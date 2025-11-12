@@ -1,4 +1,3 @@
-import * as Viz from '@viz-js/viz';
 import { D3RenderPlugin } from '../../types/d3';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
@@ -226,15 +225,8 @@ export const graphvizPlugin: D3RenderPlugin = {
     },
     render: async (container: HTMLElement, d3: any, spec: GraphvizSpec, isDarkMode: boolean) => {
         try {
-            // Lazy load Viz.js only when actually needed
-            let Viz;
-            try {
-                const VizModule = await import('@viz-js/viz');
-                Viz = VizModule;
-            } catch (error) {
-                console.error('Failed to load Viz.js for Graphviz rendering:', error);
-                throw new Error('Graphviz rendering library failed to load');
-            }
+            // Lazy load Viz.js
+            const Viz = await import('@viz-js/viz');
             
             // Handle JSON-wrapped specs vs direct definition strings
             let rawDefinition: string;

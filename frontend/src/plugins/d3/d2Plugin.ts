@@ -1,7 +1,6 @@
 import { D3RenderPlugin } from '../../types/d3';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
-import ELK from 'elkjs';
 
 export interface D2Spec {
     type: 'd2';
@@ -239,10 +238,13 @@ class D2Parser {
 
 // Full ELK layout engine integration
 class ELKLayoutEngine {
-    private elk: any;
+    private elk: any | null = null;
 
-    constructor() {
-        this.elk = new ELK();
+    async initialize() {
+        if (!this.elk) {
+            const ELK = (await import('elkjs')).default;
+            this.elk = new ELK();
+        }
     }
 
     async layout(nodes: any[], edges: any[], options: any = {}) {
@@ -250,6 +252,8 @@ class ELKLayoutEngine {
             return { nodes: [], edges: [] };
         }
 
+        await this.initialize();
+        
         // Create ELK graph structure
         const elkGraph = {
             id: 'root',

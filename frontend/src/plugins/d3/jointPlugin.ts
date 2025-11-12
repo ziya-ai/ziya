@@ -1,5 +1,5 @@
-import { dia, shapes } from '@joint/core';
-import { DirectedGraph } from '@joint/layout-directed-graph';
+import type { dia, shapes } from '@joint/core';
+
 import { D3RenderPlugin } from '../../types/d3';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
@@ -50,11 +50,11 @@ export interface D3Plugin {
 }
 
 export interface JointInstance {
-    graph: dia.Graph;
-    paper: dia.Paper;
+    graph: any; // dia.Graph - using any to avoid eager import
+    paper: any; // dia.Paper
     theme: 'light' | 'dark';
-    addElement: (elementSpec: JointElement) => dia.Element;
-    addLink: (linkSpec: JointLink) => dia.Link;
+    addElement: (elementSpec: JointElement) => any; // dia.Element
+    addLink: (linkSpec: JointLink) => any; // dia.Link
     updateElement: (id: string, updates: Partial<JointElement>) => void;
     updateLink: (id: string, updates: Partial<JointLink>) => void;
     removeElement: (id: string) => void;
@@ -67,8 +67,8 @@ export interface JointInstance {
     exportSVG: () => string;
     exportJSON: () => any;
     importJSON: (data: any) => void;
-    getElements: () => dia.Element[];
-    getLinks: () => dia.Link[];
+    getElements: () => any[]; // dia.Element[]
+    getLinks: () => any[]; // dia.Link[]
     getElementById: (id: string) => any | null;
     getLinkById: (id: string) => any | null;
     setTheme: (theme: 'light' | 'dark') => void;
@@ -133,6 +133,9 @@ const isJointSpec = (spec: any): spec is JointSpec => {
 // Enhanced shape registry with electrical and network components
 const createShapeRegistry = () => {
     return {
+        // Default fallback
+        'default': (spec: JointElement, theme: 'light' | 'dark') => createEnhancedRectElement(spec, theme),
+
         // Enhanced basic shapes with better styling
         rect: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedRectElement(spec, theme),
         square: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedRectElement({ ...spec, size: { width: 80, height: 80 } }, theme),
@@ -142,22 +145,22 @@ const createShapeRegistry = () => {
         hexagon: (spec: JointElement, theme: 'light' | 'dark') => createHexagonElement(spec, theme),
         cylinder: (spec: JointElement, theme: 'light' | 'dark') => createCylinderElement(spec, theme),
         actor: (spec: JointElement, theme: 'light' | 'dark') => createActorElement(spec, theme),
-        
+
         // Process/workflow shapes
-        process: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedRectElement({...spec, size: spec.size || {width: 140, height: 60}}, theme),
+        process: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedRectElement({ ...spec, size: spec.size || { width: 140, height: 60 } }, theme),
         decision: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedDiamondElement(spec, theme),
-        start: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedCircleElement({...spec, size: spec.size || {width: 80, height: 80}}, theme),
-        end: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedCircleElement({...spec, size: spec.size || {width: 80, height: 80}}, theme),
-        
+        start: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedCircleElement({ ...spec, size: spec.size || { width: 80, height: 80 } }, theme),
+        end: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedCircleElement({ ...spec, size: spec.size || { width: 80, height: 80 } }, theme),
+
         // Additional common shapes
         node: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedCircleElement(spec, theme),
         box: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedRectElement(spec, theme),
         oval: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedEllipseElement(spec, theme),
         rhombus: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedDiamondElement(spec, theme),
-        
+
         // Aliases for common names
         rectangle: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedRectElement(spec, theme),
-        
+
         // Database shapes
         database: (spec: JointElement, theme: 'light' | 'dark') => createCylinderElement(spec, theme),
         storage: (spec: JointElement, theme: 'light' | 'dark') => createEnhancedRectElement(spec, theme),
@@ -210,6 +213,10 @@ const createEnhancedRectElement = (elementSpec: JointElement, theme: 'light' | '
     const size = elementSpec.size || { width: 120, height: 80 };
     const text = elementSpec.text || elementSpec.label || elementSpec.id;
 
+    // Access shapes from the global scope set by render()
+    const { shapes } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!shapes) throw new Error('Joint.js not initialized');
+
     return new shapes.standard.Rectangle({
         id: elementSpec.id,
         position,
@@ -221,6 +228,7 @@ const createEnhancedRectElement = (elementSpec: JointElement, theme: 'light' | '
                 strokeWidth: 2,
                 rx: 8,
                 ry: 8,
+                magnet: true,
                 filter: theme === 'dark' ? 'drop-shadow(2px 2px 4px rgba(0,0,0,0.5))' : 'drop-shadow(2px 2px 4px rgba(0,0,0,0.2))'
             },
             label: {
@@ -243,6 +251,10 @@ const createEnhancedCircleElement = (elementSpec: JointElement, theme: 'light' |
     const size = elementSpec.size || { width: 80, height: 80 };
     const text = elementSpec.text || elementSpec.label || elementSpec.id;
 
+    // Access shapes from the global scope set by render()
+    const { shapes } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!shapes) throw new Error('Joint.js not initialized');
+
     return new shapes.standard.Circle({
         id: elementSpec.id,
         position,
@@ -252,6 +264,7 @@ const createEnhancedCircleElement = (elementSpec: JointElement, theme: 'light' |
                 fill: theme === 'dark' ? '#5e81ac' : '#3498db',
                 stroke: theme === 'dark' ? '#88c0d0' : '#2980b9',
                 strokeWidth: 3,
+                magnet: true,
                 filter: theme === 'dark' ? 'drop-shadow(2px 2px 6px rgba(0,0,0,0.4))' : 'drop-shadow(2px 2px 6px rgba(0,0,0,0.2))'
             },
             label: {
@@ -274,6 +287,10 @@ const createEnhancedEllipseElement = (elementSpec: JointElement, theme: 'light' 
     const size = elementSpec.size || { width: 140, height: 70 };
     const text = elementSpec.text || elementSpec.label || elementSpec.id;
 
+    // Access shapes from the global scope set by render()
+    const { shapes } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!shapes) throw new Error('Joint.js not initialized');
+
     return new shapes.standard.Ellipse({
         id: elementSpec.id,
         position,
@@ -283,6 +300,7 @@ const createEnhancedEllipseElement = (elementSpec: JointElement, theme: 'light' 
                 fill: theme === 'dark' ? '#bf616a' : '#e74c3c',
                 stroke: theme === 'dark' ? '#d08770' : '#c0392b',
                 strokeWidth: 2,
+                magnet: true,
                 filter: theme === 'dark' ? 'drop-shadow(2px 2px 4px rgba(0,0,0,0.5))' : 'drop-shadow(2px 2px 4px rgba(0,0,0,0.2))'
             },
             label: {
@@ -305,6 +323,10 @@ const createEnhancedDiamondElement = (elementSpec: JointElement, theme: 'light' 
     const size = elementSpec.size || { width: 120, height: 80 };
     const text = elementSpec.text || elementSpec.label || elementSpec.id;
 
+    // Access shapes from the global scope set by render()
+    const { shapes } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!shapes) throw new Error('Joint.js not initialized');
+
     return new shapes.standard.Polygon({
         id: elementSpec.id,
         position,
@@ -315,6 +337,7 @@ const createEnhancedDiamondElement = (elementSpec: JointElement, theme: 'light' 
                 stroke: theme === 'dark' ? '#d08770' : '#e67e22',
                 strokeWidth: 2,
                 refPoints: '0,10 10,0 20,10 10,20',
+                magnet: true,
                 filter: theme === 'dark' ? 'drop-shadow(2px 2px 4px rgba(0,0,0,0.5))' : 'drop-shadow(2px 2px 4px rgba(0,0,0,0.2))'
             },
             label: {
@@ -336,6 +359,10 @@ const createHexagonElement = (elementSpec: JointElement, theme: 'light' | 'dark'
         elementSpec.position || { x: 0, y: 0 };
     const size = elementSpec.size || { width: 100, height: 86 };
     const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    // Access shapes from the global scope set by render()
+    const { shapes } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!shapes) throw new Error('Joint.js not initialized');
 
     return new shapes.standard.Polygon({
         id: elementSpec.id,
@@ -368,6 +395,10 @@ const createCylinderElement = (elementSpec: JointElement, theme: 'light' | 'dark
         elementSpec.position || { x: 0, y: 0 };
     const size = elementSpec.size || { width: 80, height: 100 };
     const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    // Access dia from the global scope set by render()
+    const { dia } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!dia) throw new Error('Joint.js not initialized');
 
     return new dia.Element({
         id: elementSpec.id,
@@ -429,6 +460,10 @@ const createDiamondElement = (elementSpec: JointElement, theme: 'light' | 'dark'
     const size = elementSpec.size || { width: 120, height: 80 };
     const text = elementSpec.text || elementSpec.label || elementSpec.id;
 
+    // Access dia from the global scope set by render()
+    const { dia } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!dia) throw new Error('Joint.js not initialized');
+
     const commonAttrs = {
         body: {
             fill: theme === 'dark' ? '#2f3349' : '#ffffff',
@@ -479,6 +514,10 @@ const createNetworkElement = (elementSpec: JointElement, elementType: string, th
 
     const networkAttrs = getNetworkElementAttrs(elementType, theme);
     const defaultPorts = getDefaultPortsForNetworkElement(elementType);
+
+    // Access shapes from the global scope set by render()
+    const { shapes } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!shapes) throw new Error('Joint.js not initialized');
 
     const element = new shapes.standard.Rectangle({
         id: elementSpec.id,
@@ -554,6 +593,10 @@ const createDocumentElement = (elementSpec: JointElement, theme: 'light' | 'dark
     const size = elementSpec.size || { width: 100, height: 80 };
     const text = elementSpec.text || elementSpec.label || elementSpec.id;
 
+    // Access dia from the global scope set by render()
+    const { dia } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!dia) throw new Error('Joint.js not initialized');
+
     return new dia.Element({
         id: elementSpec.id,
         position,
@@ -591,6 +634,10 @@ const createComponentElement = (elementSpec: JointElement, theme: 'light' | 'dar
         elementSpec.position || { x: 0, y: 0 };
     const size = elementSpec.size || { width: 120, height: 80 };
     const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    // Access dia from the global scope set by render()
+    const { dia } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!dia) throw new Error('Joint.js not initialized');
 
     return new dia.Element({
         id: elementSpec.id,
@@ -650,6 +697,10 @@ const createStartEndElement = (elementSpec: JointElement, theme: 'light' | 'dark
         (theme === 'dark' ? '#a3be8c' : '#27ae60') :
         (theme === 'dark' ? '#bf616a' : '#e74c3c');
 
+    // Access shapes from the global scope set by render()
+    const { shapes } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!shapes) throw new Error('Joint.js not initialized');
+
     return new shapes.standard.Ellipse({
         id: elementSpec.id,
         position,
@@ -680,6 +731,10 @@ const createProcessElement = (elementSpec: JointElement, theme: 'light' | 'dark'
         elementSpec.position || { x: 0, y: 0 };
     const size = elementSpec.size || { width: 140, height: 60 };
     const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    // Access shapes from the global scope set by render()
+    const { shapes } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!shapes) throw new Error('Joint.js not initialized');
 
     return new shapes.standard.Rectangle({
         id: elementSpec.id,
@@ -719,6 +774,10 @@ const createElectricalElement = (elementSpec: JointElement, elementType: string,
     const electricalAttrs = getEnhancedElectricalAttrs(elementType, theme, size, label);
     const markup = getEnhancedElectricalMarkup(elementType);
     const defaultPorts = getDefaultPortsForElectricalElement(elementType);
+    
+    // Access dia from the global scope set by render()
+    const { dia } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!dia) throw new Error('Joint.js not initialized');
 
     const element = new dia.Element({
         id: elementSpec.id,
@@ -907,6 +966,10 @@ const createUMLElement = (elementSpec: JointElement, elementType: string, theme:
     // Parse UML content (methods, properties)
     const umlContent = parseUMLContent(text);
 
+    // Access shapes from the global scope set by render()
+    const { shapes } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!shapes) throw new Error('Joint.js not initialized');
+
     // Create UML class using standard rectangle with custom markup
     const element = new shapes.standard.Rectangle({
         id: elementSpec.id,
@@ -970,7 +1033,11 @@ const parseJointDefinition = (definition: string): { elements: JointElement[]; c
 
         if (currentSection === 'elements') {
             // Parse element: id [type] "label" @(x,y) size(w,h)
-            const elementMatch = line.match(/^(\w+)(?:\s*\[(\w+)\])?(?:\s*"([^"]*)")?(?:\s*@\((\d+),\s*(\d+)\))?(?:\s*size\((\d+),\s*(\d+)\))?/);
+            // Enhanced regex to handle simpler formats: "A: Label" or just "A"
+            const elementMatch = line.match(/^(\w+)(?:\s*\[(\w+)\])?(?:\s*"([^"]*)")?(?:\s*@\((\d+),\s*(\d+)\))?(?:\s*size\((\d+),\s*(\d+)\))?/) ||
+                line.match(/^(\w+):\s*"?([^"]*)"?$/) ||
+                line.match(/^(\w+)$/);
+
             if (elementMatch) {
                 const [, id, type, label, x, y, w, h] = elementMatch;
                 elements.push({
@@ -1022,13 +1089,13 @@ const parseJointDefinition = (definition: string): { elements: JointElement[]; c
     // If no elements were parsed, create a simple test case
     if (elements.length === 0 && definition.trim()) {
         console.log('No elements parsed from definition, creating default test elements');
-        elements.push({ 
-            id: 'A', type: 'rect', position: [100, 100], 
-            size: { width: 120, height: 80 }, text: 'Element A' 
+        elements.push({
+            id: 'A', type: 'rect', position: [100, 100],
+            size: { width: 120, height: 80 }, text: 'Element A'
         });
-        elements.push({ 
-            id: 'B', type: 'circle', position: [300, 100], 
-            size: { width: 80, height: 80 }, text: 'Element B' 
+        elements.push({
+            id: 'B', type: 'circle', position: [300, 100],
+            size: { width: 80, height: 80 }, text: 'Element B'
         });
         links.push({ id: 'A-B', source: 'A', target: 'B', label: 'connection' });
     }
@@ -1049,7 +1116,7 @@ const createElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
         console.error('Element missing required id:', elementSpec);
         throw new Error('Element must have an id');
     }
-    
+
     console.log(`Creating element ${elementSpec.id}:`, { position, size, text, type: elementSpec.type });
 
     const commonAttrs = {
@@ -1068,9 +1135,13 @@ const createElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
             fontFamily: 'Arial, sans-serif',
             fontWeight: 'bold',
             textAnchor: 'middle',
-            textVerticalAnchor: 'middle'
+        textVerticalAnchor: 'middle'
         }
     };
+    
+    // Access shapes and dia from the global scope set by render()
+    const { shapes, dia } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!shapes || !dia) throw new Error('Joint.js not initialized');
 
     let element: dia.Element;
     switch (elementSpec.type || 'rect') {
@@ -1172,14 +1243,26 @@ const createElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
 
 // Enhanced link creation with better routing and styling
 const createEnhancedLink = (linkSpec: JointLink, theme: 'light' | 'dark') => {
-    // Keep source/target simple - let Paper defaults handle all anchoring
-    const sourceConfig = typeof linkSpec.source === 'string' 
-        ? { id: linkSpec.source } 
-        : linkSpec.source;
-    
+    // Configure source/target with proper anchor and connection points
+    const sourceConfig = typeof linkSpec.source === 'string'
+        ? { id: linkSpec.source, anchor: { name: 'modelCenter' }, connectionPoint: { name: 'boundary' } }
+        : {
+            ...linkSpec.source,
+            anchor: linkSpec.source.anchor || { name: 'modelCenter' },
+            connectionPoint: linkSpec.source.connectionPoint || { name: 'boundary' }
+        };
+
     const targetConfig = typeof linkSpec.target === 'string'
-        ? { id: linkSpec.target }
-        : linkSpec.target;
+        ? { id: linkSpec.target, anchor: { name: 'modelCenter' }, connectionPoint: { name: 'boundary' } }
+        : {
+            ...linkSpec.target,
+            anchor: linkSpec.target.anchor || { name: 'modelCenter' },
+            connectionPoint: linkSpec.target.connectionPoint || { name: 'boundary' }
+        };
+
+    // Access shapes from the global scope set by render()
+    const { shapes } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!shapes) throw new Error('Joint.js not initialized');
 
     const link = new shapes.standard.Link({
         id: linkSpec.id,
@@ -1253,13 +1336,17 @@ const createEnhancedLink = (linkSpec: JointLink, theme: 'light' | 'dark') => {
 // Override the original createLink to use the enhanced version
 const createLink = (linkSpec: JointLink, theme: 'light' | 'dark') => {
     // Prepare source and target with proper anchor points for better connections
-    const sourceConfig = typeof linkSpec.source === 'string' 
-        ? { id: linkSpec.source, anchor: { name: 'center' } } 
-        : { ...linkSpec.source, anchor: { name: 'center' } };
-    
+    const sourceConfig = typeof linkSpec.source === 'string'
+        ? { id: linkSpec.source, anchor: { name: 'modelCenter' } }
+        : { ...linkSpec.source, anchor: { name: 'modelCenter' } };
+
     const targetConfig = typeof linkSpec.target === 'string'
-        ? { id: linkSpec.target, anchor: { name: 'center' } }
-        : { ...linkSpec.target, anchor: { name: 'center' } };
+        ? { id: linkSpec.target, anchor: { name: 'modelCenter' } }
+        : { ...linkSpec.target, anchor: { name: 'modelCenter' } };
+
+    // Access shapes from the global scope set by render()
+    const { shapes } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!shapes) throw new Error('Joint.js not initialized');
 
     const link = new shapes.standard.Link({
         id: linkSpec.id,
@@ -1333,14 +1420,16 @@ export const jointPlugin: D3RenderPlugin = {
     name: 'joint-renderer',
     priority: 6, // Higher than basic charts, lower than mermaid/graphviz
     sizingConfig: {
-        sizingStrategy: 'responsive',
+        sizingStrategy: 'auto-expand',
         needsDynamicHeight: true,
         needsOverflowVisible: true,
         observeResize: false,
-        minWidth: 400,
-        minHeight: 300,
+        minWidth: undefined,
+        minHeight: undefined,
         containerStyles: {
+            width: '100%',
             height: 'auto',
+            maxHeight: 'none',
             overflow: 'visible'
         }
     },
@@ -1363,6 +1452,19 @@ export const jointPlugin: D3RenderPlugin = {
     render: async (container: HTMLElement, d3: any, spec: JointSpec, isDarkMode: boolean): Promise<void> => {
         console.log('Joint.js plugin render called with spec:', spec);
 
+        // Lazy load Joint.js libraries
+        const [jointCore, jointLayout] = await Promise.all([
+            import('@joint/core'),
+            import('@joint/layout-directed-graph')
+        ]);
+        const { dia, shapes, anchors, connectionPoints, routers, connectors } = jointCore;
+        const { DirectedGraph } = jointLayout;
+
+        // Make runtime dependencies available to helper functions
+        (globalThis as any).__jointRuntimeDeps = {
+            dia, shapes, anchors, connectionPoints, routers, connectors
+        };
+
         try {
             // Clear container and any existing Joint.js instances
             const existingPaper = (container as any)._jointPaper;
@@ -1371,6 +1473,10 @@ export const jointPlugin: D3RenderPlugin = {
                 delete (container as any)._jointPaper;
             }
             container.innerHTML = '';
+
+            // Ensure container uses full width from parent
+            container.style.width = '100%';
+            container.style.maxWidth = '100%';
 
             // Show loading spinner
 
@@ -1475,30 +1581,58 @@ export const jointPlugin: D3RenderPlugin = {
             const theme = spec.theme === 'auto' ? (isDarkMode ? 'dark' : 'light') :
                 (spec.theme || (isDarkMode ? 'dark' : 'light'));
 
-            // Calculate container dimensions with fallbacks
-            const containerRect = container.getBoundingClientRect() || { width: 800, height: 600 };
-            const width = spec.width || Math.max(containerRect.width - 20, 600); // Account for padding
-            const height = spec.height || Math.max(containerRect.height - 20, 400); // Account for padding
+            // Calculate container dimensions - walk up to find a rendered parent with actual dimensions
+            const parentContainer = container.parentElement;
+            let parentRect = parentContainer?.getBoundingClientRect();
+
+            // If parent has no width (not laid out), walk up further
+            let searchParent = parentContainer;
+            while (searchParent && parentRect && parentRect.width === 0) {
+                searchParent = searchParent.parentElement;
+                parentRect = searchParent?.getBoundingClientRect();
+            }
+
+            // Use parent width if available, otherwise use viewport-relative default
+            const availableWidth = (parentRect && parentRect.width > 0) ? parentRect.width : window.innerWidth * 0.8;
+            const availableHeight = (parentRect && parentRect.height > 0) ? parentRect.height : 400;
+
+            console.log('Joint.js sizing:', {
+                container: container.getBoundingClientRect(),
+                parentRect,
+                availableWidth,
+                availableHeight,
+                windowWidth: window.innerWidth
+            });
+
+            const width = spec.width || Math.max(availableWidth - 40, 400);
+            const height = spec.height || Math.max(availableHeight - 40, 300);
 
             // Create Joint.js graph and paper
-            const graph = new dia.Graph();
+            const graph = new dia.Graph({}, {
+                cellNamespace: shapes
+            });
 
             console.log('Creating Joint.js paper with dimensions:', { width, height });
 
             const paper = new dia.Paper({
                 el: container,
-                width: width,
+                width,
                 height,
                 gridSize: spec.grid !== false ? 10 : 1,
                 drawGrid: spec.grid !== false,
                 model: graph,
                 cellViewNamespace: shapes,
+                anchorNamespace: anchors,
+                connectionPointNamespace: connectionPoints,
+                routerNamespace: routers,
+                connectorNamespace: connectors,
                 interactive: spec.interactive !== false,
                 snapLinks: { radius: 30 },
                 linkPinning: false,
-                defaultAnchor: { name: 'center' },
+                defaultAnchor: { name: 'modelCenter' },
                 defaultConnectionPoint: { name: 'boundary' },
-                defaultRouter: { name: 'manhattan' },
+                defaultRouter: { name: 'normal' },
+                defaultLink: () => new shapes.standard.Link(),
                 defaultConnector: { name: 'rounded', args: { radius: 15 } },
                 background: {
                     color: theme === 'dark' ? '#1f1f1f' : '#ffffff'
@@ -1507,6 +1641,68 @@ export const jointPlugin: D3RenderPlugin = {
 
             // Store paper reference for cleanup
             (container as any)._jointPaper = paper;
+
+            // Add ResizeObserver to handle container width changes
+            const resizeObserver = new ResizeObserver((entries) => {
+                for (const entry of entries) {
+                    const { width: newWidth } = entry.contentRect;
+
+                    // Only update width - height is controlled by content
+                    const currentDimensions = paper.getComputedSize();
+                    if (newWidth > 0 && newWidth !== currentDimensions.width && Math.abs(currentDimensions.width - newWidth) > 5) {
+
+                        console.log('Container width changed, updating paper width:', {
+                            from: currentDimensions.width,
+                            to: newWidth
+                        });
+
+                        // Get content bounds to maintain proper height
+                        const bbox = graph.getBBox();
+                        if (bbox) {
+                            const padding = 40;
+                            const contentHeight = bbox.height + padding * 2;
+
+                            // Update paper width, maintain content-based height
+                            paper.setDimensions(newWidth, Math.max(contentHeight, 300));
+
+                            // Update container and parent heights to match
+                            container.style.height = `${Math.max(contentHeight, 300)}px`;
+                            container.style.minHeight = `${Math.max(contentHeight, 300)}px`;
+
+                            // Also update parent d3-container if it exists
+                            const parentContainer = container.parentElement;
+                            if (parentContainer?.classList.contains('d3-container')) {
+                                parentContainer.style.height = 'auto';
+                                parentContainer.style.minHeight = `${Math.max(contentHeight, 300)}px`;
+                            }
+
+                            // Reposition content to center
+                            paper.translate(padding - bbox.x, padding - bbox.y);
+
+                            // Update SVG viewBox
+                            const svg = container.querySelector('svg');
+                            if (svg) {
+                                svg.setAttribute('viewBox', `0 0 ${newWidth} ${Math.max(contentHeight, 300)}`);
+                            }
+                        }
+                    }
+                }
+            });
+
+            resizeObserver.observe(container);
+
+            // Store observer for cleanup
+            (container as any)._resizeObserver = resizeObserver;
+
+            // CRITICAL FIX: Force the paper container to use full width
+            const paperEl = container.querySelector('.joint-paper') as HTMLElement;
+            if (paperEl) {
+                paperEl.style.width = '100%';
+                paperEl.style.height = 'auto';
+                paperEl.style.minHeight = 'unset';
+                paperEl.style.maxHeight = 'none';
+                console.log('Forced paper element to full width');
+            }
 
             // Remove loading spinner
             if (loadingSpinner && loadingSpinner.parentNode === container) {
@@ -1525,27 +1721,47 @@ export const jointPlugin: D3RenderPlugin = {
             // Create shape registry for enhanced element creation
             const shapeRegistry = createShapeRegistry();
 
+            console.log('🔧 JOINT-DEBUG: Starting element creation');
+            console.log('🔧 JOINT-DEBUG: Shape registry keys:', Object.keys(shapeRegistry));
+
             elements.forEach(elementSpec => {
                 try {
                     // Use shape registry for enhanced shapes
                     const shapeType = elementSpec.type || elementSpec.shape || 'rect';
-                    const shapeCreator = shapeRegistry[shapeType] || shapeRegistry['rect'];
 
-                    console.log(`Creating enhanced element ${elementSpec.id} with shape type: ${shapeType}`);
+                    console.log(`🔧 JOINT-DEBUG: Processing element ${elementSpec.id}:`, {
+                        type: elementSpec.type,
+                        shape: elementSpec.shape,
+                        shapeType: shapeType,
+                        hasCreator: !!shapeRegistry[shapeType]
+                    });
+
+                    const shapeCreator = shapeRegistry[shapeType];
+                    if (!shapeCreator) {
+                        console.warn(`🔧 JOINT-DEBUG: No shape creator found for "${shapeType}", using rect as fallback`);
+                        const fallbackCreator = shapeRegistry['rect'];
+                        if (!fallbackCreator) {
+                            throw new Error(`No shape creator for "${shapeType}" and no rect fallback available`);
+                        }
+                    }
+
+                    const actualCreator = shapeRegistry[shapeType] || shapeRegistry['rect'];
 
                     // Ensure element has required properties
                     let defaultPosition = elementSpec.position;
-                    if (!defaultPosition ||
-                        (Array.isArray(defaultPosition) && (defaultPosition[0] <= 0 || defaultPosition[1] <= 0)) ||
+
+                    // Only auto-position if position is completely missing or clearly invalid
+                    const needsAutoPosition = !defaultPosition ||
+                        (Array.isArray(defaultPosition) && (defaultPosition[0] < 0 || defaultPosition[1] < 0)) ||
                         (typeof defaultPosition === 'object' && !Array.isArray(defaultPosition) &&
-                            ('x' in defaultPosition && 'y' in defaultPosition &&
-                                (defaultPosition.x <= 0 || defaultPosition.y <= 0))) ||
-                        (Array.isArray(defaultPosition) && defaultPosition[0] > width - 120)) { // Also reposition if off-screen right
+                            ('x' in defaultPosition && 'y' in defaultPosition && (defaultPosition.x < 0 || defaultPosition.y < 0)));
+
+                    if (needsAutoPosition) {
                         // Use grid layout for better default positioning
                         const col = elementIndex % gridCols;
                         const row = Math.floor(elementIndex / gridCols);
                         defaultPosition = [startX + col * elementSpacing, startY + row * 120];
-                        console.log(`Auto-positioning element ${elementSpec.id} at grid position (${col}, ${row}) -> (${defaultPosition[0]}, ${defaultPosition[1]})`);
+                        console.log(`🔧 JOINT-DEBUG: Auto-positioning element ${elementSpec.id} at grid (${col}, ${row}) -> (${defaultPosition[0]}, ${defaultPosition[1]})`);
                     }
 
                     const elementWithDefaults = {
@@ -1554,11 +1770,11 @@ export const jointPlugin: D3RenderPlugin = {
                         size: elementSpec.size || { width: 120, height: 80 }
                     };
 
-                    const element = shapeCreator(elementWithDefaults, theme);
+                    const element = actualCreator(elementWithDefaults, theme);
                     if (element) {
                         jointElements.push(element);
                         graph.addCell(element);
-                        console.log(`Successfully created element: ${elementSpec.id}`);
+                        console.log(`🔧 JOINT-DEBUG: ✓ Created element ${elementSpec.id}`);
                     }
                 } catch (error) {
                     console.warn(`Failed to create element ${elementSpec.id}:`, error);
@@ -1628,10 +1844,72 @@ export const jointPlugin: D3RenderPlugin = {
             }
 
             // Fit content to paper after layout - ensure all content is visible
-            setTimeout(() => {
-                // Simple approach: just fit the content to the available space
-                paper.scaleContentToFit({ padding: 20, minScale: 0.5, maxScale: 1.5 });
-            }, 300); // Wait for layout to complete
+            const fitContentToPaper = () => {
+                // Get the actual content bounds
+                const bbox = graph.getBBox();
+                console.log('Graph bounding box:', bbox);
+
+                if (bbox && bbox.width > 0 && bbox.height > 0) {
+                    const padding = 40;
+                    const contentWidth = bbox.width + padding * 2;
+                    const contentHeight = bbox.height + padding * 2;
+
+                    // Get current container size for responsive width
+                    const containerRect = container.getBoundingClientRect();
+                    const containerWidth = containerRect.width > 0 ? containerRect.width : width;
+
+                    // Width: use container width, but ensure it fits content
+                    const finalWidth = Math.max(contentWidth, containerWidth);
+
+                    // Height: ALWAYS grow to fit content (don't cap at original height)
+                    const finalHeight = contentHeight;
+
+                    paper.setDimensions(finalWidth, finalHeight);
+
+                    // Update container height to match paper
+                    container.style.height = `${finalHeight}px`;
+                    container.style.minHeight = `${finalHeight}px`;
+                    container.style.maxHeight = 'none';
+
+                    // Propagate height to parent containers
+                    const parentContainer = container.parentElement;
+                    if (parentContainer?.classList.contains('d3-container')) {
+                        parentContainer.style.height = `${finalHeight}px`;
+                        parentContainer.style.minHeight = `${finalHeight}px`;
+                        parentContainer.style.maxHeight = 'none';
+                    }
+
+                    // Update grandparent if it exists (outer wrapper)
+                    const grandparentContainer = parentContainer?.parentElement;
+                    if (grandparentContainer?.classList.contains('d3-container')) {
+                        grandparentContainer.style.height = `${finalHeight}px`;
+                        grandparentContainer.style.minHeight = `${finalHeight}px`;
+                        grandparentContainer.style.maxHeight = 'none';
+                    }
+
+                    // Also update max-height to allow growth
+                    container.style.maxHeight = 'none';
+
+                    // Center the content
+                    paper.translate(padding - bbox.x, padding - bbox.y);
+                    console.log('Paper dimensions updated to fit content');
+
+                    // Force SVG to scale properly
+                    const svg = container.querySelector('svg');
+                    if (svg) {
+                        svg.style.width = '100%';
+                        svg.style.height = '100%';
+                        svg.style.maxWidth = '100%';
+                        svg.style.maxHeight = 'none'; // Allow vertical growth
+                        svg.setAttribute('viewBox', `0 0 ${finalWidth} ${finalHeight}`);
+                        svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+                        console.log('SVG viewBox set to:', finalWidth, finalHeight);
+                    }
+                }
+            };
+
+            // Fit content after layout completes
+            setTimeout(fitContentToPaper, 300);
 
             // Add interaction handlers
             paper.on('element:pointerclick', (elementView: dia.ElementView) => {
@@ -1683,6 +1961,14 @@ export const jointPlugin: D3RenderPlugin = {
             `;
             fitButton.onclick = () => {
                 paper.scaleContentToFit({ padding: 20, minScale: 0.5, maxScale: 1.5 });
+
+                // Also update container height after fitting
+                setTimeout(() => {
+                    const bbox = graph.getBBox();
+                    if (bbox) {
+                        container.style.height = `${bbox.height + 80}px`;
+                    }
+                }, 100);
             };
             actionsContainer.appendChild(fitButton);
 
@@ -1714,9 +2000,9 @@ export const jointPlugin: D3RenderPlugin = {
                     <p>${error instanceof Error ? error.message : 'Unknown error'}</p>
                     <details>
                         <summary>Show Definition</summary>
-                        <pre><code>${spec.definition || JSON.stringify(spec, null, 2)}</code></pre>
-                    </details>
-                </div>
+                    <pre><code>${spec.definition || JSON.stringify(spec, null, 2)}</code></pre>
+                </details>
+            </div>
             `;
         }
     }
@@ -1962,6 +2248,10 @@ const createDatabaseElement = (elementSpec: JointElement, theme: 'light' | 'dark
     const size = elementSpec.size || { width: 80, height: 100 };
     const text = elementSpec.text || elementSpec.label || elementSpec.id;
 
+    // Access dia from the global scope set by render()
+    const { dia } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!dia) throw new Error('Joint.js not initialized');
+
     return new dia.Element({
         id: elementSpec.id,
         position,
@@ -2019,6 +2309,10 @@ const createStorageElement = (elementSpec: JointElement, theme: 'light' | 'dark'
     const size = elementSpec.size || { width: 100, height: 80 };
     const text = elementSpec.text || elementSpec.label || elementSpec.id;
 
+    // Access shapes from the global scope set by render()
+    const { shapes } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!shapes) throw new Error('Joint.js not initialized');
+
     return new shapes.standard.Rectangle({
         id: elementSpec.id,
         position,
@@ -2051,6 +2345,10 @@ const createMessageElement = (elementSpec: JointElement, theme: 'light' | 'dark'
         elementSpec.position || { x: 0, y: 0 };
     const size = elementSpec.size || { width: 120, height: 60 };
     const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    // Access dia from the global scope set by render()
+    const { dia } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!dia) throw new Error('Joint.js not initialized');
 
     return new dia.Element({
         id: elementSpec.id,
@@ -2098,6 +2396,10 @@ const createModuleElement = (elementSpec: JointElement, theme: 'light' | 'dark')
     const size = elementSpec.size || { width: 120, height: 80 };
     const text = elementSpec.text || elementSpec.label || elementSpec.id;
 
+    // Access shapes from the global scope set by render()
+    const { shapes } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!shapes) throw new Error('Joint.js not initialized');
+
     return new shapes.standard.Rectangle({
         id: elementSpec.id,
         position,
@@ -2138,6 +2440,10 @@ const createEnhancedUMLElement = (elementSpec: JointElement, umlType: 'class' | 
         package: { fill: theme === 'dark' ? '#a3be8c' : '#e8f5e8', stroke: theme === 'dark' ? '#8fbcbb' : '#27ae60' }
     };
 
+    // Access shapes from the global scope set by render()
+    const { shapes } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!shapes) throw new Error('Joint.js not initialized');
+
     return new shapes.standard.Rectangle({
         id: elementSpec.id,
         position,
@@ -2172,6 +2478,10 @@ const createNoteElement = (elementSpec: JointElement, theme: 'light' | 'dark') =
         elementSpec.position || { x: 0, y: 0 };
     const size = elementSpec.size || { width: 100, height: 80 };
     const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    // Access dia from the global scope set by render()
+    const { dia } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!dia) throw new Error('Joint.js not initialized');
 
     return new dia.Element({
         id: elementSpec.id,
@@ -2211,6 +2521,10 @@ const createDataElement = (elementSpec: JointElement, theme: 'light' | 'dark') =
     const size = elementSpec.size || { width: 120, height: 60 };
     const text = elementSpec.text || elementSpec.label || elementSpec.id;
 
+    // Access dia from the global scope set by render()
+    const { dia } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!dia) throw new Error('Joint.js not initialized');
+
     return new dia.Element({
         id: elementSpec.id,
         position,
@@ -2247,6 +2561,10 @@ const createSubprocessElement = (elementSpec: JointElement, theme: 'light' | 'da
         elementSpec.position || { x: 0, y: 0 };
     const size = elementSpec.size || { width: 120, height: 60 };
     const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    // Access dia from the global scope set by render()
+    const { dia } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!dia) throw new Error('Joint.js not initialized');
 
     return new dia.Element({
         id: elementSpec.id,
@@ -2299,6 +2617,10 @@ const createManualElement = (elementSpec: JointElement, theme: 'light' | 'dark')
     const size = elementSpec.size || { width: 120, height: 80 };
     const text = elementSpec.text || elementSpec.label || elementSpec.id;
 
+    // Access dia from the global scope set by render()
+    const { dia } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!dia) throw new Error('Joint.js not initialized');
+
     return new dia.Element({
         id: elementSpec.id,
         position,
@@ -2336,6 +2658,10 @@ const createActorElement = (elementSpec: JointElement, theme: 'light' | 'dark') 
         elementSpec.position || { x: 0, y: 0 };
     const size = elementSpec.size || { width: 60, height: 100 };
     const text = elementSpec.text || elementSpec.label || elementSpec.id;
+
+    // Access dia from the global scope set by render()
+    const { dia } = (globalThis as any).__jointRuntimeDeps || {};
+    if (!dia) throw new Error('Joint.js not initialized');
 
     return new dia.Element({
         id: elementSpec.id,

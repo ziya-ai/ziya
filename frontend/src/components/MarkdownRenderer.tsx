@@ -1,6 +1,6 @@
 import React, { useState, useEffect, memo, useMemo, useCallback, useRef, useId, useLayoutEffect } from 'react';
 import { marked, Tokens } from 'marked';
-import { Alert, Button, message, Tooltip } from 'antd';
+import { Alert, Button, message, Tooltip, Collapse } from 'antd';
 import { parseDiff, tokenize } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
 import { DiffLine } from './DiffLine';
@@ -22,6 +22,8 @@ import 'katex/dist/katex.min.css';
 import { restartStreamWithEnhancedContext } from '../apis/chatApi';
 import { sendPayload } from '../apis/chatApi';
 import { formatMCPOutput } from '../utils/mcpFormatter';
+
+const { Panel } = Collapse;
 
 // Thinking component for DeepSeek reasoning content
 const ThinkingBlock: React.FC<{ children: React.ReactNode; isDarkMode: boolean; isStreaming?: boolean }> = ({ children, isDarkMode, isStreaming = false }) => {
@@ -245,6 +247,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
     const isShellCommand = actualToolName === 'mcp_run_shell_command';
 
     const { content: formattedContent, collapsed, summary } = formattedOutput;
+    const hierarchicalResults = formattedOutput.hierarchicalResults;
     const shouldShowCollapsed = collapsed !== false && (summary || formattedContent.length > 500);
 
     // Don't clean tool markers - they're already properly formatted by the backend
@@ -273,6 +276,84 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
     };
 
     const colors = getToolColors();
+
+    // Render hierarchical results if available (e.g., workspace search)
+    if (hierarchicalResults && hierarchicalResults.length > 0) {
+        return (
+            <div style={{
+                backgroundColor: colors.bg,
+                border: `2px solid ${colors.border}`,
+                borderRadius: '12px',
+                margin: '16px 0',
+                overflow: 'hidden',
+                fontFamily: 'Monaco, Menlo, "Ubuntu Mono", monospace',
+                fontSize: '14px',
+                boxShadow: isDarkMode
+                    ? '0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2)'
+                    : '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)'
+            }}>
+                <div style={{
+                    backgroundColor: colors.headerBg,
+                    padding: '8px 16px',
+                    borderBottom: `1px solid ${colors.border}`,
+                    color: colors.headerText,
+                    fontWeight: 'bold',
+                    fontSize: '12px',
+                    letterSpacing: '0.5px'
+                }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <span>{getToolSummary()}</span>
+                        <span style={{ fontSize: '11px', opacity: 0.7, fontWeight: 'normal' }}>
+                            {formattedContent || summary}
+                        </span>
+                    </div>
+                </div>
+
+                <div style={{ padding: '8px' }}>
+                    <Collapse
+                        ghost
+                        bordered={false}
+                        style={{
+                            backgroundColor: 'transparent',
+                            color: colors.contentText
+                        }}
+                    >
+                        {hierarchicalResults.map((result, index) => (
+                            <Panel
+                                header={
+                                    <span style={{
+                                        color: colors.contentText,
+                                        fontSize: '13px',
+                                        fontWeight: '500'
+                                    }}>
+                                        {result.title}
+                                    </span>
+                                }
+                                key={index}
+                                style={{
+                                    borderBottom: index < hierarchicalResults.length - 1 ? `1px solid ${colors.border}` : 'none',
+                                    marginBottom: '4px'
+                                }}
+                            >
+                                <pre style={{
+                                    margin: 0,
+                                    padding: '12px',
+                                    backgroundColor: isDarkMode ? '#0d1117' : '#f6f8fa',
+                                    borderRadius: '4px',
+                                    overflow: 'auto',
+                                    maxHeight: '400px',
+                                    fontSize: '12px',
+                                    lineHeight: '1.5'
+                                }}>
+                                    <code className={`language-${result.language || 'text'}`}>{result.content}</code>
+                                </pre>
+                            </Panel>
+                        ))}
+                    </Collapse>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div style={{
@@ -3375,7 +3456,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
         const toolName = token.lang.substring(5);
 
         // Special handling for thinking blocks
-        if (toolName === 'mcp_sequentialthinking' || token.lang?.startsWith('thinking:')) {
+        if (toolName === 'mcp_sequentialthinking' || toolName === 'sequentialthinking' || token.lang?.startsWith('thinking:')) {
             return <ThinkingBlock isDarkMode={isDarkMode}>{token.text || ''}</ThinkingBlock>;
         }
 
@@ -4794,66 +4875,108 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             updateProcessingState, addStreamingConversation } = useChatContext();
     const { checkedKeys } = useFolderContext();
     
+    // Track attached handlers to prevent duplicates
+    const attachedHandlersRef = useRef<Set<Element>>(new Set());
+    
+    // Setup MutationObserver to watch for dynamically added throttle buttons
     useLayoutEffect(() => {
         if (!containerRef.current) return;
-
-        // Find all throttle retry buttons in the rendered content
-        const buttons = containerRef.current.querySelectorAll('.throttle-retry-button');
         
-        if (buttons.length > 0) {
-            console.log(`Found ${buttons.length} throttle retry button(s), attaching event listeners`);
-        }
-        
-        const handleRetryClick = async (event: Event) => {
-            const button = event.currentTarget as HTMLButtonElement;
+        // Separate function to attach handler with proper closure
+        const attachThrottleRetryHandler = (button: HTMLButtonElement) => {
             const conversationId = button.getAttribute('data-conversation-id');
             const throttleWait = button.getAttribute('data-throttle-wait');
             
             if (!conversationId) return;
             
-            console.log('🔄 Throttle retry button clicked:', { conversationId, throttleWait });
+            console.log(`✅ Attaching throttle retry handler to button for conversation: ${conversationId}`);
             
-            // Disable button and show loading state
-            button.disabled = true;
-            button.textContent = '⏳ Retrying...';
+            const handleClick = async () => {
+                console.log('🔄 RETRY: User clicked retry button after throttling');
+
+                // Disable button and show loading state
+                button.disabled = true;
+                const originalText = button.textContent;
+                button.textContent = '⏳ Retrying...';
+                
+                try {
+                    // Get the last user message to retry
+                    const lastUserMessage = currentMessages.filter(msg => msg.role === 'human').pop();
+                    if (!lastUserMessage) {
+                        message.error('No message to retry');
+                        button.disabled = false;
+                        button.textContent = originalText;
+                        return;
+                    }
+                    
+                    // Retry the request
+                    addStreamingConversation(conversationId);
+                    await sendPayload(
+                        currentMessages.filter(msg => !msg.muted),
+                        lastUserMessage.content,
+                        checkedKeys as string[],
+                        conversationId,
+                        streamedContentMap,
+                        setStreamedContentMap,
+                        setIsStreaming,
+                        removeStreamingConversation,
+                        addMessageToConversation,
+                        streamingConversations.has(conversationId),
+                        (state) => updateProcessingState(conversationId, state)
+                    );
+                } catch (error) {
+                    console.error('Retry failed:', error);
+                    message.error('Failed to retry request');
+                    button.disabled = false;
+                    button.textContent = originalText;
+                }
+            };
             
-            // Get the last user message to retry
-            const lastUserMessage = currentMessages.filter(msg => msg.role === 'human').pop();
-            if (!lastUserMessage) {
-                message.error('No message to retry');
-                return;
-            }
-            
-            // Retry the request using the existing sendPayload infrastructure
-            addStreamingConversation(conversationId);
-            await sendPayload(
-                currentMessages.filter(msg => !msg.muted),
-                lastUserMessage.content,
-                checkedKeys as string[],
-                conversationId,
-                streamedContentMap,
-                setStreamedContentMap,
-                setIsStreaming,
-                removeStreamingConversation,
-                addMessageToConversation,
-                streamingConversations.has(conversationId),
-                (state) => updateProcessingState(conversationId, state)
-            );
+            button.addEventListener('click', handleClick);
         };
         
-        buttons.forEach(button => {
-            button.addEventListener('click', handleRetryClick);
+        const observer = new MutationObserver((mutations) => {
+            mutations.forEach((mutation) => {
+                mutation.addedNodes.forEach((node) => {
+                    if (node.nodeType === Node.ELEMENT_NODE) {
+                        const element = node as Element;
+                        
+                        // Check if this node or its children contain throttle buttons
+                        const buttons = element.classList?.contains('throttle-retry-button') 
+                            ? [element]
+                            : Array.from(element.querySelectorAll?.('.throttle-retry-button') || []);
+                        
+                        buttons.forEach((button: Element) => {
+                            if (!attachedHandlersRef.current.has(button)) {
+                                attachThrottleRetryHandler(button as HTMLButtonElement);
+                                attachedHandlersRef.current.add(button);
+                            }
+                        });
+                    }
+                });
+            });
         });
         
-        // Cleanup
+        // Start observing
+        observer.observe(containerRef.current, {
+            childList: true,
+            subtree: true
+        });
+        
+        // Also check for any existing buttons when effect runs
+        const existingButtons = containerRef.current.querySelectorAll('.throttle-retry-button');
+        existingButtons.forEach(button => {
+            if (!attachedHandlersRef.current.has(button)) {
+                attachThrottleRetryHandler(button as HTMLButtonElement);
+                attachedHandlersRef.current.add(button);
+            }
+        });
+        
         return () => {
-            buttons.forEach(button => {
-                button.removeEventListener('click', handleRetryClick);
-            });
+            observer.disconnect();
+            attachedHandlersRef.current.clear();
         };
-    }, [containerRef, currentConversationId, currentMessages, addMessageToConversation, streamedContentMap, 
-        setStreamedContentMap, setIsStreaming, removeStreamingConversation, streamingConversations, 
-        updateProcessingState, checkedKeys, addStreamingConversation]);
+    }, [containerRef.current, currentConversationId]);
 
     const isMultiFileDiff = markdown?.includes('diff --git') && markdown.split('diff --git').length > 2;
     return isMultiFileDiff && !isSubRender && displayTokens.length === 1 && displayTokens[0].type === 'code' && (displayTokens[0] as TokenWithText).lang === 'diff' ?
