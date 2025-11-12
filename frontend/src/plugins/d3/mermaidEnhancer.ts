@@ -7,6 +7,8 @@
  * 3. Allows for extensible preprocessing rules
  */
 
+import { hexToRgb } from '../../utils/colorUtils';
+
 // Types for preprocessors and error handlers
 interface Preprocessor {
   process: (definition: string, diagramType: string) => string;
@@ -2887,16 +2889,6 @@ export function initMermaidEnhancer(): void {
  * @returns - A color that provides good contrast
  */
 function getContrastColor(strokeColor: string, fillColor: string): string {
-      // Convert hex to RGB for luminance calculation
-      const hexToRgb = (hex: string) => {
-        const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-        return result ? {
-          r: parseInt(result[1], 16),
-          g: parseInt(result[2], 16),
-          b: parseInt(result[3], 16)
-        } : null;
-      };
-
       const strokeRgb = hexToRgb(strokeColor);
       if (!strokeRgb) return strokeColor;
 
@@ -2913,16 +2905,6 @@ function getContrastColor(strokeColor: string, fillColor: string): string {
  * @returns - The best contrasting text color
  */
 function getOptimalTextColor(backgroundColor: string): string {
-      // Convert hex to RGB
-      const hexToRgb = (hex: string) => {
-        const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-        return result ? {
-          r: parseInt(result[1], 16),
-          g: parseInt(result[2], 16),
-          b: parseInt(result[3], 16)
-        } : null;
-      };
-
       const rgb = hexToRgb(backgroundColor);
       if (!rgb) return '#000000';
 
