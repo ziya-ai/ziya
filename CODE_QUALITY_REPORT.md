@@ -57,7 +57,37 @@ This document tracks code quality issues, technical debt, and cleanup tasks for 
 
 ## 📋 Pending Items
 
-### 1. Duplicate Functions - Critical
+### 1. TypeScript Functions Redefined in Same File - Critical
+
+**High Priority - Multiple definitions:**
+```
+registerPreprocessor (30 copies in mermaidEnhancer.ts)
+  → Action: Refactor to single registration function with type parameter
+
+errorResponse (3 copies in chatApi.ts)
+  → Action: Consolidate error handling logic
+
+hexToRgb (2 copies in mermaidEnhancer.ts, 2 in mermaidPlugin.ts)
+luminance (2 copies in mermaidEnhancer.ts, 2 in mermaidPlugin.ts)
+  → Action: Already have colorUtils.ts, update imports
+
+Database methods in db.ts (init, saveConversations, etc.)
+  → Action: Verify if interface vs implementation pattern, consolidate if duplicate
+```
+
+**Medium Priority - 2 copies:**
+```
+isRecoverableError (chatApi.ts)
+setConversations (ChatContext.tsx)
+scrollToBottom (App.tsx)
+sortTreeData (MUIFileExplorer.tsx)
+renderMultiFileDiff (MarkdownRenderer.tsx)
+handleThrottlingError (SendChatContainer.tsx)
+beforeCount, afterCount (mermaidEnhancer.ts)
+  → Action: Consolidate each to single implementation
+```
+
+### 2. Python Duplicate Functions - Remaining
 
 #### Python Duplicates (45 functions)
 
