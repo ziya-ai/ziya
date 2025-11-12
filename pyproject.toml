@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ziya"
-version = "0.3.7.1"
+version = "0.3.7.2"
 description = ""
 authors = ["Vishnu Krishnaprasad <vishnukool@gmail.com>",
            "Dan Cohn <chroma@gmail.com>"]
@@ -10,7 +10,7 @@ packages = [
 ]
 
 [tool.poetry.dependencies]
-python = ">=3.9,<4.0"
+python = ">=3.9.2,<4.0"
 uvicorn = {extras = ["standard"], version = "^0.38.0"}
 whatthepatch = ">=1.0.2"
 requests = "^2.32.0"
@@ -19,7 +19,7 @@ tiktoken = ">=0.6.0,<0.8.0"
 boto3 = "^1.34.88"
 langchain-aws = ">=0.2,<0.3"
 # Cryptography and SSL dependencies - constrain versions for compatibility
-cryptography = ">=43.0.0"
+cryptography = ">=46.0.0"
 pyOpenSSL = ">=20.0.0,<26.0.0"
 # NumPy version constraint to support older GCC versions
 numpy = ">=1.21.0,<2.0.0"
@@ -33,7 +33,7 @@ cssutils = ">=2.6.0"
 google-generativeai = ">=0.8.5"
 html5lib = ">=1.1"
 # Document extraction dependencies
-PyPDF2 = ">=3.0.1"
+pypdf = ">=3.0.0"
 pdfplumber = "^0.11.0"
 python-docx = "^1.1.0"
 openpyxl = "^3.1.2"
