@@ -98,6 +98,12 @@ export interface FormattedOutput {
   summary?: string;
   collapsed?: boolean;
   metadata?: Record<string, any>;
+  hierarchicalResults?: Array<{
+    title: string;
+    content: string;
+    language?: string;
+    metadata?: Record<string, any>;
+  }>;
 }
 
 export function formatMCPOutput(
@@ -187,7 +193,7 @@ export function formatMCPOutput(
   }
 
   // Handle sequential thinking tool outputs specially
-  if (toolName === 'mcp_sequentialthinking') {
+  if (toolName === 'mcp_sequentialthinking' || toolName === 'sequentialthinking') {
     return formatSequentialThinking(result, input, options);
   }
 
@@ -470,10 +476,12 @@ function formatWorkspaceSearch(result: any, options: any): FormattedOutput {
   const resultSummary = `${results.length}${hasMore ? '+' : ''} result${results.length === 1 ? '' : 's'}${totalCount && totalCount !== results.length ? ` of ${totalCount} total` : ''}`;
   const summary = queryInfo ? `${queryInfo} - ${resultSummary}` : resultSummary;
 
-  // Format results with actual matching lines
-  const formattedResults = results.map((result: any, index: number) => {
-    let fileInfo = `${index + 1}. ${result.filepath}\n   ${result.lines.length} matching line${result.lines.length === 1 ? '' : 's'}`;
+  // Create hierarchical results for two-level collapsible rendering
+  const hierarchicalResults = results.map((result: any, index: number) => {
+    const matchCount = result.lines?.length || 0;
+    const title = `${index + 1}. ${result.filepath} (${matchCount} matching line${matchCount === 1 ? '' : 's'})`;
 
+    let codeContent = '';
     if (result.lines && result.lines.length > 0) {
       // Extract file extension for syntax highlighting
       const ext = result.filepath.split('.').pop()?.toLowerCase() || '';
@@ -485,13 +493,29 @@ function formatWorkspaceSearch(result: any, options: any): FormattedOutput {
       };
       const language = langMap[ext] || 'text';
 
-      const codeContent = result.lines.map((line: string) => line.replace(/^\d+[:\-*+\s]*/, '')).join('\n');
-      // Use HTML pre/code tags with language class for syntax highlighting within tool blocks
-      fileInfo += `\n<pre><code class="language-${language}">${codeContent.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`;
-    }
+      codeContent = result.lines.join('\n');
 
-    return fileInfo;
-  }).join('\n\n');
+      return {
+        title,
+        content: codeContent,
+        language,
+        metadata: {
+          filepath: result.filepath,
+          matchCount
+        }
+      };
+    } else {
+      return {
+        title,
+        content: 'No content available',
+        language: 'text',
+        metadata: {
+          filepath: result.filepath,
+          matchCount: 0
+        }
+      };
+    }
+  });
 
   const shouldCollapse = results.length > 5;
 
@@ -504,17 +528,18 @@ function formatWorkspaceSearch(result: any, options: any): FormattedOutput {
   }
 
   return {
-    content: `${summary}\n\n${formattedResults}`,
+    content: summary,
     type: 'search_results',
     collapsed: shouldCollapse,
-    summary: summaryText
+    summary: summaryText,
+    hierarchicalResults
   };
 }
 
 function formatSequentialThinking(result: any, input: any, options: any): FormattedOutput {
   const thinkingContent = result?.thought || input?.thought || result?.content || '';
-  const thoughtNumber = result?.thoughtNumber || input?.thoughtNumber || 1;
-  const totalThoughts = result?.totalThoughts || input?.totalThoughts || 1;
+  const thoughtNumber = Number(result?.thoughtNumber || input?.thoughtNumber || 1);
+  const totalThoughts = Number(result?.totalThoughts || input?.totalThoughts || 1);
   const nextThoughtNeeded = result?.nextThoughtNeeded;
 
   const statusSuffix = nextThoughtNeeded ? '\n\n_Continuing..._' : '';
