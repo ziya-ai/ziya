@@ -33,8 +33,8 @@ def _check_libraries():
     
     # Check PDF libraries
     try:
-        import PyPDF2
-        _AVAILABLE_LIBRARIES['pypdf2'] = True
+        import pypdf
+        _AVAILABLE_LIBRARIES['pypdf'] = True
     except ImportError:
         pass
     
@@ -83,7 +83,7 @@ def _check_libraries():
     if available:
         logger.info(f"Document extraction libraries available: {', '.join(available)}")
     else:
-        logger.warning("No document extraction libraries found. Install with: pip install PyPDF2 pdfplumber python-docx openpyxl pandas python-pptx")
+        logger.warning("No document extraction libraries found. Install with: pip install pypdf pdfplumber python-docx openpyxl pandas python-pptx")
 
 def is_document_file(file_path: str) -> bool:
     """
@@ -141,14 +141,14 @@ def extract_pdf_text(file_path: str) -> Optional[str]:
         except Exception as e:
             logger.warning(f"pdfplumber failed for {file_path}: {e}")
     
-    # Fallback to PyPDF2
-    if _AVAILABLE_LIBRARIES['pypdf2']:
+    # Fallback to pypdf
+    if _AVAILABLE_LIBRARIES['pypdf']:
         try:
-            import PyPDF2
+            import pypdf
             
             text_content = []
             with open(file_path, 'rb') as file:
-                pdf_reader = PyPDF2.PdfReader(file)
+                pdf_reader = pypdf.PdfReader(file)
                 for page in pdf_reader.pages:
                     text = page.extract_text()
                     if text:
@@ -157,7 +157,7 @@ def extract_pdf_text(file_path: str) -> Optional[str]:
             return '\n\n'.join(text_content) if text_content else None
             
         except Exception as e:
-            logger.warning(f"PyPDF2 failed for {file_path}: {e}")
+            logger.warning(f"pypdf failed for {file_path}: {e}")
     
     logger.error(f"No PDF libraries available to extract text from {file_path}")
     return None
