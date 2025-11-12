@@ -87,8 +87,9 @@ const sequentialThinkingHandler: ToolHandler = {
   }
 };
 
-// Register tool handlers
+// Register tool handlers - support both mcp_ prefixed and unprefixed variants
 toolHandlers.set('mcp_sequentialthinking', sequentialThinkingHandler);
+toolHandlers.set('sequentialthinking', sequentialThinkingHandler);
 
 // Export the main handler functions
 export function handleToolStart(toolName: string, jsonData: any, context: ToolEventContext): boolean {
