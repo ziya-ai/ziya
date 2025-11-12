@@ -31,33 +31,6 @@ ESCAPE_REGEX = re.compile(r'\\[nrtbfv\'\"\\]')
 UNICODE_ESCAPE_REGEX = re.compile(r'\\u[0-9a-fA-F]{4}')
 HEX_ESCAPE_REGEX = re.compile(r'\\x[0-9a-fA-F]{2}')
 
-def contains_escape_sequences(text: str) -> bool:
-    """
-    Check if the text contains escape sequences.
-    
-    Args:
-        text: The text to check
-        
-    Returns:
-        True if the text contains escape sequences, False otherwise
-    """
-    if not text or not isinstance(text, str):
-        return False
-        
-    # Look for common escape sequences
-    if ESCAPE_REGEX.search(text):
-        return True
-    
-    # Check for Unicode escape sequences like \u1234
-    if UNICODE_ESCAPE_REGEX.search(text):
-        return True
-    
-    # Check for hex escape sequences like \x12
-    if HEX_ESCAPE_REGEX.search(text):
-        return True
-    
-    return False
-
 def normalize_escape_sequences(text: str, preserve_literals: bool = True) -> str:
     """
     Normalize escape sequences in text for consistent comparison.
