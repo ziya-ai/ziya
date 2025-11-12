@@ -165,27 +165,37 @@ def initialize_registry_providers():
 
 def _is_amazon_environment(profile_name: str = None) -> bool:
     """Detect if we're running in an Amazon environment."""
+    # Check filesystem indicators first (doesn't require boto3)
+    if os.path.exists('/apollo'):
+        logger.info("Amazon environment detected via /apollo filesystem")
+        return True
+    
+    # Check environment variables
+    aws_profile = os.environ.get('AWS_PROFILE', '')
+    if 'isengard' in aws_profile.lower():
+        logger.info(f"Amazon environment detected via AWS_PROFILE: {aws_profile}")
+        return True
+    
+    aws_config = os.environ.get('AWS_CONFIG_FILE', '')
+    if 'midway' in aws_config.lower():
+        logger.info(f"Amazon environment detected via AWS_CONFIG_FILE: {aws_config}")
+        return True
+    
+    # Try AWS identity check if boto3 is available
     try:
-        # Get the profile from multiple sources
         if not profile_name:
-            # Try to get from ModelManager state first
             try:
                 from app.agents.models import ModelManager
                 profile_name = ModelManager.get_state().get('aws_profile')
             except Exception:
                 pass
-            
-            # Fall back to environment variable
             if not profile_name:
                 profile_name = os.environ.get('AWS_PROFILE')
         
-        # Create session with the profile if specified
         if profile_name:
-            logger.info(f"Using AWS profile: {profile_name}")
             session = boto3.Session(profile_name=profile_name)
             sts = session.client('sts')
         else:
-            logger.info("Using default AWS credentials")
             sts = boto3.client('sts')
         
         identity = sts.get_caller_identity()
@@ -193,21 +203,16 @@ def _is_amazon_environment(profile_name: str = None) -> bool:
         arn = identity.get('Arn', '')
         account = identity.get('Account', '')
         
-        logger.info(f"AWS Identity: UserId={user_id}, Arn={arn}, Account={account}")
-
-        # Check for Amazon internal indicators
         is_amazon = any([
             'amazon.com' in user_id.lower(),
             'midway.amazon.com' in user_id.lower(),
             '/amazon' in arn.lower(),
-            account in ['339712844704']  # Add known internal account IDs
+            account in ['339712844704']
         ])
         
-        logger.info(f"Amazon environment detected: {is_amazon}")
+        if is_amazon:
+            logger.info(f"Amazon environment detected via AWS identity: {arn}")
         return is_amazon
-    except ClientError as e:
-        logger.debug(f"Could not determine AWS identity for Amazon environment detection: {e}")
-        return False
     except Exception as e:
-        logger.debug(f"Error checking Amazon environment: {e}")
+        logger.debug(f"Could not check AWS identity (not fatal): {e}")
         return False
