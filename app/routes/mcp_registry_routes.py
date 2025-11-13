@@ -15,15 +15,18 @@ router = APIRouter(prefix="/api/mcp/registry", tags=["mcp-registry"])
 
 
 class ServiceInstallRequest(BaseModel):
+    model_config = {"extra": "allow"}
     service_id: str = Field(..., description="The service ID to install")
     provider_id: Optional[str] = Field(None, description="Optional provider ID")
     
 
 class ServiceUninstallRequest(BaseModel):
+    model_config = {"extra": "allow"}
     server_name: str = Field(..., description="The server name to uninstall")
 
 
 class ToolSearchRequest(BaseModel):
+    model_config = {"extra": "allow"}
     query: str = Field(..., description="Natural language query for tool search")
     max_tools: int = Field(default=10, description="Maximum number of tools to return")
     providers: Optional[List[str]] = Field(None, description="Limit search to specific providers")

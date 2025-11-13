@@ -156,6 +156,10 @@ class FileChangeHandler(FileSystemEventHandler):
         if not should_process:
             return
         
+        # Skip backup files
+        if abs_path.endswith('.backup') or '.backup.' in abs_path:
+            return
+        
         # Read the file content
         try:
             content = read_file_content(abs_path)

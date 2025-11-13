@@ -17,6 +17,7 @@ router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
 
 class CreateFolderRequest(BaseModel):
+    model_config = {"extra": "allow"}
     name: str = Field(..., description="Name of the folder to create")
     parent_id: Optional[str] = Field(None, description="Parent folder ID (null for root level)")
     system_instructions: Optional[str] = Field(None, description="Additional system instructions for this folder")
@@ -25,6 +26,7 @@ class CreateFolderRequest(BaseModel):
 
 
 class CreateConversationRequest(BaseModel):
+    model_config = {"extra": "allow"}
     title: str = Field(..., description="Title of the conversation")
     folder_id: Optional[str] = Field(None, description="Folder ID to place the conversation in")
     initial_message: Optional[str] = Field(None, description="Optional initial message")
@@ -32,11 +34,13 @@ class CreateConversationRequest(BaseModel):
 
 
 class MoveConversationRequest(BaseModel):
+    model_config = {"extra": "allow"}
     conversation_id: str = Field(..., description="ID of the conversation to move")
     target_folder_id: Optional[str] = Field(None, description="Target folder ID (null for root)")
 
 
 class FolderResponse(BaseModel):
+    model_config = {"extra": "allow"}
     id: str
     name: str
     parent_id: Optional[str]
@@ -48,6 +52,7 @@ class FolderResponse(BaseModel):
 
 
 class ConversationResponse(BaseModel):
+    model_config = {"extra": "allow"}
     id: str
     title: str
     folder_id: Optional[str]

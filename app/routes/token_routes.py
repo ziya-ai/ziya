@@ -11,10 +11,12 @@ router = APIRouter(prefix="/api", tags=["tokens"])
 
 
 class TokenCountRequest(BaseModel):
+    model_config = {"extra": "allow"}
     text: str
 
 
 class AccurateTokenCountRequest(BaseModel):
+    model_config = {"extra": "allow"}
     file_paths: List[str]
 
 

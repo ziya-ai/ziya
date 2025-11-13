@@ -143,22 +143,39 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
 
     // Control when to show raw content vs rendered visualization
     useEffect(() => {
+        console.log('🔍 JOINTJS-DEBUG: showRawContent effect triggered', {
+            hasSuccessfulRender: hasSuccessfulRenderRef.current,
+            isMarkdownBlockClosed,
+            isStreaming,
+            hasPlugin: !!plugin,
+            pluginName: plugin?.name,
+            hasD3: !!d3,
+            isLoading,
+            currentShowRawContent: showRawContent,
+            renderingStarted
+        });
+        
+        // If we've already had a successful render and the block is closed, always keep showing the rendered version
+        if (hasSuccessfulRenderRef.current && isMarkdownBlockClosed) {
+            console.log('🔍 JOINTJS-DEBUG: Keeping rendered version visible (successful render + closed block)');
+            setShowRawContent(false);
+            return;
+        }
+        
         // Show raw content if:
         // 1. This diagram is being streamed
-        // 2. Plugin is not loaded yet (NEW!)
+        // 2. Plugin is not loaded yet
         // 3. Markdown block is not closed
-        // 4. d3 is not loaded yet (NEW!)
+        // 4. d3 is not loaded yet
         if ((isStreaming && !hasSuccessfulRenderRef.current) || 
             !plugin ||
             !d3 ||
             !isMarkdownBlockClosed || 
             isLoading) {
+            console.log('🔍 JOINTJS-DEBUG: Setting showRawContent=true');
             setShowRawContent(true);
-        } else if ((!isStreaming || hasSuccessfulRenderRef.current) && isMarkdownBlockClosed) {
-            setShowRawContent(false);
-        }
-        // If we have a successful render and the block is closed, keep showing the rendered version
-        if (hasSuccessfulRenderRef.current && isMarkdownBlockClosed) {
+        } else {
+            console.log('🔍 JOINTJS-DEBUG: Setting showRawContent=false');
             setShowRawContent(false);
         }
     }, [isStreaming, isMarkdownBlockClosed, hasSuccessfulRenderRef.current, plugin, d3, isLoading]);
@@ -213,6 +230,12 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     // Initialize visualization with useCallback for better performance and dependency tracking
     const initializeVisualization = useCallback(async (forceRender = false): Promise<void> => {
         if (!mounted.current) return;
+        
+        console.log('🔧 D3RENDERER: initializeVisualization called', {
+            hasPlugin: !!plugin,
+            hasD3: !!d3,
+            specType: spec?.type
+        });
         
         // Track loaded values for immediate use
         let loadedPlugin: D3RenderPlugin | undefined = undefined;
@@ -505,6 +528,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
 
                 if (mounted.current) setIsLoading(false);
                 setRenderError(null);
+                console.log('🔍 JOINTJS-DEBUG: Render successful, setting hasSuccessfulRenderRef=true');
                 onLoad?.();
                 hasSuccessfulRenderRef.current = true;
                 return;

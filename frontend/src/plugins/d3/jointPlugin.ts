@@ -126,7 +126,8 @@ const isJointSpec = (spec: any): spec is JointSpec => {
         spec !== null &&
         (spec.type === 'joint' || spec.type === 'jointjs' || spec.type === 'diagram') &&
         (typeof spec.definition === 'string' ||
-            (spec.elements && typeof spec.elements === 'object'))
+            (spec.elements && typeof spec.elements === 'object') ||
+            (spec.cells && Array.isArray(spec.cells)))
     );
 };
 

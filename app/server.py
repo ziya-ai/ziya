@@ -137,20 +137,25 @@ active_streams = {}
 # For model configurations, see app/config.py
 
 class SetModelRequest(BaseModel):
+    model_config = {"extra": "allow"}
     model_id: str
 
 class PatchRequest(BaseModel):
+    model_config = {"extra": "allow"}
     diff: str
     file_path: Optional[str] = None
     
 class FolderRequest(BaseModel):
+    model_config = {"extra": "allow"}
     directory: str
     max_depth: int = 3
     
 class FileRequest(BaseModel):
+    model_config = {"extra": "allow"}
     file_path: str
     
 class FileContentRequest(BaseModel):
+    model_config = {"extra": "allow"}
     file_path: str
     content: str
 
@@ -487,24 +492,22 @@ from app.routes.mcp_registry_routes import router as mcp_registry_router
 app.include_router(mcp_registry_router)
 
 # Import and include model routes
-from app.routes.model_routes import router as model_router
-app.include_router(model_router)
+# Disabled duplicate routers - server.py already defines all these routes
+# The route modules were attempting to forward to @app decorated functions which doesn't work
+# from app.routes.model_routes import router as model_router
+# app.include_router(model_router)
 
-# Import and include folder routes
-from app.routes.folder_routes import router as folder_router
-app.include_router(folder_router)
+# from app.routes.folder_routes import router as folder_router
+# app.include_router(folder_router)
 
-# Import and include token routes
-from app.routes.token_routes import router as token_router
-app.include_router(token_router)
+# from app.routes.token_routes import router as token_router
+# app.include_router(token_router)
 
-# Import and include diff routes
-from app.routes.diff_routes import router as diff_router
-app.include_router(diff_router)
+# from app.routes.diff_routes import router as diff_router
+# app.include_router(diff_router)
 
-# Import and include static routes
-from app.routes.static_routes import router as static_router
-app.include_router(static_router)
+# from app.routes.static_routes import router as static_router
+# app.include_router(static_router)
 
 # Import and include AST routes
 # AST routes already imported and included above
@@ -2839,7 +2842,7 @@ async def apply_patch(request: PatchRequest):
         target_file = request.file_path
         if not target_file:
             logger.info("No file_path provided, attempting to extract from diff")
-            target_file = extract_target_file_from_diff(request.diff)
+            target_file = extract_target_file_from_diff(validated.diff)
             
         if not target_file:
             return {"error": "Could not determine target file from diff"}
@@ -3829,8 +3832,11 @@ class ApplyChangesRequest(BaseModel):
     diff: str
     filePath: str = Field(..., description="Path to the file being modified")
     requestId: Optional[str] = Field(None, description="Unique ID to track this specific diff application")
+    elementId: Optional[str] = None
+    buttonInstanceId: Optional[str] = None
 
     model_config = {
+        "extra": "allow",
         "json_schema_extra": {
             "example": {
                 "diff": "diff --git a/file.txt b/file.txt\n...",
@@ -3841,6 +3847,7 @@ class ApplyChangesRequest(BaseModel):
     }
 
 class ModelSettingsRequest(BaseModel):
+    model_config = {"extra": "allow"}
     temperature: float = Field(default=0.3, ge=0, le=1)
     top_k: int = Field(default=15, ge=0, le=500)
     max_output_tokens: int = Field(default=4096, ge=1)
@@ -3848,6 +3855,7 @@ class ModelSettingsRequest(BaseModel):
 
 
 class TokenCountRequest(BaseModel):
+    model_config = {"extra": "allow"}
     text: str
 
 def count_tokens_fallback(text: str) -> int:
@@ -3896,6 +3904,7 @@ async def count_tokens(request: TokenCountRequest) -> Dict[str, int]:
         return {"token_count": 0}
 
 class AccurateTokenCountRequest(BaseModel):
+    model_config = {"extra": "allow"}
     file_paths: List[str]
     
 @app.post('/api/accurate-token-count')
@@ -4261,6 +4270,28 @@ async def reset_mcp_state(request: Request):
         logger.error(f"Error resetting MCP state: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+@app.post('/api/files/validate')
+async def validate_files(request: Request):
+    """Validate which files from a list actually exist on disk."""
+    try:
+        body = await request.json()
+        files = body.get('files', [])
+        
+        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+        if not user_codebase_dir:
+            return JSONResponse(status_code=500, content={"error": "ZIYA_USER_CODEBASE_DIR not set"})
+        
+        existing_files = []
+        for file_path in files:
+            full_path = os.path.join(user_codebase_dir, file_path)
+            if os.path.exists(full_path) and os.path.isfile(full_path):
+                existing_files.append(file_path)
+        
+        return {"existingFiles": existing_files}
+    except Exception as e:
+        logger.error(f"Error validating files: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
 @app.post('/api/check-files-in-context')
 async def check_files_in_context(request: Request):
     """Check which files from a list are currently available in the selected context."""
@@ -4380,29 +4411,40 @@ async def restart_stream_with_context(request: Request):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post('/api/apply-changes')
-async def apply_changes(request: ApplyChangesRequest):
+async def apply_changes(request: Request):
     try:
-        logger.info(f"TRACE_ID: Received apply-changes request with ID: {request.requestId}")
+        # Parse body manually to debug
+        body = await request.json()
+        logger.info(f"Raw apply-changes body: {body}")
+        
+        # Validate manually
+        try:
+            validated = ApplyChangesRequest(**body)
+        except Exception as e:
+            logger.error(f"Validation error: {e}")
+            return JSONResponse(status_code=422, content={"detail": str(e)})
+        
+        logger.info(f"TRACE_ID: Received apply-changes request with ID: {validated.requestId}")
         # Validate diff size
-        if len(request.diff) < 100:  # Arbitrary minimum for a valid git diff
-            logger.warning(f"Suspiciously small diff received: {len(request.diff)} bytes")
-            logger.warning(f"Diff content: {request.diff}")
+        if len(validated.diff) < 100:  # Arbitrary minimum for a valid git diff
+            logger.warning(f"Suspiciously small diff received: {len(validated.diff)} bytes")
+            logger.warning(f"Diff content: {validated.diff}")
 
-        logger.info(f"Received request to apply changes to file: {request.filePath}")
-        logger.info(f"Raw request diff length: {len(request.diff)} bytes")
-        logger.info(f"First 100 chars of raw diff for request {request.requestId}:")
+        logger.info(f"Received request to apply changes to file: {validated.filePath}")
+        logger.info(f"Raw request diff length: {len(validated.diff)} bytes")
+        logger.info(f"First 100 chars of raw diff for request {validated.requestId}:")
         
         # Always use the client-provided request ID if available
-        if request.requestId:
-            request_id = request.requestId
+        if validated.requestId:
+            request_id = validated.requestId
             logger.info(f"Using client-provided request ID: {request_id}")
         else:
             # Only generate a server-side ID if absolutely necessary
             request_id = str(uuid.uuid4())
             logger.warning(f"Using server-side generated request ID: {request_id}")
 
-        logger.info(request.diff[:100])
-        logger.info(f"Full diff content: \n{request.diff}")
+        logger.info(validated.diff[:100])
+        logger.info(f"Full diff content: \n{validated.diff}")
 
         # --- SUGGESTION: Add secure path validation ---
         user_codebase_dir = os.path.abspath(os.environ.get("ZIYA_USER_CODEBASE_DIR"))
@@ -4412,15 +4454,15 @@ async def apply_changes(request: ApplyChangesRequest):
         user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
         
         # Prioritize extracting the file path from the diff content itself
-        extracted_path = extract_target_file_from_diff(request.diff)
+        extracted_path = extract_target_file_from_diff(validated.diff)
 
         if extracted_path:
             file_path = os.path.join(user_codebase_dir, extracted_path)
             logger.info(f"Extracted target file from diff: {extracted_path}")
-        elif request.filePath:
+        elif validated.filePath:
             # Fallback to using the provided filePath if extraction fails
-            file_path = os.path.join(user_codebase_dir, request.filePath)
-            logger.info(f"Using provided file path: {request.filePath}")
+            file_path = os.path.join(user_codebase_dir, validated.filePath)
+            logger.info(f"Using provided file path: {validated.filePath}")
 
             # Resolve the absolute path and check if it's within the codebase dir
             resolved_path = os.path.abspath(file_path)
@@ -4431,7 +4473,7 @@ async def apply_changes(request: ApplyChangesRequest):
             raise ValueError("Could not determine target file path from diff or request")
 
         # Extract individual diffs if multiple are present
-        individual_diffs = split_combined_diff(request.diff)
+        individual_diffs = split_combined_diff(validated.diff)
         if len(individual_diffs) > 1:
             logger.info(f"Received combined diff with {len(individual_diffs)} files")
             # Find the diff for our target file
@@ -4440,7 +4482,7 @@ async def apply_changes(request: ApplyChangesRequest):
             target_diff = None
             for diff in individual_diffs:
                 target_file = extract_target_file_from_diff(diff)
-                if target_file and os.path.normpath(target_file) == os.path.normpath(extracted_path or request.filePath):
+                if target_file and os.path.normpath(target_file) == os.path.normpath(extracted_path or validated.filePath):
                     target_diff = diff
                     break
 
@@ -4450,7 +4492,7 @@ async def apply_changes(request: ApplyChangesRequest):
                     detail={
                         'status': 'error',
                         'type': 'file_not_found',
-                        'message': f'No diff found for requested file {request.filePath} in combined diff'
+                        'message': f'No diff found for requested file {validated.filePath} in combined diff'
                     }
                 )
         else:
@@ -4458,7 +4500,7 @@ async def apply_changes(request: ApplyChangesRequest):
             target_diff = individual_diffs[0]
 
         # Run in thread pool to avoid blocking the event loop and allow parallel processing
-        result = await run_in_threadpool(apply_diff_pipeline, request.diff, file_path, request_id)
+        result = await run_in_threadpool(apply_diff_pipeline, validated.diff, file_path, request_id)
         
         # Check the result status and return appropriate response
         status_code = 200 # Default to OK

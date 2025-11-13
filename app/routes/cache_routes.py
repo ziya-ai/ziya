@@ -13,6 +13,7 @@ router = APIRouter(prefix="/api/cache", tags=["cache"])
 
 
 class CacheInvalidateRequest(BaseModel):
+    model_config = {"extra": "allow"}
     conversation_id: Optional[str] = None
     file_paths: Optional[List[str]] = None
 

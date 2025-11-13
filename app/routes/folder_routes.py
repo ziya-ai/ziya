@@ -12,15 +12,18 @@ router = APIRouter(tags=["folders"])
 
 
 class FolderRequest(BaseModel):
+    model_config = {"extra": "allow"}
     directory: str
     max_depth: Optional[int] = None
 
 
 class FileRequest(BaseModel):
+    model_config = {"extra": "allow"}
     file_path: str
 
 
 class SaveFileRequest(BaseModel):
+    model_config = {"extra": "allow"}
     file_path: str
     content: str
 
