@@ -793,7 +793,7 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                 <TabPane tab={`Tools (${serverDetails[name].tools.length})`} key="tools">
                                                     <List
                                                         dataSource={serverDetails[name].tools}
-                                                        renderItem={( MCPTool) => {
+                                                        renderItem={(tool: MCPTool) => {
                                                             const toolPermission = permissions?.servers?.[name]?.tools?.[tool.name]?.permission || permissions?.defaults?.tool || 'ask';
                                                             const isToolEnabled = toolPermission === 'enabled';
                                                             
