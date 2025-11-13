@@ -19,6 +19,7 @@ router = APIRouter(prefix="/builtin-tools", tags=["builtin-tools"])
 
 
 class BuiltinToolToggleRequest(BaseModel):
+    model_config = {"extra": "allow"}
     """Request model for toggling builtin tools."""
     category: str
     enabled: bool

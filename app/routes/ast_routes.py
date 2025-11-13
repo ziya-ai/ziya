@@ -26,6 +26,7 @@ from app.utils.logging_utils import logger
 router = APIRouter(prefix="/api/ast", tags=["ast"])
 
 class ResolutionChangeRequest(BaseModel):
+    model_config = {"extra": "allow"}
     resolution: str
 
 @router.get("/status")

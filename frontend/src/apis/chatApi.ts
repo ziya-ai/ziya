@@ -1128,19 +1128,30 @@ export const sendPayload = async (
                         defaultCollapsed: true
                     });
 
+                    console.log('🔧 FORMATTED CONTENT:', formatted.content.substring(0, 200));
+
                     // Create tool display with header
                     const toolResultDisplay = `\n\`\`\`tool:${toolName}|${displayHeader}\n${formatted.content}\n\`\`\`\n\n`;
-                    const toolStartPrefix = `\n\`\`\`tool:${toolName}|${displayHeader}\n`;
+                    const toolStartPrefix = `\`\`\`tool:${toolName}|${displayHeader}\n`;
 
+                    console.log('🔧 TOOL_RESULT: Looking for prefix:', toolStartPrefix);
+                    console.log('🔧 TOOL_RESULT: Current content length:', currentContent.length);
                     const lastStartIndex = currentContent.lastIndexOf(toolStartPrefix);
+                    console.log('🔧 TOOL_RESULT: Found at index:', lastStartIndex);
                     if (lastStartIndex !== -1) {
                         const blockEndIndex = currentContent.indexOf('\n```\n\n', lastStartIndex);
+                        console.log('🔧 TOOL_RESULT: Block end at:', blockEndIndex);
                         if (blockEndIndex !== -1) {
-                            currentContent = currentContent.substring(0, lastStartIndex) + toolResultDisplay + currentContent.substring(blockEndIndex + 6);
+                            // Replace from the character before the block (to preserve spacing) through the end
+                            const replaceStart = lastStartIndex > 0 && currentContent[lastStartIndex - 1] === '\n' ? lastStartIndex - 1 : lastStartIndex;
+                            currentContent = currentContent.substring(0, replaceStart) + toolResultDisplay + currentContent.substring(blockEndIndex + 6);
+                            console.log('🔧 TOOL_RESULT: Replaced tool block');
                         } else {
                             currentContent += toolResultDisplay;
+                            console.log('🔧 TOOL_RESULT: No block end found, appending');
                         }
                     } else {
+                        console.log('🔧 TOOL_RESULT: Prefix not found, appending');
                         currentContent += toolResultDisplay;
                     }
 

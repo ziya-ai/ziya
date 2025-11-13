@@ -272,47 +272,17 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
                     loadedLanguages.add('objective-c');
                     break;
                 }
-                default: {
-                    if (mappedLanguage !== 'plaintext') {
-                        try {
-                            // Load other languages directly using dynamic import without webpack chunking
-                            console.debug(`Dynamically loading language: ${mappedLanguage}`);
-                            
-                            // Special handling for C++ - ensure C is loaded first (cpp extends c, not clike)
-                            if (mappedLanguage === 'cpp') {
-                                if (!window.Prism?.languages?.c) {
-                                    await import('prismjs/components/prism-c');
-                                }
-                                console.debug('C++ loading - checking C state:', {
-                                    cExists: !!window.Prism?.languages?.c,
-                                    cType: typeof window.Prism?.languages?.c
-                                });
-                                try {
-                                    // Use string concatenation to prevent webpack static analysis
-                                    const importPath = 'prismjs/components/prism-' + mappedLanguage;
-                                    await import(importPath);
-                                } catch (cppError) {
-                                    console.warn('C++ grammar failed to load, using C fallback:', cppError);
-                                    if (window.Prism?.languages?.c) {
-                                        window.Prism.languages.cpp = window.Prism.languages.c;
-                                    }
-                                    return;
-                            }
-                        } else {
-                            // Use truly dynamic import that webpack cannot analyze
-                            const importPath = 'prismjs/components/prism-' + mappedLanguage;
-                            await import(importPath);
-                        }
+                default:
+                    if (mappedLanguage !== 'plaintext') try {
+                        await import(/* webpackChunkName: "prism-lang.[request]" */ `prismjs/components/prism-${mappedLanguage}`);
                         if (!window.Prism?.languages?.[mappedLanguage]) {
                             throw new Error(`Language ${mappedLanguage} (${language}) failed to load`);
-                            }
-                        } catch (error) {
-                            console.warn(`Failed to load language ${mappedLanguage}:`, error);
-                            throw error;
                         }
+                    } catch (error) {
+                        console.warn(`Failed to load language ${mappedLanguage}:`, error);
+                        throw error;
                     }
                     break;
-                }
             }
             // Mark both the original language and its mapped version as loaded
             loadedLanguages.add(language);
