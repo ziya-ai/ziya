@@ -486,26 +486,6 @@ app.include_router(conversation_router)
 from app.routes.mcp_registry_routes import router as mcp_registry_router
 app.include_router(mcp_registry_router)
 
-# Import and include model routes
-from app.routes.model_routes import router as model_router
-app.include_router(model_router)
-
-# Import and include folder routes
-from app.routes.folder_routes import router as folder_router
-app.include_router(folder_router)
-
-# Import and include token routes
-from app.routes.token_routes import router as token_router
-app.include_router(token_router)
-
-# Import and include diff routes
-from app.routes.diff_routes import router as diff_router
-app.include_router(diff_router)
-
-# Import and include static routes
-from app.routes.static_routes import router as static_router
-app.include_router(static_router)
-
 # Import and include AST routes
 # AST routes already imported and included above
 initialize_ast_if_enabled()
@@ -1121,17 +1101,7 @@ async def stream_chunks(body):
                     elif chunk.get('type') == 'stream_end':
                         break
                     elif chunk.get('type') == 'error':
-                        # Send error with all available details
-                        error_data = {
-                            'error': chunk.get('error', 'error'),
-                            'content': chunk.get('content', 'Unknown error'),
-                            'detail': chunk.get('detail'),
-                            'can_retry': chunk.get('can_retry', False),
-                            'retry_message': chunk.get('retry_message')
-                        }
-                        # Remove None values
-                        error_data = {k: v for k, v in error_data.items() if v is not None}
-                        yield f"data: {json.dumps(error_data)}\n\n"
+                        yield f"data: {json.dumps({'error': chunk.get('content', 'Unknown error')})}\n\n"
                     elif chunk.get('type') == 'heartbeat':
                         # Pass through heartbeat messages
                         yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\\n\\n"
@@ -2298,7 +2268,7 @@ async def stream_chunks(body):
                     full_response = current_response
                     logger.debug(f"🔍 AGENT: Updated full_response from current_response: {len(full_response)} chars")
 
-                # Only do ONE iteration unless tools were executed
+                # CRITICAL FIX: Only do ONE iteration unless tools were executed
                 if iteration == 1 and not tool_executed:
                     logger.debug("🔍 AGENT: First iteration complete with no tools - STOPPING HERE")
                     break
@@ -2615,6 +2585,81 @@ async def stream_endpoint(request: Request, body: dict = None):
         # Just re-raise the exception so the middleware can catch it
         raise
 
+@app.get("/")
+async def root(request: Request):
+    try:
+        # Log detailed information about templates
+        logger.info(f"Rendering index.html using custom template loader")
+        
+        # Create the context for the template
+        context = {
+            "request": request,
+            "diff_view_type": os.environ.get("ZIYA_DIFF_VIEW_TYPE", "unified"),
+            "api_poth": "/ziya"
+        }
+        
+        # Try to render the template
+        return templates.TemplateResponse("index.html", context)
+    except Exception as e:
+        logger.error(f"Error rendering index.html: {str(e)}")
+        # Return a simple HTML response as fallback
+        html_content = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Ziya</title>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }
+                h1 { color: #333; }
+                .container { max-width: 800px; margin: 0 auto; }
+                .error { color: #721c24; background-color: #f8d7da; padding: 10px; border-radius: 5px; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>Ziya</h1>
+                <div class="error">
+                    <p>Error loading template. Please check server logs.</p>
+                    <p>Error details: """ + str(e) + """</p>
+                </div>
+                <p>Please ensure that the templates directory is properly included in the package.</p>
+            </div>
+        </body>
+        </html>
+        """
+        from fastapi.responses import HTMLResponse
+        return HTMLResponse(content=html_content)
+
+
+@app.get("/debug")
+async def debug(request: Request):
+   return templates.TemplateResponse("index.html", {"request": request})
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    # Look for favicon in the templates directory
+    try:
+        favicon_path = os.path.join(templates_dir, "favicon.ico")
+        if os.path.exists(favicon_path):
+            logger.info(f"Serving favicon from: {favicon_path}")
+            return FileResponse(favicon_path)
+    except Exception as e:
+        logger.warning(f"Error finding favicon: {e}")
+    
+    logger.warning("Favicon not found in any location")
+    from fastapi import HTTPException
+    raise HTTPException(status_code=404, detail="Favicon not found")
+
+
+
+# Cache for folder structure with timestamp
+_folder_cache = {'timestamp': 0, 'data': None}
+_background_scan_thread = None
+_last_cache_invalidation = 0
+_cache_invalidation_debounce = 2.0  # seconds
+
 def invalidate_folder_cache():
     """Invalidate the folder structure cache with debouncing."""
     global _folder_cache, _last_cache_invalidation
@@ -2632,6 +2677,248 @@ def invalidate_folder_cache():
 
 
 
+@app.post("/folder")
+async def get_folder(request: FolderRequest):
+    """Get the folder structure of a directory with improved error handling."""
+    # Add timeout configuration
+    timeout = int(os.environ.get("ZIYA_SCAN_TIMEOUT", "45"))
+    logger.info(f"Starting folder scan with {timeout}s timeout for: {request.directory}")
+    logger.info(f"Max depth: {request.max_depth}")
+    
+    start_time = time.time()
+    logger.info(f"Starting folder scan for: {request.directory}")
+    logger.info(f"Max depth: {request.max_depth}")
+    
+    try:
+        # Special handling for home directory
+        if request.directory == os.path.expanduser("~"):
+            logger.warning("Home directory scan requested - this may be slow or fail")
+            return {
+                "error": "Home directory scans are not recommended",
+                "suggestion": "Please use a specific project directory instead of your home directory"
+            }
+            
+        # Validate the directory exists and is accessible
+        if not os.path.exists(request.directory):
+            logger.error(f"Directory does not exist: {request.directory}")
+            return {"error": f"Directory does not exist: {request.directory}"}
+            
+        if not os.path.isdir(request.directory):
+            logger.error(f"Path is not a directory: {request.directory}")
+            return {"error": f"Path is not a directory: {request.directory}"}
+            
+        # Test basic access
+        try:
+            os.listdir(request.directory)
+        except PermissionError:
+            logger.error(f"Permission denied accessing: {request.directory}")
+            return {"error": "Permission denied accessing directory"}
+        except OSError as e:
+            logger.error(f"OS error accessing {request.directory}: {e}")
+            return {"error": f"Cannot access directory: {str(e)}"}
+        
+        # Get the ignored patterns
+        ignored_patterns = get_ignored_patterns(request.directory)
+        logger.info(f"Ignore patterns loaded: {len(ignored_patterns)} patterns")
+        
+        # Use the max_depth from the request, but ensure it's at least 15 if not specified
+        max_depth = request.max_depth if request.max_depth > 0 else int(os.environ.get("ZIYA_MAX_DEPTH", 15))
+        logger.info(f"Using max depth for folder structure: {max_depth}")
+        
+        # Use our enhanced cached folder structure function
+        result = get_cached_folder_structure(request.directory, ignored_patterns, max_depth)
+        
+        # Check if we got an error result
+        if isinstance(result, dict) and "error" in result:
+            logger.warning(f"Folder scan returned error: {result['error']}")
+            
+            # For timeout errors, provide more helpful response
+            if result.get("timeout"):
+                result["suggestion"] = f"Scan timed out after {timeout}s. Try:\n" + \
+                                     "1. Increase timeout with ZIYA_SCAN_TIMEOUT environment variable\n" + \
+                                     "2. Reduce max depth\n" + \
+                                     "3. Add more patterns to .gitignore to exclude large directories"
+                result["timeout_seconds"] = timeout
+            # Add helpful context for home directory scans
+            if "home" in request.directory.lower() or request.directory.endswith(os.path.expanduser("~")):
+                result["suggestion"] = "Home directory scans can be very slow. Consider using a specific project directory instead."
+            return result
+            
+        logger.info(f"Folder scan completed successfully in {time.time() - start_time:.2f}s")
+        
+        # Add metadata about the scan
+        if isinstance(result, dict):
+            result["_scan_time"] = time.time() - start_time
+            result["_timeout_used"] = timeout
+            
+        return result
+    except Exception as e:
+        logger.error(f"Error in get_folder: {e}")
+        return {"error": str(e)}
+
+# Import scan progress from directory_util
+# from app.utils.directory_util import get_scan_progress, cancel_scan, _scan_progress
+
+@app.get("/folder-progress")
+async def get_folder_progress():
+    """Get current folder scanning progress."""
+    from app.utils.directory_util import get_scan_progress
+    progress = get_scan_progress()
+    # Only return active=True if there's actual progress to report
+    if progress["active"] and not progress["progress"]:
+        # No actual progress data, don't report as active
+        progress["active"] = False
+        progress["progress"] = {}
+    return progress
+
+@app.post("/folder-cancel")
+async def cancel_folder_scan():
+    """Cancel current folder scanning operation."""
+    from app.utils.directory_util import cancel_scan
+    was_active = cancel_scan()
+    if was_active:
+        logger.info("Folder scan cancellation requested")
+    return {"cancelled": was_active}
+
+@app.post("/api/clear-folder-cache")
+async def clear_folder_cache():
+    """Clear the folder structure cache."""
+    global _folder_cache
+    _folder_cache['data'] = None
+    _folder_cache['timestamp'] = 0
+    logger.info("Folder cache cleared")
+    return {"cleared": True}
+
+@app.post("/file")
+async def get_file(request: FileRequest):
+    """Get the content of a file."""
+    try:
+        with open(request.file_path, 'r') as f:
+            content = f.read()
+        return {"content": content}
+    except Exception as e:
+        logger.error(f"Error in get_file: {e}")
+        return {"error": str(e)}
+
+@app.post("/save")
+async def save_file(request: FileContentRequest):
+    """Save content to a file."""
+    try:
+        with open(request.file_path, 'w') as f:
+            f.write(request.content)
+        return {"success": True}
+    except Exception as e:
+        logger.error(f"Error in save_file: {e}")
+        return {"error": str(e)}
+
+@app.post("/apply_patch")
+async def apply_patch(request: PatchRequest):
+    """Apply a git diff to a file."""
+    try:
+        # If file_path is not provided, try to extract it from the diff
+        target_file = request.file_path
+        if not target_file:
+            logger.info("No file_path provided, attempting to extract from diff")
+            target_file = extract_target_file_from_diff(request.diff)
+            
+        if not target_file:
+            return {"error": "Could not determine target file from diff"}
+            
+        # Apply the patch
+        try:
+            # Use the request ID if provided, otherise generate one
+            learned_id = getattr(request, 'requestId', None)
+            if learned_id:
+                request_id = getattr(request, 'requestId', None) or str(uuid.uuid4()) 
+                logger.info(f"Using request ID from frontend for patch application: {request_id}")
+            else:
+                request_id = str(uuid.uuid4()) 
+                logger.warning(f"Generated request ID for patch application: {request_id}")
+            result = request_id
+
+            # Check if result contains error information
+            if isinstance(result, dict) and result.get('status') == 'error':
+                return JSONResponse(
+                    status_code=422,
+                    content={
+                        "status": "error",
+                        "request_id": request_id,
+                        "type": result.get("type", "patch_error"), 
+                        "message": result.get("message", "Failed to apply patch"),
+                        "details": result.get("details", {})
+                    }
+                )
+
+            # Check for partial success with failed hunks
+            if isinstance(result, dict) and result.get('hunk_statuses'):
+                failed_hunks = [
+                    hunk_num for hunk_num, status in result['hunk_statuses'].items()
+                    if status.get('status') == 'failed'
+                ]
+                
+                # Get the list of successful hunks
+                successful_hunks = [
+                    hunk_num for hunk_num, status in result['hunk_statuses'].items()
+                    if status.get('status') == 'succeeded'
+                ]
+                
+                if failed_hunks:
+                    if successful_hunks:
+                        # Some hunks succeeded, some failed - partial success
+                        return JSONResponse(
+                            status_code=207,
+                            content={
+                                "status": "partial",
+                                "message": "Some hunks failed to apply",
+                                "request_id": request_id,
+                                "details": {
+                                    "failed": failed_hunks,
+                                    "succeeded": successful_hunks,
+                                    "hunk_statuses": result['hunk_statuses']
+                                }
+                            }
+                        )
+                    else:
+                        # All hunks failed - complete failure
+                        logger.info("All hunks failed, returning error status with 422 code")
+                        return JSONResponse(
+                            status_code=422,
+                            content={
+                                "status": "error",
+                                "message": "All hunks failed to apply",
+                                "request_id": request_id,
+                                "details": {
+                                    "failed": failed_hunks,
+                                    "succeeded": [],
+                                    "hunk_statuses": result['hunk_statuses']
+                                }
+                            }
+                        )
+
+            # All hunks succeeded
+            return JSONResponse(
+                content={
+                    "status": "success",
+                    "message": "Changes applied successfully",
+                    "request_id": request_id,
+                    "details": {
+                        "succeeded": list(result['hunk_statuses'].keys()) if isinstance(result, dict) and result.get('hunk_statuses') else [],
+                        "failed": [],
+                        "hunk_statuses": result['hunk_statuses'] if isinstance(result, dict) and result.get('hunk_statuses') else {}
+                    }
+                }
+            )
+        except Exception as e: 
+            logger.error("Error in apply_path: {e}")
+
+    except PatchApplicationError as e:
+        logger.error(f"Error applying patch: {e}")
+        return {"error": str(e), "type": "patch_error"}
+    except Exception as e:
+        logger.error(f"Error in apply_patch: {e}")
+        return {"error": str(e)}
+
+@app.get('/api/available-models')
 def get_available_models():
     """Get list of available models for the current endpoint."""
     endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
@@ -2703,6 +2990,182 @@ if __name__ == "__main__":
     # Run the server
     uvicorn.run(app, host=args.host, port=args.port)
 
+@app.get('/api/default-included-folders')
+async def get_default_included_folders():
+    """Get the default included folders."""
+    return []
+
+@app.get('/api/folders-cached')
+async def get_folders_cached():
+    """Get folder structure from cache only - returns instantly without scanning."""
+    try:
+        # Get the user's codebase directory
+        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        if not user_codebase_dir:
+            user_codebase_dir = os.getcwd()
+            
+        # Get max depth from environment or use default
+        try:
+            max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
+        except ValueError:
+            max_depth = 15
+            
+        # Get ignored patterns
+        ignored_patterns = get_ignored_patterns(user_codebase_dir)
+        
+        # Import here to avoid circular imports
+        from app.utils.directory_util import _folder_cache, _token_cache, _cache_lock
+        
+        # First check if we have any cached data at all
+        with _cache_lock:
+            cache_key = f"{user_codebase_dir}:{max_depth}:{hash(str(ignored_patterns))}"
+            
+            # Check for token cache first (most complete)
+            if cache_key in _token_cache:
+                logger.info("🚀 Returning cached folder structure with tokens (instant)")
+                result = _token_cache[cache_key]
+                if "_accurate_tokens" in result:
+                    result["_accurate_token_counts"] = result["_accurate_tokens"]
+                return result
+                
+            # Fall back to folder cache if available
+            if _folder_cache['data'] is not None:
+                logger.info("🚀 Returning basic folder cache (instant)")
+                return _folder_cache['data']
+                
+        # No cache available
+        return {"error": "No cached data available"}
+    except Exception as e:
+        logger.error(f"Error in get_folders_cached: {e}")
+        return {"error": f"Cache error: {str(e)}"}
+
+@app.get('/api/folders-with-accurate-tokens')
+async def get_folders_with_accurate_tokens():
+    """Get folder structure with pre-calculated accurate token counts."""
+    try:
+        # Get the user's codebase directory
+        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        if not user_codebase_dir:
+            logger.warning("ZIYA_USER_CODEBASE_DIR environment variable not set")
+            user_codebase_dir = os.getcwd()
+            logger.info(f"ZIYA_USER_CODEBASE_DIR not set, using current directory: {user_codebase_dir}")
+            os.environ["ZIYA_USER_CODEBASE_DIR"] = user_codebase_dir
+            
+        # Get max depth from environment or use default
+        try:
+            max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
+        except ValueError:
+            logger.warning("Invalid ZIYA_MAX_DEPTH value, using default of 15")
+            max_depth = 15
+            
+        # Get ignored patterns
+        ignored_patterns = get_ignored_patterns(user_codebase_dir)
+        logger.info(f"Loaded {len(ignored_patterns)} ignore patterns")
+        
+        # Check if we have cached accurate token counts
+        from app.utils.directory_util import get_cached_folder_structure_with_tokens
+        result = get_cached_folder_structure_with_tokens(user_codebase_dir, ignored_patterns, max_depth)
+        
+        if result:
+            result["_has_accurate_tokens"] = True
+            # Include accurate token counts if available
+            if "_accurate_tokens" in result:
+                result["_accurate_token_counts"] = result["_accurate_tokens"]
+                logger.info(f"Returning folder structure with {len(result['_accurate_tokens'])} accurate token counts")
+            return result
+            
+        # Get regular folder structure
+        regular_result = await api_get_folders()
+        return regular_result
+        # Fall back to regular folder structure and start background calculation
+        return await api_get_folders()
+    except Exception as e:
+        logger.error(f"Error in get_folders_with_accurate_tokens: {e}")
+        return {"error": f"Unexpected error: {str(e)}"}
+        return JSONResponse({"error": str(e)}, status_code=500)
+        files = body.get('files', [])
+        conversation_id = body.get('conversation_id')
+        logger.info(f"Chat API received conversation_id: {conversation_id}")
+        logger.debug(f"🔍 CHAT_API: Received conversation_id from frontend: {conversation_id}")
+
+        # Debug: Log what we received from frontend
+        logger.debug(f"🔍 CHAT_API: Received messages count: {len(messages)}")
+        logger.debug(f"🔍 CHAT_API: Messages structure: {messages[:2] if messages else 'No messages'}")
+        
+        logger.info("=== File Processing Debug ===")
+        logger.info(f"Files received: {files}")
+        
+        # Log message structure for debugging
+        if messages and len(messages) > 0:
+            logger.info(f"[INSTRUMENTATION] First message structure: {type(messages[0])}")
+            if isinstance(messages[0], list) and len(messages[0]) >= 2:
+                logger.info(f"[INSTRUMENTATION] First message format: ['{messages[0][0][:20]}...', '{messages[0][1][:20]}...'] (truncated)")
+            elif isinstance(messages[0], dict):
+                logger.info(f"[INSTRUMENTATION] First message keys: {messages[0].keys()}")
+        
+        # Convert frontend message tuples to proper chat history format
+        formatted_chat_history = []
+        for msg in messages:
+            if isinstance(msg, list) and len(msg) >= 2:
+                role, content = msg[0], msg[1]
+                # Convert role names to match expected format
+                if role in ['human', 'user']:
+                    formatted_chat_history.append({'type': 'human', 'content': content})
+                elif role in ['assistant', 'ai']:
+                    formatted_chat_history.append({'type': 'ai', 'content': content})
+            elif isinstance(msg, dict):
+                # Already in correct format
+                formatted_chat_history.append(msg)
+        
+        # Debug: Log the converted chat history
+        logger.debug(f"🔍 CHAT_API: Converted chat history count: {len(formatted_chat_history)}")
+        
+        # Format the data for the stream endpoint
+        formatted_body = {
+            'question': question,
+            'conversation_id': conversation_id,
+            'chat_history': formatted_chat_history,
+            'config': {
+                'conversation_id': conversation_id,  # Also include in config for backward compatibility
+                'files': files
+            }
+        }
+        
+        logger.info(f"[INSTRUMENTATION] /api/chat formatted body structure: {formatted_body.keys()}")
+        logger.info(f"[INSTRUMENTATION] /api/chat forwarding to /ziya/stream")
+
+        
+        # Call stream_chunks directly to force direct streaming path
+        logger.info("[INSTRUMENTATION] /api/chat calling stream_chunks directly for direct streaming")
+        
+        # DEBUGGING: Wrap the stream_chunks generator to monitor transmission
+        async def debug_stream_wrapper():
+            total_bytes_sent = 0
+            chunk_count = 0
+            async for chunk in stream_chunks(formatted_body):
+                chunk_count += 1
+                chunk_size = len(chunk.encode('utf-8'))
+                total_bytes_sent += chunk_size
+                
+                if chunk_count % 50 == 0:  # Log every 50th chunk
+                    logger.debug(f"🔍 STREAM_PROGRESS: chunk #{chunk_count}, total_bytes={total_bytes_sent}")
+                    
+                yield chunk
+        
+        return StreamingResponse(
+            debug_stream_wrapper(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type"
+            }
+        )
+
+@app.get('/api/current-model')
 def get_current_model():
     """Get detailed information about the currently active model."""
     try:
@@ -2778,6 +3241,7 @@ def get_current_model():
         logger.error(f"Error getting current model: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get current model: {str(e)}")
 
+@app.get('/api/model-id')
 def get_model_id():
     """Get the model ID in a simplified format for the frontend."""
     # Always return the model alias (name) rather than the full model ID
@@ -2888,6 +3352,319 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
     # Return scanning indicator
     return {"_scanning": True, "children": {}}
 
+@app.get('/api/folders')
+async def api_get_folders():
+    """Get the folder structure for API compatibility with improved error handling."""
+    # Add cache headers to help frontend avoid unnecessary requests
+    from fastapi import Response
+    response = Response()
+    response.headers["Cache-Control"] = "public, max-age=30"
+    
+    try:
+        # Get the user's codebase directory
+        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        if not user_codebase_dir:
+            logger.warning("ZIYA_USER_CODEBASE_DIR environment variable not set")
+            user_codebase_dir = os.getcwd()
+            logger.info(f"ZIYA_USER_CODEBASE_DIR not set, using current directory: {user_codebase_dir}")
+            os.environ["ZIYA_USER_CODEBASE_DIR"] = user_codebase_dir
+            
+        # Validate the directory exists and is accessible
+        if not os.path.exists(user_codebase_dir):
+            logger.error(f"Codebase directory does not exist: {user_codebase_dir}")
+            return {"error": f"Directory does not exist: {user_codebase_dir}"}
+            
+        if not os.path.isdir(user_codebase_dir):
+            logger.error(f"Codebase path is not a directory: {user_codebase_dir}")
+            return {"error": f"Path is not a directory: {user_codebase_dir}"}
+            
+        # Test basic access
+        try:
+            os.listdir(user_codebase_dir)
+        except PermissionError:
+            logger.error(f"Permission denied accessing: {user_codebase_dir}")
+            return {"error": "Permission denied accessing directory"}
+        except OSError as e:
+            logger.error(f"OS error accessing {user_codebase_dir}: {e}")
+            return {"error": f"Cannot access directory: {str(e)}"}
+        
+        # Get max depth from environment or use default
+        try:
+            max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
+        except ValueError:
+            logger.warning("Invalid ZIYA_MAX_DEPTH value, using default of 15")
+            max_depth = 15
+            
+        # Get ignored patterns
+        try:
+            ignored_patterns = get_ignored_patterns(user_codebase_dir)
+            logger.info(f"Loaded {len(ignored_patterns)} ignore patterns")
+        except re.error as e:
+            logger.error(f"Invalid gitignore pattern detected: {e}")
+            # Use minimal default patterns if gitignore parsing fails
+            ignored_patterns = [
+                (".git", user_codebase_dir),
+                ("node_modules", user_codebase_dir),
+                ("__pycache__", user_codebase_dir)
+            ]
+        
+        # Check if a scan is in progress BEFORE we call get_cached_folder_structure
+        from app.utils.directory_util import get_scan_progress
+        scan_status_before = get_scan_progress()
+        
+        # Use our enhanced cached folder structure function
+        result = get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth)
+        
+        # Background calculation is automatically ensured by get_cached_folder_structure_with_tokens
+        # Check if we got an error result
+        if isinstance(result, dict) and "error" in result:
+            logger.warning(f"Folder scan returned error: {result['error']}")
+            
+            # If the result is completely empty, try to return at least some basic structure
+            if not result.get('children') and not result.get('token_count'):
+                logger.warning("Empty result returned, creating minimal folder structure")
+                result = {"_error": result['error'], "app": {"token_count": 0, "children": {}}}
+                
+            return result
+            
+        # Log a sample of the result to see if token counts are included
+        sample_files = []
+        def collect_sample(data, path=""):
+            if isinstance(data, dict):
+                for key, value in data.items():
+                    current_path = f"{path}/{key}" if path else key
+                    if isinstance(value, dict) and 'token_count' in value:
+                        sample_files.append(f"{current_path}: {value['token_count']} tokens")
+                        if len(sample_files) >= 5:  # Only collect first 5 for logging
+                            return
+                    elif isinstance(value, dict) and 'children' in value:
+                        collect_sample(value['children'], current_path)
+        
+        collect_sample(result)
+        if sample_files:
+            logger.info(f"Sample files with token counts: {sample_files}")
+        else:
+            logger.debug("No files with token counts found in folder structure")
+        
+        # The _scanning flag is already set by get_cached_folder_structure when appropriate
+        return result
+    except Exception as e:
+        logger.error(f"Error in api_get_folders: {e}")
+        return {"error": f"Unexpected error: {str(e)}"}
+
+@app.post('/api/set-model')
+async def set_model(request: SetModelRequest):
+    """Set the active model for the current endpoint."""
+    import gc
+    
+    try:
+        # Force garbage collection at the start
+        gc.collect()
+        
+        model_id = request.model_id
+        logger.info(f"Received model change request: {model_id}")
+
+        if not model_id:
+            logger.error("Empty model ID provided")
+            raise HTTPException(status_code=400, detail="Model ID is required")
+
+        # Get current endpoint
+        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        current_model = os.environ.get("ZIYA_MODEL")
+        current_region = os.environ.get("AWS_REGION") or ModelManager._state.get('aws_region', 'us-west-1')
+
+        logger.info(f"Current state - Endpoint: {endpoint}, Model: {current_model}")
+
+        found_alias = None
+        found_endpoint = None
+        
+        # Search through all endpoints and models to find the matching alias and its endpoint
+        for ep, models in ModelManager.MODEL_CONFIGS.items():
+            # Direct match by alias
+            if model_id in models:
+                found_alias = model_id
+                found_endpoint = ep
+                break
+            # Search by model_id value
+            for alias, model_config_item in models.items():
+                config_model_id = model_config_item.get('model_id')
+                
+                # Case 1: Both are dictionaries - check if they match
+                if isinstance(model_id, dict) and isinstance(config_model_id, dict):
+                    # Check if dictionaries have the same structure and values
+                    if model_id == config_model_id:
+                        found_alias = alias
+                        found_endpoint = ep
+                        break
+                    
+                    # Check if any region-specific IDs match
+                    # This handles partial matches where only some regions are specified
+                    matching_regions = 0
+                    for region in model_id:
+                        if region in config_model_id and model_id[region] == config_model_id[region]:
+                            matching_regions += 1
+                    
+                    # If we have at least one matching region and no mismatches
+                    if matching_regions > 0 and all(
+                        region not in config_model_id or model_id[region] == config_model_id[region]
+                        for region in model_id
+                    ):
+                        found_alias = alias
+                        found_endpoint = ep
+                        break
+                
+                # Case 2: Direct string comparison
+                elif model_id == config_model_id:
+                    found_alias = alias
+                    break
+                
+                # Case 3: String model_id matches one of the values in a dictionary config_model_id
+                elif isinstance(model_id, str) and isinstance(config_model_id, dict):
+                    if any(val == model_id for val in config_model_id.values()):
+                        found_alias = alias
+                        break
+                
+                # Case 4: Dictionary model_id contains a value that matches string config_model_id
+                elif isinstance(model_id, dict) and isinstance(config_model_id, str):
+                    if any(val == config_model_id for val in model_id.values()):
+                        found_alias = alias
+                        break
+
+        if not found_alias:
+            logger.error(f"Invalid model identifier: {model_id}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid model identifier: {model_id}. Valid models are: "
+                       f"{', '.join(ModelManager.MODEL_CONFIGS[endpoint].keys())}"
+            )
+
+        # If model hasn't actually changed, return early
+        if found_alias == current_model:
+            logger.info(f"Model {found_alias} is already active, no change needed")
+            return {"status": "success", "model": found_alias, "changed": False}
+
+        # Check if we need to adjust the region based on the model
+        model_config = ModelManager.get_model_config(endpoint, found_alias)
+        model_id = model_config.get("model_id")
+        
+        # If the model has region-specific IDs, ensure we're using the right region
+        if isinstance(model_id, dict):
+            # Check if we're in an EU region
+            is_eu_region = current_region.startswith("eu-")
+            
+            # If we're in an EU region but the model has EU-specific ID, make sure we use it
+            if is_eu_region and "eu" in model_id:
+                logger.info(f"Using EU-specific model ID for {found_alias} in region {current_region}")
+                # No need to change region as it's already set correctly
+            elif not is_eu_region and "us" in model_id:
+                logger.info(f"Using US-specific model ID for {found_alias} in region {current_region}")
+
+        # Update environment variable
+        logger.info(f"Setting model to: {found_alias}")
+
+        # Reinitialize all model related state
+        old_state = {
+            'model_id': os.environ.get("ZIYA_MODEL"),
+            'model': ModelManager._state.get('model'),
+            'current_model_id': ModelManager._state.get('current_model_id')
+        }
+        logger.info(f"Saved old state: {old_state}")
+
+        try:
+            logger.info(f"Reinitializing model with alias: {found_alias}")
+            ModelManager._reset_state()
+            logger.info(f"State after reset: {ModelManager._state}")
+
+            # Set the new model in environment
+            os.environ["ZIYA_MODEL"] = found_alias
+            os.environ["ZIYA_ENDPOINT"] = found_endpoint
+            logger.info(f"Set ZIYA_ENDPOINT environment variable to: {found_endpoint}")
+            logger.info(f"Set ZIYA_MODEL environment variable to: {found_alias}")
+
+            # Reinitialize with agent
+            try:
+                new_model = ModelManager.initialize_model(force_reinit=True)
+                logger.info(f"Model initialization successful: {type(new_model)}")
+            except Exception as model_init_error:
+                logger.error(f"Model initialization failed: {str(model_init_error)}", exc_info=True)
+                raise model_init_error
+
+            # Verify the model was actually changed by checking the model ID and updating global references
+            expected_model_id = ModelManager.MODEL_CONFIGS[endpoint][found_alias]['model_id']
+            actual_model_id = ModelManager.get_model_id(new_model)
+            logger.info(f"Model ID verification - Expected: {expected_model_id}, Actual: {actual_model_id}")
+            
+            if actual_model_id != expected_model_id:
+                logger.error(f"Model initialization failed - expected ID: {expected_model_id}, got: {actual_model_id}")
+                # Restore previous state
+                os.environ["ZIYA_MODEL"] = old_state['model_id'] if old_state['model_id'] else ModelManager.DEFAULT_MODELS["bedrock"]
+                ModelManager._state.update(old_state)
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to change model - expected {expected_model_id}, got {actual_model_id}"
+                )
+            logger.info(f"Successfully changed model to {found_alias} ({actual_model_id})")
+            # update the global model reference
+            global model
+            model = new_model
+
+            global agent
+            global agent_executor
+            global llm_with_stop  # Add global reference to llm_with_stop
+
+            # Recreate agent chain and executor with new model
+            try:
+                agent = create_agent_chain(new_model)
+                agent_executor = create_agent_executor(agent)
+                # Get the updated llm_with_stop from ModelManager
+                llm_with_stop = ModelManager._state.get('llm_with_stop')
+                logger.info("Created new agent chain and executor")
+            except Exception as agent_error:
+                logger.error(f"Failed to create agent: {str(agent_error)}", exc_info=True)
+                raise agent_error
+
+            # COMPLETELY DISABLED: LangServe routes cause duplicate execution with /api/chat
+            # initialize_langserve(app, agent_executor)
+            # _langserve_initialized = True
+            logger.info("LangServe completely disabled to prevent duplicate execution - using /api/chat only")
+
+            # Force garbage collection after successful model change
+            import gc
+            gc.collect()
+
+            # Return success response
+            return {
+                "status": "success",
+                "model": found_alias, 
+                "previous_model": old_state['model_id'],
+                "model_display_name": ModelManager.MODEL_CONFIGS[endpoint][found_alias].get("display_name", found_alias),
+                "changed": True,
+                "message": "Model and routes successfully updated"
+            }
+
+        except ValueError as e:
+            logger.error(f"Model initialization error: {str(e)}", exc_info=True)
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"Failed to initialize model {found_alias}: {str(e)}", exc_info=True)
+            # Restore previous state
+            logger.info(f"Restoring previous state: {old_state}")
+
+            os.environ["ZIYA_MODEL"] = old_state['model_id'] if old_state['model_id'] else ModelManager.DEFAULT_MODELS["bedrock"]
+            if old_state['model']:
+                ModelManager._state.update(old_state)
+            else:
+                logger.warning("No previous model state to restore")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to initialize model {found_alias}: {str(e)}"
+            )
+
+    except Exception as e:
+        logger.error(f"Error in set_model: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to change model: {str(e)}")
+
+@app.get('/api/model-capabilities')
 def get_model_capabilities(model: str = None):
     """Get the capabilities of the current model."""
 
@@ -3071,6 +3848,273 @@ def count_tokens_fallback(text: str) -> int:
             # Return character count divided by 4 as very rough approximation
             return int(len(text) / 4)
 
+@app.post('/api/token-count')
+async def count_tokens(request: TokenCountRequest) -> Dict[str, int]:
+    try:
+        token_count = 0
+        method_used = "unknown"
+
+        try:
+            # Try primary method first
+            token_count = model.get_num_tokens(request.text)
+            method_used = "primary"
+        except AttributeError:
+            # If primary method fails, use fallback
+            logger.debug("Primary token counting method unavailable, using fallback")
+            token_count = count_tokens_fallback(request.text)
+            method_used = "fallback"
+        except Exception as e:
+            logger.error(f"Unexpected error in primary token counting: {str(e)}")
+            token_count = count_tokens_fallback(request.text)
+            method_used = "fallback"
+
+        logger.info(f"Counted {token_count} tokens using {method_used} method for text length {len(request.text)}")
+        return {"token_count": token_count}
+    except Exception as e:
+        logger.error(f"Error counting tokens: {str(e)}", exc_info=True)
+        # Return 0 in case of error to avoid breaking the frontend
+        return {"token_count": 0}
+
+class AccurateTokenCountRequest(BaseModel):
+    file_paths: List[str]
+    
+@app.post('/api/accurate-token-count')
+async def get_accurate_token_counts(request: AccurateTokenCountRequest) -> Dict[str, Any]:
+    """Get accurate token counts for specific files."""
+    try:
+        from app.utils.directory_util import get_accurate_token_count
+
+        # Check if we have pre-calculated accurate counts
+        from app.utils.directory_util import _accurate_token_cache
+        if _accurate_token_cache:
+            logger.info(f"API request for accurate tokens: {len(request.file_paths)} files requested")
+            results = {}
+            for file_path in request.file_paths:
+                if file_path in _accurate_token_cache:
+                    results[file_path] = {
+                        "accurate_count": _accurate_token_cache[file_path],
+                        "timestamp": int(time.time())
+                    }
+            if results:
+                cached_count = sum(1 for path in request.file_paths if path in _accurate_token_cache)
+                calculated_count = len(results) - cached_count
+                logger.info(f"Returning {len(results)} token counts: {cached_count} from cache (accurate), {calculated_count} calculated on-demand")
+                return {"results": results, "debug_info": {"source": "precalculated_cache"}}
+
+        import os
+        
+        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+        logger.info(f"Accurate token count requested for {len(request.file_paths)} files")
+        if not user_codebase_dir:
+            raise ValueError("ZIYA_USER_CODEBASE_DIR not set")
+        
+        results = {}
+        for file_path in request.file_paths:
+            full_path = os.path.join(user_codebase_dir, file_path)
+            if os.path.exists(full_path) and os.path.isfile(full_path):
+                accurate_count = get_accurate_token_count(full_path)
+                # Get the estimated count for comparison
+                from app.utils.directory_util import estimate_tokens_fast
+                estimated_count = estimate_tokens_fast(full_path)
+                logger.info(f"File: {file_path} - ACCURATE: {accurate_count} vs ESTIMATED: {estimated_count} (diff: {accurate_count - estimated_count})")
+                results[file_path] = {
+                    "accurate_count": accurate_count,
+                    "timestamp": int(time.time())
+                }
+            else:
+                results[file_path] = {"accurate_count": 0, "error": "File not found"}
+                
+        return {"results": results, "debug_info": {"files_processed": len(results)}}
+    except Exception as e:
+        logger.error(f"Error getting accurate token counts: {str(e)}")
+        return {"error": str(e), "results": {}}
+
+@app.get('/api/cache-stats')
+async def get_cache_stats():
+    """Get context caching statistics and effectiveness metrics."""
+    try:
+        from app.utils.context_cache import get_context_cache_manager
+        cache_manager = get_context_cache_manager()
+        
+        stats = cache_manager.get_cache_stats()
+        
+        # Calculate effectiveness metrics
+        total_operations = stats["hits"] + stats["misses"]
+        hit_rate = (stats["hits"] / total_operations * 100) if total_operations > 0 else 0
+        
+        return {
+            "cache_enabled": True,
+            "statistics": {
+                "cache_hits": stats["hits"],
+                "cache_misses": stats["misses"],
+                "context_splits": stats["splits"],
+                "hit_rate_percent": round(hit_rate, 1),
+                "active_cache_entries": stats["cache_entries"],
+                "estimated_tokens_cached": stats["estimated_token_savings"]
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting cache stats: {str(e)}")
+        return {"cache_enabled": False, "error": str(e)}
+
+@app.get('/api/cache-test')
+async def test_cache_functionality():
+    """Test if context caching is properly configured and working."""
+    try:
+        from app.utils.context_cache import get_context_cache_manager
+        from app.agents.models import ModelManager
+        
+        # Check model configuration
+        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        model_name = os.environ.get("ZIYA_MODEL", ModelManager.DEFAULT_MODELS.get(endpoint))
+        model_config = ModelManager.get_model_config(endpoint, model_name)
+        
+        cache_manager = get_context_cache_manager()
+        
+        # Create a large test content
+        test_content = "Test file content. " * 1000  # ~20,000 chars
+        
+        return {
+            "model_supports_caching": model_config.get("supports_context_caching", False),
+            "current_model": model_name,
+            "endpoint": endpoint,
+            "test_content_size": len(test_content),
+            "should_cache": cache_manager.should_cache_context(test_content, model_config),
+            "min_cache_size": cache_manager.min_cache_size,
+            "cache_manager_initialized": cache_manager is not None
+        }
+    except Exception as e:
+        logger.error(f"Error testing cache functionality: {str(e)}")
+        return {"error": str(e)}
+
+
+@app.post('/api/model-settings')
+async def update_model_settings(settings: ModelSettingsRequest):
+    global model
+    import gc
+    original_settings = settings.dict()
+    try:
+        # Log the requested settings
+
+        # Get current model configuration
+        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        model_name = os.environ.get("ZIYA_MODEL")
+        model_config = ModelManager.get_model_config(endpoint, model_name)
+        
+        # Store original model config values for reference
+        original_config_values = model_config.copy()
+        
+        # Check if we need to switch regions based on model-specific region preference
+        new_model = getattr(settings, "model", None)
+        if new_model and new_model != model_name:
+            # Get the new model's configuration
+            new_model_config = ModelManager.get_model_config(endpoint, new_model)
+            
+            # Check if the new model has a preferred region
+            if "region" in new_model_config:
+                preferred_region = new_model_config["region"]
+                logger.info(f"Model {new_model} has preferred region: {preferred_region}")
+                
+                # Set the AWS_REGION environment variable to the preferred region
+                os.environ["AWS_REGION"] = preferred_region
+                logger.info(f"Switched region to {preferred_region} for model {new_model}")
+
+        # Store all settings in environment variables with ZIYA_ prefix
+        for key, value in settings.dict().items():
+            if value is not None:  # Only set if value is provided
+                env_key = f"ZIYA_{key.upper()}"
+                logger.info(f"  Set {env_key}={value}")
+
+            # Special handling for boolean values
+                if isinstance(value, bool):
+                    os.environ[env_key] = "1" if value else "0"
+                else:
+                    os.environ[env_key] = str(value)
+
+        # Create a kwargs dictionary with all settings
+        model_kwargs = {}
+        # Map settings to model parameter names
+        param_mapping = {
+            'temperature': 'temperature',
+            'top_k': 'top_k',
+            'max_output_tokens': 'max_tokens',
+            # Only include max_input_tokens if the model supports it
+            # This will be filtered by filter_model_kwargs if not supported
+        }
+
+        for setting_name, param_name in param_mapping.items():
+            value = getattr(settings, setting_name, None)
+            if value is not None:
+                model_kwargs[param_name] = value
+                
+        # Filter kwargs to only include supported parameters
+        logger.info(f"Model kwargs before filtering: {model_kwargs}")
+        filtered_kwargs = ModelManager.filter_model_kwargs(model_kwargs, model_config)
+        logger.info(f"Filtered model kwargs: {filtered_kwargs}")
+
+        # Extract conversation_id from config if available for caching
+        if config and isinstance(config, dict) and config.get('conversation_id'):
+            filtered_kwargs["conversation_id"] = config.get('conversation_id')
+            logger.info(f"Added conversation_id to astream kwargs for caching: {config.get('conversation_id')}")
+        elif hasattr(input, 'get') and input.get('conversation_id'):
+            filtered_kwargs["conversation_id"] = input.get('conversation_id')
+            logger.info(f"Added conversation_id from input to astream kwargs for caching")
+
+        # Update the model's kwargs directly
+        if hasattr(model, 'model'):
+            # For wrapped models (e.g., RetryingChatBedrock)
+            if hasattr(model.model, 'model_kwargs'):
+                # Replace the entire model_kwargs dict
+                model.model.model_kwargs = filtered_kwargs
+                logger.info(f"Updated model.model.model_kwargs: {model.model.model_kwargs}")
+                model.model.max_tokens = int(os.environ["ZIYA_MAX_OUTPUT_TOKENS"])
+        elif hasattr(model, 'model_kwargs'):
+            # For direct model instances
+            model.model_kwargs = filtered_kwargs
+            # Don't try to set max_tokens directly on NovaBedrock models
+            if not isinstance(model, NovaBedrock):
+                try:
+                    model.max_tokens = int(os.environ["ZIYA_MAX_OUTPUT_TOKENS"])  # Use the environment variable value
+                except (ValueError, AttributeError) as e:
+                    logger.warning(f"Could not set max_tokens directly on model: {e}")
+                    # The max_tokens is already in model_kwargs, so this is just a warning
+
+        # Force model reinitialization to apply new settings
+        model = ModelManager.initialize_model(force_reinit=True, settings_override=original_settings)
+
+        # Get the model's current settings for verification
+        current_kwargs = {}
+        if hasattr(model, 'model') and hasattr(model.model, 'model_kwargs'):
+            current_kwargs = model.model.model_kwargs
+        elif hasattr(model, 'model_kwargs'):
+            current_kwargs = model.model_kwargs
+
+        logger.info("Current model settings after update:")
+        for key, value in current_kwargs.items():
+            logger.info(f"  {key}: {value}")
+
+        # Also check the model's max_tokens attribute directly
+        if hasattr(model, 'max_tokens'):
+            logger.info(f"  Direct max_tokens: {model.max_tokens}")
+        if hasattr(model, 'model') and hasattr(model.model, 'max_tokens'):
+            logger.info(f"  model.model.max_tokens: {model.model.max_tokens}")
+
+        # Return the original requested settings to ensure the frontend knows what was requested
+
+        return {
+            'status': 'success',
+            'message': 'Model settings updated',
+            'settings': original_settings,
+            'applied_settings': current_kwargs
+        }
+
+    except Exception as e:
+        logger.error(f"Error updating model settings: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error updating model settings: {str(e)}"
+        )
+
 @app.post('/api/abort-stream')
 async def abort_stream(request: Request):
     """Explicitly abort a streaming response from the client side."""
@@ -3197,6 +4241,67 @@ async def reset_mcp_state(request: Request):
         logger.error(f"Error resetting MCP state: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+@app.post('/api/check-files-in-context')
+async def check_files_in_context(request: Request):
+    """Check which files from a list are currently available in the selected context."""
+    try:
+        body = await request.json()
+        file_paths = body.get('filePaths', [])
+        current_files = body.get('currentFiles', [])
+        
+        if not file_paths:
+            return {"missingFiles": [], "availableFiles": []}
+        
+        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+        if not user_codebase_dir:
+            return JSONResponse(status_code=500, content={"error": "ZIYA_USER_CODEBASE_DIR not set"})
+        
+        logger.info(f"🔄 CONTEXT_CHECK: Checking {len(file_paths)} files against {len(current_files)} current context files")
+        logger.info(f"🔄 CONTEXT_CHECK: Files to check: {file_paths}")
+        logger.info(f"🔄 CONTEXT_CHECK: Current context: {current_files[:10]}...")
+        
+        missing_files = []
+        available_files = []
+        
+        for file_path in file_paths:
+            # Clean up the file path (remove a/ or b/ prefixes from git diffs)
+            clean_path = file_path.strip()
+            if clean_path.startswith('a/') or clean_path.startswith('b/'):
+                clean_path = clean_path[2:]
+            
+            # Check if the file is in the current selected context
+            is_in_context = False
+            
+            # Direct match
+            if clean_path in current_files:
+                is_in_context = True
+            # Check if any selected folder contains this file
+            elif any(clean_path.startswith(f + '/') or f.endswith('/') and clean_path.startswith(f) 
+                    for f in current_files):
+                is_in_context = True
+            
+            logger.info(f"🔄 CONTEXT_CHECK: File '{clean_path}' in context: {is_in_context}")
+            
+            if is_in_context:
+                available_files.append(clean_path)
+            else:
+                # File is not in current context - check if it exists on disk (can be added)
+                full_path = os.path.join(user_codebase_dir, clean_path)
+                if os.path.exists(full_path) and os.path.isfile(full_path):
+                    missing_files.append(clean_path)  # Exists but not in context
+                else:
+                    missing_files.append(clean_path)  # Doesn't exist at all
+        
+        logger.info(f"🔄 CONTEXT_CHECK: Result - Available: {available_files}, Missing: {missing_files}")
+        return {
+            "missingFiles": missing_files,
+            "availableFiles": available_files
+        }
+        
+    except Exception as e:
+        logger.error(f"Error checking files in context: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
 @app.post('/api/restart-stream-with-context')
 async def restart_stream_with_context(request: Request):
     """Restart stream with enhanced context including additional files."""
@@ -3254,3 +4359,163 @@ async def restart_stream_with_context(request: Request):
         logger.error(f"Error restarting stream with enhanced context: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+@app.post('/api/apply-changes')
+async def apply_changes(request: ApplyChangesRequest):
+    try:
+        logger.info(f"TRACE_ID: Received apply-changes request with ID: {request.requestId}")
+        # Validate diff size
+        if len(request.diff) < 100:  # Arbitrary minimum for a valid git diff
+            logger.warning(f"Suspiciously small diff received: {len(request.diff)} bytes")
+            logger.warning(f"Diff content: {request.diff}")
+
+        logger.info(f"Received request to apply changes to file: {request.filePath}")
+        logger.info(f"Raw request diff length: {len(request.diff)} bytes")
+        logger.info(f"First 100 chars of raw diff for request {request.requestId}:")
+        
+        # Always use the client-provided request ID if available
+        if request.requestId:
+            request_id = request.requestId
+            logger.info(f"Using client-provided request ID: {request_id}")
+        else:
+            # Only generate a server-side ID if absolutely necessary
+            request_id = str(uuid.uuid4())
+            logger.warning(f"Using server-side generated request ID: {request_id}")
+
+        logger.info(request.diff[:100])
+        logger.info(f"Full diff content: \n{request.diff}")
+
+        # --- SUGGESTION: Add secure path validation ---
+        user_codebase_dir = os.path.abspath(os.environ.get("ZIYA_USER_CODEBASE_DIR"))
+        if not user_codebase_dir:
+            raise ValueError("ZIYA_USER_CODEBASE_DIR environment variable is not set")
+        
+        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+        
+        # Prioritize extracting the file path from the diff content itself
+        extracted_path = extract_target_file_from_diff(request.diff)
+
+        if extracted_path:
+            file_path = os.path.join(user_codebase_dir, extracted_path)
+            logger.info(f"Extracted target file from diff: {extracted_path}")
+        elif request.filePath:
+            # Fallback to using the provided filePath if extraction fails
+            file_path = os.path.join(user_codebase_dir, request.filePath)
+            logger.info(f"Using provided file path: {request.filePath}")
+
+            # Resolve the absolute path and check if it's within the codebase dir
+            resolved_path = os.path.abspath(file_path)
+            if not resolved_path.startswith(user_codebase_dir):
+                logger.error(f"Attempt to access file outside codebase directory: {resolved_path}")
+                raise ValueError("Invalid file path specified")
+        else:
+            raise ValueError("Could not determine target file path from diff or request")
+
+        # Extract individual diffs if multiple are present
+        individual_diffs = split_combined_diff(request.diff)
+        if len(individual_diffs) > 1:
+            logger.info(f"Received combined diff with {len(individual_diffs)} files")
+            # Find the diff for our target file
+            logger.debug("Individual diffs:")
+            logger.debug('\n'.join(individual_diffs))
+            target_diff = None
+            for diff in individual_diffs:
+                target_file = extract_target_file_from_diff(diff)
+                if target_file and os.path.normpath(target_file) == os.path.normpath(extracted_path or request.filePath):
+                    target_diff = diff
+                    break
+
+            if not target_diff:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        'status': 'error',
+                        'type': 'file_not_found',
+                        'message': f'No diff found for requested file {request.filePath} in combined diff'
+                    }
+                )
+        else:
+            logger.info("Single diff found")
+            target_diff = individual_diffs[0]
+
+        # Run in thread pool to avoid blocking the event loop and allow parallel processing
+        result = await run_in_threadpool(apply_diff_pipeline, request.diff, file_path, request_id)
+        
+        # Check the result status and return appropriate response
+        status_code = 200 # Default to OK
+        if result.get('status') == 'error':
+            # Determine appropriate error code
+            error_message = result.get('message', '').lower()
+            if "file does not exist" in error_message:
+                status_code = 404 # Not Found
+            elif "malformed" in error_message or "failed to apply" in error_message:
+                status_code = 422 # Unprocessable Entity
+            else:
+                status_code = 500 # Internal Server Error
+        elif result.get('status') == 'partial':
+            status_code = 207 # Multi-Status
+ 
+        return JSONResponse(content=result, status_code=status_code)
+
+    except Exception as e:
+        error_msg = str(e)
+        if isinstance(e, PatchApplicationError):
+            details = e.details
+            logger.error(f"Patch application failed:")
+            status = details.get('status', 'error')
+            if status == 'success':
+                return JSONResponse(status_code=200, content={
+                    'status': 'success',
+                    'message': 'Changes applied successfully',
+                    'request_id' : request_id,
+                    'details': details
+                })
+            elif status == 'partial':
+                return JSONResponse(status_code=207, content={
+                    'status': 'partial',
+                    'message': str(e),
+                    'request_id' : request_id,
+                    'details': details
+                })
+            elif status == 'error':
+                error_type = details.get('type', 'unknown')
+                if error_type == 'no_hunks':
+                    status_code = 400  # Bad Request
+                elif error_type == 'invalid_count':
+                    status_code = 500  # Internal Server Error
+                elif error_type == 'missing_file':
+                    status_code = 404 # Not Found
+                else:
+                    status_code = 422  # Unprocessable Entity
+
+                # Format error response based on whether we have multiple failures
+                error_content = {
+                    'status': 'error',
+                    'message': str(e),
+                    'request_id': request_id
+                }
+                if 'failures' in details:
+                    error_content['failures'] = details['failures']
+                else:
+                    error_content['details'] = details
+
+                raise HTTPException(status_code=status_code, detail={
+                    'status': 'error',
+                    'request_id': request_id,
+                    **error_content
+                })
+        logger.error(f"Error applying changes: {error_msg}")
+        if isinstance(e, FileNotFoundError):
+             status_code = 404
+        elif isinstance(e, ValueError): # e.g., invalid path
+             status_code = 400 # Bad Request
+        else:
+            status_code = 500 # Default Internal Server Error
+        raise HTTPException(
+            # Determine status code based on exception type if possible
+            status_code = status_code,
+            detail={
+                'status': 'error',
+                'request_id': request_id,
+                'message': f"Unexpected error: {error_msg}"
+            }
+        )
