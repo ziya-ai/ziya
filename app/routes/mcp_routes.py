@@ -23,6 +23,7 @@ router = APIRouter(prefix="/api/mcp", tags=["mcp"])
 
 
 class MCPServerConfig(BaseModel):
+    model_config = {"extra": "allow"}
     name: str
     command: List[str]
     args: Optional[List[str]] = None
@@ -30,6 +31,7 @@ class MCPServerConfig(BaseModel):
     enabled: bool = True
 
 class ShellConfig(BaseModel):
+    model_config = {"extra": "allow"}
     enabled: bool = DEFAULT_SHELL_CONFIG["enabled"]
     allowedCommands: List[str] = DEFAULT_SHELL_CONFIG["allowedCommands"]
     gitOperationsEnabled: bool = DEFAULT_SHELL_CONFIG["gitOperationsEnabled"]
@@ -37,21 +39,25 @@ class ShellConfig(BaseModel):
     timeout: int = DEFAULT_SHELL_CONFIG["timeout"]
 
 class ServerToggleRequest(BaseModel):
+    model_config = {"extra": "allow"}
     server_name: str
     enabled: bool
 
 PermissionLevel = Literal["enabled", "disabled", "ask"]
 
 class ServerPermissionUpdateRequest(BaseModel):
+    model_config = {"extra": "allow"}
     server_name: str
     permission: PermissionLevel
 
 class ToolPermissionUpdateRequest(BaseModel):
+    model_config = {"extra": "allow"}
     server_name: str
     tool_name: str
     permission: PermissionLevel
 
 class PermissionsData(BaseModel):
+    model_config = {"extra": "allow"}
     defaults: Dict[str, Any]
     servers: Dict[str, Any]
 
@@ -780,6 +786,7 @@ async def get_registry_providers():
 
 
 class ToggleRegistryRequest(BaseModel):
+    model_config = {"extra": "allow"}
     provider_id: str
     enabled: bool
 
@@ -812,6 +819,7 @@ async def toggle_registry_provider(request: ToggleRegistryRequest):
 
 
 class AddRegistryRequest(BaseModel):
+    model_config = {"extra": "allow"}
     name: str
     baseUrl: str
     authType: str = 'none'
@@ -1045,6 +1053,7 @@ async def get_registry_services(
 
 
 class ToolSearchRequest(BaseModel):
+    model_config = {"extra": "allow"}
     query: str
     maxTools: int = 20
     providers: Optional[List[str]] = None
@@ -1101,6 +1110,7 @@ async def search_registry_tools(request: ToolSearchRequest):
 
 
 class InstallServiceRequest(BaseModel):
+    model_config = {"extra": "allow"}
     service_id: str
     provider_id: Optional[str] = None
 
@@ -1124,6 +1134,7 @@ async def install_registry_service(request: InstallServiceRequest):
 
 
 class UninstallServiceRequest(BaseModel):
+    model_config = {"extra": "allow"}
     server_name: str
 
 
@@ -1149,6 +1160,7 @@ async def uninstall_registry_service(request: UninstallServiceRequest):
 
 # Builtin Tools API endpoints
 class BuiltinToolToggleRequest(BaseModel):
+    model_config = {"extra": "allow"}
     """Request model for toggling builtin tools."""
     category: str
     enabled: bool
@@ -1403,6 +1415,7 @@ async def get_service_preview(service_id: str, provider_id: Optional[str] = None
 
 
 class FavoritesRequest(BaseModel):
+    model_config = {"extra": "allow"}
     favorites: List[str]
 
 

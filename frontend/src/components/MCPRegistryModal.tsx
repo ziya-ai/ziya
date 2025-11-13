@@ -307,6 +307,15 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
     };
 
     const searchTools = async (query: string) => {
+        // If query is empty, clear search results and show all services
+        if (!query.trim()) {
+            setToolSearchResults([]);
+            setSearchQuery('');
+            return;
+        }
+
+        setSearchQuery(query);
+        
         if (!query.trim()) {
             setToolSearchResults([]);
             return;
@@ -337,6 +346,24 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
             setLoading(false);
         }
     };
+    
+    // Clear search when switching away from browse tab
+    useEffect(() => {
+        if (activeTab !== 'browse' && searchQuery) {
+            setSearchQuery('');
+            setToolSearchResults([]);
+        }
+    }, [activeTab]);
+    
+    // Auto-search as user types (debounced)
+    useEffect(() => {
+        const timeoutId = setTimeout(() => {
+            if (searchQuery.trim() && activeTab === 'browse') {
+                searchTools(searchQuery);
+            }
+        }, 500);
+        return () => clearTimeout(timeoutId);
+    }, [searchQuery, activeTab, selectedProviders]);
 
     const checkMcpRegistryBinary = async (): Promise<boolean> => {
         try {
@@ -531,6 +558,10 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
             if (response.ok) {
                 message.success('Service uninstalled successfully');
                 await loadInstalledServices();
+                
+                // Refresh available services to update totals and filtering
+                await loadAvailableServices();
+                await loadRegistryStats();
 
                 // Refresh MCP status
                 window.dispatchEvent(new Event('mcpStatusChanged'));
@@ -647,6 +678,234 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
             ...prev,
             [serviceId]: !prev[serviceId]
         }));
+    };
+
+    const renderEnhancedServiceCard = (service: MCPService, searchResults: ToolSearchResult[] = []) => {
+        const isBuiltinService = service.serviceId.startsWith('builtin_');
+        
+        // Check if this service is installed (even if manually configured)
+        const installedInstance = installedServices.find(s => s.serviceId === service.serviceId);
+        const isInstalled = !!installedInstance;
+        const isManuallyConfigured = installedInstance?._manually_configured === true;
+
+        // Find matching tools for this service if we're in search mode
+        const matchingResult = searchResults.find(result => result.service.serviceId === service.serviceId);
+        const matchingTools = matchingResult?.matchingTools || (service as any)._matchingTools || [];
+
+        return (
+            <Card
+                key={service.serviceId}
+                style={{ marginBottom: 16 }}
+                hoverable
+                actions={[
+                    !isBuiltinService && (
+                        <Button
+                            key="preview"
+                            icon={<EyeOutlined />}
+                            onClick={() => showServicePreview(service.serviceId, service.provider.id)}
+                        >
+                            Preview
+                        </Button>
+                    ),
+                    <Tooltip title={favorites.includes(service.serviceId) ? "Remove from favorites" : "Add to favorites"} key="favorite">
+                        <Button
+                            icon={favorites.includes(service.serviceId) ? <HeartFilled style={{ color: '#ff4d4f' }} /> : <HeartOutlined />}
+                            onClick={() => toggleFavorite(service.serviceId)}
+                        />
+                    </Tooltip>,
+                    <Button
+                        key="install"
+                        type={isBuiltinService ? "default" : "primary"}
+                        icon={<DownloadOutlined />}
+                        loading={installing[service.serviceId]}
+                        disabled={isInstalled}
+                        onClick={() => installService(service.serviceId)}
+                    >
+                        {isBuiltinService ? (isInstalled ? 'Enabled' : 'Enable') : (isInstalled ? (isManuallyConfigured ? 'Configured' : 'Installed') : 'Install')}
+                    </Button>,
+                    !isBuiltinService && service.repositoryUrl && (
+                        <Tooltip title="View Repository" key="repo">
+                            <Button
+                                icon={<GithubOutlined />}
+                                onClick={() => window.open(service.repositoryUrl, '_blank')}
+                            />
+                        </Tooltip>
+                    ),
+                    !isBuiltinService && service.securityReviewLink && (
+                        <Tooltip title="Security Review" key="security">
+                            <Button
+                                key="security"
+                                icon={<SafetyCertificateOutlined />}
+                                onClick={() => window.open(service.securityReviewLink, '_blank')}
+                            />
+                        </Tooltip>
+                    ),
+                    isInstalled && !isBuiltinService && (
+                        <Tooltip title="Uninstall service" key="uninstall">
+                            <Button
+                                icon={<DeleteOutlined />}
+                                danger
+                                onClick={() => uninstallService(installedInstance.serverName)}
+                            />
+                        </Tooltip>
+                    ),
+                    <Tooltip title={expandedServices[service.serviceId] ? "Show less" : "Show more"} key="info">
+                        <Button
+                            icon={<InfoCircleOutlined />}
+                            onClick={() => toggleServiceExpanded(service.serviceId)}
+                        />
+                    </Tooltip>
+                ].filter(Boolean)}
+            >
+                <Card.Meta
+                    title={
+                        <Space wrap>
+                            <span>{service.serviceName}</span>
+                            <Tag color={getSupportLevelColor(service.supportLevel)}>
+                                {service.supportLevel}
+                            </Tag>
+                            {isManuallyConfigured && (
+                                <Tag color="orange" icon={<ToolOutlined />}>
+                                    Manually Configured
+                                </Tag>
+                            )}
+                            {isBuiltinService ? (
+                                <Tag color="purple">
+                                    <ExperimentOutlined /> Builtin
+                                </Tag>
+                            ) : service.provider.availableIn && service.provider.availableIn.length > 1 ? (
+                                <Tooltip title={`Available in: ${service.provider.availableIn.join(', ')}`}>
+                                    <Tag color="purple">
+                                        {service.provider.availableIn.length} sources
+                                    </Tag>
+                                </Tooltip>
+                            ) : (
+                                <Tag color={service.provider.isInternal ? 'gold' : 'blue'}>
+                                    {service.provider.name}
+                                </Tag>
+                            )}
+                            {service.installationType && (
+                                <Tag color="geekblue">{service.installationType}</Tag>
+                            )}
+                            {isBuiltinService && service._dependencies_available === false && (
+                                <Tag color="orange" icon={<WarningOutlined />}>
+                                    Dependencies Required
+                                </Tag>
+                            )}
+                        </Space>
+                    }
+                    description={
+                        <div>
+                            <Paragraph
+                                ellipsis={expandedServices[service.serviceId] ? false : { rows: 2 }}
+                                style={{ marginBottom: 8 }}
+                            >
+                                {service.serviceDescription}
+                            </Paragraph>
+
+                            {/* Show matching tools if in search mode */}
+                            {matchingTools && matchingTools.length > 0 && (
+                                <div style={{ marginBottom: 8 }}>
+                                    <Text strong>Matching Tools: </Text>
+                                    {matchingTools.map(tool => (
+                                        <Tag key={tool.toolName} icon={<ToolOutlined />} color="blue">
+                                            {tool.toolName}
+                                        </Tag>
+                                    ))}
+                                </div>
+                            )}
+
+                            {isBuiltinService && service._available_tools && (
+                                <div style={{ marginBottom: 8 }}>
+                                    <Text strong>Available Tools: </Text>
+                                    {service._available_tools.map(toolName => (
+                                        <Tag key={toolName} color="cyan">{toolName}</Tag>
+                                    ))}
+                                </div>
+                            )}
+
+                            {isBuiltinService && service._dependencies_available === false && (
+                                <Alert
+                                    message="Dependencies Required"
+                                    description={
+                                        <div>
+                                            Install with: <code>pip install scapy dpkt</code>
+                                        </div>
+                                    }
+                                    style={{ marginBottom: 8 }}
+                                />
+                            )}
+
+                            {expandedServices[service.serviceId] && (
+                                <div style={{
+                                    marginTop: 12,
+                                    paddingTop: 12,
+                                    borderTop: '1px solid #f0f0f0'
+                                }}>
+                                    <Row gutter={16} style={{ marginBottom: 12 }}>
+                                        {service.downloadCount && (
+                                            <Col span={8}>
+                                                <Statistic
+                                                    title="Downloads"
+                                                    value={service.downloadCount}
+                                                    prefix={<DownloadOutlined />}
+                                                    valueStyle={{ fontSize: '16px' }}
+                                                />
+                                            </Col>
+                                        )}
+                                        {service.starCount && (
+                                            <Col span={8}>
+                                                <Statistic
+                                                    title="Stars"
+                                                    value={service.starCount}
+                                                    prefix={<StarOutlined />}
+                                                    valueStyle={{ fontSize: '16px' }}
+                                                />
+                                            </Col>
+                                        )}
+                                        <Col span={8}>
+                                            <Statistic
+                                                title="Updated"
+                                                value={new Date(service.lastUpdatedAt).toLocaleDateString()}
+                                                prefix={<ClockCircleOutlined />}
+                                                valueStyle={{ fontSize: '14px' }}
+                                            />
+                                        </Col>
+                                    </Row>
+
+                                    {service.author && (
+                                        <div style={{ marginBottom: 8 }}>
+                                            <Text strong>Author: </Text>
+                                            <Text>{service.author}</Text>
+                                        </div>
+                                    )}
+
+                                    {service.provider.availableIn && service.provider.availableIn.length > 1 && (
+                                        <div style={{ marginBottom: 8 }}>
+                                            <Text strong>Available in: </Text>
+                                            {service.provider.availableIn.map(source => (
+                                                <Tag key={source} color="blue">{source}</Tag>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            <div style={{ marginBottom: 8 }}>
+                                {service.tags?.map(tag => (
+                                    <Tag key={tag} color="default">{tag}</Tag>
+                                ))}
+                            </div>
+
+                            <Text type="secondary" style={{ fontSize: '12px', display: 'flex', justifyContent: 'space-between' }}>
+                                <span>ID: {service.serviceId}</span>
+                                {service.version && <span>v{service.version}</span>}
+                            </Text>
+                        </div>
+                    }
+                />
+            </Card>
+        );
     };
 
     const renderServiceCard = (service: MCPService) => {
@@ -1531,7 +1790,7 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                 <TabPane
                     tab={
                         <Space>
-                            <SearchOutlined />
+                            <ToolOutlined />
                             <span>Browse Services</span>
                         </Space>
                     }
@@ -1539,6 +1798,33 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                 >
                     <div ref={browseServicesScrollRef} style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                         {/* Summary Stats Card */}
+                        {(() => {
+                            // Calculate filtered stats
+                            let displayServices = searchQuery && toolSearchResults.length > 0 
+                                ? toolSearchResults.map(result => result.service).filter(s => s.serviceId) as Partial<MCPService>[]
+                                : availableServices;
+
+                            // Apply provider filter to display services
+                            if (selectedProviders.length > 0) {
+                                displayServices = displayServices.filter(s => 
+                                    s.provider && (selectedProviders.includes(s.provider.id) || 
+                                    (s.provider.availableIn && s.provider.availableIn.some(p => selectedProviders.includes(p)))));
+                            }
+
+                            const filteredTotal = displayServices.length;
+                            const isFiltered = filteredTotal !== totalAvailableServices || searchQuery || selectedProviders.length !== providers.length;
+                            
+                            return isFiltered ? (
+                                <Alert
+                                    message={`Showing ${filteredTotal} of ${totalAvailableServices} services`}
+                                    description={searchQuery ? `Search: "${searchQuery}"` : 'Filters applied'}
+                                    type="info"
+                                    style={{ marginBottom: 16 }}
+                                    showIcon
+                                />
+                            ) : null;
+                        })()}
+                        
                         {stats && (
                             <Card
                                 style={{ marginBottom: 16 }}
@@ -1595,6 +1881,26 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
 
                         {/* Filters Card */}
                         <Card size="small" style={{ marginBottom: 16 }}>
+                            <div style={{ marginBottom: 12 }}>
+                                <Text strong>Search & Filter:</Text>
+                                <Search
+                                    placeholder="Search services or describe tools you need (e.g., 'file operations')"
+                                    enterButton="Search"
+                                    size="middle"
+                                    value={searchQuery}
+                                    onChange={(e) => setSearchQuery(e.target.value)}
+                                    onSearch={searchTools}
+                                    loading={loading}
+                                    style={{ marginTop: 4 }}
+                                />
+                                <Text type="secondary" style={{ fontSize: '12px', display: 'block', marginTop: 4 }}>
+                                    Search by name, description, or tool functionality
+                                </Text>
+                            </div>
+                        </Card>
+
+                        {/* Advanced Filters Card */}
+                        <Card size="small" style={{ marginBottom: 16 }}>
                             <Row gutter={16}>
                                 <Col span={24} style={{ marginBottom: 12 }}>
                                     <Space>
@@ -1625,6 +1931,22 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                                             </Space>
                                         </Checkbox>
                                     </Space>
+                                </Col>
+                                <Col span={8}>
+                                    <Text strong>Registries: </Text>
+                                    <Select
+                                        mode="multiple"
+                                        placeholder="Select registries"
+                                        style={{ width: '100%', marginTop: 4 }}
+                                        value={selectedProviders}
+                                        onChange={setSelectedProviders}
+                                    >
+                                        {providers.map(provider => (
+                                            <Option key={provider.id} value={provider.id}>
+                                                {provider.name} {provider.isInternal ? '(Internal)' : ''}
+                                            </Option>
+                                        ))}
+                                    </Select>
                                 </Col>
                                 <Col span={8}>
                                     <Text strong>Sort by: </Text>
@@ -1676,7 +1998,7 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                         <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
                             {loading ? (
                                 <div style={{ textAlign: 'center', padding: '40px' }}>
-                                    <Spin size="large" tip="Loading MCP servers from all registries..." />
+                                    <Spin size="large" tip={searchQuery ? "Searching services..." : "Loading MCP servers from all registries..."} />
                                 </div>
                             ) : availableServices.length === 0 ? (
                                 <Empty
@@ -1686,7 +2008,20 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                             ) : (
                                 (() => {
                                     // Apply filters
-                                    let filtered = availableServices;
+                                    let filtered = searchQuery && toolSearchResults.length > 0 
+                                        ? toolSearchResults.map(result => ({
+                                            ...result.service,
+                                            // Fill in missing fields from full service data
+                                            ...availableServices.find(s => s.serviceId === result.service.serviceId),
+                                            _matchingTools: result.matchingTools // Add matching tools info
+                                        })).filter(s => s.serviceId) as MCPService[]
+                                        : availableServices;
+
+                                    // Filter by selected providers
+                                    if (selectedProviders.length > 0) {
+                                        filtered = filtered.filter(s => selectedProviders.includes(s.provider.id) || 
+                                            (s.provider.availableIn && s.provider.availableIn.some(p => selectedProviders.includes(p))));
+                                    }
 
                                     if (filterSupport !== 'all') {
                                         filtered = filtered.filter(s => s.supportLevel === filterSupport);
@@ -1714,9 +2049,25 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                                     });
 
                                     return (
+                                        <div>
+                                            {searchQuery && (
+                                                <div style={{ marginBottom: 16, padding: '8px 0', borderBottom: '1px solid #f0f0f0' }}>
+                                                    <Text type="secondary">
+                                                        {toolSearchResults.length > 0 
+                                                            ? `Found ${sorted.length} service${sorted.length !== 1 ? 's' : ''} matching "${searchQuery}"`
+                                                            : `Showing ${sorted.length} service${sorted.length !== 1 ? 's' : ''} (no tool matches for "${searchQuery}")`
+                                                        }
+                                                    </Text>
+                                                    {sorted.length !== totalAvailableServices && (
+                                                        <Text type="secondary" style={{ marginLeft: 8 }}>
+                                                            • Filtered from {totalAvailableServices} total
+                                                        </Text>
+                                                    )}
+                                                </div>
+                                            )}
                                         <List
                                             dataSource={sorted}
-                                            renderItem={renderServiceCard}
+                                            renderItem={(service) => renderEnhancedServiceCard(service, searchQuery ? toolSearchResults : [])}
                                             pagination={{
                                                 current: currentPage,
                                                 pageSize: pageSize,
@@ -1735,6 +2086,7 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                                                 }
                                             }}
                                         />
+                                        </div>
                                     );
                                 })()
                             )}
@@ -1771,77 +2123,6 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                                     dataSource={installedServices}
                                     renderItem={renderInstalledService}
                                 />
-                            )}
-                        </div>
-                    </div>
-                </TabPane>
-
-                <TabPane
-                    tab={
-                        <Space>
-                            <ToolOutlined />
-                            <span>Search Tools</span>
-                        </Space>
-                    }
-                    key="search"
-                >
-                    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                        <div style={{ marginBottom: 16 }}>
-                            <div style={{ marginBottom: 12 }}>
-                                <Text strong>Search Providers:</Text>
-                                <Select
-                                    mode="multiple"
-                                    placeholder="Select providers to search"
-                                    style={{ width: '100%', marginTop: 4 }}
-                                    value={selectedProviders}
-                                    onChange={setSelectedProviders}
-                                >
-                                    {providers.map(provider => (
-                                        <Option key={provider.id} value={provider.id}>
-                                            {provider.name} {provider.isInternal ? '(Internal)' : ''}
-                                        </Option>
-                                    ))}
-                                </Select>
-                            </div>
-                            <Search
-                                placeholder="Describe what you want to do (e.g., 'file operations', 'database queries')"
-                                enterButton="Search Tools"
-                                size="large"
-                                value={searchQuery}
-                                onChange={(e) => setSearchQuery(e.target.value)}
-                                onSearch={searchTools}
-                                loading={loading}
-                            />
-                            <Text type="secondary" style={{ fontSize: '12px', display: 'block', marginTop: 4 }}>
-                                Search for MCP servers by describing the tools you need
-                            </Text>
-                        </div>
-
-                        <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
-                            {loading ? (
-                                <div style={{ textAlign: 'center', padding: '40px' }}>
-                                    <Spin size="large" />
-                                </div>
-                            ) : toolSearchResults.length > 0 ? (
-                                <div>
-                                    <div style={{ marginBottom: 16, padding: '8px 0', borderBottom: '1px solid #f0f0f0' }}>
-                                        <Text type="secondary">
-                                            Found {toolSearchResults.length} result{toolSearchResults.length !== 1 ? 's' : ''} for "{searchQuery}"
-                                        </Text>
-                                    </div>
-                                    <List
-                                        dataSource={toolSearchResults}
-                                        renderItem={renderToolSearchResult}
-                                    />
-                                </div>
-                            ) : searchQuery ? (
-                                <div style={{ textAlign: 'center', padding: '40px' }}>
-                                    <Text type="secondary">No tools found for "{searchQuery}"</Text>
-                                </div>
-                            ) : (
-                                <div style={{ textAlign: 'center', padding: '40px' }}>
-                                    <Text type="secondary">Enter a search query to find relevant tools</Text>
-                                </div>
                             )}
                         </div>
                     </div>

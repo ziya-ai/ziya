@@ -1,7 +1,7 @@
 """
 Model configuration and management routes.
 """
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
 import logging
@@ -15,6 +15,8 @@ router = APIRouter(prefix="/api", tags=["models"])
 
 
 class ModelSettingsRequest(BaseModel):
+    model_config = {"extra": "allow"}
+    model_config = {"extra": "allow"}
     temperature: Optional[float] = None
     top_k: Optional[int] = None
     top_p: Optional[float] = None
@@ -45,20 +47,10 @@ async def model_id():
 
 
 @router.post('/set-model')
-async def set_model(model_name: str, endpoint: str):
-    """Set the current model."""
-    try:
-        ModelManager.set_model(model_name, endpoint)
-        logger.info(f"Model changed to {model_name} on {endpoint}")
-        return {
-            "success": True,
-            "model": model_name,
-            "endpoint": endpoint,
-            "model_id": ModelManager.get_model_id()
-        }
-    except Exception as e:
-        logger.error(f"Error setting model: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+async def set_model(request: Request):
+    """Set the current model - forwards to server.py implementation."""
+    from app.server import set_model as server_set_model
+    return await server_set_model(request)
 
 
 @router.get('/model-capabilities')

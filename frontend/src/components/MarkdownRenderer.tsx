@@ -3413,7 +3413,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
     */
 
     useEffect(() => {
-        if (token.lang !== undefined && !prismInstance) {
+        if (token.lang !== undefined) {
             const loadLanguage = async () => {
                 setIsLanguageLoaded(false);
                 try {
@@ -3997,20 +3997,28 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         console.warn('Tool token missing toolName or text:', { hasText: hasText(tokenWithText), toolName: tokenWithText.toolName });
                         return null;
                     }
-                    console.log('🔧 Rendering ToolBlock:', { toolName: tokenWithText.toolName, contentLength: tokenWithText.text?.length, contentPreview: tokenWithText.text?.substring(0, 100) });
+
+                    // Strip tool block fence markers if present in content
+                    let toolContent = tokenWithText.text || '';
+                    const fenceMatch = toolContent.match(/^\n*```tool:[^\n]+\n([\s\S]*?)```\n*$/);
+                    if (fenceMatch) {
+                        toolContent = fenceMatch[1];
+                    }
+
+                    console.log('🔧 Rendering ToolBlock:', { toolName: tokenWithText.toolName, contentLength: toolContent.length, contentPreview: toolContent.substring(0, 100) });
 
                     // Check for security errors in tool output and render them prominently
-                    const isSecurityError = tokenWithText.text && (
-                        tokenWithText.text.includes('🚫 SECURITY BLOCK') ||
-                        tokenWithText.text.includes('Command not allowed') ||
-                        tokenWithText.text.includes('COMMAND BLOCKED') ||
-                        (tokenWithText.text.includes("'error': True") && tokenWithText.text.includes('SECURITY BLOCK'))
+                    const isSecurityError = toolContent && (
+                        toolContent.includes('🚫 SECURITY BLOCK') ||
+                        toolContent.includes('Command not allowed') ||
+                        toolContent.includes('COMMAND BLOCKED') ||
+                        (toolContent.includes("'error': True") && toolContent.includes('SECURITY BLOCK'))
                     );
 
                     if (isSecurityError) {
                         // Extract the actual message from Python dict format
-                        let errorMessage = tokenWithText.text;
-                        const pythonDictMatch = tokenWithText.text.match(/\{'error': True, 'message': "([^"]*(?:\\.[^"]*)*)"/);
+                        let errorMessage = toolContent;
+                        const pythonDictMatch = toolContent.match(/\{'error': True, 'message': "([^"]*(?:\\.[^"]*)*)"/);
                         if (pythonDictMatch) {
                             errorMessage = pythonDictMatch[1].replace(/\\n/g, '\n').replace(/^🚫 SECURITY BLOCK:\s*/, '');
                         }
@@ -4023,27 +4031,17 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     if (tokenWithText.toolName?.startsWith('thinking_')) {
                         return (
                             <ThinkingBlock key={index} isDarkMode={isDarkMode} isStreaming={isStreaming}>
-                                {tokenWithText.text}
-                            </ThinkingBlock>
-                        );
-                    }
-
-                    // Special handling for thinking content
-                    if (tokenWithText.toolName?.startsWith('thinking_')) {
-                        const stepInfo = tokenWithText.toolName.substring(9);
-                        return (
-                            <ThinkingBlock key={index} isDarkMode={isDarkMode} isStreaming={isStreaming}>
-                                {tokenWithText.text}
+                                {toolContent}
                             </ThinkingBlock>
                         );
                     }
 
                     // Only log successful tool rendering when debug logging is enabled
                     if (isDebugLoggingEnabled()) {
-                        debugLog('Successfully rendering tool block:', { toolName: tokenWithText.toolName, contentLength: tokenWithText.text?.length });
+                        debugLog('Successfully rendering tool block:', { toolName: tokenWithText.toolName, contentLength: toolContent.length });
                     }
                     return (
-                        <ToolBlock key={index} toolName={tokenWithText.toolName} content={tokenWithText.text} isDarkMode={isDarkMode} />
+                        <ToolBlock key={index} toolName={tokenWithText.toolName} content={toolContent} isDarkMode={isDarkMode} />
                     );
 
                 case 'd3':

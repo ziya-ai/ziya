@@ -10,9 +10,11 @@ from pydantic import BaseModel
 router = APIRouter()
 
 class FileValidationRequest(BaseModel):
+    model_config = {"extra": "allow"}
     files: List[str]
 
 class FileValidationResponse(BaseModel):
+    model_config = {"extra": "allow"}
     existingFiles: List[str]
     missingFiles: List[str]
 
