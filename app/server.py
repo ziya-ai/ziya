@@ -486,6 +486,26 @@ app.include_router(conversation_router)
 from app.routes.mcp_registry_routes import router as mcp_registry_router
 app.include_router(mcp_registry_router)
 
+# Import and include model routes
+from app.routes.model_routes import router as model_router
+app.include_router(model_router)
+
+# Import and include folder routes
+from app.routes.folder_routes import router as folder_router
+app.include_router(folder_router)
+
+# Import and include token routes
+from app.routes.token_routes import router as token_router
+app.include_router(token_router)
+
+# Import and include diff routes
+from app.routes.diff_routes import router as diff_router
+app.include_router(diff_router)
+
+# Import and include static routes
+from app.routes.static_routes import router as static_router
+app.include_router(static_router)
+
 # Import and include AST routes
 # AST routes already imported and included above
 initialize_ast_if_enabled()
