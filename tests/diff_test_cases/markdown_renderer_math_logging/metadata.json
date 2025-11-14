@@ -1,0 +1,4 @@
+{
+    "description": "Add debug logging for math expression processing to diagnose mathbf rendering issues",
+    "target_file": "MarkdownRenderer.tsx"
+}
