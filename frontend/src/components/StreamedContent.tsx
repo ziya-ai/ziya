@@ -150,42 +150,6 @@ export const StreamedContent: React.FC<{}> = () => {
         }
     }, [currentConversationId]);
 
-    // When new streaming starts (user just sent a message), ensure we scroll to see the new content
-    useEffect(() => {
-        const isCurrentlyStreaming = streamingConversations.has(currentConversationId);
-        const justStartedStreaming = isCurrentlyStreaming && !hasShownContent && !streamedContent;
-
-        // Only reset scroll state when actually starting a new stream
-        if (justStartedStreaming) {
-            console.log('📜 New streaming session started - resetting scroll state and enabling auto-follow');
-            setUserHasScrolled(false); // Critical: Reset user scroll state for new messages
-            
-            const scrollTimeout = setTimeout(() => {
-                const container = document.querySelector('.chat-container') as HTMLElement;
-                if (container) {
-                    if (isTopToBottom) {
-                        // In top-down mode, scroll to actual bottom
-                        container.scrollTo({
-                            top: container.scrollHeight - container.clientHeight,
-                            behavior: 'auto' // Immediate scroll for new messages
-                        });
-                        // Ensure we're at the bottom
-                        requestAnimationFrame(() => {
-                            container.scrollTop = container.scrollHeight;
-                        });
-                    } else {
-                        // In bottom-up mode, scroll to top when new streaming starts
-                        container.scrollTo({ 
-                            top: 0,
-                            behavior: 'smooth'
-                        });
-                    }
-                }
-            }, 200); // Small delay to let content render
-
-            return () => clearTimeout(scrollTimeout);
-        }
-    }, [streamingConversations, currentConversationId, hasShownContent, isTopToBottom, setUserHasScrolled]);
     // Track when we've shown content for this conversation
     useEffect(() => {
         if (hasStreamedContent && !hasShownContent) {
@@ -384,184 +348,6 @@ export const StreamedContent: React.FC<{}> = () => {
             closable
         />
     );
-    // Function to check if user is viewing the "active end" of content (bottom in top-down, top in bottom-up)
-    const isViewingActiveEnd = () => {
-        if (!contentRef.current) return false;
-
-        const container = contentRef.current.closest('.chat-container');
-        if (!container) return true;
-
-        // In bottom-up mode, check if we're viewing the top (where new content appears)
-        if (!isTopToBottom) {
-            // Check if we're near the top of the scroll area
-            return container.scrollTop <= 50; // 50px tolerance from top
-        }
-
-        // In top-down mode, check if we're near the bottom
-        const { scrollTop, scrollHeight, clientHeight } = container;
-        return Math.abs(scrollHeight - scrollTop - clientHeight) <= 50; // 50px tolerance from bottom
-    };
-    
-    const scrollToKeepInView = useCallback(() => {
-            if (!contentRef.current) return;
-
-            // Only auto-scroll if we're currently streaming AND have actual new content
-            if (!streamingConversations.has(currentConversationId)) return;
-
-            // Don't auto-scroll if user has manually scrolled
-            if (userHasScrolled) {
-                return;
-            }
-            
-            // Only scroll if we have actual content (not just "waiting" state)
-            const hasActualContent = streamedContent && streamedContent.trim().length > 0;
-            if (!hasActualContent) return;
-
-            // Check if content has actually changed since last scroll
-            const lastContentLength = (scrollToKeepInView as any).lastContentLength || 0;
-            if (streamedContent.length <= lastContentLength) {
-                return; // No new content to scroll for
-            }
-            (scrollToKeepInView as any).lastContentLength = streamedContent.length;
-
-
-            const container = contentRef.current.closest('.chat-container');
-            if (!container) return;
-
-            if (isTopToBottom) {
-                // In top-down mode, scroll to bottom to follow new content
-                const BOTTOM_THRESHOLD = 50;
-                const { scrollTop, scrollHeight, clientHeight } = container as HTMLElement;
-                const isAtBottom = Math.abs(scrollHeight - scrollTop - clientHeight) < BOTTOM_THRESHOLD;
-
-                if (!isAtBottom) {
-                    console.log('📜 StreamedContent: Auto-scrolling to bottom in top-down mode');
-                    container.scrollTo({
-                        top: scrollHeight - clientHeight, // Correct calculation for bottom
-                        behavior: 'smooth'
-                    });
-                }
-            } else {
-                // In bottom-up mode, scroll to keep the top of the content visible
-                const contentRect = contentRef.current.getBoundingClientRect();
-                const containerRect = container.getBoundingClientRect();
-
-                if (contentRect.top < containerRect.top) {
-                    console.log('📜 StreamedContent: Adjusting scroll in bottom-up mode');
-                    container.scrollBy({
-                        top: contentRect.top - containerRect.top,
-                        behavior: 'smooth'
-                    });
-                }
-            }
-
-            // Update last scroll position
-            lastScrollPositionRef.current = container.scrollTop;
-        }, [currentConversationId, streamingConversations, userHasScrolled, isTopToBottom, streamedContent]);
-
-        // Trigger scroll when streamed content updates
-        useEffect(() => {
-            // Only auto-scroll during active streaming with new content
-            if (!streamingConversations.has(currentConversationId)) return;
-
-            // Don't auto-scroll if we don't have actual content yet
-            const hasActualContent = streamedContent && streamedContent.trim().length > 0;
-            if (!hasActualContent) return;
-
-            // Respect user scroll intent
-            if (userHasScrolled) return;
-            
-            // Use shorter delay to make scrolling more responsive to content updates
-            // but not so short that it interferes with user scrolling
-            const delay = 150; // Consistent delay that allows user scroll gestures to be detected
-
-            const scrollTimeout = setTimeout(() => {
-                // Re-check conditions before auto-scrolling
-                const allowAutoScrollNow = !userHasScrolled;
-                const stillHasContent = streamedContent && streamedContent.trim().length > 0;
-                
-                if (allowAutoScrollNow && stillHasContent && streamingConversations.has(currentConversationId)) {
-                    scrollToKeepInView();
-                }
-            }, delay);
-
-            return () => clearTimeout(scrollTimeout);
-        }, [streamedContent, currentConversationId, streamingConversations, userHasScrolled, scrollToKeepInView]);
-
-        // Enhanced scroll position monitoring for resume-following behavior
-        useEffect(() => {
-            const container = contentRef.current?.closest('.chat-container') as HTMLElement;
-            if (!container) return;
-
-            let scrollCheckInterval: NodeJS.Timeout;
-            let consecutiveAtActiveEndChecks = 0;
-            const ACTIVE_END_THRESHOLD = 100; // Increased threshold to be more forgiving
-            const REQUIRED_CONSECUTIVE_CHECKS = 2;
-            
-            // Only monitor for active streaming, not for static failed content
-            const isActivelyStreaming = streamingConversations.has(currentConversationId);
-            
-            // Only monitor for return to active end if user has scrolled away AND we have content
-            // But not if we're just showing loading indicators or static retry buttons
-            const hasActualContent = streamedContent && streamedContent.trim().length > 0;
-            if (isActivelyStreaming &&
-                userHasScrolled &&
-                hasActualContent) {
-
-                scrollCheckInterval = setInterval(() => {
-                    let isAtActiveEnd = false;
-
-                    if (isTopToBottom) {
-                        // Top-down mode: check if at bottom
-                        const { scrollTop, scrollHeight, clientHeight } = container as HTMLElement;
-                        isAtActiveEnd = Math.abs(scrollHeight - scrollTop - clientHeight) < ACTIVE_END_THRESHOLD;
-                    } else {
-                        // Bottom-up mode: check if at top
-                        isAtActiveEnd = container.scrollTop <= ACTIVE_END_THRESHOLD;
-                    }
-
-                    if (isAtActiveEnd) {
-                        consecutiveAtActiveEndChecks++;
-                        // Only re-enable auto-scroll after consecutive checks to prevent flicker
-                        if (consecutiveAtActiveEndChecks >= REQUIRED_CONSECUTIVE_CHECKS &&
-                            userHasScrolled &&
-                            isActivelyStreaming) {
-                            setUserHasScrolled(false);
-                            clearInterval(scrollCheckInterval);
-                        }
-                    } else {
-                        // Reset counter if user moves away from active end
-                        consecutiveAtActiveEndChecks = 0;
-                    }
-                }, 1200); // Increased interval - less aggressive checking
-            }
-
-            return () => {
-                if (scrollCheckInterval) clearInterval(scrollCheckInterval);
-            };
-        }, [currentConversationId, streamingConversations, userHasScrolled, setUserHasScrolled, isTopToBottom, streamedContent, streamedContentMap]);
-
-        // Clean up streaming state when conversation changes
-        useEffect(() => {
-            // When switching conversations, don't let old streaming state affect new conversation
-            if (!streamingConversations.has(currentConversationId)) {
-                // Reset user scroll state for non-streaming conversations to allow fresh start
-                const wasStreaming = Array.from(streamingConversations).length > 0;
-                if (!wasStreaming) {
-                    // Only reset if no conversations are currently streaming
-                    setUserHasScrolled(false);
-                }
-            }
-        }, [currentConversationId, streamingConversations, setUserHasScrolled]);
-
-        // Update loading state based on streaming status
-        useEffect(() => {
-            if (!isStreaming) {
-                setIsLoading(false);
-            }
-        }, [isStreaming]);
-
-        // Update loading state based on streaming status
 
         // Listen for preserved content events from streaming errors
         useEffect(() => {
@@ -764,53 +550,10 @@ export const StreamedContent: React.FC<{}> = () => {
             };
         }, [isTopToBottom, isStreaming, streamingConversations, currentConversationId]);
 
-        // Set up observer to detect when user is viewing the bottom of content
-        const observerRef = useRef<IntersectionObserver>();
-
-        useEffect(() => {
-            if (!contentRef.current) return;
-
-            if (observerRef.current) {
-                observerRef.current.disconnect();
-            }
-
-            observerRef.current = new IntersectionObserver((entries) => {
-                entries.forEach(entry => {
-                    if (entry.isIntersecting) {
-                        isAutoScrollingRef.current = !userHasScrolled;
-                    } else {
-                        isAutoScrollingRef.current = false;
-                    }
-                });
-            }, { threshold: 0.1, rootMargin: '0px' });
-
-            observerRef.current.observe(contentRef.current);
-
-            return () => {
-                observerRef.current?.disconnect();
-            };
-        }, [currentConversationId, streamingConversations]);
-
         // Add effect to handle conversation switches
         useEffect(() => {
             // Remove scroll event dispatching that was causing layout changes
         }, [currentConversationId, streamedContentMap]);
-
-        // Effect to handle auto-scrolling during streaming
-        useEffect(() => {
-            if (!streamingConversations.has(currentConversationId)) return;
-            // Enable auto-scrolling for the current streaming conversation
-            const shouldAutoScroll = !userHasScrolled && streamingConversations.has(currentConversationId);
-            isAutoScrollingRef.current = shouldAutoScroll;
-
-            console.log('📜 StreamedContent: Auto-scroll state updated', {
-                conversationId: currentConversationId,
-                isStreaming: streamingConversations.has(currentConversationId),
-                userHasScrolled,
-                shouldAutoScroll,
-                contentLength: streamedContent?.length || 0
-            });
-        }, [currentConversationId, streamingConversations, streamedContentMap, userHasScrolled]);
 
         // Update loading state based on streaming status
         useEffect(() => {
@@ -878,7 +621,6 @@ export const StreamedContent: React.FC<{}> = () => {
                         </Suspense>
                     </div>
                 )}
-                <div ref={contentRef} style={{ minHeight: '10px' }} />
                 {/* Loading indicator - shown at bottom in top-down mode, top in bottom-up mode */}
                 {streamingConversations.has(currentConversationId) &&
                     !error && (isLoading || isPendingResponse) && // don't show loading if there's an error
