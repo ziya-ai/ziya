@@ -1551,6 +1551,83 @@ export const vegaLitePlugin: D3RenderPlugin = {
         }
       }
 
+      // Fix bar charts with xOffset where y-axis is hardcoded to one rate field
+      // but the data has multiple rate fields that should be selected based on the xOffset/color field
+      if (vegaSpec.mark && (vegaSpec.mark === 'bar' || vegaSpec.mark.type === 'bar') &&
+        vegaSpec.encoding?.xOffset?.field && vegaSpec.encoding?.y?.field &&
+        vegaSpec.data?.values && Array.isArray(vegaSpec.data.values) && vegaSpec.data.values.length > 0) {
+        
+        const metricField = vegaSpec.encoding.xOffset.field;
+        const currentYField = vegaSpec.encoding.y.field;
+        const firstRow = vegaSpec.data.values[0];
+        
+        // Find all fields in the data that look like rate fields (end with _rate)
+        const rateFields = Object.keys(firstRow).filter(key => 
+          key.endsWith('_rate') && typeof firstRow[key] === 'number'
+        );
+        
+        console.log('🔧 XOFFSET-RATE-FIX: Checking bar chart with xOffset:', {
+          metricField,
+          currentYField,
+          rateFields,
+          hasMultipleRates: rateFields.length > 1
+        });
+        
+        // Only apply fix if:
+        // 1. We have multiple rate fields in the data
+        // 2. The y-axis is currently hardcoded to one of them
+        // 3. The metric field values correspond to the rate field names
+        if (rateFields.length > 1 && rateFields.includes(currentYField)) {
+          // Get unique metric values from the data
+          const metricValues = [...new Set(vegaSpec.data.values.map(d => d[metricField]))].filter(v => v !== null && v !== undefined);
+          
+          // Check if metric values correspond to rate field names
+          // e.g., "Hospitalization" -> "hospitalization_rate", "Mortality" -> "mortality_rate"
+          const metricToFieldMap: { [key: string]: string } = {};
+          metricValues.forEach(metricValue => {
+            const metricKey = String(metricValue);
+            const normalizedMetric = String(metricValue).toLowerCase().replace(/\s+/g, '_');
+            const matchingField = rateFields.find(field => 
+              field.toLowerCase().startsWith(normalizedMetric) || 
+              normalizedMetric.includes(field.replace('_rate', ''))
+            );
+            if (matchingField) {
+              metricToFieldMap[metricKey] = matchingField;
+            }
+          });
+          
+          console.log('🔧 XOFFSET-RATE-FIX: Metric to field mapping:', metricToFieldMap);
+          
+          // If we found mappings for all metrics, apply the fix
+          if (Object.keys(metricToFieldMap).length === metricValues.length && metricValues.length > 1) {
+            console.log('🔧 XOFFSET-RATE-FIX: Applying fix - adding calculate transform to select correct rate field');
+            
+            // Build a conditional expression: datum.metric === 'X' ? datum.x_rate : datum.metric === 'Y' ? datum.y_rate : ...
+            const conditions = metricValues.map((metricValue, idx) => {
+              const metricKey = String(metricValue);
+              const field = metricToFieldMap[metricKey];
+              if (idx === metricValues.length - 1) {
+                // Last condition - no ternary needed
+                return `datum['${field}']`;
+              }
+              return `datum['${metricField}'] === '${metricValue}' ? datum['${field}'] :`;
+            }).join(' ');
+            
+            // Add transform to calculate the correct rate
+            if (!vegaSpec.transform) vegaSpec.transform = [];
+            vegaSpec.transform.push({
+              calculate: conditions,
+              as: 'calculated_rate'
+            });
+            
+            // Update y-axis to use the calculated field
+            vegaSpec.encoding.y.field = 'calculated_rate';
+            
+            console.log('🔧 XOFFSET-RATE-FIX: Updated y-axis to use calculated_rate field');
+          }
+        }
+      }
+
       // Fix 1: Handle shape encoding with null/undefined values
       if (vegaSpec.encoding?.shape) {
         const shapeEncoding = vegaSpec.encoding.shape;
@@ -2485,7 +2562,9 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // Fix bar charts with fold transforms missing y-axis encoding for the 'value' field
       if (vegaSpec.mark && (vegaSpec.mark.type === 'bar' || vegaSpec.mark === 'bar') &&
         vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
-        vegaSpec.encoding && vegaSpec.encoding.x && (!vegaSpec.encoding.y || !vegaSpec.encoding.y.field)) {
+        vegaSpec.encoding && vegaSpec.encoding.x && 
+        (!vegaSpec.encoding.y || !vegaSpec.encoding.y.field) &&
+        !vegaSpec.encoding.xOffset) {  // Don't apply if xOffset is used (different pattern)
         console.log('Fixing bar chart with fold transform missing y-axis encoding for value field');
 
         const foldTransform = vegaSpec.transform.find(t => t.fold);
@@ -2499,8 +2578,12 @@ export const vegaLitePlugin: D3RenderPlugin = {
       }
 
       // Fix for bar charts missing y-axis encoding (common issue with flow/journey charts)
-      if (vegaSpec.mark && (vegaSpec.mark.type === 'bar' || vegaSpec.mark === 'bar') &&
-        vegaSpec.encoding && vegaSpec.encoding.x && !vegaSpec.encoding.y) {
+      if (vegaSpec.mark && (vegaSpec.mark === 'bar' || vegaSpec.mark.type === 'bar') &&
+        vegaSpec.encoding && vegaSpec.encoding.x && !vegaSpec.encoding.y &&
+        !vegaSpec.encoding.xOffset) {  // Don't apply if xOffset is used (different pattern)
+        console.log('Fixing bar chart missing y-axis encoding');
+
+        // Check if we have a calculated flow field or similar categorical field
         console.log('Fixing line chart with y encoding missing field property');
 
         // If there's a fold transform, use the value field from it
@@ -2513,6 +2596,23 @@ export const vegaLitePlugin: D3RenderPlugin = {
           // If there's a calculated field 'y', use that
           vegaSpec.encoding.y.field = 'y';
           console.log('Added y field from calculated field: "y"');
+        }
+        
+        // If no fold transform or calculated field, look for a suitable field in the data
+        if (!vegaSpec.encoding.y?.field && vegaSpec.data?.values && vegaSpec.data.values.length > 0) {
+          const firstRow = vegaSpec.data.values[0];
+          const flowField = vegaSpec.transform?.find(t => t.calculate && t.as)?.as;
+          const categoricalFields = ['flow', 'source', 'target', 'category', 'group'];
+          
+          const yField = flowField || categoricalFields.find(field => firstRow.hasOwnProperty(field));
+          if (yField) {
+            vegaSpec.encoding.y = {
+              field: yField,
+              type: 'nominal',
+              title: yField.charAt(0).toUpperCase() + yField.slice(1)
+            };
+            console.log(`Added y-axis encoding with field: ${yField}`);
+          }
         }
       }
 
@@ -3505,12 +3605,6 @@ export const vegaLitePlugin: D3RenderPlugin = {
         const vegaEmbedDiv = renderContainer.querySelector('.vega-embed') as HTMLElement;
         const vegaSvg = renderContainer.querySelector('svg') as SVGSVGElement;
 
-        console.log('Setting up Vega-Lite specific resizing:', {
-          vegaEmbedDiv: !!vegaEmbedDiv,
-          vegaSvg: !!vegaSvg,
-          renderContainer: renderContainer.getBoundingClientRect(),
-          container: container.getBoundingClientRect()
-        });
 
         if (vegaEmbedDiv || vegaSvg) {
           const targetElement = vegaEmbedDiv || vegaSvg;
