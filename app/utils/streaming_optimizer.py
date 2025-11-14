@@ -24,14 +24,6 @@ class StreamingContentOptimizer:
         # Update code block state
         self._update_code_block_state(content)
         
-        # NEVER flush if buffer ends with partial code block delimiter
-        if self.buffer.rstrip().endswith('```') and not self.buffer.rstrip().endswith('\n```'):
-            # Buffer ends with ``` but not on its own line - might be ```vega-lite coming
-            return
-        if re.search(r'```[a-z]$', self.buffer):
-            # Buffer ends with ```X where X is a single letter - definitely partial
-            return
-        
         # NEVER flush in the middle of a code block
         if self.in_code_block:
             # Only flush if buffer is extremely large (safety valve)
