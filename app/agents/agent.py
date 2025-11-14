@@ -1497,6 +1497,10 @@ ModelManager._state['llm_with_stop'] = llm_with_stop
 
 file_state_manager = FileStateManager()
 
+def escape_backticks_for_llm(text: str) -> str:
+    """Escape backticks to prevent LLM confusion when generating diffs."""
+    return text.replace('`', '\\`')
+
 def get_combined_docs_from_files(files, conversation_id: str = "default") -> str:
     logger.info("=== get_combined_docs_from_files called ===")
     logger.debug(f"🔍 FILES_DEBUG: Called with {len(files)} files: {files[:5]}..." if len(files) > 5 else f"🔍 FILES_DEBUG: Called with files: {files}")
@@ -1539,7 +1543,8 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
                 # Log a preview of the content
                 preview = "\n".join(annotated_lines[:5]) if annotated_lines else "NO CONTENT"
                 logger.debug(f"Content preview for {file_path}:\n{preview}\n...")
-                combined_contents += f"File: {file_path}\n" + "\n".join(annotated_lines) + "\n\n"
+                escaped_lines = [escape_backticks_for_llm(line) for line in annotated_lines]
+                combined_contents += f"File: {file_path}\n" + "\n".join(escaped_lines) + "\n\n"
             else:
                 # Add file directly to FileStateManager when not found
                 logger.debug(f"File {file_path} not in FileStateManager, adding it directly")
@@ -1564,7 +1569,8 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
                     
                     # Get annotated content
                     annotated_lines, success = file_state_manager.get_annotated_content(conversation_id, file_path)
-                    combined_contents += f"File: {file_path}\n" + "\n".join(annotated_lines) + "\n\n"
+                    escaped_lines = [escape_backticks_for_llm(line) for line in annotated_lines]
+                    combined_contents += f"File: {file_path}\n" + "\n".join(escaped_lines) + "\n\n"
         except Exception as e:
             logger.error(f"Error processing {file_path}: {str(e)}")
     
