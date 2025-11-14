@@ -686,7 +686,7 @@ async def update_server_permission(request: ServerPermissionUpdateRequest):
     """Update permission for a specific server."""
     manager = get_permissions_manager()
     manager.update_server_permission(request.server_name, request.permission)
-    return {"success": True, "message": f"Permission for server '{request.server_name}' updated."}
+    return {"success": True, "message": f"Server '{request.server_name}' {request.permission}."}
 
 @router.post("/permissions/tool")
 async def update_tool_permission(request: ToolPermissionUpdateRequest):

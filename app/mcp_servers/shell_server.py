@@ -93,8 +93,90 @@ class ShellServer:
         print(f"Available commands: {available_commands}", file=sys.stderr)
         print(f"Git operations enabled: {self.git_operations_enabled}", file=sys.stderr)
         
+    def _split_by_shell_operators(self, command: str) -> list[tuple[str, str]]:
+        """
+        Split a command by shell operators while preserving the operators.
+        Returns a list of (operator, command) tuples.
+        First tuple has empty operator string.
+        
+        Handles: &&, ||, ;, | (pipe), and command substitution $(...)
+        """
+        segments = []
+        current_segment = ""
+        current_operator = ""
+        i = 0
+        in_single_quote = False
+        in_double_quote = False
+        in_backtick = False
+        paren_depth = 0
+        
+        while i < len(command):
+            char = command[i]
+            next_char = command[i + 1] if i + 1 < len(command) else ''
+            
+            # Handle quotes
+            if char == "'" and not in_double_quote and not in_backtick:
+                in_single_quote = not in_single_quote
+                current_segment += char
+                i += 1
+                continue
+            elif char == '"' and not in_single_quote and not in_backtick:
+                in_double_quote = not in_double_quote
+                current_segment += char
+                i += 1
+                continue
+            elif char == '`' and not in_single_quote and not in_double_quote:
+                in_backtick = not in_backtick
+                current_segment += char
+                i += 1
+                continue
+            
+            # Track command substitution depth $(...) 
+            if not in_single_quote and not in_double_quote and not in_backtick:
+                if char == '$' and next_char == '(':
+                    paren_depth += 1
+                    current_segment += char + next_char
+                    i += 2
+                    continue
+                elif char == ')' and paren_depth > 0:
+                    paren_depth -= 1
+                    current_segment += char
+                    i += 1
+                    continue
+            
+            # Only detect operators outside quotes and command substitutions
+            if not in_single_quote and not in_double_quote and not in_backtick and paren_depth == 0:
+                # Check for two-character operators: &&, ||
+                if char in '&|' and next_char == char:
+                    if current_segment.strip():
+                        segments.append((current_operator, current_segment.strip()))
+                    current_operator = char + next_char
+                    current_segment = ""
+                    i += 2
+                    continue
+                # Check for single-character operators: ; and |
+                elif char in ';|':
+                    if current_segment.strip():
+                        segments.append((current_operator, current_segment.strip()))
+                    current_operator = char
+                    current_segment = ""
+                    i += 1
+                    continue
+            
+            current_segment += char
+            i += 1
+        
+        # Add final segment
+        if current_segment.strip():
+            segments.append((current_operator, current_segment.strip()))
+        
+        return segments
+    
     def is_command_allowed(self, command: str) -> bool:
-        """Check if a command matches any of the allowed patterns."""
+        """
+        Check if a command matches any of the allowed patterns.
+        Also validates all commands in chains (&&, ||, ;, |) and substitutions.
+        """
         if not command or not command.strip():
             return False
         
@@ -103,17 +185,68 @@ class ShellServer:
         # Clean command - remove any output that got included (take only first line)
         command = command.split('\n')[0].strip()
         
+        # Split by shell operators and validate each segment
+        segments = self._split_by_shell_operators(command)
+        
+        if not segments:
+            print(f"Command parsing resulted in no segments", file=sys.stderr)
+            return False
+        
+        print(f"Command split into {len(segments)} segment(s)", file=sys.stderr)
+        
+        # Validate each segment
+        for i, (operator, cmd_segment) in enumerate(segments):
+            if i > 0:
+                print(f"Validating segment {i} after operator '{operator}': '{cmd_segment}'", file=sys.stderr)
+            else:
+                print(f"Validating segment {i}: '{cmd_segment}'", file=sys.stderr)
+            
+            # Check for command substitution in the segment
+            if '$(' in cmd_segment or '`' in cmd_segment:
+                # Extract and validate substituted commands
+                # Pattern for $(...) 
+                substitutions = re.findall(r'\$\(([^)]+)\)', cmd_segment)
+                # Pattern for `...`
+                substitutions.extend(re.findall(r'`([^`]+)`', cmd_segment))
+                
+                for sub_cmd in substitutions:
+                    print(f"Validating command substitution: '{sub_cmd}'", file=sys.stderr)
+                    # Recursively validate substituted commands
+                    if not self.is_command_allowed(sub_cmd):
+                        print(f"Command substitution '{sub_cmd}' is not allowed", file=sys.stderr)
+                        return False
+            
+            # Validate the segment itself
+            segment_allowed = False
+            for pattern_name, pattern in self.safe_command_patterns.items():
+                try:
+                    if re.match(pattern, cmd_segment, re.IGNORECASE):
+                        print(f"Segment '{cmd_segment}' matched pattern '{pattern_name}'", file=sys.stderr)
+                        segment_allowed = True
+                        break
+                except re.error as e:
+                    print(f"Regex error in pattern '{pattern_name}': {e}", file=sys.stderr)
+                    continue
+            
+            if not segment_allowed:
+                print(f"Segment '{cmd_segment}' did not match any allowed patterns", file=sys.stderr)
+                return False
+        
+        # All segments are valid
+        print(f"All {len(segments)} segments validated successfully", file=sys.stderr)
+        return True
+    
+    def _validate_single_command(self, cmd_segment: str) -> bool:
+        """Validate a single command segment against allowed patterns."""
         # Check against all allowed patterns
         for pattern_name, pattern in self.safe_command_patterns.items():
             try:
-                if re.match(pattern, command, re.IGNORECASE):
-                    print(f"Command '{command}' matched pattern '{pattern_name}': {pattern}", file=sys.stderr)
+                if re.match(pattern, cmd_segment, re.IGNORECASE):
                     return True
             except re.error as e:
                 print(f"Regex error in pattern '{pattern_name}': {e}", file=sys.stderr)
                 continue
         
-        print(f"Command '{command}' did not match any allowed patterns", file=sys.stderr)
         return False
 
     def _build_safe_command_patterns(self) -> Dict[str, str]:

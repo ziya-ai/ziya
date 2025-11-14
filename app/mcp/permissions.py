@@ -22,8 +22,8 @@ class MCPPermissionsManager:
         """Get default permissions structure."""
         return {
             "defaults": {
-                "server": "ask",
-                "tool": "ask"
+                "server": "enabled",
+                "tool": "enabled"
             },
             "servers": {}
         }

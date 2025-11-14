@@ -657,10 +657,10 @@ class MCPManager:
             tool_permission = tool_perms.get('permission', permissions.get('defaults', {}).get('tool', 'enabled'))
             
             if tool_permission == 'disabled':
-                logger.warning(f"Tool {internal_tool_name} is disabled by permissions")
+                logger.info(f"Tool {internal_tool_name} is disabled")
                 return {
                     "error": True,
-                    "message": f"Tool '{internal_tool_name}' is disabled. Enable it in MCP Server Settings to use this tool.",
+                    "message": f"Tool '{internal_tool_name}' is currently disabled. You can enable it in MCP Server Settings.",
                     "code": -32001
                 }
         
