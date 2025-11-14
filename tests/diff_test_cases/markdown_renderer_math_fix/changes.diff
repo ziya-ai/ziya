@@ -1,0 +1,55 @@
+diff --git a/frontend/src/components/MarkdownRenderer.tsx b/frontend/src/components/MarkdownRenderer.tsx
+--- a/frontend/src/components/MarkdownRenderer.tsx
++++ b/frontend/src/components/MarkdownRenderer.tsx
+@@ -4243,6 +4243,24 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApp
+                 case 'html':
+                     if (!hasText(tokenWithText)) return null;
+ 
++                    // CRITICAL: Check for math expressions FIRST before any other HTML processing
++                    const htmlContent = tokenWithText.text;
++                    
++                    // Check for KATEX/LATEX math expressions
++                    if (htmlContent.includes('MATH_DISPLAY:')) {
++                        const mathMatch = htmlContent.match(/MATH_DISPLAY:([^<]*)/s);
++                        if (mathMatch) {
++                            console.log('🔍 MATH_DISPLAY extraction:', {
++                                htmlContent: htmlContent.substring(0, 200),
++                                extractedMath: mathMatch[1]
++                            });
++                            return <MathRenderer key={index} math={mathMatch[1]} displayMode={true} />;
++                        }
++                    }
++                    if (htmlContent.includes('MATH_INLINE:')) {
++                        const mathMatch = htmlContent.match(/MATH_INLINE:([^<]*)/s);
++                        if (mathMatch) return <MathRenderer key={index} math={mathMatch[1]} displayMode={false} />;
++                    }
++
+                     // Handle thinking blocks - check for thinking-data tags
+                     if (tokenWithText.text.includes('thinking-wrapper') || tokenWithText.text.match(/<thinking-data>([\s\S]*?)<\/thinking-data>/)) {
+                         console.log('🤔 Detected thinking-data tag in HTML token:', tokenWithText.text.substring(0, 100));
+@@ -4295,24 +4313,6 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApp
+                         return <div key={index} dangerouslySetInnerHTML={{ __html: htmlContent }} />;
+                     }
+ 
+-                    // Check for KATEX/LATEX math expressions
+-                    if (htmlContent.includes('MATH_DISPLAY:')) {
+-                        const mathMatch = htmlContent.match(/MATH_DISPLAY:([^<]*)/s);
+-                        if (mathMatch) {
+-                            console.log('🔍 MATH_DISPLAY extraction:', {
+-                                htmlContent: htmlContent.substring(0, 200),
+-                                extractedMath: mathMatch[1]
+-                            });
+-                            return <MathRenderer key={index} math={mathMatch[1]} displayMode={true} />;
+-                        }
+-                    }
+-                    if (htmlContent.includes('MATH_INLINE:')) {
+-                        const mathMatch = htmlContent.match(/MATH_INLINE:([^<]*)/s);
+-                        if (mathMatch) return <MathRenderer key={index} math={mathMatch[1]} displayMode={false} />;
+-                    }
+-
+-                    if (htmlContent.includes('class="math-inline-span"') && htmlContent.includes('MATH_INLINE:')) {
+-                        const mathMatch = htmlContent.match(/MATH_INLINE:([^<]*)/);
+-                        if (mathMatch) return <MathRenderer key={index} math={mathMatch[1]} displayMode={false} />;
+-                    }
+-
+                     const tagMatches = htmlContent.match(/<\/?([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/g);

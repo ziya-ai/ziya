@@ -1,0 +1,59 @@
+diff --git a/frontend/src/components/MarkdownRenderer.tsx b/frontend/src/components/MarkdownRenderer.tsx
+--- a/frontend/src/components/MarkdownRenderer.tsx
++++ b/frontend/src/components/MarkdownRenderer.tsx
+@@ -4000,9 +4000,6 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApp
+ 
+                     // Strip tool block fence markers if present in content
+                     let toolContent = tokenWithText.text || '';
+-                    // Remove zero-width space escaping from nested code blocks
+-                    toolContent = toolContent.replace(/`​`​`/g, '```');
+-
+                     const fenceMatch = toolContent.match(/^\n*```tool:[^\n]+\n([\s\S]*?)```\n*$/);
+                     if (fenceMatch) {
+                         toolContent = fenceMatch[1];
+@@ -4033,9 +4030,6 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApp
+ 
+                     // Special handling for thinking content
+                     if (tokenWithText.toolName?.startsWith('thinking_')) {
+-                        // Unescape content before passing to ThinkingBlock
+-                        const unescapedContent = toolContent.replace(/`​`​`/g, '```');
+-                        
+                         return (
+                             <ThinkingBlock key={index} isDarkMode={isDarkMode} isStreaming={isStreaming}>
+-                                {unescapedContent}
++                                {toolContent}
+                             </ThinkingBlock>
+                         );
+                     }
+-
+-                    // Unescape content for all tool blocks before rendering
+-                    toolContent = toolContent.replace(/`​`​`/g, '```');
+ 
+                     // Only log successful tool rendering when debug logging is enabled
+@@ -4252,6 +4246,27 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApp
+ 
+                 case 'html':
+                     if (!hasText(tokenWithText)) return null;
++                    
++                    // Check for tool block HTML comments
++                    const toolBlockMatch = tokenWithText.text.match(/<!-- TOOL_BLOCK_START:(mcp_\w+)\|([^-]+) -->\n([\s\S]*?)\n<!-- TOOL_BLOCK_END:\1 -->/);
++                    if (toolBlockMatch) {
++                        const [, toolName, displayHeader, toolContent] = toolBlockMatch;
++                        
++                        // Special handling for thinking tools
++                        if (toolName === 'mcp_sequentialthinking' || toolName.includes('thinking')) {
++                            return (
++                                <ThinkingBlock key={index} isDarkMode={isDarkMode} isStreaming={isStreaming}>
++                                    {toolContent}
++                                </ThinkingBlock>
++                            );
++                        }
++                        
++                        // Regular tool blocks
++                        return (
++                            <ToolBlock key={index} toolName={`${toolName}|${displayHeader}`} content={toolContent} isDarkMode={isDarkMode} />
++                        );
++                    }
+ 
+                     // Handle thinking blocks - check for thinking-data tags
+                     if (tokenWithText.text.includes('thinking-wrapper') || tokenWithText.text.match(/<thinking-data>([\s\S]*?)<\/thinking-data>/)) {

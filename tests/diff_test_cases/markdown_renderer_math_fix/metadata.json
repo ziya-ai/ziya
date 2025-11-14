@@ -1,0 +1,5 @@
+{
+    "target_file": "MarkdownRenderer.tsx",
+    "description": "Fix math expression rendering by checking MATH_DISPLAY/MATH_INLINE before other HTML processing to prevent incorrect handling",
+    "date_added": "2025-01-13"
+}
