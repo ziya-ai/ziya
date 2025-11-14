@@ -32,6 +32,7 @@ setuptools = ">=68.0.0"
 cssutils = ">=2.6.0"
 google-generativeai = ">=0.8.5"
 html5lib = ">=1.1"
+beautifulsoup4 = ">=4.11.0"
 # Document extraction dependencies
 pypdf = ">=3.0.0"
 pdfplumber = "^0.11.0"
