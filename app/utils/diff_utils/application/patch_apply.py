@@ -261,6 +261,13 @@ def apply_diff_with_difflib_hybrid_forced_hunks(
                 if match:
                     logger.info(f"Hunk #{hunk_number}: Exact match found, applying changes")
                     
+                    # Check if we have positional information for pure additions
+                    new_lines_is_addition = hunk.get('new_lines_is_addition', [])
+                    is_pure_addition = len(hunk.get('removed_lines', [])) == 0 and len(hunk.get('added_lines', [])) > 0
+                    
+                    if is_pure_addition and new_lines_is_addition:
+                        logger.info(f"Hunk #{hunk_number}: Pure addition with positional info - {len(new_lines_is_addition)} markers")
+                    
                     # Apply the hunk by replacing the old content with new content
                     # Preserve original line endings
                     new_lines_with_endings = []
@@ -813,20 +820,32 @@ def apply_diff_with_difflib_hybrid_forced(
                                             end_remove_pos = insertion_point
                                             insert_pos = insertion_point
                                         
-                                        # Only insert the added lines, not the entire context
-                                        new_lines_content = h.get('added_lines', [])
-                                        new_lines_with_endings = []
-                                        for line in new_lines_content:
-                                            new_lines_with_endings.append(line + dominant_ending)
+                                        # Check if we have positional information for pure additions
+                                        new_lines_is_addition = h.get('new_lines_is_addition', [])
+                                        
+                                        if new_lines_is_addition and len(new_lines_is_addition) == len(h['new_lines']):
+                                            # Use new_lines with positional info - replace old_block with new_lines
+                                            new_lines_with_endings = [line + dominant_ending for line in h['new_lines']]
+                                            # Adjust to replace the old_block region
+                                            actual_remove_count = len(h['old_block'])
+                                            insert_pos = insertion_point - len(h['old_block']) + 1
+                                            end_remove_pos = insertion_point + 1
+                                            logger.info(f"Hunk #{hunk_idx}: Using new_lines_is_addition for insertion - replacing {actual_remove_count} lines with {len(new_lines_with_endings)} lines")
+                                        else:
+                                            # Fallback: Only insert the added lines, not the entire context
+                                            new_lines_content = h.get('added_lines', [])
+                                            new_lines_with_endings = []
+                                            for line in new_lines_content:
+                                                new_lines_with_endings.append(line + dominant_ending)
+                                            logger.info(f"Hunk #{hunk_idx}: Using added_lines for insertion - inserting {len(new_lines_content)} lines")
                                         
                                         found_match = True
-                                        logger.info(f"Hunk #{hunk_idx}: Using corrected insertion logic for pure addition - inserting {len(new_lines_content)} lines")
                                         
                                         # Skip duplicate detection for corrected pure insertions
                                         skip_duplicate_check = True
                                         
                                         # Apply the insertion immediately to avoid further processing
-                                        logger.debug(f"Hunk #{hunk_idx}: Replacing/inserting at position {insert_pos}:{end_remove_pos} with: {new_lines_content}")
+                                        logger.debug(f"Hunk #{hunk_idx}: Replacing/inserting at position {insert_pos}:{end_remove_pos}")
                                         final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
                                         verify_line_delta(hunk_idx, h, insert_pos, end_remove_pos, len(new_lines_with_endings))
                                         logger.info(f"Hunk #{hunk_idx}: Successfully applied corrected pure insertion")
@@ -942,18 +961,28 @@ def apply_diff_with_difflib_hybrid_forced(
             
             logger.debug(f"Hunk #{hunk_idx}: Pure addition with malformed line numbers - inserting at end of file")
         elif len(h['removed_lines']) == 0 and len(h['added_lines']) > 0:
-            # For pure additions where context is found, only insert the added lines
-            # Don't remove/replace the context lines
-            added_lines_only = h['added_lines']
+            print(f"DEBUG: Hunk #{hunk_idx} INSIDE pure addition if block")
+            # For pure additions, use new_lines with is_addition tracking to preserve position
+            new_lines_is_addition = h.get('new_lines_is_addition', [])
             
-            new_lines_with_endings = []
-            for line in added_lines_only:
-                new_lines_with_endings.append(line + dominant_ending)
-            
-            # Insert after the context (at the end of old_block)
-            actual_remove_count = 0  # Don't remove any lines
-            insert_pos = remove_pos + len(h['old_block'])
-            end_remove_pos = insert_pos
+            if new_lines_is_addition and len(new_lines_is_addition) == len(h['new_lines']):
+                # Use positional information: replace old_block with new_lines (which has additions in correct positions)
+                print(f"DEBUG: Hunk #{hunk_idx} using new_lines: {len(h['new_lines'])} lines, replacing {len(h['old_block'])} at pos {remove_pos}")
+                new_lines_with_endings = [line + dominant_ending for line in h['new_lines']]
+                
+                # Replace the entire old_block region
+                actual_remove_count = len(h['old_block'])
+                insert_pos = remove_pos
+                end_remove_pos = remove_pos + actual_remove_count
+            else:
+                # Fallback: only insert the added lines (old behavior)
+                added_lines_only = h['added_lines']
+                new_lines_with_endings = [line + dominant_ending for line in added_lines_only]
+                
+                # Insert after the context (at the end of old_block)
+                actual_remove_count = 0  # Don't remove any lines
+                insert_pos = remove_pos + len(h['old_block'])
+                end_remove_pos = insert_pos
             
             # Check for duplicate content before skipping duplicate check
             added_lines_only = h.get('added_lines', [])
@@ -1369,9 +1398,17 @@ def apply_diff_with_difflib_hybrid_forced(
                 else:
                     logger.info(f"Hunk #{hunk_idx}: Skipping surgical application for pure addition/deletion, using standard approach")
                     # Use standard application for pure additions/deletions
-                    new_lines_with_endings = []
-                    for line in new_lines_content:
-                        new_lines_with_endings.append(line + dominant_ending)
+                    # Don't reconstruct if we already set it in the pure addition block
+                    is_pure_addition = len(h.get('removed_lines', [])) == 0 and len(h.get('added_lines', [])) > 0
+                    print(f"DEBUG: Hunk #{hunk_idx} is_pure_addition={is_pure_addition}, new_lines_with_endings len={len(new_lines_with_endings)}")
+                    if not is_pure_addition or len(new_lines_with_endings) == 0:
+                        print(f"DEBUG: Hunk #{hunk_idx} RECONSTRUCTING new_lines_with_endings")
+                        new_lines_with_endings = []
+                        for line in new_lines_content:
+                            new_lines_with_endings.append(line + dominant_ending)
+                    else:
+                        print(f"DEBUG: Hunk #{hunk_idx} KEEPING existing new_lines_with_endings")
+                    print(f"DEBUG: Hunk #{hunk_idx} about to apply {len(new_lines_with_endings)} lines at {insert_pos}:{end_remove_pos}")
                     final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
                     verify_line_delta(hunk_idx, h, insert_pos, end_remove_pos, len(new_lines_with_endings))
             else:
