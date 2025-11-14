@@ -921,6 +921,14 @@ class DiffRegressionTest(unittest.TestCase):
         """
         self.run_diff_test('mcp_registry_builtin_handling')
 
+    def test_markdown_renderer_math_fix(self):
+        """Test fixing math expression rendering by moving MATH_DISPLAY/MATH_INLINE checks before other HTML processing"""
+        self.run_diff_test('markdown_renderer_math_fix')
+
+    def test_markdown_renderer_math_logging(self):
+        """Test adding debug logging for math expression processing"""
+        self.run_diff_test('markdown_renderer_math_logging')
+
 
 # Dynamically generate test methods for all test case directories
 # This allows -k filtering to work without hardcoding every test

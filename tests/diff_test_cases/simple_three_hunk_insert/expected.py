@@ -62,12 +62,6 @@ class StreamingMiddleware(BaseHTTPMiddleware):
             async for chunk in original_iterator:
                 # Log chunk info for debugging
                 logger.info("=== AGENT astream received chunk ===")
-                logger.info(f"Chunk type: {type(chunk)}")
-                
-                # Process the chunk
-                try:
-                    # Handle AIMessageChunk objects
-                    if isinstance(chunk, AIMessageChunk):
             logger.info(f"Chunk type: {type(chunk)}")
             
             try:
@@ -79,11 +73,6 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                 # Handle AIMessageChunk objects
                 if isinstance(chunk, AIMessageChunk):
                         logger.info("Processing AIMessageChunk")
-                        content = chunk.content
-                        yield f"data: {content}\n\n"
-                        continue
-                    
-                    # Handle None chunks
                     content = chunk.content
                     
                     # Check if content is an error message

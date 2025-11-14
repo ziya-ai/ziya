@@ -1,0 +1,34 @@
+diff --git a/frontend/src/components/MarkdownRenderer.tsx b/frontend/src/components/MarkdownRenderer.tsx
+--- a/frontend/src/components/MarkdownRenderer.tsx
++++ b/frontend/src/components/MarkdownRenderer.tsx
+@@ -4776,9 +4776,14 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdo
+                         // In math blocks, only unescape quotes, not backslashes
+                         return segment;
+                     }
+ 
++                    console.log('📐 Processing math in segment:', {
++                        segmentPreview: segment.substring(0, 100),
++                        hasMathbf: segment.includes('mathbf'),
++                        hasDisplayMath: segment.includes('$$')
++                    });
++
+                     // Process math only in non-code segments
+                     let processed = segment;
+ 
+                     try {
+@@ -4789,8 +4794,13 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdo
+                         }
+ 
+                         // Handle display math $$...$$
++                        const beforeReplace = processed;
+                         processed = processed.replace(
+                             /\$\$([\s\S]+?)\$\$/g,
+-                            '\n<div class="math-display-block">MATH_DISPLAY:$1</div>\n'
++                            (match, captured) => {
++                                console.log('📐 DISPLAY MATH REPLACEMENT:', { match: match.substring(0, 100), captured: captured.substring(0, 100), hasMathbf: captured.includes('mathbf') });
++                                return '\n<div class="math-display-block">MATH_DISPLAY:' + captured + '</div>\n';
++                            }
+                         );
++                        console.log('📐 After display math replace:', { changed: beforeReplace !== processed, processedPreview: processed.substring(0, 200) });
+ 
+                         // Handle inline math $...$
