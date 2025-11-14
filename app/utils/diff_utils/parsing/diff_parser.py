@@ -10,6 +10,10 @@ from app.utils.logging_utils import logger
 from ..core.exceptions import PatchApplicationError
 from ..core.utils import normalize_escapes
 
+def unescape_backticks_from_llm(text: str) -> str:
+    """Unescape backticks that were escaped for LLM context."""
+    return text.replace('\\`', '`')
+
 def extract_target_file_from_diff(diff_content: str) -> Optional[str]:
     """
     Extract the target file path from a git diff.
@@ -139,6 +143,9 @@ def parse_unified_diff(diff_content: str) -> List[Dict[str, Any]]:
     """
     if not diff_content:
         return []
+    
+    # Unescape backticks that were escaped for LLM context
+    diff_content = unescape_backticks_from_llm(diff_content)
         
     hunks = []
     current_hunk = None
@@ -202,6 +209,9 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
     Returns:
         A list of dictionaries representing hunks
     """
+    # Unescape backticks that were escaped for LLM context
+    diff_content = unescape_backticks_from_llm(diff_content)
+    
     logger.debug(f"parse_unified_diff_exact_plus input diff first 10 lines:\n{diff_content.splitlines()[:10]}")
     lines = diff_content.splitlines()
     logger.debug(f"Parsing diff with {len(lines)} lines:\n{diff_content}")
@@ -274,6 +284,7 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
                     'old_block': [],
                     'original_hunk': hunk_num,  # Store original hunk number
                     'new_lines': [],
+                    'new_lines_is_addition': [],  # Track which new_lines are additions
                     'old_lines': old_count,     # Store old line count for patch application
                     'removed_lines': [],        # Track removed lines
                     'added_lines': [],          # Track added lines
@@ -312,6 +323,7 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
                         current_hunk['lines'].append(line)
                         # Empty lines are context lines (should be in both old and new)
                         current_hunk['new_lines'].append('')
+                        current_hunk['new_lines_is_addition'].append(False)
                         current_hunk['old_block'].append('')
                     i += 1
                     continue
@@ -335,10 +347,12 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
                 elif line.startswith('+'):
                     text = line[1:].rstrip('\r\n')
                     current_hunk['new_lines'].append(text)
+                    current_hunk['new_lines_is_addition'].append(True)
                     current_hunk['added_lines'].append(text)  # Store without prefix
                 elif line.startswith(' '):
                     text = line[1:].rstrip('\r\n')
                     current_hunk['new_lines'].append(text)
+                    current_hunk['new_lines_is_addition'].append(False)
                     current_hunk['old_block'].append(text)
                 elif line.startswith('\\'):
                     # Handle "No newline at end of file" marker

@@ -261,10 +261,28 @@ def detect_malformed_state(file_lines: List[str], hunk: Dict[str, Any]) -> bool:
             return True
         
         # Malformed pattern 3: new content exists but old doesn't (trying to add existing content)
-        # Be more lenient for very short changes (≤2 lines)
+        # Only flag as malformed if the new content exists NEAR the expected hunk location
+        # If it exists far away, it's likely just a common pattern (like a variable name)
         if new_content_exists_normalized and not old_content_exists_normalized:
+            # Be more lenient for very short changes (≤2 lines) - likely common patterns
             if len(added_lines) <= 2 and len(removed_lines) <= 2:
                 return False  # Don't flag short changes as malformed
+            
+            # Check proximity: if new content exists far from the hunk location, it's not malformed
+            new_pos = file_content_normalized.find(added_content_normalized)
+            if new_pos >= 0:
+                # Estimate hunk position in normalized content
+                # Use the hunk's old_start line number as a rough guide
+                old_start = hunk.get('old_start', 0)
+                # Convert line number to character position (rough estimate)
+                estimated_pos = sum(len(line) + 1 for line in file_lines[:old_start-1]) if old_start > 0 else 0
+                distance = abs(new_pos - estimated_pos)
+                max_proximity = len(added_content_normalized) * 10  # More lenient than pattern 1/2
+                
+                if distance > max_proximity:
+                    logger.debug(f"New content exists but far from hunk location (distance: {distance}, max: {max_proximity}) - likely common pattern, not malformed")
+                    return False
+            
             return True
     
     # 2. Pure removals: Don't flag as malformed - let the difflib stage handle it
