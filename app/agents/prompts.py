@@ -74,6 +74,8 @@ context about the evolution of the code during our discussion.
  Skip single-line changes that differ only in non-functional whitespace
  Only include whitespace changes that affect functionality (e.g., Python indentation)
 
+NOTE: Backticks in code context are escaped as \` to prevent parsing issues. When generating diffs, preserve this escaping exactly as shown.
+
 IMPORTANT: When recommending code changes, format your response as a standard Git diff format unless the user specifies otherwise. 
 Follow these strict guidelines for diff formatting:
 
