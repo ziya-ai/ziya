@@ -466,27 +466,35 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                     ? Math.round((disabledTokens / total_tool_tokens) * 100)
                                     : 0;
                                 
-                                const grandTotal = total_tool_tokens + instructions.per_model_cost;
+                                // Use enabled_tool_tokens for the grand total, not total_tool_tokens
+                                const grandTotal = enabled_tool_tokens + instructions.per_model_cost;
                                 
                                 return (
                                     <Alert
-                                        message="Total Context Token Usage"
+                                        message={
+                                            <span>
+                                                Total Context Token Usage
+                                                {disabledTokens > 0 && (
+                                                    <span style={{ fontSize: '12px', marginLeft: '8px', opacity: 0.7 }}>
+                                                        (saving {formatTokenCount(disabledTokens)} tokens)
+                                                    </span>
+                                                )}
+                                            </span>
+                                        }
                                         description={
                                             <div>
                                                 <div style={{ fontSize: '20px', fontWeight: 'bold', marginBottom: '8px' }}>
                                                     {formatTokenCount(grandTotal)} <span style={{ fontSize: '14px', fontWeight: 'normal', opacity: 0.7 }}>tokens</span>
                                                 </div>
                                                 <div style={{ fontSize: '12px', opacity: 0.7 }}>
-                                                    <div>🔧 MCP Tools: <strong>{formatTokenCount(total_tool_tokens)}</strong> tokens (from {Object.keys(status.token_costs.servers).length} servers)</div>
-                                                    <div>📋 Instructions: <strong>{formatTokenCount(instructions.per_model_cost)}</strong> tokens (for current model)</div>
-                                                    {disabledTokens > 0 && (
-                                                        <div style={{ color: '#52c41a', marginTop: '4px' }}>
-                                                            💾 Saving: <strong>{formatTokenCount(disabledTokens)}</strong> tokens 
-                                                            <span style={{ opacity: 0.8 }}>
-                                                                {' '}({savingsPercent}% of tools disabled)
+                                                    <div>🔧 MCP Tools: <strong>{formatTokenCount(enabled_tool_tokens)}</strong> tokens 
+                                                        {disabledTokens > 0 && (
+                                                            <span style={{ opacity: 0.7 }}>
+                                                                {' '}({formatTokenCount(total_tool_tokens)} total, {formatTokenCount(disabledTokens)} disabled)
                                                             </span>
-                                                        </div>
-                                                    )}
+                                                        )}
+                                                    </div>
+                                                    <div>📋 Instructions: <strong>{formatTokenCount(instructions.per_model_cost)}</strong> tokens (for current model)</div>
                                                 </div>
                                             </div>
                                         }
@@ -527,11 +535,11 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                         <div style={{ marginBottom: 16 }}>
                             <Alert
                                 type="success"
-                                message="Context Optimization"
+                                message="Tool Management"
                                 description={
                                     <div>
-                                        Disabled tools are <strong>completely removed from the AI's context window</strong>, saving tokens and improving response quality. 
-                                        Only enabled tools appear in the system prompt.
+                                        Disabled tools are <strong>removed from the AI's context</strong>, saving tokens. 
+                                        Only enabled tools are available to the AI agent.
                                     </div>
                                 }
                                 showIcon
@@ -759,19 +767,35 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                     );
                                                 })()}
                                             </Descriptions.Item>
-                                            <Descriptions.Item label="Server Permissions">
-                                                <Select value={serverPermission} style={{ width: 120 }} onChange={(value) => updateServerPermission(name, value)}>
-                                                    <Option value="enabled">Enabled</Option>
-                                                    <Option value="disabled">Disabled</Option>
-                                                    <Option value="ask">Ask</Option>
-                                                </Select>
-                                            </Descriptions.Item>
                                             {status.token_costs?.servers[name] && (
                                                 <Descriptions.Item label="Context Cost">
-                                                    <Tag color={isEnabled && server.connected ? undefined : 'default'}
-                                                         style={isEnabled && server.connected ? {} : { opacity: 0.5 }}>
-                                                        {formatTokenCount(status.token_costs.servers[name])} tokens
-                                                    </Tag>
+                                                    {(() => {
+                                                        const totalTokens = status.token_costs.servers[name];
+                                                        const serverPerms = permissions?.servers?.[name] || {};
+                                                        const toolPerms = serverPerms.tools || {};
+                                                        
+                                                        const disabledToolCount = Object.values(toolPerms).filter(
+                                                            (p: any) => p?.permission === 'disabled'
+                                                        ).length;
+                                                        
+                                                        const enabledRatio = server.tools > 0 ? (server.tools - disabledToolCount) / server.tools : 1;
+                                                        const enabledTokens = Math.round(totalTokens * enabledRatio);
+                                                        const disabledTokens = totalTokens - enabledTokens;
+                                                        
+                                                        return (
+                                                            <span>
+                                                                <Tag color={isEnabled && server.connected ? 'blue' : 'default'}
+                                                                     style={isEnabled && server.connected ? {} : { opacity: 0.5 }}>
+                                                                    {formatTokenCount(enabledTokens)} tokens active
+                                                                </Tag>
+                                                                {disabledTokens > 0 && (
+                                                                    <Tag color="default" style={{ opacity: 0.6 }}>
+                                                                        {formatTokenCount(disabledTokens)} tokens saved
+                                                                    </Tag>
+                                                                )}
+                                                            </span>
+                                                        );
+                                                    })()}
                                                 </Descriptions.Item>
                                             )}
                                             {!isEnabled && status.server_configs?.[name]?.registry_provider && (

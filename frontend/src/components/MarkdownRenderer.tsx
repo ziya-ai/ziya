@@ -130,10 +130,10 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
     const [actualToolName, encodedCommand] = toolName.includes('|')
         ? toolName.split('|', 2)
         : [toolName, ''];
-    
+
     // Define cleanToolName early for use in header
     const cleanToolName = actualToolName.replace('mcp_', '').replace(/_/g, ' ');
-    
+
     // Extract query from content if this is internalsearch
     const isInternalSearch = actualToolName === 'mcp_InternalSearch';
     const queryMatch = isInternalSearch && content.match(/Query:\s*"([^"]+)"/);
@@ -170,16 +170,16 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
         if (encodedCommand) {
             // Check if it's a shell command
             if (encodedCommand.includes(': $ ')) {
-            return `🔧 ${encodedCommand}`;
-        }
-        // Check if it's a search query
-        if (searchQuery) {
-            return `🔍 ${cleanToolName}: "${searchQuery}"`;
-        }
-        // Check if it's a search query from encoded command
-        if (encodedCommand.includes(': "')) {
-            return `🔍 ${encodedCommand}`;
-        }
+                return `🔧 ${encodedCommand}`;
+            }
+            // Check if it's a search query
+            if (searchQuery) {
+                return `🔍 ${cleanToolName}: "${searchQuery}"`;
+            }
+            // Check if it's a search query from encoded command
+            if (encodedCommand.includes(': "')) {
+                return `🔍 ${encodedCommand}`;
+            }
             // Check if it's multiple parameters
             if (encodedCommand.endsWith(': multiple')) {
                 return `🛠️ ${encodedCommand}`;
@@ -4159,10 +4159,10 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     // Check if any paragraph content has inline math
                     const paragraphContent = pTokens.map(t => (t as TokenWithText).text || '').join('');
                     if (paragraphContent.includes('⟨MATH_INLINE:')) {
-                        const parts = paragraphContent.split(/(⟨MATH_INLINE:[^⟩]*⟩)/);
+                        const parts = paragraphContent.split(/(⟨MATH_INLINE:[\s\S]*?⟩)/);
                         return <p key={index}>{parts.map((part, i) => {
                             if (part.startsWith('⟨MATH_INLINE:')) {
-                                const math = part.replace('⟨MATH_INLINE:', '').replace('⟩', '').trim();
+                                const math = part.slice('⟨MATH_INLINE:'.length, -1).trim();
                                 return <MathRenderer key={i} math={math} displayMode={false} />;
                             }
                             return part || null;
@@ -4243,6 +4243,26 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'html':
                     if (!hasText(tokenWithText)) return null;
 
+                    // Check for tool block HTML comments
+                    const toolBlockMatch = tokenWithText.text.match(/<!-- TOOL_BLOCK_START:(mcp_\w+)\|([^-]+) -->\n([\s\S]*?)\n<!-- TOOL_BLOCK_END:\1 -->/);
+                    if (toolBlockMatch) {
+                        const [, toolName, displayHeader, toolContent] = toolBlockMatch;
+
+                        // Special handling for thinking tools
+                        if (toolName === 'mcp_sequentialthinking' || toolName.includes('thinking')) {
+                            return (
+                                <ThinkingBlock key={index} isDarkMode={isDarkMode} isStreaming={isStreaming}>
+                                    {toolContent}
+                                </ThinkingBlock>
+                            );
+                        }
+
+                        // Regular tool blocks
+                        return (
+                            <ToolBlock key={index} toolName={`${toolName}|${displayHeader}`} content={toolContent} isDarkMode={isDarkMode} />
+                        );
+                    }
+
                     // Handle thinking blocks - check for thinking-data tags
                     if (tokenWithText.text.includes('thinking-wrapper') || tokenWithText.text.match(/<thinking-data>([\s\S]*?)<\/thinking-data>/)) {
                         console.log('🤔 Detected thinking-data tag in HTML token:', tokenWithText.text.substring(0, 100));
@@ -4271,21 +4291,41 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                     ];
 
-                    // Check if the HTML content contains only known tags
                     const htmlContent = tokenWithText.text;
+
+                    // Check for angle-bracketed math markers first
+                    if (htmlContent.includes('⟨MATH_INLINE:')) {
+                        const parts = htmlContent.split(/(⟨MATH_INLINE:[\s\S]*?⟩)/);
+                        return (
+                            <React.Fragment key={index}>
+                                {parts.map((part, i) => {
+                                    if (part.startsWith('⟨MATH_INLINE:')) {
+                                        const math = part.slice('⟨MATH_INLINE:'.length, -1).trim();
+                                        return <MathRenderer key={i} math={math} displayMode={false} />;
+                                    }
+                                    return part || null;
+                                })}
+                            </React.Fragment>
+                        );
+                    }
 
                     // Check if this is a MathML element and render it inline
                     if (htmlContent.match(/^<(math|mi|mo|mn|mrow|mfrac|msup|msub|msubsup|msqrt|mroot)/)) {
-                        const mathWithNamespace = htmlContent.includes('xmlns=')
-                            ? htmlContent
-                            : htmlContent.replace('<math', '<math xmlns="http://www.w3.org/1998/Math/MathML"');
-                        return <span key={index} dangerouslySetInnerHTML={{ __html: mathWithNamespace }} />;
+                        try {
+                            const mathWithNamespace = htmlContent.includes('xmlns=')
+                                ? htmlContent
+                                : htmlContent.replace('<math', '<math xmlns="http://www.w3.org/1998/Math/MathML"');
+                            return <span key={index} dangerouslySetInnerHTML={{ __html: mathWithNamespace }} />;
+                        } catch (error) {
+                            console.error('MathML rendering error:', error);
+                            return <span key={index}>{htmlContent}</span>;
+                        }
                     }
 
                     // Detect throttling/rate limit messages and render them directly
                     // These contain interactive retry buttons that must not be escaped
                     const isThrottlingMessage = htmlContent.includes('throttle-retry-button') ||
-                                               (htmlContent.includes('Rate Limit') && htmlContent.includes('<button'));
+                        (htmlContent.includes('Rate Limit') && htmlContent.includes('<button'));
                     if (isThrottlingMessage) {
                         return <div key={index} dangerouslySetInnerHTML={{ __html: htmlContent }} />;
                     }
@@ -4330,6 +4370,27 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'text':
                     if (!hasText(tokenWithText)) return null;
                     let decodedText = decodeHtmlEntities(tokenWithText.text);
+                    
+                    // Check for encoded tool blocks
+                    const toolBlockMatch = decodedText.match(/⟨TOOL:(mcp_\w+)\|([^|]+)\|([^⟩]+)⟩/);
+                    if (toolBlockMatch) {
+                        const [, toolName, displayHeader, encodedContent] = toolBlockMatch;
+                        
+                        // Decode the content
+                        let toolContent;
+                        try {
+                            toolContent = encodedContent === 'LOADING' ? '⏳ Running...' : 
+                                decodeURIComponent(escape(atob(encodedContent)));
+                        } catch (e) {
+                            console.error('Failed to decode tool content:', e);
+                            toolContent = 'Error decoding tool content';
+                        }
+                        
+                        // Render as ThinkingBlock or ToolBlock
+                        return toolName === 'mcp_sequentialthinking' || toolName.includes('thinking') ?
+                            <ThinkingBlock key={index} isDarkMode={isDarkMode} isStreaming={isStreaming}>{toolContent}</ThinkingBlock> :
+                            <ToolBlock key={index} toolName={`${toolName}|${displayHeader}`} content={toolContent} isDarkMode={isDarkMode} />;
+                    }
 
                     // Handle thinking block tokens
                     if (decodedText.startsWith('THINKING_MARKER')) {
@@ -4339,14 +4400,12 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                     // Handle math expressions in text tokens
                     if (decodedText.includes('⟨MATH_INLINE:')) {
-                        // const mathMatch = decodedText.match(/MATH_DISPLAY:([^<]*)/s);
-                        // if (mathMatch) return <MathRenderer key={index} math={mathMatch[1]} displayMode={true} />;
-                        const parts = decodedText.split(/(⟨MATH_INLINE:[^⟩]*⟩)/);
+                        const parts = decodedText.split(/(⟨MATH_INLINE:[\s\S]*?⟩)/);
                         return (
                             <>
                                 {parts.map((part, i) => {
                                     if (part.startsWith('⟨MATH_INLINE:')) {
-                                        const math = part.replace('⟨MATH_INLINE:', '').replace('⟩', '').trim();
+                                        const math = part.slice('⟨MATH_INLINE:'.length, -1).trim();
                                         return <MathRenderer key={i} math={math} displayMode={false} />;
                                     }
                                     return part || null;
@@ -4749,13 +4808,15 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 // Skip processing for content containing tool sentinels or template variables
                 // TODO: Get actual sentinel values from backend instead of hardcoding
                 processedMarkdown.includes('<TOOL_SENTINEL>') ||
-                processedMarkdown.includes('</TOOL_SENTINEL>') ||
-                /\{[A-Z_][A-Z_0-9]*\}/g.test(processedMarkdown);
+                processedMarkdown.includes('</TOOL_SENTINEL>');
+
+            // Check for template variables separately, but exclude LaTeX commands
+            const hasTemplateVars = !processedMarkdown.includes('\\') && /\{[A-Z_][A-Z_0-9]*\}/g.test(processedMarkdown);
 
             const hasCodeBlocks = processedMarkdown.includes('```');
 
             // Only process math expressions if this doesn't look like a diff
-            if (!isDiff) {
+            if (!isDiff && !hasTemplateVars) {
                 try {
                     // Split the markdown into code blocks and non-code blocks
                     const segments = processedMarkdown.split(/(```[\s\S]*?```)/g);
@@ -4779,7 +4840,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
                             // Handle inline math $...$
                             processed = processed.replace(
-                                /\$([^⟩$\n]+?)\$/g,
+                                /\$([^$\n]+?)\$/g,
                                 (match, p1) => {
                                     // Skip processing if this looks like a regex replacement ($1, $2, etc.)
                                     if (/^\d+$/.test(p1.trim())) {
@@ -4868,27 +4929,27 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     }, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender, forceRenderKey]); // Use forceRenderKey to trigger re-renders
 
     // Attach event listeners to throttle retry buttons after render
-    const { currentConversationId, currentMessages, addMessageToConversation, streamedContentMap, 
-            setStreamedContentMap, setIsStreaming, removeStreamingConversation, streamingConversations, 
-            updateProcessingState, addStreamingConversation } = useChatContext();
+    const { currentConversationId, currentMessages, addMessageToConversation, streamedContentMap,
+        setStreamedContentMap, setIsStreaming, removeStreamingConversation, streamingConversations,
+        updateProcessingState, addStreamingConversation } = useChatContext();
     const { checkedKeys } = useFolderContext();
-    
+
     // Track attached handlers to prevent duplicates
     const attachedHandlersRef = useRef<Set<Element>>(new Set());
-    
+
     // Setup MutationObserver to watch for dynamically added throttle buttons
     useLayoutEffect(() => {
         if (!containerRef.current) return;
-        
+
         // Separate function to attach handler with proper closure
         const attachThrottleRetryHandler = (button: HTMLButtonElement) => {
             const conversationId = button.getAttribute('data-conversation-id');
             const throttleWait = button.getAttribute('data-throttle-wait');
-            
+
             if (!conversationId) return;
-            
+
             console.log(`✅ Attaching throttle retry handler to button for conversation: ${conversationId}`);
-            
+
             const handleClick = async () => {
                 console.log('🔄 RETRY: User clicked retry button after throttling');
 
@@ -4896,7 +4957,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 button.disabled = true;
                 const originalText = button.textContent;
                 button.textContent = '⏳ Retrying...';
-                
+
                 try {
                     // Get the last user message to retry
                     const lastUserMessage = currentMessages.filter(msg => msg.role === 'human').pop();
@@ -4906,7 +4967,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                         button.textContent = originalText;
                         return;
                     }
-                    
+
                     // Retry the request
                     addStreamingConversation(conversationId);
                     await sendPayload(
@@ -4929,21 +4990,21 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                     button.textContent = originalText;
                 }
             };
-            
+
             button.addEventListener('click', handleClick);
         };
-        
+
         const observer = new MutationObserver((mutations) => {
             mutations.forEach((mutation) => {
                 mutation.addedNodes.forEach((node) => {
                     if (node.nodeType === Node.ELEMENT_NODE) {
                         const element = node as Element;
-                        
+
                         // Check if this node or its children contain throttle buttons
-                        const buttons = element.classList?.contains('throttle-retry-button') 
+                        const buttons = element.classList?.contains('throttle-retry-button')
                             ? [element]
                             : Array.from(element.querySelectorAll?.('.throttle-retry-button') || []);
-                        
+
                         buttons.forEach((button: Element) => {
                             if (!attachedHandlersRef.current.has(button)) {
                                 attachThrottleRetryHandler(button as HTMLButtonElement);
@@ -4954,13 +5015,13 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 });
             });
         });
-        
+
         // Start observing
         observer.observe(containerRef.current, {
             childList: true,
             subtree: true
         });
-        
+
         // Also check for any existing buttons when effect runs
         const existingButtons = containerRef.current.querySelectorAll('.throttle-retry-button');
         existingButtons.forEach(button => {
@@ -4969,7 +5030,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 attachedHandlersRef.current.add(button);
             }
         });
-        
+
         return () => {
             observer.disconnect();
             attachedHandlersRef.current.clear();
