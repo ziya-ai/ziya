@@ -41,8 +41,6 @@ const containerThemes = new WeakMap<HTMLElement, boolean>();
 
 // Enhanced text visibility function
 const enhanceTextVisibility = (svgElement: SVGElement, isDarkMode: boolean) => {
-    console.log('🔍 GRAPHVIZ-TEXT-FIX: Starting comprehensive text visibility enhancement');
-    
     // Process all text elements with comprehensive background detection
     const textElements = svgElement.querySelectorAll('text');
     let fixedCount = 0;
@@ -50,8 +48,6 @@ const enhanceTextVisibility = (svgElement: SVGElement, isDarkMode: boolean) => {
     textElements.forEach((textEl, index) => {
         const textContent = textEl.textContent?.trim();
         if (!textContent) return;
-        
-        console.log(`🔍 Processing text element ${index}: "${textContent}"`);
         
         let backgroundColor: string | null = null;
         const currentTextColor = textEl.getAttribute('fill') || '';
@@ -64,14 +60,12 @@ const enhanceTextVisibility = (svgElement: SVGElement, isDarkMode: boolean) => {
                 const fill = backgroundShape.getAttribute('fill');
                 const computedFill = window.getComputedStyle(backgroundShape).fill;
                 backgroundColor = (computedFill !== 'none' && computedFill !== 'rgb(0, 0, 0)') ? computedFill : fill;
-                console.log(`  Found background from shape: ${backgroundColor}`);
             }
         }
         
         // Strategy 2: Check if this is an edge label - use page background for contrast
         if (!backgroundColor && parentGroup?.classList.contains('edge')) {
             backgroundColor = isDarkMode ? '#2e3440' : '#ffffff'; // Use page background
-            console.log(`  Using page background for edge label: ${backgroundColor}`);
         }
         
         // Strategy 3: Check if this is a cluster label
@@ -81,7 +75,6 @@ const enhanceTextVisibility = (svgElement: SVGElement, isDarkMode: boolean) => {
                 const fill = clusterBg.getAttribute('fill');
                 const computedFill = window.getComputedStyle(clusterBg).fill;
                 backgroundColor = (computedFill !== 'none' && computedFill !== 'rgb(0, 0, 0)') ? computedFill : fill;
-                console.log(`  Found cluster background: ${backgroundColor}`);
             }
         }
         
@@ -89,27 +82,19 @@ const enhanceTextVisibility = (svgElement: SVGElement, isDarkMode: boolean) => {
             const isLight = isLightBackground(backgroundColor);
             const optimalColor = getOptimalTextColor(backgroundColor);
             
-            console.log(`  Background analysis: ${backgroundColor} -> isLight: ${isLight} -> optimal text: ${optimalColor}`);
-            
             if (isLight) {
                 textEl.setAttribute('fill', optimalColor);
                 (textEl as SVGElement).style.setProperty('fill', optimalColor, 'important');
-                console.log(`  ✅ Fixed text "${textContent}": ${currentTextColor} -> ${optimalColor} on background ${backgroundColor}`);
                 fixedCount++;
-            } else {
-                console.log(`  ✓ Text "${textContent}" already has good contrast`);
             }
         } else {
             // Fallback: use high contrast color based on page mode
             const fallbackColor = isDarkMode ? '#ffffff' : '#000000';
             if (currentTextColor !== fallbackColor) {
                 textEl.setAttribute('fill', fallbackColor);
-                console.log(`  📝 Applied fallback color to "${textContent}": ${fallbackColor}`);
             }
         }
     });
-    
-    console.log(`🔍 GRAPHVIZ-TEXT-FIX: Enhanced ${fixedCount} text elements out of ${textElements.length} total`);
 };
 
 export const graphvizPlugin: D3RenderPlugin = {
@@ -486,21 +471,11 @@ export const graphvizPlugin: D3RenderPlugin = {
                 }
             }
             
-            // Add debugging checkpoint before text fixes
-            console.log('🔍 GRAPHVIZ-DEBUG: About to apply text visibility fixes');
-            console.log('🔍 GRAPHVIZ-DEBUG: Element type:', element.tagName);
-            console.log('🔍 GRAPHVIZ-DEBUG: Text elements found:', element.querySelectorAll('text').length);
-            
             // Apply enhanced text visibility immediately
-            console.log('🔍 GRAPHVIZ-DEBUG: Calling enhanceTextVisibility immediately');
             enhanceTextVisibility(element, isDarkMode);
-            
-            // Make debugging functions globally available
-            (window as any).graphvizTextDebug = { element, enhanceTextVisibility, isLightBackground, getDarkVersionOfColor };
             
             // Apply delayed text visibility fix (borrowed from Mermaid approach)
             setTimeout(() => {
-                console.log('🔍 GRAPHVIZ-DELAYED-FIX: Applying delayed text visibility fixes');
                 enhanceTextVisibility(element, isDarkMode);
             }, 500);
             

@@ -879,9 +879,7 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
 
         // TEXT VISIBILITY FIX - Focus on foreignObject children only
         setTimeout(() => {
-            console.log('🔍 TEXT VISIBILITY FIX: Starting analysis');
             const foreignObjects = container.querySelectorAll('foreignObject');
-            console.log(`Found ${foreignObjects.length} foreignObject elements`);
             let fixCount = 0;
             let totalTextElements = 0;
             let elementsWithBackground = 0;
@@ -1004,7 +1002,6 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                     // Check if we need to fix this text
                 });
             });
-            console.log(`🔍 SUMMARY: Processed ${totalTextElements} text elements, ${elementsWithBackground} had backgrounds, fixed ${fixCount}`);
         }, 1000);
 
         // Apply unified responsive scaling for all browsers
