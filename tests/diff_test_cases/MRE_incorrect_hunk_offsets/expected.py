@@ -18,7 +18,7 @@ class DataProcessor:
                 self._load_from_api(source.url, source.params)
             elif source.type == "database":
                 self._load_from_database(source.connection, source.query)
-            elif source.type == "memory":
+        elif source.type == "memory":
                 self.data = source.data
             else:
                 raise ValueError(f"Unsupported source type: {source.type}")

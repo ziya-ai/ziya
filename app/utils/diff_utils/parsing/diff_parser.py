@@ -11,7 +11,18 @@ from ..core.exceptions import PatchApplicationError
 from ..core.utils import normalize_escapes
 
 def unescape_backticks_from_llm(text: str) -> str:
-    """Unescape backticks that were escaped for LLM context."""
+    """Unescape backticks that were escaped for LLM context.
+    
+    Only unescape \\` when it's NOT part of a JavaScript/TypeScript template literal escape.
+    In template literals, \\` is used to include a literal backtick.
+    Multiple consecutive \\` (like \\`\\`\\`) represent literal backticks and should be preserved.
+    """
+    # Check if we have multiple consecutive escaped backticks (e.g., \\`\\`\\`)
+    # This pattern indicates literal backticks in code, not LLM escaping
+    if '\\`\\`' in text:
+        return text
+    
+    # Otherwise, unescape backticks from LLM
     return text.replace('\\`', '`')
 
 def extract_target_file_from_diff(diff_content: str) -> Optional[str]:
