@@ -1,6 +1,7 @@
 import glob
 import os
 import time
+import re
 import threading
 import signal
 from typing import List, Tuple, Dict, Any, Optional
@@ -29,8 +30,56 @@ _scan_lock = threading.Lock()
 # Track visited directories to prevent infinite loops
 _visited_directories = set()
 
+# Global cache for ignored patterns to avoid re-scanning on every API call
+_ignored_patterns_cache: Optional[List[Tuple[str, str]]] = None
+_ignored_patterns_cache_dir: Optional[str] = None
+_ignored_patterns_cache_time: float = 0
+IGNORED_PATTERNS_CACHE_TTL = 300  # 5 minutes
+
 def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
+    global _ignored_patterns_cache, _ignored_patterns_cache_dir, _ignored_patterns_cache_time
+    
+    # Check cache first - avoid rescanning entirely
+    current_time = time.time()
+    if (_ignored_patterns_cache is not None and 
+        _ignored_patterns_cache_dir == directory and
+        (current_time - _ignored_patterns_cache_time) < IGNORED_PATTERNS_CACHE_TTL):
+        logger.info(f"♻️ Using cached gitignore patterns ({len(_ignored_patterns_cache)} patterns)")
+        return _ignored_patterns_cache
+    
+    logger.info(f"🔍 Building gitignore patterns for {directory}...")
     user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", directory)
+    
+    # CRITICAL: Warn users EARLY if scanning will be slow
+    import sys
+    home_dir = os.path.expanduser("~")
+    is_home_or_near_home = (
+        os.path.abspath(directory) == home_dir or
+        os.path.abspath(directory).startswith(home_dir + os.sep) and
+        len(os.path.abspath(directory).replace(home_dir, '').split(os.sep)) <= 2
+    )
+    
+    # Quick sampling: check how many entries are in the root
+    try:
+        root_entries = len(os.listdir(directory))
+    except (PermissionError, OSError):
+        root_entries = 0
+    
+    # Warn if this looks like it will be slow
+    if is_home_or_near_home or root_entries > 50:
+        print("\n" + "="*70, file=sys.stderr)
+        print("⚠️  SCANNING LARGE DIRECTORY - THIS MAY TAKE SEVERAL MINUTES", file=sys.stderr)
+        print("="*70, file=sys.stderr)
+        print(f"📁 Directory: {directory}", file=sys.stderr)
+        print(f"📊 Root contains {root_entries} entries", file=sys.stderr)
+        print("\n💡 TIP: For faster startup, start Ziya in a project root directory", file=sys.stderr)
+        print("   Or use: --include-only <path> to scan specific directories", file=sys.stderr)
+        print("="*70 + "\n", file=sys.stderr)
+        
+        # Show progress as we process gitignore patterns
+        print("🔍 Scanning for .gitignore files...", file=sys.stderr, flush=True)
+    
+    scan_start_time = time.time()
     
     # Check if we're using include-only mode
     include_only_dirs = os.environ.get("ZIYA_INCLUDE_ONLY_DIRS", "")
@@ -76,10 +125,24 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
     
     # Standard exclusion patterns (used when not in include-only mode)
     ignored_patterns: List[Tuple[str, str]] = [
+        # Common large directories that should always be skipped
+        ("Library/Developer", user_codebase_dir),
+        ("Library/Caches", user_codebase_dir),
+        ("Library/Application Support", user_codebase_dir),
+        (".Trash", user_codebase_dir),
+        ("Downloads", user_codebase_dir),
+        ("Applications", user_codebase_dir),
+        
+        # Standard project exclusions
         ("poetry.lock", user_codebase_dir),
         ("package-lock.json", user_codebase_dir),
         (".DS_Store", user_codebase_dir),
         (".git", user_codebase_dir),
+        (".svn", user_codebase_dir),
+        (".hg", user_codebase_dir),
+        (".cache", user_codebase_dir),
+        (".cargo", user_codebase_dir),
+        (".npm", user_codebase_dir),
         ("node_modules", user_codebase_dir),
         ("build", user_codebase_dir),
         ("dist", user_codebase_dir),
@@ -89,6 +152,10 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
         ("venv", user_codebase_dir),  # Common virtual environment folder
         (".vscode", user_codebase_dir), # VSCode settings
         (".idea", user_codebase_dir),   # JetBrains IDE settings
+        ("target", user_codebase_dir),  # Rust build artifacts
+        ("pkg", user_codebase_dir),     # Go packages
+        ("vendor", user_codebase_dir),  # Vendor dependencies
+        (".pytest_cache", user_codebase_dir),
     ]
     
     # Add additional exclude directories from environment variable if it exists
@@ -101,12 +168,34 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
                 ignored_patterns.append((pattern, user_codebase_dir))
                 logger.info(f"Added exclude pattern: {pattern}")
     
-    logger.info(f"Total ignore patterns: {len(ignored_patterns)}")
+    scan_duration = time.time() - scan_start_time
+    
+    # Log to both logger and stderr for visibility
+    pattern_msg = f"Total ignore patterns: {len(ignored_patterns)}"
+    logger.info(pattern_msg)
+    
+    # If scanning took more than 5 seconds, warn the user
+    if scan_duration > 5.0:
+        print(f"\n⏱️  .gitignore scan took {scan_duration:.1f}s", file=sys.stderr)
+        print("💡 Tip: Large directory trees slow down startup significantly", file=sys.stderr)
+        print(f"   Consider starting Ziya in a smaller directory\n", file=sys.stderr, flush=True)
+    
     for pattern, base in ignored_patterns:
         logger.debug(f"Ignore pattern: {pattern} (base: {base})")
+    
+    # Cache the results for future calls
+    _ignored_patterns_cache = ignored_patterns
+    _ignored_patterns_cache_dir = directory
+    _ignored_patterns_cache_time = time.time()
 
     def read_gitignore(path: str) -> List[Tuple[str, str]]:
         gitignore_patterns: List[Tuple[str, str]] = []
+        
+        # Show progress for very large scans
+        if scan_duration > 10.0 and (time.time() - scan_start_time) % 5 < 0.1:
+            print(f"\r⏳ Still scanning... ({time.time() - scan_start_time:.0f}s)", 
+                  end='', file=sys.stderr, flush=True)
+        
         try:
             with open(path, "r", encoding="utf-8") as f:
                 for line_number, line in enumerate(f, 1):
@@ -127,18 +216,53 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
         return gitignore_patterns
 
     def get_patterns_recursive(path: str) -> List[Tuple[str, str]]:
+        """Recursively find gitignore patterns with optimizations for speed."""
         patterns: List[Tuple[str, str]] = []
+        
+        # Periodic progress for deep recursion
+        if (time.time() - scan_start_time) > 10.0 and (time.time() - scan_start_time) % 3 < 0.1:
+            print(f"\r🔍 Scanning deep directories... ({time.time() - scan_start_time:.0f}s elapsed)", 
+                  end='', file=sys.stderr, flush=True)
+        
         gitignore_path = os.path.join(path, ".gitignore")
         if os.path.exists(gitignore_path):
             patterns.extend(read_gitignore(gitignore_path))
         
-        for subdir in glob.glob(os.path.join(path, "*/")):
+        # Calculate current depth relative to starting directory
+        try:
+            relative_path = os.path.relpath(path, directory)
+            current_depth = 0 if relative_path == '.' else len(relative_path.split(os.sep))
+        except ValueError:
+            # Can't calculate relative path (different drives on Windows)
+            current_depth = 0
+        
+        # Limit recursion depth for gitignore scanning (5 levels should be more than enough)
+        MAX_GITIGNORE_DEPTH = 5
+        if current_depth >= MAX_GITIGNORE_DEPTH:
+            logger.debug(f"Reached max gitignore scan depth at {path}")
+            return patterns
+        
+        # Use os.scandir() for faster iteration than glob
+        try:
+            entries = os.scandir(path)
+        except (PermissionError, OSError) as e:
+            logger.debug(f"Cannot access directory {path}: {e}")
+            return patterns
+        
+        for entry in entries:
+            # Skip non-directories
+            if not entry.is_dir(follow_symlinks=False):
+                continue
+            
+            subdir = entry.path + os.sep
+            
             # Skip symlinks to prevent infinite loops
-            if os.path.islink(subdir.rstrip('/')):
+            if entry.is_symlink():
                 logger.debug(f"Skipping symlink directory: {subdir}")
+                continue
                 
             # Skip directories with problematic characters that cause regex errors
-            dir_name = os.path.basename(subdir.rstrip('/'))
+            dir_name = entry.name
             if '[' in dir_name or ']' in dir_name:
                 logger.debug(f"Skipping directory with brackets: {subdir}")
                 continue
@@ -211,6 +335,36 @@ def get_file_type_multiplier(file_path: str) -> float:
     return FILE_TYPE_MULTIPLIERS.get(ext, FILE_TYPE_MULTIPLIERS['default'])
 
 
+def detect_large_directory_and_warn(directory: str) -> None:
+    """Detect if we're scanning a potentially large directory and warn the user."""
+    import sys
+    
+    # Check if this is a home directory
+    home_dir = os.path.expanduser("~")
+    is_home_or_near_home = (
+        os.path.abspath(directory) == home_dir or
+        os.path.abspath(directory).startswith(home_dir + os.sep) and
+        len(os.path.abspath(directory).replace(home_dir, '').split(os.sep)) <= 2
+    )
+    
+    # Quick sampling: check how many entries are in the root
+    try:
+        root_entries = len(os.listdir(directory))
+    except (PermissionError, OSError):
+        root_entries = 0
+    
+    # Warn if this looks like it will be slow
+    if is_home_or_near_home or root_entries > 50:
+        print("\n" + "="*70, file=sys.stderr)
+        print("⚠️  SCANNING LARGE DIRECTORY - THIS MAY TAKE SEVERAL MINUTES", file=sys.stderr)
+        print("="*70, file=sys.stderr)
+        print(f"📁 Directory: {directory}", file=sys.stderr)
+        print(f"📊 Root contains {root_entries} entries", file=sys.stderr)
+        print("\n💡 TIP: For faster startup, start Ziya in a project root directory", file=sys.stderr)
+        print("   Or use: --include-only <path> to scan specific directories", file=sys.stderr)
+        print("="*70 + "\n", file=sys.stderr)
+
+
 def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int) -> Dict[str, Any]:
     """
     Get the folder structure of a directory with token counts.
@@ -240,6 +394,9 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     if cached_result:
         return cached_result
     
+    # Warn users if this looks like it will be slow
+    detect_large_directory_and_warn(directory)
+
     import tiktoken
     should_ignore_fn = parse_gitignore_patterns(ignored_patterns)
     
@@ -275,10 +432,29 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     # Add progress tracking
     last_progress_time = time.time()
     progress_interval = 2.0  # Log progress every 2 seconds
+    last_stderr_progress_time = time.time()
 
     def process_dir(path: str, depth: int) -> Dict[str, Any]:
         """Process a directory recursively."""
         # Resolve symlinks to detect loops
+        
+        # EARLY TERMINATION: Skip known problematic directories immediately
+        # Check basename first (fastest check)
+        dir_basename = os.path.basename(path.rstrip(os.sep))
+        if dir_basename in {
+            'CoreSimulator', 'Library', 'Containers', 'Caches', 'Logs',
+            'Application Support', 'Developer', 'News', 'Trial',
+            '.Trash', 'Downloads', 'Applications', 'Movies', 'Music', 'Pictures'
+        }:
+            # For these directories, do a quick ignore check before processing
+            if should_ignore_fn(path):
+                logger.debug(f"Early skip of known slow directory: {path}")
+                return {'token_count': 0}
+        
+        # Also check depth immediately to avoid processing deep paths
+        if depth > max_depth:
+            return {'token_count': 0}
+        
         real_path = os.path.realpath(path)
         
         # Check for infinite loops using real path
@@ -314,9 +490,6 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
         }
         _scan_progress["last_update"] = time.time()
         
-        if depth > max_depth:
-            return {'token_count': 0}
-            
         scan_stats['directories_scanned'] += 1
         
         result = {'token_count': 0, 'children': {}}
@@ -352,8 +525,19 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
                 
             # Progress logging
             if current_time - last_progress_time > progress_interval:
-                logger.info(f"Scan progress: {scan_stats['directories_scanned']} dirs, {scan_stats['files_processed']} files in {elapsed:.1f}s")
+                logger.info(f"📊 Scan progress: {scan_stats['directories_scanned']} dirs, {scan_stats['files_processed']} files in {elapsed:.1f}s")
                 last_progress_time = current_time
+                
+                # Also print to stderr every 5 seconds for user visibility
+                nonlocal last_stderr_progress_time
+                if current_time - last_stderr_progress_time > 5.0:
+                    import sys
+                    print(f"\r⏳ Scanning... {scan_stats['directories_scanned']} directories, "
+                          f"{scan_stats['files_processed']} files ({elapsed:.0f}s elapsed)",
+                          end='', file=sys.stderr, flush=True)
+                    last_stderr_progress_time = current_time
+                    if elapsed > 30:
+                        print("\n💡 This is taking a while. Consider starting Ziya in a smaller directory.", file=sys.stderr)
                 
             if entry.startswith('.'):  # Skip hidden files
                 continue
@@ -467,8 +651,14 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     _visited_directories.clear()
     
     total_time = time.time() - scan_stats['start_time']
-    logger.info(f"Folder scan completed: {scan_stats['directories_scanned']} dirs, "
-                f"{scan_stats['files_processed']} files in {total_time:.2f}s")
+    import sys
+    completion_msg = (f"✅ Folder scan completed: {scan_stats['directories_scanned']} dirs, "
+                     f"{scan_stats['files_processed']} files in {total_time:.2f}s")
+    logger.info(completion_msg)
+    
+    # Clear the progress line and print completion
+    print("\r" + " "*100 + "\r" + completion_msg, file=sys.stderr)
+    print("", file=sys.stderr)  # Add newline
     
     if total_time >= max_scan_time:
         logger.warning(f"Folder scan timed out after {max_scan_time}s")
