@@ -4976,6 +4976,91 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     // Track attached handlers to prevent duplicates
     const attachedHandlersRef = useRef<Set<Element>>(new Set());
 
+    // Separate function to attach handler with proper closure
+    const attachThrottleRetryHandler = useCallback((button: HTMLButtonElement) => {
+        const conversationId = button.getAttribute('data-conversation-id');
+        const throttleWait = button.getAttribute('data-throttle-wait');
+
+        if (!conversationId) return;
+
+        console.log(`✅ Attaching throttle retry handler to button for conversation: ${conversationId}`);
+
+        const handleClick = async () => {
+            console.log('🔄 RETRY: User clicked retry button after throttling');
+
+            // Disable button and show loading state
+            button.disabled = true;
+            const originalText = button.textContent;
+            button.textContent = '⏳ Retrying...';
+
+            try {
+                const recoveryData = throttlingRecoveryData.get(conversationId);
+                const lastUserMessage = currentMessages.filter(msg => msg.role === 'human').pop();
+                
+                if (!lastUserMessage) {
+                    message.error('No message to retry');
+                    button.disabled = false;
+                    button.textContent = originalText;
+                    return;
+                }
+
+                const messagesForRetry = [...currentMessages.filter(msg => !msg.muted)];
+                
+                if (recoveryData?.toolResults && recoveryData.toolResults.length > 0) {
+                    recoveryData.toolResults.forEach((toolResult, index) => {
+                        messagesForRetry.push({
+                            role: 'assistant',
+                            content: `Tool execution result ${index + 1}:\n\`\`\`tool:result\n${toolResult}\n\`\`\``,
+                            _timestamp: Date.now(),
+                            _isToolResult: true
+                        });
+                    });
+                }
+                
+                addStreamingConversation(conversationId);
+                await sendPayload(
+                    messagesForRetry,
+                    lastUserMessage.content,
+                    checkedKeys as string[],
+                    conversationId,
+                    streamedContentMap,
+                    setStreamedContentMap,
+                    setIsStreaming,
+                    removeStreamingConversation,
+                    addMessageToConversation,
+                    streamingConversations.has(conversationId),
+                    (state) => updateProcessingState(conversationId, state)
+                );
+                
+                const next = new Map(throttlingRecoveryData);
+                next.delete(conversationId);
+                setThrottlingRecoveryData(next);
+            } catch (error) {
+                console.error('Retry failed:', error);
+                message.error('Failed to retry request');
+                button.disabled = false;
+                button.textContent = originalText;
+            }
+        };
+
+        button.addEventListener('click', handleClick);
+    }, [currentMessages, throttlingRecoveryData, checkedKeys, streamedContentMap, 
+        setStreamedContentMap, setIsStreaming, removeStreamingConversation, 
+        addMessageToConversation, streamingConversations, updateProcessingState, 
+        addStreamingConversation, setThrottlingRecoveryData]);
+
+    // Helper to attach handlers to all buttons
+    const attachAllThrottleHandlers = useCallback(() => {
+        const allButtons = document.querySelectorAll('.throttle-retry-button');
+        console.log(`🔍 GLOBAL-ATTACH: Found ${allButtons.length} throttle buttons`);
+        allButtons.forEach(button => {
+            if (!attachedHandlersRef.current.has(button)) {
+                attachThrottleRetryHandler(button as HTMLButtonElement);
+                attachedHandlersRef.current.add(button);
+            }
+        });
+    }, [attachThrottleRetryHandler]);
+
     // Setup MutationObserver to watch for dynamically added throttle buttons
     useLayoutEffect(() => {
         if (!containerRef.current) return;
@@ -4996,93 +5081,6 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         
         return () => {
             document.removeEventListener('throttlingRecoveryData', handleThrottlingRecoveryData as EventListener);
-        };
-
-        // Separate function to attach handler with proper closure
-        const attachThrottleRetryHandler = (button: HTMLButtonElement) => {
-            const conversationId = button.getAttribute('data-conversation-id');
-            const throttleWait = button.getAttribute('data-throttle-wait');
-
-            if (!conversationId) return;
-
-            console.log(`✅ Attaching throttle retry handler to button for conversation: ${conversationId}`);
-
-            const handleClick = async () => {
-                console.log('🔄 RETRY: User clicked retry button after throttling');
-
-                // Disable button and show loading state
-                button.disabled = true;
-                const originalText = button.textContent;
-                button.textContent = '⏳ Retrying...';
-
-                try {
-                    // Retrieve throttling recovery data for this conversation
-                    const recoveryData = throttlingRecoveryData.get(conversationId);
-                    
-                    // Get the last user message to retry
-                    const lastUserMessage = currentMessages.filter(msg => msg.role === 'human').pop();
-                    if (!lastUserMessage) {
-                        message.error('No message to retry');
-                        button.disabled = false;
-                        button.textContent = originalText;
-                        return;
-                    }
-
-                    // Retry the request
-                    // CRITICAL FIX: Build conversation history including tool results
-                    const messagesForRetry = [...currentMessages.filter(msg => !msg.muted)];
-                    
-                    // Add successful tool results as tool_result messages
-                    if (recoveryData?.toolResults && recoveryData.toolResults.length > 0) {
-                        console.log('📦 RETRY: Including', recoveryData.toolResults.length, 'successful tool results');
-                        
-                        recoveryData.toolResults.forEach((toolResult, index) => {
-                            messagesForRetry.push({
-                                role: 'assistant',
-                                content: `Tool execution result ${index + 1}:\n\`\`\`tool:result\n${toolResult}\n\`\`\``,
-                                _timestamp: Date.now(),
-                                _isToolResult: true
-                            });
-                        });
-                    }
-                    
-                    // Add the partial text response if any
-                    if (recoveryData?.partialContent && recoveryData.partialContent.trim()) {
-                        messagesForRetry.push({
-                            role: 'assistant',
-                            content: recoveryData.partialContent,
-                            _timestamp: Date.now()
-                        });
-                    }
-                    
-                    addStreamingConversation(conversationId);
-                    await sendPayload(
-                        messagesForRetry,
-                        lastUserMessage.content,
-                        checkedKeys as string[],
-                        conversationId,
-                        streamedContentMap,
-                        setStreamedContentMap,
-                        setIsStreaming,
-                        removeStreamingConversation,
-                        addMessageToConversation,
-                        streamingConversations.has(conversationId),
-                        (state) => updateProcessingState(conversationId, state)
-                    );
-                    
-                    // Clear recovery data after successful retry
-                    const next = new Map(throttlingRecoveryData);
-                    next.delete(conversationId);
-                    setThrottlingRecoveryData(next);
-                } catch (error) {
-                    console.error('Retry failed:', error);
-                    message.error('Failed to retry request');
-                    button.disabled = false;
-                    button.textContent = originalText;
-                }
-            };
-
-            button.addEventListener('click', handleClick);
         };
 
         const observer = new MutationObserver((mutations) => {
@@ -5120,16 +5118,20 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             existingButtons.forEach(button => {
                 if (!attachedHandlersRef.current.has(button)) {
                     attachThrottleRetryHandler(button as HTMLButtonElement);
-                    attachedHandlersRef.current.add(button);
+                    console.log('✅ INITIAL-ATTACH: Handler attached to existing button');
                 }
             });
+
+            // CRITICAL FIX: Check globally for buttons that might be outside containerRef
+            setTimeout(attachAllThrottleHandlers, 100);
+            setTimeout(attachAllThrottleHandlers, 500);
         }
 
         return () => {
             observer.disconnect();
             attachedHandlersRef.current.clear();
         };
-    }, [containerRef.current, currentConversationId]);
+    }, [containerRef.current, currentConversationId, attachThrottleRetryHandler, attachAllThrottleHandlers]);
 
     const isMultiFileDiff = markdown?.includes('diff --git') && markdown.split('diff --git').length > 2;
     return isMultiFileDiff && !isSubRender && displayTokens.length === 1 && displayTokens[0].type === 'code' && (displayTokens[0] as TokenWithText).lang === 'diff' ?

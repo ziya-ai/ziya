@@ -720,6 +720,49 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             });
         };
 
+        // Helper function to enhance Sankey diagram visibility in dark mode
+        const enhanceSankeyDarkMode = (svgElement: SVGElement) => {
+            console.log('🎨 SANKEY-DARK-MODE: Enhancing Sankey diagram visibility');
+            
+            // Define bright, saturated colors for dark mode
+            const sankeyColors = [
+                '#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#ffd93d',
+                '#ff9ff3', '#54a0ff', '#5f27cd', '#ff9f43', '#0abde3',
+                '#10ac84', '#ee5a6f', '#c56cf0', '#ffbe76', '#7bed9f'
+            ];
+            
+            // Enhance flow paths (the main sankey links)
+            const paths = svgElement.querySelectorAll('path[class*="link"], path[class*="flow"], .sankey-link, [id*="link"]');
+            console.log(`🎨 SANKEY-DARK-MODE: Found ${paths.length} flow paths`);
+            
+            paths.forEach((path, index) => {
+                const pathEl = path as SVGPathElement;
+                const color = sankeyColors[index % sankeyColors.length];
+                pathEl.style.fill = color;
+                pathEl.style.fillOpacity = '0.5';
+                pathEl.style.stroke = 'none';
+            });
+            
+            // Enhance all text elements for visibility
+            const textElements = svgElement.querySelectorAll('text');
+            console.log(`🎨 SANKEY-DARK-MODE: Found ${textElements.length} text elements`);
+            
+            textElements.forEach(textEl => {
+                textEl.setAttribute('fill', '#ffffff');
+                (textEl as SVGElement).style.setProperty('fill', '#ffffff', 'important');
+                textEl.setAttribute('stroke', 'none');
+            });
+            
+            // Enhance rectangles (nodes) if present
+            const rects = svgElement.querySelectorAll('rect[class*="node"], .sankey-node');
+            rects.forEach((rect, index) => {
+                const color = sankeyColors[index % sankeyColors.length];
+                rect.setAttribute('fill', color);
+                rect.setAttribute('stroke', '#ffffff');
+                rect.setAttribute('stroke-width', '1');
+            });
+        };
+
         // Enhance dark theme visibility for specific elements
         if (isDarkMode && svgElement) {
             requestAnimationFrame(() => {
@@ -746,6 +789,11 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
 
                 // Apply classDef text visibility fixes
                 fixTextVisibilityForClassDef(svgElement);
+
+                // Apply Sankey-specific enhancements for dark mode
+                if (rawDefinition.trim().startsWith('sankey')) {
+                    enhanceSankeyDarkMode(svgElement);
+                }
 
                 svgElement.querySelectorAll('path.path, path.messageText, .flowchart-link').forEach(el => {
                     el.setAttribute('stroke', '#88c0d0');
