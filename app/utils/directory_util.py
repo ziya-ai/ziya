@@ -4,10 +4,11 @@ import time
 import threading
 import signal
 from typing import List, Tuple, Dict, Any, Optional
-from app.utils.logging_utils import logger
-import re
+import mimetypes
+from pathlib import Path
 
 from app.utils.file_utils import is_binary_file, is_document_file, is_processable_file, read_file_content
+from app.utils.document_extractor import is_tool_backed_file
 from app.utils.logging_utils import logger
 from app.utils.gitignore_parser import parse_gitignore_patterns
 
@@ -388,10 +389,11 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
             elif os.path.isfile(entry_path):
                 tokens = estimate_tokens_fast(entry_path)
                 logger.debug(f"📄 File {entry}: tokens={tokens}")
-                if tokens > 0:
-                    scan_stats['files_processed'] += 1  # Fix: increment counter for processed files
+                if tokens > 0 or tokens == -1:  # Include tool-backed files (marked as -1)
+                    scan_stats['files_processed'] += 1
                     result['children'][entry] = {'token_count': tokens}
-                    total_tokens += tokens
+                    if tokens > 0:  # Only add positive tokens to total
+                        total_tokens += tokens
                 else:
                     logger.debug(f"⏭️  Skipping file {entry} - zero tokens")
         
@@ -500,6 +502,11 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
 def estimate_tokens_fast(file_path: str) -> int:
     """Fast token estimation based on file size and type."""
     try:
+        # Check for tool-backed files first (before any file I/O)
+        from app.utils.document_extractor import is_tool_backed_file
+        if is_tool_backed_file(file_path):
+            return -1  # Special marker for tool-backed files
+        
         # Get file size
         file_size = os.path.getsize(file_path)
         
@@ -515,7 +522,7 @@ def estimate_tokens_fast(file_path: str) -> int:
         
         # Quick binary check using file extension
         _, ext = os.path.splitext(file_path.lower())
-        if ext in {'.pyc', '.pyo', '.pyd', '.ico', '.png', '.jpg', '.jpeg', '.gif', '.svg',
+        if ext in {'.pyc', '.pyo', '.pyd', '.ico', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.pcap', '.pcapng',
                   '.core', '.bin', '.exe', '.dll', '.so', '.dylib', '.class',
                   '.woff', '.woff2', '.ttf', '.eot', '.zip', '.key', '.crt', '.p12', '.pfx',
                   '.der', '.pem', '.stl', '.obj', '.fbx', '.blend'}:  # Binary 3D formats only
@@ -697,6 +704,10 @@ def get_accurate_token_count(file_path: str) -> int:
     import tiktoken
     
     try:
+        # Tool-backed files should return special marker
+        if is_tool_backed_file(file_path):
+            return -1  # Special marker
+        
         encoding = tiktoken.get_encoding("cl100k_base")
         
         # Skip binary files

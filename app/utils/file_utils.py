@@ -1,7 +1,8 @@
 import os.path
+import os
 from typing import List, Optional
 from app.utils.logging_utils import logger
-from app.utils.document_extractor import is_document_file, extract_document_text
+from app.utils.document_extractor import is_document_file, extract_document_text, is_tool_backed_file
  
 # Define binary extensions once at module level
 BINARY_EXTENSIONS = {
@@ -49,9 +50,35 @@ def is_binary_file(file_path: str) -> bool:
         return True
 
 def is_processable_file(file_path: str) -> bool:
-    """Check if a file can be processed (either text or extractable document)."""
+    """
+    Check if a file can be processed (either text or extractable document).
+    Note: Tool-backed files (like pcap) return True here but are handled specially
+    with -1 token counts to indicate tool availability.
+    """
     result = not is_binary_file(file_path) or is_document_file(file_path)
     return result
+
+def get_tool_backed_file_context(file_path: str) -> str:
+    """
+    Generate a context note for tool-backed files like PCAPs.
+    
+    Args:
+        file_path: Path to the tool-backed file
+        
+    Returns:
+        Context note explaining the file and available tools
+    """
+    ext = os.path.splitext(file_path)[1].lower()
+    
+    if ext in {'.pcap', '.pcapng', '.cap', '.dmp'}:
+        return f"""Tool-Backed File: {os.path.basename(file_path)}
+Location: {file_path}
+Type: PCAP network capture file
+Available Tool: mcp_analyze_pcap
+Operations: summary, conversations, dns_queries, dns_responses, filter, search, tcp_health, flow_stats, connectivity_map, flow_health, search_advanced, http, packet_details, tunneling, ipv6_extensions, tls, icmp
+Note: This file has been included in the context. Use the analyze_pcap tool to extract information from it. The tool can analyze protocols, flows, health metrics, and provide detailed packet information."""
+    
+    return f"Tool-Backed File: {file_path} (specialized tools available)"
 
 def read_file_content(file_path: str) -> Optional[str]:
     """
@@ -61,9 +88,15 @@ def read_file_content(file_path: str) -> Optional[str]:
         file_path: Path to the file
         
     Returns:
-        File content as string, or None if reading failed
+        Returns:
+            File content as string, or None if reading failed
     """
     try:
+        # Check if this file has specialized tool support - return context note instead
+        if is_tool_backed_file(file_path):
+            logger.info(f"File {file_path} has specialized tool support - adding context note")
+            return get_tool_backed_file_context(file_path)
+        
         # Check if it's a document file first
         from app.utils.document_extractor import is_document_file, extract_document_text
         if is_document_file(file_path):
