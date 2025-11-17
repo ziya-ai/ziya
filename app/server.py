@@ -82,6 +82,10 @@ from app.utils.context_enhancer import initialize_ast_if_enabled
 from fastapi.websockets import WebSocketState
 from app.middleware.continuation import ContinuationMiddleware
 
+# PCAP analysis utilities
+from app.utils.pcap_analyzer import analyze_pcap_file, is_pcap_supported
+from app.utils.conversation_exporter import export_conversation_for_paste
+
 # WebSocket support for real-time feedback
 from fastapi.websockets import WebSocket, WebSocketDisconnect
  
@@ -158,6 +162,22 @@ class FileContentRequest(BaseModel):
     model_config = {"extra": "allow"}
     file_path: str
     content: str
+
+class PcapAnalyzeRequest(BaseModel):
+    model_config = {"extra": "allow"}
+    file_path: str
+    operation: str = "summary"
+    src_ip: Optional[str] = None
+    dst_ip: Optional[str] = None
+    protocol: Optional[str] = None
+    port: Optional[int] = None
+    tcp_flags: Optional[str] = None
+    min_size: Optional[int] = None
+    max_size: Optional[int] = None
+    icmp_type: Optional[int] = None
+    pattern: Optional[str] = None
+    packet_index: Optional[int] = None
+    limit: Optional[int] = None
 
 # Define lifespan context manager before app creation
 @asynccontextmanager
@@ -2658,7 +2678,11 @@ async def root(request: Request):
 
 @app.get("/debug")
 async def debug(request: Request):
-   return templates.TemplateResponse("index.html", {"request": request})
+    # Return the same app but with a query parameter to show debug mode
+    return templates.TemplateResponse("index.html", {
+        "request": request,
+        "debug_mode": True
+    })
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():
@@ -2802,6 +2826,163 @@ async def cancel_folder_scan():
     if was_active:
         logger.info("Folder scan cancellation requested")
     return {"cancelled": was_active}
+
+@app.post("/api/dynamic-tools/update")
+async def update_dynamic_tools(request: Request):
+    """
+    Update dynamically loaded tools based on file selection.
+    Called by frontend when file selection changes.
+    """
+    try:
+        body = await request.json()
+        files = body.get('files', [])
+        
+        logger.info(f"Dynamic tools update requested for {len(files)} files")
+        
+        from app.mcp.dynamic_tools import get_dynamic_loader
+        from app.mcp.manager import get_mcp_manager
+        
+        # Get the dynamic loader
+        loader = get_dynamic_loader()
+        
+        # Load appropriate tools based on files
+        newly_loaded = loader.load_tools_for_files(files)
+        
+        # Invalidate MCP manager's tools cache so new tools appear
+        mcp_manager = get_mcp_manager()
+        if mcp_manager.is_initialized:
+            mcp_manager.invalidate_tools_cache()
+        
+        # Get currently active dynamic tools
+        active_tools = loader.get_active_tools()
+        
+        return JSONResponse({
+            "success": True,
+            "newly_loaded": list(newly_loaded.keys()),
+            "active_tools": list(active_tools.keys()),
+            "message": f"Loaded {len(newly_loaded)} new tools, {len(active_tools)} total active"
+        })
+        
+    except Exception as e:
+        logger.error(f"Error updating dynamic tools: {e}", exc_info=True)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.post("/api/dynamic-tools/update")
+async def update_dynamic_tools(request: Request):
+    """
+    Update dynamically loaded tools based on file selection.
+    Called by frontend when file selection changes.
+    """
+    try:
+        body = await request.json()
+        files = body.get('files', [])
+
+        logger.info(f"Dynamic tools update requested for {len(files)} files")
+
+        from app.mcp.dynamic_tools import get_dynamic_loader
+        from app.mcp.manager import get_mcp_manager
+
+        # Get the dynamic loader
+        loader = get_dynamic_loader()
+
+        # Load appropriate tools based on files
+        newly_loaded = loader.load_tools_for_files(files)
+
+        # Invalidate MCP manager's tools cache so new tools appear
+        mcp_manager = get_mcp_manager()
+        if mcp_manager.is_initialized:
+            mcp_manager.invalidate_tools_cache()
+
+        # Get currently active dynamic tools
+        active_tools = loader.get_active_tools()
+
+        return JSONResponse({
+            "success": True,
+            "newly_loaded": list(newly_loaded.keys()),
+            "active_tools": list(active_tools.keys()),
+            "message": f"Loaded {len(newly_loaded)} new tools, {len(active_tools)} total active"
+        })
+
+    except Exception as e:
+        logger.error(f"Error updating dynamic tools: {e}", exc_info=True)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/tools/pcap/analyze")
+async def analyze_pcap(request: PcapAnalyzeRequest):
+    """
+    Analyze a pcap file with various operations
+    
+    Operations:
+    - summary: Get overall statistics
+    - conversations: Extract TCP/UDP conversations
+    - dns_queries: Extract DNS queries
+    - dns_responses: Extract DNS responses
+    - filter: Filter packets by IP/protocol/port
+    - search: Search for pattern in payloads
+    - tcp_health: Analyze TCP health metrics (retransmissions, resets, errors)
+    - flow_stats: Get detailed flow-level statistics with timing
+    - connectivity_map: Get connectivity map for visualization
+    - flow_health: Combined flow statistics with health analysis
+    - search_advanced: Advanced filtering with TCP flags, size, etc.
+    - http: Extract HTTP requests
+    - packet_details: Get details for specific packet
+    - tunneling: Get tunneling protocol information
+    - ipv6_extensions: Get IPv6 extension header details
+    - tls: Get TLS/SSL connection information
+    - icmp: Get ICMP/ICMPv6 packet information
+    """
+    if not is_pcap_supported():
+        return JSONResponse(
+            status_code=501,
+            content={
+                "error": "pcap_not_supported",
+                "message": "Scapy is not installed. Install with: pip install scapy"
+            }
+        )
+    
+    try:
+        result = analyze_pcap_file(
+            file_path=request.file_path,
+            operation=request.operation,
+            src_ip=request.src_ip,
+            dst_ip=request.dst_ip,
+            protocol=request.protocol,
+            port=request.port,
+            pattern=request.pattern,
+            packet_index=request.packet_index,
+            limit=request.limit
+        )
+        
+        # Check if result contains an error
+        if isinstance(result, dict) and "error" in result:
+            status_code = 400
+            if result["error"] == "file_not_found":
+                status_code = 404
+            elif result["error"] == "import_error":
+                status_code = 501
+            
+            return JSONResponse(
+                status_code=status_code,
+                content=result
+            )
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error in pcap analysis endpoint: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": "analysis_failed", "message": str(e)}
+        )
+
+@app.get("/api/tools/pcap/status")
+async def pcap_status():
+    """Check if pcap analysis is available"""
+    return {
+        "available": is_pcap_supported(),
+        "message": "Scapy is installed and ready" if is_pcap_supported() else "Scapy is not installed. Install with: pip install scapy"
+    }
 
 @app.post("/api/clear-folder-cache")
 async def clear_folder_cache():
@@ -4351,6 +4532,54 @@ async def check_files_in_context(request: Request):
         
     except Exception as e:
         logger.error(f"Error checking files in context: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post('/api/export-conversation')
+async def export_conversation(request: Request):
+    """Export a conversation in a format suitable for paste services."""
+    try:
+        body = await request.json()
+        conversation_id = body.get('conversation_id')
+        format_type = body.get('format', 'markdown')  # 'markdown' or 'html'
+        target = body.get('target', 'public')  # 'public' or 'internal'
+        captured_diagrams = body.get('captured_diagrams', [])
+        
+        if not conversation_id:
+            return JSONResponse(
+                status_code=400, 
+                content={"error": "conversation_id is required"}
+            )
+        
+        # Get conversation messages
+        # In a real implementation, you'd fetch from the conversation store
+        messages = body.get('messages', [])
+        
+        # Get current model info
+        from app.agents.models import ModelManager
+        model_alias = ModelManager.get_model_alias()
+        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        
+        # Get version
+        from app.utils.version_util import get_current_version
+        version = get_current_version()
+        
+        logger.info(f"Exporting conversation with {len(captured_diagrams)} captured diagrams")
+        
+        # Export the conversation
+        exported = export_conversation_for_paste(
+            messages=messages,
+            format_type=format_type,
+            target=target,
+            captured_diagrams=captured_diagrams,
+            version=version,
+            model=model_alias,
+            provider=endpoint
+        )
+        
+        return JSONResponse(content=exported)
+        
+    except Exception as e:
+        logger.error(f"Error exporting conversation: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post('/api/restart-stream-with-context')
