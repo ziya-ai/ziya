@@ -100,6 +100,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
     });
     const currentConversationRef = useRef<string>(currentConversationId);
     const [currentMessages, setCurrentMessages] = useState<Message[]>([]);
+    
+    // CRITICAL: Persist currentConversationId to localStorage whenever it changes
+    useEffect(() => {
+        localStorage.setItem('ZIYA_CURRENT_CONVERSATION_ID', currentConversationId);
+    }, [currentConversationId]);
     const [streamingConversations, setStreamingConversations] = useState<Set<string>>(new Set());
     const [isTopToBottom, setIsTopToBottom] = useState(() => {
         const saved = localStorage.getItem('ZIYA_TOP_DOWN_MODE');
@@ -367,8 +372,23 @@ export function ChatProvider({ children }: ChatProviderProps) {
         retryCount?: number;
         isRecoveryAttempt?: boolean;
     } = {}) => {
+        // CRITICAL FIX: Filter out corrupted conversations before any processing
+        const validConversations = conversations.filter(conv => {
+            const isValid = conv && 
+                           conv.id && 
+                           typeof conv.id === 'string' &&
+                           conv.title !== undefined &&
+                           Array.isArray(conv.messages);
+            
+            if (!isValid) {
+                console.warn('🧹 FILTERED CORRUPTED CONVERSATION:', { id: conv?.id, title: conv?.title, hasMessages: Array.isArray(conv?.messages) });
+            }
+            
+            return isValid;
+        });
+        
         // VALIDATION: Ensure all conversations have explicit isActive values
-        const validatedConversations = conversations.map(conv => ({
+        const validatedConversations = validConversations.map(conv => ({
             ...conv,
             isActive: conv.isActive !== false ? true : false, // Normalize to explicit boolean
             _version: conv._version || Date.now() // Ensure version is set
@@ -407,7 +427,18 @@ export function ChatProvider({ children }: ChatProviderProps) {
             if (!skipValidation) {
                 try {
                     const savedConversations = await db.getConversations();
-                    const savedActiveCount = savedConversations.filter(c => c.isActive).length;
+                    
+                    // CRITICAL FIX: Filter corrupted entries from database
+                    const validSavedConversations = savedConversations.filter(c => 
+                        c && c.id && typeof c.id === 'string' &&
+                        c.title !== undefined && Array.isArray(c.messages)
+                    );
+                    
+                    if (validSavedConversations.length < savedConversations.length) {
+                        console.warn(`🧹 FILTERED ${savedConversations.length - validSavedConversations.length} CORRUPTED ENTRIES FROM DB READ`);
+                    }
+                    
+                    const savedActiveCount = validSavedConversations.filter(c => c.isActive).length;
                     
                     // Only trigger healing if mismatch is significant (>1 conversation difference)
                     // and we haven't exceeded max retries
@@ -423,6 +454,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             const revalidatedConversations = validatedConversations.filter(c => 
                                 c.id && c.messages && Array.isArray(c.messages) && c.title
                             );
+                            
+                            // If we filtered out corrupted data, log it
+                            if (revalidatedConversations.length < validatedConversations.length) {
+                                console.warn(`🧹 CLEANED: Removed ${validatedConversations.length - revalidatedConversations.length} corrupted conversations`);
+                            }
                             
                             console.log(`🔍 VALIDATION: Filtered ${validatedConversations.length} -> ${revalidatedConversations.length} conversations`);
                             
@@ -745,8 +781,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     setCurrentMessages([]);
                     setCurrentConversationId(newId);
                     
-                    // Persist the new conversation ID immediately
+                    // CRITICAL: Persist the new conversation ID immediately
+                    // This must happen synchronously to prevent race conditions
+                    try {
                     localStorage.setItem('ZIYA_CURRENT_CONVERSATION_ID', newId);
+                    } catch (e) {
+                        console.error('Failed to persist conversation ID to localStorage:', e);
+                    }
                     resolve();
                     
                 } catch (saveError) {
@@ -900,6 +941,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // Remove artificial delay that might be blocking
             // await new Promise(resolve => setTimeout(resolve, 50));
             setCurrentConversationId(conversationId);
+            
+            // CRITICAL: Persist to localStorage immediately when switching conversations
+            try {
+                localStorage.setItem('ZIYA_CURRENT_CONVERSATION_ID', conversationId);
+            } catch (e) {
+                console.error('Failed to persist conversation ID during switch:', e);
+            }
 
             // Set the current folder ID based on the conversation's folder
             // This should not block conversation loading
@@ -1193,23 +1241,50 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             // Handle backup/recovery operations asynchronously - don't block UI
             setTimeout(async () => {
-                // Check for corruption by comparing with backup
+                // Check for corruption by comparing with backup - but be careful!
                 const backup = localStorage.getItem('ZIYA_CONVERSATION_BACKUP');
                 if (backup) {
                     const backupConversations = JSON.parse(backup);
 
-                    // If IndexedDB has significantly fewer conversations than backup, restore from backup
-                    if (savedConversations.length < backupConversations.length * 0.5) {
-                        console.warn(`⚠️ Potential corruption detected: IndexedDB has ${savedConversations.length} conversations, backup has ${backupConversations.length}`);
+                    // CRITICAL FIX: Don't blindly trust backup over IndexedDB
+                    // The backup might be from a different browser tab with partial state
+                    
+                    // Instead, MERGE conversations from both sources
+                    const allConversationIds = new Set([
+                        ...savedConversations.map(c => c.id),
+                        ...backupConversations.map(c => c.id)
+                    ]);
+                    
+                    console.log('🔄 INIT MERGE:', {
+                        dbCount: savedConversations.length,
+                        backupCount: backupConversations.length,
+                        uniqueIds: allConversationIds.size
+                    });
+                    
+                    // Only restore if backup has conversations that DB doesn't
+                    const missingInDb = backupConversations.filter(bc => 
+                        !savedConversations.find(sc => sc.id === bc.id)
+                    );
+                    
+                    if (missingInDb.length > 0) {
+                        console.warn(`⚠️ Found ${missingInDb.length} conversations in backup but not in IndexedDB:`, 
+                            missingInDb.map(c => c.id.substring(0, 8)));
+                        
+                        // Merge instead of replace
+                        const mergedConversations = [
+                            ...savedConversations,
+                            ...missingInDb
+                        ];
 
-                        // Auto-recovery - update state again
-                        await db.saveConversations(backupConversations);
-                        setConversations(backupConversations);
-                        console.log('✅ Auto-recovery completed');
+                        await db.saveConversations(mergedConversations);
+                        setConversations(mergedConversations);
+                        console.log('✅ Merged backup conversations into IndexedDB');
                     } else {
+                        // Backup has no additional conversations, create new backup from DB
                         await createBackup(savedConversations);
                     }
                 } else {
+                    // No backup exists, create one
                     await createBackup(savedConversations);
                 }
             }, 0);
@@ -1227,12 +1302,40 @@ export function ChatProvider({ children }: ChatProviderProps) {
     useEffect(() => {
         initializeWithRecovery();
 
-        // Enhanced backup interval - every 15 seconds instead of 30
+        // Enhanced backup interval - but merge with existing backup instead of replacing
         const backupInterval = setInterval(() => {
             if (conversations.length > 0) {
-                createBackup(conversations);
+                // CRITICAL FIX: Merge with existing backup instead of replacing
+                const existingBackup = localStorage.getItem('ZIYA_CONVERSATION_BACKUP');
+                if (existingBackup) {
+                    try {
+                        const existingBackupData = JSON.parse(existingBackup);
+                        
+                        // Merge: keep conversations from backup that aren't in current state
+                        const currentIds = new Set(conversations.map(c => c.id));
+                        const missingFromCurrent = existingBackupData.filter(
+                            (bc: Conversation) => !currentIds.has(bc.id) && bc.isActive !== false
+                        );
+                        
+                        if (missingFromCurrent.length > 0) {
+                            console.log(`🔄 BACKUP MERGE: Adding ${missingFromCurrent.length} conversations from previous backup`);
+                            const mergedForBackup = [...conversations, ...missingFromCurrent];
+                            createBackup(mergedForBackup);
+                        } else {
+                            createBackup(conversations);
+                        }
+                    } catch (e) {
+                        console.error('Failed to merge with existing backup:', e);
+                        createBackup(conversations);
+                    }
+                } else {
+                    createBackup(conversations);
+                }
             }
         }, 60000);
+        
+        // Also create backup immediately on mount
+        if (conversations.length > 0) createBackup(conversations);
 
         const request = indexedDB.open('ZiyaDB');
         request.onerror = (event) => {
