@@ -510,10 +510,15 @@ class MCPClient:
                 error_code = error_info.get("code", -1)
                 error_message = str(error_info.get("message", "Unknown error"))
                 
-                # Don't retry security blocks - they're intentional rejections
+                # Don't retry security blocks - they're intentional rejections  
+                # Return them in normalized format for consistent frontend display
                 if "SECURITY BLOCK" in error_message:
-                    logger.error(f"MCP server error: {error_info}")
-                    return response
+                    logger.info(f"MCP server security block: {error_message}")
+                    return {
+                        "error": True,
+                        "message": error_message,
+                        "code": error_code
+                    }
                 
                 # Check for external server specific errors that should trigger retries
                 external_server_errors = [

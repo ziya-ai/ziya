@@ -33,8 +33,11 @@ const sequentialThinkingHandler: ToolHandler = {
     console.log('🤔 THINKING_START: Extracted values:', { thinkingContent: thinkingContent.substring(0, 50), thoughtNumber, totalThoughts });
     
     if (thinkingContent) {
+      // Escape any code fences in the thinking content to prevent breaking the outer fence
+      const escapedContent = thinkingContent.replace(/```/g, '\\`\\`\\`');
+      
       // Create a thinking block display instead of generic tool start
-      const thinkingDisplay = `\n\`\`\`thinking:step-${thoughtNumber}\n🤔 **Thought ${thoughtNumber}/${totalThoughts}**\n\n${thinkingContent}\n\`\`\`\n\n`;
+      const thinkingDisplay = `\n\`\`\`thinking:step-${thoughtNumber}\n🤔 **Thought ${thoughtNumber}/${totalThoughts}**\n\n${escapedContent}\n\`\`\`\n\n`;
       
       context.currentContent.value += thinkingDisplay;
       
@@ -54,7 +57,22 @@ const sequentialThinkingHandler: ToolHandler = {
   
   handleToolDisplay: (jsonData: any, context: ToolEventContext): boolean => {
     try {
-      const result = JSON.parse(jsonData.result);
+      // Check if this is an error result - suppress it for thinking tools
+      if (typeof jsonData.result === 'string' && jsonData.result.startsWith('ERROR:')) {
+        console.log('🤔 THINKING_DISPLAY: Suppressing error result for thinking tool');
+        return true; // Handled - don't show error
+      }
+      
+      // Handle both JSON and non-JSON results
+      let result;
+      try {
+        result = typeof jsonData.result === 'string' ? JSON.parse(jsonData.result) : jsonData.result;
+      } catch (parseError) {
+        // If result isn't JSON (e.g., an error), let default handler show it
+        console.log('🤔 THINKING_DISPLAY: Result is not JSON, letting default handler display:', jsonData.result);
+        return false; // Return false to allow default handler to run
+      }
+      
       const thoughtNumber = result.thoughtNumber || 1;
       const totalThoughts = result.totalThoughts || 1;
       const nextThoughtNeeded = result.nextThoughtNeeded;
