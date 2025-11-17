@@ -36,6 +36,21 @@ interface MCPServer {
     capabilities: any;
     builtin?: boolean;
     enabled?: boolean;
+    is_ondemand?: boolean;
+    tool_details?: Array<{
+        name: string;
+        tool_name: string;
+        triggers: string[];
+        trigger_desc: string;
+    }>;
+    available_tools?: Array<{
+        name: string;
+        tool_name: string;
+        triggers: string[];
+        dependencies_met: boolean;
+        missing_dependencies: string[];
+        is_active: boolean;
+    }>;
 }
 
 interface BuiltinToolCategory {
@@ -125,6 +140,7 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
     const [expandedKeys, setExpandedKeys] = useState<string[]>([]);
     const [serverDetails, setServerDetails] = useState<Record<string, ServerDetails>>({});
     const [detailsLoading, setDetailsLoading] = useState<Record<string, boolean>>({});
+    const [onDemandToolsExpanded, setOnDemandToolsExpanded] = useState(false);
 
     useEffect(() => {
         if (visible) {
@@ -532,29 +548,160 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                 )}
                             </Space>
                         </Divider>
-                        <div style={{ marginBottom: 16 }}>
-                            <Alert
-                                type="success"
-                                message="Tool Management"
-                                description={
-                                    <div>
-                                        Disabled tools are <strong>removed from the AI's context</strong>, saving tokens. 
-                                        Only enabled tools are available to the AI agent.
-                                    </div>
-                                }
-                                showIcon
-                                style={{ marginBottom: 12 }}
-                            />
-                            <Alert
-                                type="info"
-                                description="Optional tools that run directly within Ziya without external servers."
-                                showIcon
-                            />
-                        </div>
                         
-                        {/* Render builtin MCP servers (time, shell) */}
+                        {/* Render on-demand tools section */}
+                        {(() => {
+                            // Check if we have any on-demand tools (active or available)
+                            const ondemandServer = status.servers?.['ondemand'];
+                            const hasActiveTools = ondemandServer && ondemandServer.tools > 0;
+                            const availableTools = ondemandServer?.available_tools || [];
+                            
+                            if (hasActiveTools) {
+                                // Show active on-demand tools
+                                const tokenCount = status.token_costs?.servers['ondemand'] || 0;
+                                const toolDetails = ondemandServer.tool_details || [];
+                                
+                                return (
+                                    <div key="ondemand" style={{ 
+                                        marginBottom: 12, 
+                                        padding: 16, 
+                                        border: isDarkMode ? '1px solid #434343' : '1px solid #eee',
+                                        borderRadius: 6,
+                                        backgroundColor: isDarkMode ? '#1a1f2e' : '#f0f5ff'
+                                    }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                                            <div style={{ flex: 1 }}>
+                                                <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+                                                    <strong style={{ fontSize: '14px' }}>On-demand Tools - Active</strong>
+                                                    <Tag color="blue" style={{ marginLeft: 8 }}>
+                                                        {ondemandServer.tools} tool{ondemandServer.tools !== 1 ? 's' : ''} loaded
+                                                    </Tag>
+                                                    {tokenCount > 0 && (
+                                                        <Tag color="purple" style={{ marginLeft: 4 }}>
+                                                            {formatTokenCount(tokenCount)} tokens
+                                                        </Tag>
+                                                    )}
+                                                </div>
+                                                <div style={{ fontSize: '12px', color: isDarkMode ? '#a0a0a0' : '#666', marginBottom: 12 }}>
+                                                    Specialized tools automatically loaded based on files in context
+                                                </div>
+                                                {toolDetails.length > 0 && (
+                                                    <div style={{ 
+                                                        fontSize: '12px', 
+                                                        marginTop: 8,
+                                                        paddingLeft: 12,
+                                                        borderLeft: `2px solid ${isDarkMode ? '#40a9ff' : '#1890ff'}`
+                                                    }}>
+                                                        {toolDetails.map((detail, idx) => (
+                                                            <div key={idx} style={{ marginBottom: 6 }}>
+                                                                <strong style={{ color: isDarkMode ? '#40a9ff' : '#1890ff' }}>{detail.name}</strong>
+                                                                <div style={{ fontSize: '11px', color: isDarkMode ? '#888' : '#999', marginTop: 2 }}>
+                                                                    Triggered by: <code style={{ 
+                                                                        backgroundColor: isDarkMode ? '#1f1f1f' : '#f5f5f5',
+                                                                        padding: '2px 6px',
+                                                                        borderRadius: 3,
+                                                                        fontSize: '11px'
+                                                                    }}>{detail.trigger_desc}</code> file{detail.triggers.length > 1 ? 's' : ''} in context
+                                                                </div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            } else if (availableTools.length > 0) {
+                                // Show compact collapsed section for available but inactive tools
+                                const availableCount = availableTools.filter(t => t.dependencies_met).length;
+                                const unavailableCount = availableTools.filter(t => !t.dependencies_met).length;
+                                
+                                return (
+                                    <div key="ondemand-available" style={{ 
+                                        marginBottom: 12, 
+                                        padding: 12, 
+                                        border: isDarkMode ? '1px solid #434343' : '1px solid #eee',
+                                        borderRadius: 6,
+                                        backgroundColor: isDarkMode ? '#1a1a1a' : '#fafafa'
+                                    }}>
+                                        <div 
+                                            style={{ 
+                                                display: 'flex', 
+                                                alignItems: 'center', 
+                                                cursor: 'pointer',
+                                                fontSize: '13px'
+                                            }}
+                                            onClick={() => setOnDemandToolsExpanded(!onDemandToolsExpanded)}
+                                        >
+                                            <span style={{ marginRight: 8 }}>{onDemandToolsExpanded ? '▼' : '▶'}</span>
+                                            <strong>On-demand Tools</strong>
+                                            <Tag color="default" style={{ marginLeft: 8, fontSize: '11px' }}>
+                                                None Active
+                                            </Tag>
+                                            {availableCount > 0 && (
+                                                <Tag color="green" style={{ marginLeft: 4, fontSize: '11px' }}>
+                                                    {availableCount} available
+                                                </Tag>
+                                            )}
+                                            {unavailableCount > 0 && (
+                                                <Tag color="orange" style={{ marginLeft: 4, fontSize: '11px' }}>
+                                                    {unavailableCount} needs dependencies
+                                                </Tag>
+                                            )}
+                                        </div>
+                                        
+                                        {onDemandToolsExpanded && (
+                                            <div style={{ marginTop: 12, paddingLeft: 20 }}>
+                                                <div style={{ fontSize: '11px', color: isDarkMode ? '#888' : '#999', marginBottom: 8 }}>
+                                                    Tools automatically loaded when matching files are added to context
+                                                </div>
+                                                {availableTools.map((tool, idx) => (
+                                                    <div key={idx} style={{ 
+                                                        marginBottom: 8,
+                                                        paddingBottom: 8,
+                                                        borderBottom: idx < availableTools.length - 1 ? `1px solid ${isDarkMode ? '#2a2a2a' : '#e8e8e8'}` : 'none'
+                                                    }}>
+                                                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                                            <strong style={{ fontSize: '12px', color: isDarkMode ? '#40a9ff' : '#1890ff' }}>
+                                                                {tool.name}
+                                                            </strong>
+                                                            {tool.dependencies_met ? (
+                                                                <Tag color="green" style={{ fontSize: '10px', padding: '0 4px' }}>
+                                                                    Ready
+                                                                </Tag>
+                                                            ) : (
+                                                                <Tag color="orange" style={{ fontSize: '10px', padding: '0 4px' }}>
+                                                                    Dependencies Missing
+                                                                </Tag>
+                                                            )}
+                                                        </div>
+                                                        <div style={{ fontSize: '10px', color: isDarkMode ? '#666' : '#999', marginTop: 2 }}>
+                                                            Triggers: <code style={{ 
+                                                                backgroundColor: isDarkMode ? '#0d0d0d' : '#f0f0f0',
+                                                                padding: '1px 4px',
+                                                                borderRadius: 2,
+                                                                fontSize: '10px'
+                                                            }}>{tool.triggers.join(', ')}</code>
+                                                            {!tool.dependencies_met && (
+                                                                <span style={{ marginLeft: 6, color: '#ff9800' }}>
+                                                                    • Install: pip install {tool.missing_dependencies.join(' ')}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            }
+                            
+                            return null; // No on-demand tools at all
+                        })()}
+                        
+                        {/* Render regular builtin MCP servers (time, shell) */}
                         {status.servers && Object.entries(status.servers)
-                            .filter(([name, server]: [string, any]) => server.builtin)
+                            .filter(([name, server]: [string, any]) => server.builtin && !server.is_ondemand)
                             .map(([name, server]: [string, any]) => {
                                 const isEnabled = status.server_configs?.[name]?.enabled !== false;
                                 const tokenCount = status.token_costs?.servers[name] || 0;
@@ -679,7 +826,8 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                         ))}
                         
                         {Object.keys(builtinTools).length === 0 && 
-                         (!status.servers || Object.values(status.servers).filter((s: any) => s.builtin).length === 0) && (
+                         (!status.servers || Object.values(status.servers)
+                             .filter((s: any) => s.builtin && !s.is_ondemand).length === 0) && (
                             <Empty 
                                 description="No builtin tools available" 
                                 image={Empty.PRESENTED_IMAGE_SIMPLE}
@@ -757,12 +905,19 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                 />
                                                 <span style={{ marginLeft: 8 }}>{isEnabled ? 'Enabled' : 'Disabled'}</span>
                                                 {isEnabled && server.tools > 0 && (() => {
-                                                    const enabledTools = Object.keys(permissions?.servers?.[name]?.tools || {})
-                                                        .filter(toolName => permissions?.servers?.[name]?.tools?.[toolName]?.permission === 'enabled').length;
+                                                    // Count tools that are enabled (explicitly or by default)
+                                                    const disabledTools = Object.keys(permissions?.servers?.[name]?.tools || {})
+                                                        .filter(toolName => permissions?.servers?.[name]?.tools?.[toolName]?.permission === 'disabled').length;
+                                                    const enabledTools = server.tools - disabledTools;
                                                     const totalTools = server.tools;
+                                                    
+                                                    // Show count with helpful indicator
+                                                    if (disabledTools > 0) {
+                                                        return <span style={{ marginLeft: 8, fontSize: '11px', color: '#ff4d4f' }}>({disabledTools} disabled)</span>;
+                                                    }
                                                     return (
                                                         <span style={{ marginLeft: 8, fontSize: '11px', color: '#999' }}>
-                                                            ({enabledTools || totalTools} / {totalTools} tools enabled)
+                                                            (all tools enabled)
                                                         </span>
                                                     );
                                                 })()}
@@ -818,7 +973,8 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                     <List
                                                         dataSource={serverDetails[name].tools}
                                                         renderItem={(tool: MCPTool) => {
-                                                            const toolPermission = permissions?.servers?.[name]?.tools?.[tool.name]?.permission || permissions?.defaults?.tool || 'ask';
+                                                            // Default to 'enabled' if no explicit permission set
+                                                            const toolPermission = permissions?.servers?.[name]?.tools?.[tool.name]?.permission || permissions?.defaults?.tool || 'enabled';
                                                             const isToolEnabled = toolPermission === 'enabled';
                                                             
                                                             return (

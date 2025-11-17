@@ -200,6 +200,58 @@ async def get_mcp_status():
         config_info = mcp_manager.get_config_search_info()
         server_configs = mcp_manager.server_configs
         
+        # Add dynamic tools as a virtual server - only when tools are actually active
+        from app.mcp.dynamic_tools import get_dynamic_loader
+        dynamic_loader = get_dynamic_loader()
+        active_dynamic_tools = dynamic_loader.get_active_tools()
+        tool_triggers = dynamic_loader.get_all_triggers()
+        available_tools_info = dynamic_loader.get_available_tools_info()
+        
+        # Only show on-demand tools section when tools are actually loaded
+        if active_dynamic_tools and len(active_dynamic_tools) > 0:
+            # Build detailed descriptions with trigger information
+            tool_details = []
+            for tool_name, tool_instance in active_dynamic_tools.items():
+                # Get tool display name and trigger info
+                triggers = tool_triggers.get(tool_name, [])
+                trigger_desc = ", ".join(triggers) if triggers else "unknown trigger"
+                
+                # Get a friendly name for the tool
+                if tool_name == "analyze_pcap":
+                    friendly_name = "PCAP Network Analyzer"
+                else:
+                    # Default: capitalize and clean up underscores
+                    friendly_name = tool_name.replace('_', ' ').title()
+                
+                tool_details.append({
+                    "name": friendly_name,
+                    "tool_name": tool_name,
+                    "triggers": triggers,
+                    "trigger_desc": trigger_desc
+                })
+            
+            # Add on-demand tools as a virtual server entry
+            status["ondemand"] = {
+                "connected": True,
+                "resources": 0,
+                "tools": len(active_dynamic_tools),
+                "prompts": 0,
+                "capabilities": {},
+                "builtin": True,
+                "is_ondemand": True,  # Special flag to identify this as on-demand
+                "tool_details": tool_details  # Include detailed trigger information
+            }
+            
+            # Add to server_configs
+            server_configs["ondemand"] = {
+                "enabled": True,
+                "description": "On-demand Tools",
+                "builtin": True,
+                "is_ondemand": True,
+                "tool_details": tool_details,
+                "available_tools": available_tools_info
+            }
+        
         # Calculate token costs for each server (including disabled ones)
         from app.mcp.permissions import get_permissions_manager
         permissions_manager = get_permissions_manager()
@@ -247,6 +299,25 @@ async def get_mcp_status():
                     enabled_tool_tokens += enabled_token_count
                     
                     logger.debug(f"Server {server_name}: {len(enabled_tools_dict)}/{len(tools_dict)} tools enabled, {enabled_token_count}/{token_count} tokens")
+        
+        # Add dynamic tools to token calculation
+        if active_dynamic_tools:
+            # Calculate token cost for active dynamic tools
+            dynamic_tools_dict = [
+                {
+                    'name': tool_instance.name,
+                    'description': tool_instance.description,
+                    'inputSchema': tool_instance.InputSchema.schema()
+                }
+                for tool_instance in active_dynamic_tools.values()
+            ]
+            
+            dynamic_token_count = count_server_tool_tokens(dynamic_tools_dict)
+            server_token_costs["ondemand"] = dynamic_token_count
+            total_tool_tokens += dynamic_token_count
+            enabled_tool_tokens += dynamic_token_count
+            
+            logger.debug(f"Dynamic tools: {len(active_dynamic_tools)} tools, {dynamic_token_count} tokens")
         
         # Calculate instruction token costs
         instruction_costs = calculate_model_instruction_tokens()
@@ -699,6 +770,28 @@ async def update_tool_permission(request: ToolPermissionUpdateRequest):
 async def get_mcp_server_details(server_name: str):
     """Get details (tools, resources, prompts) for a specific MCP server."""
     try:
+        mcp_manager = get_mcp_manager()
+        
+        # Handle dynamic tools virtual server
+        if server_name == "ondemand" or server_name == "dynamic":
+            from app.mcp.dynamic_tools import get_dynamic_loader
+            dynamic_loader = get_dynamic_loader()
+            active_tools = dynamic_loader.get_active_tools()
+            
+            return {
+                "tools": [
+                    {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "inputSchema": tool.InputSchema.schema()
+                    }
+                    for tool in active_tools.values()
+                ],
+                "resources": [],
+                "prompts": [],
+                "logs": ["Dynamic tools loaded based on file selection"]
+            }
+        
         mcp_manager = get_mcp_manager()
         if not mcp_manager.is_initialized or server_name not in mcp_manager.clients:
             raise HTTPException(status_code=404, detail="Server not found or not initialized")
