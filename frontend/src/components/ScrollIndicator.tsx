@@ -1,6 +1,6 @@
 import React from 'react';
 import { Button, Tooltip } from 'antd';
-import { DownOutlined, ArrowDownOutlined } from '@ant-design/icons';
+import { DownOutlined, ArrowDownOutlined, UpOutlined, ArrowUpOutlined } from '@ant-design/icons';
 import { useTheme } from '../context/ThemeContext';
 
 interface ScrollIndicatorProps {
@@ -24,7 +24,7 @@ export const ScrollIndicator: React.FC<ScrollIndicatorProps> = ({
         bottom: '80px',
         right: '24px'
     } : {
-        top: '80px',
+        top: '120px', // Extra space to avoid overlapping with fixed input box
         right: '24px'
     };
 
@@ -33,15 +33,17 @@ export const ScrollIndicator: React.FC<ScrollIndicatorProps> = ({
         : (isDarkMode ? '#ad6800' : '#faad14'); // Yellow for streaming
 
     const icon = isCompleted
-        ? <ArrowDownOutlined style={{ 
-            fontSize: '20px', 
-            transform: isTopToBottom ? 'none' : 'rotate(180deg)' 
-          }} />
-        : <DownOutlined style={{ fontSize: '20px', transform: isTopToBottom ? 'none' : 'rotate(180deg)' }} />;
+        ? (isTopToBottom 
+            ? <ArrowDownOutlined style={{ fontSize: '20px' }} />
+            : <ArrowUpOutlined style={{ fontSize: '20px' }} />)
+        : (isTopToBottom
+            ? <DownOutlined style={{ fontSize: '20px' }} />
+            : <UpOutlined style={{ fontSize: '20px' }} />);
 
+    const scrollDirection = isTopToBottom ? 'bottom' : 'top';
     const tooltipText = isCompleted
-        ? 'New content available - click to scroll'
-        : 'New content streaming - click to follow';
+        ? `New content available - click to scroll to ${scrollDirection}`
+        : `New content streaming - click to follow to ${scrollDirection}`;
 
     return (
         <Tooltip title={tooltipText} placement={isTopToBottom ? 'left' : 'left'}>
@@ -65,7 +67,7 @@ export const ScrollIndicator: React.FC<ScrollIndicatorProps> = ({
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    animation: 'slideInRight 0.3s ease-out',
+                    animation: isTopToBottom ? 'slideInRight 0.3s ease-out' : 'slideInDown 0.3s ease-out',
                     cursor: 'pointer',
                     transition: 'all 0.3s ease'
                 }}
@@ -93,6 +95,17 @@ if (typeof document !== 'undefined' && !document.getElementById('scroll-indicato
             to {
                 opacity: 1;
                 transform: translateX(0);
+            }
+        }
+        
+        @keyframes slideInDown {
+            from {
+                opacity: 0;
+                transform: translateY(-50px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
             }
         }
         

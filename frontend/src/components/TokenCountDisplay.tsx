@@ -474,6 +474,13 @@ export const TokenCountDisplay = memo(() => {
                 // Use accurate count if available
         let tokens = folders ? getFolderTokenCount(path, folders) : 0;
                 const accurateData = accurateTokenCounts[path];
+                
+                // Skip tool-backed files (marked as -1) from total count
+                if (tokens === -1) {
+                    details[path] = -1; // Mark but don't add to total
+                    return;
+                }
+                
                 if (accurateData && path.includes('.')) { // Only for files
                     tokens = accurateData.count;
                     accurateFileCount++;
@@ -672,6 +679,10 @@ export const TokenCountDisplay = memo(() => {
     // Helper to get file token display with accuracy indicator
     const getFileTokenDisplay = () => {
         const accurateCount = Object.keys(accurateTokenCounts).length;
+        
+        // Check if we have any tool-backed files (marked as -1)
+        const hasToolBackedFiles = Object.values(tokenDetailsRef.current).some(count => count === -1);
+        
         const selectedFiles = checkedKeys.filter(key => {
             const keyStr = String(key);
             return keyStr.includes('.') && !keyStr.endsWith('/') && 
@@ -681,7 +692,7 @@ export const TokenCountDisplay = memo(() => {
         const isFullyAccurate = selectedFiles > 0 && accurateCount === selectedFiles;
         const hasAnyAccurate = accurateCount > 0;
         
-        return `${totalTokenCount.toLocaleString()}${isFullyAccurate ? '✓' : (hasAnyAccurate ? '~' : '~')}`;
+        return `${totalTokenCount.toLocaleString()}${hasToolBackedFiles ? '(*)' : ''}${isFullyAccurate ? '✓' : (hasAnyAccurate ? '~' : '')}`;
     };
 
     // Build breakdown items (Files, MCP, AST, Chat)

@@ -10,6 +10,7 @@ import {
     BulbOutlined,
     SwapOutlined,
     CodeOutlined,
+    ExportOutlined,
     ApiOutlined,
     CloudServerOutlined,
     SettingOutlined
@@ -26,6 +27,7 @@ import { ScrollIndicator } from './ScrollIndicator';
 const ShellConfigModal = React.lazy(() => import("./ShellConfigModal"));
 const MCPStatusModal = React.lazy(() => import("./MCPStatusModal"));
 const MCPRegistryModal = React.lazy(() => import("./MCPRegistryModal"));
+const ExportConversationModal = React.lazy(() => import("./ExportConversationModal"));
 // Lazy load the Conversation component
 const Conversation = React.lazy(() => import("./Conversation"));
 const AstStatusIndicator = React.lazy(() => import("./AstStatusIndicator"));
@@ -123,6 +125,7 @@ export const App: React.FC = () => {
     const [showShellConfig, setShowShellConfig] = useState(false);
     const [showMCPStatus, setShowMCPStatus] = useState(false);
     const [showMCPRegistry, setShowMCPRegistry] = useState(false);
+    const [showExportModal, setShowExportModal] = useState(false);
     const [mcpEnabled, setMcpEnabled] = useState(false);
 
     const {
@@ -460,6 +463,10 @@ export const App: React.FC = () => {
                                 />
                             </>
                         )}
+                    </Suspense>
+                    
+                    <Suspense fallback={null}>
+                        <ExportConversationModal visible={showExportModal} onClose={() => setShowExportModal(false)} />
                     </Suspense>
 
                 </ConfigProvider>
