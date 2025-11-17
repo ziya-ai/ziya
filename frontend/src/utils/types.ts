@@ -33,6 +33,7 @@ export type Message = {
     _timestamp?: number;
     _version?: number;
     isComplete?: boolean;
+    _isToolResult?: boolean;
 };
 
 export interface ConversationFolder {

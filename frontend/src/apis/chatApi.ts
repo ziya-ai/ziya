@@ -152,6 +152,17 @@ function extractErrorFromSSE(content: string): ErrorResponse | null {
                 };
             }
 
+            // Check for authentication/credential errors specifically (these may not have status_code)
+            if (parsed.error && typeof parsed.error === 'string' &&
+                (parsed.error.includes('credential') || parsed.error.includes('mwinit') ||
+                    parsed.error.includes('authentication') || parsed.error.includes('AWS credentials'))) {
+                return {
+                    error: 'auth_error',
+                    detail: parsed.error,
+                    status_code: 401
+                };
+            }
+
             // Check for direct error format
             if (parsed.error || parsed.detail) {
                 return {
@@ -475,14 +486,22 @@ export const sendPayload = async (
     addMessageToConversation: (message: Message, conversationId: string, isNonCurrentConversation?: boolean) => void,
     isStreamingToCurrentConversation: boolean = true,
     setProcessingState?: (state: ProcessingState) => void,
-    setReasoningContentMap?: Dispatch<SetStateAction<Map<string, string>>>
+    setReasoningContentMap?: Dispatch<SetStateAction<Map<string, string>>>,
+    throttlingRecoveryDataRef?: { toolResults?: any[]; partialContent?: string }
 ): Promise<string> => {
     let eventSource: any = null;
     let currentContent = '';
     let containsDiff = false;
     let errorOccurred = false;
     let toolInputsMap = new Map<string, any>(); // Store tool inputs by tool ID
-    let originalRequestParams = { messages, question, checkedItems, conversationId }; // Store for retry
+
+    // Store original params but also track accumulated content for retry
+    let originalRequestParams = {
+        messages,
+        question,
+        checkedItems,
+        conversationId
+    };
     let activeFeedbackToolId: string | null = null;
 
     // Connect feedback WebSocket
@@ -543,6 +562,14 @@ export const sendPayload = async (
         }
     };
     document.addEventListener('abortStream', abortListener as EventListener);
+
+    // CRITICAL FIX: Check if there's already an active stream for this conversation
+    if (streamedContentMap.has(conversationId) && streamedContentMap.get(conversationId) !== '') {
+        console.warn('🔄 Stream already active for conversation:', conversationId);
+        console.warn('Aborting existing stream before starting new one');
+        document.dispatchEvent(new CustomEvent('abortStream', { detail: { conversationId } }));
+        await new Promise(resolve => setTimeout(resolve, 300));
+    }
 
     try {
         // Filter out empty messages
@@ -655,23 +682,17 @@ export const sendPayload = async (
 
         // Extract the single data message processing logic into a separate function
         const processSingleDataMessage = (data: string) => {
-            // Skip heartbeat messages entirely
-            if (data.includes('"heartbeat": true') || data.includes('"type": "heartbeat"')) {
-                console.log('📊 SSE: Skipping heartbeat message');
-                return;
-            }
-
-            // Check if this chunk contains diff syntax and set the flag
-            if (!containsDiff && (
-                data.includes('```diff') || data.includes('diff --git') ||
-                data.match(/^@@ /) || data.match(/^\+\+\+ /) || data.match(/^--- /))) {
-                containsDiff = true;
-                console.log("Detected diff content, disabling error detection");
-            }
-
-            // Check if this is a hunk status update
             try {
+                // Skip heartbeat messages entirely
+                if (data.includes('"heartbeat": true') || data.includes('"type": "heartbeat"')) {
+                    console.log('📊 SSE: Skipping heartbeat message');
+                    return;
+                }
+
+                // Parse JSON first to check message type
                 const jsonData = JSON.parse(data);
+
+                // Check if this is a hunk status update
                 if (jsonData.request_id && jsonData.details && jsonData.details.hunk_statuses) {
                     // Dispatch a custom event with the hunk status update
                     window.dispatchEvent(new CustomEvent('hunkStatusUpdate', {
@@ -681,8 +702,32 @@ export const sendPayload = async (
                         }
                     }));
                 }
+
+                // Unwrap tool_start and tool_result if they're wrapped
+                let unwrappedData = jsonData;
+                if (jsonData.tool_start) {
+                    unwrappedData = jsonData.tool_start;
+                } else if (jsonData.tool_result) {
+                    unwrappedData = jsonData.tool_result;
+                    unwrappedData.type = 'tool_display';
+                }
+
+                // CRITICAL: Check if this is tool-related content BEFORE doing any pattern detection
+                const isToolContent = unwrappedData.type === 'tool_start' ||
+                    unwrappedData.type === 'tool_display' ||
+                    unwrappedData.type === 'tool_execution' ||
+                    unwrappedData.tool_name ||
+                    unwrappedData.tool_id;
+
+                // Only check for diff patterns in non-tool content
+                if (!isToolContent && !containsDiff && (
+                    data.includes('```diff') || data.includes('diff --git') ||
+                    data.match(/^@@ /) || data.match(/^\+\+\+ /) || data.match(/^--- /))) {
+                    containsDiff = true;
+                    console.log("Detected diff content, disabling error detection");
+                }
             } catch (e) {
-                // Not JSON or not a hunk status update, ignore
+                // JSON parse error, continue processing
             }
 
             // Check for partial response preservation warnings
@@ -776,6 +821,22 @@ export const sendPayload = async (
                 try {
                     const errorData = JSON.parse(data);
 
+                    // CRITICAL: Extract and store successful tool results for retry
+                    if (errorData.successful_tool_results && Array.isArray(errorData.successful_tool_results)) {
+                        console.log('📦 THROTTLE_RECOVERY: Captured', errorData.successful_tool_results.length, 'successful tool results');
+                        
+                        // Store in recovery data ref if provided
+                        if (throttlingRecoveryDataRef) {
+                            throttlingRecoveryDataRef.toolResults = errorData.successful_tool_results;
+                            throttlingRecoveryDataRef.partialContent = currentContent;
+                        }
+                        
+                        // Also dispatch for other components that might need it
+                        document.dispatchEvent(new CustomEvent('throttlingRecoveryData', {
+                            detail: { conversationId, toolResults: errorData.successful_tool_results, partialContent: currentContent }
+                        }));
+                    }
+
                     // Include the current streamed content in the preserved data
                     if (currentContent && currentContent.trim()) {
                         errorData.existing_streamed_content = currentContent;
@@ -837,18 +898,10 @@ export const sendPayload = async (
                 // Unwrap tool_start and tool_result if they're wrapped
                 let unwrappedData = jsonData;
                 if (jsonData.tool_start) {
-                    console.log('🔧 Processing wrapped tool_start - this is legitimate tool data, not an error');
                     unwrappedData = jsonData.tool_start;
                 } else if (jsonData.tool_result) {
-                    console.log('🔧 Processing wrapped tool_result - this is legitimate tool data, not an error');
-
-                    // Tool results should never be processed by error detection
-                    // even if they contain error-related keywords in their content.
-                    // This prevents legitimate tool output (source code, command output, etc.)
-                    // from being misinterpreted as actual API errors.
-
                     unwrappedData = jsonData.tool_result;
-                    unwrappedData.type = 'tool_display'; // Normalize to tool_display
+                    unwrappedData.type = 'tool_display';
                 }
 
                 // Process the JSON object
@@ -915,16 +968,33 @@ export const sendPayload = async (
 
                                 // Disable the button during retry
                                 retryButton.disabled = true;
-                                retryButton.textContent = '⏳ Waiting...';
 
-                                // Wait the suggested time
-                                const waitTime = parseInt(retryButton.dataset.throttleWait || '60', 10);
-                                message.info(`Waiting ${waitTime} seconds before retry...`, waitTime);
-                                await new Promise(resolve => setTimeout(resolve, waitTime * 1000));
+                                // CRITICAL FIX: Build conversation history including content before throttle
+                                const messagesForRetry = [...originalRequestParams.messages];
 
-                                // Retry by calling sendPayload recursively with original parameters
+                                // Add the assistant's partial response before the throttle
+                                if (currentContent && currentContent.trim()) {
+                                    messagesForRetry.push({
+                                        role: 'assistant',
+                                        content: currentContent,
+                                        _timestamp: Date.now()
+                                    });
+
+                                    console.log('🔄 RETRY: Including partial response in retry context:',
+                                        currentContent.length, 'characters');
+                                }
+
+                                // Continue with the original question
+                                const continueQuestion = originalRequestParams.question;
+
+                                console.log('🔄 RETRY: Sending', messagesForRetry.length,
+                                    'messages (including partial response)');
+
+                                // Don't wait - user already waited by clicking the button
+                                // If they click too early, AWS will reject it and they can try again
+
                                 message.info('Retrying request...');
-                                await sendPayload(originalRequestParams.messages, originalRequestParams.question,
+                                await sendPayload(messagesForRetry, continueQuestion,
                                     originalRequestParams.checkedItems, originalRequestParams.conversationId,
                                     streamedContentMap, setStreamedContentMap, setIsStreaming,
                                     removeStreamingConversation, addMessageToConversation, isStreamingToCurrentConversation, setProcessingState, setReasoningContentMap);
@@ -974,7 +1044,13 @@ export const sendPayload = async (
                         const lines = currentContent.split('\n');
                         currentContent = lines.slice(0, rewindLine).join('\n');
 
-                        console.log(`🔄 REWIND: Rewound to line ${rewindLine}, waiting for continuation chunks`);
+                        // Strip the marker and "Block continues" text from this chunk's content
+                        // but keep any actual content that comes after
+                        jsonData.content = jsonData.content
+                            .replace(/<!-- REWIND_MARKER: \d+ -->\n?/, '')
+                            .replace(/\*\*🔄 Block continues\.\.\.\*\*\n?/, '');
+
+                        console.log(`🔄 REWIND: Rewound to line ${rewindLine}, stripped marker text`);
                         // Update the map immediately to reflect the rewound content
                         setStreamedContentMap((prev: Map<string, string>) => {
                             const next = new Map(prev);
@@ -982,8 +1058,7 @@ export const sendPayload = async (
                             return next;
                         });
 
-                        // Skip this chunk - continuation will come in separate chunks
-                        return;
+                        // Continue processing this chunk in case there's actual content after the marker
                     }
                 }
 
@@ -1772,8 +1847,11 @@ function handleSequentialThinkingStart(
     const totalThoughts = toolStart.args?.totalThoughts || 1;
 
     if (thinkingContent) {
+        // Escape any code fences in the thinking content to prevent breaking the outer fence
+        const escapedContent = thinkingContent.replace(/```/g, '\\`\\`\\`');
+        
         // Create a thinking block display
-        const thinkingDisplay = `\n\`\`\`thinking:step-${thoughtNumber}\n🤔 **Thought ${thoughtNumber}/${totalThoughts}**\n\n${thinkingContent}\n\`\`\`\n\n`;
+        const thinkingDisplay = `\n\`\`\`thinking:step-${thoughtNumber}\n🤔 **Thought ${thoughtNumber}/${totalThoughts}**\n\n${escapedContent}\n\`\`\`\n\n`;
 
         currentContent += thinkingDisplay;
 
@@ -1811,12 +1889,15 @@ function handleSequentialThinkingDisplay(
         const isComplete = result.nextThoughtNeeded === false;
 
         if (thinkingContent) {
+            // Escape any code fences in the thinking content to prevent breaking the outer fence
+            const escapedContent = thinkingContent.replace(/```/g, '\\`\\`\\`');
+            
             // Replace the "Running" indicator with the actual thinking content
             const toolStartPrefix = `\\cp_sequentialthinking\n⏳ Running:`;
             const toolStartSuffix = `\n\`\`\`\n\n`;
             const lastStartIndex = currentContent.lastIndexOf(toolStartPrefix);
 
-            const thinkingDisplay = `\n\`\`\`thinking:step-${thoughtNumber}\n🤔 **Thought ${thoughtNumber}/${totalThoughts}**\n\n${thinkingContent}\n\n${nextThoughtNeeded ? '_Continuing to next thought..._' : '_Thinking complete._'}\n\`\`\`\n\n`;
+            const thinkingDisplay = `\n\`\`\`thinking:step-${thoughtNumber}\n🤔 **Thought ${thoughtNumber}/${totalThoughts}**\n\n${escapedContent}\n\n${nextThoughtNeeded ? '_Continuing to next thought..._' : '_Thinking complete._'}\n\`\`\`\n\n`;
 
             if (lastStartIndex !== -1) {
                 const blockEndIndex = currentContent.indexOf(toolStartSuffix, lastStartIndex);
