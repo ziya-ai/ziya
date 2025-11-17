@@ -224,35 +224,35 @@ export const vegaLitePlugin: D3RenderPlugin = {
       }
 
       // Configure autosize to make visualizations responsive
-      vegaSpec.autosize = {
-        type: 'fit-x',
-        contains: 'padding',
-        resize: true
-      };
-
-      // Ensure axis labels are properly displayed without overriding user config
-      if (vegaSpec.layer) {
-        vegaSpec.layer.forEach(layer => {
-          if (layer.encoding?.x && !layer.encoding.x.axis) {
-            // Only add default axis config if none exists
-            layer.encoding.x.axis = {
-              labelAngle: 0,
-              labelLimit: 0, // No limit to prevent truncation
-              labelFontSize: 11
+            vegaSpec.autosize = {
+                type: 'fit-x',
+                contains: 'padding',
+                resize: true
             };
-          }
-          if (layer.encoding?.y && !layer.encoding.y.axis) {
-            // Ensure y-axis labels are also properly displayed
-            layer.encoding.y.axis = {
-              labelLimit: 0,
-              labelFontSize: 11
-            };
-          }
-        });
-      }
 
-      // Ensure it has a schema if not present
-      if (!vegaSpec.$schema) {
+            // Ensure axis labels are properly displayed without overriding user config
+            if (vegaSpec.layer) {
+                vegaSpec.layer.forEach(layer => {
+                    if (layer.encoding?.x && !layer.encoding.x.axis) {
+                        // Only add default axis config if none exists
+                        layer.encoding.x.axis = {
+                            labelAngle: 0,
+                            labelLimit: 0, // No limit to prevent truncation
+                            labelFontSize: 11
+                        };
+                    }
+                    if (layer.encoding?.y && !layer.encoding.y.axis) {
+                        // Ensure y-axis labels are also properly displayed
+                        layer.encoding.y.axis = {
+                            labelLimit: 0,
+                            labelFontSize: 11
+                        };
+                    }
+                });
+            }
+
+            // Ensure it has a schema if not present
+            if (!vegaSpec.$schema) {
         vegaSpec.$schema = 'https://vega.github.io/schema/vega-lite/v5.json';
       }
 
@@ -267,7 +267,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
             x_coord: d.level * Math.cos((d.order - 1) * 2 * Math.PI / (dataValues.length - 1)),
             y_coord: d.level * Math.sin((d.order - 1) * 2 * Math.PI / (dataValues.length - 1))
           }));
-
+          
           // Update encoding to use cartesian coordinates
           vegaSpec.encoding = {
             x: { field: "x_coord", type: "quantitative", scale: { domain: [-100, 100] } },
@@ -673,7 +673,7 @@ ${svgData}`;
             margin: 0;
             box-sizing: border-box;
             color: ${isDarkMode ? '#e6e6e6' : '#24292e'};
-          "><code>${JSON.stringify(vegaSpec, null, 2)}</code></pre>`;
+          }><code>${JSON.stringify(vegaSpec, null, 2)}</code></pre>`;
 
           // Re-add the actions container after clearing innerHTML
           if (actionsContainer.parentNode !== container) {
@@ -685,6 +685,7 @@ ${svgData}`;
           if (sourceView) {
             container.removeChild(sourceView);
           }
+
           // Restore the vega container
           if (vegaContainer) {
             vegaContainer.style.display = '';
