@@ -49,6 +49,10 @@ watchdog = "^6.0.0"
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.3"
 
+[tool.poetry.group.pcap.dependencies]
+# Optional: Network packet analysis tools
+scapy = "^2.5.0"
+
 [tool.poetry.extras]
 local = ["torch"]
 
