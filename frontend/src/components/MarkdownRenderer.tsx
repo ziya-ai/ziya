@@ -22,6 +22,7 @@ import 'katex/dist/katex.min.css';
 import { restartStreamWithEnhancedContext } from '../apis/chatApi';
 import { sendPayload } from '../apis/chatApi';
 import { formatMCPOutput } from '../utils/mcpFormatter';
+import { HTMLMockupRenderer } from './HTMLMockupRenderer';
 
 const { Panel } = Collapse;
 
@@ -37,7 +38,9 @@ const ThinkingBlock: React.FC<{ children: React.ReactNode; isDarkMode: boolean; 
 
     useEffect(() => {
         if (isString) {
-            const result = marked.parse(children, { breaks: true, gfm: true });
+            // Unescape any escaped backticks before parsing
+            const unescapedContent = (children as string).replace(/\\`\\`\\`/g, '```');
+            const result = marked.parse(unescapedContent, { breaks: true, gfm: true });
             if (typeof result === 'string') {
                 setHtmlContent(result);
             } else {
@@ -397,6 +400,10 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
             </div>
 
             {shouldShowCollapsed && !isExpanded ? (
+                (() => {
+                    const firstLine = cleanContent.split('\n')[0];
+                    const truncatedFirstLine = firstLine.length > 200 ? firstLine.substring(0, 200) + '...' : firstLine;
+                    return (
                 <div
                     style={{
                         padding: '16px',
@@ -415,7 +422,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
                                 wordBreak: 'break-word',
                                 fontFamily: 'monospace'
                             }}>
-                                {cleanContent.split('\n')[0]}
+                                {truncatedFirstLine}
                             </pre>
                             <div style={{
                                 marginTop: '8px',
@@ -423,7 +430,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
                                 textAlign: 'center',
                                 opacity: 0.7
                             }}>
-                                {summary} - Click to expand
+                                {summary}{firstLine.length > 200 ? ' (preview truncated)' : ''} - Click to expand
                             </div>
                         </div>
                     ) : (
@@ -432,6 +439,8 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
                         </div>
                     )}
                 </div>
+                    );
+                })()
             ) : (
                 <pre style={{
                     margin: 0,
@@ -3673,11 +3682,14 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
 
         // Enhanced tool block detection by content
         // Look for tool block markers that might have been missed by lang detection
-        if (trimmedText.startsWith('```tool:mcp_') ||
-            trimmedText.includes('```tool:mcp_') ||
-            (trimmedText.startsWith('$ ') && trimmedText.length > 10) ||
-            trimmedText.match(/^[A-Z_]+:\s*\S+/) || // Environment variables or command outputs
-            trimmedText.includes('🔧') ||
+        if (trimmedText.startsWith('\`\`\`tool:mcp_') ||
+            trimmedText.includes('\cp_') ||
+            (trimmedText.startsWith('$ ') && trimmedText.length > 10 && 
+             !trimmedText.includes('\n') && // Single line commands only
+             !trimmedText.includes('ERROR:') && // Not error messages
+             !trimmedText.includes('WARNING:') && // Not warning messages
+             !trimmedText.includes('DEBUG:')) || // Not debug messages
+            trimmedText.includes('🔧') || // Tool emoji markers
             trimmedText.includes('🛠️')) {
 
             // Try to extract tool name from content
@@ -4244,9 +4256,9 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     if (!hasText(tokenWithText)) return null;
 
                     // Check for tool block HTML comments
-                    const toolBlockMatch = tokenWithText.text.match(/<!-- TOOL_BLOCK_START:(mcp_\w+)\|([^-]+) -->\n([\s\S]*?)\n<!-- TOOL_BLOCK_END:\1 -->/);
-                    if (toolBlockMatch) {
-                        const [, toolName, displayHeader, toolContent] = toolBlockMatch;
+                    const HTMLtoolBlockMatch = tokenWithText.text.match(/<!-- TOOL_BLOCK_START:(mcp_\w+)\|([^-]+) -->\s*([\s\S]*?)\s*<!-- TOOL_BLOCK_END:\1 -->/);
+                    if (HTMLtoolBlockMatch) {
+                        const [, toolName, displayHeader, toolContent] = HTMLtoolBlockMatch;
 
                         // Special handling for thinking tools
                         if (toolName === 'mcp_sequentialthinking' || toolName.includes('thinking')) {
@@ -4370,22 +4382,22 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'text':
                     if (!hasText(tokenWithText)) return null;
                     let decodedText = decodeHtmlEntities(tokenWithText.text);
-                    
+
                     // Check for encoded tool blocks
                     const toolBlockMatch = decodedText.match(/⟨TOOL:(mcp_\w+)\|([^|]+)\|([^⟩]+)⟩/);
                     if (toolBlockMatch) {
                         const [, toolName, displayHeader, encodedContent] = toolBlockMatch;
-                        
+
                         // Decode the content
                         let toolContent;
                         try {
-                            toolContent = encodedContent === 'LOADING' ? '⏳ Running...' : 
+                            toolContent = encodedContent === 'LOADING' ? '⏳ Running...' :
                                 decodeURIComponent(escape(atob(encodedContent)));
                         } catch (e) {
                             console.error('Failed to decode tool content:', e);
                             toolContent = 'Error decoding tool content';
                         }
-                        
+
                         // Render as ThinkingBlock or ToolBlock
                         return toolName === 'mcp_sequentialthinking' || toolName.includes('thinking') ?
                             <ThinkingBlock key={index} isDarkMode={isDarkMode} isStreaming={isStreaming}>{toolContent}</ThinkingBlock> :
@@ -4727,26 +4739,59 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             // Pre-process indented diff blocks before any other processing
             processedMarkdown = normalizeIndentedDiffs(processedMarkdown);
 
+            // Pre-process HTML comment tool blocks to prevent marked.js from fragmenting them
+            // This handles cases where marked doesn't recognize them as 'html' tokens
+            try {
+                const toolBlockRegex = /<!-- TOOL_BLOCK_START:(mcp_\w+)\|([^-]+) -->\s*([\s\S]*?)\s*<!-- TOOL_BLOCK_END:\1 -->/g;
+                const toolBlocks: Array<{ match: string, toolName: string, displayHeader: string, content: string }> = [];
+
+                let match;
+                while ((match = toolBlockRegex.exec(processedMarkdown)) !== null) {
+                    toolBlocks.push({
+                        match: match[0],
+                        toolName: match[1],
+                        displayHeader: match[2],
+                        content: match[3]
+                    });
+                }
+
+                // Replace tool blocks with markdown code blocks using a special lang tag
+                toolBlocks.forEach(({ match, toolName, displayHeader, content }) => {
+                    processedMarkdown = processedMarkdown.replace(
+                        match,
+                        `\`\`\`tool:${toolName}|${displayHeader}\n${content}\n\`\`\``
+                    );
+                });
+            } catch (toolBlockError) {
+                console.debug('Tool block preprocessing error (handled):', toolBlockError);
+            }
+
             // Ensure blank line before code fences in all problematic cases
             // Marked.js requires blank lines before code blocks for proper parsing
-
-            // Fix 1: Code fence on same line as heading (e.g., "### Title ```vega-lite")
+            
+            // Fix 0: Code fence immediately after bold/emphasis markers (e.g., "**text**\n```language")
             processedMarkdown = processedMarkdown.replace(
-                /(^#{1,6}\s+[^\n`]+?)\s+(```(?:vega-lite|mermaid|graphviz|diff|d3|json|javascript|typescript|python))/gm,
+                /(\*\*[^*]+\*\*|\*[^*]+\*|__[^_]+__|_[^_]+_)\n(```[a-zA-Z0-9_-]*)/gm,
+                '$1\n\n$2'
+            );
+            
+            // Fix 0b: Code fence after any markdown formatting without blank line
+            processedMarkdown = processedMarkdown.replace(/(\*\*)\n(```)/g, '$1\n\n$2');
+
+            // Fix 1: Code fence on same line as heading (e.g., "### Title ```language")
+            processedMarkdown = processedMarkdown.replace(
+                /(^#{1,6}\s+[^\n\`]+?)\s+(\`\`\`[a-zA-Z0-9_-]*)/gm,
                 '$1\n\n$2'
             );
 
-            // Fix 2: Code fence immediately after heading on next line (e.g., "###\n```")
+            // Fix 2: Code fence immediately after numbered list (e.g., "1. Item ```language")
             processedMarkdown = processedMarkdown.replace(
-                /(\d+\.\s+[^\n`]+?)\s+(```(?:vega-lite|mermaid|graphviz|diff|d3|json))/gm,
+                /(\d+\.\s+[^\n\`]+?)\s+(\`\`\`[a-zA-Z0-9_-]*)/gm,
                 '$1\n\n$2'
             );
 
             // Also fix after paragraphs or text that directly precedes code fences
-            processedMarkdown = processedMarkdown.replace(/([^\n])\n(```(?:vega-lite|mermaid|graphviz|diff|d3))/g, '$1\n\n$2');
-
-            // Also fix after paragraphs or text that directly precedes code fences
-            processedMarkdown = processedMarkdown.replace(/([^\n])\n(```(?:vega-lite|mermaid|graphviz|diff|d3))/g, '$1\n\n$2');
+            processedMarkdown = processedMarkdown.replace(/([^\n])\n(\`\`\`[a-zA-Z0-9_-]*)/g, '$1\n\n$2');
 
             // Don't process empty or whitespace-only markdown during streaming
             if (isStreamingState && (!processedMarkdown || processedMarkdown.trim() === '')) {
@@ -4791,15 +4836,8 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 processedMarkdown = removeThinkingTags(processedMarkdown);
             }
 
-            // Pre-process tool blocks to clean up literal inclusions
-            processedMarkdown = processedMarkdown.replace(
-                /```tool:(mcp_\w+)\s*```tool:(mcp_\w+)/g,
-                '```tool:$1'
-            );
-            processedMarkdown = processedMarkdown.replace(
-                /^```tool:(mcp_\w+)\s*$/gm,
-                '```tool:$1'
-            );
+            // Pre-process tool blocks to clean up ONLY duplicate tool markers
+            processedMarkdown = processedMarkdown.replace(/```tool:(mcp_\w+)\n```tool:\1/g, '```tool:$1');
 
             // First check if this is a diff or code block that shouldn't have math processing
             const isDiff = processedMarkdown.includes('diff --git') ||
@@ -4819,7 +4857,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             if (!isDiff && !hasTemplateVars) {
                 try {
                     // Split the markdown into code blocks and non-code blocks
-                    const segments = processedMarkdown.split(/(```[\s\S]*?```)/g);
+                    const segments = processedMarkdown.split(/(```[^\n]*\n[\s\S]*?```)/g);
 
                     // Process each segment separately
                     processedMarkdown = segments.map((segment, index) => {
@@ -4931,7 +4969,8 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     // Attach event listeners to throttle retry buttons after render
     const { currentConversationId, currentMessages, addMessageToConversation, streamedContentMap,
         setStreamedContentMap, setIsStreaming, removeStreamingConversation, streamingConversations,
-        updateProcessingState, addStreamingConversation } = useChatContext();
+        updateProcessingState, addStreamingConversation, throttlingRecoveryData,
+        setThrottlingRecoveryData } = useChatContext();
     const { checkedKeys } = useFolderContext();
 
     // Track attached handlers to prevent duplicates
@@ -4940,6 +4979,24 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     // Setup MutationObserver to watch for dynamically added throttle buttons
     useLayoutEffect(() => {
         if (!containerRef.current) return;
+        
+        // Listen for throttling recovery data
+        const handleThrottlingRecoveryData = (event: CustomEvent) => {
+            const { conversationId, toolResults, partialContent } = event.detail;
+            
+            if (conversationId && toolResults) {
+                console.log('📦 RECOVERY_DATA: Storing tool results for conversation:', conversationId);
+                const next = new Map(throttlingRecoveryData);
+                next.set(conversationId, { toolResults, partialContent });
+                setThrottlingRecoveryData(next);
+            }
+        };
+        
+        document.addEventListener('throttlingRecoveryData', handleThrottlingRecoveryData as EventListener);
+        
+        return () => {
+            document.removeEventListener('throttlingRecoveryData', handleThrottlingRecoveryData as EventListener);
+        };
 
         // Separate function to attach handler with proper closure
         const attachThrottleRetryHandler = (button: HTMLButtonElement) => {
@@ -4959,6 +5016,9 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 button.textContent = '⏳ Retrying...';
 
                 try {
+                    // Retrieve throttling recovery data for this conversation
+                    const recoveryData = throttlingRecoveryData.get(conversationId);
+                    
                     // Get the last user message to retry
                     const lastUserMessage = currentMessages.filter(msg => msg.role === 'human').pop();
                     if (!lastUserMessage) {
@@ -4969,9 +5029,35 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                     }
 
                     // Retry the request
+                    // CRITICAL FIX: Build conversation history including tool results
+                    const messagesForRetry = [...currentMessages.filter(msg => !msg.muted)];
+                    
+                    // Add successful tool results as tool_result messages
+                    if (recoveryData?.toolResults && recoveryData.toolResults.length > 0) {
+                        console.log('📦 RETRY: Including', recoveryData.toolResults.length, 'successful tool results');
+                        
+                        recoveryData.toolResults.forEach((toolResult, index) => {
+                            messagesForRetry.push({
+                                role: 'assistant',
+                                content: `Tool execution result ${index + 1}:\n\`\`\`tool:result\n${toolResult}\n\`\`\``,
+                                _timestamp: Date.now(),
+                                _isToolResult: true
+                            });
+                        });
+                    }
+                    
+                    // Add the partial text response if any
+                    if (recoveryData?.partialContent && recoveryData.partialContent.trim()) {
+                        messagesForRetry.push({
+                            role: 'assistant',
+                            content: recoveryData.partialContent,
+                            _timestamp: Date.now()
+                        });
+                    }
+                    
                     addStreamingConversation(conversationId);
                     await sendPayload(
-                        currentMessages.filter(msg => !msg.muted),
+                        messagesForRetry,
                         lastUserMessage.content,
                         checkedKeys as string[],
                         conversationId,
@@ -4983,6 +5069,11 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                         streamingConversations.has(conversationId),
                         (state) => updateProcessingState(conversationId, state)
                     );
+                    
+                    // Clear recovery data after successful retry
+                    const next = new Map(throttlingRecoveryData);
+                    next.delete(conversationId);
+                    setThrottlingRecoveryData(next);
                 } catch (error) {
                     console.error('Retry failed:', error);
                     message.error('Failed to retry request');
@@ -5017,19 +5108,22 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         });
 
         // Start observing
-        observer.observe(containerRef.current, {
-            childList: true,
-            subtree: true
-        });
+        if (containerRef.current) {
+            const container = containerRef.current!;
+            observer.observe(container as Node, {
+                childList: true,
+                subtree: true
+            });
 
-        // Also check for any existing buttons when effect runs
-        const existingButtons = containerRef.current.querySelectorAll('.throttle-retry-button');
-        existingButtons.forEach(button => {
-            if (!attachedHandlersRef.current.has(button)) {
-                attachThrottleRetryHandler(button as HTMLButtonElement);
-                attachedHandlersRef.current.add(button);
-            }
-        });
+            // Also check for any existing buttons when effect runs
+            const existingButtons = container.querySelectorAll('.throttle-retry-button');
+            existingButtons.forEach(button => {
+                if (!attachedHandlersRef.current.has(button)) {
+                    attachThrottleRetryHandler(button as HTMLButtonElement);
+                    attachedHandlersRef.current.add(button);
+                }
+            });
+        }
 
         return () => {
             observer.disconnect();

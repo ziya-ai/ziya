@@ -1,5 +1,7 @@
 import React, { useState, useCallback, useEffect, memo, useRef, useMemo } from 'react';
-import { message, Modal, Form, Spin, Input, Switch, Dropdown, Menu as AntMenu } from 'antd'; // Added AntD Dropdown & Menu
+import { message, Modal, Form, Spin, Input, Switch, Dropdown, Menu as AntMenu } from 'antd';
+import { ConversationHealthDebugModal } from './ConversationHealthDebug';
+import ExportConversationModal from './ExportConversationModal';
 import { useChatContext } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
 import { Conversation, ConversationFolder } from '../utils/types';
@@ -42,6 +44,7 @@ import {
   CopyOutlined as AntCopyOutlined,
   CompressOutlined as AntCompressOutlined,
   SettingOutlined as AntSettingOutlined,
+  ExportOutlined as AntExportOutlined,
   FolderOutlined as AntFolderOutlined,
   PushpinOutlined as AntPushpinOutlined,
 } from '@ant-design/icons';
@@ -141,6 +144,7 @@ interface ChatTreeItemProps {
   onConfigure: (id: string) => void;
   onFork: (id: string) => void;
   onCompress: (id: string) => void;
+  onExport?: (id: string) => void;
   onMove: (id: string, folderId: string | null) => void;
   onOpenMoveMenu?: (id: string, anchorEl: HTMLElement) => void;
   onCreateSubfolder?: (id: string) => void;
@@ -173,6 +177,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     onEdit,
     onDelete,
     onAddChat,
+    onExport,
     onPin,
     onConfigure,
     onFork,
@@ -343,7 +348,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                     overlay={<AntActionMenu // Use the new AntD menu component
                       isFolder={isFolder}
                       nodeId={nodeId}
-                      onEdit={onEdit} onDelete={onDelete} onFork={onFork} onCompress={onCompress}
+                      onEdit={onEdit} onDelete={onDelete} onFork={onFork} onCompress={onCompress} onExport={onExport}
                       onOpenMoveMenu={onOpenMoveMenu} // Pass the handler
                       onConfigure={onConfigure} onPin={onPin} isPinned={isPinned} onCreateSubfolder={onCreateSubfolder}
                     />}
@@ -379,7 +384,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
   );
 });
 
-const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress, onOpenMoveMenu, onConfigure, onPin, isPinned, onCreateSubfolder }) => {
+const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress, onExport, onOpenMoveMenu, onConfigure, onPin, isPinned, onCreateSubfolder }) => {
   const handleAntAction = (actionCallback: (id: string) => void, originalEvent?: React.MouseEvent | Event) => {
     originalEvent?.stopPropagation();
     actionCallback(nodeId);
@@ -398,6 +403,7 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
           onOpenMoveMenu && onOpenMoveMenu(nodeId, e.domEvent.currentTarget as HTMLElement); // Pass the clicked element as anchor
         }
       },
+      { key: 'export', label: 'Export', icon: <AntExportOutlined />, onClick: (e) => handleAntAction(onExport, e.domEvent) },
       { type: 'divider' as const },
       { key: 'delete', label: 'Delete', icon: <DeleteOutlined />, onClick: (e) => handleAntAction(onDelete, e.domEvent), danger: true }
     );
@@ -561,6 +567,9 @@ const MUIChatHistory = () => {
       anchorEl: null | HTMLElement;
       nodeId: null | string
     }>({ anchorEl: null, nodeId: null });
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportConversationId, setExportConversationId] = useState<string | null>(null);
+  const [showHealthDebug, setShowHealthDebug] = useState(false);
 
   // Custom drag state to replace HTML5 drag and drop
   const [customDragState, setCustomDragState] = useState<{
@@ -600,7 +609,19 @@ const MUIChatHistory = () => {
       // Log the expanded nodes for debugging
       console.log('Initial expanded nodes:', folderIds);
     }
-  }, [folders]);
+  }, []);
+
+  // Add keyboard shortcut to open debug modal (Ctrl+Shift+D)
+  useEffect(() => {
+    const handleKeyPress = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+        e.preventDefault();
+        setShowHealthDebug(true);
+      }
+    };
+    window.addEventListener('keydown', handleKeyPress);
+    return () => window.removeEventListener('keydown', handleKeyPress);
+  }, []);
 
   // Save pinned folders to localStorage when they change
   useEffect(() => {
@@ -677,7 +698,7 @@ const MUIChatHistory = () => {
 
     // Get the original conversation ID for finding the conversation
     const originalConversationId = conversationId;
-    
+
     // Strip conv- prefix if present
     let cleanConversationId = conversationId;
     if (conversationId.startsWith('conv-')) {
@@ -695,6 +716,15 @@ const MUIChatHistory = () => {
       if (currentFolderId === folderId) {
         console.log('🔧 No move needed - conversation is already in target folder:', folderId);
         return; // Exit early without showing success message
+      }
+
+      // Defensive check: ensure conversation is active before moving
+      // This prevents corrupting conversations that somehow had isActive set to false
+      const conversationToMove = conversations.find(c => c.id === cleanConversationId);
+      if (conversationToMove && conversationToMove.isActive === false) {
+        console.warn('🔧 DEFENSIVE: Conversation was marked inactive, restoring to active before move');
+        conversationToMove.isActive = true;
+        await db.saveConversations(conversations);
       }
 
       console.log('🔧 Calling moveConversationToFolder with:', { conversationId: cleanConversationId, folderId });
@@ -716,10 +746,10 @@ const MUIChatHistory = () => {
       }, 100);
 
       // Show a more descriptive success message
-      const targetFolderName = folderId 
+      const targetFolderName = folderId
         ? folders.find(f => f.id === folderId)?.name || 'selected folder'
         : 'root';
-      const sourceFolderName = currentFolderId 
+      const sourceFolderName = currentFolderId
         ? folders.find(f => f.id === currentFolderId)?.name || 'previous folder'
         : 'root';
       message.success(`Conversation moved from ${sourceFolderName} to ${targetFolderName}`);
@@ -756,26 +786,26 @@ const MUIChatHistory = () => {
 
       // Calculate the appropriate timestamp for ordering
       let orderingTimestamp = Date.now();
-      
+
       if (insertionContext && (insertionContext.type === 'above' || insertionContext.type === 'below')) {
         // Find the target folder for insertion ordering
         const targetFolder = folders.find(f => f.id === insertionContext.targetNodeId);
-        
+
         if (targetFolder) {
           // Get all sibling folders in the target parent
           const siblings = folders
             .filter(f => f.parentId === targetParentId && f.id !== folderId)
             .sort((a, b) => (a.updatedAt || a.createdAt || 0) - (b.updatedAt || b.createdAt || 0));
-          
+
           const targetIndex = siblings.findIndex(f => f.id === targetFolder.id);
-          
+
           if (targetIndex !== -1) {
             if (insertionContext.type === 'above') {
               // Insert before target - set timestamp slightly before target
               const targetTime = targetFolder.updatedAt || targetFolder.createdAt || Date.now();
               const previousFolder = targetIndex > 0 ? siblings[targetIndex - 1] : null;
               const previousTime = previousFolder ? (previousFolder.updatedAt || previousFolder.createdAt || 0) : 0;
-              
+
               // Set timestamp between previous and target
               orderingTimestamp = previousTime + Math.floor((targetTime - previousTime) / 2);
               if (orderingTimestamp <= previousTime) orderingTimestamp = previousTime + 1;
@@ -784,7 +814,7 @@ const MUIChatHistory = () => {
               const targetTime = targetFolder.updatedAt || targetFolder.createdAt || Date.now();
               const nextFolder = targetIndex < siblings.length - 1 ? siblings[targetIndex + 1] : null;
               const nextTime = nextFolder ? (nextFolder.updatedAt || nextFolder.createdAt || Date.now() + 10000) : Date.now() + 10000;
-              
+
               // Set timestamp between target and next
               orderingTimestamp = targetTime + Math.floor((nextTime - targetTime) / 2);
               if (orderingTimestamp <= targetTime) orderingTimestamp = targetTime + 1;
@@ -810,7 +840,7 @@ const MUIChatHistory = () => {
 
   const startCustomDrag = useCallback((nodeId: string, nodeType: 'folder' | 'conversation', text: string) => {
     const ghostElement = createDragGhost(text);
-    
+
     // Clean up any existing ghost elements first (defensive programming)
     const existingGhost = document.getElementById('mui-drag-ghost');
     if (existingGhost && existingGhost !== ghostElement) {
@@ -907,15 +937,15 @@ const MUIChatHistory = () => {
       // Check if mouse left the chat history panel
       const chatHistoryContainer = chatHistoryRef.current;
       if (!chatHistoryContainer) return;
-      
+
       const rect = chatHistoryContainer.getBoundingClientRect();
       const mouseX = e.clientX;
       const mouseY = e.clientY;
-      
+
       // If mouse is outside the chat history panel bounds
-      if (mouseX < rect.left || mouseX > rect.right || 
-          mouseY < rect.top || mouseY > rect.bottom) {
-        
+      if (mouseX < rect.left || mouseX > rect.right ||
+        mouseY < rect.top || mouseY > rect.bottom) {
+
         if (customDragState.isDragging) {
           console.log('🚫 Mouse left chat history panel - canceling drag operation');
           endCustomDrag(); // Cancel drag without applying any changes
@@ -953,7 +983,7 @@ const MUIChatHistory = () => {
       // Enhanced drop zone detection with hierarchical insertion
       const elementBelow = document.elementFromPoint(e.clientX, e.clientY);
       const treeItemBelow = elementBelow?.closest('.MuiTreeItem-content');
-      
+
       // Get the target node ID from the tree item
       let targetNodeId: string | undefined;
       if (treeItemBelow) {
@@ -1180,7 +1210,7 @@ const MUIChatHistory = () => {
         console.log('🧹 UNMOUNT_CLEANUP: Removing orphaned ghost element');
         ghostElement.remove();
       }
-      
+
       // Clean up any remaining insertion lines
       document.querySelectorAll('.drop-insertion-line').forEach(line => line.remove());
     };
@@ -1300,6 +1330,7 @@ const MUIChatHistory = () => {
           conv.id === conversationId ? {
             ...conv,
             title: newValue,
+            isActive: conv.isActive !== false ? true : conv.isActive,  // Preserve active state
             // Keep original lastAccessedAt - renaming shouldn't affect sort order
             _version: Date.now() // Only update version for sync purposes
           } : conv
@@ -1453,7 +1484,8 @@ const MUIChatHistory = () => {
         title: `Fork: ${conversation.title}`,
         lastAccessedAt: Date.now(),
         _version: Date.now(),
-        hasUnreadResponse: false
+        hasUnreadResponse: false,
+        isActive: true  // Explicitly ensure forked conversations are active
       };
 
       // Add the forked conversation to the list
@@ -1481,6 +1513,17 @@ const MUIChatHistory = () => {
     }
 
     message.info('Conversation compression is not yet implemented');
+  };
+
+  // Handle exporting a conversation
+  const handleExportConversation = (conversationId: string) => {
+    if (conversationId.startsWith('conv-')) {
+      conversationId = conversationId.substring(5);
+    }
+
+    console.log('Opening export modal for conversation:', conversationId);
+    setExportConversationId(conversationId);
+    setShowExportModal(true);
   };
 
   // Handle configuring a folder
@@ -1657,6 +1700,13 @@ const MUIChatHistory = () => {
 
     // Add conversations to their respective folders in the map
     const activeConversations = conversations.filter(conv => conv.isActive !== false);
+
+    // Debug: Log if current conversation is missing from active list
+    if (currentConversationId && !activeConversations.find(c => c.id === currentConversationId)) {
+      console.error('🚨 HISTORY_CORRUPTION: Current conversation missing from active list:', currentConversationId);
+      console.error('🚨 Current conversation state:', conversations.find(c => c.id === currentConversationId));
+    }
+
     activeConversations.forEach(conv => {
       if (conv.folderId && folderMap.has(conv.folderId)) {
         const folderNode = folderMap.get(conv.folderId);
@@ -2106,6 +2156,7 @@ const MUIChatHistory = () => {
           onEdit={handleEdit}
           onDelete={handleDelete}
           onAddChat={handleAddChat}
+          onExport={handleExportConversation}
           onPin={togglePinFolder}
           onConfigure={handleConfigureFolder}
           onFork={handleForkConversation}
@@ -2223,6 +2274,17 @@ const MUIChatHistory = () => {
           nodeId={moveToMenuState.nodeId}
         />
       </Box>
+
+      {/* Export modal - only for conversations, not folders */}
+      {exportConversationId && (
+        <ExportConversationModal visible={showExportModal} onClose={() => { setShowExportModal(false); setExportConversationId(null); }} />
+      )}
+      
+      {/* Health Debug Modal */}
+      <ConversationHealthDebugModal 
+        visible={showHealthDebug}
+        onClose={() => setShowHealthDebug(false)}
+      />
     </>
   );
 };

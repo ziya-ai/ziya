@@ -77,6 +77,7 @@ export const MUIFileExplorer = () => {
   const [filteredTreeData, setFilteredTreeData] = useState<any[]>([]);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const [foldersLoadedFromDB, setFoldersLoadedFromDB] = useState(false);
+  const lastCheckedKeysRef = useRef<string>('');
   const lastDBFetchRef = useRef<number>(0);
   const lastClickRef = useRef<number>(0);
 
@@ -137,9 +138,8 @@ export const MUIFileExplorer = () => {
     const accurateData = accurateTokenCounts[String(node.key)];
 
     // Extract clean label and token count from title
-    const titleMatch = String(node.title).match(/^(.+?)\s*\(([0-9,]+)\s*tokens?\)$/);
-    const cleanLabel = titleMatch ? titleMatch[1] : String(node.title);
-    const titleTokenCount = titleMatch ? parseInt(titleMatch[2].replace(/,/g, '')) : 0;
+    // Title is just the filename now (no token count in title)
+    const cleanLabel = String(node.title);
 
     // Helper function to check if any descendants are selected
     const hasSelectedDescendants = useCallback((node: any): boolean => {
@@ -279,19 +279,22 @@ export const MUIFileExplorer = () => {
               // Get token count from folder context
               const estimatedTokens = getFolderTokenCount(String(node.key), folders || {});
 
-              // Use accurate count if available, otherwise use estimated count or title token count
-              if (accurateData) {
+              // Check for tool-backed files (marked as -1)
+              if (estimatedTokens === -1 || (accurateData && accurateData.count === -1)) {
+                // Tool-backed file - show special marker
+                return (
+                  <Typography variant="caption" sx={{ ml: 1, fontSize: '0.7rem', fontFamily: 'monospace', color: '#1890ff' }}>
+                    (*)
+                  </Typography>
+                );
+              } else if (accurateData) {
                 nodeTokens = accurateData.count;
                 total = nodeTokens;
                 included = isChecked ? nodeTokens : 0;
-              } else if (estimatedTokens > 0) {
+              } else if (estimatedTokens > 0 || estimatedTokens === -1) {
                 nodeTokens = estimatedTokens;
                 total = estimatedTokens;
                 included = isChecked ? estimatedTokens : 0;
-              } else if (titleTokenCount > 0) {
-                nodeTokens = titleTokenCount;
-                total = titleTokenCount;
-                included = isChecked ? titleTokenCount : 0;
               }
 
               return (
@@ -306,7 +309,7 @@ export const MUIFileExplorer = () => {
                     ...(isChecked && total > 0 && { color: isDarkMode ? '#ffffff' : '#000000' })
                   }}
                 >
-                  {total > 0 ? `(${formatNumber(total)}${accurateData ? '✓' : ''})` : '(0)'}
+                  {total === -1 ? '(*)' : (total > 0 ? `(${formatNumber(total)}${accurateData ? '✓' : ''})` : '(0)')}
                 </Typography>
               );
             })()
@@ -442,6 +445,81 @@ export const MUIFileExplorer = () => {
     console.log('MUI: One-time database folder load completed');
   }, []); // Empty deps - only run once on mount
 
+  // Compute expanded keys based on selected items - only expand paths with selections
+  useEffect(() => {
+    // Track if checkedKeys actually changed to avoid fighting with manual expansions
+    const checkedKeysSignature = checkedKeys.sort().join(',');
+    if (lastCheckedKeysRef.current === checkedKeysSignature) {
+      return; // No change in selections, don't recalculate
+    }
+    lastCheckedKeysRef.current = checkedKeysSignature;
+
+    // Skip if no tree data or checked keys
+    if (!treeData || treeData.length === 0 || checkedKeys.length === 0) {
+      // If nothing is selected, collapse everything
+      if (checkedKeys.length === 0 && expandedKeys.length > 0) {
+        setExpandedKeys([]);
+      }
+      return;
+    }
+
+    // Helper function to find all ancestor keys for selected items
+    const findAncestorsOfSelected = (nodes: any[], checkedSet: Set<string>, parentPath: string[] = []): Set<string> => {
+      const ancestors = new Set<string>();
+
+      for (const node of nodes) {
+        const nodeKey = String(node.key);
+        const currentPath = [...parentPath, nodeKey];
+
+        // Check if this node or any descendant is selected
+        const isNodeSelected = checkedSet.has(nodeKey);
+        const hasSelectedDescendants = hasSelectedInSubtree(node, checkedSet);
+
+        if (isNodeSelected || hasSelectedDescendants) {
+          // Add all ancestors to the expansion set
+          parentPath.forEach(ancestorKey => ancestors.add(ancestorKey));
+
+          // If this node has children and contains selections, recursively process
+          if (node.children && node.children.length > 0) {
+            const childAncestors = findAncestorsOfSelected(node.children, checkedSet, currentPath);
+            childAncestors.forEach(key => ancestors.add(key));
+          }
+        }
+      }
+
+      return ancestors;
+    };
+
+    // Helper to check if a node has any selected descendants
+    const hasSelectedInSubtree = (node: any, checkedSet: Set<string>): boolean => {
+      if (!node.children) return false;
+
+      for (const child of node.children) {
+        const childKey = String(child.key);
+        if (checkedSet.has(childKey)) {
+          return true;
+        }
+        if (hasSelectedInSubtree(child, checkedSet)) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    // Calculate which directories should be expanded
+    const checkedSet = new Set(checkedKeys.map(String));
+    const requiredExpansions = findAncestorsOfSelected(treeData, checkedSet);
+
+    // Only update if the expansion set has changed
+    const newExpandedKeys = Array.from(requiredExpansions).sort();
+    const currentExpandedSorted = [...expandedKeys].sort();
+    
+    // Compare sorted arrays to avoid unnecessary updates
+    if (JSON.stringify(newExpandedKeys) === JSON.stringify(currentExpandedSorted)) {
+      return;
+    }
+    setExpandedKeys(newExpandedKeys);
+  }, [treeData, checkedKeys]); // Run when tree data or selections change
 
   // Debounced search function
   const debouncedSearch = useCallback(
@@ -530,29 +608,40 @@ export const MUIFileExplorer = () => {
         throw new Error(`Failed to refresh folders: ${response.status}`);
       }
       const data: Folders = await response.json();
-
-      // Sort the tree data recursively
-      // Convert and sort data
-      const sortedData = sortTreeData(convertToTreeData(data));
-      setTreeData(sortedData);
-
-      // Also refresh accurate token counts asynchronously
-      setTimeout(async () => {
-        try {
-          const tokenResponse = await fetch('/api/accurate-token-count');
-          if (tokenResponse.ok) {
-            const tokenData = await tokenResponse.json();
-            console.log('Refreshed accurate token counts:', Object.keys(tokenData).length);
-
-            window.dispatchEvent(new CustomEvent('accurateTokenCountsUpdated', {
-              detail: { updatedTokens: tokenData }
-            }));
+      
+      // If we get a scanning placeholder, poll until we get actual data
+      if (data._scanning) {
+        console.log('Received scanning placeholder, polling for actual data...');
+        
+        // Poll for actual data with a short interval
+        const pollForData = async () => {
+          for (let attempt = 0; attempt < 10; attempt++) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            const pollResponse = await fetch('/api/folders-cached');
+            if (!pollResponse.ok) continue;
+            
+            const pollData: Folders = await pollResponse.json();
+            if (!pollData._scanning && Object.keys(pollData).length > 1) {
+              console.log('Polling successful, got actual data');
+              return pollData;
+            }
           }
-        } catch (error) {
-          console.error('Failed to refresh token counts:', error);
-        }
-      }, 100);
+          throw new Error('Polling timeout - scan taking too long');
+        };
+        
+        const actualData = await pollForData();
+        const sortedData = sortTreeData(convertToTreeData(actualData));
+        setTreeData(sortedData);
+      } else {
+        // Got actual data immediately
+        const sortedData = sortTreeData(convertToTreeData(data));
+        setTreeData(sortedData);
+      }
 
+      // Token counts will be loaded on-demand when files are selected
+      // No need to fetch them during refresh without knowing which files to check
+      
       // Keep folders collapsed on refresh too
       message.success('Folder structure refreshed');
     } catch (err) {
@@ -769,15 +858,23 @@ export const MUIFileExplorer = () => {
       const isChildDirectlySelected = checkedKeys.includes(childKey);
 
       if (isChildDirectlySelected) {
-        // If child is directly selected, include its full token count
-        const childTokens = getFolderTokenCount(childKey, folders || {});
+        // For files, prioritize accurate counts
+        const isFile = !nodeHasChildren(child);
+        let childTotal = 0;
+        
+        if (isFile) {
+          // For files, use accurate count first, then fall back to estimated
+          const childAccurate = accurateTokenCounts[childKey];
+          childTotal = childAccurate ? childAccurate.count : getFolderTokenCount(childKey, folders || {});
+        } else {
+          // For directories, recursively calculate
+          childTotal = calculateChildrenTotal(child);
+        }
 
-        // Extract token count from title if available
-        const titleMatch = String(child.title).match(/^(.+?)\s*\(([0-9,]+)\s*tokens?\)$/);
-        const titleTokenCount = titleMatch ? parseInt(titleMatch[2].replace(/,/g, '')) : 0;
-
-        const childAccurate = accurateTokenCounts[childKey];
-        const childTotal = (childAccurate && !nodeHasChildren(child)) ? childAccurate.count : (childTokens || titleTokenCount || 0);
+        // Skip tool-backed files (indicated by -1)
+        if (childTotal === -1) {
+          continue;
+        }
 
         included += childTotal;
         // Debug logging removed to improve performance
