@@ -3199,6 +3199,12 @@ async def get_default_included_folders():
     """Get the default included folders."""
     return []
 
+# Cache for ignored patterns - build once at startup, reuse for all scans
+_ignored_patterns_cache = None
+_ignored_patterns_cache_time = 0
+_ignored_patterns_cache_dir = None
+IGNORED_PATTERNS_CACHE_TTL = 300  # 5 minutes
+
 @app.get('/api/folders-cached')
 async def get_folders_cached():
     """Get folder structure from cache only - returns instantly without scanning."""
@@ -3559,6 +3565,7 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
 @app.get('/api/folders')
 async def api_get_folders():
     """Get the folder structure for API compatibility with improved error handling."""
+    
     # Add cache headers to help frontend avoid unnecessary requests
     from fastapi import Response
     response = Response()
@@ -3589,8 +3596,11 @@ async def api_get_folders():
             logger.error(f"Permission denied accessing: {user_codebase_dir}")
             return {"error": "Permission denied accessing directory"}
         except OSError as e:
-            logger.error(f"OS error accessing {user_codebase_dir}: {e}")
-            return {"error": f"Cannot access directory: {str(e)}"}
+            logger.error(f"Permission denied accessing: {user_codebase_dir}")
+            return {"error": "Permission denied accessing directory"}
+        
+        # Get ignored patterns (will use cache if available)
+        ignored_patterns = get_ignored_patterns(user_codebase_dir)
         
         # Get max depth from environment or use default
         try:
