@@ -6,7 +6,7 @@ export const convertToTreeData = (folders: Folders, parentKey = ''): TreeDataNod
     return Object.entries(folders).filter(([key]) => key !== 'children').sort(([a], [b]) => a.toLowerCase().localeCompare(b.toLowerCase())).map(([key, value]) => {
         const currentKey = parentKey ? `${parentKey}/${key}` : key;
         const tokenCount = (value?.token_count ?? 0);
-        const title = `${key} (${tokenCount.toLocaleString()} tokens)`;
+        const title = key;  // Just use the filename without token count
         const node: TreeDataNode = {
             title,
             key: currentKey,
