@@ -61,6 +61,8 @@ interface ChatContext {
     toggleMessageMute: (conversationId: string, messageIndex: number) => void;
     editingMessageIndex: number | null;
     setEditingMessageIndex: (index: number | null) => void;
+    throttlingRecoveryData: Map<string, { toolResults?: any[]; partialContent?: string }>;
+    setThrottlingRecoveryData: (data: Map<string, any>) => void;
 }
 
 const chatContext = createContext<ChatContext | undefined>(undefined);
@@ -133,6 +135,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const lastManualScrollTime = useRef<number>(0);
     const manualScrollCooldownActive = useRef<boolean>(false);
     const [messageUpdateCounter, setMessageUpdateCounter] = useState(0);
+    const [throttlingRecoveryData, setThrottlingRecoveryData] = useState<Map<string, { toolResults?: any[]; partialContent?: string }>>(new Map());
     
     // CRITICAL: Track scroll state per conversation to prevent cross-conversation interference
     const conversationScrollStates = useRef<Map<string, {
@@ -1461,6 +1464,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
         toggleMessageMute,
         editingMessageIndex,
         setEditingMessageIndex,
+        throttlingRecoveryData,
+        setThrottlingRecoveryData,
     }), [
         streamedContentMap,
         currentMessages,
@@ -1507,13 +1512,64 @@ export function ChatProvider({ children }: ChatProviderProps) {
         toggleMessageMute,
         editingMessageIndex,
         setEditingMessageIndex,
+        throttlingRecoveryData,
+        setThrottlingRecoveryData,
     ]);
 
     // Temporary debug command
     useEffect(() => {
+        // Enhanced debug helper to diagnose history corruption
         (window as any).debugChatContext = () => {
-            console.log('ChatContext State:', { conversations, currentConversationId, streamedContentMap });
-            console.log('Rendering Info:', Array.from(document.querySelectorAll('.diff-view')).map(el => el.id));
+            console.log('=== CHAT CONTEXT DEBUG ===');
+            console.log('Current Conversation ID:', currentConversationId);
+            console.log('Total conversations in memory:', conversations.length);
+            console.log('Active conversations in memory:', conversations.filter(c => c.isActive !== false).length);
+            console.log('Inactive conversations in memory:', conversations.filter(c => c.isActive === false).length);
+            
+            const currentConv = conversations.find(c => c.id === currentConversationId);
+            console.log('Current conversation in memory:', currentConv ? {
+                id: currentConv.id,
+                title: currentConv.title,
+                isActive: currentConv.isActive,
+                folderId: currentConv.folderId,
+                messageCount: currentConv.messages.length
+            } : 'NOT FOUND IN MEMORY');
+            
+            console.log('\n=== CONVERSATION LIST ===');
+            conversations.forEach((conv, idx) => {
+                console.log(`${idx + 1}. ${conv.id.substring(0, 8)} - "${conv.title.substring(0, 30)}" - isActive: ${conv.isActive}, messages: ${conv.messages.length}`);
+            });
+            
+            return { conversations, currentConversationId, currentConv };
+        };
+        
+        // Debug helper to check IndexedDB directly
+        (window as any).debugIndexedDB = async () => {
+            console.log('=== INDEXEDDB DEBUG ===');
+            try {
+                const dbConversations = await db.getConversations();
+                console.log('Total conversations in IndexedDB:', dbConversations.length);
+                console.log('Active in IndexedDB:', dbConversations.filter(c => c.isActive !== false).length);
+                console.log('Inactive in IndexedDB:', dbConversations.filter(c => c.isActive === false).length);
+                
+                const currentInDB = dbConversations.find(c => c.id === currentConversationId);
+                console.log('Current conversation in IndexedDB:', currentInDB ? {
+                    id: currentInDB.id,
+                    title: currentInDB.title,
+                    isActive: currentInDB.isActive,
+                    folderId: currentInDB.folderId,
+                    messageCount: currentInDB.messages.length
+                } : 'NOT FOUND IN INDEXEDDB');
+                
+                console.log('\n=== INDEXEDDB CONVERSATION LIST ===');
+                dbConversations.forEach((conv, idx) => {
+                    console.log(`${idx + 1}. ${conv.id.substring(0, 8)} - "${conv.title.substring(0, 30)}" - isActive: ${conv.isActive}, messages: ${conv.messages.length}`);
+                });
+                
+                return { dbConversations, currentInDB };
+            } catch (error) {
+                console.error('Error reading IndexedDB:', error);
+            }
         };
     }, [conversations, currentConversationId, streamedContentMap]);
 

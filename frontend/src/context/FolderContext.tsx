@@ -229,6 +229,32 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     }
   }, [checkedKeys]);
 
+  // Update dynamic tools when file selection changes
+  useEffect(() => {
+    const updateDynamicTools = async () => {
+      if (!checkedKeys || checkedKeys.length === 0) return;
+      
+      try {
+        const response = await fetch('/api/dynamic-tools/update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ files: checkedKeys.map(String) })
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          console.log('Dynamic tools updated:', data);
+        }
+      } catch (error) {
+        console.debug('Failed to update dynamic tools:', error);
+      }
+    };
+    
+    // Debounce the update to avoid excessive calls
+    const timeoutId = setTimeout(updateDynamicTools, 1000);
+    return () => clearTimeout(timeoutId);
+  }, [checkedKeys]);
+
   // Get accurate token counts for selected files
   const updateAccurateTokens = useCallback((checkedKeys) => {
     console.log('updateAccurateTokens called with:', checkedKeys.length, 'keys');
