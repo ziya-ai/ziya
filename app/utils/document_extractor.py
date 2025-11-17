@@ -109,6 +109,15 @@ def is_document_file(file_path: str) -> bool:
     
     return ext in supported_extensions
 
+def is_tool_backed_file(file_path: str) -> bool:
+    """
+    Check if a file has specialized tool support (like pcap files).
+    These files should be marked with -1 tokens to indicate tool availability.
+    """
+    ext = os.path.splitext(file_path)[1].lower()
+    tool_backed_extensions = {'.pcap', '.pcapng', '.cap', '.dmp'}
+    return ext in tool_backed_extensions
+
 def extract_pdf_text(file_path: str) -> Optional[str]:
     """
     Extract text from a PDF file.
