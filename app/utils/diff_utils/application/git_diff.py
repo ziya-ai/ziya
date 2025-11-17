@@ -718,7 +718,7 @@ def apply_diff_atomically(file_path: str, git_diff: str) -> Dict[str, Any]:
             # Handle new file creation
             user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
             create_new_file(git_diff, user_codebase_dir)
-            return {"status": "success", "details": {"new_file": True}}
+            return {"status": "success", "details": {"new_file": True, "changes_written": True}}
         else:
             return {"status": "error", "details": {"error": f"File not found: {file_path}"}}
     
@@ -772,7 +772,7 @@ def apply_diff_atomically(file_path: str, git_diff: str) -> Dict[str, Any]:
     
     if all_already_applied:
         logger.info("All hunks are already applied")
-        return {"status": "success", "details": {"already_applied": already_applied_hunks}}
+        return {"status": "success", "details": {"already_applied": already_applied_hunks, "changes_written": False}}
     
     # Apply the diff in memory using difflib
     try:
@@ -787,7 +787,7 @@ def apply_diff_atomically(file_path: str, git_diff: str) -> Dict[str, Any]:
         # Check if content actually changed
         if modified_content == original_content:
             logger.warning("No changes were made to the content")
-            return {"status": "success", "details": {"already_applied": already_applied_hunks}}
+            return {"status": "success", "details": {"already_applied": already_applied_hunks, "changes_written": False}}
         
         # Verify changes with language handler
         is_valid, error_details = verify_changes_with_language_handler(file_path, original_content, modified_content)
@@ -800,7 +800,7 @@ def apply_diff_atomically(file_path: str, git_diff: str) -> Dict[str, Any]:
             f.write(modified_content)
         
         logger.info(f"Successfully wrote changes to {file_path}")
-        return {"status": "success", "details": {"succeeded": list(range(1, len(hunks) + 1))}}
+        return {"status": "success", "details": {"succeeded": list(range(1, len(hunks) + 1)), "changes_written": True}}
         
     except Exception as e:
         logger.error(f"Error applying diff: {str(e)}")
@@ -1079,8 +1079,8 @@ def use_git_to_apply_code_diff(git_diff: str, file_path: str) -> None:
             return {"status": "success", "details": {
                 "succeeded": [],
                 "failed": [],
-                "failed": [],
-                "already_applied": list(dry_run_status.keys())
+                "already_applied": list(dry_run_status.keys()),
+                "changes_written": False
             }}
 
         # Apply successful hunks with system patch if any
@@ -1140,6 +1140,7 @@ def use_git_to_apply_code_diff(git_diff: str, file_path: str) -> None:
             git_diff = extract_remaining_hunks(git_diff, {h: False for h in results["failed"]})
         else:
             logger.info("Exiting pipeline die to full success condition.")
+            results["changes_written"] = changes_written
             return {"status": "success", "details": results}
 
         # Proceed with git apply if we have any failed hunks
@@ -1189,6 +1190,7 @@ def use_git_to_apply_code_diff(git_diff: str, file_path: str) -> None:
                     # Move hunks from failed to succeeded
                     results["succeeded"].extend([h for h in hunk_status.keys() if hunk_status[h]])
                     changes_written = True
+                    results["changes_written"] = changes_written
                     return {"status": "success", "details": results}
                 elif "already applied" in git_result.stderr:
                     # Handle mixed case of already applied and other failures
@@ -1221,6 +1223,7 @@ def use_git_to_apply_code_diff(git_diff: str, file_path: str) -> None:
                             results["failed"].remove(hunk_num)
                             results["succeeded"].append(hunk_num)
                         changes_written = True
+                        results["changes_written"] = changes_written
                         return {"status": "success", "details": results}
                     except Exception as e:
                         if isinstance(e, PatchApplicationError) and e.details.get("type") == "already_applied":
@@ -1228,12 +1231,14 @@ def use_git_to_apply_code_diff(git_diff: str, file_path: str) -> None:
                             for hunk_num in results["failed"][:]:
                                 results["failed"].remove(hunk_num)
                                 results["already_applied"].append(hunk_num)
+                            results["changes_written"] = False
                             return {"status": "success", "details": results}
                         logger.error(f"Difflib application failed: {str(e)}")
                         raise
             except PatchApplicationError as e:
                 logger.error(f"Difflib application failed: {str(e)}")
                 if e.details.get("type") == "already_applied":
+                    results["changes_written"] = False
                     return {"status": "success", "details": results}
                 if changes_written:
                     # Return partial success with specific hunk details
@@ -1252,6 +1257,7 @@ def use_git_to_apply_code_diff(git_diff: str, file_path: str) -> None:
         cleanup_patch_artifacts(user_codebase_dir, file_path)
 
     # Return final status
+    results["changes_written"] = changes_written
     if len(results["failed"]) == 0:
         return {"status": "success", "details": results}
     elif changes_written:

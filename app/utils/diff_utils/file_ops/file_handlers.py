@@ -30,10 +30,20 @@ def create_new_file(git_diff: str, base_dir: str) -> None:
         file_path = None
         for line in diff_lines:
             if line.startswith('diff --git'):
-                file_path = line.split(' b/')[-1]
+                # Handle both "a/path b/path" and "path path" formats
+                if ' b/' in line:
+                    file_path = line.split(' b/')[-1]
+                else:
+                    # Extract second path from "diff --git path1 path2"
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        file_path = parts[-1]
                 break
             elif line.startswith('+++ b/'):
                 file_path = line[6:]  # Remove the '+++ b/' prefix
+                break
+            elif line.startswith('+++ ') and not line.startswith('+++ /dev/null'):
+                file_path = line[4:].strip()
                 break
                 
         # Make sure we found a file path

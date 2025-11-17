@@ -284,7 +284,6 @@ class DiffRegressionTest(unittest.TestCase):
         """Test applying a diff to fix missing closing braces in FolderContext.tsx"""
         self.run_diff_test('folder_context_fix')
         
-    @unittest.expectedFailure
     def test_model_defaults_config(self):
         """Test adding centralized defaults config and removing scattered is_default flags
         
@@ -777,7 +776,7 @@ class DiffRegressionTest(unittest.TestCase):
                                f"Content didn't change for {case_name} but should have")
                 self.assertIn(result_dict['status'], ['success', 'partial'], 
                              f"Reported status should be success/partial for {case_name}, got {result_dict['status']}")
-                self.assertTrue(result_dict['details']['changes_written'], 
+                self.assertTrue(result_dict.get('changes_written', False), 
                                f"changes_written should be True for {case_name}")
         
         # Test already applied cases
@@ -814,9 +813,9 @@ class DiffRegressionTest(unittest.TestCase):
                                f"Content changed for {case_name} but shouldn't have")
                 self.assertEqual(result_dict['status'], 'success', 
                                f"Reported status should be success for {case_name}, got {result_dict['status']}")
-                self.assertFalse(result_dict['details']['changes_written'], 
+                self.assertFalse(result_dict.get('changes_written', True), 
                                f"changes_written should be False for {case_name}")
-                self.assertTrue(len(result_dict['details']['already_applied']) > 0, 
+                self.assertTrue(len(result_dict.get('already_applied', [])) > 0, 
                                f"No hunks reported as already_applied for {case_name}")
         
     def test_simple_comma_addition(self):
@@ -859,7 +858,7 @@ class DiffRegressionTest(unittest.TestCase):
                 # Verify first application reported success with changes_written=True
                 self.assertIn(first_result['status'], ['success', 'partial'], 
                              f"First application should report success/partial for {case_name}")
-                self.assertTrue(first_result['details']['changes_written'], 
+                self.assertTrue(first_result.get('changes_written', False), 
                                f"First application should have changes_written=True for {case_name}")
                 
                 # Second application
@@ -876,7 +875,7 @@ class DiffRegressionTest(unittest.TestCase):
                 # Verify second application reported success with changes_written=False
                 self.assertEqual(second_result['status'], 'success', 
                                f"Second application should report success for {case_name}")
-                self.assertFalse(second_result['details']['changes_written'], 
+                self.assertFalse(second_result.get('changes_written', True), 
                                 f"Second application should have changes_written=False for {case_name}")
                 self.assertTrue(len(second_result['details']['already_applied']) > 0, 
                                f"Second application should report hunks as already_applied for {case_name}")

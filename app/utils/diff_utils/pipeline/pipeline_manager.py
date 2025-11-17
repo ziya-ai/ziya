@@ -1950,6 +1950,9 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                 return True
                 
             except Exception as e:
+                # Check if this is a partial success case
+                error_details = e.args[1] if len(e.args) > 1 and isinstance(e.args[1], dict) else {}
+                
                 if hasattr(e, 'details') and getattr(e, 'details', {}).get("type") == "already_applied":
                     # If hybrid mode says already applied, trust it
                     logger.info("Hybrid mode detected hunks already applied")
@@ -1961,6 +1964,42 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                                 status=HunkStatus.ALREADY_APPLIED
                             )
                     return False
+                elif error_details.get("status") == "partial":
+                    # Partial success - some hunks applied, write the changes
+                    logger.info(f"Partial success in hybrid mode: {len(error_details.get('failures', []))} hunks failed")
+                    
+                    # Get the partial content from the exception
+                    partial_content = error_details.get('partial_content')
+                    if not partial_content:
+                        logger.error("Partial status but no partial_content in error details")
+                        return False
+                    
+                    # Write the modified content that was generated before the exception
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(partial_content)
+                        logger.info(f"Successfully wrote partial changes to {file_path}")
+                    
+                    pipeline.result.changes_written = True
+                    
+                    # Get list of failed hunk IDs from the error details
+                    failed_hunk_ids = [f['details'].get('hunk') for f in error_details.get('failures', []) if 'hunk' in f.get('details', {})]
+                    
+                    # Mark successful hunks as succeeded, leave failed ones as PENDING for next stage
+                    for hunk_id, tracker in pipeline.result.hunks.items():
+                        if tracker.status == HunkStatus.PENDING:
+                            if hunk_id in failed_hunk_ids:
+                                # Leave as PENDING so it can be tried in the next stage
+                                logger.info(f"Hunk #{hunk_id} failed in difflib stage, leaving as PENDING for next stage")
+                            else:
+                                # Mark as succeeded
+                                pipeline.update_hunk_status(
+                                    hunk_id=hunk_id,
+                                    stage=PipelineStage.DIFFLIB,
+                                    status=HunkStatus.SUCCEEDED
+                                )
+                                logger.info(f"Marked hunk #{hunk_id} as SUCCEEDED in difflib stage")
+                    
+                    return True
                 else:
                     # Fall back to regular difflib mode
                     logger.info(f"Falling back to regular difflib mode due to: {str(e)}")
@@ -2070,6 +2109,56 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                         
                         pipeline.result.changes_written = True
                         return True
+                    except PatchApplicationError as inner_e:
+                        logger.error(f"Error in regular difflib mode: {str(inner_e)}")
+                        
+                        # CRITICAL FIX: Check if this is a partial success
+                        # The exception may contain information about successfully applied hunks
+                        if hasattr(inner_e, 'details'):
+                            details = inner_e.details
+                            
+                            # Check if this is a partial success (some hunks applied)
+                            if details.get("status") == "partial":
+                                logger.info("Regular difflib mode had partial success - preserving successful hunks")
+                                
+                                # Read the current file content to check if changes were made
+                                try:
+                                    with open(file_path, 'r', encoding='utf-8') as f:
+                                        current_content = f.read()
+                                    
+                                    # If content changed, we have partial success
+                                    if current_content != original_content:
+                                        logger.info("File was modified despite exception - marking as partial success")
+                                        pipeline.result.changes_written = True
+                                        
+                                        # Mark failed hunks from the exception details
+                                        failures = details.get("failures", [])
+                                        failed_hunk_ids = set()
+                                        
+                                        for failure in failures:
+                                            hunk_idx = failure.get("details", {}).get("hunk")
+                                            if hunk_idx:
+                                                failed_hunk_ids.add(hunk_idx)
+                                                pipeline.update_hunk_status(
+                                                    hunk_id=hunk_idx,
+                                                    stage=PipelineStage.DIFFLIB,
+                                                    status=HunkStatus.FAILED,
+                                                    error_details=failure.get("details"),
+                                                    confidence=failure.get("details", {}).get("confidence", 0.0)
+                                                )
+                                                logger.info(f"Marked hunk #{hunk_idx} as FAILED from partial success")
+                                        
+                                        # Mark remaining pending hunks as succeeded (since file was modified)
+                                        for hunk_id, tracker in pipeline.result.hunks.items():
+                                            if tracker.status == HunkStatus.PENDING and hunk_id not in failed_hunk_ids:
+                                                pipeline.update_hunk_status(hunk_id=hunk_id, stage=PipelineStage.DIFFLIB, status=HunkStatus.SUCCEEDED)
+                                                logger.info(f"Marked hunk #{hunk_id} as SUCCEEDED (partial success)")
+                                        
+                                        return True  # Partial success is still success
+                                except Exception as read_error:
+                                    logger.error(f"Failed to verify file changes: {read_error}")
+                        
+                        return False
                     except Exception as inner_e:
                         logger.error(f"Error in regular difflib mode: {str(inner_e)}")
                         return False

@@ -1540,7 +1540,8 @@ def apply_diff_with_difflib_hybrid_forced(
             "Some hunks failed to apply during difflib stage",
             {
                 "status": status_type,
-                "failures": [{"message": msg, "details": details} for msg, details in hunk_failures]
+                "failures": [{"message": msg, "details": details} for msg, details in hunk_failures],
+                "partial_content": ''.join(final_lines_with_endings)
             }
         )
 

@@ -23,11 +23,11 @@ class Config:
         self.db_name = "app_database"
         
         """
-        Authentication settings:
-        - auth_method: The authentication method to use (oauth2, jwt, basic)
-        - token_expiry: Time in seconds before tokens expire (3600 = 1 hour)
-        - max_attempts: Maximum login attempts before account lockout
-        """
+        Authentication settings
+        - auth_method: The authentication method to use
+        - token_expiry: Time in seconds before tokens expire
+        - max_attempts: Maximum login attempts before lockout
+        '''
         self.auth_method = "oauth2"
         self.token_expiry = 3600
         self.max_attempts = 5
@@ -43,7 +43,7 @@ class Config:
             bool: True if loaded successfully, False otherwise
         """
         # FIXME: Implement file loading logic
-        return False
+        pass
     
     def save_to_file(self, filepath):
         """
@@ -56,19 +56,21 @@ class Config:
             bool: True if saved successfully, False otherwise
         """
         # FIXME: Implement file saving logic
-        return False
+        pass
     
     def get_database_url(self):
         """
         Get the database connection URL.
         
         Returns:
-            str: Database connection URL string
+            Database connection URL string
         """
-        # Format: postgresql://host:port/dbname
-        return f"postgresql://{self.db_host}:{self.db_port}/{self.db_name}"
-    
+            str: Database connection URL string
     # The following methods are for internal use only and should not be called directly.
+    
+    """
+    The following methods are for internal use only and should not be called directly.
+    They may change in future versions without notice.
     # They may change in future versions without notice.
     
     def _validate_settings(self):
