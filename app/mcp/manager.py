@@ -12,6 +12,7 @@ from pathlib import Path
 
 from app.mcp.client import MCPClient, MCPResource, MCPTool, MCPPrompt # Assuming MCPClient is in the same directory or sys.path is configured
 from app.utils.logging_utils import logger
+from app.mcp.dynamic_tools import get_dynamic_loader
 
 
 class MCPManager:
@@ -481,6 +482,24 @@ class MCPManager:
         self._tools_cache_timestamp = current_time
         logger.debug(f"MCP_MANAGER.get_all_tools: Cached {len(tools)} tools for {self._tools_cache_ttl}s")
         
+        # Add dynamically loaded tools
+        dynamic_loader = get_dynamic_loader()
+        dynamic_tools = dynamic_loader.get_active_tools()
+        
+        if dynamic_tools:
+            logger.info(f"Adding {len(dynamic_tools)} dynamic tools to tool list")
+            for tool_name, tool_instance in dynamic_tools.items():
+                # Convert dynamic tool to MCPTool format
+                mcp_tool = MCPTool(
+                    name=tool_instance.name,
+                    description=tool_instance.description,
+                    inputSchema=tool_instance.InputSchema.schema()
+                )
+                mcp_tool._server_name = "dynamic"  # type: ignore
+                mcp_tool._is_dynamic = True  # type: ignore
+                tools.append(mcp_tool)
+                logger.debug(f"Added dynamic tool: {tool_name}")
+        
         return tools
     
     def invalidate_tools_cache(self):
@@ -635,6 +654,21 @@ class MCPManager:
         Returns:
             Tool execution result or None if not found
         """
+
+        # Check if this is a dynamic tool first
+        dynamic_loader = get_dynamic_loader()
+        internal_tool_name = tool_name[4:] if tool_name.startswith("mcp_") else tool_name
+        dynamic_tool = dynamic_loader.get_tool(internal_tool_name)
+
+        if dynamic_tool:
+            logger.info(f"Executing dynamic tool: {internal_tool_name}")
+            try:
+                result = await dynamic_tool.execute(**arguments)
+                return {"content": [{"type": "text", "text": str(result)}]}
+            except Exception as e:
+                logger.error(f"Dynamic tool execution failed: {e}", exc_info=True)
+                return {"error": True, "message": str(e)}
+
         # Check tool permissions before execution
         from app.mcp.permissions import get_permissions_manager
         permissions_manager = get_permissions_manager()
