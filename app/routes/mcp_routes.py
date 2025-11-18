@@ -37,6 +37,7 @@ class ShellConfig(BaseModel):
     gitOperationsEnabled: bool = DEFAULT_SHELL_CONFIG["gitOperationsEnabled"]
     safeGitOperations: List[str] = DEFAULT_SHELL_CONFIG["safeGitOperations"]
     timeout: int = DEFAULT_SHELL_CONFIG["timeout"]
+    persist: bool = False  # New field to indicate whether to save to config file
 
 class ServerToggleRequest(BaseModel):
     model_config = {"extra": "allow"}
@@ -546,15 +547,12 @@ async def get_shell_config():
             server_env = server_config.get("env", {})
             
             # Extract allowed commands from environment configuration
-            # Always start with the full default command list
+            # Use environment commands if present, otherwise use defaults
             allowed_commands = DEFAULT_SHELL_CONFIG["allowedCommands"].copy()
             
-            # Only override if environment explicitly provides a DIFFERENT set
             if "ALLOW_COMMANDS" in server_env and server_env["ALLOW_COMMANDS"].strip():
-                # If environment override exists, use it instead
                 env_commands = [cmd.strip() for cmd in server_env["ALLOW_COMMANDS"].split(",") if cmd.strip()]
-                # Only replace if the environment list is substantially different (not just a subset)
-                if env_commands and len(env_commands) >= len(DEFAULT_SHELL_CONFIG["allowedCommands"]) * 0.8:
+                if env_commands:
                     allowed_commands = env_commands
                     logger.info(f"Using environment override commands: {allowed_commands}")
             
@@ -592,7 +590,8 @@ async def get_shell_config():
 @router.post("/shell-config")
 async def update_shell_config(config: ShellConfig):
     """
-    Update shell configuration and restart the shell server instantly.
+    Update shell configuration and restart the shell server.
+    If persist=true, also saves the configuration to ~/.ziya/mcp_config.json.
     """
     try:
         # Check if MCP is enabled
@@ -623,6 +622,59 @@ async def update_shell_config(config: ShellConfig):
                 "COMMAND_TIMEOUT": str(config.timeout)
             }
         }
+        
+        # Handle persistence to config file if requested
+        if config.persist:
+            try:
+                from pathlib import Path
+                
+                # Use the standard config path
+                config_path = Path.home() / ".ziya" / "mcp_config.json"
+                config_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Load existing config or create new one
+                if config_path.exists():
+                    with open(config_path, 'r') as f:
+                        mcp_config = json.load(f)
+                else:
+                    mcp_config = {"mcpServers": {}}
+                
+                # Ensure mcpServers section exists
+                if "mcpServers" not in mcp_config:
+                    mcp_config["mcpServers"] = {}
+                
+                # Update or create shell server config
+                if "shell" not in mcp_config["mcpServers"]:
+                    # Get the base command from builtin definitions
+                    import sys
+                    mcp_config["mcpServers"]["shell"] = {
+                        "command": [sys.executable, "-u", "app/mcp_servers/shell_server.py"],
+                        "enabled": config.enabled,
+                        "description": "Shell command execution server"
+                    }
+                
+                # Update the env section with new configuration
+                if "env" not in mcp_config["mcpServers"]["shell"]:
+                    mcp_config["mcpServers"]["shell"]["env"] = {}
+                
+                mcp_config["mcpServers"]["shell"]["env"]["ALLOW_COMMANDS"] = ",".join(config.allowedCommands)
+                mcp_config["mcpServers"]["shell"]["env"]["GIT_OPERATIONS_ENABLED"] = "true" if config.gitOperationsEnabled else "false"
+                mcp_config["mcpServers"]["shell"]["env"]["SAFE_GIT_OPERATIONS"] = ",".join(config.safeGitOperations)
+                mcp_config["mcpServers"]["shell"]["env"]["COMMAND_TIMEOUT"] = str(config.timeout)
+                mcp_config["mcpServers"]["shell"]["enabled"] = config.enabled
+                
+                # Save back to file
+                with open(config_path, 'w') as f:
+                    json.dump(mcp_config, f, indent=2)
+                
+                logger.info(f"Persisted shell configuration to {config_path}")
+                persist_message = f" Configuration saved to {config_path} and will persist between sessions."
+                
+            except Exception as persist_error:
+                logger.error(f"Failed to persist configuration: {persist_error}")
+                persist_message = f" Warning: Failed to save to config file: {persist_error}"
+        else:
+            persist_message = ""
         
         if config.enabled:
             # Update the server configuration in MCP manager before restarting
@@ -655,7 +707,7 @@ async def update_shell_config(config: ShellConfig):
                 
                 return {
                     "success": True, 
-                    "message": f"Shell server updated instantly. Basic commands: {', '.join(config.allowedCommands)}, Git operations: {'enabled' if config.gitOperationsEnabled else 'disabled'}"
+                    "message": f"Shell server updated for this session. Basic commands: {', '.join(config.allowedCommands[:5])}{'...' if len(config.allowedCommands) > 5 else ''}, Git operations: {'enabled' if config.gitOperationsEnabled else 'disabled'}.{persist_message}"
                 }
         else:
             # Disable shell server by disconnecting it
@@ -672,7 +724,7 @@ async def update_shell_config(config: ShellConfig):
             # Invalidate tools cache to ensure fresh tool list without shell tools
             mcp_manager.invalidate_tools_cache()
             
-            return {"success": True, "message": "Shell server disabled instantly"}
+            return {"success": True, "message": f"Shell server disabled for this session.{persist_message}"}
         
     except Exception as e:
         logger.error(f"Error updating shell config: {e}")
@@ -965,6 +1017,16 @@ async def refresh_registry_provider(provider_id: str):
     except HTTPException:
         raise
     except Exception as e:
+        error_str = str(e)
+        # Handle auth errors gracefully
+        if 'NotAuthorizedException' in error_str or 'Not Authorized' in error_str:
+            logger.warning(f"Registry {provider_id} access not available (permissions required)")
+            return {
+                'success': False,
+                'provider_id': provider_id,
+                'services_count': 0,
+                'message': f"Registry {provider_id} requires additional permissions"
+            }
         logger.error(f"Error refreshing registry provider: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
