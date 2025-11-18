@@ -15,7 +15,15 @@ DEFAULT_SHELL_CONFIG = {
         "xxd", "tail", "head", "echo", "printf", "tr", "uniq", "column", "nl", 
         "tee", "base64", "md5sum", "sha1sum", "sha256sum", "bc", "expr", "seq", 
         "paste", "join", "fold", "expand", "cd", "tree", "less", "xargs", "curl", 
-        "ping", "du", "file"
+        "ping", "du", "file",
+        # Additional text/binary inspection
+        "strings", "diff", "stat", "readlink", "realpath", "basename", "dirname",
+        # System information
+        "uname", "hostname", "whoami", "id", "uptime", "free",
+        # Compressed file viewing
+        "zcat", "zgrep", "zless",
+        # Network diagnostics
+        "dig", "host", "nslookup"
     ],
     "gitOperationsEnabled": True,
     "safeGitOperations": [
