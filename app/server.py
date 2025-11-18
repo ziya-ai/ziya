@@ -2811,14 +2811,22 @@ async def get_folder_progress():
     """Get current folder scanning progress."""
     from app.utils.directory_util import get_scan_progress
     progress = get_scan_progress()
+    
     # Only return active=True if there's actual progress to report
     if progress["active"] and not progress["progress"]:
         # No actual progress data, don't report as active
         progress["active"] = False
         progress["progress"] = {}
+    
+    # Add percentage if we have estimated total
+    if progress.get("estimated_total", 0) > 0 and progress.get("progress", {}).get("directories", 0) > 0:
+        progress["progress"]["percentage"] = min(100, int(
+            (progress["progress"]["directories"] / progress["estimated_total"]) * 100
+        ))
+    
     return progress
 
-@app.post("/folder-cancel")
+@app.post("/api/cancel-scan")
 async def cancel_folder_scan():
     """Cancel current folder scanning operation."""
     from app.utils.directory_util import cancel_scan
@@ -3526,15 +3534,12 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
             
             # Update scan progress to indicate start
             from app.utils.directory_util import _scan_progress
-            with _scan_progress_lock if '_scan_progress_lock' in globals() else threading.Lock():
-                _scan_progress["active"] = True
-                _scan_progress["start_time"] = scan_start
-                _scan_progress["last_update"] = scan_start
+            _scan_progress["active"] = True
+            _scan_progress["start_time"] = scan_start
+            _scan_progress["last_update"] = scan_start
+            _scan_progress["progress"] = {"directories": 0, "files": 0, "elapsed": 0}
+            
             try:
-                from app.utils.directory_util import _scan_progress
-                _scan_progress["active"] = True
-                _scan_progress["progress"] = {"directories": 0, "files": 0, "elapsed": 0}
-                
                 logger.debug(f"🔥 Background scan starting for {directory}")
                 result = get_folder_structure(directory, ignored_patterns, max_depth)
                 _scan_progress["last_update"] = time.time()  # Mark progress update
@@ -3542,7 +3547,7 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
                 _folder_cache['data'] = result
                 _folder_cache['timestamp'] = time.time()
             except Exception as e:
-                logger.error(f"🔥 Scan error: {e}")
+                logger.error(f"🔥 Scan error: {e}", exc_info=True)
             finally:
                 _scan_progress["active"] = False
                 scan_end = time.time()

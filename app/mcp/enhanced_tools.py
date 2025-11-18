@@ -20,7 +20,7 @@ from typing import Dict, Any, List, Optional, Union
 from enum import Enum
 from dataclasses import dataclass
 
-from langchain.tools import BaseTool
+from langchain_classic.tools import BaseTool
 from app.utils.logging_utils import logger
 from app.utils.file_utils import read_file_content
 

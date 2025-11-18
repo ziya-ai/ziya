@@ -39,10 +39,13 @@ def run_post_build():
 # We're just adding our custom command class
 setup(
     name="ziya",
-    version="0.3.8",
+    version="0.3.9",
+    author="Dan Cohn, Vishnu Krishnaprasad",
+    author_email="chroma@gmail.com",
     packages=find_packages(include=["app", "app.*", "mcp_servers", "app.mcp_servers.*"]),
     include_package_data=True,
     zip_safe=False,
+    python_requires=">=3.10",
     cmdclass={
         'bdist_wheel': CustomBdistWheel,
     },

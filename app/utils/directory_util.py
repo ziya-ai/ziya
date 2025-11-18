@@ -21,7 +21,7 @@ _folder_cache = {
 }
 
 # Global progress tracking
-_scan_progress = {"active": False, "progress": {}, "cancelled": False, "start_time": 0, "last_update": 0}
+_scan_progress = {"active": False, "progress": {}, "cancelled": False, "start_time": 0, "last_update": 0, "estimated_total": 0}
 
 # Add new globals for background scanning
 _scan_thread: Optional[threading.Thread] = None
@@ -34,7 +34,7 @@ _visited_directories = set()
 _ignored_patterns_cache: Optional[List[Tuple[str, str]]] = None
 _ignored_patterns_cache_dir: Optional[str] = None
 _ignored_patterns_cache_time: float = 0
-IGNORED_PATTERNS_CACHE_TTL = 300  # 5 minutes
+IGNORED_PATTERNS_CACHE_TTL = 3600  # 1 hour - gitignore files rarely change
 
 def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
     global _ignored_patterns_cache, _ignored_patterns_cache_dir, _ignored_patterns_cache_time
@@ -44,7 +44,7 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
     if (_ignored_patterns_cache is not None and 
         _ignored_patterns_cache_dir == directory and
         (current_time - _ignored_patterns_cache_time) < IGNORED_PATTERNS_CACHE_TTL):
-        logger.info(f"♻️ Using cached gitignore patterns ({len(_ignored_patterns_cache)} patterns)")
+        logger.debug(f"♻️ Using cached gitignore patterns ({len(_ignored_patterns_cache)} patterns)")
         return _ignored_patterns_cache
     
     logger.info(f"🔍 Building gitignore patterns for {directory}...")
@@ -126,6 +126,7 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
     # Standard exclusion patterns (used when not in include-only mode)
     ignored_patterns: List[Tuple[str, str]] = [
         # Common large directories that should always be skipped
+        ("Library", user_codebase_dir),  # Skip entire Library directory on macOS
         ("Library/Developer", user_codebase_dir),
         ("Library/Caches", user_codebase_dir),
         ("Library/Application Support", user_codebase_dir),
@@ -170,9 +171,17 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
     
     scan_duration = time.time() - scan_start_time
     
-    # Log to both logger and stderr for visibility
+    # Warn if we found an excessive number of patterns (performance killer)
+    if len(ignored_patterns) > 1000:
+        logger.warning(f"⚠️ Found {len(ignored_patterns)} gitignore patterns - this will slow down scanning significantly")
+        logger.warning(f"💡 Consider using --include-only to scan specific directories only")
+        import sys
+        print(f"\n⚠️ Found {len(ignored_patterns)} gitignore patterns - scanning will be slower", file=sys.stderr)
+        print(f"💡 Tip: Use 'ziya --include-only path/to/project' for faster startup\n", file=sys.stderr, flush=True)
+    
+    # Only log at debug level to reduce noise
     pattern_msg = f"Total ignore patterns: {len(ignored_patterns)}"
-    logger.info(pattern_msg)
+    logger.debug(pattern_msg)
     
     # If scanning took more than 5 seconds, warn the user
     if scan_duration > 5.0:
@@ -278,7 +287,22 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
     if os.path.exists(root_gitignore_path) and os.path.isfile(root_gitignore_path):
         ignored_patterns.extend(read_gitignore(root_gitignore_path))
 
-    ignored_patterns.extend(get_patterns_recursive(directory))
+    # Skip recursive gitignore scanning for home directories - too slow and not useful
+    home_dir = os.path.expanduser("~")
+    is_home = os.path.abspath(directory).startswith(home_dir) and os.path.abspath(directory) == home_dir
+    
+    if is_home:
+        logger.info("Skipping recursive .gitignore scan for home directory (using defaults only)")
+    else:
+        # Only scan recursively for project directories
+        ignored_patterns.extend(get_patterns_recursive(directory))
+        logger.debug(f"Found {len(ignored_patterns)} total patterns after recursive scan")
+    
+    # Cache the results for future calls
+    _ignored_patterns_cache = ignored_patterns
+    _ignored_patterns_cache_dir = directory
+    _ignored_patterns_cache_time = time.time()
+    
     return ignored_patterns
 
 
@@ -365,6 +389,82 @@ def detect_large_directory_and_warn(directory: str) -> None:
         print("="*70 + "\n", file=sys.stderr)
 
 
+def estimate_directory_count(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int = 3) -> int:
+    """Quick estimate of total directories to scan (only go 3 levels deep for estimate)."""
+    should_ignore_fn = parse_gitignore_patterns(ignored_patterns)
+    count = 0
+    
+    # CRITICAL: Skip Library directory in estimation to avoid hanging
+    if 'Library' in directory or directory.endswith('/Library'):
+        logger.info("Skipping Library directory in estimation")
+        return 0
+    
+    def quick_count(path: str, depth: int) -> int:
+        # Even more aggressive depth limit for estimation
+        if depth > 2:  # Only scan 2 levels deep for estimate
+            return 0
+        
+        # Check for cancellation
+        if _scan_progress.get("cancelled"):
+            return 0
+        
+        nonlocal count
+        try:
+            entries = os.scandir(path)
+            for entry in entries:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+                if entry.is_symlink():
+                    continue
+                entry_path = entry.path
+                
+                # Skip Library and other known slow directories
+                basename = entry.name
+                if basename in {'Library', 'Applications', 'Downloads', '.Trash'}:
+                    continue
+                
+                if should_ignore_fn(entry_path):
+                    continue
+                count += 1
+                quick_count(entry_path, depth + 1)
+                
+                # Add a limit to prevent estimation from taking too long
+                if count > 1000:  # Stop counting after 1000 dirs found
+                    return count
+        except (PermissionError, OSError):
+            pass
+        return count
+    
+    # Set a short timeout for estimation
+    import signal
+    
+    def timeout_handler(signum, frame):
+        raise TimeoutError("Estimation timeout")
+    
+    # Only use timeout on Unix-like systems
+    if hasattr(signal, 'SIGALRM'):
+        old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(5)  # 5 second timeout for estimation
+        try:
+            count = quick_count(directory, 0)
+        except TimeoutError:
+            logger.warning("Estimation timed out after 5s, skipping estimate")
+            count = 0
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
+    else:
+        # Windows or other systems - just run without timeout
+        count = quick_count(directory, 0)
+    
+    # Extrapolate to full depth
+    if count > 0:
+        # Scale estimate based on actual max_depth vs estimation depth
+        scaled = count * (max_depth // 2) if max_depth > 2 else count
+        return min(scaled, count * 10)  # Cap at 10x to avoid ridiculous estimates
+    return 0
+
+
 def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int) -> Dict[str, Any]:
     """
     Get the folder structure of a directory with token counts.
@@ -386,6 +486,8 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
         for line in traceback.format_stack()[:-1]:
             f.write(line)
         f.write(f"=== END CALL STACK ===\n\n")
+    
+    logger.debug(f"🔍 PERF: Starting ULTRA-FAST folder scan for directory: {directory}")
     
     logger.debug(f"🔍 PERF: Starting ULTRA-FAST folder scan for directory: {directory}")
     
@@ -416,18 +518,45 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     
     # Update global progress
     global _scan_progress
-    _scan_progress["active"] = True
     _scan_progress["cancelled"] = False
     _scan_progress["start_time"] = time.time()
     _scan_progress["last_update"] = time.time()
-    _scan_progress["progress"] = {
-        "directories": 0,
-        "files": 0,
-        "elapsed": 0
-    }
     
-    # Set a maximum time limit for scanning (30 seconds)
+    # Check for early cancellation before expensive operations
+    if _scan_progress.get("cancelled"):
+        logger.info("Scan cancelled before starting")
+        return {"error": "Scan cancelled by user", "cancelled": True}
+    
+    logger.info("Estimating directory count for progress tracking...")
+    # Quick estimate of total work for better progress reporting
+    try:
+        # Skip estimation for home directories - it's too slow
+        home_dir = os.path.expanduser("~")
+        is_home = os.path.abspath(directory).startswith(home_dir)
+        
+        if is_home:
+            logger.info("Skipping estimation for home directory (too large)")
+            estimated_total = 0
+        else:
+            estimated_total = estimate_directory_count(directory, ignored_patterns)
+        
+        # Check cancellation after estimation
+        if _scan_progress.get("cancelled"):
+            logger.info("Scan cancelled during estimation")
+            _scan_progress["active"] = False
+            return {"error": "Scan cancelled by user", "cancelled": True}
+        
+    except Exception as e:
+        logger.warning(f"Failed to estimate directory count: {e}")
+        estimated_total = 0
+    
+    _scan_progress["estimated_total"] = estimated_total
+    logger.info(f"Estimated ~{estimated_total} directories to scan" if estimated_total > 0 else "Starting scan without estimate (will show raw counts)")
+    # Set a maximum time limit for scanning (45 seconds default, configurable)
     max_scan_time = int(os.environ.get("ZIYA_SCAN_TIMEOUT", "45"))  # Increased default, configurable
+    
+    # Track progress for intelligent timeout
+    last_progress_check = {'time': time.time(), 'directories': 0}
     
     # Add progress tracking
     last_progress_time = time.time()
@@ -436,20 +565,21 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
 
     def process_dir(path: str, depth: int) -> Dict[str, Any]:
         """Process a directory recursively."""
-        # Resolve symlinks to detect loops
+        nonlocal last_progress_check  # Declare nonlocal so we can modify it
         
-        # EARLY TERMINATION: Skip known problematic directories immediately
+        # CRITICAL: Skip known problematic directories BEFORE any expensive operations
         # Check basename first (fastest check)
         dir_basename = os.path.basename(path.rstrip(os.sep))
+        
+        # AGGRESSIVE SKIP: Library directory alone causes 90% of slowness in home dirs
         if dir_basename in {
-            'CoreSimulator', 'Library', 'Containers', 'Caches', 'Logs',
+            'Library',  # Skip entire Library directory - single biggest slowdown
+            'CoreSimulator', 'Containers', 'Caches', 'Logs',
             'Application Support', 'Developer', 'News', 'Trial',
             '.Trash', 'Downloads', 'Applications', 'Movies', 'Music', 'Pictures'
         }:
-            # For these directories, do a quick ignore check before processing
-            if should_ignore_fn(path):
-                logger.debug(f"Early skip of known slow directory: {path}")
-                return {'token_count': 0}
+            logger.debug(f"Early skip of known slow directory: {path}")
+            return {'token_count': 0}
         
         # Also check depth immediately to avoid processing deep paths
         if depth > max_depth:
@@ -469,20 +599,40 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
         # Check for cancellation
         if _scan_progress.get("cancelled"):
             logger.info("Scan cancelled by user request")
+            _scan_progress["active"] = False
             return {'token_count': 0, 'cancelled': True}
         
-        # Check if we've exceeded the time limit
+        # Intelligent timeout: Only abort if we're NOT making progress
         current_time = time.time()
         elapsed = current_time - scan_stats['start_time']
         
-        if elapsed > max_scan_time:
+        # Check progress every 10 seconds
+        if elapsed - (last_progress_check['time'] - scan_stats['start_time']) > 10:
+            dirs_scanned_since_check = scan_stats['directories_scanned'] - last_progress_check['directories']
+            
+            if dirs_scanned_since_check > 0:
+                # Making progress - extend timeout
+                last_progress_check = {
+                    'time': current_time,
+                    'directories': scan_stats['directories_scanned']
+                }
+                logger.debug(f"Progress detected: {dirs_scanned_since_check} dirs in last 10s, continuing scan")
+            elif elapsed > max_scan_time:
+                # No progress AND timeout exceeded
+                logger.warning(f"No progress in 10s and timeout reached ({elapsed:.1f}s), aborting")
+                return {'token_count': 0, 'timeout': True}
+        
+        # Hard timeout at 2x the configured timeout regardless of progress
+        if elapsed > max_scan_time * 2:
             logger.warning(f"Timeout reached at {elapsed:.1f}s while processing {path}")
             return {'token_count': 0, 'timeout': True}
-            
+        
         # Log progress periodically
         nonlocal last_progress_time
         
-        # Update global progress
+        scan_stats['directories_scanned'] += 1
+        
+        # Update global progress immediately
         _scan_progress["progress"] = {
             "directories": scan_stats['directories_scanned'],
             "files": scan_stats['files_processed'],
@@ -490,11 +640,8 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
         }
         _scan_progress["last_update"] = time.time()
         
-        scan_stats['directories_scanned'] += 1
-        
         result = {'token_count': 0, 'children': {}}
         total_tokens = 0
-        
         
         try:
             entries = os.listdir(path)
@@ -515,17 +662,12 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
                 logger.info("Scan cancelled during entry processing")
                 break
             
-            # Check if we've exceeded the time limit
+            # Progress logging
             current_time = time.time()
             elapsed = current_time - scan_stats['start_time']
-            
-            if elapsed > max_scan_time:
-                logger.warning(f"Timeout during entry processing in {path}")
-                break
-                
-            # Progress logging
             if current_time - last_progress_time > progress_interval:
-                logger.info(f"📊 Scan progress: {scan_stats['directories_scanned']} dirs, {scan_stats['files_processed']} files in {elapsed:.1f}s")
+                progress_pct = f" ({scan_stats['directories_scanned']}/{estimated_total}, {(scan_stats['directories_scanned']/estimated_total*100):.0f}%)" if estimated_total > 0 else ""
+                logger.info(f"📊 Scan progress: {scan_stats['directories_scanned']} dirs{progress_pct}, {scan_stats['files_processed']} files in {elapsed:.1f}s")
                 last_progress_time = current_time
                 
                 # Also print to stderr every 5 seconds for user visibility
@@ -571,7 +713,12 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
                         # Skip directories beyond max depth
                         pass
             elif os.path.isfile(entry_path):
+                file_start = time.time()
                 tokens = estimate_tokens_fast(entry_path)
+                file_time = time.time() - file_start
+                if file_time > 0.5:  # Log if a single file takes >0.5s
+                    logger.warning(f"🔍 PERF: Slow token estimation for {entry}: {file_time*1000:.1f}ms")
+                
                 logger.debug(f"📄 File {entry}: tokens={tokens}")
                 if tokens > 0 or tokens == -1:  # Include tool-backed files (marked as -1)
                     scan_stats['files_processed'] += 1
@@ -676,14 +823,24 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     result = root_result.get('children', {})
     logger.debug(f"root_result keys: {list(root_result.keys())}")
     logger.debug(f"root_result has {len(root_result.get('children', {}))} children")
+    
+    # Add metadata flags at the top level, not inside children
     if total_time >= max_scan_time:
         logger.warning(f"Folder scan timed out after {max_scan_time}s, returning partial results with {len(result)} entries")
-        result['_timeout'] = True
-        result['_partial'] = True
+        # Return metadata alongside children, not inside children
+        return {
+            **result,
+            '_timeout': True,
+            '_partial': True
+        }
     
     # Check if cancelled
     if _scan_progress.get("cancelled"):
-        result['_cancelled'] = True
+        return {
+            **result,
+            '_cancelled': True
+        }
+    
     _visited_directories.clear()
     logger.info(f"Returning folder structure with {len(result)} top-level entries")
     return result

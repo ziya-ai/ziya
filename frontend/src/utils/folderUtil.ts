@@ -3,7 +3,14 @@ import {TreeDataNode} from "antd";
 
 export const convertToTreeData = (folders: Folders, parentKey = ''): TreeDataNode[] => {
     if (!folders || typeof folders !== 'object') return [];
-    return Object.entries(folders).filter(([key]) => key !== 'children').sort(([a], [b]) => a.toLowerCase().localeCompare(b.toLowerCase())).map(([key, value]) => {
+    return Object.entries(folders)
+        .filter(([key]) => {
+            // Skip metadata flags and children property
+            if (key === 'children') return false;
+            if (key.startsWith('_') && ['_timeout', '_partial', '_cancelled', '_stale', '_scanning', '_error'].includes(key)) return false;
+            return true;
+        })
+        .sort(([a], [b]) => a.toLowerCase().localeCompare(b.toLowerCase())).map(([key, value]) => {
         const currentKey = parentKey ? `${parentKey}/${key}` : key;
         const tokenCount = (value?.token_count ?? 0);
         const title = key;  // Just use the filename without token count
