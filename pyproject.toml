@@ -10,7 +10,7 @@ packages = [
 ]
 
 [tool.poetry.dependencies]
-python = ">=3.10,<3.14"
+python = ">=3.10,<3.15"
 uvicorn = {extras = ["standard"], version = "^0.38.0"}
 whatthepatch = "^1.0.6"
 requests = "^2.32.0"
@@ -20,7 +20,10 @@ boto3 = "^1.35.0"
 langchain-aws = "^1.0.0"
 cryptography = "^46.0.0"
 pyOpenSSL = "^25.0.0"
-numpy = "^2.0.0"
+numpy = [
+    {version = ">=2.0.0,<2.3.0", python = ">=3.10,<3.12"},
+    {version = "^2.3.2", python = ">=3.12,<3.15"}
+]
 langchain-google-genai = "^3.0.0"
 langchain = "^1.0.0"
 langchain-classic = "^1.0.0"
