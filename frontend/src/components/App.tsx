@@ -306,7 +306,7 @@ export const App: React.FC = () => {
                 maxWidth: '100%', overflowX: 'hidden'
             }}>
                 <Suspense fallback={<div>Loading conversation...</div>}>
-                    <Conversation key="conv" enableCodeApply={enableCodeApply} />
+                    <Conversation key="conv" enableCodeApply={enableCodeApply} onOpenShellConfig={() => setShowShellConfig(true)} />
                 </Suspense>
                 <StreamedContent key="stream" />
             </div>
@@ -321,7 +321,7 @@ export const App: React.FC = () => {
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
                 <div className="bottom-up-content" ref={bottomUpContentRef}>
                     <Suspense fallback={<div>Loading conversation...</div>}>
-                        <Conversation key="conv" enableCodeApply={enableCodeApply} />
+                        <Conversation key="conv" enableCodeApply={enableCodeApply} onOpenShellConfig={() => setShowShellConfig(true)} />
                     </Suspense>
                 </div>
             </div>

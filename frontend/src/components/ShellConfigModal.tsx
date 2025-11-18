@@ -13,13 +13,16 @@ interface ShellConfig {
     gitOperationsEnabled: boolean;
     safeGitOperations: string[];
     timeout: number;
+    persist?: boolean;
 }
 
 const { Panel } = Collapse;
 
 const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose }) => {
     const [config, setConfig] = useState<ShellConfig | null>(null);
+    const [originalConfig, setOriginalConfig] = useState<ShellConfig | null>(null);
     const [newCommand, setNewCommand] = useState('');
+    const [persistConfig, setPersistConfig] = useState(false);
     const [loading, setLoading] = useState(false);
 
     useEffect(() => {
@@ -34,6 +37,7 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
             if (response.ok) {
                 const data = await response.json();
                 setConfig(data);
+                setOriginalConfig(data);
             }
         } catch (error) {
             console.error('Failed to fetch shell config:', error);
@@ -44,6 +48,7 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                 safeGitOperations: [],
                 timeout: 30
             });
+            setOriginalConfig(defaultConfig);
         }
     };
 
@@ -74,7 +79,7 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify(config),
+                body: JSON.stringify({ ...config, persist: persistConfig }),
             });
 
             if (response.ok) {
@@ -137,6 +142,36 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
         }));
     };
 
+    const hasChanges = (): boolean => {
+        if (!config || !originalConfig) return false;
+        return JSON.stringify(config) !== JSON.stringify(originalConfig);
+    };
+
+    const handleClose = () => {
+        if (hasChanges()) {
+            Modal.confirm({
+                title: 'Unsaved Changes',
+                icon: <WarningOutlined style={{ color: '#faad14' }} />,
+                content: 'You have unsaved changes. What would you like to do?',
+                okText: 'Save Changes',
+                cancelText: 'Discard Changes',
+                okButtonProps: {
+                    loading: loading
+                },
+                onOk: async () => {
+                    await saveConfig();
+                },
+                onCancel: () => {
+                    onClose();
+                },
+                maskClosable: true,
+                closable: true
+            });
+        } else {
+            onClose();
+        }
+    };
+
     const dangerousCommands = ['rm', 'rmdir', 'mv', 'cp', 'chmod', 'chown', 'sudo', 'su'];
     const allGitOperations = ['status', 'log', 'show', 'diff', 'branch', 'remote', 'config --get', 'ls-files', 'ls-tree', 'blame', 'tag', 'stash list', 'reflog', 'rev-parse', 'describe', 'shortlog', 'whatchanged'];
 
@@ -157,11 +192,35 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
         <Modal
             title="Shell Command Configuration"
             open={visible}
-            onCancel={onClose}
+            onCancel={handleClose}
             onOk={saveConfig}
             confirmLoading={loading}
             width={600}
             okText="Save Configuration"
+            footer={[
+                <div key="footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                    <Checkbox
+                        checked={persistConfig}
+                        onChange={(e) => setPersistConfig(e.target.checked)}
+                        style={{ marginRight: 'auto' }}
+                    >
+                        Save to config file (~/.ziya/mcp_config.json)
+                    </Checkbox>
+                    <Space>
+                        <Button key="cancel" onClick={handleClose}>
+                            Cancel
+                        </Button>
+                        <Button
+                            key="submit"
+                            type="primary"
+                            loading={loading}
+                            onClick={saveConfig}
+                        >
+                            Save Configuration
+                        </Button>
+                    </Space>
+                </div>
+            ]}
         >
             <Space direction="vertical" style={{ width: '100%' }} size="large">
                 <div>
@@ -176,7 +235,7 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                         <span>Enable shell command execution</span>
                     </Space>
                     <div style={{ marginTop: 8, color: '#666', fontSize: '12px' }}>
-                        When enabled, the AI agent can execute whitelisted shell commands
+                        Enables execution of whitelisted commands for file operations, system inspection, and diagnostics
                     </div>
                 </div>
 

@@ -17,9 +17,10 @@ import { MarkdownRenderer } from "./MarkdownRenderer";
 
 interface ConversationProps {
     enableCodeApply: boolean;
+    onOpenShellConfig?: () => void;
 }
 
-const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => {
+const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpenShellConfig }) => {
     const { currentMessages,
         editingMessageIndex,
         isTopToBottom,
@@ -345,12 +346,13 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                 <EditSection index={actualIndex} isInline={false} />
                             ) : msg.role === 'human' && msg.content ? (
                                 <div className="message-content">
-                                    <MarkdownRenderer
-                                        markdown={msg.content}
-                                        enableCodeApply={enableCodeApply}
-                                        isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
-                                    />
-                                </div>
+                                <MarkdownRenderer
+                                    markdown={msg.content}
+                                    enableCodeApply={enableCodeApply}
+                                    onOpenShellConfig={onOpenShellConfig}
+                                    isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
+                                />
+                            </div>
                             ) : msg.role === 'assistant' && msg.content ? (
                                 <>
                                     <div style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -361,12 +363,13 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                         {renderRetryButton(actualIndex)}
                                     </div>
                                     <div className="message-content">
-                                        <MarkdownRenderer
-                                            markdown={msg.content}
-                                            enableCodeApply={enableCodeApply}
-                                            isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
-                                        />
-                                    </div>
+                                    <MarkdownRenderer
+                                        markdown={msg.content}
+                                        enableCodeApply={enableCodeApply}
+                                        onOpenShellConfig={onOpenShellConfig}
+                                        isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
+                                    />
+                                </div>
                                 </>
                             ) : null}
                         </>
@@ -613,6 +616,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                             <MarkdownRenderer
                                                 markdown={msg.content}
                                                 enableCodeApply={enableCodeApply}
+                                                onOpenShellConfig={onOpenShellConfig}
                                                 isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
                                             />
                                         </div>
@@ -634,6 +638,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply }) => 
                                                 <MarkdownRenderer
                                                     markdown={msg.content}
                                                     enableCodeApply={enableCodeApply}
+                                                    onOpenShellConfig={onOpenShellConfig}
                                                     isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
                                                 />
                                             </div>
