@@ -55,11 +55,10 @@ function formatBuilderMcpOutput(toolName: string, result: any, options: any): Fo
     case 'code_search':
       // Let generic formatter handle code search since it follows standard search pattern
       return null;
-    default:
-    case 'workspace_git':
-      return formatAmazonWorkspaceGit(result, options);
     case 'workspace_search':
       return formatAmazonWorkspaceSearch(result, options);
+    default:
+      return null;
   }
 }
 
@@ -93,7 +92,7 @@ function parseWorkspaceSearchHTML(content: string): Array<{
   return results;
 }
 
-function formatAmazonWorkspaceSearch(result: any, options: any): FormattedOutput | null {
+function formatAmazonWorkspaceSearch(result: any, _options: any): FormattedOutput | null {
   // Only handle string results with our specific HTML format
   if (typeof result === 'string' && result.includes('<pre><code class="language-')) {
     const parsedResults = parseWorkspaceSearchHTML(result);
@@ -138,7 +137,7 @@ function formatAmazonWorkspaceSearch(result: any, options: any): FormattedOutput
   return null;
 }
 
-function formatAmazonAcronym(result: any, options: any): FormattedOutput | null {
+function formatAmazonAcronym(result: any, _options: any): FormattedOutput | null {
   if (!result.results?.[0]) {
     return { content: 'No acronym definitions found', type: 'text', collapsed: false };
   }
@@ -156,7 +155,7 @@ function formatAmazonAcronym(result: any, options: any): FormattedOutput | null 
   };
 }
 
-function formatAmazonTicketing(result: any, options: any): FormattedOutput {
+function formatAmazonTicketing(result: any, _options: any): FormattedOutput {
   if (result.status === 'success' && result.data?.groups) {
     const groups = result.data.groups.map((group: any) => 
       `• **${group.details.label}**\n  - ${group.details.description}\n  - ID: ${group.name}`
@@ -172,7 +171,7 @@ function formatAmazonTicketing(result: any, options: any): FormattedOutput {
   return { content: JSON.stringify(result, null, 2), type: 'json', collapsed: true };
 }
 
-function formatAmazonTaskeiRooms(result: any, options: any): FormattedOutput {
+function formatAmazonTaskeiRooms(result: any, _options: any): FormattedOutput {
   if (result.rooms) {
     const rooms = result.rooms.map((room: any) => 
       `• **${room.name}**\n  - ${room.description}\n  - Sprints: ${room.enableSprints ? '✓' : '✗'} | Kanban: ${room.enableKanban ? '✓' : '✗'}`
@@ -188,7 +187,7 @@ function formatAmazonTaskeiRooms(result: any, options: any): FormattedOutput {
   return { content: JSON.stringify(result, null, 2), type: 'json', collapsed: true };
 }
 
-function formatAmazonOncall(result: any, options: any): FormattedOutput {
+function formatAmazonOncall(result: any, _options: any): FormattedOutput {
   if (result.status === 'success' && result.data) {
     const teams = result.data.map((team: any) => 
       `• **${team.teamName}**\n  - ${team.description}\n  - Members: ${team.members.split(' ').length}\n  - Owners: ${team.owners.split(' ').length}`
@@ -204,7 +203,7 @@ function formatAmazonOncall(result: any, options: any): FormattedOutput {
   return { content: JSON.stringify(result, null, 2), type: 'json', collapsed: true };
 }
 
-function formatAmazonApollo(result: any, options: any): FormattedOutput {
+function formatAmazonApollo(result: any, _options: any): FormattedOutput {
   if (result.content && result.content.status === 'success' && result.content.data) {
     const data = result.content.data;
     
@@ -224,7 +223,7 @@ function formatAmazonApollo(result: any, options: any): FormattedOutput {
   return { content: JSON.stringify(result, null, 2), type: 'json', collapsed: true };
 }
 
-function formatAmazonSasRisks(result: any, options: any): FormattedOutput {
+function formatAmazonSasRisks(result: any, _options: any): FormattedOutput {
   if (result.content && result.content.status === 'success' && result.content.data) {
     const data = result.content.data;
     
@@ -246,7 +245,7 @@ function formatAmazonSasRisks(result: any, options: any): FormattedOutput {
   return { content: JSON.stringify(result, null, 2), type: 'json', collapsed: true };
 }
 
-function formatAmazonWorkspaceGit(result: any, options: any): FormattedOutput {
+function formatAmazonWorkspaceGit(result: any, _options: any): FormattedOutput {
   if (result.gitRepositories) {
     const repos = result.gitRepositories.map((repo: any) => {
       let repoInfo = `• **${repo.repositoryName}** (${repo.repositoryPath})\n`;

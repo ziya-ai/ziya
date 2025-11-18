@@ -218,11 +218,6 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
                         }
                     }
                     break;
-                case 'jsx': {
-                    await import('prismjs/components/prism-clike');
-                    await import('prismjs/components/prism-csharp');
-                    break;
-                }
                 case 'javascript': {
                     await import('prismjs/components/prism-jsx');
                     break;
@@ -274,7 +269,7 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
                 }
                 default:
                     if (mappedLanguage !== 'plaintext') try {
-                        await import(/* webpackChunkName: "prism-lang.[request]" */ `prismjs/components/prism-${mappedLanguage}`);
+                        await import(/* webpackChunkName: "prism-[request]", webpackPrefetch: false, webpackPreload: false */ `prismjs/components/prism-${mappedLanguage}`);
                         if (!window.Prism?.languages?.[mappedLanguage]) {
                             throw new Error(`Language ${mappedLanguage} (${language}) failed to load`);
                         }

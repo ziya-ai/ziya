@@ -502,7 +502,6 @@ export const sendPayload = async (
         checkedItems,
         conversationId
     };
-    let activeFeedbackToolId: string | null = null;
 
     // Connect feedback WebSocket
     let feedbackConnected = false;
@@ -1370,7 +1369,7 @@ export const sendPayload = async (
 
                             // Unescape common escape sequences
                             // Don't unescape backslashes inside math blocks as \\ is meaningful in LaTeX
-                            const mathBlockRegex = /(\$\$[\s\S]*?\$\$|\$[^\$\n]+?\$)/g;
+                            const mathBlockRegex = /(\$\$[\s\S]*?\$\$|\$[^$\n]+?\$)/g;
                             const parts = extractedContent.split(mathBlockRegex);
 
                             newContent = parts.map((part, index) => {
@@ -1693,13 +1692,6 @@ export const sendPayload = async (
             // After successful streaming, update with final content
             if (currentContent && !errorOccurred) {
                 console.log("Stream completed successfully");
-
-                // Check if the stream was aborted before adding the message
-                if (isAborted) {
-                    console.log("Stream was aborted, not adding final message");
-                    removeStreamingConversation(conversationId);
-                    return 'Response generation stopped by user.';
-                }
 
                 // Check if the stream was aborted before adding the message
                 if (isAborted) {
