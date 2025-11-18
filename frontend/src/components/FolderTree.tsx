@@ -31,7 +31,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
 
     // Use a more selective approach to extract only what we need from ChatContext
     const chatContext = useChatContext();
-    const { startNewChat, createFolder } = useChatContext();
+    const { createFolder } = chatContext;
     const { isScanning, scanError } = useFolderContext();
     const currentFolderId = chatContext.currentFolderId;
 
@@ -79,13 +79,13 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
     // Handle creating a new chat at current folder level
     const handleCreateChatAtCurrentLevel = useCallback(async () => {
         try {
-            await startNewChat(currentFolderId);
+            await chatContext.startNewChat(currentFolderId);
             message.success('New chat created successfully');
         } catch (error) {
             console.error('Error creating chat:', error);
             message.error('Failed to create new chat');
         }
-    }, [startNewChat, currentFolderId]);
+    }, [chatContext, currentFolderId]);
 
     // Handle scan cancellation
     const handleCancelScan = useCallback(async () => {

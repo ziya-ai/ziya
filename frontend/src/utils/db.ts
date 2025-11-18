@@ -62,7 +62,7 @@ class ConversationDB implements DB {
 
         this.initializing = true;
         if (navigator.locks) {
-            this.initPromise = navigator.locks.request('ziya-db-init', async lock => {
+            this.initPromise = navigator.locks.request('ziya-db-init', async _lock => {
                 return this._initWithLock();
             });
             return this.initPromise;
@@ -100,7 +100,7 @@ class ConversationDB implements DB {
                             console.log('Recovery completed, forcing page reload');
                             // Force reload to reinitialize everything
                             setTimeout(() => {
-                                window.location.href = window.location.href;
+                                window.location.reload();
                             }, 100);
                         }).catch(err => console.error('Auto-recovery failed:', err));
                         return;
@@ -309,7 +309,7 @@ class ConversationDB implements DB {
         }
 
         if (navigator.locks) {
-            return navigator.locks.request('ziya-db-write', async lock => {
+            return navigator.locks.request('ziya-db-write', async _lock => {
                 try {
                     return await this._saveConversationsWithLock(conversations);
                 } catch (error) {
@@ -335,7 +335,7 @@ class ConversationDB implements DB {
 
                             // Force reload to reinitialize everything
                             setTimeout(() => {
-                                window.location.href = window.location.href;
+                                window.location.reload();
                             }, 100);
                         }
                         return this._saveConversationsWithLock(conversations);
@@ -489,7 +489,7 @@ class ConversationDB implements DB {
         }
 
         if (navigator.locks) {
-            return navigator.locks.request('ziya-db-read', async lock => {
+            return navigator.locks.request('ziya-db-read', async _lock => {
                 return this._getConversationsWithLock();
             });
         }
@@ -501,8 +501,6 @@ class ConversationDB implements DB {
             console.warn('Database not initialized in _getConversationsWithLock');
             return [];
         }
-
-        let result: Conversation[] = [];
 
         // Check if the store exists
         if (!this.db.objectStoreNames.contains(STORE_NAME)) {
@@ -544,7 +542,6 @@ class ConversationDB implements DB {
                     );
 
                     if (validConversations.length > 0) {
-                        result = validConversations;
                         resolve(validConversations);
                         return;
                     }
@@ -552,7 +549,6 @@ class ConversationDB implements DB {
                 resolve([]);
                 // If we got no valid conversations, try to restore from backup
                 this.restoreFromBackup().then(backupConversations => {
-                    result = backupConversations;
                     resolve(backupConversations);
                 }).catch(() => resolve([]));
             };
@@ -600,7 +596,7 @@ class ConversationDB implements DB {
 
     async exportConversations(): Promise<string> {
         if (navigator.locks) {
-            return navigator.locks.request('ziya-db-read', async lock => {
+            return navigator.locks.request('ziya-db-read', async _lock => {
                 return this._exportConversations();
             });
         }
@@ -643,7 +639,7 @@ class ConversationDB implements DB {
 
     async importConversations(data: string): Promise<void> {
         if (navigator.locks) {
-            return navigator.locks.request('ziya-db-write', async lock => {
+            return navigator.locks.request('ziya-db-write', async _lock => {
                 return this._importConversations(data);
             });
         }
@@ -929,7 +925,7 @@ class ConversationDB implements DB {
 
     async repairDatabase(): Promise<void> {
         if (navigator.locks) {
-            return navigator.locks.request('ziya-db-write', async lock => {
+            return navigator.locks.request('ziya-db-write', async _lock => {
                 return this._repairDatabase();
             });
         }
@@ -959,7 +955,7 @@ class ConversationDB implements DB {
 
     async clearDatabase(): Promise<void> {
         if (navigator.locks) {
-            return navigator.locks.request('ziya-db-write', async lock => {
+            return navigator.locks.request('ziya-db-write', async _lock => {
                 return this._clearDatabase();
             });
         }
