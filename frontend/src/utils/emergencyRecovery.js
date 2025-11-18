@@ -206,7 +206,7 @@ export async function performEmergencyRecovery() {
 
     // Force a reload after a short delay to ensure all operations complete
     setTimeout(() => {
-      window.location.href = window.location.href; // Force a hard reload
+      window.location.reload(); // Force a hard reload
     }, 500);
 
     return result;
