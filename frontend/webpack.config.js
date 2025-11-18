@@ -34,7 +34,7 @@ module.exports = {
           },
         },
       }),
-    },
+    ],
     splitChunks: {
       chunks: 'all',
       maxInitialRequests: Infinity,
@@ -47,15 +47,7 @@ module.exports = {
             return `vendor.${packageName.replace('@', '')}`;
           },
         },
-        prismjs: {
-          test: /[\\/]node_modules[\\/]prismjs[\\/]components[\\/]/,
-          name(module) {
-            const match = module.resource.match(/prism-([^.]+)\.js$/);
-            return match ? `prism-lang.${match[1]}` : 'prism-core';
-          },
-          priority: 10,
-          enforce: true,
-        }
+        // Removed prismjs cache group - languages will be lazy loaded on demand
       }
     }
   }
