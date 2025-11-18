@@ -76,6 +76,8 @@ def parse_arguments():
                         help="Maximum depth for folder structure traversal (e.g., --max-depth 20)")
     parser.add_argument("--check-auth", action="store_true",
                         help="Check authentication setup without starting the server")
+    parser.add_argument("--info", action="store_true",
+                        help="Display system information and configuration for debugging")
     parser.add_argument("--list-models", action="store_true",
                         help="List all supported endpoints and their available models")
     parser.add_argument("--ast", action="store_true",
@@ -289,6 +291,171 @@ def print_version():
     print(f"Ziya version {current_version}")
 
 
+def print_info(args):
+    """Display system information and configuration for debugging."""
+    import platform
+    import boto3
+    from dotenv import load_dotenv, find_dotenv
+    
+    # Load .env file like models.py does
+    dotenv_path = find_dotenv()
+    if dotenv_path:
+        load_dotenv(dotenv_path, override=True)
+    
+    print("\n" + "=" * 60)
+    print("Ziya System Information")
+    print("=" * 60 + "\n")
+    
+    # Version info
+    current_version = get_current_version()
+    print(f"Ziya Version: {current_version}")
+    print(f"Python Version: {sys.version.split()[0]}")
+    print(f"Python Executable: {sys.executable}")
+    print(f"Platform: {platform.platform()}")
+    print()
+    
+    # Endpoint and model configuration
+    print(f"Endpoint: {args.endpoint}")
+    print(f"Model: {args.model or config.DEFAULT_MODELS.get(args.endpoint, 'N/A')}")
+    if args.model_id:
+        print(f"Model ID Override: {args.model_id}")
+    print()
+    
+    # AWS configuration (if using Bedrock)
+    if args.endpoint == "bedrock":
+        print("AWS Configuration:")
+        print(f"  Profile: {args.profile or os.environ.get('AWS_PROFILE', 'default')}")
+        print(f"  Region: {args.region or os.environ.get('AWS_REGION', 'us-west-2')}")
+        
+        try:
+            session = boto3.Session(profile_name=args.profile, region_name=args.region)
+            credentials = session.get_credentials()
+            if credentials:
+                try:
+                    sts = session.client('sts', region_name=args.region)
+                    identity = sts.get_caller_identity()
+                    print(f"  Account ID: {identity['Account']}")
+                    print(f"  Access Key: {credentials.access_key[:8]}...")
+                    print(f"  Status: Valid")
+                except Exception as sts_error:
+                    error_msg = str(sts_error)
+                    if 'ExpiredToken' in error_msg:
+                        print(f"  Access Key: {credentials.access_key[:8]}...")
+                        # Check if using Midway/mwinit
+                        if os.path.exists(os.path.expanduser('~/.midway')) or 'midway' in (args.profile or '').lower():
+                            print(f"  Status: Expired (run 'mwinit' to refresh)")
+                        else:
+                            print(f"  Status: Expired (run 'ada credentials update' or refresh your credentials)")
+                    elif 'InvalidClientTokenId' in error_msg:
+                        print(f"  Status: Invalid credentials")
+                    else:
+                        print(f"  Status: Error - {error_msg[:80]}")
+            else:
+                print("  Status: No credentials found")
+        except Exception as e:
+            print(f"  Status: Error - {str(e)[:80]}")
+        print()
+    
+    # Google configuration (if using Google)
+    elif args.endpoint == "google":
+        print("Google Configuration:")
+        api_key = os.environ.get('GOOGLE_API_KEY')
+        print(f"  API Key: {'Set' if api_key else 'Not set'}")
+        if api_key:
+            print(f"  API Key (masked): {api_key[:8]}...")
+        print()
+    
+    # Feature flags
+    print("Features:")
+    print(f"  AST: {'Enabled' if args.ast else 'Disabled'}")
+    if args.ast:
+        print(f"  AST Resolution: {args.ast_resolution}")
+    print(f"  MCP: {'Enabled' if args.mcp else 'Disabled'}")
+    print()
+    
+    # Environment detection
+    print("Environment Detection:")
+    from app.mcp.registry.registry import _is_amazon_environment
+    is_amazon = _is_amazon_environment(profile_name=args.profile)
+    print(f"  Amazon Internal: {'Yes' if is_amazon else 'No'}")
+    
+    if is_amazon:
+        # Check for toolbox
+        try:
+            result = subprocess.run(['which', 'toolbox'], capture_output=True, text=True)
+            toolbox_installed = result.returncode == 0
+            print(f"  Toolbox: {'Installed' if toolbox_installed else 'Not found'}")
+        except:
+            print(f"  Toolbox: Not found")
+        
+        # Check for mcp-registry
+        try:
+            result = subprocess.run(['which', 'mcp-registry'], capture_output=True, text=True)
+            mcp_registry_installed = result.returncode == 0
+            print(f"  MCP Registry: {'Installed' if mcp_registry_installed else 'Not found'}")
+        except:
+            print(f"  MCP Registry: Not found")
+        
+        # Check Amazon MCP Registry API access
+        print(f"  Amazon MCP Registry API: ", end='')
+        try:
+            session = boto3.Session(profile_name=args.profile, region_name=args.region or 'us-west-2')
+            credentials = session.get_credentials()
+            if credentials:
+                from botocore.auth import SigV4Auth
+                from botocore.awsrequest import AWSRequest
+                import httpx
+                import json
+                
+                # Try a minimal API call
+                payload = {'maxResults': 1}
+                request = AWSRequest(
+                    method='POST',
+                    url='https://api.registry.mcp.aws.dev/',
+                    data=json.dumps(payload),
+                    headers={
+                        'Content-Type': 'application/x-amz-json-1.0',
+                        'X-Amz-Target': 'MCPRegistryService.ListServices'
+                    }
+                )
+                signer = SigV4Auth(credentials, 'mcp-registry-service', args.region or 'us-west-2')
+                signer.add_auth(request)
+                
+                client = httpx.Client(timeout=5.0)
+                response = client.post(
+                    'https://api.registry.mcp.aws.dev/',
+                    headers=dict(request.headers),
+                    content=request.body
+                )
+                
+                if response.status_code == 200:
+                    print('Accessible')
+                elif 'NotAuthorizedException' in response.text or 'Not Authorized' in response.text:
+                    print('No permissions (requires access to DEFAULT registry)')
+                else:
+                    print(f'Error ({response.status_code})')
+            else:
+                print('No credentials')
+        except Exception as e:
+            print(f'Check failed ({str(e)[:50]})')
+    
+    print()
+    
+    # ZIYA_* environment variables
+    ziya_vars = {k: v for k, v in os.environ.items() if k.startswith('ZIYA_')}
+    if ziya_vars:
+        print("ZIYA Environment Variables:")
+        for key, value in sorted(ziya_vars.items()):
+            # Mask sensitive values
+            if 'KEY' in key or 'SECRET' in key or 'TOKEN' in key:
+                print(f"  {key}: {value[:8]}..." if len(value) > 8 else f"  {key}: ***")
+            else:
+                print(f"  {key}: {value}")
+        print()
+    
+    print("=" * 60 + "\n")
+
+
 def print_models():
     """Pretty-print all supported endpoints and their available models."""
     print("\nSupported Endpoints and Models:")
@@ -487,6 +654,11 @@ def main():
     # Handle list-models flag - print models and exit immediately
     if args.list_models:
         print_models()
+        return
+    
+    # Handle info flag - print system info and exit immediately
+    if args.info:
+        print_info(args)
         return
 
     # Set up environment variables for remaining commands

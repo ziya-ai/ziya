@@ -289,6 +289,11 @@ class AmazonInternalRegistryProvider(RegistryProvider):
             }
             
         except Exception as e:
+            error_str = str(e)
+            # Handle NotAuthorizedException gracefully - user doesn't have access
+            if 'NotAuthorizedException' in error_str or 'Not Authorized' in error_str:
+                logger.warning(f"Amazon MCP registry access not available (API permissions required)")
+                return {'services': [], 'next_token': None}
             logger.error(f"Error listing Amazon MCP services: {e}")
             raise
     
