@@ -67,9 +67,6 @@ class MCPManager:
             }
             builtin_servers["shell"] = {
                 "command": [sys.executable, "-u", str(package_dir / "shell_server.py")],
-                "env": {
-                    "ALLOW_COMMANDS": "ls,cat,pwd,grep,wc,touch,find,date,ps,curl,ping,cut,sort"
-                },
                 "enabled": True,
                 "description": "Provides shell command execution",
                 "builtin": True
