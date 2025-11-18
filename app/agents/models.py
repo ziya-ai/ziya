@@ -9,7 +9,7 @@ from pathlib import Path
 from langchain_aws import ChatBedrock
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.language_models import BaseChatModel
-from langchain.callbacks.base import BaseCallbackHandler
+from langchain_classic.callbacks.base import BaseCallbackHandler
 from app.utils.logging_utils import logger
 import app.config.models_config as config
 from app.config.models_config import get_supported_parameters  # Import the function explicitly
@@ -26,8 +26,8 @@ if dotenv_path:
     load_dotenv(dotenv_path, override=True)
     logger.info(f"MODELS.PY: Loaded environment variables from {dotenv_path}")
 
-from langchain.agents import AgentExecutor
-from langchain.agents.format_scratchpad import format_xml
+from langchain_classic.agents import AgentExecutor
+from langchain_classic.agents.format_scratchpad import format_xml
 from langchain_core.messages import HumanMessage
 
 # Import configuration from the central config module

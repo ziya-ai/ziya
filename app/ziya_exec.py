@@ -5,6 +5,27 @@ import sys
 import threading
 
 
+def _check_installation():
+    """Check if ziya is properly installed and accessible."""
+    # Check Python version
+    if sys.version_info < (3, 10):
+        print(f"❌ Ziya requires Python 3.10 or higher")
+        print(f"   Current: Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
+        print(f"\n   Fix: python3.10 -m pip install --user ziya")
+        sys.exit(1)
+    
+    # Check if running from correct location
+    install_path = os.path.dirname(os.path.abspath(__file__))
+    py_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    
+    # Warn if version mismatch detected
+    if f"python3.9" in install_path and sys.version_info >= (3, 10):
+        print(f"⚠️  Installation mismatch detected")
+        print(f"   Ziya installed for Python 3.9 but running with Python {py_version}")
+        print(f"\n   Fix: python{py_version} -m pip install --user --force-reinstall ziya\n")
+        sys.exit(1)
+
+
 def frontend_start():
     subprocess.run(["npm", "run", "start"], cwd="frontend")
 
@@ -18,6 +39,9 @@ def frontend_build():
 
 
 def ziya():
+    # Check installation before anything else
+    _check_installation()
+    
     # Check for version flag first to avoid importing main
     if "--version" in sys.argv:
         # Use direct import of version utility to avoid loading the full app

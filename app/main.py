@@ -499,7 +499,9 @@ def main():
         return
 
     try:
-        check_version_and_upgrade()
+        # Temporarily disabled for development - uncomment for release
+        # check_version_and_upgrade()
+        pass
     except Exception as e:
         logger.error(f"Error checking version: {e}")
         logger.warning("Continuing with current version...")
