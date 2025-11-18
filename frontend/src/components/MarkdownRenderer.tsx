@@ -1,7 +1,7 @@
 import React, { useState, useEffect, memo, useMemo, useCallback, useRef, useId, useLayoutEffect } from 'react';
 import { marked, Tokens } from 'marked';
 import { Alert, Button, message, Tooltip, Collapse } from 'antd';
-import { parseDiff, tokenize } from 'react-diff-view';
+import { parseDiff } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
 import { DiffLine } from './DiffLine';
 import { D3Renderer } from './D3Renderer';
@@ -26,12 +26,41 @@ import { HTMLMockupRenderer } from './HTMLMockupRenderer';
 
 const { Panel } = Collapse;
 
+// Helper function to make "Shell Configuration settings" clickable in security error messages
+const makeShellConfigLinkClickable = (message: string | React.ReactNode, onOpenShellConfig?: () => void): React.ReactNode => {
+    // If message is already a React node, return it as is
+    if (typeof message !== 'string') {
+        return message;
+    }
+
+    if (!message.includes('Shell Configuration settings')) {
+        return message;
+    }
+
+    const parts = message.split('Shell Configuration settings');
+    
+    return (
+        <>
+            {parts[0]}
+            <a
+                onClick={(e) => {
+                    e.preventDefault();
+                    onOpenShellConfig?.();
+                }}
+                style={{ cursor: 'pointer', textDecoration: 'underline', color: '#1890ff', fontWeight: 500 }}
+            >
+                Shell Configuration settings
+            </a>
+            {parts[1]}
+        </>
+    );
+};
+
 // Thinking component for DeepSeek reasoning content
 const ThinkingBlock: React.FC<{ children: React.ReactNode; isDarkMode: boolean; isStreaming?: boolean }> = ({ children, isDarkMode, isStreaming = false }) => {
     // Start expanded during streaming, collapsed when done
     const [isExpanded, setIsExpanded] = useState(isStreaming);
     const [htmlContent, setHtmlContent] = useState('');
-    const thinkingRenderedRef = useRef(false);
 
     // Parse markdown in children if it's a string
     const isString = typeof children === 'string';
@@ -124,9 +153,10 @@ interface ToolBlockProps {
     content: string;
     isDarkMode: boolean;
     toolInput?: any;
+    onOpenShellConfig?: () => void;
 }
 
-const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) => {
+const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode, onOpenShellConfig }) => {
     const [isExpanded, setIsExpanded] = useState(false);
 
     // Extract command/query from toolName if it contains encoded information
@@ -195,8 +225,6 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
         return `🛠️ ${cleanToolName}`;
     };
 
-    const toolSummary = getToolSummary();
-
     // Check if this is a security error from shell command blocking
     let isSecurityError = content.includes('🚫 SECURITY BLOCK') ||
         content.includes('Command not allowed') ||
@@ -230,7 +258,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
         return (
             <Alert
                 message="🚫 Command Blocked"
-                description={securityErrorMessage}
+                description={makeShellConfigLinkClickable(securityErrorMessage, onOpenShellConfig)}
                 type="warning"
                 showIcon
                 style={{ margin: '16px 0', border: '2px solid #faad14', whiteSpace: 'pre-line' }}
@@ -404,41 +432,41 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode }) 
                     const firstLine = cleanContent.split('\n')[0];
                     const truncatedFirstLine = firstLine.length > 200 ? firstLine.substring(0, 200) + '...' : firstLine;
                     return (
-                <div
-                    style={{
-                        padding: '16px',
-                        color: colors.contentText,
-                        fontSize: '14px',
-                        cursor: 'pointer'
-                    }}
-                    onClick={() => setIsExpanded(true)}
-                >
-                    {cleanContent ? (
-                        <div>
-                            <pre style={{
-                                margin: 0,
-                                padding: 0,
-                                whiteSpace: 'pre-wrap',
-                                wordBreak: 'break-word',
-                                fontFamily: 'monospace'
-                            }}>
-                                {truncatedFirstLine}
-                            </pre>
-                            <div style={{
-                                marginTop: '8px',
-                                fontStyle: 'italic',
-                                textAlign: 'center',
-                                opacity: 0.7
-                            }}>
-                                {summary}{firstLine.length > 200 ? ' (preview truncated)' : ''} - Click to expand
-                            </div>
+                        <div
+                            style={{
+                                padding: '16px',
+                                color: colors.contentText,
+                                fontSize: '14px',
+                                cursor: 'pointer'
+                            }}
+                            onClick={() => setIsExpanded(true)}
+                        >
+                            {cleanContent ? (
+                                <div>
+                                    <pre style={{
+                                        margin: 0,
+                                        padding: 0,
+                                        whiteSpace: 'pre-wrap',
+                                        wordBreak: 'break-word',
+                                        fontFamily: 'monospace'
+                                    }}>
+                                        {truncatedFirstLine}
+                                    </pre>
+                                    <div style={{
+                                        marginTop: '8px',
+                                        fontStyle: 'italic',
+                                        textAlign: 'center',
+                                        opacity: 0.7
+                                    }}>
+                                        {summary}{firstLine.length > 200 ? ' (preview truncated)' : ''} - Click to expand
+                                    </div>
+                                </div>
+                            ) : (
+                                <div style={{ fontStyle: 'italic', textAlign: 'center' }}>
+                                    {summary} - Click to expand
+                                </div>
+                            )}
                         </div>
-                    ) : (
-                        <div style={{ fontStyle: 'italic', textAlign: 'center' }}>
-                            {summary} - Click to expand
-                        </div>
-                    )}
-                </div>
                     );
                 })()
             ) : (
@@ -543,7 +571,7 @@ class ErrorBoundary extends React.Component<
         return { hasError: true };
     }
 
-    componentDidCatch(error, errorInfo) {
+    componentDidCatch(_error, errorInfo) {
         const errorType: ErrorType = this.props.type || 'unknown';
         console.error(`${errorType} rendering error:`, error, errorInfo);
     }
@@ -719,10 +747,10 @@ const extractAllFilesFromDiff = (diffContent: string): string[] => {
     for (const line of lines) {
         // Extract from git diff headers
         // Handle both standard format and malformed Gemini format
-        const gitMatch = line.match(/diff --git (?:a\/)?([^\/]*(?:\/[^\/]*)*) (?:b\/)?(.*)$/);
+        const gitMatch = line.match(/^diff --git (?:a\/)?([^\s]+) (?:b\/)?([^\s]+)$/);
         if (gitMatch) {
-            const newPath = gitMatch[2];
             const oldPath = gitMatch[1];
+            const newPath = gitMatch[2];
             if (newPath !== '/dev/null') files.push(newPath);
             if (oldPath !== '/dev/null' && oldPath !== newPath) files.push(oldPath);
         }
@@ -741,7 +769,15 @@ const extractAllFilesFromDiff = (diffContent: string): string[] => {
 
     // Remove duplicates and filter out new file creations
     const uniqueFiles = [...new Set(files)];
-    const existingFiles = uniqueFiles.filter(file => !newFiles.has(file));
+    const existingFiles = uniqueFiles.filter(file =>
+        !newFiles.has(file) &&
+        // Filter out regex patterns and invalid filenames
+        !file.includes('(?:') &&
+        !file.includes('$/)') &&
+        !file.includes('[^') &&
+        !file.endsWith(');') &&
+        !file.includes('\\')
+    );
 
     console.log('🔄 CONTEXT_ENHANCEMENT: File analysis:', { allFiles: uniqueFiles, newFiles: Array.from(newFiles), existingFiles });
     return existingFiles;
@@ -3326,8 +3362,6 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
     const [loadError, setLoadError] = useState<string | null>(null);
     const { isDarkMode } = useTheme();
     const [prismInstance, setPrismInstance] = useState<PrismStatic | null>(null);
-    const [debugInfo, setDebugInfo] = useState<any>({});
-    const renderCountRef = useRef(0);
 
     const { isStreaming: isGlobalStreaming } = useChatContext();
 
@@ -3440,12 +3474,6 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
                     await loadPrismLanguage(normalizedLang);
                     setPrismInstance(window.Prism);
                     const effectiveLang = getEffectiveLang(token.lang);
-                    setDebugInfo({
-                        loadedLang: token.lang,
-                        prismAvailable: Boolean(window.Prism),
-                        languagesAfterLoad: window.Prism ? Object.keys(window.Prism.languages) : [],
-                        grammarAvailable: window.Prism?.languages[effectiveLang] ? true : false
-                    });
                 } catch (error: unknown) {
                     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
                     setLoadError(`Error loading language ${normalizedLang}: ${errorMessage}`);
@@ -3684,11 +3712,11 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         // Look for tool block markers that might have been missed by lang detection
         if (trimmedText.startsWith('\`\`\`tool:mcp_') ||
             trimmedText.includes('\cp_') ||
-            (trimmedText.startsWith('$ ') && trimmedText.length > 10 && 
-             !trimmedText.includes('\n') && // Single line commands only
-             !trimmedText.includes('ERROR:') && // Not error messages
-             !trimmedText.includes('WARNING:') && // Not warning messages
-             !trimmedText.includes('DEBUG:')) || // Not debug messages
+            (trimmedText.startsWith('$ ') && trimmedText.length > 10 &&
+                !trimmedText.includes('\n') && // Single line commands only
+                !trimmedText.includes('ERROR:') && // Not error messages
+                !trimmedText.includes('WARNING:') && // Not warning messages
+                !trimmedText.includes('DEBUG:')) || // Not debug messages
             trimmedText.includes('🔧') || // Tool emoji markers
             trimmedText.includes('🛠️')) {
 
@@ -3815,8 +3843,7 @@ const decodeHtmlEntities = (text: string): string => {
         .replace(/&trade;/g, '™');
 };
 
-const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false, isStreaming: boolean = false, thinkingContentRef?: React.MutableRefObject<string>): React.ReactNode => {
-    // Only log when debug logging is enabled and not too frequently
+const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false, isStreaming: boolean = false, thinkingContentRef?: React.MutableRefObject<string>, onOpenShellConfig?: () => void): React.ReactNode => {
     const shouldLog = isDebugLoggingEnabled() &&
         (Date.now() - lastLogTimestamp > 10000);
 
@@ -4035,7 +4062,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             errorMessage = pythonDictMatch[1].replace(/\\n/g, '\n').replace(/^🚫 SECURITY BLOCK:\s*/, '');
                         }
                         return (
-                            <Alert key={index} message="🚫 Command Blocked" description={errorMessage} type="warning" showIcon style={{ margin: '16px 0', border: '2px solid #faad14', whiteSpace: 'pre-line' }} />
+                            <Alert key={index} message="🚫 Command Blocked" description={makeShellConfigLinkClickable(errorMessage, onOpenShellConfig)} type="warning" showIcon style={{ margin: '16px 0', border: '2px solid #faad14', whiteSpace: 'pre-line' }} />
                         );
                     }
 
@@ -4053,7 +4080,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         debugLog('Successfully rendering tool block:', { toolName: tokenWithText.toolName, contentLength: toolContent.length });
                     }
                     return (
-                        <ToolBlock key={index} toolName={tokenWithText.toolName} content={toolContent} isDarkMode={isDarkMode} />
+                        <ToolBlock key={index} toolName={tokenWithText.toolName} content={toolContent} isDarkMode={isDarkMode} onOpenShellConfig={onOpenShellConfig} />
                     );
 
                 case 'd3':
@@ -4121,7 +4148,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     if (tokenWithText.lang?.startsWith('tool:')) {
                         console.error('CRITICAL ERROR: Tool block reached code case!', { lang: tokenWithText.lang, determinedType });
                         // Force redirect to tool rendering
-                        return <ToolBlock key={index} toolName={tokenWithText.lang.substring(5)} content={tokenWithText.text} isDarkMode={isDarkMode} />;
+                        return <ToolBlock key={index} toolName={tokenWithText.lang.substring(5)} content={tokenWithText.text} isDarkMode={isDarkMode} onOpenShellConfig={onOpenShellConfig} />
                     }
 
                     // Check for file operations first
@@ -4184,7 +4211,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     // Filter out empty text tokens that might remain after processing
                     const filteredPTokens = pTokens.filter(t => t.type !== 'text' || (t as TokenWithText).text.trim() !== '');
                     if (filteredPTokens.length === 0) return null; // Don't render empty paragraphs
-                    return <p key={index}>{renderTokens(filteredPTokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef)}</p>;
+                    return <p key={index}>{renderTokens(filteredPTokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</p>;
 
                 case 'list':
                     // Render list, processing items recursively
@@ -4195,7 +4222,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             {listToken.items.map((item, itemIndex) => (
                                 // Render list items using the 'list_item' case below
                                 <React.Fragment key={itemIndex}>
-                                    {renderTokens([item], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef)}
+                                    {renderTokens([item], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}
                                 </React.Fragment>
                             ))}
                         </ListTag>
@@ -4204,7 +4231,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'list_item':
                     const listItemToken = token as Tokens.ListItem;
 
-                    const itemContent = renderTokens(listItemToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef);
+                    const itemContent = renderTokens(listItemToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig);
 
                     // Handle task list items
                     if (listItemToken.task) {
@@ -4233,7 +4260,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                                 <tr>
                                     {tableToken.header.map((cell, cellIndex) => (
                                         <th key={cellIndex} style={{ borderBottom: '2px solid #ddd', padding: '8px', textAlign: tableToken.align[cellIndex] || 'left' }}>
-                                            {renderTokens(cell.tokens || [{ type: 'text', text: cell.text }], enableCodeApply, isDarkMode)}
+                                            {renderTokens(cell.tokens || [{ type: 'text', text: cell.text }], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}
                                         </th>
                                     ))}
                                 </tr>
@@ -4243,7 +4270,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                                     <tr key={rowIndex}>
                                         {row.map((cell, cellIndex) => (
                                             <td key={cellIndex} style={{ border: '1px solid #ddd', padding: '8px', textAlign: tableToken.align[cellIndex] || 'left' }}>
-                                                {renderTokens(cell.tokens || [], enableCodeApply, isDarkMode)}
+                                                {renderTokens(cell.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}
                                             </td>
                                         ))}
                                     </tr>
@@ -4271,7 +4298,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                         // Regular tool blocks
                         return (
-                            <ToolBlock key={index} toolName={`${toolName}|${displayHeader}`} content={toolContent} isDarkMode={isDarkMode} />
+                            <ToolBlock key={index} toolName={`${toolName}|${displayHeader}`} content={toolContent} isDarkMode={isDarkMode} onOpenShellConfig={onOpenShellConfig} />
                         );
                     }
 
@@ -4429,7 +4456,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     // Check if this 'text' token has nested inline tokens (like strong, em, etc.)
                     if (tokenWithText.tokens && tokenWithText.tokens.length > 0) {
                         // If it has nested tokens, render them recursively
-                        return renderTokens(tokenWithText.tokens, enableCodeApply, isDarkMode);
+                        return renderTokens(tokenWithText.tokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig);
                     } else {
                         // Otherwise, just render the decoded text content directly
                         return decodedText; // Direct text rendering prevents JSX interpretation
@@ -4437,9 +4464,9 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                 // --- Handle Inline Markdown Elements (Recursively) ---
                 case 'strong':
-                    return <strong key={index}>{renderTokens((token as Tokens.Strong).tokens || [], enableCodeApply, isDarkMode)}</strong>;
+                    return <strong key={index}>{renderTokens((token as Tokens.Strong).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</strong>;
                 case 'em':
-                    return <em key={index}>{renderTokens((token as Tokens.Em).tokens || [], enableCodeApply, isDarkMode)}</em>;
+                    return <em key={index}>{renderTokens((token as Tokens.Em).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</em>;
                 case 'codespan':
                     if (!hasText(tokenWithText)) return null;
                     const decodedCode = decodeHtmlEntities(tokenWithText.text);
@@ -4448,11 +4475,11 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'br':
                     return <br key={index} />;
                 case 'del':
-                    return <del key={index}>{renderTokens((token as Tokens.Del).tokens || [], enableCodeApply, isDarkMode)}</del>;
+                    return <del key={index}>{renderTokens((token as Tokens.Del).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</del>;
 
                 case 'link':
                     const linkToken = token as Tokens.Link;
-                    return <a key={index} href={linkToken.href} title={linkToken.title ?? undefined}>{renderTokens(linkToken.tokens || [], enableCodeApply, isDarkMode)}</a>;
+                    return <a key={index} href={linkToken.href} title={linkToken.title ?? undefined}>{renderTokens(linkToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</a>;
 
                 case 'escape':
                     if (!hasText(tokenWithText)) return null;
@@ -4474,11 +4501,11 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'heading':
                     const headingToken = token as Tokens.Heading;
                     const Tag = `h${headingToken.depth}` as keyof JSX.IntrinsicElements;
-                    return <Tag key={index}>{renderTokens(headingToken.tokens || [], enableCodeApply, isDarkMode)}</Tag>;
+                    return <Tag key={index}>{renderTokens(headingToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</Tag>;
                 case 'hr':
                     return <hr key={index} />;
                 case 'blockquote':
-                    return <blockquote key={index}>{renderTokens((token as Tokens.Blockquote).tokens || [], enableCodeApply, isDarkMode)}</blockquote>;
+                    return <blockquote key={index}>{renderTokens((token as Tokens.Blockquote).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</blockquote>;
                 case 'space': // Usually ignored
                     return null;
 
@@ -4536,7 +4563,7 @@ const splitMultiFileDiffs = (diffText: string): string[] => {
 };
 
 // Function to handle multi-file diffs with proper recursive rendering
-const renderMultiFileDiff = (token: TokenWithText, index: number, enableCodeApply: boolean, isDarkMode: boolean): JSX.Element => {
+const renderMultiFileDiff = (token: TokenWithText, index: number, enableCodeApply: boolean, isDarkMode: boolean, onOpenShellConfig?: () => void): JSX.Element => {
     // Split the diff into separate file diffs
     const fileDiffs = splitMultiFileDiffs(token.text);
 
@@ -4569,6 +4596,7 @@ const renderMultiFileDiff = (token: TokenWithText, index: number, enableCodeAppl
                         <MarkdownRenderer
                             markdown={wrappedDiff}
                             enableCodeApply={enableCodeApply}
+                            onOpenShellConfig={onOpenShellConfig}
                             forceRender={true}
                             // isMarkdownBlockClosed will be true by default for sub-renders if they get a complete diff
                             isSubRender={true}
@@ -4586,6 +4614,7 @@ interface MarkdownRendererProps {
     enableCodeApply: boolean;
     forceRender?: boolean;
     isSubRender?: boolean; // Add flag to prevent infinite recursion
+    onOpenShellConfig?: () => void;
 }
 
 // Configure marked options
@@ -4701,7 +4730,7 @@ const normalizeIndentedDiffs = (content: string): string => {
     return result.join('\n');
 };
 
-export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply, isStreaming: externalStreaming = false, forceRender = false, isSubRender = false }) => {
+export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply, isStreaming: externalStreaming = false, forceRender = false, isSubRender = false, onOpenShellConfig }) => {
     const { isStreaming } = useChatContext();
     const { isDarkMode } = useTheme();
     const containerRef = useRef<HTMLDivElement>(null);
@@ -4712,7 +4741,6 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     const markdownRef = useRef<string>(markdown);
     const thinkingRenderedRef = useRef(false);
     const thinkingContentRef = useRef<string>('');
-    const [forceRenderKey, setForceRenderKey] = useState(0);
 
     // State for the tokens that are currently displayed with stable reference
     const [displayTokens, setDisplayTokens] = useState<(Tokens.Generic | TokenWithText)[]>([]);
@@ -4768,13 +4796,13 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
             // Ensure blank line before code fences in all problematic cases
             // Marked.js requires blank lines before code blocks for proper parsing
-            
+
             // Fix 0: Code fence immediately after bold/emphasis markers (e.g., "**text**\n```language")
             processedMarkdown = processedMarkdown.replace(
                 /(\*\*[^*]+\*\*|\*[^*]+\*|__[^_]+__|_[^_]+_)\n(```[a-zA-Z0-9_-]*)/gm,
                 '$1\n\n$2'
             );
-            
+
             // Fix 0b: Code fence after any markdown formatting without blank line
             processedMarkdown = processedMarkdown.replace(/(\*\*)\n(```)/g, '$1\n\n$2');
 
@@ -4851,8 +4879,6 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             // Check for template variables separately, but exclude LaTeX commands
             const hasTemplateVars = !processedMarkdown.includes('\\') && /\{[A-Z_][A-Z_0-9]*\}/g.test(processedMarkdown);
 
-            const hasCodeBlocks = processedMarkdown.includes('```');
-
             // Only process math expressions if this doesn't look like a diff
             if (!isDiff && !hasTemplateVars) {
                 try {
@@ -4923,7 +4949,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             const mathMLBlocks = processedMarkdown.match(mathMLRegex);
 
             if (mathMLBlocks) {
-                mathMLBlocks.forEach((mathBlock, index) => {
+                mathMLBlocks.forEach((mathBlock, _index) => {
                     // Add namespace if missing and wrap in a way that preserves it as a single token
                     const mathWithNamespace = mathBlock.includes('xmlns=')
                         ? mathBlock
@@ -4963,8 +4989,8 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
     // Only memoize the rendered content when not streaming or when streaming completes
     const renderedContent = useMemo(() => {
-        return renderTokens(displayTokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef);
-    }, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender, forceRenderKey]); // Use forceRenderKey to trigger re-renders
+        return renderTokens(displayTokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig);
+    }, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender]); // Use forceRender to trigger re-renders
 
     // Attach event listeners to throttle retry buttons after render
     const { currentConversationId, currentMessages, addMessageToConversation, streamedContentMap,
@@ -4996,7 +5022,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             try {
                 const recoveryData = throttlingRecoveryData.get(conversationId);
                 const lastUserMessage = currentMessages.filter(msg => msg.role === 'human').pop();
-                
+
                 if (!lastUserMessage) {
                     message.error('No message to retry');
                     button.disabled = false;
@@ -5005,7 +5031,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 }
 
                 const messagesForRetry = [...currentMessages.filter(msg => !msg.muted)];
-                
+
                 if (recoveryData?.toolResults && recoveryData.toolResults.length > 0) {
                     recoveryData.toolResults.forEach((toolResult, index) => {
                         messagesForRetry.push({
@@ -5016,7 +5042,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                         });
                     });
                 }
-                
+
                 addStreamingConversation(conversationId);
                 await sendPayload(
                     messagesForRetry,
@@ -5031,7 +5057,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                     streamingConversations.has(conversationId),
                     (state) => updateProcessingState(conversationId, state)
                 );
-                
+
                 const next = new Map(throttlingRecoveryData);
                 next.delete(conversationId);
                 setThrottlingRecoveryData(next);
@@ -5044,9 +5070,9 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         };
 
         button.addEventListener('click', handleClick);
-    }, [currentMessages, throttlingRecoveryData, checkedKeys, streamedContentMap, 
-        setStreamedContentMap, setIsStreaming, removeStreamingConversation, 
-        addMessageToConversation, streamingConversations, updateProcessingState, 
+    }, [currentMessages, throttlingRecoveryData, checkedKeys, streamedContentMap,
+        setStreamedContentMap, setIsStreaming, removeStreamingConversation,
+        addMessageToConversation, streamingConversations, updateProcessingState,
         addStreamingConversation, setThrottlingRecoveryData]);
 
     // Helper to attach handlers to all buttons
@@ -5064,11 +5090,11 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     // Setup MutationObserver to watch for dynamically added throttle buttons
     useLayoutEffect(() => {
         if (!containerRef.current) return;
-        
+
         // Listen for throttling recovery data
         const handleThrottlingRecoveryData = (event: CustomEvent) => {
             const { conversationId, toolResults, partialContent } = event.detail;
-            
+
             if (conversationId && toolResults) {
                 console.log('📦 RECOVERY_DATA: Storing tool results for conversation:', conversationId);
                 const next = new Map(throttlingRecoveryData);
@@ -5076,9 +5102,9 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 setThrottlingRecoveryData(next);
             }
         };
-        
+
         document.addEventListener('throttlingRecoveryData', handleThrottlingRecoveryData as EventListener);
-        
+
         return () => {
             document.removeEventListener('throttlingRecoveryData', handleThrottlingRecoveryData as EventListener);
         };
@@ -5135,7 +5161,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
     const isMultiFileDiff = markdown?.includes('diff --git') && markdown.split('diff --git').length > 2;
     return isMultiFileDiff && !isSubRender && displayTokens.length === 1 && displayTokens[0].type === 'code' && (displayTokens[0] as TokenWithText).lang === 'diff' ?
-        renderMultiFileDiff(displayTokens[0] as TokenWithText, 0, enableCodeApply, isDarkMode) :
+        renderMultiFileDiff(displayTokens[0] as TokenWithText, 0, enableCodeApply, isDarkMode, onOpenShellConfig) :
         <div ref={containerRef}>{renderedContent}</div>;
 }, (prevProps, nextProps) => prevProps.markdown === nextProps.markdown && prevProps.enableCodeApply === nextProps.enableCodeApply);
 // Note: forceRender prop is intentionally not included in the memo comparison to ensure re-rendering during streaming
