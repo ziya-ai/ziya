@@ -1,4 +1,4 @@
-import type { EmbedOptions } from 'vega-embed';
+import { type EmbedOptions } from 'vega-embed';
 
 import { D3RenderPlugin } from '../../types/d3';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';

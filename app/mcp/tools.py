@@ -13,8 +13,8 @@ import time
 import asyncio
 from typing import Dict, List, Any, Optional, Type
 from pydantic import BaseModel, Field
-from langchain.tools import BaseTool
-from langchain.callbacks.manager import CallbackManagerForToolRun, AsyncCallbackManagerForToolRun
+from langchain_classic.tools import BaseTool
+from langchain_classic.callbacks.manager import CallbackManagerForToolRun, AsyncCallbackManagerForToolRun
 
 from app.mcp.manager import get_mcp_manager
 from app.utils.logging_utils import logger

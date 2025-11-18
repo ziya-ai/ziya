@@ -14,8 +14,8 @@ from app.utils.custom_exceptions import KnownCredentialException, ThrottlingExce
 
 # Wrap imports in try/except to catch credential errors early
 try:
-    from langchain.agents import AgentExecutor
-    from langchain.agents.format_scratchpad import format_xml
+    from langchain_classic.agents import AgentExecutor
+    from langchain_classic.agents.format_scratchpad import format_xml
     from langchain_aws import ChatBedrock
     from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
     from google.api_core.exceptions import ResourceExhausted
@@ -1803,7 +1803,7 @@ def log_codebase_wrapper(x):
 
 def create_agent_chain(chat_model: BaseChatModel):
     """Create a new agent chain with the given model."""
-    from langchain.agents import create_xml_agent
+    from langchain_classic.agents import create_xml_agent
     import hashlib
     from app.agents.models import ModelManager
     logger.debug("Creating agent chain")

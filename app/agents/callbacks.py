@@ -1,7 +1,7 @@
 """
 Callback handlers for LLM interactions.
 """
-from langchain.callbacks.base import BaseCallbackHandler
+from langchain_classic.callbacks.base import BaseCallbackHandler
 
 
 class EmptyMessageFilter(BaseCallbackHandler):
