@@ -62,28 +62,8 @@
       "react-app/jest"
     ]
   },
-  "prismjs": {
-    "languages": [],
-    "plugins": [],
-    "theme": "default",
-    "css": true,
-    "components": {
-      "prismjs": {
-        "core": true
-      }
-    },
-    "production": [
-      ">0.2%",
-      "not dead",
-      "not op_mini all"
-    ],
-    "development": [
-      "last 1 chrome version",
-      "last 1 firefox version",
-      "last 1 safari version"
-    ]
-  },
   "devDependencies": {
+    "@craco/craco": "^7.1.0",
     "@eslint/js": "^9.38.0",
     "@types/prismjs": "^1.26.5",
     "eslint": "^8.57.1",
