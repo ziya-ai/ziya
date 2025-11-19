@@ -120,6 +120,18 @@ MODEL_FAMILIES = {
     "gemini-flash": {
         "supported_parameters": ["temperature", "top_k", "top_p"] 
     },
+    "gemini-3": {
+        "supported_parameters": ["temperature", "top_k", "top_p", "thinking_level"],
+        "parameter_ranges": {
+            "temperature": {"min": 0.0, "max": 2.0, "default": 1.0},
+            "topP": {"min": 0.0, "max": 1.0, "default": 0.95},
+            "maxOutputTokens": {"min": 1000, "max": 65535, "default": 20000}
+        },
+        "thinking_level": "high",  # Default thinking level for Gemini 3
+        "supports_thinking": True,
+        "native_function_calling": True,
+        "token_limit": 1048576
+    },
     "oss_openai_gpt": {
         "supported_parameters": ["temperature", "top_k", "top_p"],
         "token_limit": 128000,
@@ -443,7 +455,18 @@ MODEL_CONFIGS = {
             "convert_system_message_to_human": False,
             "supports_function_calling": True,
             "native_function_calling": False,
-        }
+        },
+        "gemini-3-pro": {
+            "model_id": "gemini-3-pro-preview",
+            "token_limit": 1048576,
+            "family": "gemini-3",
+            "max_output_tokens": 65536,
+            "default_max_output_tokens": 8192,
+            "convert_system_message_to_human": False,
+            "supports_function_calling": True,
+            "native_function_calling": True,
+            "thinking_level": "high"
+        },
     }
 }
 
@@ -456,7 +479,8 @@ ENV_VAR_MAPPING = {
     "ZIYA_THINKING_MODE": "thinking_mode",
     "ZIYA_MAX_TOKENS": "max_tokens",
     "ZIYA_MODEL_ID_OVERRIDE": "model_id",
-    "AWS_REGION": "region"
+    "AWS_REGION": "region",
+    "ZIYA_THINKING_LEVEL": "thinking_level"
 }
 
 # Default request size limits
