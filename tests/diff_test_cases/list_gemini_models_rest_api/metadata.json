@@ -1,0 +1,7 @@
+{
+  "description": "Test diff with miscounted hunk header - LLM said 48 lines but actually 65 lines, hunk header fix should handle this",
+  "target_file": "list_gemini_models.py",
+  "test_type": "miscounted_header",
+  "difficulty": "medium",
+  "tags": ["miscounted-hunk-header", "llm-generated"]
+}

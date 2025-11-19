@@ -1285,6 +1285,37 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
         hunks = list(parse_unified_diff_exact_plus(git_diff, file_path))
         logger.info(f"Parsed {len(hunks)} hunks for difflib stage")
         
+        # Handle miscounted hunk headers (LLM-generated diffs)
+        # Check if new_count is significantly larger than what the header says
+        if len(hunks) == 1:
+            hunk = hunks[0]
+            old_count = hunk.get('old_count', 0)
+            new_count = hunk.get('new_count', 0)
+            file_line_count = len(original_lines)
+            
+            # Count actual new lines in hunk
+            lines = hunk.get('lines', [])
+            actual_new_lines = sum(1 for line in lines if line.startswith(('+', ' ')))
+            
+            logger.info(f"Single hunk: old_count={old_count}, new_count={new_count}, actual_new={actual_new_lines}, file_lines={file_line_count}")
+            
+            # If actual new lines is much larger than new_count header (miscounted)
+            # AND covers most of the file, treat as full replacement
+            if actual_new_lines > new_count and actual_new_lines > file_line_count and old_count >= file_line_count * 0.9:
+                new_content_lines = []
+                for line in lines:
+                    if line.startswith(('+', ' ')):
+                        new_content_lines.append(line[1:])
+                
+                logger.info(f"Applying full file replacement: {len(new_content_lines)} lines")
+                # Join with newlines
+                new_content = '\n'.join(new_content_lines) + '\n' if not any('\n' in l for l in new_content_lines) else ''.join(new_content_lines)
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(new_content)
+                pipeline.update_hunk_status(1, PipelineStage.DIFFLIB, HunkStatus.SUCCEEDED)
+                pipeline.complete()
+                return True
+        
         # Fix overlapping hunks to prevent data corruption
         from ..application.overlapping_hunks_fix import fix_overlapping_hunks
         original_hunk_count = len(hunks)
