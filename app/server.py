@@ -23,7 +23,7 @@ from starlette.background import BackgroundTask
 from starlette.requests import Request
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-import tiktoken
+from app.utils.tiktoken_compat import tiktoken
 from fastapi import FastAPI, Request, HTTPException, APIRouter, routing
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse

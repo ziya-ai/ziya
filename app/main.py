@@ -1,6 +1,10 @@
+# Suppress transformers warning about PyTorch/TensorFlow not being installed
+# We only use transformers for tokenization, not ML models
+import os
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 import argparse
 import os
-import subprocess
+import os.path
 import sys
 import warnings
 from typing import Optional

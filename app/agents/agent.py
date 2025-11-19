@@ -7,7 +7,7 @@ import json
 import time
 import botocore
 import asyncio
-import tiktoken
+from app.utils.tiktoken_compat import tiktoken
 
 # Import custom exceptions first to ensure they're available for error handling
 from app.utils.custom_exceptions import KnownCredentialException, ThrottlingException, ExpiredTokenException
