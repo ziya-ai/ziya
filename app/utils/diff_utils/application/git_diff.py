@@ -372,8 +372,6 @@ def correct_git_diff(git_diff: str, file_path: str) -> str:
 
         # Modify hunk headers to be more lenient about line counts
         lines = cleaned_diff.splitlines()
-        from .hunk_utils import fix_hunk_context
-        modified_lines = fix_hunk_context(lines)
 
         try:
             # Parse and normalize with whatthepatch

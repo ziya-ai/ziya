@@ -928,6 +928,10 @@ class DiffRegressionTest(unittest.TestCase):
         """Test adding debug logging for math expression processing"""
         self.run_diff_test('markdown_renderer_math_logging')
 
+    def test_list_gemini_models_rest_api(self):
+        """Test refactoring list_gemini_models.py to use REST API instead of SDK"""
+        self.run_diff_test('list_gemini_models_rest_api')
+
 
 # Dynamically generate test methods for all test case directories
 # This allows -k filtering to work without hardcoding every test
