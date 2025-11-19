@@ -1691,9 +1691,17 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
             # Fallback: If not found in local search AND local search was very limited, try full file search
             # Only do this if we had very few search positions (< 100), indicating line numbers are way off
             if not found_applied_at_any_pos and len(search_positions) < 100 and 'new_lines' in hunk:
-                logger.info(f"Local already-applied search failed for hunk #{i} with limited search space, trying full file search")
                 new_lines = hunk.get('new_lines', [])
                 old_block = hunk.get('old_block', [])
+                
+                # Skip full file search for large deletions (>10 lines deleted)
+                # The context lines might match elsewhere, causing false "already applied" detection
+                if old_block and len(old_block) > len(new_lines) + 10:
+                    logger.info(f"Skipping full file search for large deletion hunk #{i} (deletes {len(old_block) - len(new_lines)} lines)")
+                    all_hunks_found_applied = False
+                    continue
+                
+                logger.info(f"Local already-applied search failed for hunk #{i} with limited search space, trying full file search")
                 normalized_new_lines = [normalize_line_for_comparison(line) for line in new_lines]
                 normalized_old_block = [normalize_line_for_comparison(line) for line in old_block]
                 
@@ -1717,7 +1725,7 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                             
                             # If old content still exists, change is NOT applied
                             if old_block_exists:
-                                logger.debug(f"Position {pos} has new content but old content still exists - not applied")
+                                logger.info(f"Position {pos} has new content but old content still exists - not applied")
                                 continue
                         
                         found_applied_at_any_pos = True
