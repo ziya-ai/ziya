@@ -1,6 +1,8 @@
 import json
 import asyncio
-from typing import List, Dict, Optional, AsyncIterator, Any, Any
+import re
+from typing import List, Dict, Optional, AsyncIterator, Any, Tuple, Union
+import inspect
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
 from app.utils.logging_utils import logger
 from app.mcp.manager import get_mcp_manager
@@ -14,13 +16,23 @@ class DirectGoogleModel:
     SDK to support proper conversation history and native tool calling.
     """
     
-    def __init__(self, model_name: str, temperature: float = 0.3, max_output_tokens: int = 8192):
+    def __init__(self, model_name: str, temperature: float = 0.3, max_output_tokens: int = 8192, thinking_level: Optional[str] = None):
         self.model_name = model_name
         self.temperature = temperature
         self.max_output_tokens = max_output_tokens
+        self.thinking_level = thinking_level  # "low", "medium", "high", or None
         self.mcp_manager = get_mcp_manager()
         
+        
         logger.info(f"DirectGoogleModel initialized: model={model_name}, temp={temperature}, max_output_tokens={max_output_tokens}")
+        if thinking_level:
+            logger.info(f"Gemini 3 thinking_level: {thinking_level}")
+            # Check if GenerationConfig supports thinking_level
+            gen_config_params = inspect.signature(types.GenerationConfig.__init__).parameters
+            if 'thinking_level' not in gen_config_params:
+                logger.warning("Current google-generativeai SDK doesn't support thinking_level. Install google-genai package for Gemini 3 support.")
+                logger.warning("Continuing without thinking_level parameter...")
+                self.thinking_level = None  # Disable for compatibility
         
         # Get API key from environment and configure genai
         import os
@@ -65,7 +77,7 @@ class DirectGoogleModel:
                 logger.warning(f"Could not convert tool '{tool.name}' to Google format: {e}")
         return google_tools
 
-    def _convert_messages_to_google_format(self, messages: List[BaseMessage]) -> List[Dict]:
+    def _convert_messages_to_google_format(self, messages: List[BaseMessage]) -> Tuple[List[Dict], Optional[str]]:
         """
         Converts LangChain messages to the structured format required by the
         Google GenAI SDK, preserving the conversational turn structure.
@@ -94,9 +106,20 @@ class DirectGoogleModel:
                 content = message.content
                 # Clean out tool blocks from historical AI messages to avoid confusing the model
                 if role == "model":
-                    import re
-                    content = re.sub(r'```tool:.*?```', '', content, flags=re.DOTALL).strip()
-                google_messages.append({'role': role, 'parts': [{'text': content}]})
+                    # Remove XML-style tool blocks (legacy/sentinel)
+                    content = re.sub(r'<TOOL_SENTINEL>.*?</TOOL_SENTINEL>', '', content, flags=re.DOTALL)
+                    # Remove markdown-style tool blocks
+                    content = re.sub(r'\`\`\`tool:.*?\`\`\`', '', content, flags=re.DOTALL).strip()
+                
+                # Skip empty messages to avoid API errors
+                if not content.strip():
+                    continue
+
+                # Merge consecutive messages of the same role to satisfy API requirements
+                if google_messages and google_messages[-1]['role'] == role:
+                    google_messages[-1]['parts'][0]['text'] += f"\n\n{content}"
+                else:
+                    google_messages.append({'role': role, 'parts': [{'text': content}]})
 
         # The SDK expects the system instruction as a separate argument, not in the list.
         return google_messages, system_instruction
@@ -117,12 +140,19 @@ class DirectGoogleModel:
         while True:
             logger.info("Calling Google model with history...")
             try:
+                # Build generation config
+                gen_config_params = {
+                    "temperature": self.temperature,
+                    "max_output_tokens": self.max_output_tokens,
+                }
+                # Add thinking_level for Gemini 3 models
+                # Only add if SDK supports it (google-genai, not google-generativeai)
+                if self.thinking_level and 'thinking_level' in inspect.signature(types.GenerationConfig.__init__).parameters:
+                    gen_config_params["thinking_level"] = self.thinking_level
+                
                 response = await model.generate_content_async(
                     history,
-                    generation_config=types.GenerationConfig(
-                        temperature=self.temperature,
-                        max_output_tokens=self.max_output_tokens,
-                    ),
+                    generation_config=types.GenerationConfig(**gen_config_params),
                     tools=google_tools if google_tools else None,
                     stream=True
                 )

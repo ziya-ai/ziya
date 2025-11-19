@@ -29,7 +29,8 @@ export interface ModelSettings {
   top_k: number;
   max_output_tokens: number;
   max_input_tokens: number;
-  thinking_mode: boolean;
+  thinking_mode: boolean;  // For DeepSeek/other models
+  thinking_level?: string;  // For Gemini 3 models: "low", "medium", "high"
 }
 
 export interface ModelCapabilities {
@@ -41,6 +42,7 @@ export interface ModelCapabilities {
   top_k_range: { min: number; max: number; default: number } | null;
   max_output_tokens_range?: { min: number; max: number; default: number };
   max_input_tokens_range?: { min: number; max: number; default: number };
+  supports_thinking_level?: boolean;  // For Gemini 3 models
 }
 
 const DEFAULT_SETTINGS: ModelSettings = {
@@ -48,7 +50,8 @@ const DEFAULT_SETTINGS: ModelSettings = {
   top_k: 15,
   max_output_tokens: 4096,
   max_input_tokens: 4096,
-  thinking_mode: false
+  thinking_mode: false,
+  thinking_level: "high"
 };
 
 export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
@@ -411,6 +414,26 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
             <InfoCircleOutlined style={{ marginLeft: 5 }} />
           </Tooltip></span>} name="thinking_mode" valuePropName="checked">
             <Switch />
+          </Form.Item>
+        )}
+
+        {selectedModelCapabilities?.supports_thinking_level && (
+          <Form.Item 
+            label={
+              <span>
+                Thinking Level 
+                <Tooltip title="Controls depth of model reasoning (Gemini 3 models only)">
+                  <InfoCircleOutlined style={{ marginLeft: 5 }} />
+                </Tooltip>
+              </span>
+            } 
+            name="thinking_level"
+          >
+            <Select>
+              <Select.Option value="low">Low (faster, less reasoning)</Select.Option>
+              <Select.Option value="medium">Medium (balanced)</Select.Option>
+              <Select.Option value="high">High (deeper reasoning)</Select.Option>
+            </Select>
           </Form.Item>
         )}
 
