@@ -73,6 +73,8 @@ def parse_arguments():
                         help="Top-k sampling parameter for supported models")
     parser.add_argument("--max-output-tokens", type=int, default=None,
                         help="Maximum number of tokens to generate in the response")
+    parser.add_argument("--thinking-level", type=str, choices=['low', 'medium', 'high'], default=None,
+                        help="Thinking level for models that support it (e.g., Gemini 3)")
 
     parser.add_argument("--version", action="store_true",
                         help="Prints the version of Ziya")
@@ -226,6 +228,8 @@ def setup_environment(args):
         os.environ["ZIYA_TOP_K"] = str(args.top_k)
     if args.max_output_tokens is not None:
         os.environ["ZIYA_MAX_OUTPUT_TOKENS"] = str(args.max_output_tokens)
+    if args.thinking_level is not None:
+        os.environ["ZIYA_THINKING_LEVEL"] = args.thinking_level
     
     # Set model ID override if provided
     if args.model_id is not None:
