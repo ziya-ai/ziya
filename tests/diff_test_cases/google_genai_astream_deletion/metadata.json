@@ -1,0 +1,4 @@
+{
+  "description": "Test deletion of _astream method from ZiyaChatGoogleGenerativeAI wrapper. The web pipeline reports 'already applied' but doesn't perform the deletion.",
+  "target_file": "app/agents/wrappers/ziya_google_genai.py"
+}

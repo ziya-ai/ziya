@@ -932,6 +932,10 @@ class DiffRegressionTest(unittest.TestCase):
         """Test refactoring list_gemini_models.py to use REST API instead of SDK"""
         self.run_diff_test('list_gemini_models_rest_api')
 
+    def test_google_genai_astream_deletion(self):
+        """Test deletion of _astream method - should fail when incorrectly reported as already applied"""
+        self.run_diff_test('google_genai_astream_deletion')
+
 
 # Dynamically generate test methods for all test case directories
 # This allows -k filtering to work without hardcoding every test
