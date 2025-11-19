@@ -17,9 +17,16 @@ try:
     from langchain_classic.agents import AgentExecutor
     from langchain_classic.agents.format_scratchpad import format_xml
     from langchain_aws import ChatBedrock
-    from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
     from google.api_core.exceptions import ResourceExhausted
     from langchain_community.document_loaders import TextLoader
+    
+    # Import Google AI error for proper handling - optional for compatibility
+    try:
+        from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
+    except (ImportError, AttributeError) as e:
+        logger.warning(f"Could not import ChatGoogleGenerativeAIError: {e}")
+        ChatGoogleGenerativeAIError = None
+    
     from langchain_core.agents import AgentFinish, AgentAction
     from langchain_core.language_models import BaseChatModel
     from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, BaseMessage
@@ -865,7 +872,7 @@ class RetryingChatBedrock(Runnable):
                                 accumulated_text += content
                             logger.debug(f"Accumulated content size: {len(''.join(accumulated_content))} chars")
 
-                    if isinstance(chunk, ChatGoogleGenerativeAIError):
+                    if ChatGoogleGenerativeAIError and isinstance(chunk, ChatGoogleGenerativeAIError):
                         error_response = {
                             "error": "server_error",
                             "detail": str(chunk),
@@ -928,10 +935,19 @@ class RetryingChatBedrock(Runnable):
                 
                 # Send DONE marker
                 done_message = "data: [DONE]\n\n"
-                logger.info(f"[ERROR_SSE] Preparing DONE marker after throttle error: {done_message}")
+                logger.info(f"[ERROR_SSE] Sending DONE marker after throttle error: {done_message}")
                 yield AIMessageChunk(content=done_message)
                 return
-            except ChatGoogleGenerativeAIError as e:
+            except Exception as e:
+                # Check if this is a Gemini error that should be handled specially
+                if ChatGoogleGenerativeAIError and isinstance(e, ChatGoogleGenerativeAIError):
+                    # Handle as Gemini-specific error
+                    pass
+                else:
+                    # Check if it's a generic Gemini error even without the import
+                    if "google" in str(type(e).__module__).lower() and "generative" in str(e).lower():
+                        pass  # Treat as Gemini error
+                
                 # Format Gemini errors as structured error payload within a chunk
                 logger.error(f"ChatGoogleGenerativeAI error: {str(e)}")
                 

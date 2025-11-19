@@ -34,7 +34,6 @@ from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AI
 from app.agents.agent import model, RetryingChatBedrock, initialize_langserve
 from app.agents.agent import get_or_create_agent, get_or_create_agent_executor, create_agent_chain, create_agent_executor
 from app.agents.agent import update_conversation_state, update_and_return, parse_output
-from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError 
 from fastapi.responses import FileResponse
 from starlette.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -3970,6 +3969,12 @@ def get_model_capabilities(model: str = None):
         capabilities = {
             "supports_thinking": effective_settings.get("thinking_mode", base_model_config.get("supports_thinking", False)),
         }
+        
+        # Add thinking level support for Gemini 3 models
+        if base_model_config.get("family") == "gemini-3":
+            capabilities["supports_thinking_level"] = True
+            capabilities["thinking_level_default"] = base_model_config.get("thinking_level", "high")
+            capabilities["thinking_level"] = effective_settings.get("thinking_level", capabilities["thinking_level_default"])
 
         # Get base token limit, using extended context if supported
         base_token_limit = base_model_config.get("token_limit", 4096)
@@ -4048,6 +4053,7 @@ class ModelSettingsRequest(BaseModel):
     top_k: int = Field(default=15, ge=0, le=500)
     max_output_tokens: int = Field(default=4096, ge=1)
     thinking_mode: bool = Field(default=False)
+    thinking_level: Optional[str] = Field(default=None, pattern='^(low|medium|high)$')
 
 
 class TokenCountRequest(BaseModel):
@@ -4249,6 +4255,10 @@ async def update_model_settings(settings: ModelSettingsRequest):
             if value is not None:  # Only set if value is provided
                 env_key = f"ZIYA_{key.upper()}"
                 logger.info(f"  Set {env_key}={value}")
+                
+                # Special handling for thinking_level - preserve string value
+                if key == 'thinking_level':
+                    os.environ[env_key] = value
 
             # Special handling for boolean values
                 if isinstance(value, bool):

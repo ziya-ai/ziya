@@ -1,14 +1,14 @@
 import json
 import asyncio
 import re
-from typing import List, Dict, Optional, AsyncIterator, Any, Tuple, Union
+from typing import List, Dict, Optional, AsyncIterator, Any, Tuple, Union, TYPE_CHECKING
 import inspect
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
 from app.utils.logging_utils import logger
 from app.mcp.manager import get_mcp_manager
 from langchain_core.tools import BaseTool
-from google import generativeai as genai
-from google.generativeai import types
+from google import genai
+from google.genai import types
 
 class DirectGoogleModel:
     """
@@ -27,21 +27,16 @@ class DirectGoogleModel:
         logger.info(f"DirectGoogleModel initialized: model={model_name}, temp={temperature}, max_output_tokens={max_output_tokens}")
         if thinking_level:
             logger.info(f"Gemini 3 thinking_level: {thinking_level}")
-            # Check if GenerationConfig supports thinking_level
-            gen_config_params = inspect.signature(types.GenerationConfig.__init__).parameters
-            if 'thinking_level' not in gen_config_params:
-                logger.warning("Current google-generativeai SDK doesn't support thinking_level. Install google-genai package for Gemini 3 support.")
-                logger.warning("Continuing without thinking_level parameter...")
-                self.thinking_level = None  # Disable for compatibility
+            # New SDK has full Gemini 3 support
+            logger.info(f"Using new Google GenAI SDK with thinking_level support")
         
         # Get API key from environment and configure genai
         import os
         api_key = os.getenv('GOOGLE_API_KEY')
-        if api_key:
-            genai.configure(api_key=api_key)
-            logger.info("Configured Google GenAI with API key from environment")
-        else:
-            logger.info("No GOOGLE_API_KEY found, will attempt to use Application Default Credentials")
+        
+        # Create client with new SDK
+        self.client = genai.Client(api_key=api_key) if api_key else genai.Client()
+        logger.info("Created Google GenAI client")
 
     def _extract_text_from_mcp_result(self, result: Any) -> str:
         """Extracts the text content from a structured MCP tool result."""
@@ -58,24 +53,31 @@ class DirectGoogleModel:
 
         return str(result)
 
-    def _convert_langchain_tools_to_google(self, tools: List[BaseTool]) -> List[types.Tool]:
+    def _convert_langchain_tools_to_google(self, tools: List[BaseTool]) -> Optional[types.Tool]:
         """Converts LangChain tools to Google GenAI SDK Tool format."""
         if not tools:
             return []
         
-        google_tools = []
+        # New SDK uses a different tool format
+        from google.genai import types
+        
+        function_declarations = []
         for tool in tools:
             try:
                 schema = tool.args_schema.schema() if tool.args_schema else {}
-                function_declaration = types.FunctionDeclaration(
+                
+                # New SDK format
+                func_decl = types.FunctionDeclaration(
                     name=tool.name,
                     description=tool.description,
-                    parameters=schema,
+                    parameters=schema
                 )
-                google_tools.append(types.Tool(function_declarations=[function_declaration]))
+                function_declarations.append(func_decl)
             except Exception as e:
                 logger.warning(f"Could not convert tool '{tool.name}' to Google format: {e}")
-        return google_tools
+        
+        # Return single Tool with all function declarations
+        return types.Tool(function_declarations=function_declarations) if function_declarations else None
 
     def _convert_messages_to_google_format(self, messages: List[BaseMessage]) -> Tuple[List[Dict], Optional[str]]:
         """
@@ -127,14 +129,11 @@ class DirectGoogleModel:
         """
         Streams responses from the Google Gemini model, handling native tool calls correctly.
         """
+        from google.genai import types
+        
         tools = kwargs.get("tools", [])
-        google_tools = self._convert_langchain_tools_to_google(tools)
+        google_tool = self._convert_langchain_tools_to_google(tools)
         history, system_instruction = self._convert_messages_to_google_format(messages)
-
-        model = genai.GenerativeModel(
-            self.model_name,
-            system_instruction=system_instruction
-        )
 
         # The main loop for handling multi-turn tool calls
         while True:
@@ -145,16 +144,25 @@ class DirectGoogleModel:
                     "temperature": self.temperature,
                     "max_output_tokens": self.max_output_tokens,
                 }
-                # Add thinking_level for Gemini 3 models
-                # Only add if SDK supports it (google-genai, not google-generativeai)
-                if self.thinking_level and 'thinking_level' in inspect.signature(types.GenerationConfig.__init__).parameters:
-                    gen_config_params["thinking_level"] = self.thinking_level
                 
-                response = await model.generate_content_async(
-                    history,
-                    generation_config=types.GenerationConfig(**gen_config_params),
-                    tools=google_tools if google_tools else None,
-                    stream=True
+                # Add thinking_config for Gemini 3 models (fully supported in new SDK)
+                if self.thinking_level:
+                    # Convert thinking_level to ThinkingConfig format
+                    gen_config_params["thinking_config"] = types.ThinkingConfig(
+                        thinking_level=self.thinking_level.upper()  # Convert "low" to "LOW", etc.
+                    )
+                
+                # Use new SDK's async streaming API
+                config = types.GenerateContentConfig(**gen_config_params)
+                
+                # Add tools if available
+                if google_tool:
+                    config.tools = [google_tool]
+                
+                response = await self.client.aio.models.generate_content_stream(
+                    model=self.model_name,
+                    contents=history,
+                    config=config
                 )
             except Exception as e:
                 error_message = f"Google API Error ({type(e).__name__}): {str(e)}"
@@ -169,25 +177,21 @@ class DirectGoogleModel:
 
             async for chunk in response:
                 # Log finish reason if present
-                if hasattr(chunk, 'candidates') and chunk.candidates:
+                # New SDK chunk structure
+                if hasattr(chunk, 'candidates'):
                     for candidate in chunk.candidates:
-                        if hasattr(candidate, 'finish_reason') and candidate.finish_reason:
+                        if hasattr(candidate, 'finish_reason'):
                             finish_reason = candidate.finish_reason
-                            # Decode finish reason
-                            try:
-                                from google.ai.generativelanguage_v1beta.types import Candidate
-                                finish_reason_name = Candidate.FinishReason(finish_reason).name
-                            except:
-                                finish_reason_name = str(finish_reason)
-                            logger.info(f"Google model finish_reason: {finish_reason_name} ({finish_reason})")
-                        if hasattr(candidate, 'safety_ratings') and candidate.safety_ratings:
+                            finish_reason_name = str(finish_reason)
+                            logger.info(f"Google model finish_reason: {finish_reason_name}")
+                        if hasattr(candidate, 'safety_ratings'):
                             logger.info(f"Google model safety_ratings: {candidate.safety_ratings}")
                 
                 if chunk.parts:
                     for part in chunk.parts:
                         if part.text:
                             yield {"type": "text", "content": part.text}
-                        if part.function_call:
+                        if hasattr(part, 'function_call') and part.function_call:
                             tool_calls.append(part.function_call)
 
                 if chunk.candidates:
@@ -218,17 +222,19 @@ class DirectGoogleModel:
                     yield {"type": "tool_display", "tool_name": tool_name, "result": tool_result_str}
 
                     tool_results.append(
-                        {"function_response": {"name": tool_name, "response": {"content": tool_result_str}}}
+                        types.FunctionResponse(name=tool_name, response={"content": tool_result_str})
                     )
                 except Exception as e:
                     error_message = f"Error executing tool {tool_name}: {e}"
                     logger.error(error_message)
                     yield {"type": "error", "content": error_message}
                     tool_results.append(
-                        {"function_response": {"name": tool_name, "response": {"error": error_message}}}
+                        types.FunctionResponse(name=tool_name, response={"error": error_message})
                     )
 
-            history.append({'role': 'function', 'parts': tool_results})
+            # Add tool results to history in new format
+            if tool_results:
+                history.append({'role': 'function', 'parts': tool_results})
 
     def bind(self, **kwargs):
         """Compatibility method - ignore stop sequences for Google."""
