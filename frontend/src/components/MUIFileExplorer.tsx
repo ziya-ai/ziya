@@ -518,7 +518,15 @@ export const MUIFileExplorer = () => {
     if (JSON.stringify(newExpandedKeys) === JSON.stringify(currentExpandedSorted)) {
       return;
     }
-    setExpandedKeys(newExpandedKeys);
+    
+    // When search is active, preserve search-driven expansions
+    if (searchValue) {
+      // Merge with existing expanded keys to preserve search results
+      const mergedKeys = Array.from(new Set([...expandedKeys, ...newExpandedKeys]));
+      setExpandedKeys(mergedKeys);
+    } else {
+      setExpandedKeys(newExpandedKeys);
+    }
   }, [treeData, checkedKeys]); // Run when tree data or selections change
 
   // Debounced search function

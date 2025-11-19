@@ -21,7 +21,8 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
     top_k: 15,
     max_output_tokens: 4096,
     max_input_tokens: 4096,
-    thinking_mode: false
+    thinking_mode: false,
+    thinking_level: 'high'
   });
   const [currentModelId, setCurrentModelId] = useState<string>(modelId);
   const [endpoint, setEndpoint] = useState<string>('bedrock');

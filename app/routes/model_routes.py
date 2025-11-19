@@ -22,6 +22,7 @@ class ModelSettingsRequest(BaseModel):
     top_p: Optional[float] = None
     max_output_tokens: Optional[int] = None
     model: Optional[str] = None
+    thinking_level: Optional[str] = None
 
 
 @router.get('/available-models')

@@ -1138,7 +1138,7 @@ class ModelManager:
         model_id = model_config.get("model_id")
         temperature = model_config.get("temperature", 0.3)
         max_output_tokens = model_config.get("max_output_tokens", 2048)
-        thinking_level = model_config.get("thinking_level")  # Get thinking_level for Gemini 3
+        thinking_level = model_config.get("thinking_level", "high")  # Get thinking_level for Gemini 3, default to high
         
         logger.info(f"Google model config: thinking_level={thinking_level}")
         
@@ -1148,11 +1148,15 @@ class ModelManager:
             temperature = settings["temperature"]
         if "max_output_tokens" in settings:
             max_output_tokens = settings["max_output_tokens"]
+        # Override thinking_level from environment if set
         if "thinking_level" in settings:
-            thinking_level = settings["thinking_level"]
+            env_thinking_level = settings.get("thinking_level")
+            if env_thinking_level:
+                thinking_level = env_thinking_level
+                logger.info(f"Overriding thinking_level from environment: {thinking_level}")
         
         # Check Google credentials (this also loads GOOGLE_API_KEY if not already set)
-        cls._check_google_credentials() 
+        cls._check_google_credentials()
         
         # Explicitly get the API key after checking credentials
         google_api_key = os.environ.get("GOOGLE_API_KEY")

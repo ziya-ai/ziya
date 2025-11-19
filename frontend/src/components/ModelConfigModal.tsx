@@ -42,7 +42,8 @@ export interface ModelCapabilities {
   top_k_range: { min: number; max: number; default: number } | null;
   max_output_tokens_range?: { min: number; max: number; default: number };
   max_input_tokens_range?: { min: number; max: number; default: number };
-  supports_thinking_level?: boolean;  // For Gemini 3 models
+  supports_thinking_level?: boolean;
+  thinking_level_default?: string;  // Default thinking level for the model
 }
 
 const DEFAULT_SETTINGS: ModelSettings = {
@@ -74,7 +75,8 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
     top_k: currentSettings.top_k || 15,
     max_output_tokens: currentSettings.max_output_tokens,
     max_input_tokens: capabilities?.token_limit || 4096,
-    thinking_mode: currentSettings.thinking_mode
+    thinking_mode: currentSettings.thinking_mode,
+    thinking_level: currentSettings.thinking_level || capabilities?.thinking_level_default || 'high'
   });
   const [sliderValues, setSliderValues] = useState({
     temperature: currentSettings.temperature || 0.3,
@@ -100,7 +102,8 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
         temperature: currentSettings.temperature || capabilities.temperature_range?.default || 0.3,
         top_k: currentSettings.top_k || capabilities.top_k_range?.default || 15,
         max_output_tokens: currentSettings.max_output_tokens || capabilities.max_output_tokens,
-        max_input_tokens: currentSettings.max_input_tokens || capabilities.max_input_tokens || capabilities.token_limit
+        max_input_tokens: currentSettings.max_input_tokens || capabilities.max_input_tokens || capabilities.token_limit,
+        thinking_level: currentSettings.thinking_level || capabilities.thinking_level_default || 'high'
       });
 
       // Force update of slider values
@@ -212,26 +215,50 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
   const fetchModelCapabilities = async (modelId: string) => {
     try {
       setIsLoadingCapabilities(true);
-      const response = await fetch(`/api/model-capabilities?model=${modelId}`);
+      const response = await fetch(`/api/model-capabilities?model=${encodeURIComponent(modelId)}`);
+      
       if (!response.ok) {
-        throw new Error('Failed to fetch model capabilities');
+        throw new Error(`Failed to fetch model capabilities: ${response.status}`);
       }
       const data = await response.json();
+      
+      // Check if there's an error in the response
+      if (data.error) {
+        console.error("Error in capabilities response:", data.error);
+        message.error(`Failed to load model capabilities: ${data.error}`);
+        return null;
+      }
+      
+      console.log('Fetched capabilities:', data);
       setSelectedModelCapabilities(data);
-
-      // Update form values based on new model capabilities
+      capabilitiesLoadedRef.current = true;
+      
+      // Update settings with capabilities
+      setSettings(prev => ({
+        ...prev,
+        max_input_tokens: data.max_input_tokens || data.token_limit || prev.max_input_tokens,
+        max_output_tokens: data.max_output_tokens || prev.max_output_tokens,
+        thinking_level: data.thinking_level || prev.thinking_level
+      }));
+      
+      // Get current form values to use as fallbacks
+      const currentFormValues = form.getFieldsValue();
+      
+      // Build new values object
       const newValues = {
         temperature: data.temperature_range.default,
         top_k: data.top_k_range?.default || 15,
         max_output_tokens: data.max_output_tokens,
         max_input_tokens: data.token_limit,
-        thinking_mode: data.supports_thinking ? form.getFieldValue('thinking_mode') || false : false
+        thinking_mode: data.supports_thinking ? form.getFieldValue('thinking_mode') || false : false,
+        thinking_level: data.thinking_level_default || 'high'
       };
-
-      // Also update currentValues to reflect these new defaults
+      
+      // Update form with new values
       handleValuesChange(newValues);
       form.setFieldsValue(newValues);
-
+      
+      console.log("Updated form with capabilities:", form.getFieldsValue());
       return data;
     } catch (error) {
       console.error('Failed to fetch model capabilities:', error);
