@@ -23,7 +23,12 @@ from starlette.background import BackgroundTask
 from starlette.requests import Request
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from app.utils.tiktoken_compat import tiktoken
+# Lazy import tiktoken - it's optional with fallbacks
+try:
+    from app.utils.tiktoken_compat import tiktoken
+except ImportError:
+    tiktoken = None  # Will be handled at usage time
+
 from fastapi import FastAPI, Request, HTTPException, APIRouter, routing
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -4077,9 +4082,20 @@ async def count_tokens(request: TokenCountRequest) -> Dict[str, int]:
         token_count = 0
         method_used = "unknown"
 
+        # Import tiktoken here for lazy loading
+        if tiktoken is None:
+            from app.utils.tiktoken_compat import tiktoken as tk
+        else:
+            tk = tiktoken
+
         try:
             # Try primary method first
-            token_count = model.get_num_tokens(request.text)
+            if hasattr(model, 'get_num_tokens'):
+                token_count = model.get_num_tokens(request.text)
+            else:
+                # Use tiktoken directly
+                encoding = tk.get_encoding("cl100k_base")
+                token_count = len(encoding.encode(request.text))
             method_used = "primary"
         except AttributeError:
             # If primary method fails, use fallback
