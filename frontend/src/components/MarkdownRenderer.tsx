@@ -3560,7 +3560,7 @@ type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' |
     'd3' | 'mermaid' | 'file-operation' | 'tool' |
     'joint' | 'jointjs' | 'code' | 'html' | 'text' | 'list' | 'table' | 'escape' | 'math' |
     'paragraph' | 'heading' | 'hr' | 'blockquote' | 'space' |
-    'circuitikz' |
+    'circuitikz' | 'html-mockup' |
     'codespan' | 'strong' | 'em' | 'del' | 'link' | 'image' |
     'br' | 'list_item' | 'circuitikz' | 'latex' |
     'unknown';
@@ -3615,6 +3615,11 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
     // 2. Handle Code Blocks with explicit lang tags
     if (tokenType === 'code' && 'lang' in token && typeof token.lang === 'string' && token.lang) {
         const lang = token.lang.toLowerCase().trim();
+
+        // Check for HTML mockup blocks
+        if (lang === 'html-mockup' || lang === 'ui-mockup' || lang === 'mockup') {
+            return 'html-mockup';
+        }
 
         // Check for visualization types BEFORE tool types
         // This prevents Vega-Lite blocks from being misidentified
@@ -3921,6 +3926,12 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         debugLog('Rendering single DiffToken component');
                     }
                     return <DiffToken key={index} token={diffToken} index={index} enableCodeApply={enableCodeApply} isDarkMode={isDarkMode} />;
+
+                case 'html-mockup':
+                    if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
+                    return (
+                        <HTMLMockupRenderer key={index} html={tokenWithText.text} isStreaming={isStreaming} />
+                    );
 
                 case 'file-operation':
                     if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
