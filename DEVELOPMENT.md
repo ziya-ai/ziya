@@ -33,13 +33,29 @@ poetry run pytest
 python tests/run_diff_tests.pl --multi
 ```
 
+#### To test dependencies in a clean environment before publication:
+```bash
+# Clean everything
+rm -rf .venv dist/ build/ *.egg-info poetry.lock
+# Optional - clear and reinstall poetry cache
+poetry cache clear pypi --all
+poetry install
+# Build
+python ziya_build.py
+# Test in fresh environment
+python3 -m venv /tmp/test_ziya_clean
+source /tmp/test_ziya_clean/bin/activate
+pip install dist/*.whl
+ziya --version
+deactivate
+rm -rf /tmp/test_ziya_clean
+```
+
 ### To Publish
 #### To publish to PyPi:
 ```bash
 python ziya_build.py
-pip install ziya --upgrade
-OR 
-pipx upgrade ziya
+twine upload dist/*.whl
 ```
 
 ### FAQ

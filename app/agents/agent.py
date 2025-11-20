@@ -12,6 +12,9 @@ from app.utils.tiktoken_compat import tiktoken
 # Import custom exceptions first to ensure they're available for error handling
 from app.utils.custom_exceptions import KnownCredentialException, ThrottlingException, ExpiredTokenException
 
+# Import logger early so it's available for exception handling
+from app.utils.logging_utils import logger
+
 # Wrap imports in try/except to catch credential errors early
 try:
     from langchain_classic.agents import AgentExecutor
@@ -26,7 +29,6 @@ try:
     except (ImportError, AttributeError) as e:
         logger.warning(f"Could not import ChatGoogleGenerativeAIError: {e}")
         ChatGoogleGenerativeAIError = None
-    
     from langchain_core.agents import AgentFinish, AgentAction
     from langchain_core.language_models import BaseChatModel
     from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, SystemMessage, BaseMessage
@@ -51,7 +53,6 @@ from app.agents.models import ModelManager
 from app.middleware import RequestSizeMiddleware
 from app.utils.sanitizer_util import clean_backtick_sequences
 from app.utils.context_enhancer import enhance_context_with_ast, get_ast_indexing_status
-from app.utils.logging_utils import logger
 from app.utils.print_tree_util import print_file_tree
 from app.utils.file_utils import is_binary_file, is_processable_file
 from app.utils.file_utils import read_file_content
