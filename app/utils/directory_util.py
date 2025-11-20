@@ -81,6 +81,27 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
     
     scan_start_time = time.time()
     
+    # Get include directories that should override default exclusions
+    include_dirs = os.environ.get("ZIYA_INCLUDE_DIRS", "")
+    include_patterns_override = set()
+    if include_dirs:
+        logger.info(f"Include directories specified (will override defaults): {include_dirs}")
+        for include_path in include_dirs.split(','):
+            include_path = include_path.strip()
+            if not include_path:
+                continue
+            
+            # Normalize the path to handle both absolute and relative paths
+            if os.path.isabs(include_path):
+                # For absolute paths, get the basename for pattern matching
+                basename = os.path.basename(include_path.rstrip(os.sep))
+                include_patterns_override.add(basename)
+            else:
+                # For relative paths, use as-is
+                include_patterns_override.add(include_path.rstrip(os.sep))
+            
+            logger.info(f"Will override default exclusions for pattern: {include_path}")
+    
     # Check if we're using include-only mode
     include_only_dirs = os.environ.get("ZIYA_INCLUDE_ONLY_DIRS", "")
     if include_only_dirs:
@@ -145,7 +166,6 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
         (".cargo", user_codebase_dir),
         (".npm", user_codebase_dir),
         ("node_modules", user_codebase_dir),
-        ("build", user_codebase_dir),
         ("dist", user_codebase_dir),
         ("__pycache__", user_codebase_dir),
         ("*.pyc", user_codebase_dir),
@@ -158,6 +178,20 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
         ("vendor", user_codebase_dir),  # Vendor dependencies
         (".pytest_cache", user_codebase_dir),
     ]
+    
+    # Filter out patterns that are overridden by --include
+    if include_patterns_override:
+        original_count = len(ignored_patterns)
+        ignored_patterns = [
+            (pattern, base) for pattern, base in ignored_patterns
+            if pattern not in include_patterns_override and 
+               not any(pattern.startswith(override + os.sep) or pattern == override 
+                      for override in include_patterns_override)
+        ]
+        removed_count = original_count - len(ignored_patterns)
+        if removed_count > 0:
+            logger.info(f"Removed {removed_count} default exclusion patterns due to --include overrides")
+            logger.info(f"Overridden patterns: {[p for p, _ in ignored_patterns if p in include_patterns_override]}")
     
     # Add additional exclude directories from environment variable if it exists
     additional_excludes = os.environ.get("ZIYA_ADDITIONAL_EXCLUDE_DIRS", "")
@@ -749,6 +783,8 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     root_result = process_dir(directory, 1)
     
     # Check if we need to include external paths
+    # Note: The ignore pattern override above handles paths within the codebase
+    # This section handles absolute paths outside the codebase directory
     include_dirs = os.environ.get("ZIYA_INCLUDE_DIRS", "")
     if include_dirs:
         logger.info(f"Processing external paths: {include_dirs}")
