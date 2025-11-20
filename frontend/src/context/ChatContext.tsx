@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from "uuid";
 import { db } from '../utils/db';
 import { detectIncompleteResponse } from '../utils/responseUtils';
 import { message } from 'antd';
+import { useTheme } from './ThemeContext';
 
 export type ProcessingState = 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'awaiting_tool_response' | 'tool_throttling' | 'tool_limit_reached' | 'error';
 
@@ -40,6 +41,7 @@ interface ChatContext {
     currentMessages: Message[];
     loadConversation: (id: string) => void;
     startNewChat: (specificFolderId?: string | null) => Promise<void>;
+    loadConversationAndScrollToMessage: (conversationId: string, messageIndex: number) => Promise<void>;
     isTopToBottom: boolean;
     dbError: string | null;
     setIsTopToBottom: Dispatch<SetStateAction<boolean>>;
@@ -73,6 +75,7 @@ interface ChatProviderProps {
 
 export function ChatProvider({ children }: ChatProviderProps) {
     const renderStart = useRef(performance.now());
+    const { isDarkMode } = useTheme();
     const renderCount = useRef(0);
     const [isStreaming, setIsStreaming] = useState(false);
     const [streamedContentMap, setStreamedContentMap] = useState(() => new Map<string, string>());
@@ -746,8 +749,22 @@ export function ChatProvider({ children }: ChatProviderProps) {
             }
             
             if (!isInitialized) {
-                reject(new Error('Chat context not initialized yet'));
-                return;
+                console.warn('⚠️ NEW CHAT: Context not initialized, attempting initialization...');
+                try {
+                    await initializeWithRecovery();
+                    // Give initialization a moment to complete
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                    
+                    if (!isInitialized) {
+                        // If still not initialized after attempt, proceed anyway with degraded mode
+                        console.warn('⚠️ NEW CHAT: Proceeding with degraded mode (no IndexedDB persistence)');
+                        setIsInitialized(true);
+                    }
+                } catch (initError) {
+                    console.error('❌ NEW CHAT: Initialization failed, proceeding in localStorage-only mode:', initError);
+                    // Set initialized to true anyway - app can work with localStorage
+                    setIsInitialized(true);
+                }
             }
             try {
                 const newId = uuidv4();
@@ -774,7 +791,16 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 );
 
                 try {
-                    await queueSave([...updatedConversations, newConversation]);
+                    try {
+                        await queueSave([...updatedConversations, newConversation]);
+                    } catch (saveError) {
+                        console.warn('⚠️ NEW CHAT: IndexedDB save failed, using localStorage backup:', saveError);
+                        // Fallback to localStorage if DB save fails
+                        const backupData = JSON.stringify([...updatedConversations, newConversation]);
+                        localStorage.setItem('ZIYA_CONVERSATION_BACKUP', backupData);
+                        console.log('✅ NEW CHAT: Conversation saved to localStorage backup');
+                        // Continue - don't let save failure block new chat creation
+                    }
                     
                     // Update state immediately after successful save
                     setConversations([...updatedConversations, newConversation]);
@@ -1012,6 +1038,51 @@ export function ChatProvider({ children }: ChatProviderProps) {
         }
     }, [currentConversationId, conversations, streamingConversations, streamedContentMap, queueSave, isTopToBottom]);
 
+    // Load conversation and scroll to specific message
+    const loadConversationAndScrollToMessage = useCallback(async (conversationId: string, messageIndex: number) => {
+        try {
+            // Load the conversation first
+            await loadConversation(conversationId);
+            
+            // Wait for the conversation to be loaded and rendered
+            await new Promise(resolve => setTimeout(resolve, 100));
+            
+            // Find the message element and scroll to it
+            const scrollToMessage = () => {
+                const chatContainer = document.querySelector('.chat-container') as HTMLElement;
+                if (!chatContainer) return false;
+                
+                // Find all message elements
+                const messageElements = chatContainer.querySelectorAll('.message');
+                
+                if (messageIndex < messageElements.length) {
+                    const targetMessage = messageElements[messageIndex] as HTMLElement;
+                    
+                    // Scroll to the message with smooth behavior
+                    targetMessage.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    
+                    // Add highlight effect
+                    targetMessage.style.transition = 'background-color 0.5s ease';
+                    targetMessage.style.backgroundColor = isDarkMode ? 'rgba(24, 144, 255, 0.2)' : 'rgba(24, 144, 255, 0.1)';
+                    
+                    setTimeout(() => {
+                        targetMessage.style.backgroundColor = '';
+                    }, 2000);
+                    
+                    return true;
+                }
+                return false;
+            };
+            
+            // Try scrolling multiple times with delays to ensure rendering is complete
+            setTimeout(scrollToMessage, 200);
+            setTimeout(scrollToMessage, 500);
+        } catch (error) {
+            console.error('Error loading conversation and scrolling to message:', error);
+            throw error;
+        }
+    }, [loadConversation, isTopToBottom]);
+
     // frontend/src/context/ChatContext.tsx
     // Folder management functions
     const createFolder = useCallback(async (name: string, parentId?: string | null): Promise<string> => {
@@ -1212,6 +1283,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
         initializationStarted.current = true;
         isRecovering.current = true;
 
+        // Track if database is fully functional
+        let isDatabaseHealthy = true;
+
         try {
             await db.init();
             const savedConversations = await db.getConversations();
@@ -1236,7 +1310,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     }
                 }
                 
+                // Always mark as initialized to allow app to function
                 setIsInitialized(true);
+                console.log('✅ INIT: Chat context initialized successfully');
             }
 
             // Handle backup/recovery operations asynchronously - don't block UI
@@ -1290,8 +1366,27 @@ export function ChatProvider({ children }: ChatProviderProps) {
             }, 0);
 
         } catch (error) {
-            console.error('Initialization failed:', error);
-            // Existing error handling...
+            console.error('❌ INIT: Database initialization failed:', error);
+            isDatabaseHealthy = false;
+            
+            // CRITICAL FIX: Set initialized flag even on failure
+            // The app should be able to create new conversations even if DB initialization failed
+            setIsInitialized(true);
+            
+            // Try to recover from localStorage backup as fallback
+            try {
+                const backup = localStorage.getItem('ZIYA_CONVERSATION_BACKUP');
+                if (backup) {
+                    const backupConversations = JSON.parse(backup);
+                    console.log(`🔄 INIT: Loaded ${backupConversations.length} conversations from localStorage backup`);
+                    setConversations(backupConversations);
+                }
+            } catch (backupError) {
+                console.error('❌ INIT: Failed to load backup, starting with empty state:', backupError);
+                setConversations([]);
+            }
+            
+            console.warn('⚠️ INIT: App running in degraded mode - persistence may be limited to localStorage');
         } finally {
             isRecovering.current = false;
         }
@@ -1543,6 +1638,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         currentMessages,
         setCurrentConversationId,
         addMessageToConversation,
+        loadConversationAndScrollToMessage,
         loadConversation,
         startNewChat,
         isTopToBottom,

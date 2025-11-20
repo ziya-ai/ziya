@@ -627,7 +627,6 @@ export const sendPayload = async (
 
             // Split by double newlines to get complete SSE messages
             const messages = buffer.split('\n\n');
-            console.log('📬 Split into', messages.length, 'messages, buffer remaining:', buffer.length);
 
             // Keep the last potentially incomplete message in buffer
             buffer = messages.pop() || '';
@@ -636,12 +635,9 @@ export const sendPayload = async (
             for (const sseMessage of messages) {
                 if (!sseMessage.trim()) continue;
 
-                console.log('📨 Processing SSE message, length:', sseMessage.length, 'starts with:', sseMessage.substring(0, 50));
-
                 // Check if it's an SSE data line
                 if (sseMessage.startsWith('data:')) {
                     let dataContent = sseMessage.slice(5).trim();
-                    console.log('📊 SSE data extracted, length:', dataContent.length, 'content:', dataContent.substring(0, 100));
 
                     // Handle multiple data: messages concatenated in the extracted content
                     // This happens when heartbeat messages get bundled with content messages
@@ -823,13 +819,13 @@ export const sendPayload = async (
                     // CRITICAL: Extract and store successful tool results for retry
                     if (errorData.successful_tool_results && Array.isArray(errorData.successful_tool_results)) {
                         console.log('📦 THROTTLE_RECOVERY: Captured', errorData.successful_tool_results.length, 'successful tool results');
-                        
+
                         // Store in recovery data ref if provided
                         if (throttlingRecoveryDataRef) {
                             throttlingRecoveryDataRef.toolResults = errorData.successful_tool_results;
                             throttlingRecoveryDataRef.partialContent = currentContent;
                         }
-                        
+
                         // Also dispatch for other components that might need it
                         document.dispatchEvent(new CustomEvent('throttlingRecoveryData', {
                             detail: { conversationId, toolResults: errorData.successful_tool_results, partialContent: currentContent }
@@ -1105,7 +1101,6 @@ export const sendPayload = async (
 
                 // Add content if we found any
                 if (contentToAdd) {
-                    console.log('Adding content chunk:', contentToAdd.substring(0, 50) + '...');
                     currentContent += contentToAdd;
 
                     // Use functional update to prevent race conditions
@@ -1205,7 +1200,9 @@ export const sendPayload = async (
                     console.log('🔧 FORMATTED CONTENT:', formatted.content.substring(0, 200));
 
                     // Create tool display with header
-                    const toolResultDisplay = `\n<!-- TOOL_BLOCK_START:${toolName}|${displayHeader} -->\n${formatted.content}\n<!-- TOOL_BLOCK_END:${toolName} -->\n\n`;
+                    // Ensure blank line before tool result for proper markdown parsing
+                    const needsExtraNewline = !currentContent.endsWith('\n\n');
+                    const toolResultDisplay = `${needsExtraNewline ? '\n\n' : '\n'}<!-- TOOL_BLOCK_START:${toolName}|${displayHeader} -->\n${formatted.content}\n<!-- TOOL_BLOCK_END:${toolName} -->\n\n`;
                     const toolStartPrefix = `\`\`\`tool:${toolName}|${displayHeader}\n`;
 
                     console.log('🔧 TOOL_RESULT: Looking for prefix:', toolStartPrefix);
@@ -1214,616 +1211,602 @@ export const sendPayload = async (
                     console.log('🔧 TOOL_RESULT: Found at index:', lastStartIndex);
                     if (lastStartIndex !== -1) {
                         const blockEndIndex = currentContent.indexOf('\n```\n\n', lastStartIndex);
-                        console.log('🔧 TOOL_RESULT: Block end at:', blockEndIndex);
-                        if (blockEndIndex !== -1) {
-                            // Replace from the character before the block (to preserve spacing) through the end
-                            const replaceStart = lastStartIndex > 0 && currentContent[lastStartIndex - 1] === '\n' ? lastStartIndex - 1 : lastStartIndex;
-                            currentContent = currentContent.substring(0, replaceStart) + toolResultDisplay + currentContent.substring(blockEndIndex + 6);
-                            console.log('🔧 TOOL_RESULT: Replaced tool block');
-                        } else {
-                            currentContent += toolResultDisplay;
-                            console.log('🔧 TOOL_RESULT: No block end found, appending');
-                        }
-                    } else {
-                        console.log('🔧 TOOL_RESULT: Prefix not found, appending');
-                        currentContent += toolResultDisplay;
-                    }
-
-                    setStreamedContentMap((prev: Map<string, string>) => {
-                        const next = new Map(prev);
-                        next.set(conversationId, currentContent);
-                        return next;
-                    });
-                } else if (unwrappedData.type === 'tool_start') {
-                    console.log('🔧 TOOL_START received:', unwrappedData);
-
-                    // Check for specialized tool handlers first
-                    const contentRef = { value: currentContent };
-                    const context: ToolEventContext = {
-                        conversationId,
-                        currentContent: contentRef,
-                        setStreamedContentMap,
-                        toolInputsMap
-                    };
-
-                    if (handleToolStart(unwrappedData.tool_name, unwrappedData, context)) {
-                        currentContent = contentRef.value;
-
-                        // Store tool input for later use in tool_display
-                        if (unwrappedData.args && unwrappedData.tool_id) {
-                            toolInputsMap.set(unwrappedData.tool_id, unwrappedData.args);
-                        }
-                        if (unwrappedData.input && unwrappedData.tool_id) {
-                            toolInputsMap.set(unwrappedData.tool_id, unwrappedData.input);
-                        }
-                        return; // Handler processed the event, return from function
-                    }
-
-                    // Store tool input for later use in tool_display
-                    if (unwrappedData.args && unwrappedData.tool_id) {
-                        toolInputsMap.set(unwrappedData.tool_id, unwrappedData.args);
-                    }
-                    if (unwrappedData.input && unwrappedData.tool_id) {
-                        toolInputsMap.set(unwrappedData.tool_id, unwrappedData.input);
-                    }
-
-                    // Store display_header for matching in tool_result
-                    if (unwrappedData.display_header && unwrappedData.tool_id) {
-                        toolInputsMap.set(`${unwrappedData.tool_id}_header`, unwrappedData.display_header);
-                    }
-
-                    let toolName = unwrappedData.tool_name;
-                    if (!toolName.startsWith('mcp_')) {
-                        toolName = `mcp_${toolName}`;
-                    }
-                    toolName = toolName.replace(/^mcp_mcp_/, 'mcp_');
-
-                    const actualToolName = toolName.replace('mcp_', '');
-                    const displayHeader = unwrappedData.display_header || toolName.replace('mcp_', '').replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase());
-                    const inputArgs = unwrappedData.args || unwrappedData.input || {};
-
-                    // Generate tool start display
-                    let toolStartDisplay;
-
-                    if (actualToolName === 'run_shell_command' && inputArgs.command) {
-                        // For shell: show command on first line
-                        toolStartDisplay = `\n\`\`\`tool:${toolName}|${displayHeader}\n$ ${inputArgs.command}\n⏳ Running...\n\`\`\`\n\n`;
-                    } else if (actualToolName === 'get_current_time') {
-                        toolStartDisplay = `\n<!-- TOOL_BLOCK_START:${toolName}|${displayHeader} -->\n⏳ Getting current time...\n<!-- TOOL_BLOCK_END:${toolName} -->\n\n`;
-                    } else {
-                        toolStartDisplay = `\n\`\`\`tool:${toolName}|${displayHeader}\n⏳ Running...\n\`\`\`\n\n`;
-                    }
-
-                    console.log('🔧 TOOL_START formatted:', toolStartDisplay);
-                    currentContent += toolStartDisplay;
-                    setStreamedContentMap((prev: Map<string, string>) => {
-                        const next = new Map(prev);
-                        next.set(conversationId, currentContent);
-                        return next;
-                    });
-                    setStreamedContentMap((prev: Map<string, string>) => {
-                        const next = new Map(prev);
-                        next.set(conversationId, currentContent);
-                        return next;
-                    });
+                console.log('🔧 TOOL_RESULT: Block end at:', blockEndIndex);
+                if (blockEndIndex !== -1) {
+                    // Replace from the character before the block (to preserve spacing) through the end
+                    const replaceStart = lastStartIndex > 0 && currentContent[lastStartIndex - 1] === '\n' ? lastStartIndex - 1 : lastStartIndex;
+                    currentContent = currentContent.substring(0, replaceStart) + toolResultDisplay + currentContent.substring(blockEndIndex + 6);
+                    console.log('🔧 TOOL_RESULT: Replaced tool block');
+                } else {
+                    currentContent += toolResultDisplay;
+                    console.log('🔧 TOOL_RESULT: No block end found, appending');
                 }
-
-                // Process operations if present
-                const ops = jsonData.ops || [];
-                for (const op of ops) {
-                    if (op.op === 'add' && op.path === '/processing_state' && typeof setProcessingState === 'function') {
-                        // Handle processing state updates
-                        const stateValue = op.value;
-                        if (stateValue === 'awaiting_model_response') {
-                            setProcessingState('processing_tools');
-                        }
-                        // Note: State will auto-reset to 'idle' when removeStreamingConversation is called
-                        // No return needed here, continue to next op
-                    }
-                    if (op.op === 'add' && op.path.endsWith('/reasoning_content/-')) {
-                        // Handle reasoning content separately
-                        const reasoningContent = op.value || '';
-                        if (reasoningContent && setReasoningContentMap) {
-                            console.log('ChatAPI: Adding reasoning content:', reasoningContent);
-                            setReasoningContentMap((prev: Map<string, string>) => {
-                                const next = new Map(prev);
-                                const existing = next.get(conversationId) || '';
-                                next.set(conversationId, existing + reasoningContent);
-                                return next;
-                            });
-                        }
-                        // No return needed here, continue to next op
-                    }
-                    if (op.op === 'add' && op.path.endsWith('/streamed_output_str/-')) {
-                        let newContent = op.value || '';
-                        if (!newContent) return;
-
-                        // Handle new Bedrock format with content= wrapper
-                        if (typeof newContent === 'string' && newContent.includes('content=')) {
-                            let extractedContent = '';
-
-                            // Find where content= starts and determine quote type
-                            const contentMatch = newContent.match(/content=(['"])/);
-                            if (contentMatch) {
-                                const quoteChar = contentMatch[1];
-                                const startPos = newContent.indexOf('content=') + 8 + 1; // +8 for 'content=', +1 for opening quote
-                                const restOfString = newContent.substring(startPos);
-                                
-                                // Find the closing quote by looking for: quote + whitespace + (additional_kwargs | response_metadata | end)
-                                // Use a more careful approach that handles nested quotes
-                                const escapedQuote = quoteChar === '"' ? '\\"' : "\\'";
-                                const endPattern = new RegExp(`${quoteChar}\\s*(?:additional_kwargs=|response_metadata=|$)`);
-                                const endMatch = restOfString.search(endPattern);
-                                
-                                if (endMatch !== -1) {
-                                    extractedContent = restOfString.substring(0, endMatch);
-                                } else {
-                                    // Fallback: find last occurrence of quote char
-                                    const lastQuotePos = restOfString.lastIndexOf(quoteChar);
-                                    extractedContent = lastQuotePos > 0 
-                                        ? restOfString.substring(0, lastQuotePos)
-                                        : restOfString;
-                                }
-                            } else {
-                                // No content= wrapper found, use as-is
-                                extractedContent = newContent;
-                            }
-
-                            // Unescape common escape sequences
-                            // Don't unescape backslashes inside math blocks as \\ is meaningful in LaTeX
-                            const mathBlockRegex = /(\$\$[\s\S]*?\$\$|\$[^$\n]+?\$)/g;
-                            const parts = extractedContent.split(mathBlockRegex);
-
-                            newContent = parts.map((part, index) => {
-                                // Odd indices are math blocks (captured by regex), even indices are regular text
-                                const isMathBlock = index % 2 === 1;
-
-                                if (isMathBlock) {
-                                    // In math blocks, only unescape quotes, not backslashes
-                                    return part
-                                        .replace(/\\'/g, "'")
-                                        .replace(/\\"/g, '"');
-                                } else {
-                                    // In regular text, unescape everything including backslashes
-                                    return part
-                                        .replace(/\\'/g, "'")
-                                        .replace(/\\"/g, '"')
-                                        .replace(/\\n/g, '\n')
-                                        .replace(/\\t/g, '\t')
-                                        .replace(/\\r/g, '\r')
-                                        .replace(/\\\\/g, '\\');
-                                }
-                            }).join('');
-                        }
-
-                        currentContent += newContent;
-                        const contentSnapshot = currentContent;
-                        setStreamedContentMap((prev: Map<string, string>) => {
-                            const next = new Map(prev);
-                            next.set(conversationId, contentSnapshot);
-                            return next;
-                        });
-                    } else if (op.op === 'add' && op.path.includes('/streamed_output/-')) {
-                        // Check for error in messages array - but be careful not to match code examples
-                        if (op.value && op.value.messages && Array.isArray(op.value.messages)) {
-                            for (const msg of op.value.messages) {
-                                if (msg.content && typeof msg.content === 'string') {
-                                    // Check if this message contains diff syntax and set the flag
-                                    if (!containsDiff && (
-                                        msg.content.includes('```diff') || msg.content.includes('diff --git') ||
-                                        msg.content.match(/^@@ /m) || msg.content.match(/^\+\+\+ /m) || msg.content.match(/^--- /m))) {
-                                        containsDiff = true;
-                                        console.log("Detected diff content in message, disabling error detection");
-                                    }
-
-                                    // Skip error checking if the message contains tool execution results
-                                    const containsCodeBlock = msg.content.includes('```');
-                                    const containsToolExecution = msg.content.includes('tool_execution') || msg.content.includes('⟩') || msg.content.includes('⟨');
-                                    const errorResponse = (containsCodeBlock || containsDiff || containsToolExecution) ? null : extractErrorFromSSE(msg.content);
-
-                                    if (errorResponse) {
-                                        console.log("Error detected in message content:", errorResponse);
-                                        const isPartialResponse = currentContent.length > 0;
-                                        const errorMessage = isPartialResponse
-                                            ? `${errorResponse.detail || 'An error occurred'} (Partial response preserved - ${currentContent.length} characters)`
-                                            : errorResponse.detail || 'An error occurred';
-
-                                        showError(errorMessage, conversationId, addMessageToConversation, isPartialResponse ? 'warning' : 'error');
-                                        errorOccurred = true;
-
-                                        // Preserve partial content before removing stream
-                                        if (currentContent && currentContent.trim()) {
-                                            const partialMessage: Message = {
-                                                role: 'assistant',
-                                                content: currentContent + '\n\n[Response interrupted: ' + (errorResponse.detail || 'An error occurred') + ']',
-                                                _timestamp: Date.now()
-                                            };
-                                            addMessageToConversation(partialMessage, conversationId, !isStreamingToCurrentConversation);
-                                        }
-
-                                        // Clean up
-                                        setIsStreaming(false);
-                                        removeStreamingConversation(conversationId);
-                                        setStreamedContentMap((prev: Map<string, string>) => new Map(prev));
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch (error) {
-                const e = error as Error;
-                console.error('Error parsing JSON chunk:', { error: e, rawData: data });
-                console.error('Error parsing JSON:', e);
-
-                // FALLBACK: Try simple JSON.parse for basic content chunks
-                try {
-                    const simpleJson = JSON.parse(data);
-                    console.log('Fallback JSON parse succeeded:', simpleJson);
-
-                    // Handle simple content objects
-                    if (simpleJson.content) {
-                        console.log('Processing fallback content:', simpleJson.content);
-                        currentContent += simpleJson.content;
-                        setStreamedContentMap((prev: Map<string, string>) => {
-                            const next = new Map(prev);
-                            next.set(conversationId, currentContent);
-                            return next;
-                        });
-                    }
-                } catch (fallbackError) {
-                    console.warn('Fallback JSON parse also failed:', fallbackError);
-                    console.warn('Lost content chunk:', data);
-                }
+            } else {
+                console.log('🔧 TOOL_RESULT: Prefix not found, appending');
+                currentContent += toolResultDisplay;
             }
-        };
 
-        const readStream = async () => {
-            // Metrics collection for debugging
-            const metrics = {
-                chunks_received: 0,
-                bytes_received: 0,
-                chunk_sizes: [] as number[],
-                start_time: Date.now()
+            setStreamedContentMap((prev: Map<string, string>) => {
+                const next = new Map(prev);
+                next.set(conversationId, currentContent);
+                return next;
+            });
+        } else if (unwrappedData.type === 'tool_start') {
+            console.log('🔧 TOOL_START received:', unwrappedData);
+
+            // Check for specialized tool handlers first
+            const contentRef = { value: currentContent };
+            const context: ToolEventContext = {
+                conversationId,
+                currentContent: contentRef,
+                setStreamedContentMap,
+                toolInputsMap
             };
 
-            try {
-                while (true) {
-                    let chunk = '';
-                    try {
-                        if (signal.aborted) {
-                            console.log("Stream aborted by user");
-                            errorOccurred = true;
-                            removeStreamingConversation(conversationId);
-                            setIsStreaming(false);
-                            return 'Response generation stopped by user.';
-                        }
-                        console.log('⏳ Waiting for next chunk from reader.read()...');
-                        const { done, value } = await reader.read();
-                        console.log('📨 Received from reader:', { done, valueLength: value?.length });
-                        if (done) {
-                            console.log("Stream read complete (done=true)");
-                            // If the stream was aborted, don't process the final content
-                            if (isAborted) {
-                                console.log("Stream was aborted, discarding final content");
-                                removeStreamingConversation(conversationId);
-                                return 'Response generation stopped by user.';
-                            }
-                            break;
-                        }
-                        if (errorOccurred) {
-                            console.log("Stream read aborted due to error");
-                            break;
-                        }
-                        chunk = decoder.decode(value, { stream: true });
-                        console.log('🔤 Decoded chunk length:', chunk.length);
+            if (handleToolStart(unwrappedData.tool_name, unwrappedData, context)) {
+                currentContent = contentRef.value;
 
-                        // Track metrics
-                        metrics.chunks_received++;
-                        metrics.bytes_received += chunk.length;
-                        metrics.chunk_sizes.push(chunk.length);
-
-                        if (metrics.chunks_received % 100 === 0) {
-                            console.log('📊 Streaming metrics:', {
-                                chunks: metrics.chunks_received,
-                                bytes: metrics.bytes_received,
-                                avg_chunk: (metrics.bytes_received / metrics.chunks_received).toFixed(2),
-                                elapsed_ms: Date.now() - metrics.start_time
-                            });
-                        }
-
-                        if (!chunk) {
-                            // Check if the stream was aborted during processing
-                            if (isAborted) {
-                                console.log("Stream was aborted during processing, discarding chunk");
-                                removeStreamingConversation(conversationId);
-                                setIsStreaming(false);
-                                return 'Response generation stopped by user.';
-                            }
-                            console.log("Empty chunk received, continuing");
-                            continue;
-                        }
-
-                        // Check if this chunk contains diff syntax and set the flag
-                        if (!containsDiff && (
-                            chunk.includes('```diff') || chunk.includes('diff --git') ||
-                            chunk.match(/^@@ /m) || chunk.match(/^\+\+\+ /m) || chunk.match(/^--- /m))) {
-                            containsDiff = true;
-                            console.log("Detected diff content in chunk, disabling error detection");
-                        }
-
-                        // Check for errors using our new function - but be careful with code blocks
-                        try {
-                            // Skip error checking if the chunk contains code blocks or diffs
-                            const containsCodeBlock = chunk.includes('```');
-
-                            if (!containsCodeBlock && !containsDiff) {
-                                // Check for nested errors in LangChain ops structure
-                                const nestedError = extractErrorFromNestedOps(chunk);
-                                if (nestedError) {
-                                    // Handle recoverable errors after substantial content
-                                    const hasSubstantialContent = currentContent.length > 1000;
-                                    const isRecoverableError = (
-                                        nestedError.error === 'timeout' ||
-                                        nestedError.detail?.includes('timeout') ||
-                                        nestedError.detail?.includes('ReadTimeoutError') ||
-                                        nestedError.detail?.includes('Read timeout')
-                                    );
-
-                                    if (hasSubstantialContent && isRecoverableError) {
-                                        console.log('Recoverable nested error after substantial content - preserving:', currentContent.length, 'characters');
-                                        showError(`${nestedError.detail} (${Math.round(currentContent.length / 1000)}KB content preserved)`, conversationId, addMessageToConversation, 'warning');
-                                    }
-
-                                    console.log("Nested error detected in ops structure:", nestedError);
-
-                                    // Define isPartialResponse for this scope
-                                    const isPartialResponse = currentContent.length > 0;
-                                    const errorMessage = nestedError.detail || 'An error occurred';
-
-                                    // Dispatch preserved content event before showing error
-                                    if (isPartialResponse) {
-                                        document.dispatchEvent(new CustomEvent('preservedContent', {
-                                            detail: {
-                                                existing_streamed_content: currentContent,
-                                                error_detail: nestedError.detail || 'An error occurred during processing'
-                                            }
-                                        }));
-                                        // Don't remove streaming conversation here - let preserved content handler do it
-                                    } else if (currentContent && currentContent.length > 0) {
-                                        // Save partial content even without the preserved content event
-                                        const partialMessage: Message = {
-                                            role: 'assistant',
-                                            content: currentContent + '\n\n[Response interrupted: ' + (nestedError.detail || 'An error occurred during processing') + ']',
-                                            _timestamp: Date.now()
-                                        };
-                                        addMessageToConversation(partialMessage, conversationId, !isStreamingToCurrentConversation);
-                                        console.log('Saved partial content directly:', currentContent.length, 'characters');
-                                        removeStreamingConversation(conversationId);
-                                    }
-                                    else {
-                                        // No partial content to save
-                                        removeStreamingConversation(conversationId);
-                                    }
-
-                                    const messageType = isPartialResponse ? 'warning' : 'error';
-                                    showError(errorMessage, conversationId, addMessageToConversation, messageType);
-                                    errorOccurred = true;
-                                    break;
-                                }
-                            }
-                        } catch (error) {
-                            console.warn("Error checking for nested errors:", error);
-                        }
-
-                        console.log('📦 Processing chunk, length:', chunk.length, 'first 100 chars:', chunk.substring(0, 100));
-                        processChunk(chunk);
-                        console.log('✅ Chunk processed successfully');
-                    } catch (error) {
-                        console.error('❌ Error reading stream:', error);
-                        console.error('Error type:', (error as any)?.constructor?.name);
-                        console.error('Error message:', (error as any)?.message);
-                        console.error('Error stack:', (error as any)?.stack);
-                        console.error('Last chunk before error:', chunk?.substring(0, 200));
-
-                        // Save partial content before aborting
-                        if (currentContent && currentContent.trim()) {
-                            const partialMessage: Message = {
-                                role: 'assistant',
-                                content: currentContent + '\n\n[Stream interrupted - partial response saved]',
-                                _timestamp: Date.now()
-                            };
-                            addMessageToConversation(partialMessage, conversationId, !isStreamingToCurrentConversation);
-                            console.log('💾 Saved partial content on abort:', currentContent.length, 'characters');
-                            showError(`Stream interrupted. Saved ${currentContent.length} characters of partial response.`, conversationId, addMessageToConversation, 'warning');
-                        } else {
-                            message.error('Stream reading error. Check JS console for details.');
-                        }
-
-                        errorOccurred = true;
-                        removeStreamingConversation(conversationId);
-                        setIsStreaming(false);
-                        break;
-                    }
+                // Store tool input for later use in tool_display
+                if (unwrappedData.args && unwrappedData.tool_id) {
+                    toolInputsMap.set(unwrappedData.tool_id, unwrappedData.args);
                 }
-            } catch (error) {
-                console.error('🔥 Outer catch - error type:', (error as any)?.constructor?.name, 'message:', (error as any)?.message);
-                if (error instanceof DOMException && error.name === 'AbortError') return '';
-                console.error('Unhandled Stream error in readStream:', { error });
-                removeStreamingConversation(conversationId);
-                setIsStreaming(false);
-                throw error;
-            } finally {
-                // Flush any remaining bytes in the decoder
-                try {
-                    const finalChunk = decoder.decode();
-                    if (finalChunk) {
-                        processChunk(finalChunk);
-                    }
-
-                    // Process any remaining buffered message
-                    if (buffer.trim()) {
-                        processChunk('');  // This will process the final buffer content
-                    }
-                } catch (error) {
-                    console.warn("Error flushing decoder:", error);
+                if (unwrappedData.input && unwrappedData.tool_id) {
+                    toolInputsMap.set(unwrappedData.tool_id, unwrappedData.input);
                 }
-
-                // Log final streaming metrics
-                console.log('📊 Final streaming metrics:', {
-                    total_chunks: metrics.chunks_received,
-                    total_bytes: metrics.bytes_received,
-                    avg_chunk_size: (metrics.bytes_received / metrics.chunks_received).toFixed(2),
-                    min_chunk: Math.min(...metrics.chunk_sizes),
-                    max_chunk: Math.max(...metrics.chunk_sizes),
-                    chunks_under_10: metrics.chunk_sizes.filter(s => s < 10).length,
-                    duration_ms: Date.now() - metrics.start_time,
-                    content_length: currentContent.length,
-                    content_vs_bytes_ratio: (currentContent.length / metrics.bytes_received * 100).toFixed(1) + '%'
-                });
-
-                setIsStreaming(false);
-                return !errorOccurred && currentContent ? currentContent : '';
+                return; // Handler processed the event, return from function
             }
+
+            // Store tool input for later use in tool_display
+            if (unwrappedData.args && unwrappedData.tool_id) {
+                toolInputsMap.set(unwrappedData.tool_id, unwrappedData.args);
+            }
+            if (unwrappedData.input && unwrappedData.tool_id) {
+                toolInputsMap.set(unwrappedData.tool_id, unwrappedData.input);
+            }
+
+            // Store display_header for matching in tool_result
+            if (unwrappedData.display_header && unwrappedData.tool_id) {
+                toolInputsMap.set(`${unwrappedData.tool_id}_header`, unwrappedData.display_header);
+            }
+
+            let toolName = unwrappedData.tool_name;
+            if (!toolName.startsWith('mcp_')) {
+                toolName = `mcp_${toolName}`;
+            }
+            toolName = toolName.replace(/^mcp_mcp_/, 'mcp_');
+
+            const actualToolName = toolName.replace('mcp_', '');
+            const displayHeader = unwrappedData.display_header || toolName.replace('mcp_', '').replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase());
+            const inputArgs = unwrappedData.args || unwrappedData.input || {};
+
+            // Generate tool start display
+            let toolStartDisplay;
+
+            if (actualToolName === 'run_shell_command' && inputArgs.command) {
+                // For shell: show command on first line
+                toolStartDisplay = `\n\`\`\`tool:${toolName}|${displayHeader}\n$ ${inputArgs.command}\n⏳ Running...\n\`\`\`\n\n`;
+            } else if (actualToolName === 'get_current_time') {
+                toolStartDisplay = `\n<!-- TOOL_BLOCK_START:${toolName}|${displayHeader} -->\n⏳ Getting current time...\n<!-- TOOL_BLOCK_END:${toolName} -->\n\n`;
+            } else {
+                toolStartDisplay = `\n\`\`\`tool:${toolName}|${displayHeader}\n⏳ Running...\n\`\`\`\n\n`;
+            }
+
+            console.log('🔧 TOOL_START formatted:', toolStartDisplay);
+            currentContent += toolStartDisplay;
+            setStreamedContentMap((prev: Map<string, string>) => {
+                const next = new Map(prev);
+                next.set(conversationId, currentContent);
+                return next;
+            });
+            setStreamedContentMap((prev: Map<string, string>) => {
+                const next = new Map(prev);
+                next.set(conversationId, currentContent);
+                return next;
+            });
         }
 
-        try {
-            console.log("Starting stream read...");
-            const result = await readStream();
-            // After successful streaming, update with final content
-            if (currentContent && !errorOccurred) {
-                console.log("Stream completed successfully");
-
-                // Check if the stream was aborted before adding the message
-                if (isAborted) {
-                    console.log("Stream was aborted, not adding final message");
-                    removeStreamingConversation(conversationId);
-                    return 'Response generation stopped by user.';
+        // Process operations if present
+        const ops = jsonData.ops || [];
+        for (const op of ops) {
+            if (op.op === 'add' && op.path === '/processing_state' && typeof setProcessingState === 'function') {
+                // Handle processing state updates
+                const stateValue = op.value;
+                if (stateValue === 'awaiting_model_response') {
+                    setProcessingState('processing_tools');
                 }
-                // Check if the content is an error message using our new function
-                // Skip error checking if the content contains tool execution results
-                const containsCodeBlock = currentContent.includes('```');
-                const containsToolExecution = currentContent.includes('tool_execution') || currentContent.includes('⟩') || currentContent.includes('⟨');
-                const errorResponse = (containsCodeBlock || containsDiff || containsToolExecution) ? null : extractErrorFromSSE(currentContent);
+                // Note: State will auto-reset to 'idle' when removeStreamingConversation is called
+                // No return needed here, continue to next op
+            }
+            if (op.op === 'add' && op.path.endsWith('/reasoning_content/-')) {
+                // Handle reasoning content separately
+                const reasoningContent = op.value || '';
+                if (reasoningContent && setReasoningContentMap) {
+                    console.log('ChatAPI: Adding reasoning content:', reasoningContent);
+                    setReasoningContentMap((prev: Map<string, string>) => {
+                        const next = new Map(prev);
+                        const existing = next.get(conversationId) || '';
+                        next.set(conversationId, existing + reasoningContent);
+                        return next;
+                    });
+                }
+                // No return needed here, continue to next op
+            }
+            if (op.op === 'add' && op.path.endsWith('/streamed_output_str/-')) {
+                let newContent = op.value || '';
+                if (!newContent) return;
 
-                if (errorResponse) {
-                    // Handle recoverable errors after substantial content
-                    const hasSubstantialContent = currentContent.length > 1000;
-                    const isRecoverableError = (
-                        errorResponse.error === 'timeout' ||
-                        errorResponse.detail?.includes('timeout') ||
-                        errorResponse.detail?.includes('ReadTimeoutError') ||
-                        errorResponse.detail?.includes('Read timeout')
-                    );
+                // Handle new Bedrock format with content= wrapper
+                if (typeof newContent === 'string' && newContent.includes('content=')) {
+                    let extractedContent = '';
 
-                    if (hasSubstantialContent && isRecoverableError) {
-                        console.log('Final content check - recoverable error after substantial content, preserving');
-                        // Don't treat this as an error, just complete normally
-                        // The content will be added to conversation below
-                    } else {
-                        console.log("Error detected in final content:", errorResponse);
+                    // Find where content= starts and determine quote type
+                    const contentMatch = newContent.match(/content=(['"])/);
+                    if (contentMatch) {
+                        const quoteChar = contentMatch[1];
+                        const startPos = newContent.indexOf('content=') + 8 + 1; // +8 for 'content=', +1 for opening quote
+                        const restOfString = newContent.substring(startPos);
 
-                        const isPartialResponse = currentContent.length > 0;
+                        // Find the closing quote by looking for: quote + whitespace + (additional_kwargs | response_metadata | end)
+                        // Use a more careful approach that handles nested quotes
+                        const escapedQuote = quoteChar === '"' ? '\\"' : "\\'";
+                        const endPattern = new RegExp(`${quoteChar}\\s*(?:additional_kwargs=|response_metadata=|$)`);
+                        const endMatch = restOfString.search(endPattern);
 
-                        // Dispatch preserved content event before showing error and removing stream
-                        if (isPartialResponse) {
-                            document.dispatchEvent(new CustomEvent('preservedContent', {
-                                detail: {
-                                    existing_streamed_content: currentContent,
-                                    error_detail: errorResponse.detail || 'An error occurred during processing'
-                                }
-                            }));
+                        if (endMatch !== -1) {
+                            extractedContent = restOfString.substring(0, endMatch);
+                        } else {
+                            // Fallback: find last occurrence of quote char
+                            const lastQuotePos = restOfString.lastIndexOf(quoteChar);
+                            extractedContent = lastQuotePos > 0
+                                ? restOfString.substring(0, lastQuotePos)
+                                : restOfString;
                         }
+                    } else {
+                        // No content= wrapper found, use as-is
+                        extractedContent = newContent;
+                    }
 
-                        const errorMessage = isPartialResponse
-                            ? `${errorResponse.detail} (Partial response preserved - ${currentContent.length} characters)`
-                            : errorResponse.detail || 'An error occurred';
-                        showError(errorMessage, conversationId, addMessageToConversation, isPartialResponse ? 'warning' : 'error');
-                        errorOccurred = true;
-                        removeStreamingConversation(conversationId);
+                    // Unescape common escape sequences
+                    // Don't unescape backslashes inside math blocks as \\ is meaningful in LaTeX
+                    const mathBlockRegex = /(\$\$[\s\S]*?\$\$|\$[^$\n]+?\$)/g;
+                    const parts = extractedContent.split(mathBlockRegex);
 
-                        // Still return the partial content so it can be used
-                        return currentContent || '';
+                    newContent = parts.map((part, index) => {
+                        // Odd indices are math blocks (captured by regex), even indices are regular text
+                        const isMathBlock = index % 2 === 1;
+
+                        if (isMathBlock) {
+                            // In math blocks, only unescape quotes, not backslashes
+                            return part
+                                .replace(/\\'/g, "'")
+                                .replace(/\\"/g, '"');
+                        } else {
+                            // In regular text, unescape everything including backslashes
+                            return part
+                                .replace(/\\'/g, "'")
+                                .replace(/\\"/g, '"')
+                                .replace(/\\n/g, '\n')
+                                .replace(/\\t/g, '\t')
+                                .replace(/\\r/g, '\r')
+                                .replace(/\\\\/g, '\\');
+                        }
+                    }).join('');
+                }
+
+                currentContent += newContent;
+                const contentSnapshot = currentContent;
+                setStreamedContentMap((prev: Map<string, string>) => {
+                    const next = new Map(prev);
+                    next.set(conversationId, contentSnapshot);
+                    return next;
+                });
+            } else if (op.op === 'add' && op.path.includes('/streamed_output/-')) {
+                // Check for error in messages array - but be careful not to match code examples
+                if (op.value && op.value.messages && Array.isArray(op.value.messages)) {
+                    for (const msg of op.value.messages) {
+                        if (msg.content && typeof msg.content === 'string') {
+                            // Check if this message contains diff syntax and set the flag
+                            if (!containsDiff && (
+                                msg.content.includes('```diff') || msg.content.includes('diff --git') ||
+                                msg.content.match(/^@@ /m) || msg.content.match(/^\+\+\+ /m) || msg.content.match(/^--- /m))) {
+                                containsDiff = true;
+                                console.log("Detected diff content in message, disabling error detection");
+                            }
+
+                            // Skip error checking if the message contains tool execution results
+                            const containsCodeBlock = msg.content.includes('```');
+                            const containsToolExecution = msg.content.includes('tool_execution') || msg.content.includes('⟩') || msg.content.includes('⟨');
+                            const errorResponse = (containsCodeBlock || containsDiff || containsToolExecution) ? null : extractErrorFromSSE(msg.content);
+
+                            if (errorResponse) {
+                                console.log("Error detected in message content:", errorResponse);
+                                const isPartialResponse = currentContent.length > 0;
+                                const errorMessage = isPartialResponse
+                                    ? `${errorResponse.detail || 'An error occurred'} (Partial response preserved - ${currentContent.length} characters)`
+                                    : errorResponse.detail || 'An error occurred';
+
+                                showError(errorMessage, conversationId, addMessageToConversation, isPartialResponse ? 'warning' : 'error');
+                                errorOccurred = true;
+
+                                // Preserve partial content before removing stream
+                                if (currentContent && currentContent.trim()) {
+                                    const partialMessage: Message = {
+                                        role: 'assistant',
+                                        content: currentContent + '\n\n[Response interrupted: ' + (errorResponse.detail || 'An error occurred') + ']',
+                                        _timestamp: Date.now()
+                                    };
+                                    addMessageToConversation(partialMessage, conversationId, !isStreamingToCurrentConversation);
+                                }
+
+                                // Clean up
+                                setIsStreaming(false);
+                                removeStreamingConversation(conversationId);
+                                setStreamedContentMap((prev: Map<string, string>) => new Map(prev));
+                                break;
+                            }
+                        }
                     }
                 }
-
-                // Even if we detect an error in the final content, save what we have
-                if (errorOccurred && currentContent && currentContent.trim()) {
-                    const partialMessage: Message = {
-                        role: 'assistant',
-                        content: currentContent,
-                        _timestamp: Date.now()
-                    };
-
-                    const isNonCurrentConversation = !isStreamingToCurrentConversation;
-                    addMessageToConversation(partialMessage, conversationId, isNonCurrentConversation);
-                    removeStreamingConversation(conversationId);
-                    console.log('Saved partial content on error:', currentContent.length, 'characters');
-                    return currentContent;
-                }
-
-                // Add message to conversation history for context, but keep displaying via StreamedContent
-                const aiMessage: Message = {
-                    role: 'assistant',
-                    content: currentContent,
-                    _timestamp: Date.now()
-                };
-
-                // Add to conversation history and remove from streaming
-                const isNonCurrentConversation = !isStreamingToCurrentConversation;
-                addMessageToConversation(aiMessage, conversationId, isNonCurrentConversation);
-                removeStreamingConversation(conversationId);
-
             }
-            return result;
-
-        } catch (error) {
-            // Type guard for DOMException
-            if (error instanceof DOMException && error.name === 'AbortError') {
-                console.log('Request was aborted');
-                return 'Response generation stopped by user.';
-            }
-            if (error instanceof DOMException && error.name === 'AbortError') return '';
-
-            console.error('Stream processing error in readStream catch block:', { error });
-            removeStreamingConversation(conversationId);
-            setIsStreaming(false);
-            throw error;
-        } finally {
-            setIsStreaming(false);
         }
     } catch (error) {
-        console.error('Error in sendPayload:', error);
-        // Check for abort error
-        if (error instanceof DOMException && error.name === 'AbortError') {
-            return 'Response generation stopped by user.';
+        const e = error as Error;
+        console.error('Error parsing JSON chunk:', { error: e, rawData: data });
+        console.error('Error parsing JSON:', e);
+
+        // FALLBACK: Try simple JSON.parse for basic content chunks
+        try {
+            const simpleJson = JSON.parse(data);
+            console.log('Fallback JSON parse succeeded:', simpleJson);
+
+            // Handle simple content objects
+            if (simpleJson.content) {
+                console.log('Processing fallback content:', simpleJson.content);
+                currentContent += simpleJson.content;
+                setStreamedContentMap((prev: Map<string, string>) => {
+                    const next = new Map(prev);
+                    next.set(conversationId, currentContent);
+                    return next;
+                });
+            }
+        } catch (fallbackError) {
+            console.warn('Fallback JSON parse also failed:', fallbackError);
+            console.warn('Lost content chunk:', data);
         }
-        // Type guard for Error objects
-        if (error instanceof Error) {
-            console.error('Error details:', {
-                name: error.name,
-                message: error.message,
-                stack: error.stack
-            });
-            message.error(`Error: ${error.message}`);
+    }
+};
+
+const readStream = async () => {
+    // Metrics collection for debugging
+    const metrics = {
+        chunks_received: 0,
+        bytes_received: 0,
+        chunk_sizes: [] as number[],
+        start_time: Date.now()
+    };
+
+    try {
+        while (true) {
+            let chunk = '';
+            try {
+                if (signal.aborted) {
+                    console.log("Stream aborted by user");
+                    errorOccurred = true;
+                    removeStreamingConversation(conversationId);
+                    setIsStreaming(false);
+                    return 'Response generation stopped by user.';
+                }
+                const { done, value } = await reader.read();
+                if (done) {
+                    console.log("Stream read complete (done=true)");
+                    // If the stream was aborted, don't process the final content
+                    if (isAborted) {
+                        console.log("Stream was aborted, discarding final content");
+                        removeStreamingConversation(conversationId);
+                        return 'Response generation stopped by user.';
+                    }
+                    break;
+                }
+                if (errorOccurred) {
+                    console.log("Stream read aborted due to error");
+                    break;
+                }
+                chunk = decoder.decode(value, { stream: true });
+
+                // Track metrics
+                metrics.chunks_received++;
+                metrics.bytes_received += chunk.length;
+                metrics.chunk_sizes.push(chunk.length);
+
+                if (!chunk) {
+                    // Check if the stream was aborted during processing
+                    if (isAborted) {
+                        console.log("Stream was aborted during processing, discarding chunk");
+                        removeStreamingConversation(conversationId);
+                        setIsStreaming(false);
+                        return 'Response generation stopped by user.';
+                    }
+                    console.log("Empty chunk received, continuing");
+                    continue;
+                }
+
+                // Check if this chunk contains diff syntax and set the flag
+                if (!containsDiff && (
+                    chunk.includes('```diff') || chunk.includes('diff --git') ||
+                    chunk.match(/^@@ /m) || chunk.match(/^\+\+\+ /m) || chunk.match(/^--- /m))) {
+                    containsDiff = true;
+                    console.log("Detected diff content in chunk, disabling error detection");
+                }
+
+                // Check for errors using our new function - but be careful with code blocks
+                try {
+                    // Skip error checking if the chunk contains code blocks or diffs
+                    const containsCodeBlock = chunk.includes('```');
+
+                    if (!containsCodeBlock && !containsDiff) {
+                        // Check for nested errors in LangChain ops structure
+                        const nestedError = extractErrorFromNestedOps(chunk);
+                        if (nestedError) {
+                            // Handle recoverable errors after substantial content
+                            const hasSubstantialContent = currentContent.length > 1000;
+                            const isRecoverableError = (
+                                nestedError.error === 'timeout' ||
+                                nestedError.detail?.includes('timeout') ||
+                                nestedError.detail?.includes('ReadTimeoutError') ||
+                                nestedError.detail?.includes('Read timeout')
+                            );
+
+                            if (hasSubstantialContent && isRecoverableError) {
+                                console.log('Recoverable nested error after substantial content - preserving:', currentContent.length, 'characters');
+                                showError(`${nestedError.detail} (${Math.round(currentContent.length / 1000)}KB content preserved)`, conversationId, addMessageToConversation, 'warning');
+                            }
+
+                            console.log("Nested error detected in ops structure:", nestedError);
+
+                            // Define isPartialResponse for this scope
+                            const isPartialResponse = currentContent.length > 0;
+                            const errorMessage = nestedError.detail || 'An error occurred';
+
+                            // Dispatch preserved content event before showing error
+                            if (isPartialResponse) {
+                                document.dispatchEvent(new CustomEvent('preservedContent', {
+                                    detail: {
+                                        existing_streamed_content: currentContent,
+                                        error_detail: nestedError.detail || 'An error occurred during processing'
+                                    }
+                                }));
+                                // Don't remove streaming conversation here - let preserved content handler do it
+                            } else if (currentContent && currentContent.length > 0) {
+                                // Save partial content even without the preserved content event
+                                const partialMessage: Message = {
+                                    role: 'assistant',
+                                    content: currentContent + '\n\n[Response interrupted: ' + (nestedError.detail || 'An error occurred during processing') + ']',
+                                    _timestamp: Date.now()
+                                };
+                                addMessageToConversation(partialMessage, conversationId, !isStreamingToCurrentConversation);
+                                console.log('Saved partial content directly:', currentContent.length, 'characters');
+                                removeStreamingConversation(conversationId);
+                            }
+                            else {
+                                // No partial content to save
+                                removeStreamingConversation(conversationId);
+                            }
+
+                            const messageType = isPartialResponse ? 'warning' : 'error';
+                            showError(errorMessage, conversationId, addMessageToConversation, messageType);
+                            errorOccurred = true;
+                            break;
+                        }
+                    }
+                } catch (error) {
+                    console.warn("Error checking for nested errors:", error);
+                }
+
+                processChunk(chunk);
+            } catch (error) {
+                console.error('❌ Error reading stream:', error);
+                console.error('Error type:', (error as any)?.constructor?.name);
+                console.error('Error message:', (error as any)?.message);
+                console.error('Error stack:', (error as any)?.stack);
+                console.error('Last chunk before error:', chunk?.substring(0, 200));
+
+                // Save partial content before aborting
+                if (currentContent && currentContent.trim()) {
+                    const partialMessage: Message = {
+                        role: 'assistant',
+                        content: currentContent + '\n\n[Stream interrupted - partial response saved]',
+                        _timestamp: Date.now()
+                    };
+                    addMessageToConversation(partialMessage, conversationId, !isStreamingToCurrentConversation);
+                    console.log('💾 Saved partial content on abort:', currentContent.length, 'characters');
+                    showError(`Stream interrupted. Saved ${currentContent.length} characters of partial response.`, conversationId, addMessageToConversation, 'warning');
+                } else {
+                    message.error('Stream reading error. Check JS console for details.');
+                }
+
+                errorOccurred = true;
+                removeStreamingConversation(conversationId);
+                setIsStreaming(false);
+                break;
+            }
         }
-        if (eventSource && typeof eventSource.close === 'function') eventSource.close();
-        // Clear streaming state
-        setIsStreaming(false);
+    } catch (error) {
+        console.error('🔥 Outer catch - error type:', (error as any)?.constructor?.name, 'message:', (error as any)?.message);
+        if (error instanceof DOMException && error.name === 'AbortError') return '';
+        console.error('Unhandled Stream error in readStream:', { error });
         removeStreamingConversation(conversationId);
+        setIsStreaming(false);
         throw error;
     } finally {
-        if (eventSource && typeof eventSource.close === 'function') eventSource.close();
-        document.removeEventListener('abortStream', abortListener as EventListener);
+        // Flush any remaining bytes in the decoder
+        try {
+            const finalChunk = decoder.decode();
+            if (finalChunk) {
+                processChunk(finalChunk);
+            }
+
+            // Process any remaining buffered message
+            if (buffer.trim()) {
+                processChunk('');  // This will process the final buffer content
+            }
+        } catch (error) {
+            console.warn("Error flushing decoder:", error);
+        }
+
+        // Log final streaming metrics
+        console.log('📊 Final streaming metrics:', {
+            total_chunks: metrics.chunks_received,
+            total_bytes: metrics.bytes_received,
+            avg_chunk_size: (metrics.bytes_received / metrics.chunks_received).toFixed(2),
+            min_chunk: Math.min(...metrics.chunk_sizes),
+            max_chunk: Math.max(...metrics.chunk_sizes),
+            chunks_under_10: metrics.chunk_sizes.filter(s => s < 10).length,
+            duration_ms: Date.now() - metrics.start_time,
+            content_length: currentContent.length,
+            content_vs_bytes_ratio: (currentContent.length / metrics.bytes_received * 100).toFixed(1) + '%'
+        });
+
         setIsStreaming(false);
+        return !errorOccurred && currentContent ? currentContent : '';
+    }
+}
+
+try {
+    console.log("Starting stream read...");
+    const result = await readStream();
+    // After successful streaming, update with final content
+    if (currentContent && !errorOccurred) {
+        console.log("Stream completed successfully");
+
+        // Check if the stream was aborted before adding the message
+        if (isAborted) {
+            console.log("Stream was aborted, not adding final message");
+            removeStreamingConversation(conversationId);
+            return 'Response generation stopped by user.';
+        }
+        // Check if the content is an error message using our new function
+        // Skip error checking if the content contains tool execution results
+        const containsCodeBlock = currentContent.includes('```');
+        const containsToolExecution = currentContent.includes('tool_execution') || currentContent.includes('⟩') || currentContent.includes('⟨');
+        const errorResponse = (containsCodeBlock || containsDiff || containsToolExecution) ? null : extractErrorFromSSE(currentContent);
+
+        if (errorResponse) {
+            // Handle recoverable errors after substantial content
+            const hasSubstantialContent = currentContent.length > 1000;
+            const isRecoverableError = (
+                errorResponse.error === 'timeout' ||
+                errorResponse.detail?.includes('timeout') ||
+                errorResponse.detail?.includes('ReadTimeoutError') ||
+                errorResponse.detail?.includes('Read timeout')
+            );
+
+            if (hasSubstantialContent && isRecoverableError) {
+                console.log('Final content check - recoverable error after substantial content, preserving');
+                // Don't treat this as an error, just complete normally
+                // The content will be added to conversation below
+            } else {
+                console.log("Error detected in final content:", errorResponse);
+
+                const isPartialResponse = currentContent.length > 0;
+
+                // Dispatch preserved content event before showing error and removing stream
+                if (isPartialResponse) {
+                    document.dispatchEvent(new CustomEvent('preservedContent', {
+                        detail: {
+                            existing_streamed_content: currentContent,
+                            error_detail: errorResponse.detail || 'An error occurred during processing'
+                        }
+                    }));
+                }
+
+                const errorMessage = isPartialResponse
+                    ? `${errorResponse.detail} (Partial response preserved - ${currentContent.length} characters)`
+                    : errorResponse.detail || 'An error occurred';
+                showError(errorMessage, conversationId, addMessageToConversation, isPartialResponse ? 'warning' : 'error');
+                errorOccurred = true;
+                removeStreamingConversation(conversationId);
+
+                // Still return the partial content so it can be used
+                return currentContent || '';
+            }
+        }
+
+        // Even if we detect an error in the final content, save what we have
+        if (errorOccurred && currentContent && currentContent.trim()) {
+            const partialMessage: Message = {
+                role: 'assistant',
+                content: currentContent,
+                _timestamp: Date.now()
+            };
+
+            const isNonCurrentConversation = !isStreamingToCurrentConversation;
+            addMessageToConversation(partialMessage, conversationId, isNonCurrentConversation);
+            removeStreamingConversation(conversationId);
+            console.log('Saved partial content on error:', currentContent.length, 'characters');
+            return currentContent;
+        }
+
+        // Add message to conversation history for context, but keep displaying via StreamedContent
+        const aiMessage: Message = {
+            role: 'assistant',
+            content: currentContent,
+            _timestamp: Date.now()
+        };
+
+        // Add to conversation history and remove from streaming
+        const isNonCurrentConversation = !isStreamingToCurrentConversation;
+        addMessageToConversation(aiMessage, conversationId, isNonCurrentConversation);
         removeStreamingConversation(conversationId);
 
-        // Only disconnect WebSocket if we're truly done and not just switching conversations
-        // The WebSocket should persist across multiple requests in the same conversation
     }
+    return result;
 
-    return !errorOccurred && currentContent ? currentContent : '';
+} catch (error) {
+    // Type guard for DOMException
+    if (error instanceof DOMException && error.name === 'AbortError') {
+        console.log('Request was aborted');
+        return 'Response generation stopped by user.';
+    }
+    if (error instanceof DOMException && error.name === 'AbortError') return '';
+
+    console.error('Stream processing error in readStream catch block:', { error });
+    removeStreamingConversation(conversationId);
+    setIsStreaming(false);
+    throw error;
+} finally {
+    setIsStreaming(false);
+}
+    } catch (error) {
+    console.error('Error in sendPayload:', error);
+    // Check for abort error
+    if (error instanceof DOMException && error.name === 'AbortError') {
+        return 'Response generation stopped by user.';
+    }
+    // Type guard for Error objects
+    if (error instanceof Error) {
+        console.error('Error details:', {
+            name: error.name,
+            message: error.message,
+            stack: error.stack
+        });
+        message.error(`Error: ${error.message}`);
+    }
+    if (eventSource && typeof eventSource.close === 'function') eventSource.close();
+    // Clear streaming state
+    setIsStreaming(false);
+    removeStreamingConversation(conversationId);
+    throw error;
+} finally {
+    if (eventSource && typeof eventSource.close === 'function') eventSource.close();
+    document.removeEventListener('abortStream', abortListener as EventListener);
+    setIsStreaming(false);
+    removeStreamingConversation(conversationId);
+
+    // Only disconnect WebSocket if we're truly done and not just switching conversations
+    // The WebSocket should persist across multiple requests in the same conversation
+}
+
+return !errorOccurred && currentContent ? currentContent : '';
 };
 
 /* Unused helper functions - kept for future use
