@@ -533,7 +533,8 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     # Warn users if this looks like it will be slow
     detect_large_directory_and_warn(directory)
 
-    import tiktoken
+    # Use compatibility layer for tiktoken with automatic fallbacks
+    from app.utils.tiktoken_compat import tiktoken
     should_ignore_fn = parse_gitignore_patterns(ignored_patterns)
     
     # Ensure max_depth is at least 15 if not specified
@@ -993,10 +994,11 @@ def start_background_token_calculation(directory: str, ignored_patterns: List[Tu
             logger.debug("🔍 PERF: Background token calculation temporarily disabled")
             return
             
-            # The rest of the function remains the same but won't execute due to return above
-            # Remove the return statement above when you want to re-enable background calculation
+            # Use compatibility layer for tiktoken with automatic fallbacks
+            from app.utils.tiktoken_compat import tiktoken
             
-            import tiktoken
+            if tiktoken is None:
+                return result
             encoding = tiktoken.get_encoding("cl100k_base")
             should_ignore_fn = parse_gitignore_patterns(ignored_patterns)
             
@@ -1084,7 +1086,8 @@ def get_accurate_token_count(file_path: str) -> int:
     Get accurate token count for a specific file using tiktoken.
     This is the slow but precise method - use sparingly.
     """
-    import tiktoken
+    # Use compatibility layer for tiktoken with automatic fallbacks
+    from app.utils.tiktoken_compat import tiktoken
     
     try:
         # Tool-backed files should return special marker
