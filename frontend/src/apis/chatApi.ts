@@ -1340,31 +1340,33 @@ export const sendPayload = async (
 
                         // Handle new Bedrock format with content= wrapper
                         if (typeof newContent === 'string' && newContent.includes('content=')) {
-                            // More robust extraction for various formats:
-                            // content='text' additional_kwargs={} response_metadata={}
-                            // content="text" additional_kwargs={} response_metadata={}
-
                             let extractedContent = '';
 
-                            // Try single quotes first
-                            let match = newContent.match(/content='([^']*(?:\\.[^']*)*)'(?:\s+additional_kwargs=.*)?$/);
-                            if (match) {
-                                extractedContent = match[1];
-                            } else {
-                                // Try double quotes
-                                match = newContent.match(/content="([^"]*(?:\\.[^"]*)*)"(?:\s+additional_kwargs=.*)?$/);
-                                if (match) {
-                                    extractedContent = match[1];
+                            // Find where content= starts and determine quote type
+                            const contentMatch = newContent.match(/content=(['"])/);
+                            if (contentMatch) {
+                                const quoteChar = contentMatch[1];
+                                const startPos = newContent.indexOf('content=') + 8 + 1; // +8 for 'content=', +1 for opening quote
+                                const restOfString = newContent.substring(startPos);
+                                
+                                // Find the closing quote by looking for: quote + whitespace + (additional_kwargs | response_metadata | end)
+                                // Use a more careful approach that handles nested quotes
+                                const escapedQuote = quoteChar === '"' ? '\\"' : "\\'";
+                                const endPattern = new RegExp(`${quoteChar}\\s*(?:additional_kwargs=|response_metadata=|$)`);
+                                const endMatch = restOfString.search(endPattern);
+                                
+                                if (endMatch !== -1) {
+                                    extractedContent = restOfString.substring(0, endMatch);
                                 } else {
-                                    // Fallback: extract anything between quotes after content=
-                                    match = newContent.match(/content=['"]([^'"]*)['"]/);
-                                    if (match) {
-                                        extractedContent = match[1];
-                                    } else {
-                                        // Last resort: use original content
-                                        extractedContent = newContent;
-                                    }
+                                    // Fallback: find last occurrence of quote char
+                                    const lastQuotePos = restOfString.lastIndexOf(quoteChar);
+                                    extractedContent = lastQuotePos > 0 
+                                        ? restOfString.substring(0, lastQuotePos)
+                                        : restOfString;
                                 }
+                            } else {
+                                // No content= wrapper found, use as-is
+                                extractedContent = newContent;
                             }
 
                             // Unescape common escape sequences

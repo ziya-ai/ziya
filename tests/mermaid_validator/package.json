@@ -8,5 +8,8 @@
     "jsdom": "^22.1.0",
     "mermaid": "^11.12.1",
     "puppeteer": "^24.19.0"
+  },
+  "overrides": {
+    "js-yaml": ">=4.1.0"
   }
 }

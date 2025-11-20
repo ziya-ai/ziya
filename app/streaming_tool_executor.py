@@ -615,12 +615,28 @@ class StreamingToolExecutor:
                                             result = await self._execute_fake_tool('mcp_run_shell_command', command, assistant_text, tool_results, mcp_manager)
                                             if result:
                                                 yield result
-                                
                                 for pattern in patterns:
                                     if re.search(pattern, text):
                                         logger.warning(f"🚫 Intercepted fake tool call: {pattern}")
-                            if 'tool:' in text:
-                                # Skip fake tool patterns
+                                        # FLUSH optimizer before skipping fake tool patterns
+                                        if hasattr(self, '_content_optimizer'):
+                                            remaining = self._content_optimizer.flush_remaining()
+                                            if remaining:
+                                                yield track_yield({
+                                                    'type': 'text',
+                                                    'content': remaining,
+                                                    'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                                                })
+                            if '```tool:' in text or '`tool:' in text:
+                                # FLUSH optimizer before skipping fake tool patterns
+                                if hasattr(self, '_content_optimizer'):
+                                    remaining = self._content_optimizer.flush_remaining()
+                                    if remaining:
+                                        yield track_yield({
+                                            'type': 'text',
+                                            'content': remaining,
+                                            'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                                        })
                                 continue
                             
                             # Initialize content optimizer if not exists
@@ -628,8 +644,16 @@ class StreamingToolExecutor:
                                 from app.utils.streaming_optimizer import StreamingContentOptimizer
                                 self._content_optimizer = StreamingContentOptimizer()
                             
-                            # Skip fake tool patterns
-                            if 'tool:' in text:
+                            
+                            if '```tool:' in text or '`tool:' in text:
+                                if hasattr(self, '_content_optimizer'):
+                                    remaining = self._content_optimizer.flush_remaining()
+                                    if remaining:
+                                        yield track_yield({
+                                            'type': 'text',
+                                            'content': remaining,
+                                            'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                                        })
                                 continue
                             
                             # Check for visualization block boundaries - ensure proper markdown format
@@ -650,6 +674,15 @@ class StreamingToolExecutor:
                                     viz_buffer = text
                                     in_viz_block = True
                                 elif not in_viz_block:
+                                    # FLUSH optimizer before starting viz block
+                                    if hasattr(self, '_content_optimizer'):
+                                        remaining = self._content_optimizer.flush_remaining()
+                                        if remaining:
+                                            yield track_yield({
+                                                'type': 'text',
+                                                'content': remaining,
+                                                'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                                            })
                                     in_viz_block = True
                                     viz_buffer = text
                                 else:

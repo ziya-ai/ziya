@@ -117,17 +117,10 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
                 streamingConversations.has(currentConversationId)
             );
 
-            // Get the final streamed content
-            const finalContent = result;
-
-            if (finalContent) {
-                const newAIMessage: Message = {
-                    content: finalContent,
-                    role: 'assistant'
-                };
-                addMessageToConversation(newAIMessage, currentConversationId);
-
-                // Clear the edit in progress flag after successfully adding the response
+            // sendPayload already adds the message to conversation, so we just need to clear the flag
+            if (result) {
+                // Clear the edit in progress flag after the response is complete
+                // Note: The message is already added by sendPayload, so we don't add it again
                 setConversations(prev => prev.map(conv =>
                     conv.id === currentConversationId
                         ? { ...conv, _editInProgress: false }
