@@ -4,7 +4,7 @@ import { ConversationHealthDebugModal } from './ConversationHealthDebug';
 import ExportConversationModal from './ExportConversationModal';
 import { useChatContext } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
-import { Conversation, ConversationFolder } from '../utils/types';
+import { Conversation, ConversationFolder, SearchResult } from '../utils/types';
 import { db } from '../utils/db';
 import { v4 as uuidv4 } from 'uuid';
 // MUI imports
@@ -36,6 +36,8 @@ import UploadIcon from '@mui/icons-material/Upload';
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import ArrowRightIcon from '@mui/icons-material/ArrowRight';
 import SyncIcon from '@mui/icons-material/Sync';
+import SearchIcon from '@mui/icons-material/Search';
+import CloseIcon from '@mui/icons-material/Close';
 
 // Ant Design Icons for the menu items
 import {
@@ -542,6 +544,7 @@ const MUIChatHistory = () => {
     loadConversation,
     folders,
     setFolders,
+    loadConversationAndScrollToMessage,
     currentFolderId,
     setCurrentFolderId,
     createFolder,
@@ -571,6 +574,11 @@ const MUIChatHistory = () => {
   const [exportConversationId, setExportConversationId] = useState<string | null>(null);
   const [showHealthDebug, setShowHealthDebug] = useState(false);
 
+  // Search state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+
   // Custom drag state to replace HTML5 drag and drop
   const [customDragState, setCustomDragState] = useState<{
     isDragging: boolean;
@@ -585,6 +593,48 @@ const MUIChatHistory = () => {
     ghostElement: null,
     draggedText: ''
   });
+
+  // Debounced search function
+  const searchTimeoutRef = useRef<NodeJS.Timeout>();
+  const performSearch = useCallback(async (query: string) => {
+    if (!query || query.trim().length === 0) {
+      setSearchResults([]);
+      setIsSearching(false);
+      return;
+    }
+
+    setIsSearching(true);
+
+    try {
+      const results = await db.searchConversations(query, {
+        caseSensitive: false,
+        maxSnippetLength: 150
+      });
+      setSearchResults(results);
+      console.log(`🔍 Search for "${query}" found ${results.length} conversations`);
+    } catch (error) {
+      console.error('Search error:', error);
+      message.error('Search failed');
+      setSearchResults([]);
+    } finally {
+      setIsSearching(false);
+    }
+  }, []);
+
+  // Handle search input with debouncing
+  const handleSearchChange = useCallback((value: string) => {
+    setSearchQuery(value);
+
+    // Clear previous timeout
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+
+    // Debounce search by 300ms
+    searchTimeoutRef.current = setTimeout(() => {
+      performSearch(value);
+    }, 300);
+  }, [performSearch]);
 
   // Load pinned folders from localStorage on mount
   useEffect(() => {
@@ -2194,6 +2244,122 @@ const MUIChatHistory = () => {
     <>
       <Box ref={chatHistoryRef} sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
         {/* Tree View with integrated action buttons */}
+        
+        {/* Search Input */}
+        <Box sx={{ p: 2, borderBottom: isDarkMode ? '1px solid #303030' : '1px solid #e8e8e8' }}>
+          <TextField
+            fullWidth
+            size="small"
+            placeholder="Search conversations..."
+            value={searchQuery}
+            onChange={(e) => handleSearchChange(e.target.value)}
+            InputProps={{
+              startAdornment: (
+                <SearchIcon sx={{ mr: 1, color: isDarkMode ? '#888' : '#999' }} />
+              ),
+              endAdornment: searchQuery && (
+                <IconButton
+                  size="small"
+                  onClick={() => {
+                    setSearchQuery('');
+                    setSearchResults([]);
+                  }}
+                >
+                  <CloseIcon fontSize="small" />
+                </IconButton>
+              )
+            }}
+          />
+        </Box>
+
+        {/* Search Results or Tree View */}
+        {searchQuery && searchResults.length > 0 ? (
+          <Box sx={{ flexGrow: 1, overflow: 'auto', pt: 1 }}>
+            <Box sx={{ p: 2, borderBottom: isDarkMode ? '1px solid #303030' : '1px solid #e8e8e8' }}>
+              <Typography variant="caption" sx={{ color: isDarkMode ? '#888' : '#666' }}>
+                Found {searchResults.reduce((acc, r) => acc + r.totalMatches, 0)} matches in {searchResults.length} conversations
+              </Typography>
+            </Box>
+            {searchResults.map((result) => (
+              <Box
+                key={result.conversationId}
+                sx={{
+                  p: 2,
+                  borderBottom: isDarkMode ? '1px solid #303030' : '1px solid #e8e8e8',
+                  cursor: 'pointer',
+                  '&:hover': {
+                    backgroundColor: isDarkMode ? 'rgba(255, 255, 255, 0.04)' : 'rgba(0, 0, 0, 0.04)'
+                  }
+                }}
+              >
+                <Typography
+                  variant="body2"
+                  sx={{ fontWeight: 'bold', mb: 1, display: 'flex', alignItems: 'center', gap: 1 }}
+                >
+                  <ChatIcon fontSize="small" />
+                  {result.conversationTitle}
+                  <Typography variant="caption" sx={{ color: isDarkMode ? '#888' : '#666', ml: 'auto' }}>
+                    ({result.totalMatches} match{result.totalMatches > 1 ? 'es' : ''})
+                  </Typography>
+                </Typography>
+                {result.matches.slice(0, 3).map((match, idx) => (
+                  <Box
+                    key={idx}
+                    sx={{
+                      pl: 2,
+                      py: 0.5,
+                      cursor: 'pointer',
+                      '&:hover': {
+                        backgroundColor: isDarkMode ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.08)'
+                      }
+                    }}
+                    onClick={async () => {
+                      try {
+                        await loadConversationAndScrollToMessage(result.conversationId, match.messageIndex);
+                        setSearchQuery('');
+                        setSearchResults([]);
+                      } catch (error) {
+                        console.error('Error navigating to message:', error);
+                        message.error('Failed to navigate to message');
+                      }
+                    }}
+                  >
+                    <Typography variant="caption" sx={{ color: isDarkMode ? '#1890ff' : '#1890ff', display: 'block', mb: 0.5 }}>
+                      {match.messageRole === 'human' ? '👤 You' : '🤖 AI'} · {new Date(match.timestamp).toLocaleDateString()}
+                    </Typography>
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        color: isDarkMode ? '#ccc' : '#555',
+                        display: 'block',
+                        fontStyle: 'italic',
+                        whiteSpace: 'pre-wrap'
+                      }}
+                    >
+                      {match.snippet}
+                    </Typography>
+                  </Box>
+                ))}
+                {result.matches.length > 3 && (
+                  <Typography variant="caption" sx={{ pl: 2, color: isDarkMode ? '#888' : '#666', display: 'block', mt: 0.5 }}>
+                    +{result.matches.length - 3} more match{result.matches.length - 3 > 1 ? 'es' : ''}...
+                  </Typography>
+                )}
+              </Box>
+            ))}
+          </Box>
+        ) : searchQuery && !isSearching ? (
+          <Box sx={{ p: 4, textAlign: 'center', color: isDarkMode ? '#888' : '#666' }}>
+            <Typography variant="body2">No results found for "{searchQuery}"</Typography>
+          </Box>
+        ) : searchQuery && isSearching ? (
+          <Box sx={{ p: 4, textAlign: 'center' }}>
+            <Spin size="small" />
+            <Typography variant="caption" sx={{ display: 'block', mt: 1, color: isDarkMode ? '#888' : '#666' }}>
+              Searching...
+            </Typography>
+          </Box>
+        ) : (
         <Box sx={{ flexGrow: 1, overflow: 'auto', pt: 1 }}>
           {(() => {
             const treeViewStyles = {
@@ -2234,6 +2400,7 @@ const MUIChatHistory = () => {
             );
           })()}
         </Box>
+        )}
 
         {/* Export/Import buttons */}
         <Box sx={{

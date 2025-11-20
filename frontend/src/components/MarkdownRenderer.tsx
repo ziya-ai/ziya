@@ -38,7 +38,7 @@ const makeShellConfigLinkClickable = (message: string | React.ReactNode, onOpenS
     }
 
     const parts = message.split('Shell Configuration settings');
-    
+
     return (
         <>
             {parts[0]}
@@ -4043,8 +4043,6 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     if (fenceMatch) {
                         toolContent = fenceMatch[1];
                     }
-
-                    console.log('🔧 Rendering ToolBlock:', { toolName: tokenWithText.toolName, contentLength: toolContent.length, contentPreview: toolContent.substring(0, 100) });
 
                     // Check for security errors in tool output and render them prominently
                     const isSecurityError = toolContent && (

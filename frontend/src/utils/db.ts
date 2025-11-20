@@ -1,4 +1,4 @@
-import { Conversation, ConversationFolder } from './types';
+import { Conversation, ConversationFolder, SearchResult, MessageMatch, SearchOptions } from './types';
 import { message } from 'antd';
 import { performEmergencyRecovery } from './emergencyRecovery';
 
@@ -44,6 +44,7 @@ interface DB {
     repairDatabase(): Promise<void>;
     forceReset(): Promise<void>;
     checkDatabaseHealth(): Promise<DatabaseHealth>;
+    searchConversations(query: string, options?: SearchOptions): Promise<SearchResult[]>;
 }
 
 class ConversationDB implements DB {
@@ -1087,6 +1088,111 @@ class ConversationDB implements DB {
         } catch (error) {
             health.errors.push(`Unexpected error: ${error instanceof Error ? error.message : 'Unknown error'}`);
             return health;
+        }
+    }
+
+    async searchConversations(query: string, options: SearchOptions = {}): Promise<SearchResult[]> {
+        if (!query || query.trim().length === 0) {
+            return [];
+        }
+
+        const { caseSensitive = false, maxSnippetLength = 150 } = options;
+        const searchTerm = caseSensitive ? query : query.toLowerCase();
+
+        try {
+            // Get all active conversations
+            const conversations = await this.getConversations();
+            const activeConversations = conversations.filter(conv => conv.isActive !== false);
+
+            const results: SearchResult[] = [];
+
+            for (const conv of activeConversations) {
+                const matches: MessageMatch[] = [];
+
+                // Search through conversation title
+                const titleToSearch = caseSensitive ? conv.title : conv.title.toLowerCase();
+                const titleMatches = titleToSearch.includes(searchTerm);
+
+                // Search through messages
+                conv.messages.forEach((msg, index) => {
+                    const contentToSearch = caseSensitive ? msg.content : msg.content.toLowerCase();
+                    
+                    if (contentToSearch.includes(searchTerm)) {
+                        // Find all occurrences in this message
+                        const occurrences: Array<{ start: number; length: number }> = [];
+                        let pos = 0;
+                        
+                        while (pos < contentToSearch.length) {
+                            const foundPos = contentToSearch.indexOf(searchTerm, pos);
+                            if (foundPos === -1) break;
+                            
+                            occurrences.push({
+                                start: foundPos,
+                                length: searchTerm.length
+                            });
+                            pos = foundPos + searchTerm.length;
+                        }
+
+                        if (occurrences.length > 0) {
+                            // Create snippet around first occurrence
+                            const firstOccurrence = occurrences[0];
+                            const snippetStart = Math.max(0, firstOccurrence.start - 50);
+                            const snippetEnd = Math.min(
+                                msg.content.length,
+                                firstOccurrence.start + searchTerm.length + 100
+                            );
+                            
+                            let snippet = msg.content.substring(snippetStart, snippetEnd);
+                            
+                            // Add ellipsis if truncated
+                            if (snippetStart > 0) snippet = '...' + snippet;
+                            if (snippetEnd < msg.content.length) snippet = snippet + '...';
+                            
+                            // Limit snippet length
+                            if (snippet.length > maxSnippetLength) {
+                                snippet = snippet.substring(0, maxSnippetLength) + '...';
+                            }
+
+                            matches.push({
+                                messageIndex: index,
+                                messageRole: msg.role,
+                                snippet,
+                                fullContent: msg.content,
+                                timestamp: msg._timestamp || conv.lastAccessedAt || Date.now(),
+                                highlightPositions: occurrences
+                            });
+                        }
+                    }
+                });
+
+                // Add to results if there are matches in messages or title
+                if (matches.length > 0 || titleMatches) {
+                    results.push({
+                        conversationId: conv.id,
+                        conversationTitle: conv.title,
+                        folderId: conv.folderId,
+                        matches,
+                        totalMatches: matches.length + (titleMatches ? 1 : 0),
+                        lastAccessedAt: conv.lastAccessedAt || 0
+                    });
+                }
+            }
+
+            // Sort results by relevance (more matches first) and then by recency
+            results.sort((a, b) => {
+                // First by number of matches
+                if (b.totalMatches !== a.totalMatches) {
+                    return b.totalMatches - a.totalMatches;
+                }
+                // Then by recency
+                return b.lastAccessedAt - a.lastAccessedAt;
+            });
+
+            console.log(`🔍 Search completed: found ${results.length} conversations with matches`);
+            return results;
+        } catch (error) {
+            console.error('Error searching conversations:', error);
+            return [];
         }
     }
 }

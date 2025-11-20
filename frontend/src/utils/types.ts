@@ -86,6 +86,30 @@ export const convertKeysToStrings = (keys: Key[]): string[] => {
     return keys.map(key => String(key));
 }
 
+// Search Types
+export interface MessageMatch {
+    messageIndex: number;
+    messageRole: MessageRole;
+    snippet: string; // Context around match with search term
+    fullContent: string;
+    timestamp: number;
+    highlightPositions: Array<{ start: number; length: number }>; // For highlighting
+}
+
+export interface SearchResult {
+    conversationId: string;
+    conversationTitle: string;
+    folderId?: string | null;
+    matches: MessageMatch[];
+    totalMatches: number;
+    lastAccessedAt: number;
+}
+
+export interface SearchOptions {
+    caseSensitive?: boolean;
+    maxSnippetLength?: number;
+}
+
 // D3 Visualization Types
 interface BaseChartOptions {
     width?: number;
