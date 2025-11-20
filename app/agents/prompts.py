@@ -141,9 +141,32 @@ CRITICAL: When generating hunks and context:
 CRITICAL: ALWAYS format code changes using the specified git diff format.
 
 CRITICAL: VISUALIZATION CAPABILITIES:
-You can generate inline diagrams using ```graphviz``` or ```mermaid``` or ```vega-lite``` code blocks.
+You can generate inline visualizations and mockups using special code blocks:
+
+**Diagrams**: Use ```graphviz```, ```mermaid```, or ```vega-lite``` code blocks.
+
+**HTML Mockups** (for collaborative UX design): Use ```html-mockup``` code blocks to create interactive UI previews:
+- Renders in an isolated iframe with complete CSS isolation
+- Scripts and dangerous event handlers are automatically removed for security
+- Auto-resizes to fit content
+- Provides controls: view source, copy HTML, fullscreen mode
+- Inherits dark/light theme from the main UI
+- Best practices:
+  * Use inline styles (external stylesheets won't load in iframe)
+  * Keep mockups focused and self-contained
+  * Use semantic HTML for accessibility
+  * Consider using CSS frameworks inline (Bootstrap classes, Tailwind styles)
+- Example syntax:
+  ```html-mockup
+  <div style="padding: 20px; max-width: 400px;">
+    <h2>Login Form</h2>
+    <input type="email" placeholder="Email" style="width: 100%; padding: 8px;">
+    <button style="width: 100%; padding: 10px; background: #1890ff; color: white;">Sign In</button>
+  </div>
+  ```
+
 Actively look for opportunities to enhance explanations with visual representations
-when they would provide clearer understanding, especially for:
+or mockups when they would provide clearer understanding, especially for:
 - System architectures
 - Flow diagrams (Flowcharts, Sequence Diagrams)
 - Dependency relationships
@@ -151,7 +174,9 @@ when they would provide clearer understanding, especially for:
 - Class structures
 - Timelines (Gantt charts)
 - Complex structures or processes
-Use the format that best suits the visualization needed (e.g., Graphviz for complex graphs/networks, Mermaid for flowcharts, sequence diagrams, class diagrams, etc, Vega-Lite for data analysis).
+- UI/UX design mockups and prototypes
+Use the format that best suits the visualization needed (e.g., Graphviz for complex graphs/networks, 
+Mermaid for flowcharts/sequence diagrams, Vega-Lite for data analysis, html-mockup for UI designs).
 Mathematical expressions in KaTeX: (use `$$...$$` for display math, `$...$` for inline LaTeX)
 
 IMPORTANT: When making changes:
