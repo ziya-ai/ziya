@@ -6,6 +6,7 @@ import argparse
 import os
 import os.path
 import sys
+import subprocess
 import warnings
 from typing import Optional
 
@@ -393,7 +394,8 @@ def print_info(args):
             result = subprocess.run(['which', 'toolbox'], capture_output=True, text=True)
             toolbox_installed = result.returncode == 0
             print(f"  Toolbox: {'Installed' if toolbox_installed else 'Not found'}")
-        except:
+        except Exception as e:
+            logger.debug(f"Error checking for toolbox: {e}")
             print(f"  Toolbox: Not found")
         
         # Check for mcp-registry
@@ -401,7 +403,8 @@ def print_info(args):
             result = subprocess.run(['which', 'mcp-registry'], capture_output=True, text=True)
             mcp_registry_installed = result.returncode == 0
             print(f"  MCP Registry: {'Installed' if mcp_registry_installed else 'Not found'}")
-        except:
+        except Exception as e:
+            logger.debug(f"Error checking for mcp-registry: {e}")
             print(f"  MCP Registry: Not found")
         
         # Check Amazon MCP Registry API access
