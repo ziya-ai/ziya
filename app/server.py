@@ -2318,15 +2318,8 @@ async def stream_chunks(body):
                 # If tools were executed, we need iteration 2 for the response
                 if iteration == 1 and tool_executed:
                     logger.debug("🔍 AGENT: Tools executed, continuing to iteration 2 for response")
-                    # Mark rewind boundary before continuing to next iteration
-                    if current_response:
-                        lines = current_response.split('\n')
-                        rewind_marker = f"<!-- REWIND_MARKER: {len(lines)} -->"
-                        rewind_content = f"\n\n{rewind_marker}\n**🔄 Response continues...**\n"
-                        # Send as atomic unit with continuation flag
-                        yield f"data: {json.dumps({'content': rewind_content, 'continuation_boundary': True})}\n\n"
-                        logger.info(f"🔄 ITERATION_REWIND: Marked boundary at line {len(lines)} before iteration continue")
-                    
+                    # Continue to next iteration without rewind marker
+                    # Rewind markers should only be used for context overflow, not tool execution
                     continue
                 
                 # After iteration 2, we're done
