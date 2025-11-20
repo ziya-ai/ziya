@@ -37,6 +37,8 @@ python tests/run_diff_tests.pl --multi
 ```bash
 # Clean everything
 rm -rf .venv dist/ build/ *.egg-info poetry.lock
+# Remove all __pycache__ directories
+find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null
 # Optional - clear and reinstall poetry cache
 poetry cache clear pypi --all
 poetry install
