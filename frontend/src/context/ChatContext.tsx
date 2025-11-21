@@ -900,14 +900,51 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 const percentDifference = ((memoryActive - dbActive) / dbActive) * 100;
                 
                 if (percentDifference > 50 && dbActive > 0) {
-                    console.warn(`🚨 RECOVERY: Memory has ${percentDifference.toFixed(0)}% more conversations than DB - likely phantom data`);
+                    console.warn(`⚠️ RECOVERY: Memory has ${percentDifference.toFixed(0)}% more conversations than DB`);
+                    
+                    // CRITICAL FIX: Check if current conversation is in DB before nuking memory
+                    const currentConvInDB = dbConversations.find(c => c.id === currentConversationId);
+                    const currentConvInMemory = memoryConversations.find(c => c.id === currentConversationId);
+                    
+                    if (!currentConvInDB && currentConvInMemory && currentConvInMemory.messages.length > 0) {
+                        console.error(`🚨 RECOVERY BLOCKED: Current conversation ${currentConversationId.substring(0, 8)} not in DB but has ${currentConvInMemory.messages.length} messages!`);
+                        console.log('🔄 RECOVERY: Saving current conversation to DB instead of deleting it');
+                        
+                        // Save the current conversation to DB instead of deleting it
+                        await db.saveConversations([...dbConversations, currentConvInMemory]);
+                        console.log('✅ RECOVERY: Protected current conversation from deletion');
+                        return;
+                    }
+                    
+                    // CRITICAL FIX: Check backup before deleting it
+                    const backup = localStorage.getItem('ZIYA_CONVERSATION_BACKUP');
+                    if (backup) {
+                        const backupConversations = JSON.parse(backup);
+                        const backupIds = new Set(backupConversations.map(c => c.id));
+                        
+                        // Find conversations in backup that aren't in DB
+                        const missingFromDB = backupConversations.filter(bc => 
+                            !dbConversations.find(dc => dc.id === bc.id) &&
+                            bc.isActive !== false &&
+                            bc.messages.length > 0
+                        );
+                        
+                        if (missingFromDB.length > 0) {
+                            console.warn(`🚨 RECOVERY: Backup has ${missingFromDB.length} conversations not in DB!`);
+                            console.log('🔄 RECOVERY: Merging backup conversations into DB');
+                            await db.saveConversations([...dbConversations, ...missingFromDB]);
+                            console.log('✅ RECOVERY: Restored conversations from backup');
+                            return;
+                        }
+                    }
+                    
                     console.log(`🔄 RECOVERY: Trusting database (${dbActive}) over memory (${memoryActive})`);
                     
                     // Reload memory from database
                     setConversations(dbConversations);
                     
-                    // Clear stale backups
-                    localStorage.removeItem('ZIYA_CONVERSATION_BACKUP');
+                    // CRITICAL FIX: Never delete backups - they're the last line of defense!
+                    // The backup will be naturally refreshed on next save cycle
                     
                     console.log('✅ RECOVERY: Memory synced from database');
                 } else {
@@ -1249,25 +1286,68 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     const currentConversations = await db.getConversations();
                     const currentIds = new Set(currentConversations.map(c => c.id));
                     
-                    let recoveredConversations: Conversation[] = [];
+                    let recoveryData: any = null;
                     
                     if (enhancedBackup) {
-                        recoveredConversations = JSON.parse(enhancedBackup) as Conversation[];
+                        recoveryData = JSON.parse(enhancedBackup);
+                        // Handle both old format (array) and new format (object)
+                        let recoveredConversations = Array.isArray(recoveryData) 
+                            ? recoveryData 
+                            : recoveryData.conversations || [];
                     } else if (emergencyRecovery) {
-                        recoveredConversations = [JSON.parse(emergencyRecovery) as Conversation];
-                    }
-                    
-                    // Only add conversations that don't already exist
-                    const newConversations = recoveredConversations.filter((c: Conversation) => !currentIds.has(c.id));
-                    
-                    if (newConversations.length > 0) {
-                        const mergedConversations = [...currentConversations, ...newConversations];
-                        await db.saveConversations(mergedConversations);
-                        console.log(`✅ RECOVERY: Restored ${newConversations.length} missing conversations`);
+                        recoveryData = JSON.parse(emergencyRecovery);
+                        let recoveredConversations = recoveryData.conversations || [];
                         
-                        // Clean up recovery data after successful save
-                        localStorage.removeItem('ZIYA_EMERGENCY_CONVERSATION_RECOVERY');
-                        localStorage.removeItem('ZIYA_CONVERSATION_BACKUP_WITH_RECOVERY');
+                        // CRITICAL: Restore streaming content that was in progress
+                        if (recoveryData.wasStreaming && recoveryData.streamingContent) {
+                            console.log('📡 RECOVERY: Found streaming content in backup');
+                            
+                            // Merge streaming content into messages
+                            Object.entries(recoveryData.streamingContent).forEach(([convId, content]) => {
+                                if (!content || (content as string).trim().length === 0) return;
+                                
+                                const conv = recoveredConversations.find(c => c.id === convId);
+                                if (conv) {
+                                    // Check if last message is already this content
+                                    const lastMsg = conv.messages[conv.messages.length - 1];
+                                    if (lastMsg?.content !== content) {
+                                        conv.messages.push({
+                                            id: uuidv4(),
+                                            role: 'assistant',
+                                            content: content as string,
+                                            _timestamp: Date.now(),
+                                            _recovered: true
+                                        });
+                                        console.log(`✅ RECOVERY: Restored streaming content for ${convId.substring(0, 8)}`);
+                                    }
+                                }
+                            });
+                        }
+                        
+                        // Restore current conversation context
+                        if (recoveryData.currentConversationId && recoveryData.currentMessages) {
+                            setTimeout(() => {
+                                setCurrentConversationId(recoveryData.currentConversationId);
+                                setCurrentMessages(recoveryData.currentMessages);
+                            }, 100);
+                        }
+                        
+                        // Only add conversations that don't already exist
+                        const newConversations = recoveredConversations.filter((c: Conversation) => 
+                            !currentIds.has(c.id) ||
+                            // Update if recovered version has more messages
+                            (c.messages.length > (currentConversations.find(cc => cc.id === c.id)?.messages.length || 0))
+                        );
+                        
+                        if (newConversations.length > 0) {
+                            const mergedConversations = [...currentConversations, ...newConversations];
+                            await db.saveConversations(mergedConversations);
+                            console.log(`✅ RECOVERY: Restored ${newConversations.length} missing conversations`);
+                            
+                            // Clean up recovery data after successful save
+                            localStorage.removeItem('ZIYA_EMERGENCY_CONVERSATION_RECOVERY');
+                            localStorage.removeItem('ZIYA_CONVERSATION_BACKUP_WITH_RECOVERY');
+                        }
                     }
                 }
             } catch (error) {
@@ -1393,6 +1473,110 @@ export function ChatProvider({ children }: ChatProviderProps) {
     }, [createBackup, currentConversationId]);
 
 
+
+    useEffect(() => {
+        // ============================================================================
+        // CRITICAL FIX: Emergency backup system to prevent conversation loss
+        // ============================================================================
+        // This fixes the bug where conversations vanish when navigating away during
+        // active streaming or before IndexedDB saves complete.
+        
+        const createEmergencyBackup = () => {
+            try {
+                // Include ALL current state, not just what's persisted
+                const emergencyData = {
+                    conversations: conversations.filter(c => c.isActive !== false),
+                    currentConversationId,
+                    currentMessages,
+                    currentFolderId,
+                    timestamp: Date.now(),
+                    // CRITICAL: Capture streaming content before it's lost
+                    streamingContent: Object.fromEntries(streamedContentMap),
+                    streamingConversations: Array.from(streamingConversations),
+                    wasStreaming: streamingConversations.size > 0,
+                    userAgent: navigator.userAgent,
+                    url: window.location.href
+                };
+
+                // Synchronous localStorage save (works during page unload)
+                localStorage.setItem('ZIYA_EMERGENCY_CONVERSATION_RECOVERY', 
+                    JSON.stringify(emergencyData));
+                
+                // Also update the regular backup with recovery flag
+                localStorage.setItem('ZIYA_CONVERSATION_BACKUP_WITH_RECOVERY',
+                    JSON.stringify(emergencyData.conversations));
+                
+                console.log('💾 EMERGENCY BACKUP:', {
+                    conversations: emergencyData.conversations.length,
+                    wasStreaming: emergencyData.wasStreaming,
+                    streamingIds: emergencyData.streamingConversations
+                });
+            } catch (error) {
+                console.error('❌ EMERGENCY BACKUP failed:', error);
+                // Try minimal backup as fallback
+                try {
+                    localStorage.setItem('ZIYA_LAST_CONVERSATION_ID', currentConversationId);
+                    localStorage.setItem('ZIYA_LAST_MESSAGES', 
+                        JSON.stringify(currentMessages));
+                } catch (fallbackError) {
+                    console.error('❌ Even minimal backup failed:', fallbackError);
+                }
+            }
+        };
+
+        // Handle page unload - create emergency backup
+        const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+            console.log('🚪 BEFOREUNLOAD: Creating emergency backup');
+            createEmergencyBackup();
+            
+            // Warn user if actively streaming
+            if (streamingConversations.size > 0) {
+                const message = 'A response is still being generated. Leaving now may lose your conversation.';
+                e.preventDefault();
+                e.returnValue = message;
+                return message;
+            }
+        };
+
+        // Handle visibility changes (catches mobile browser backgrounding)
+        const handleVisibilityChange = () => {
+            if (document.hidden) {
+                console.log('👁️ VISIBILITY: Page hidden, creating emergency backup');
+                createEmergencyBackup();
+            }
+        };
+
+        // Handle page hide (more reliable than beforeunload on some browsers)
+        const handlePageHide = () => {
+            console.log('🚫 PAGEHIDE: Creating emergency backup');
+            createEmergencyBackup();
+        };
+
+        // Periodic emergency backup during streaming (every 10 seconds)
+        let streamingBackupInterval: NodeJS.Timeout | null = null;
+        if (streamingConversations.size > 0) {
+            streamingBackupInterval = setInterval(() => {
+                console.log('🔄 STREAMING BACKUP: Auto-backup during stream');
+                createEmergencyBackup();
+            }, 10000);
+        }
+
+        // Attach all handlers
+        window.addEventListener('beforeunload', handleBeforeUnload);
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        window.addEventListener('pagehide', handlePageHide);
+
+        // Cleanup
+        return () => {
+            window.removeEventListener('beforeunload', handleBeforeUnload);
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+            window.removeEventListener('pagehide', handlePageHide);
+            if (streamingBackupInterval) {
+                clearInterval(streamingBackupInterval);
+            }
+        };
+    }, [conversations, currentConversationId, currentMessages, currentFolderId,
+        streamedContentMap, streamingConversations]);
 
     useEffect(() => {
         initializeWithRecovery();
