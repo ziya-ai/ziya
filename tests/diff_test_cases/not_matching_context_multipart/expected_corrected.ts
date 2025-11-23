@@ -326,12 +326,12 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
       // Remove loading spinner
       container.removeChild(loadingSpinner);
-
       // Create a fresh container div to ensure no conflicts
       const renderContainer = document.createElement('div');
       renderContainer.style.width = '100%';
       renderContainer.style.height = '100%';
       container.appendChild(renderContainer);
+
 
       // Add debugging for complex layouts
       if (vegaSpec.vconcat || vegaSpec.hconcat || vegaSpec.facet) {

@@ -1,0 +1,52 @@
+diff --git a/frontend/src/components/MUIChatHistory.tsx b/frontend/src/components/MUIChatHistory.tsx
+index 1234567..abcdefg 100644
+--- a/frontend/src/components/MUIChatHistory.tsx
++++ b/frontend/src/components/MUIChatHistory.tsx
+@@ -1725,18 +1725,31 @@ const MUIChatHistory = () => {
+     input.click();
+   };
+ 
+-  // Build tree data from folders and conversations
++  // Create a stable signature for data changes
++  const dataSignature = useMemo(() => {
++    return JSON.stringify({
++      convIds: conversations.map(c => c.id).sort(),
++      folderIds: folders.map(f => f.id).sort(),
++      pinned: Array.from(pinnedFolders).sort()
++    });
++  }, [conversations, folders, pinnedFolders]);
++
++  // Build tree data from folders and conversations - only rebuild when data actually changes
+   const treeData = useMemo(() => {
+-    // Add logging to see why this rebuilds so often
+-    console.log('🔄 REBUILDING TREE DATA:', {
++    // Only log at debug level to reduce noise
++    if (process.env.NODE_ENV === 'development') {
++      console.debug('🔄 REBUILDING TREE DATA:', {
++        foldersCount: folders.length,
++        conversationsCount: conversations.length,
++        pinnedFoldersCount: pinnedFolders.size,
++        timestamp: Date.now()
++      });
++    }
++
++    const folderMap = new Map();
++    folders.forEach(folder => {
+-      foldersCount: folders.length,
+-      conversationsCount: conversations.length,
+-      pinnedFoldersCount: pinnedFolders.size,
+-      timestamp: Date.now()
+-    });
+-    folders.forEach(folder => {
+       folderMap.set(folder.id, {
+         id: folder.id,
+         name: folder.name,
+@@ -1902,7 +1915,7 @@ const MUIChatHistory = () => {
+     };
+ 
+     return sortRecursive(rootItems);
+-  }, [conversations, folders, pinnedFolders]);
++  }, [dataSignature]); // Use stable primitive dependency
+ 
+   // Create a unified folder configuration dialog that works for both creation and editing
+   const showFolderConfigDialog = (folderId?: string) => {

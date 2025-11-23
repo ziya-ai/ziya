@@ -112,16 +112,9 @@ export const vegaLitePlugin: D3RenderPlugin = {
   render: async (container: HTMLElement, d3: any, spec: VegaLiteSpec, isDarkMode: boolean): Promise<void> => {
     console.log('Vega-Lite plugin render called with spec:', spec);
 
-    // Completely clear container and any Vega instances
-    container.innerHTML = '';
-    
-    // Remove any existing vega-embed instances
-    const existingEmbeds = container.querySelectorAll('.vega-embed');
-    existingEmbeds.forEach(embed => {
-      if (embed.parentNode) embed.parentNode.removeChild(embed);
-    });
-
     try {
+      // Clear container
+      container.innerHTML = '';
 
       // Show loading spinner
       const loadingSpinner = document.createElement('div');
@@ -327,12 +320,6 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // Remove loading spinner
       container.removeChild(loadingSpinner);
 
-      // Create a fresh container div to ensure no conflicts
-      const renderContainer = document.createElement('div');
-      renderContainer.style.width = '100%';
-      renderContainer.style.height = '100%';
-      container.appendChild(renderContainer);
-
       // Add debugging for complex layouts
       if (vegaSpec.vconcat || vegaSpec.hconcat || vegaSpec.facet) {
         console.log(">>> vegaLitePlugin: Rendering complex layout:", {
@@ -343,10 +330,10 @@ export const vegaLitePlugin: D3RenderPlugin = {
       }
 
       // Render the visualization
-      const result = await embed(renderContainer, vegaSpec, embedOptions);
+      const result = await embed(container, vegaSpec, embedOptions);
 
       // Store references to the vega view and container content
-      const vegaContainer = renderContainer.querySelector('.vega-embed') as HTMLElement;
+      const vegaContainer = container.querySelector('.vega-embed') as HTMLElement;
 
       // Add action buttons container
       const actionsContainer = document.createElement('div');

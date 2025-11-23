@@ -226,6 +226,11 @@ def find_best_chunk_position(
             best_ratio = ratio
             best_pos = pos
             logger.debug(f"Found better match at position {pos} with enhanced ratio {ratio:.3f}")
+            
+            # Debug: log first few lines of the match
+            if len(chunk_lines) > 0 and len(file_slice) > 0:
+                logger.debug(f"  Chunk first line: {repr(chunk_lines[0][:50])}")
+                logger.debug(f"  File first line:  {repr(file_slice[0][:50])}")
     
     # For whitespace changes or indentation-heavy content, use a more lenient threshold
     effective_threshold = confidence_threshold

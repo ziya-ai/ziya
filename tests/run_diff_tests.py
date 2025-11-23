@@ -936,6 +936,10 @@ class DiffRegressionTest(unittest.TestCase):
         """Test deletion of _astream method - should fail when incorrectly reported as already applied"""
         self.run_diff_test('google_genai_astream_deletion')
 
+    def test_mui_chat_history_tree_optimization(self):
+        """Test tree data optimization with stable signature dependency - reproduces corruption from useMemo dependency change"""
+        self.run_diff_test('mui_chat_history_tree_optimization')
+
 
 # Dynamically generate test methods for all test case directories
 # This allows -k filtering to work without hardcoding every test
