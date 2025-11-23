@@ -1,0 +1,5 @@
+{
+    "target_file": "frontend/src/components/MUIChatHistory.tsx",
+    "description": "Tree data optimization with stable signature dependency - tests corruption from useMemo dependency change",
+    "date_added": "2025-11-22"
+}
