@@ -43,6 +43,11 @@ const pluginMetadata: PluginMetadata[] = [
     name: 'd2-renderer',
     priority: 6,
     loader: async () => (await import('./d2Plugin')).d2Plugin
+  },
+  {
+    name: 'drawio-renderer',
+    priority: 7,
+    loader: async () => (await import('./drawioPlugin')).drawioPlugin
   }
 ];
 
@@ -98,18 +103,18 @@ export async function loadAllPlugins(): Promise<D3RenderPlugin[]> {
 const pluginRegistry: D3RenderPlugin[] = [];
 
 pluginRegistry.forEach(plugin => {
-    if (!plugin.name) {
-        throw new Error('Plugin missing required name property');
-    }
-    if (typeof plugin.priority !== 'number') {
-        throw new Error(`Plugin ${plugin.name} missing required priority number`);
-    }
-    if (typeof plugin.canHandle !== 'function') {
-        throw new Error(`Plugin ${plugin.name} missing required canHandle function`);
-    }
-    if (typeof plugin.render !== 'function') {
-        throw new Error(`Plugin ${plugin.name} missing required render function`);
-    }
+  if (!plugin.name) {
+    throw new Error('Plugin missing required name property');
+  }
+  if (typeof plugin.priority !== 'number') {
+    throw new Error(`Plugin ${plugin.name} missing required priority number`);
+  }
+  if (typeof plugin.canHandle !== 'function') {
+    throw new Error(`Plugin ${plugin.name} missing required canHandle function`);
+  }
+  if (typeof plugin.render !== 'function') {
+    throw new Error(`Plugin ${plugin.name} missing required render function`);
+  }
 });
 
 // Export empty array - plugins should be loaded dynamically now
@@ -128,7 +133,7 @@ export const getPluginByName = async (name: string): Promise<D3RenderPlugin | un
 export async function findPluginForSpec(spec: any): Promise<D3RenderPlugin | undefined> {
   // Sort metadata by priority
   const sortedMetadata = [...pluginMetadata].sort((a, b) => b.priority - a.priority);
-  
+
   // Try each plugin in priority order
   for (const metadata of sortedMetadata) {
     const plugin = await loadPlugin(metadata.name);
@@ -137,7 +142,7 @@ export async function findPluginForSpec(spec: any): Promise<D3RenderPlugin | und
       return plugin;
     }
   }
-  
+
   console.warn('No plugin found for spec:', spec);
   return undefined;
 }

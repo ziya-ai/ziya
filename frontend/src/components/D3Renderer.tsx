@@ -103,7 +103,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     const [vegaEmbed, setVegaEmbed] = useState<any>(null);
     const [d3, setD3] = useState<any>(null);
     const [plugin, setPlugin] = useState<D3RenderPlugin | null>(null);
-    
+
     const [isSourceModalVisible, setIsSourceModalVisible] = useState(false);
     const renderIdRef = useRef<number>(0);
     const mounted = useRef(true);
@@ -143,7 +143,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
 
     // Control when to show raw content vs rendered visualization
     useEffect(() => {
-        console.log('🔍 JOINTJS-DEBUG: showRawContent effect triggered', {
+        console.log('🔍 RENDERER: showRawContent effect triggered', {
             hasSuccessfulRender: hasSuccessfulRenderRef.current,
             isMarkdownBlockClosed,
             isStreaming,
@@ -154,32 +154,31 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             currentShowRawContent: showRawContent,
             renderingStarted
         });
-        
+
         // If we've already had a successful render and the block is closed, always keep showing the rendered version
         if (hasSuccessfulRenderRef.current && isMarkdownBlockClosed) {
-            console.log('🔍 JOINTJS-DEBUG: Keeping rendered version visible (successful render + closed block)');
+            console.log('🔍 RENDERER: Keeping rendered version visible (successful render + closed block)');
             setShowRawContent(false);
             return;
         }
-        
+
         // Show raw content if:
-        // 1. This diagram is being streamed
+        // 1. This diagram is being streamed AND we don't have a successful render yet
         // 2. Plugin is not loaded yet
         // 3. Markdown block is not closed
         // 4. d3 is not loaded yet
-        if ((isStreaming && !hasSuccessfulRenderRef.current) || 
+        if ((isStreaming && !hasSuccessfulRenderRef.current) ||
             !plugin ||
             !d3 ||
-            !isMarkdownBlockClosed || 
+            !isMarkdownBlockClosed ||
             isLoading) {
-            console.log('🔍 JOINTJS-DEBUG: Setting showRawContent=true');
+            console.log('🔍 RENDERER: Setting showRawContent=true');
             setShowRawContent(true);
         } else {
-            console.log('🔍 JOINTJS-DEBUG: Setting showRawContent=false');
+            console.log('🔍 RENDERER: Setting showRawContent=false');
             setShowRawContent(false);
         }
     }, [isStreaming, isMarkdownBlockClosed, hasSuccessfulRenderRef.current, plugin, d3, isLoading]);
-
     // Comprehensive cleanup on unmount
     useEffect(() => {
         return () => {
@@ -230,17 +229,23 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     // Initialize visualization with useCallback for better performance and dependency tracking
     const initializeVisualization = useCallback(async (forceRender = false): Promise<void> => {
         if (!mounted.current) return;
-        
-        console.log('🔧 D3RENDERER: initializeVisualization called', {
+
+        // If we already have a successful render and not forcing, skip
+        if (hasSuccessfulRenderRef.current && !forceRender) {
+            console.log('🔧 D3RENDERER: Skipping render - already successfully rendered and not forcing');
+            return;
+        }
+
+        console.log('🔧 D3RENDERER: initializeVisualization called, isRendering:', isRenderingRef.current, {
             hasPlugin: !!plugin,
             hasD3: !!d3,
             specType: spec?.type
         });
-        
+
         // Track loaded values for immediate use
         let loadedPlugin: D3RenderPlugin | undefined = undefined;
         let loadedD3: any = undefined;
-        
+
         // Load the appropriate plugin for this spec
         if (!plugin && spec) {
             console.log('🔧 D3RENDERER: Loading plugin for spec:', spec.type);
@@ -253,34 +258,26 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             }
             console.log('🔧 D3RENDERER: Plugin loaded:', loadedPlugin.name);
             setPlugin(loadedPlugin);
-            
+
             // Also load d3 if needed (most plugins need it)
             if (!d3) {
                 console.log('🔧 D3RENDERER: Loading d3 module');
                 loadedD3 = await import('d3');
                 setD3(loadedD3);
             }
-            
+
         }
-        
+
         // Get current values (either from state or just loaded)
         const currentPlugin = loadedPlugin || plugin;
         const currentD3 = loadedD3 || d3;
-        
+
         // Early exit if we still don't have plugin or d3
         if (!currentPlugin || !currentD3) {
             console.log('🔧 D3RENDERER: Waiting for plugin and d3 to load...', { hasPlugin: !!plugin, hasD3: !!d3 });
             return;
         }
-        
-        console.log('🔧 D3RENDERER: Starting render with plugin:', currentPlugin.name);
-        
-        // Prevent concurrent renders that cause loops in Safari
-        if (isRenderingRef.current && !forceRender) {
-            console.log('Skipping concurrent render to prevent Safari loop');
-            return;
-        }
-        
+
         // Once we start rendering, hide the spinner permanently
         if (!renderingStarted) {
             setRenderingStarted(true);
@@ -293,7 +290,17 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
         } else if ((!hasAttemptedRender || !isStreaming) && !hasSuccessfulRenderRef.current && !showRawContent) {
             setIsLoading(true);
         }
-        
+
+        console.log('🔧 D3RENDERER: Starting render with plugin:', currentPlugin.name);
+
+        // Prevent concurrent renders that cause loops in Safari
+        // But check AFTER async plugin loading completes
+        if (isRenderingRef.current && !forceRender) {
+            console.log('Skipping concurrent render to prevent Safari loop');
+            return;
+        }
+
+        console.log('🔧 D3RENDERER: Setting isRendering=true');
         isRenderingRef.current = true;
         try {
             // Clear previous cleanup functions
@@ -402,7 +409,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             if (currentPlugin && (type === 'd3' || parsed.renderer === 'd3' || typeof parsed.render === 'function')) {
                 const container = d3ContainerRef.current;
                 if (!container || !currentPlugin) return;
-                
+
                 console.log('🔧 D3RENDERER: About to render with plugin:', currentPlugin.name);
 
                 // Check if this is a Graphviz or Mermaid plugin
@@ -429,8 +436,9 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
 
                 // Set container dimensions - but allow height to grow for joint-renderer
                 const isJointRenderer = plugin?.name === 'joint-renderer';
-                
-                container.style.width = isJointRenderer ? '100%' : `${width}px`;
+                const isDrawioRenderer = currentPlugin?.name === 'drawio-renderer';
+
+                container.style.width = (isJointRenderer || isDrawioRenderer) ? '100%' : `${width}px`;
                 container.style.height = isJointRenderer ? 'auto' : `${height}px`;
                 container.style.minHeight = isJointRenderer ? '400px' : 'unset';
                 container.style.maxHeight = isJointRenderer ? 'none' : 'unset';
@@ -481,23 +489,44 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                         }
                     } else if (currentPlugin) {
                         console.log('🔧 D3RENDERER: Calling plugin.render for:', currentPlugin.name);
-                        await currentPlugin.render(tempContainer, currentD3, {
+
+                        // Add timeout for plugin render to prevent infinite hang
+                        const renderPromise = Promise.race([
+                            currentPlugin.render(tempContainer, currentD3, {
                                 ...sanitizedParsed,
                                 width: width || 600,
                                 height: height || 400,
                                 isStreaming: isStreaming,
                                 isMarkdownBlockClosed: isMarkdownBlockClosed,
                                 forceRender: forceRender,
-                            }, isDarkMode);
-                            renderSuccessful = true;
+                            }, isDarkMode),
+                            new Promise((_, reject) =>
+                                setTimeout(() => reject(new Error('Plugin render timeout after 10s')), 10000)
+                            )
+                        ]);
+
+                        console.log('🔧 D3RENDERER: Awaiting plugin render...');
+                        await renderPromise;
+                        console.log('🔧 D3RENDERER: Plugin render completed');
+
+                        renderSuccessful = true;
                     } else {
                         throw new Error('No render function or compatible plugin found');
                     }
                 } catch (renderError) {
                     console.error('D3 render error:', renderError);
                     if (mounted.current) {
-                        setRenderError(renderError instanceof Error ? renderError.message : 'Render failed');
-                        setErrorDetails([renderError instanceof Error ? renderError.message : 'Unknown error']);
+                        const errorMessage = renderError instanceof Error ? renderError.message : 'Render failed';
+                        setRenderError(errorMessage);
+                        setErrorDetails([errorMessage]);
+
+                        // If it was a timeout, show helpful message
+                        if (errorMessage.includes('timeout')) {
+                            setErrorDetails([
+                                'Rendering timed out - this diagram may be too complex or malformed',
+                                'Try simplifying the diagram or check the definition for errors'
+                            ]);
+                        }
                     }
                 }
 
@@ -528,7 +557,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
 
                 if (mounted.current) setIsLoading(false);
                 setRenderError(null);
-                console.log('🔍 JOINTJS-DEBUG: Render successful, setting hasSuccessfulRenderRef=true');
+                console.log('🔍 RENDERER: Render successful, setting hasSuccessfulRenderRef=true');
                 onLoad?.();
                 hasSuccessfulRenderRef.current = true;
                 return;
@@ -549,10 +578,11 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 }
             }
         } finally {
+            console.log('🔧 D3RENDERER: Setting isRendering=false');
             isRenderingRef.current = false;
         }
     }, [spec, type, width, height, isStreaming, isMarkdownBlockClosed, config, onLoad, onError]);
-    
+
     // Separate effect to trigger re-render when plugin/d3 loads
     useEffect(() => {
         if (plugin && d3 && spec) {
@@ -564,14 +594,18 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     // Main rendering useEffect with stable dependencies
     useEffect(() => {
         if (!mounted.current) return;
-        
+
         // Create a simple hash of the spec to detect changes without JSON.stringify
-        const specHash = typeof spec === 'string' ? spec : 
+        const specHash = typeof spec === 'string' ? spec :
             (spec?.definition || '') + (spec?.type || '') + (spec?.timestamp || '');
-        
-        if (specHash === specHashRef.current && !forceRender) {
+
+        // Skip if spec hasn't changed AND we already have a successful render
+        if (specHash === specHashRef.current && !forceRender && hasSuccessfulRenderRef.current) {
+            console.debug('Skipping render - spec unchanged and already successfully rendered');
             return;
         }
+
+        // Update hash even if we don't render yet (to track changes)
         specHashRef.current = specHash;
 
         // Trigger rendering immediately when markdown block closes, even during streaming
@@ -583,7 +617,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
 
         if (shouldRender) {
             const currentRender = ++renderIdRef.current;
-            console.debug(`Starting render #${currentRender}, isStreaming: ${isStreaming}, blockClosed: ${isMarkdownBlockClosed}, hasPlugin: ${!!plugin}`);
+            console.debug(`Starting render #${currentRender}, isStreaming: ${isStreaming}, blockClosed: ${isMarkdownBlockClosed}, hasPlugin: ${!!plugin}, hasSuccessfulRender: ${hasSuccessfulRenderRef.current}`);
             initializeVisualization(forceRender);
         }
     }, [spec, isStreaming, isMarkdownBlockClosed, forceRender, initializeVisualization]);
@@ -593,38 +627,38 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
         if (isSafari() && (renderError || !hasSuccessfulRenderRef.current)) {
             console.warn('🍎 SAFARI-COMPAT: Safari detected with rendering issues. Consider showing browser upgrade notice.');
         }
-        
+
         // Detect Safari for theme change handling
         const safariDetected = isSafari();
-        
+
         // For Safari users, add an additional notice about potential issues
         if (safariDetected && renderError) {
             console.warn('🍎 SAFARI-NOTICE: Diagram rendering failed on Safari. This is a known compatibility issue.');
         }
-        
+
         // Only re-render for theme changes if we've already had a successful render
         // and this isn't the initial theme setting  
-        if (lastSpecRef.current && hasSuccessfulRenderRef.current && renderingStarted && 
+        if (lastSpecRef.current && hasSuccessfulRenderRef.current && renderingStarted &&
             isDarkMode !== initialThemeRef.current) {
             console.log('Theme changed, re-rendering visualization');
-            
+
             // Use a longer debounce for Safari to prevent render loops
             const debounceTime = safariDetected ? 1000 : 100; // Even longer for Safari
-            
+
             const themeChangeTimer = setTimeout(() => {
                 // Extra safety check for Safari
                 if (isSafari() && isRenderingRef.current) {
                     console.log('Safari: Skipping theme change render due to concurrent operation');
                     return;
                 }
-                
+
                 try {
                     initializeVisualization(true); // Force render on theme change
                 } catch (error) {
                     console.error('Theme change render failed:', error);
                 }
             }, debounceTime);
-            
+
             return () => clearTimeout(themeChangeTimer);
         }
     }, [isDarkMode]); // Remove initializeVisualization dependency to break circular dependency
@@ -649,15 +683,30 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 return {
                     ...baseStyles,
                     height: 'auto',
-                maxHeight: 'none',
+                    maxHeight: 'none',
                     minHeight: 'auto',
                     overflow: plugin.sizingConfig.needsOverflowVisible ? 'visible' : (baseStyles.overflow || 'auto')
+                };
+            } else if (plugin.sizingConfig.sizingStrategy === 'responsive') {
+                return {
+                    ...baseStyles,
+                    width: '100%',
+                    maxWidth: '100%'
+                };
+            }
+            
+            // For plugins that need responsive width, don't use the width prop
+            if (plugin?.name === 'drawio-renderer') {
+                return {
+                    ...baseStyles,
+                    width: '100%'
                 };
             }
 
             return baseStyles;
         }
         return {
+            width: '100%',
             height: 'auto',
             overflow: 'auto'
         };
@@ -667,7 +716,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
         position: 'relative',
         width: '100%',
         maxWidth: '100%',
-        height: 'auto', 
+        height: 'auto',
         minHeight: 'auto',
         display: 'block',
         margin: '1em 0',
@@ -884,7 +933,7 @@ ${svgData}`;
         >
             {/* Show raw content during streaming */}
             {showRawContent && rawContent ? (
-                <div style={{ 
+                <div style={{
                     position: 'relative',
                     backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
                     border: `1px solid ${isDarkMode ? '#303030' : '#e1e4e8'}`,
@@ -924,24 +973,28 @@ ${svgData}`;
                             fontSize: '13px',
                             color: isDarkMode ? '#faad14' : '#d46b08'
                         }}>
-                            ⚠️ <strong>Safari Compatibility Notice:</strong> Diagrams may not render correctly in Safari. 
+                            ⚠️ <strong>Safari Compatibility Notice:</strong> Diagrams may not render correctly in Safari.
                             For best results, please use Chrome, Edge, Firefox, or another modern browser.
                         </div>
                     )}
-                <div
-                    ref={d3ContainerRef}
-                    className={`d3-container ${currentPlugin?.name ? `${currentPlugin.name}-container` : ''}`}
-                    style={{
-                        width: '100%',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: 'center',
-                        position: 'relative',
-                        boxSizing: 'border-box',
-                        // Apply containerStyles last so they can override defaults
-                        ...containerStyles
-                    }}
-                />
+                    <div
+                        ref={d3ContainerRef}
+                        className={`d3-container ${currentPlugin?.name ? `${currentPlugin.name}-container` : ''}`}
+                        style={{
+                            width: currentPlugin?.name === 'drawio-renderer' ? '100%' : (containerStyles.width || '100%'),
+                            height: containerStyles.height || 'auto',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            position: 'relative',
+                            boxSizing: 'border-box',
+                            // Apply remaining containerStyles (excluding width/height to avoid override)
+                            overflow: containerStyles.overflow,
+                            maxWidth: containerStyles.maxWidth,
+                            minHeight: containerStyles.minHeight,
+                            maxHeight: containerStyles.maxHeight
+                        }}
+                    />
                 </>
             ) : (
                 <div

@@ -79,12 +79,19 @@ def main():
                 success_marker.unlink()
             
             try:
-                # Check if node_modules exists, if not run npm install
-                if not (frontend_project_dir / "node_modules").exists():
+                # Check if node_modules exists and if package.json is newer
+                node_modules = frontend_project_dir / "node_modules"
+                package_json = frontend_project_dir / "package.json"
+                
+                needs_install = not node_modules.exists()
+                if node_modules.exists() and package_json.exists():
+                    needs_install = os.path.getmtime(package_json) > os.path.getmtime(node_modules)
+                
+                if needs_install:
                     print("Running npm install for frontend...")
                     subprocess.run(["npm", "install"], cwd=str(frontend_project_dir), check=True, shell=sys.platform == "win32")
                 else:
-                    print("Frontend dependencies (node_modules) already exist, skipping npm install.")
+                    print("Frontend dependencies up to date, skipping npm install.")
 
                 subprocess.run(["npm", "run", "build"], cwd=str(frontend_project_dir), check=True, shell=sys.platform == "win32")
                 
