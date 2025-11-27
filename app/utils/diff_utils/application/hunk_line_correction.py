@@ -3,10 +3,79 @@ Utility to detect and correct incorrect hunk line numbers using context matching
 """
 
 import logging
+import re
 from typing import List, Dict, Any, Optional, Tuple
 from difflib import SequenceMatcher
 
 logger = logging.getLogger(__name__)
+
+
+def extract_function_context_from_header(header: str) -> Optional[str]:
+    """
+    Extract the function/method context from a hunk header.
+    
+    Hunk headers can include function context after the @@ markers, e.g.:
+    @@ -854,14 +854,47 @@ async def continue_response_stream(continuation_state: Dict[str, Any], conversa
+    
+    Returns the function signature if found, None otherwise.
+    """
+    if not header:
+        return None
+    
+    # Match the pattern: @@ -N,N +N,N @@ <function_context>
+    match = re.match(r'^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@\s*(.+)$', header)
+    if match:
+        context = match.group(1).strip()
+        # Check if it looks like a function/method definition
+        if context and any(kw in context for kw in ['def ', 'async def ', 'function ', 'class ']):
+            return context
+    return None
+
+
+def validate_function_context_at_position(
+    function_context: str, 
+    file_lines: List[str], 
+    position: int,
+    search_range: int = 50
+) -> bool:
+    """
+    Validate that the function context from the hunk header exists in the file.
+    
+    This prevents diffs from being applied to the wrong file when the context lines
+    partially match but the function/class specified in the header doesn't exist.
+    
+    The function context in a hunk header (e.g., "async def continue_response_stream")
+    indicates which function/class the change is within. If this function/class doesn't
+    exist anywhere in the file, the diff is likely targeting the wrong file.
+    
+    Args:
+        function_context: The function signature from the hunk header
+        file_lines: The lines of the target file
+        position: The target line position (0-based) - used for logging only
+        search_range: Not used (kept for API compatibility)
+        
+    Returns:
+        True if the function context is found in the file, False otherwise
+    """
+    if not function_context or not file_lines:
+        return True  # No function context to validate
+    
+    # Extract the function/class name from the context
+    func_name_match = re.search(r'(?:async\s+)?(?:def|function|class)\s+(\w+)', function_context)
+    if not func_name_match:
+        return True  # Can't extract function name, skip validation
+    
+    func_name = func_name_match.group(1)
+    
+    # Search the entire file for the function/class definition
+    for i, line in enumerate(file_lines):
+        # Check if this line contains the function/class definition
+        # Handle both Python (def/class) and JavaScript/TypeScript (function/class) syntax
+        if re.search(rf'(?:async\s+)?(?:def|function|class)\s+{re.escape(func_name)}\b', line):
+            return True
+    
+    logger.warning(f"Function context validation failed: '{func_name}' not found in file (hunk targets line {position + 1})")
+    return False
 
 
 def extract_context_from_hunk(hunk: Dict[str, Any]) -> List[str]:
@@ -110,6 +179,7 @@ def correct_hunk_line_numbers(hunks: List[Dict[str, Any]], file_lines: List[str]
     Correct hunk line numbers by finding best context matches in the file.
     Adds 'line_number_corrected' and 'correction_confidence' metadata to corrected hunks.
     Filters out large deletions with low confidence to prevent corruption.
+    Also validates function context from hunk headers to prevent applying diffs to wrong functions.
     """
     print(f"DEBUG: correct_hunk_line_numbers called with {len(hunks) if hunks else 0} hunks")
     if not hunks or not file_lines:
@@ -130,6 +200,12 @@ def correct_hunk_line_numbers(hunks: List[Dict[str, Any]], file_lines: List[str]
             corrected.append(hunk)
             continue
         
+        # Extract and validate function context from hunk header
+        header = hunk.get('header', '')
+        function_context = extract_function_context_from_header(header)
+        if function_context:
+            print(f"DEBUG: Hunk {i} has function context: {function_context}")
+        
         # Find best match, passing original line for proximity preference
         result = find_best_match_position(context, file_lines, old_start)
         
@@ -138,6 +214,14 @@ def correct_hunk_line_numbers(hunks: List[Dict[str, Any]], file_lines: List[str]
         if result:
             pos, confidence = result
             new_start = pos + 1  # Convert to 1-based
+            
+            # Validate function context if present in hunk header
+            # This prevents applying diffs to wrong functions when context lines partially match
+            if function_context:
+                if not validate_function_context_at_position(function_context, file_lines, pos):
+                    logger.warning(f"Hunk {i}: function context '{function_context}' not found near target position {new_start} - skipping to prevent corruption")
+                    skipped += 1
+                    continue
             
             # For large deletions, require higher confidence to avoid removing wrong content
             old_count = hunk.get('old_count', 0)
