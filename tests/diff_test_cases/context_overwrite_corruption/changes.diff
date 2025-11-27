@@ -1,0 +1,64 @@
+diff --git a/app/server.py b/app/server.py
+--- a/app/server.py
++++ b/app/server.py
+@@ -854,14 +854,47 @@ async def continue_response_stream(continuation_state: Dict[str, Any], conversa
+         try:
+             continuation_point = continuation_state.get('continuation_point')
+             current_response = continuation_state.get('current_response', '')
++            
++            # Helper function to detect markdown block state
++            def get_markdown_state_at_position(text: str, position: int) -> dict:
++                """Analyze markdown structure at a specific position."""
++                lines_before = text[:position].split('\n')
++                
++                # Track code block state
++                code_fences = []
++                for i, line in enumerate(lines_before):
++                    stripped = line.lstrip()
++                    if stripped.startswith('```') or stripped.startswith('~~~'):
++                        fence_match = re.match(r'^(`{3,}|~{3,})(\w*)', stripped)
++                        if fence_match:
++                            fence_type = fence_match.group(1)[0]
++                            language = fence_match.group(2) or ''
++                            
++                            # Check if this closes an existing fence
++                            if code_fences and code_fences[-1]['type'] == fence_type:
++                                code_fences.pop()
++                            else:
++                                code_fences.append({
++                                    'type': fence_type,
++                                    'language': language,
++                                    'line': i
++                                })
++                
++                return {
++                    'in_code_block': len(code_fences) > 0,
++                    'code_fence_language': code_fences[-1]['language'] if code_fences else None,
++                    'code_fence_type': code_fences[-1]['type'] if code_fences else None
++                }
+ 
+             lines = current_response[:continuation_point].split('\n')
+             complete_lines = lines[:-1]  # All but the potentially partial last line
+             partial_last_line = lines[-1] if lines else ""
++            
++            # Analyze markdown state at the continuation point
++            markdown_state = get_markdown_state_at_position(current_response, continuation_point)
+ 
+             completed_part = '\n'.join(complete_lines)
+ 
+             # Add rewind marker that identifies exactly where to splice
+-            rewind_marker = f"\n\n<!-- REWIND_MARKER: {len(complete_lines)} -->\n**🔄 Response continues...**\n"
++            # Include markdown state information for frontend
++            state_info = f"|FENCE:{markdown_state['code_fence_type']}{markdown_state['code_fence_language']}" if markdown_state['in_code_block'] else ""
++            rewind_marker = f"\n\n<!-- REWIND_MARKER: {len(complete_lines)}{state_info} -->\n**🔄 Response continues...**\n"
+             completed_part += rewind_marker
+ 
+             # Prepare continuation state
+             continuation_state = {
+                 "rewind_line_number": len(complete_lines),
+                 "partial_last_line": partial_last_line,
+-                "rewind_marker": f"<!-- REWIND_MARKER: {len(complete_lines)} -->",
++                "rewind_marker": f"<!-- REWIND_MARKER: {len(complete_lines)}{state_info} -->",
++                "markdown_state": markdown_state,
+                 "conversation_id": conversation_id,
+                 "completed_response": completed_part,
