@@ -1,0 +1,7 @@
+{
+    "target_file": "app/server.py",
+    "description": "Test case for diff corruption where a diff targeting a non-existent function (continue_response_stream) is incorrectly applied to a different function (check_context_overflow) due to partial context line matching, causing code to be inserted in the wrong location and overwriting existing logic",
+    "date_added": "2025-11-27",
+    "issue_reference": "context_overwrite_corruption",
+    "expected_to_fail": false
+}
