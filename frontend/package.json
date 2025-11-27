@@ -16,6 +16,7 @@
     "@mui/icons-material": "^5.14.5",
     "@mui/material": "^5.14.5",
     "@mui/x-tree-view": "^6.0.0",
+    "@maxgraph/core": "^0.11.0",
     "@types/d3": "^7.4.3",
     "@types/lodash": "^4.17.20",
     "@types/node": "^24.9.2",
@@ -44,10 +45,10 @@
   },
   "proxy": "http://localhost:6969",
   "scripts": {
-    "start": "react-scripts start",
-    "build": "react-scripts build && npm run copy-to-templates",
+    "start": "craco start",
+    "build": "craco build && npm run copy-to-templates",
     "copy-to-templates": "rm -rf ../templates/* && cp -r build/* ../templates",
-    "test": "react-scripts test",
+    "test": "craco test",
     "eject": "react-scripts eject"
   },
   "inlineSourcePlugin": {

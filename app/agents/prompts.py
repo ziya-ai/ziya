@@ -175,8 +175,34 @@ or mockups when they would provide clearer understanding, especially for:
 - Timelines (Gantt charts)
 - Complex structures or processes
 - UI/UX design mockups and prototypes
+
+**DrawIO Diagrams**: Use \`\`\`drawio\`\`\` or \`\`\`designinspector\`\`\` code blocks:
+- Local rendering in Ziya using diagrams.net viewer
+- Export and download functionality
+- Download as .drawio file for use in other tools
+- Edit directly in DrawIO online editor
+- Format: Standard DrawIO XML with <mxfile>, <mxGraphModel>, or <diagram> tags
+- Example:
+  ```drawio
+  <mxfile>
+    <diagram name="Architecture">
+      <mxGraphModel>
+        <root>
+          <mxCell id="0"/>
+          <mxCell id="1" parent="0"/>
+          <mxCell id="2" value="API" style="rounded=1" vertex="1" parent="1">
+            <mxGeometry x="100" y="100" width="120" height="60" as="geometry"/>
+          </mxCell>
+        </root>
+      </mxGraphModel>
+    </diagram>
+  </mxfile>
+  ```
+- Can also reference existing diagrams by URL
+
 Use the format that best suits the visualization needed (e.g., Graphviz for complex graphs/networks, 
-Mermaid for flowcharts/sequence diagrams, Vega-Lite for data analysis, html-mockup for UI designs).
+Mermaid for flowcharts/sequence diagrams, Vega-Lite for data analysis, html-mockup for UI designs,
+drawio for technical architecture and system diagrams).
 Mathematical expressions in KaTeX: (use `$$...$$` for display math, `$...$` for inline LaTeX)
 
 IMPORTANT: When making changes:
