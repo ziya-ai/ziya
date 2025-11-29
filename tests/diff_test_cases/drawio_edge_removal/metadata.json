@@ -1,0 +1,7 @@
+{
+    "target_file": "frontend/src/plugins/d3/drawioPlugin.ts",
+    "description": "Remove 90 lines of edge attachment logic from DrawIO plugin",
+    "date_added": "2025-11-27",
+    "expected_to_fail": true,
+    "failure_reason": "Malformed diff: header says @@ -610,90 +610,6 @@ but content is at line 806 with wrong indentation. Line-by-line match ratio is only 10%, correctly rejected to prevent corruption."
+}

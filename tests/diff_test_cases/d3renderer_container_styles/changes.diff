@@ -1,0 +1,28 @@
+diff --git a/frontend/src/components/D3Renderer.tsx b/frontend/src/components/D3Renderer.tsx
+--- a/frontend/src/components/D3Renderer.tsx
++++ b/frontend/src/components/D3Renderer.tsx
+@@ -435,10 +435,21 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
+                 }
+             }
+ 
+-                // Set container dimensions - but allow height to grow for joint-renderer
++                // Set container dimensions - but allow height to grow for joint-renderer and drawio-renderer
+                 const isJointRenderer = plugin?.name === 'joint-renderer';
+                 const isDrawioRenderer = currentPlugin?.name === 'drawio-renderer';
+ 
+-                container.style.width = (isJointRenderer || isDrawioRenderer) ? '100%' : `${width}px`;
+-                container.style.height = isJointRenderer ? 'auto' : `${height}px`;
++                // Also check if container will contain error content
++                const willHaveError = renderError !== null;
++                
++                container.style.width = (isJointRenderer || isDrawioRenderer) ? '100%' : `${width}px`;
++                // Allow auto height for joint, drawio, and error states
++                container.style.height = (isJointRenderer || isDrawioRenderer || willHaveError) ? 'auto' : `${height}px`;
+                 container.style.minHeight = isJointRenderer ? '400px' : 'unset';
+-                container.style.maxHeight = isJointRenderer ? 'none' : 'unset';
+-                container.style.position = 'relative';
+-                container.style.overflow = isJointRenderer ? 'visible' : 'hidden';
++                container.style.maxHeight = (isJointRenderer || willHaveError) ? 'none' : 'unset';
++                container.style.position = 'relative';
++                // Use visible/auto overflow for joint, drawio, and errors
++                container.style.overflow = (isJointRenderer || isDrawioRenderer || willHaveError) ? 'visible' : 'hidden';
