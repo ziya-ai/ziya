@@ -1,0 +1,7 @@
+{
+    "target_file": "frontend/src/components/D3Renderer.tsx",
+    "description": "Add error state handling to D3Renderer container styles",
+    "date_added": "2025-11-28",
+    "expected_to_fail": true,
+    "failure_reason": "Diff has wrong leading context (first 3 lines don't match file). Non-1:1 replacement (6 removed, 11 added) with context lines between removed lines. Requires smarter surgical application that preserves context line positions."
+}
