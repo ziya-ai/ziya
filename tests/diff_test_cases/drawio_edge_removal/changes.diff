@@ -1,0 +1,336 @@
+diff --git a/frontend/src/plugins/d3/drawioPlugin.ts b/frontend/src/plugins/d3/drawioPlugin.ts
+index 1234567..89abcde 100644
+--- a/frontend/src/plugins/d3/drawioPlugin.ts
++++ b/frontend/src/plugins/d3/drawioPlugin.ts
+@@ -610,90 +610,6 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec,
+                                 const targetCell = cellMap.get(targetId);
+                                 cell.setTerminal(sourceCell, true);  // true = source
+                                 cell.setTerminal(targetCell, false); // false = target
+-                                
+-                                // CRITICAL FIX: Separate in/out attachment points for rectangles,
+-                                // and offset bidirectional pairs
+-                                const currentStyle = cell.getStyle();
+-                                
+-                                if (currentStyle &&
+-                                    currentStyle['exitX'] === undefined && 
+-                                    currentStyle['exitY'] === undefined &&
+-                                    currentStyle['entryX'] === undefined && 
+-                                    currentStyle['entryY'] === undefined) {
+-                                    
+-                                    // Check if this is a bidirectional pair (A↔B)
+-                                    const pairKey = sourceId < targetId ? `${sourceId}-${targetId}` : `${targetId}-${sourceId}`;
+-                                    const pairEdges = edgePairs.get(pairKey) || [];
+-                                    const isBidirectional = pairEdges.length > 1;
+-                                    
+-                                    if (isBidirectional) {
+-                                        // CASE 1: True bidirectional - offset to prevent overlap
+-                                        const sourceGeom = sourceCell?.getGeometry();
+-                                        const targetGeom = targetCell?.getGeometry();
+-                                        
+-                                        if (sourceGeom && targetGeom) {
+-                                            const dx = targetGeom.x + targetGeom.width/2 - (sourceGeom.x + sourceGeom.width/2);
+-                                            const dy = targetGeom.y + targetGeom.height/2 - (sourceGeom.y + sourceGeom.height/2);
+-                                            const isHorizontal = Math.abs(dx) > Math.abs(dy);
+-                                            
+-                                            const edgeIndex = pairEdges.indexOf(id);
+-                                            const offset = edgeIndex === 0 ? -0.2 : 0.2;
+-                                            
+-                                            if (isHorizontal) {
+-                                                currentStyle['exitY'] = 0.5 + offset;
+-                                                currentStyle['entryY'] = 0.5 + offset;
+-                                            } else {
+-                                                currentStyle['exitX'] = 0.5 + offset;
+-                                                currentStyle['entryX'] = 0.5 + offset;
+-                                            }
+-                                            
+-                                            cell.setStyle(currentStyle);
+-                                            console.log(`📐 DrawIO: Offset bidirectional edge ${id} by ${offset}`);
+-                                        }
+-                                    } else {
+-                                        // CASE 2: Check for in/out on rectangles (skip rhombus/ellipse/special shapes)
+-                                        const sourceStyle = sourceCell?.getStyle();
+-                                        const targetStyle = targetCell?.getStyle();
+-                                        
+-                                        const isSourceRectangle = sourceStyle && 
+-                                            !sourceStyle['rhombus'] && 
+-                                            !sourceStyle['ellipse'] && 
+-                                            sourceStyle['shape'] !== 'rhombus' &&
+-                                            sourceStyle['shape'] !== 'ellipse';
+-                                            
+-                                        const isTargetRectangle = targetStyle && 
+-                                            !targetStyle['rhombus'] && 
+-                                            !targetStyle['ellipse'] &&
+-                                            targetStyle['shape'] !== 'rhombus' &&
+-                                            targetStyle['shape'] !== 'ellipse';
+-                                        
+-                                        const sourceDirs = vertexEdgeDirections.get(sourceId);
+-                                        const targetDirs = vertexEdgeDirections.get(targetId);
+-                                        
+-                                        const sourceHasBoth = sourceDirs && sourceDirs.incoming.length > 0 && sourceDirs.outgoing.length > 0;
+-                                        const targetHasBoth = targetDirs && targetDirs.incoming.length > 0 && targetDirs.outgoing.length > 0;
+-                                        
+-                                        // Only adjust rectangles with both in/out
+-                                        if ((isSourceRectangle && sourceHasBoth) || (isTargetRectangle && targetHasBoth)) {
+-                                            const sourceGeom = sourceCell?.getGeometry();
+-                                            const targetGeom = targetCell?.getGeometry();
+-                                            
+-                                            if (sourceGeom && targetGeom) {
+-                                                const dx = targetGeom.x + targetGeom.width/2 - (sourceGeom.x + sourceGeom.width/2);
+-                                                const dy = targetGeom.y + targetGeom.height/2 - (sourceGeom.y + sourceGeom.height/2);
+-                                                const angle = Math.atan2(dy, dx) * (180 / Math.PI);
+-                                                
+-                                                // Use angle-based attachment (respects natural flow direction)
+-                                                if (isSourceRectangle && sourceHasBoth) {
+-                                                    if (angle >= -45 && angle < 45) { currentStyle['exitX'] = 1.0; currentStyle['exitY'] = 0.5; }
+-                                                    else if (angle >= 45 && angle < 135) { currentStyle['exitX'] = 0.5; currentStyle['exitY'] = 1.0; }
+-                                                    else if (angle >= 135 || angle < -135) { currentStyle['exitX'] = 0.0; currentStyle['exitY'] = 0.5; }
+-                                                    else { currentStyle['exitX'] = 0.5; currentStyle['exitY'] = 0.0; }
+-                                                }
+-                                                
+-                                                if (isTargetRectangle && targetHasBoth) {
+-                                                    const reverseAngle = (angle + 180) % 360 - 180;
+-                                                    if (reverseAngle >= -45 && reverseAngle < 45) { currentStyle['entryX'] = 0.0; currentStyle['entryY'] = 0.5; }
+-                                                    else if (reverseAngle >= 45 && reverseAngle < 135) { currentStyle['entryX'] = 0.5; currentStyle['entryY'] = 0.0; }
+-                                                    else if (reverseAngle >= 135 || reverseAngle < -135) { currentStyle['entryX'] = 1.0; currentStyle['entryY'] = 0.5; }
+-                                                    else { currentStyle['entryX'] = 0.5; currentStyle['entryY'] = 1.0; }
+-                                                }
+-                                                
+-                                                cell.setStyle(currentStyle);
+-                                                console.log(`📐 DrawIO: Separated in/out for rectangle edge ${id}`);
+-                                            }
+-                                        }
+-                                    }
+-                                }
+                             }
+                         }
+                     }
+                 });
++                
++                // CRITICAL: Apply connection point fixes AFTER all cells are added
++                // but BEFORE view refresh (which might recalculate them)
++                console.log('📐 DrawIO: Applying connection point fixes to edges');
++                edgeCells.forEach(({id, element}) => {
++                    const cell = cellMap.get(id);
++                    if (!cell) return;
++                    
++                    const sourceId = element.getAttribute('source');
++                    const targetId = element.getAttribute('target');
++                    if (!sourceId || !targetId) return;
++                    
++                    const sourceCell = cellMap.get(sourceId);
++                    const targetCell = cellMap.get(targetId);
++                    if (!sourceCell || !targetCell) return;
++                    
++                    const currentStyle = cell.getStyle();
++                    
++                    // Skip if connection points are already defined
++                    if (currentStyle &&
++                        (currentStyle['exitX'] !== undefined || 
++                         currentStyle['exitY'] !== undefined ||
++                         currentStyle['entryX'] !== undefined || 
++                         currentStyle['entryY'] !== undefined)) {
++                        console.log(`📐 DrawIO: Edge ${id} already has connection points, skipping`);
++                        return;
++                    }
++                    
++                    // Check if this is a bidirectional pair (A↔B)
++                    const pairKey = sourceId < targetId ? `${sourceId}-${targetId}` : `${targetId}-${sourceId}`;
++                    const pairEdges = edgePairs.get(pairKey) || [];
++                    const isBidirectional = pairEdges.length > 1;
++                    
++                    if (isBidirectional) {
++                        // CASE 1: True bidirectional - offset to prevent overlap
++                        const sourceGeom = sourceCell.getGeometry();
++                        const targetGeom = targetCell.getGeometry();
++                        
++                        if (sourceGeom && targetGeom) {
++                            const dx = targetGeom.x + targetGeom.width/2 - (sourceGeom.x + sourceGeom.width/2);
++                            const dy = targetGeom.y + targetGeom.height/2 - (sourceGeom.y + sourceGeom.height/2);
++                            const isHorizontal = Math.abs(dx) > Math.abs(dy);
++                            
++                            const edgeIndex = pairEdges.indexOf(id);
++                            const offset = edgeIndex === 0 ? -0.2 : 0.2;
++                            
++                            if (isHorizontal) {
++                                currentStyle['exitY'] = 0.5 + offset;
++                                currentStyle['entryY'] = 0.5 + offset;
++                            } else {
++                                currentStyle['exitX'] = 0.5 + offset;
++                                currentStyle['entryX'] = 0.5 + offset;
++                            }
++                            
++                            cell.setStyle(currentStyle);
++                            console.log(`📐 DrawIO: Offset bidirectional edge ${id} by ${offset}`);
++                        }
++                    } else {
++                        // CASE 2: Check for in/out on rectangles (skip rhombus/ellipse/special shapes)
++                        const sourceStyle = sourceCell.getStyle();
++                        const targetStyle = targetCell.getStyle();
++                        
++                        const isSourceRectangle = sourceStyle && 
++                            !sourceStyle['rhombus'] && 
++                            !sourceStyle['ellipse'] && 
++                            sourceStyle['shape'] !== 'rhombus' &&
++                            sourceStyle['shape'] !== 'ellipse';
++                            
++                        const isTargetRectangle = targetStyle && 
++                            !targetStyle['rhombus'] && 
++                            !targetStyle['ellipse'] &&
++                            targetStyle['shape'] !== 'rhombus' &&
++                            targetStyle['shape'] !== 'ellipse';
++                        
++                        const sourceDirs = vertexEdgeDirections.get(sourceId);
++                        const targetDirs = vertexEdgeDirections.get(targetId);
++                        
++                        const sourceHasBoth = sourceDirs && sourceDirs.incoming.length > 0 && sourceDirs.outgoing.length > 0;
++                        const targetHasBoth = targetDirs && targetDirs.incoming.length > 0 && targetDirs.outgoing.length > 0;
++                        
++                        // Only adjust rectangles with both in/out
++                        if ((isSourceRectangle && sourceHasBoth) || (isTargetRectangle && targetHasBoth)) {
++                            const sourceGeom = sourceCell.getGeometry();
++                            const targetGeom = targetCell.getGeometry();
++                            
++                            if (sourceGeom && targetGeom) {
++                                const dx = targetGeom.x + targetGeom.width/2 - (sourceGeom.x + sourceGeom.width/2);
++                                const dy = targetGeom.y + targetGeom.height/2 - (sourceGeom.y + sourceGeom.height/2);
++                                const angle = Math.atan2(dy, dx) * (180 / Math.PI);
++                                
++                                // Use angle-based attachment (respects natural flow direction)
++                                if (isSourceRectangle && sourceHasBoth) {
++                                    if (angle >= -45 && angle < 45) { currentStyle['exitX'] = 1.0; currentStyle['exitY'] = 0.5; }
++                                    else if (angle >= 45 && angle < 135) { currentStyle['exitX'] = 0.5; currentStyle['exitY'] = 1.0; }
++                                    else if (angle >= 135 || angle < -135) { currentStyle['exitX'] = 0.0; currentStyle['exitY'] = 0.5; }
++                                    else { currentStyle['exitX'] = 0.5; currentStyle['exitY'] = 0.0; }
++                                }
++                                
++                                if (isTargetRectangle && targetHasBoth) {
++                                    const reverseAngle = (angle + 180) % 360 - 180;
++                                    if (reverseAngle >= -45 && reverseAngle < 45) { currentStyle['entryX'] = 0.0; currentStyle['entryY'] = 0.5; }
++                                    else if (reverseAngle >= 45 && reverseAngle < 135) { currentStyle['entryX'] = 0.5; currentStyle['entryY'] = 0.0; }
++                                    else if (reverseAngle >= 135 || reverseAngle < -135) { currentStyle['entryX'] = 1.0; currentStyle['entryY'] = 0.5; }
++                                    else { currentStyle['entryX'] = 0.5; currentStyle['entryY'] = 1.0; }
++                                }
++                                
++                                cell.setStyle(currentStyle);
++                                console.log(`📐 DrawIO: Separated in/out for rectangle edge ${id}`);
++                            }
++                        }
++                    }
++                }
+                             }
+                         }
+                     }
+                 });
++                
++                // CRITICAL: Apply connection point fixes AFTER all cells and terminals are set
++                console.log('📐 DrawIO: Post-processing edges for connection point fixes');
++                edgeCells.forEach(({id, element}) => {
++                    const cell = model.cells[id]; // Get from model, not cellMap
++                    if (!cell || !cell.isEdge()) return;
++                    
++                    const sourceId = element.getAttribute('source');
++                    const targetId = element.getAttribute('target');
++                    if (!sourceId || !targetId) return;
++                    
++                    const sourceCell = model.cells[sourceId];
++                    const targetCell = model.cells[targetId];
++                    if (!sourceCell || !targetCell) return;
++                    
++                    const currentStyle = cell.getStyle();
++                    
++                    // Skip if connection points are already defined
++                    if (currentStyle &&
++                        (currentStyle['exitX'] !== undefined || 
++                         currentStyle['exitY'] !== undefined ||
++                         currentStyle['entryX'] !== undefined || 
++                         currentStyle['entryY'] !== undefined)) {
++                        return;
++                    }
++                    
++                    // Check if this is a bidirectional pair (A↔B)
++                    const pairKey = sourceId < targetId ? `${sourceId}-${targetId}` : `${targetId}-${sourceId}`;
++                    const pairEdges = edgePairs.get(pairKey) || [];
++                    const isBidirectional = pairEdges.length > 1;
++                    
++                    if (isBidirectional) {
++                        // CASE 1: True bidirectional - offset to prevent overlap
++                        const sourceGeom = sourceCell.getGeometry();
++                        const targetGeom = targetCell.getGeometry();
++                        
++                        if (sourceGeom && targetGeom) {
++                            const dx = targetGeom.x + targetGeom.width/2 - (sourceGeom.x + sourceGeom.width/2);
++                            const dy = targetGeom.y + targetGeom.height/2 - (sourceGeom.y + sourceGeom.height/2);
++                            const isHorizontal = Math.abs(dx) > Math.abs(dy);
++                            
++                            const edgeIndex = pairEdges.indexOf(id);
++                            const offset = edgeIndex === 0 ? -0.2 : 0.2;
++                            
++                            if (isHorizontal) {
++                                currentStyle['exitY'] = 0.5 + offset;
++                                currentStyle['entryY'] = 0.5 + offset;
++                            } else {
++                                currentStyle['exitX'] = 0.5 + offset;
++                                currentStyle['entryX'] = 0.5 + offset;
++                            }
++                            
++                            cell.setStyle(currentStyle);
++                            console.log(`📐 DrawIO: POST-PROCESS: Offset bidirectional edge ${id} by ${offset}`);
++                        }
++                    } else {
++                        // CASE 2: Check for in/out on rectangles (skip rhombus/ellipse)
++                        const sourceStyle = sourceCell.getStyle();
++                        const targetStyle = targetCell.getStyle();
++                        
++                        const isSourceRectangle = sourceStyle && 
++                            !sourceStyle['rhombus'] && 
++                            !sourceStyle['ellipse'] && 
++                            sourceStyle['shape'] !== 'rhombus' &&
++                            sourceStyle['shape'] !== 'ellipse';
++                            
++                        const isTargetRectangle = targetStyle && 
++                            !targetStyle['rhombus'] && 
++                            !targetStyle['ellipse'] &&
++                            targetStyle['shape'] !== 'rhombus' &&
++                            targetStyle['shape'] !== 'ellipse';
++                        
++                        const sourceDirs = vertexEdgeDirections.get(sourceId);
++                        const targetDirs = vertexEdgeDirections.get(targetId);
++                        
++                        const sourceHasBoth = sourceDirs && sourceDirs.incoming.length > 0 && sourceDirs.outgoing.length > 0;
++                        const targetHasBoth = targetDirs && targetDirs.incoming.length > 0 && targetDirs.outgoing.length > 0;
++                        
++                        // Only adjust rectangles with both in/out
++                        if ((isSourceRectangle && sourceHasBoth) || (isTargetRectangle && targetHasBoth)) {
++                            const sourceGeom = sourceCell.getGeometry();
++                            const targetGeom = targetCell.getGeometry();
++                            
++                            if (sourceGeom && targetGeom) {
++                                const dx = targetGeom.x + targetGeom.width/2 - (sourceGeom.x + sourceGeom.width/2);
++                                const dy = targetGeom.y + targetGeom.height/2 - (sourceGeom.y + sourceGeom.height/2);
++                                const angle = Math.atan2(dy, dx) * (180 / Math.PI);
++                                
++                                // Use angle-based attachment (respects natural flow direction)
++                                if (isSourceRectangle && sourceHasBoth) {
++                                    if (angle >= -45 && angle < 45) { currentStyle['exitX'] = 1.0; currentStyle['exitY'] = 0.5; }
++                                    else if (angle >= 45 && angle < 135) { currentStyle['exitX'] = 0.5; currentStyle['exitY'] = 1.0; }
++                                    else if (angle >= 135 || angle < -135) { currentStyle['exitX'] = 0.0; currentStyle['exitY'] = 0.5; }
++                                    else { currentStyle['exitX'] = 0.5; currentStyle['exitY'] = 0.0; }
++                                }
++                                
++                                if (isTargetRectangle && targetHasBoth) {
++                                    const reverseAngle = (angle + 180) % 360 - 180;
++                                    if (reverseAngle >= -45 && reverseAngle < 45) { currentStyle['entryX'] = 0.0; currentStyle['entryY'] = 0.5; }
++                                    else if (reverseAngle >= 45 && reverseAngle < 135) { currentStyle['entryX'] = 0.5; currentStyle['entryY'] = 0.0; }
++                                    else if (reverseAngle >= 135 || reverseAngle < -135) { currentStyle['entryX'] = 1.0; currentStyle['entryY'] = 0.5; }
++                                    else { currentStyle['entryX'] = 0.5; currentStyle['entryY'] = 1.0; }
++                                }
++                                
++                                cell.setStyle(currentStyle);
++                                console.log(`📐 DrawIO: POST-PROCESS: Separated in/out for rectangle edge ${id}`);
++                            }
++                        }
++                    }
++                });
++                
+                 // CRITICAL FIX: After adding all cells, refresh the view to apply styles
+                 console.log('📐 DrawIO: Refreshing graph view to apply cell styles');
