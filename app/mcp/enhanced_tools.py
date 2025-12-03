@@ -163,27 +163,42 @@ class DirectMCPTool(BaseTool):
     def __init__(self, tool_instance):
         """Initialize the direct MCP tool wrapper."""
         
+        # Check if tool is internal
+        is_internal = hasattr(tool_instance, 'is_internal') and tool_instance.is_internal
+        
+        # Get args_schema BEFORE calling super().__init__
+        args_schema = None
+        if hasattr(tool_instance, 'InputSchema'):
+            try:
+                args_schema = tool_instance.InputSchema
+                logger.debug(f"Found InputSchema for {tool_instance.name}: {args_schema}")
+            except Exception as e:
+                logger.warning(f"Could not get args schema for {tool_instance.name}: {e}")
+        
         # Initialize BaseTool with the tool's metadata
+        metadata = {'is_internal': is_internal}
+        
         super().__init__(
-            name=f"mcp_{tool_instance.name}",
+            name=tool_instance.name,
             description=f"[DIRECT] {tool_instance.description}",
-            args_schema=None  # Will be set from tool's input schema
+            args_schema=args_schema,
+            metadata=metadata
         )
         
         # Set tool_instance after super().__init__
         self.tool_instance = tool_instance
         
-        # Set the args schema if available
-        if hasattr(tool_instance, 'InputSchema'):
-            try:
-                # Convert Pydantic model to args schema
-                self.args_schema = tool_instance.InputSchema
-            except Exception as e:
-                logger.warning(f"Could not set args schema for {tool_instance.name}: {e}")
+        if is_internal:
+            logger.info(f"🔇 Initialized internal tool: {tool_instance.name}")
     
     def _run(self, **kwargs) -> str:
         """Run the tool synchronously."""
         import asyncio
+        import traceback
+        
+        logger.info(f"🔧 DirectMCPTool._run called for {self.tool_instance.name}")
+        logger.info(f"🔧 Arguments: {kwargs}")
+        logger.info(f"🔧 Tool instance: {self.tool_instance}")
         
         # Run the async execute method
         try:
@@ -194,17 +209,41 @@ class DirectMCPTool(BaseTool):
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(asyncio.run, self.tool_instance.execute(**kwargs))
                     result = future.result(timeout=30)
+                    logger.info(f"🔧 Got result from ThreadPoolExecutor: {type(result)}")
             else:
                 result = loop.run_until_complete(self.tool_instance.execute(**kwargs))
-        except RuntimeError:
+                logger.info(f"🔧 Got result from run_until_complete: {type(result)}")
+        except RuntimeError as e:
             # No event loop, create one
-            result = asyncio.run(self.tool_instance.execute(**kwargs))
+            try:
+                result = asyncio.run(self.tool_instance.execute(**kwargs))
+                logger.info(f"🔧 Got result from asyncio.run: {type(result)}")
+            except Exception as ex:
+                error_msg = f"Error executing builtin tool {self.tool_instance.name}: {str(ex)}"
+                logger.error(f"{error_msg}\n{traceback.format_exc()}")
+                return f"❌ {error_msg}"
+        except Exception as e:
+            error_msg = f"Error executing builtin tool {self.tool_instance.name}: {str(e)}"
+            logger.error(f"{error_msg}\n{traceback.format_exc()}")
+            return f"❌ {error_msg}"
+        
+        logger.info(f"🔧 Result after execution: type={type(result)}, value={str(result)[:200]}")
+        
+        # Internal tools: suppress output to user
+        if hasattr(self.tool_instance, 'is_internal') and self.tool_instance.is_internal:
+            logger.info(f"🔇 Internal tool {self.tool_instance.name} - output suppressed")
+            return ""
         
         # Format the result
         if isinstance(result, dict):
+            logger.info(f"🔧 Result is dict, keys: {result.keys()}")
             if result.get("error"):
                 error_message = result.get('message', 'Unknown error')
                 return f"❌ Error: {error_message}"
+            elif result.get("content"):
+                # Return content directly for information retrieval tools
+                logger.info(f"🔧 Returning content, length: {len(result['content'])}")
+                return result["content"]
             elif result.get("success"):
                 message = result.get("message", "Operation completed successfully")
                 
@@ -231,7 +270,13 @@ class DirectMCPTool(BaseTool):
     async def _arun(self, **kwargs) -> str:
         """Run the tool asynchronously."""
         try:
+            # Execute the tool
             result = await self.tool_instance.execute(**kwargs)
+            
+            # Internal tools: suppress output to user
+            if hasattr(self.tool_instance, 'is_internal') and self.tool_instance.is_internal:
+                logger.info(f"🔇 Internal tool {self.tool_instance.name} - output suppressed")
+                return ""
             
             # Format the result
             if isinstance(result, dict):

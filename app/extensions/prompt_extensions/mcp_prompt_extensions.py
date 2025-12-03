@@ -115,12 +115,19 @@ If you catch yourself about to modify a file with a tool - STOP and provide a di
 ## MCP Tool Usage - CRITICAL INSTRUCTIONS
 **EXECUTE TOOLS WHEN REQUESTED - Never simulate or describe what you would do.**
 
-**Available Tools:**
 """ + _get_tool_descriptions_from_mcp(available_tools) + """
+
+""" + _get_tool_parameter_schemas(available_tools) + """
+
+CRITICAL: PARAMETER VERIFICATION
+Before ANY tool call: Find tool schema -> Verify EXACT parameter names -> Match character-for-character
+Common error: Using 'query' when schema says 'searchQuery' (or similar name mismatches)
+DO NOT guess names from similar tools. Each tool has its own parameter names.
 
 """ + _get_tool_call_formats_from_mcp(available_tools) + """
 
-**Usage Rules:**
+**Usage 
+
 0. **Answer from context first** - Only use tools when you need information not available in the provided context
 1. **Prefer local context and AST over tools** when either can provide similar information
 2. **When using tools, use actual results** - Never fabricate output
@@ -198,6 +205,44 @@ def _get_tool_descriptions_from_mcp(available_tools: list) -> str:
     
     return "\n".join(tool_descriptions)
 
+def _get_tool_parameter_schemas(available_tools: list) -> str:
+    """Get detailed parameter schemas for MCP tools."""
+    tool_schemas = []
+    
+    try:
+        from app.mcp.manager import get_mcp_manager
+        mcp_manager = get_mcp_manager()
+        
+        if mcp_manager.is_initialized:
+            mcp_tools = mcp_manager.get_all_tools()
+            tool_map = {tool.name: tool for tool in mcp_tools}
+            
+            for tool_name in available_tools:
+                clean_name = tool_name[4:] if tool_name.startswith("mcp_") else tool_name
+                
+                if clean_name in tool_map:
+                    tool = tool_map[clean_name]
+                    display_name = f"mcp_{clean_name}" if not tool_name.startswith("mcp_") else tool_name
+                    
+                    schema = tool.inputSchema
+                    if schema and 'properties' in schema:
+                        schema_parts = [f"\n**{display_name} Parameters:**"]
+                        for param_name, param_info in schema['properties'].items():
+                            param_type = param_info.get('type', 'any')
+                            param_desc = param_info.get('description', '')
+                            required = param_name in schema.get('required', [])
+                            req_marker = " (required)" if required else " (optional)"
+                            schema_parts.append(f"  - `{param_name}` ({param_type}){req_marker}: {param_desc}")
+                        tool_schemas.append("\n".join(schema_parts))
+    except Exception as e:
+        logger.warning(f"Could not get MCP tool parameter schemas: {e}")
+        return ""
+    
+    if not tool_schemas:
+        return ""
+    
+    return "\n\n".join(tool_schemas) + "\n"
+
 def _get_tool_call_formats_from_mcp(available_tools: list) -> str:
     """Generate tool call format examples from actual MCP tool schemas."""
     try:
@@ -250,6 +295,30 @@ def _generate_example_args_from_schema(schema: dict, tool_name: str) -> str:
     properties = schema.get("properties", {})
     required = schema.get("required", [])
     
+    # CRITICAL: Check if this tool uses the tool_input wrapper pattern
+    # Many MCP tools have a single top-level "tool_input" property that contains all params
+    if len(properties) == 1 and "tool_input" in properties:
+        logger.debug(f"Tool {tool_name} uses tool_input wrapper pattern")
+        tool_input_schema = properties["tool_input"]
+        
+        # If tool_input is an object with its own properties, generate examples from those
+        if isinstance(tool_input_schema, dict) and "properties" in tool_input_schema:
+            inner_properties = tool_input_schema["properties"]
+            inner_required = tool_input_schema.get("required", [])
+            
+            # Generate inner arguments
+            inner_args = {}
+            for prop_name, prop_info in inner_properties.items():
+                if prop_name in inner_required or len(inner_properties) <= 2:
+                    inner_args[prop_name] = _get_example_value_for_property(prop_info, prop_name, tool_name)
+            
+            # Wrap in tool_input
+            example_args = {"tool_input": inner_args}
+            import json
+            json_str = json.dumps(example_args, indent=2)
+            return json_str.replace('{', '{{').replace('}', '}}')
+    
+    # Standard case: properties are at the root level
     example_args = {}
     for prop_name, prop_info in properties.items():
         if prop_name in required or len(properties) <= 2:  # Include all if few properties
