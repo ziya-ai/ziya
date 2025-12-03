@@ -114,6 +114,9 @@ class DirectStreamingAgent:
         """
         try:
             logger.debug(f"DirectStreamingAgent received {len(messages)} messages")
+            logger.info(f"🔍 DIRECT_STREAMING: Received {len(tools) if tools else 0} tools")
+            if tools:
+                logger.info(f"🔍 DIRECT_STREAMING: Tool types: {[type(t).__name__ for t in tools[:5]]}")
             
             # Log user messages at INFO level
             for i, msg in enumerate(messages):
@@ -141,6 +144,9 @@ class DirectStreamingAgent:
                 chunk_count = 0
                 tool_results_sent = 0
                 largest_chunk = 0
+                logger.info(f"🔍 BEFORE_EXECUTOR_CALL: About to call executor.stream_with_tools with {len(tools) if tools else 0} tools")
+                if tools:
+                    logger.info(f"🔍 BEFORE_EXECUTOR_CALL: Tool names: {[t.name for t in tools[:5]]}")
                 async for chunk in self.executor.stream_with_tools(openai_messages, tools, conversation_id=conversation_id):
                     chunk_count += 1
                     chunk_size = len(str(chunk))
