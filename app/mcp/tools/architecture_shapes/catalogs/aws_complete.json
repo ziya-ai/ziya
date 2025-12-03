@@ -1,0 +1,1465 @@
+{
+  "provider_id": "aws",
+  "provider_name": "AWS Services",
+  "version": "2024.1",
+  "source": "AWS Architecture Icons (Public)",
+  "description": "Complete catalog of AWS services using public AWS Architecture Icons from https://aws.amazon.com/architecture/icons/",
+  "shapes": [
+    {
+      "id": "aws_ec2",
+      "name": "EC2",
+      "category": "compute",
+      "color": "orange",
+      "description": "Elastic Compute Cloud - virtual servers in the cloud",
+      "keywords": ["ec2", "instance", "vm", "server", "compute", "virtual machine"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.ec2"},
+        "mermaid": {"icon": "aws-ec2"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_ec2_instance",
+      "name": "EC2 Instance",
+      "category": "compute",
+      "color": "orange",
+      "description": "EC2 Instance - individual virtual machine",
+      "keywords": ["ec2", "instance", "vm", "server"],
+      "defaultSize": {"width": 48, "height": 48},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.instance2"},
+        "mermaid": {"icon": "aws-ec2-instance"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_lambda",
+      "name": "Lambda",
+      "category": "compute",
+      "color": "orange",
+      "description": "Lambda - serverless compute service",
+      "keywords": ["lambda", "function", "serverless", "faas", "compute"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.lambda_function"},
+        "mermaid": {"icon": "aws-lambda"},
+        "graphviz": {"shape": "box", "style": "filled,rounded"}
+      }
+    },
+    {
+      "id": "aws_elastic_beanstalk",
+      "name": "Elastic Beanstalk",
+      "category": "compute",
+      "color": "orange",
+      "description": "Elastic Beanstalk - application deployment and management",
+      "keywords": ["beanstalk", "deployment", "paas", "application", "web app"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.elastic_beanstalk"},
+        "mermaid": {"icon": "aws-elastic-beanstalk"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_lightsail",
+      "name": "Lightsail",
+      "category": "compute",
+      "color": "orange",
+      "description": "Lightsail - simple virtual private servers",
+      "keywords": ["lightsail", "vps", "simple", "vm", "virtual private server"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.lightsail"},
+        "mermaid": {"icon": "aws-lightsail"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_batch",
+      "name": "Batch",
+      "category": "compute",
+      "color": "orange",
+      "description": "AWS Batch - fully managed batch computing",
+      "keywords": ["batch", "jobs", "compute", "processing", "queue"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.batch"},
+        "mermaid": {"icon": "aws-batch"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_outposts",
+      "name": "Outposts",
+      "category": "compute",
+      "color": "orange",
+      "description": "AWS Outposts - hybrid cloud infrastructure",
+      "keywords": ["outposts", "hybrid", "on-premises", "local"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.outposts"},
+        "mermaid": {"icon": "aws-outposts"},
+        "graphviz": {"shape": "box", "style": "filled,bold"}
+      }
+    },
+    {
+      "id": "aws_auto_scaling",
+      "name": "Auto Scaling",
+      "category": "compute",
+      "color": "orange",
+      "description": "EC2 Auto Scaling - automatic capacity adjustment",
+      "keywords": ["auto scaling", "scaling", "asg", "capacity", "elasticity"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.auto_scaling"},
+        "mermaid": {"icon": "aws-auto-scaling"},
+        "graphviz": {"shape": "box", "style": "filled,dashed"}
+      }
+    },
+    {
+      "id": "aws_ecs",
+      "name": "ECS",
+      "category": "container",
+      "color": "orange",
+      "description": "Elastic Container Service - container orchestration",
+      "keywords": ["ecs", "container", "docker", "orchestration", "task"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.ecs"},
+        "mermaid": {"icon": "aws-ecs"},
+        "graphviz": {"shape": "component", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_ecr",
+      "name": "ECR",
+      "category": "container",
+      "color": "orange",
+      "description": "Elastic Container Registry - Docker container registry",
+      "keywords": ["ecr", "registry", "docker", "images", "container"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.ecr"},
+        "mermaid": {"icon": "aws-ecr"},
+        "graphviz": {"shape": "cylinder", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_eks",
+      "name": "EKS",
+      "category": "container",
+      "color": "orange",
+      "description": "Elastic Kubernetes Service - managed Kubernetes",
+      "keywords": ["eks", "kubernetes", "k8s", "container", "orchestration"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.eks"},
+        "mermaid": {"icon": "aws-eks"},
+        "graphviz": {"shape": "component", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_fargate",
+      "name": "Fargate",
+      "category": "container",
+      "color": "orange",
+      "description": "AWS Fargate - serverless compute for containers",
+      "keywords": ["fargate", "serverless", "container", "ecs", "eks"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.fargate"},
+        "mermaid": {"icon": "aws-fargate"},
+        "graphviz": {"shape": "component", "style": "filled,rounded"}
+      }
+    },
+    {
+      "id": "aws_s3",
+      "name": "S3",
+      "category": "storage",
+      "color": "green",
+      "description": "Simple Storage Service - object storage",
+      "keywords": ["s3", "storage", "bucket", "object", "blob", "file"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.s3"},
+        "mermaid": {"icon": "aws-s3"},
+        "graphviz": {"shape": "cylinder", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_s3_glacier",
+      "name": "S3 Glacier",
+      "category": "storage",
+      "color": "green",
+      "description": "S3 Glacier - long-term archive storage",
+      "keywords": ["glacier", "archive", "backup", "cold storage", "s3"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.s3_glacier"},
+        "mermaid": {"icon": "aws-glacier"},
+        "graphviz": {"shape": "cylinder", "style": "filled,dashed"}
+      }
+    },
+    {
+      "id": "aws_efs",
+      "name": "EFS",
+      "category": "storage",
+      "color": "green",
+      "description": "Elastic File System - network filesystem",
+      "keywords": ["efs", "filesystem", "nfs", "shared", "file", "network"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.efs"},
+        "mermaid": {"icon": "aws-efs"},
+        "graphviz": {"shape": "folder", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_fsx",
+      "name": "FSx",
+      "category": "storage",
+      "color": "green",
+      "description": "FSx - fully managed third-party file systems",
+      "keywords": ["fsx", "filesystem", "file", "windows", "lustre", "ontap"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.fsx"},
+        "mermaid": {"icon": "aws-fsx"},
+        "graphviz": {"shape": "folder", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_ebs",
+      "name": "EBS",
+      "category": "storage",
+      "color": "green",
+      "description": "Elastic Block Store - block storage volumes for EC2",
+      "keywords": ["ebs", "volume", "block", "storage", "disk"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.ebs"},
+        "mermaid": {"icon": "aws-ebs"},
+        "graphviz": {"shape": "cylinder", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_storage_gateway",
+      "name": "Storage Gateway",
+      "category": "storage",
+      "color": "green",
+      "description": "Storage Gateway - hybrid cloud storage integration",
+      "keywords": ["storage gateway", "hybrid", "backup", "on-premises"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.storage_gateway"},
+        "mermaid": {"icon": "aws-storage-gateway"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_backup",
+      "name": "Backup",
+      "category": "storage",
+      "color": "green",
+      "description": "AWS Backup - centralized backup service",
+      "keywords": ["backup", "restore", "recovery", "snapshot"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.backup"},
+        "mermaid": {"icon": "aws-backup"},
+        "graphviz": {"shape": "cylinder", "style": "filled,dashed"}
+      }
+    },
+    {
+      "id": "aws_dynamodb",
+      "name": "DynamoDB",
+      "category": "database",
+      "color": "blue",
+      "description": "DynamoDB - fully managed NoSQL database",
+      "keywords": ["dynamodb", "database", "nosql", "table", "keyvalue", "document"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.dynamodb"},
+        "mermaid": {"icon": "aws-dynamodb"},
+        "graphviz": {"shape": "cylinder", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_rds",
+      "name": "RDS",
+      "category": "database",
+      "color": "blue",
+      "description": "Relational Database Service - managed relational databases",
+      "keywords": ["rds", "database", "sql", "relational", "postgres", "mysql", "oracle", "sqlserver"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.rds"},
+        "mermaid": {"icon": "aws-rds"},
+        "graphviz": {"shape": "cylinder", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_aurora",
+      "name": "Aurora",
+      "category": "database",
+      "color": "blue",
+      "description": "Aurora - MySQL and PostgreSQL compatible relational database",
+      "keywords": ["aurora", "database", "mysql", "postgres", "relational"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.aurora"},
+        "mermaid": {"icon": "aws-aurora"},
+        "graphviz": {"shape": "cylinder", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_elasticache",
+      "name": "ElastiCache",
+      "category": "database",
+      "color": "blue",
+      "description": "ElastiCache - in-memory caching (Redis, Memcached)",
+      "keywords": ["elasticache", "cache", "redis", "memcached", "inmemory", "memory"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.elasticache"},
+        "mermaid": {"icon": "aws-elasticache"},
+        "graphviz": {"shape": "cylinder", "style": "filled,rounded"}
+      }
+    },
+    {
+      "id": "aws_neptune",
+      "name": "Neptune",
+      "category": "database",
+      "color": "blue",
+      "description": "Neptune - graph database service",
+      "keywords": ["neptune", "graph", "database", "relationships", "nodes"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.neptune"},
+        "mermaid": {"icon": "aws-neptune"},
+        "graphviz": {"shape": "ellipse", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_documentdb",
+      "name": "DocumentDB",
+      "category": "database",
+      "color": "blue",
+      "description": "DocumentDB - MongoDB-compatible document database",
+      "keywords": ["documentdb", "mongodb", "document", "database", "nosql"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.documentdb"},
+        "mermaid": {"icon": "aws-documentdb"},
+        "graphviz": {"shape": "cylinder", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_redshift",
+      "name": "Redshift",
+      "category": "database",
+      "color": "blue",
+      "description": "Redshift - data warehouse service",
+      "keywords": ["redshift", "warehouse", "analytics", "olap", "sql", "data"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.redshift"},
+        "mermaid": {"icon": "aws-redshift"},
+        "graphviz": {"shape": "cylinder", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_keyspaces",
+      "name": "Keyspaces",
+      "category": "database",
+      "color": "blue",
+      "description": "Amazon Keyspaces - Cassandra-compatible database",
+      "keywords": ["keyspaces", "cassandra", "database", "nosql"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.keyspaces"},
+        "mermaid": {"icon": "aws-keyspaces"},
+        "graphviz": {"shape": "cylinder", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_timestream",
+      "name": "Timestream",
+      "category": "database",
+      "color": "blue",
+      "description": "Timestream - time series database",
+      "keywords": ["timestream", "timeseries", "database", "iot", "metrics"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.timestream"},
+        "mermaid": {"icon": "aws-timestream"},
+        "graphviz": {"shape": "cylinder", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_qldb",
+      "name": "QLDB",
+      "category": "database",
+      "color": "blue",
+      "description": "Quantum Ledger Database - ledger database",
+      "keywords": ["qldb", "ledger", "blockchain", "immutable", "database"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.qldb"},
+        "mermaid": {"icon": "aws-qldb"},
+        "graphviz": {"shape": "cylinder", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_dms",
+      "name": "Database Migration Service",
+      "category": "database",
+      "color": "blue",
+      "description": "DMS - database migration service",
+      "keywords": ["dms", "migration", "database", "transfer", "replication"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.dms"},
+        "mermaid": {"icon": "aws-dms"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_vpc",
+      "name": "VPC",
+      "category": "networking",
+      "color": "purple",
+      "description": "Virtual Private Cloud - isolated network environment",
+      "keywords": ["vpc", "network", "virtual", "cloud", "subnet", "private"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.vpc"},
+        "mermaid": {"icon": "aws-vpc"},
+        "graphviz": {"shape": "box", "style": "filled,dashed"}
+      }
+    },
+    {
+      "id": "aws_api_gateway",
+      "name": "API Gateway",
+      "category": "networking",
+      "color": "pink",
+      "description": "API Gateway - create and manage APIs",
+      "keywords": ["api", "gateway", "rest", "http", "websocket", "endpoint"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.api_gateway"},
+        "mermaid": {"icon": "aws-api-gateway"},
+        "graphviz": {"shape": "hexagon", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_cloudfront",
+      "name": "CloudFront",
+      "category": "networking",
+      "color": "purple",
+      "description": "CloudFront - content delivery network (CDN)",
+      "keywords": ["cloudfront", "cdn", "edge", "cache", "distribution", "content"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.cloudfront"},
+        "mermaid": {"icon": "aws-cloudfront"},
+        "graphviz": {"shape": "ellipse", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_route53",
+      "name": "Route 53",
+      "category": "networking",
+      "color": "purple",
+      "description": "Route 53 - scalable DNS service",
+      "keywords": ["route53", "dns", "domain", "hosted zone", "routing"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.route_53"},
+        "mermaid": {"icon": "aws-route53"},
+        "graphviz": {"shape": "ellipse", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_elb",
+      "name": "Elastic Load Balancing",
+      "category": "networking",
+      "color": "purple",
+      "description": "Elastic Load Balancing - distribute traffic (ALB, NLB, CLB)",
+      "keywords": ["elb", "alb", "nlb", "load balancer", "traffic", "distribution"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.elastic_load_balancing"},
+        "mermaid": {"icon": "aws-elb"},
+        "graphviz": {"shape": "trapezium", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_transit_gateway",
+      "name": "Transit Gateway",
+      "category": "networking",
+      "color": "purple",
+      "description": "Transit Gateway - connect VPCs and on-premises networks",
+      "keywords": ["transit gateway", "tgw", "network", "hub", "peering", "routing"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.transit_gateway"},
+        "mermaid": {"icon": "aws-transit-gateway"},
+        "graphviz": {"shape": "diamond", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_vpn_gateway",
+      "name": "VPN Gateway",
+      "category": "networking",
+      "color": "purple",
+      "description": "VPN Gateway - managed VPN connections",
+      "keywords": ["vpn", "gateway", "tunnel", "connection", "ipsec"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.vpn_gateway"},
+        "mermaid": {"icon": "aws-vpn-gateway"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_direct_connect",
+      "name": "Direct Connect",
+      "category": "networking",
+      "color": "purple",
+      "description": "Direct Connect - dedicated network connection to AWS",
+      "keywords": ["direct connect", "dx", "dedicated", "network", "private"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.direct_connect"},
+        "mermaid": {"icon": "aws-direct-connect"},
+        "graphviz": {"shape": "box", "style": "filled,bold"}
+      }
+    },
+    {
+      "id": "aws_global_accelerator",
+      "name": "Global Accelerator",
+      "category": "networking",
+      "color": "purple",
+      "description": "Global Accelerator - improve application availability and performance",
+      "keywords": ["global accelerator", "anycast", "performance", "acceleration", "network"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.global_accelerator"},
+        "mermaid": {"icon": "aws-global-accelerator"},
+        "graphviz": {"shape": "ellipse", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_privatelink",
+      "name": "PrivateLink",
+      "category": "networking",
+      "color": "purple",
+      "description": "PrivateLink - private connectivity to services",
+      "keywords": ["privatelink", "endpoint", "private", "vpc", "service"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.privatelink"},
+        "mermaid": {"icon": "aws-privatelink"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_cloud_map",
+      "name": "Cloud Map",
+      "category": "networking",
+      "color": "purple",
+      "description": "Cloud Map - service discovery for cloud resources",
+      "keywords": ["cloud map", "service discovery", "dns", "discovery"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.cloud_map"},
+        "mermaid": {"icon": "aws-cloud-map"},
+        "graphviz": {"shape": "ellipse", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_app_mesh",
+      "name": "App Mesh",
+      "category": "networking",
+      "color": "purple",
+      "description": "App Mesh - application-level networking for microservices",
+      "keywords": ["app mesh", "service mesh", "microservices", "networking"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.app_mesh"},
+        "mermaid": {"icon": "aws-app-mesh"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_nat_gateway",
+      "name": "NAT Gateway",
+      "category": "networking",
+      "color": "purple",
+      "description": "NAT Gateway - enable outbound internet access",
+      "keywords": ["nat", "gateway", "internet", "outbound", "network"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.nat_gateway"},
+        "mermaid": {"icon": "aws-nat-gateway"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_internet_gateway",
+      "name": "Internet Gateway",
+      "category": "networking",
+      "color": "purple",
+      "description": "Internet Gateway - allow VPC internet access",
+      "keywords": ["internet gateway", "igw", "internet", "public", "vpc"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.internet_gateway"},
+        "mermaid": {"icon": "aws-internet-gateway"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_client_vpn",
+      "name": "Client VPN",
+      "category": "networking",
+      "color": "purple",
+      "description": "Client VPN - managed client-based VPN service",
+      "keywords": ["client vpn", "vpn", "remote", "access"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.client_vpn"},
+        "mermaid": {"icon": "aws-client-vpn"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_sqs",
+      "name": "SQS",
+      "category": "integration",
+      "color": "pink",
+      "description": "Simple Queue Service - fully managed message queuing",
+      "keywords": ["sqs", "queue", "message", "async", "fifo", "standard"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.sqs"},
+        "mermaid": {"icon": "aws-sqs"},
+        "graphviz": {"shape": "box", "style": "filled,dashed"}
+      }
+    },
+    {
+      "id": "aws_sns",
+      "name": "SNS",
+      "category": "integration",
+      "color": "pink",
+      "description": "Simple Notification Service - pub/sub messaging",
+      "keywords": ["sns", "topic", "pubsub", "notification", "fanout", "publish"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.sns"},
+        "mermaid": {"icon": "aws-sns"},
+        "graphviz": {"shape": "ellipse", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_eventbridge",
+      "name": "EventBridge",
+      "category": "integration",
+      "color": "pink",
+      "description": "EventBridge - serverless event bus",
+      "keywords": ["eventbridge", "events", "bus", "rule", "trigger", "event driven"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.eventbridge"},
+        "mermaid": {"icon": "aws-eventbridge"},
+        "graphviz": {"shape": "ellipse", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_step_functions",
+      "name": "Step Functions",
+      "category": "integration",
+      "color": "pink",
+      "description": "Step Functions - orchestrate distributed applications",
+      "keywords": ["step functions", "workflow", "orchestration", "state machine", "sfn"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.step_functions"},
+        "mermaid": {"icon": "aws-step-functions"},
+        "graphviz": {"shape": "box", "style": "filled,rounded"}
+      }
+    },
+    {
+      "id": "aws_mq",
+      "name": "Amazon MQ",
+      "category": "integration",
+      "color": "pink",
+      "description": "Amazon MQ - managed message broker (ActiveMQ, RabbitMQ)",
+      "keywords": ["mq", "message broker", "activemq", "rabbitmq", "queue"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.mq"},
+        "mermaid": {"icon": "aws-mq"},
+        "graphviz": {"shape": "box", "style": "filled,dashed"}
+      }
+    },
+    {
+      "id": "aws_appsync",
+      "name": "AppSync",
+      "category": "integration",
+      "color": "pink",
+      "description": "AppSync - managed GraphQL service",
+      "keywords": ["appsync", "graphql", "api", "realtime", "subscription"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.appsync"},
+        "mermaid": {"icon": "aws-appsync"},
+        "graphviz": {"shape": "hexagon", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_iam",
+      "name": "IAM",
+      "category": "security",
+      "color": "red",
+      "description": "Identity and Access Management - manage access to AWS",
+      "keywords": ["iam", "identity", "access", "auth", "permission", "role", "policy", "user"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.iam"},
+        "mermaid": {"icon": "aws-iam"},
+        "graphviz": {"shape": "octagon", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_cognito",
+      "name": "Cognito",
+      "category": "security",
+      "color": "red",
+      "description": "Cognito - user sign-up, sign-in, and access control",
+      "keywords": ["cognito", "auth", "authentication", "user", "login", "sso", "identity"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.cognito"},
+        "mermaid": {"icon": "aws-cognito"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_kms",
+      "name": "KMS",
+      "category": "security",
+      "color": "red",
+      "description": "Key Management Service - create and control encryption keys",
+      "keywords": ["kms", "encryption", "key", "crypto", "cmk", "security"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.kms"},
+        "mermaid": {"icon": "aws-kms"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_secrets_manager",
+      "name": "Secrets Manager",
+      "category": "security",
+      "color": "red",
+      "description": "Secrets Manager - rotate, manage, and retrieve credentials",
+      "keywords": ["secrets manager", "secrets", "credentials", "password", "api key", "token"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.secrets_manager"},
+        "mermaid": {"icon": "aws-secrets-manager"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_waf",
+      "name": "WAF",
+      "category": "security",
+      "color": "red",
+      "description": "Web Application Firewall - protect web applications",
+      "keywords": ["waf", "firewall", "web", "protection", "rules", "security"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.waf"},
+        "mermaid": {"icon": "aws-waf"},
+        "graphviz": {"shape": "octagon", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_shield",
+      "name": "Shield",
+      "category": "security",
+      "color": "red",
+      "description": "AWS Shield - DDoS protection",
+      "keywords": ["shield", "ddos", "protection", "security", "defense"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.shield"},
+        "mermaid": {"icon": "aws-shield"},
+        "graphviz": {"shape": "octagon", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_guardduty",
+      "name": "GuardDuty",
+      "category": "security",
+      "color": "red",
+      "description": "GuardDuty - intelligent threat detection",
+      "keywords": ["guardduty", "threat", "detection", "security", "monitoring"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.guardduty"},
+        "mermaid": {"icon": "aws-guardduty"},
+        "graphviz": {"shape": "octagon", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_inspector",
+      "name": "Inspector",
+      "category": "security",
+      "color": "red",
+      "description": "Inspector - automated security assessment",
+      "keywords": ["inspector", "security", "assessment", "vulnerability", "scan"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.inspector"},
+        "mermaid": {"icon": "aws-inspector"},
+        "graphviz": {"shape": "octagon", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_macie",
+      "name": "Macie",
+      "category": "security",
+      "color": "red",
+      "description": "Macie - discover and protect sensitive data",
+      "keywords": ["macie", "data", "privacy", "sensitive", "pii", "security"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.macie"},
+        "mermaid": {"icon": "aws-macie"},
+        "graphviz": {"shape": "octagon", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_certificate_manager",
+      "name": "Certificate Manager",
+      "category": "security",
+      "color": "red",
+      "description": "Certificate Manager - provision and manage SSL/TLS certificates",
+      "keywords": ["acm", "certificate", "ssl", "tls", "https", "security"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.certificate_manager"},
+        "mermaid": {"icon": "aws-certificate-manager"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_directory_service",
+      "name": "Directory Service",
+      "category": "security",
+      "color": "red",
+      "description": "Directory Service - managed Microsoft Active Directory",
+      "keywords": ["directory service", "active directory", "ad", "ldap", "identity"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.directory_service"},
+        "mermaid": {"icon": "aws-directory-service"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_security_hub",
+      "name": "Security Hub",
+      "category": "security",
+      "color": "red",
+      "description": "Security Hub - unified security and compliance center",
+      "keywords": ["security hub", "compliance", "security", "posture", "findings"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.security_hub"},
+        "mermaid": {"icon": "aws-security-hub"},
+        "graphviz": {"shape": "octagon", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_cloudwatch",
+      "name": "CloudWatch",
+      "category": "analytics",
+      "color": "orange",
+      "description": "CloudWatch - monitoring and observability service",
+      "keywords": ["cloudwatch", "monitoring", "logs", "metrics", "alarms", "observability"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.cloudwatch"},
+        "mermaid": {"icon": "aws-cloudwatch"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_kinesis",
+      "name": "Kinesis",
+      "category": "analytics",
+      "color": "orange",
+      "description": "Kinesis - real-time streaming data platform",
+      "keywords": ["kinesis", "stream", "data", "realtime", "firehose", "analytics", "streaming"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.kinesis"},
+        "mermaid": {"icon": "aws-kinesis"},
+        "graphviz": {"shape": "parallelogram", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_athena",
+      "name": "Athena",
+      "category": "analytics",
+      "color": "orange",
+      "description": "Athena - interactive query service for S3",
+      "keywords": ["athena", "query", "sql", "analytics", "s3", "data lake"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.athena"},
+        "mermaid": {"icon": "aws-athena"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_glue",
+      "name": "Glue",
+      "category": "analytics",
+      "color": "orange",
+      "description": "AWS Glue - serverless data integration (ETL)",
+      "keywords": ["glue", "etl", "data", "catalog", "crawler", "transform"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.glue"},
+        "mermaid": {"icon": "aws-glue"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_emr",
+      "name": "EMR",
+      "category": "analytics",
+      "color": "orange",
+      "description": "Elastic MapReduce - big data processing",
+      "keywords": ["emr", "hadoop", "spark", "big data", "mapreduce", "processing"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.emr"},
+        "mermaid": {"icon": "aws-emr"},
+        "graphviz": {"shape": "component", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_quicksight",
+      "name": "QuickSight",
+      "category": "analytics",
+      "color": "orange",
+      "description": "QuickSight - business intelligence service",
+      "keywords": ["quicksight", "bi", "business intelligence", "visualization", "dashboard"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.quicksight"},
+        "mermaid": {"icon": "aws-quicksight"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_data_pipeline",
+      "name": "Data Pipeline",
+      "category": "analytics",
+      "color": "orange",
+      "description": "Data Pipeline - orchestrate data workflows",
+      "keywords": ["data pipeline", "etl", "workflow", "data", "processing"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.data_pipeline"},
+        "mermaid": {"icon": "aws-data-pipeline"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_lake_formation",
+      "name": "Lake Formation",
+      "category": "analytics",
+      "color": "orange",
+      "description": "Lake Formation - set up secure data lakes",
+      "keywords": ["lake formation", "data lake", "catalog", "security"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.lake_formation"},
+        "mermaid": {"icon": "aws-lake-formation"},
+        "graphviz": {"shape": "cylinder", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_msk",
+      "name": "MSK",
+      "category": "analytics",
+      "color": "orange",
+      "description": "Managed Streaming for Apache Kafka",
+      "keywords": ["msk", "kafka", "streaming", "data", "realtime"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.msk"},
+        "mermaid": {"icon": "aws-msk"},
+        "graphviz": {"shape": "parallelogram", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_opensearch",
+      "name": "OpenSearch",
+      "category": "analytics",
+      "color": "orange",
+      "description": "OpenSearch - search and analytics engine",
+      "keywords": ["opensearch", "elasticsearch", "search", "analytics", "logs"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.elasticsearch_service"},
+        "mermaid": {"icon": "aws-opensearch"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_cloudformation",
+      "name": "CloudFormation",
+      "category": "management",
+      "color": "pink",
+      "description": "CloudFormation - infrastructure as code",
+      "keywords": ["cloudformation", "iac", "infrastructure", "template", "stack", "cfn"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.cloudformation"},
+        "mermaid": {"icon": "aws-cloudformation"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_cloudtrail",
+      "name": "CloudTrail",
+      "category": "management",
+      "color": "pink",
+      "description": "CloudTrail - track user activity and API usage",
+      "keywords": ["cloudtrail", "audit", "logging", "compliance", "trail"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.cloudtrail"},
+        "mermaid": {"icon": "aws-cloudtrail"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_config",
+      "name": "Config",
+      "category": "management",
+      "color": "pink",
+      "description": "AWS Config - assess and audit resource configurations",
+      "keywords": ["config", "compliance", "audit", "configuration", "rules"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.config"},
+        "mermaid": {"icon": "aws-config"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_systems_manager",
+      "name": "Systems Manager",
+      "category": "management",
+      "color": "pink",
+      "description": "Systems Manager - operational insights and automation",
+      "keywords": ["ssm", "systems manager", "parameter store", "automation", "patch", "session"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.systems_manager"},
+        "mermaid": {"icon": "aws-systems-manager"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_opsworks",
+      "name": "OpsWorks",
+      "category": "management",
+      "color": "pink",
+      "description": "OpsWorks - configuration management (Chef, Puppet)",
+      "keywords": ["opsworks", "chef", "puppet", "configuration", "management"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.opsworks"},
+        "mermaid": {"icon": "aws-opsworks"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_organizations",
+      "name": "Organizations",
+      "category": "management",
+      "color": "pink",
+      "description": "Organizations - centrally manage multiple AWS accounts",
+      "keywords": ["organizations", "accounts", "management", "consolidation", "scp"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.organizations"},
+        "mermaid": {"icon": "aws-organizations"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_service_catalog",
+      "name": "Service Catalog",
+      "category": "management",
+      "color": "pink",
+      "description": "Service Catalog - create and manage catalogs of IT services",
+      "keywords": ["service catalog", "catalog", "products", "portfolio"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.service_catalog"},
+        "mermaid": {"icon": "aws-service-catalog"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_trusted_advisor",
+      "name": "Trusted Advisor",
+      "category": "management",
+      "color": "pink",
+      "description": "Trusted Advisor - optimize AWS environment",
+      "keywords": ["trusted advisor", "optimization", "best practices", "recommendations"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.trusted_advisor"},
+        "mermaid": {"icon": "aws-trusted-advisor"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_control_tower",
+      "name": "Control Tower",
+      "category": "management",
+      "color": "pink",
+      "description": "Control Tower - set up and govern multi-account AWS environment",
+      "keywords": ["control tower", "governance", "multi-account", "landing zone"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.control_tower"},
+        "mermaid": {"icon": "aws-control-tower"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_codecommit",
+      "name": "CodeCommit",
+      "category": "developer_tools",
+      "color": "blue",
+      "description": "CodeCommit - managed source control (Git)",
+      "keywords": ["codecommit", "git", "repository", "source", "version control"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.codecommit"},
+        "mermaid": {"icon": "aws-codecommit"},
+        "graphviz": {"shape": "cylinder", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_codebuild",
+      "name": "CodeBuild",
+      "category": "developer_tools",
+      "color": "blue",
+      "description": "CodeBuild - build and test code",
+      "keywords": ["codebuild", "build", "compile", "test", "ci"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.codebuild"},
+        "mermaid": {"icon": "aws-codebuild"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_codedeploy",
+      "name": "CodeDeploy",
+      "category": "developer_tools",
+      "color": "blue",
+      "description": "CodeDeploy - automate code deployments",
+      "keywords": ["codedeploy", "deployment", "release", "cd"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.codedeploy"},
+        "mermaid": {"icon": "aws-codedeploy"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_codepipeline",
+      "name": "CodePipeline",
+      "category": "developer_tools",
+      "color": "blue",
+      "description": "CodePipeline - continuous delivery service",
+      "keywords": ["codepipeline", "pipeline", "cicd", "automation", "delivery"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.codepipeline"},
+        "mermaid": {"icon": "aws-codepipeline"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_codeartifact",
+      "name": "CodeArtifact",
+      "category": "developer_tools",
+      "color": "blue",
+      "description": "CodeArtifact - artifact repository",
+      "keywords": ["codeartifact", "artifacts", "packages", "maven", "npm", "pypi"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.codeartifact"},
+        "mermaid": {"icon": "aws-codeartifact"},
+        "graphviz": {"shape": "cylinder", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_xray",
+      "name": "X-Ray",
+      "category": "developer_tools",
+      "color": "blue",
+      "description": "X-Ray - analyze and debug distributed applications",
+      "keywords": ["xray", "tracing", "debugging", "monitoring", "distributed"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.x_ray"},
+        "mermaid": {"icon": "aws-xray"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_cloud9",
+      "name": "Cloud9",
+      "category": "developer_tools",
+      "color": "blue",
+      "description": "Cloud9 - cloud IDE for writing and debugging code",
+      "keywords": ["cloud9", "ide", "editor", "development"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.cloud9"},
+        "mermaid": {"icon": "aws-cloud9"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_sagemaker",
+      "name": "SageMaker",
+      "category": "ml",
+      "color": "green",
+      "description": "SageMaker - build, train, and deploy ML models",
+      "keywords": ["sagemaker", "ml", "machine learning", "ai", "model", "training"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.sagemaker"},
+        "mermaid": {"icon": "aws-sagemaker"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_comprehend",
+      "name": "Comprehend",
+      "category": "ml",
+      "color": "green",
+      "description": "Comprehend - natural language processing",
+      "keywords": ["comprehend", "nlp", "text", "language", "sentiment"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.comprehend"},
+        "mermaid": {"icon": "aws-comprehend"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_rekognition",
+      "name": "Rekognition",
+      "category": "ml",
+      "color": "green",
+      "description": "Rekognition - image and video analysis",
+      "keywords": ["rekognition", "image", "video", "vision", "recognition", "ml"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.rekognition"},
+        "mermaid": {"icon": "aws-rekognition"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_polly",
+      "name": "Polly",
+      "category": "ml",
+      "color": "green",
+      "description": "Polly - text-to-speech service",
+      "keywords": ["polly", "tts", "speech", "voice", "audio"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.polly"},
+        "mermaid": {"icon": "aws-polly"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_transcribe",
+      "name": "Transcribe",
+      "category": "ml",
+      "color": "green",
+      "description": "Transcribe - speech-to-text service",
+      "keywords": ["transcribe", "stt", "speech", "audio", "transcription"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.transcribe"},
+        "mermaid": {"icon": "aws-transcribe"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_translate",
+      "name": "Translate",
+      "category": "ml",
+      "color": "green",
+      "description": "Translate - language translation service",
+      "keywords": ["translate", "translation", "language", "localization"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.translate"},
+        "mermaid": {"icon": "aws-translate"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_lex",
+      "name": "Lex",
+      "category": "ml",
+      "color": "green",
+      "description": "Lex - build conversational interfaces (chatbots)",
+      "keywords": ["lex", "chatbot", "bot", "conversation", "voice", "alexa"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.lex"},
+        "mermaid": {"icon": "aws-lex"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_textract",
+      "name": "Textract",
+      "category": "ml",
+      "color": "green",
+      "description": "Textract - extract text and data from documents",
+      "keywords": ["textract", "ocr", "document", "extraction", "text"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.textract"},
+        "mermaid": {"icon": "aws-textract"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_forecast",
+      "name": "Forecast",
+      "category": "ml",
+      "color": "green",
+      "description": "Forecast - time-series forecasting service",
+      "keywords": ["forecast", "prediction", "timeseries", "ml"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.forecast"},
+        "mermaid": {"icon": "aws-forecast"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_personalize",
+      "name": "Personalize",
+      "category": "ml",
+      "color": "green",
+      "description": "Personalize - personalization and recommendation service",
+      "keywords": ["personalize", "recommendation", "ml", "personalization"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.personalize"},
+        "mermaid": {"icon": "aws-personalize"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_bedrock",
+      "name": "Bedrock",
+      "category": "ml",
+      "color": "green",
+      "description": "Bedrock - build and scale generative AI applications",
+      "keywords": ["bedrock", "genai", "llm", "ai", "foundation models"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.bedrock"},
+        "mermaid": {"icon": "aws-bedrock"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_ses",
+      "name": "SES",
+      "category": "application",
+      "color": "pink",
+      "description": "Simple Email Service - email sending and receiving",
+      "keywords": ["ses", "email", "smtp", "mail", "sending"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.ses"},
+        "mermaid": {"icon": "aws-ses"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_pinpoint",
+      "name": "Pinpoint",
+      "category": "application",
+      "color": "pink",
+      "description": "Pinpoint - customer engagement (email, SMS, push)",
+      "keywords": ["pinpoint", "engagement", "email", "sms", "push", "marketing"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.pinpoint"},
+        "mermaid": {"icon": "aws-pinpoint"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_iot_core",
+      "name": "IoT Core",
+      "category": "iot",
+      "color": "green",
+      "description": "IoT Core - connect IoT devices to the cloud",
+      "keywords": ["iot", "core", "devices", "mqtt", "things"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.iot_core"},
+        "mermaid": {"icon": "aws-iot-core"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    },
+    {
+      "id": "aws_greengrass",
+      "name": "Greengrass",
+      "category": "iot",
+      "color": "green",
+      "description": "Greengrass - edge computing for IoT devices",
+      "keywords": ["greengrass", "iot", "edge", "local", "devices"],
+      "defaultSize": {"width": 78, "height": 78},
+      "renderHints": {
+        "drawio": {"shape": "mxgraph.aws4.resourceIcon", "resIcon": "mxgraph.aws4.greengrass"},
+        "mermaid": {"icon": "aws-greengrass"},
+        "graphviz": {"shape": "box", "style": "filled"}
+      }
+    }
+  ]
+}
