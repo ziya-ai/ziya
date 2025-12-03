@@ -70,6 +70,7 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
 }) => {
   const { isDarkMode } = useTheme();
   const [form] = Form.useForm();
+  const capabilitiesLoadedRef = useRef<boolean>(false);
   const [formValues, setFormValues] = useState({
     temperature: currentSettings.temperature,
     top_k: currentSettings.top_k || 15,
@@ -216,23 +217,23 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
     try {
       setIsLoadingCapabilities(true);
       const response = await fetch(`/api/model-capabilities?model=${encodeURIComponent(modelId)}`);
-      
+
       if (!response.ok) {
         throw new Error(`Failed to fetch model capabilities: ${response.status}`);
       }
       const data = await response.json();
-      
+
       // Check if there's an error in the response
       if (data.error) {
         console.error("Error in capabilities response:", data.error);
         message.error(`Failed to load model capabilities: ${data.error}`);
         return null;
       }
-      
+
       console.log('Fetched capabilities:', data);
       setSelectedModelCapabilities(data);
       capabilitiesLoadedRef.current = true;
-      
+
       // Update settings with capabilities
       setSettings(prev => ({
         ...prev,
@@ -240,10 +241,10 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
         max_output_tokens: data.max_output_tokens || prev.max_output_tokens,
         thinking_level: data.thinking_level || prev.thinking_level
       }));
-      
+
       // Get current form values to use as fallbacks
       const currentFormValues = form.getFieldsValue();
-      
+
       // Build new values object
       const newValues = {
         temperature: data.temperature_range.default,
@@ -253,11 +254,11 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
         thinking_mode: data.supports_thinking ? form.getFieldValue('thinking_mode') || false : false,
         thinking_level: data.thinking_level_default || 'high'
       };
-      
+
       // Update form with new values
       handleValuesChange(newValues);
       form.setFieldsValue(newValues);
-      
+
       console.log("Updated form with capabilities:", form.getFieldsValue());
       return data;
     } catch (error) {
@@ -292,25 +293,32 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
   const handleApply = async () => {
     try {
       const values = await form.validateFields();
+      console.log('Apply clicked with values:', values);
       setIsUpdating(true);
 
       // First update the model if it changed
       const currentModelIdSafe = typeof modelId === 'object' ? JSON.stringify(modelId) : String(modelId);
+      console.log('Comparing models - current:', currentModelIdSafe, 'new:', values.model);
+
       if (values.model !== currentModelIdSafe) {
+        console.log('Model changed, calling onModelChange');
         const success = await onModelChange(values.model);
         if (!success) {
+          console.log('Model change failed, aborting');
+          setIsUpdating(false);
           return; // Don't proceed if model change failed
         }
-        setIsUpdating(false);
+        console.log('Model change succeeded');
       }
       // Then save the settings
       onSave(values);
       onClose();
     } catch (error: any) {
       message.error('Failed to update model configuration');
+    } finally {
+      // Ensure loading state is reset
+      setIsUpdating(false);
     }
-    // Ensure loading state is reset
-    setIsUpdating(false);
   };
 
   return (
@@ -355,10 +363,58 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
         >
           <Select
             onChange={handleModelSelect}
-            options={availableModels.map(model => ({
-              label: model.name,
-              value: typeof model.id === 'object' ? JSON.stringify(model.id) : model.id
-            }))}
+            options={
+              // Custom sort: newest to oldest within each model family
+              [...availableModels]
+                .sort((a, b) => {
+                  // Extract model family and version for both models
+                  const extractFamilyAndVersion = (name: string): { family: string; version: number; subVersion: number } => {
+                    // Handle patterns like "opus4.5", "sonnet3.7", "nova-pro", etc.
+                    const match = name.match(/^([a-z]+)(\d+(?:\.\d+)?)?(-.*)?$/i);
+                    if (!match) return { family: name, version: 0, subVersion: 0 };
+                    
+                    const family = match[1]; // "opus", "sonnet", "nova"
+                    const versionStr = match[2] || '0'; // "4.5", "3.7", undefined
+                    const suffix = match[3] || ''; // "-pro", "-v2", etc.
+                    
+                    // Parse version as major.minor
+                    const versionParts = versionStr.split('.');
+                    const major = parseInt(versionParts[0]) || 0;
+                    const minor = parseInt(versionParts[1]) || 0;
+                    
+                    // Combine into single comparable number: 4.5 -> 4.5, 4 -> 4.0
+                    const version = major + (minor / 10);
+                    
+                    // Handle suffixes: -v2 should come before base version
+                    let subVersion = 0;
+                    if (suffix.includes('-v2')) subVersion = 1;
+                    if (suffix.includes('-pro')) subVersion = 2;
+                    if (suffix.includes('-premier')) subVersion = 3;
+                    
+                    return { family, version, subVersion };
+                  };
+                  
+                  const aInfo = extractFamilyAndVersion(a.name);
+                  const bInfo = extractFamilyAndVersion(b.name);
+                  
+                  // First sort by family name alphabetically
+                  if (aInfo.family !== bInfo.family) {
+                    return aInfo.family.localeCompare(bInfo.family);
+                  }
+                  
+                  // Within same family, sort by version (descending - newest first)
+                  if (aInfo.version !== bInfo.version) {
+                    return bInfo.version - aInfo.version; // Higher version first
+                  }
+                  
+                  // If versions are the same, sort by subVersion (descending)
+                  return bInfo.subVersion - aInfo.subVersion;
+                })
+                .map(model => ({
+                  label: model.name,
+                  value: typeof model.id === 'object' ? JSON.stringify(model.id) : model.id
+                }))
+            }
           />
         </Form.Item>
 
@@ -445,15 +501,15 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
         )}
 
         {selectedModelCapabilities?.supports_thinking_level && (
-          <Form.Item 
+          <Form.Item
             label={
               <span>
-                Thinking Level 
+                Thinking Level
                 <Tooltip title="Controls depth of model reasoning (Gemini 3 models only)">
                   <InfoCircleOutlined style={{ marginLeft: 5 }} />
                 </Tooltip>
               </span>
-            } 
+            }
             name="thinking_level"
           >
             <Select>

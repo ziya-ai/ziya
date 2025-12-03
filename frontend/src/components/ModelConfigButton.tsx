@@ -238,8 +238,6 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
   };
 
   // Fetch available models
-  // Fetch available models
-  // Fetch available models
   useEffect(() => {
     const fetchAvailableModels = async () => {
       try {
@@ -261,6 +259,7 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
 
   const handleModelChange = async (selectedModelId: string): Promise<boolean> => {
     try {
+      console.log('Attempting to change model to:', selectedModelId);
       // First try to set the model
       const response = await fetch('/api/set-model', {
         method: 'POST',
@@ -270,19 +269,32 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
 
       const data = await response.json();
 
-      if (response.ok && data.status === 'success') {
+      if (!response.ok || data.status !== 'success') {
+        console.error('Model change failed:', data);
+        throw new Error(data.message || 'Failed to change model');
+      }
+
+      console.log('Model change API succeeded, verifying...');
+      
+      // Verify the model was actually changed
+      const verifyResponse = await fetch('/api/current-model');
+      if (!verifyResponse.ok) {
+        throw new Error('Failed to verify model change');
+      }
+      
+      const currentModel = await verifyResponse.json();
+      console.log('Verification response:', currentModel);
+
+      // Compare using model_alias instead of model_id for consistency
+      if (currentModel.model_alias === selectedModelId || currentModel.model_id === selectedModelId) {
+        console.log('Model change verified successfully');
+        setCurrentModelId(selectedModelId);
+        message.success(`Model updated to ${selectedModelId} successfully`);
+
         // Verify the model was actually changed
-        const verifyResponse = await fetch('/api/current-model');
-        const currentModel = await verifyResponse.json();
-
-        if (currentModel.model_id === selectedModelId) {
-          setCurrentModelId(selectedModelId);
-          message.success(`Model updated to ${selectedModelId} successfully`);
-
-          // Get model display name for the notification
-          const selectedModel = availableModels.find(m => m.id === selectedModelId);
-          const displayName = selectedModel?.display_name || selectedModel?.name || selectedModelId;
-          const previousModelObj = availableModels.find(m => m.id === modelId || m.name === modelId);
+        const selectedModel = availableModels.find(m => m.id === selectedModelId);
+        const displayName = selectedModel?.display_name || selectedModel?.name || selectedModelId;
+        const previousModelObj = availableModels.find(m => m.id === modelId || m.name === modelId);
           const previousDisplayName = previousModelObj?.display_name || previousModelObj?.name || modelId;
 
           // Dispatch a custom event for model change notification
@@ -300,15 +312,15 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
           // Dispatch event for token display update
           window.dispatchEvent(new CustomEvent('modelSettingsChanged', {
             detail: currentModel
-          }));
+        }));
 
-          return true;
-        }
+        return true;
+      } else {
+        console.error('Model verification failed. Expected:', selectedModelId, 'Got:', currentModel.model_alias || currentModel.model_id);
+        throw new Error('Model change verification failed - model did not update');
       }
-
-      throw new Error('Failed to verify model change');
     } catch (error) {
-      message.error('Failed to change model: ' + (error instanceof Error ? error.message : 'Unknown error'));
+      console.error('Model change error:', error);
       message.error('Failed to change model');
       return false;
     }
@@ -334,36 +346,67 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
       if (!verifyResponse.ok) {
         throw new Error('Failed to verify settings');
       }
-
+      
       const currentSettings = await verifyResponse.json();
       
-      // Normalize the server response to match expected format
-      const normalizedActualSettings = {
-        temperature: currentSettings.settings.temperature,
-        top_k: currentSettings.settings.top_k,
-        max_output_tokens: currentSettings.settings.max_output_tokens,
-        max_input_tokens: currentSettings.settings.max_input_tokens,
-        thinking_mode: currentSettings.settings.thinking_mode === "1" || currentSettings.settings.thinking_mode === true || currentSettings.settings.thinking_mode === 1
+      // Get supported parameters from capabilities
+      const supportedParams = currentSettings.capabilities?.supported_parameters || [];
+      console.log('Supported parameters for verification:', supportedParams);
+      
+      // Helper to check if a parameter is supported
+      const isSupported = (param: string): boolean => {
+        // Always check core parameters
+        if (['temperature', 'max_output_tokens', 'max_input_tokens', 'thinking_mode', 'thinking_level'].includes(param)) {
+          // For top_k, only include if explicitly supported
+          if (param === 'top_k') {
+            return supportedParams.includes('top_k');
+          }
+          // For thinking_level, only include if model supports it
+          if (param === 'thinking_level') {
+            return currentSettings.capabilities?.supports_thinking_level || false;
+          }
+          return true;
+        }
+        return supportedParams.includes(param);
       };
       
-      // Normalize the expected settings to ensure consistent types
-      const normalizedExpectedSettings = {
-        temperature: newSettings.temperature,
-        top_k: newSettings.top_k,
-        max_output_tokens: newSettings.max_output_tokens,
-        max_input_tokens: newSettings.max_input_tokens,
-        thinking_mode: Boolean(newSettings.thinking_mode)
+      // Build normalized settings objects with ONLY supported parameters
+      const normalizedActualSettings: any = {};
+      const normalizedExpectedSettings: any = {};
+      
+      // Only include supported parameters in comparison
+      const paramsToCheck = ['temperature', 'top_k', 'max_output_tokens', 'max_input_tokens', 'thinking_mode', 'thinking_level'];
+      
+      for (const param of paramsToCheck) {
+        if (isSupported(param)) {
+          // Normalize actual settings
+          if (param === 'thinking_mode') {
+            normalizedActualSettings[param] = currentSettings.settings[param] === "1" || currentSettings.settings[param] === true || currentSettings.settings[param] === 1;
+          } else if (param === 'top_k' && currentSettings.settings[param]) {
+            normalizedActualSettings[param] = parseInt(currentSettings.settings[param]);
+          } else {
+            normalizedActualSettings[param] = currentSettings.settings[param];
+          }
+          
+          // Normalize expected settings
+          if (param === 'thinking_mode') {
+            normalizedExpectedSettings[param] = Boolean(newSettings[param as keyof ModelSettings]);
+          } else {
+            normalizedExpectedSettings[param] = newSettings[param as keyof ModelSettings];
+          }
+        }
       };
 
       // Helper function to compare numbers with tolerance
       const isClose = (a: number, b: number, tolerance = 0.001) => Math.abs(a - b) <= tolerance;
 
-      // Check if settings match what we tried to set, with tolerance for floating point
+      // Check if SUPPORTED settings match what we tried to set
       const settingsMatch = {
-        temperature: isClose(normalizedActualSettings.temperature, normalizedExpectedSettings.temperature),
-        top_k: normalizedActualSettings.top_k === normalizedExpectedSettings.top_k,
-        max_output_tokens: normalizedActualSettings.max_output_tokens === normalizedExpectedSettings.max_output_tokens,
-        thinking_mode: normalizedActualSettings.thinking_mode === normalizedExpectedSettings.thinking_mode
+        temperature: isSupported('temperature') ? isClose(normalizedActualSettings.temperature, normalizedExpectedSettings.temperature) : true,
+        top_k: isSupported('top_k') ? normalizedActualSettings.top_k === normalizedExpectedSettings.top_k : true,
+        max_output_tokens: isSupported('max_output_tokens') ? normalizedActualSettings.max_output_tokens === normalizedExpectedSettings.max_output_tokens : true,
+        thinking_mode: isSupported('thinking_mode') ? normalizedActualSettings.thinking_mode === normalizedExpectedSettings.thinking_mode : true,
+        thinking_level: isSupported('thinking_level') ? normalizedActualSettings.thinking_level === normalizedExpectedSettings.thinking_level : true
       };
 
       const allMatch = Object.values(settingsMatch).every(match => match);

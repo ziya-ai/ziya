@@ -116,11 +116,13 @@ export const DiffLine = React.memo(({
                 if (!languageLoadedRef.current) {
                     try {
                         await loadPrismLanguage(language || 'plaintext');
+                        // Only mark as loaded if the load succeeded
+                        languageLoadedRef.current = true;
                     } catch (e) {
                         console.warn(`Failed to load language ${language}, falling back to plaintext:`, e);
+                        // Don't set languageLoadedRef on failure - leave it false
                     }
                 }
-                languageLoadedRef.current = true;
 
                 if (!window.Prism || content.length <= 1) return;
 

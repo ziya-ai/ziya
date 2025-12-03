@@ -6,6 +6,13 @@ const DEBUG_RENDER_FILE_HEADER = true;
 // Cache for file headers to prevent disappearing during streaming
 const fileHeaderCache = new Map<string, string>();
 
+// Helper function to check if a path is /dev/null (handles both "dev/null" and "/dev/null")
+const isDevNull = (path: string | null | undefined): boolean => {
+    if (!path) return false;
+    const normalized = path.trim();
+    return normalized === '/dev/null' || normalized === 'dev/null';
+};
+
 export const renderFileHeader = (file: ReturnType<typeof parseDiff>[number], originalDiffSegment?: string, fileIndex?: number): string => {
     if (DEBUG_RENDER_FILE_HEADER) {
         console.log('[renderFileHeader] Input:', {
@@ -62,8 +69,8 @@ export const renderFileHeader = (file: ReturnType<typeof parseDiff>[number], ori
     const extractPathsFromDiffSegmentInternal = (diffStr: string): [string | null, string | null, string | null] => {
         const gitMatch = diffStr.match(/^diff --git a\/(.*?) b\/(.*?)$/m);
         if (gitMatch) {
-            const oldP = gitMatch[1] === '/dev/null' ? null : gitMatch[1].trim();
-            const newP = gitMatch[2] === '/dev/null' ? null : gitMatch[2].trim();
+            const oldP = isDevNull(gitMatch[1]) ? null : gitMatch[1].trim();
+            const newP = isDevNull(gitMatch[2]) ? null : gitMatch[2].trim();
             let detectedType: string | null = null;
             if (oldP === null && newP !== null) detectedType = 'add';
             else if (oldP !== null && newP === null) detectedType = 'delete';
@@ -90,13 +97,13 @@ export const renderFileHeader = (file: ReturnType<typeof parseDiff>[number], ori
             if ((oldPath !== undefined && newPath !== undefined) || line.startsWith('@@ ')) break;
         }
 
-        if (isNewFile || (oldPath === null && newPath !== null && newPath !== '/dev/null')) {
+        if (isNewFile || (oldPath === null && newPath !== null && !isDevNull(newPath))) {
             detectedType = 'add';
-        } else if (isDeletedFile || (oldPath !== null && oldPath !== '/dev/null' && newPath === null)) {
+        } else if (isDeletedFile || (oldPath !== null && !isDevNull(oldPath) && newPath === null)) {
             detectedType = 'delete';
-        } else if (oldPath && newPath && oldPath !== newPath && oldPath !== '/dev/null' && newPath !== '/dev/null') {
+        } else if (oldPath && newPath && oldPath !== newPath && !isDevNull(oldPath) && !isDevNull(newPath)) {
             detectedType = 'rename';
-        } else if ((oldPath && oldPath !== '/dev/null') || (newPath && newPath !== '/dev/null')) {
+        } else if ((oldPath && !isDevNull(oldPath)) || (newPath && !isDevNull(newPath))) {
             detectedType = 'modify';
         }
         const result: [string | null, string | null, string | null] = [oldPath, newPath, detectedType];
@@ -123,7 +130,7 @@ export const renderFileHeader = (file: ReturnType<typeof parseDiff>[number], ori
     }
 
     // Check for rename even when type is not explicitly set - do this early
-    if (oldP && newP && oldP !== newP && oldP !== '/dev/null' && newP !== '/dev/null') {
+    if (oldP && newP && oldP !== newP && !isDevNull(oldP) && !isDevNull(newP)) {
         return cacheAndReturn(`Rename: ${oldP} -> ${newP}`);
     }
 
@@ -185,18 +192,18 @@ export const renderFileHeader = (file: ReturnType<typeof parseDiff>[number], ori
         // Use extracted paths if available
         if (extractedOldPath || extractedNewPath) {
             // If we have both paths and neither is /dev/null, it's likely a modification or rename
-            if (extractedOldPath && extractedNewPath && extractedOldPath !== '/dev/null' && extractedNewPath !== '/dev/null') {
+            if (extractedOldPath && extractedNewPath && !isDevNull(extractedOldPath) && !isDevNull(extractedNewPath)) {
                 if (extractedOldPath === extractedNewPath) {
                     return cacheAndReturn(`File: ${extractedNewPath}`);
                 }
             }
 
             // Determine operation type from extracted paths
-            if ((!extractedOldPath || extractedOldPath == '/dev/null') && extractedNewPath) {
+            if ((!extractedOldPath || isDevNull(extractedOldPath)) && extractedNewPath) {
                 return cacheAndReturn(`Create: ${extractedNewPath}`);
-            } else if (extractedOldPath && (!extractedNewPath || extractedNewPath == '/dev/null')) {
+            } else if (extractedOldPath && (!extractedNewPath || isDevNull(extractedNewPath))) {
                 return cacheAndReturn(`Delete: ${extractedOldPath}`);
-            } else if (extractedOldPath && extractedNewPath && extractedOldPath !== extractedNewPath) {
+            } else if (extractedOldPath && extractedNewPath && extractedOldPath !== extractedNewPath && !isDevNull(extractedOldPath) && !isDevNull(extractedNewPath)) {
                 return cacheAndReturn(`Rename: ${extractedOldPath} -> ${extractedNewPath}`);
             }
             // Default to File: for modifications
@@ -206,28 +213,28 @@ export const renderFileHeader = (file: ReturnType<typeof parseDiff>[number], ori
 
     if (type === 'add') {
         // For 'add', newP should be the filename. oldP is /dev/null or undefined.
-        if (newP && newP !== '/dev/null') {
+        if (newP && !isDevNull(newP)) {
             return cacheAndReturn(`Create: ${newP}`);
         }
         // Fallback if newP is missing or /dev/null (which is unusual for 'add' from parseDiff)
         if (originalDiffSegment) {
             const [, fallbackNewP] = extractPathsFromDiffSegmentInternal(originalDiffSegment);
-            if (fallbackNewP && fallbackNewP !== '/dev/null') {
+            if (fallbackNewP && !isDevNull(fallbackNewP)) {
                 return cacheAndReturn(`Create: ${fallbackNewP}`);
             }
         }
         return cacheAndReturn('Create: (unknown path)');
     }
 
-    if (type === 'delete' || (!newP && oldP && oldP !== '/dev/null')) {
+    if (type === 'delete' || (!newP && oldP && !isDevNull(oldP))) {
         // For 'delete', oldP should be the filename. newP is /dev/null or undefined.
-        if (oldP && oldP !== '/dev/null') {
+        if (oldP && !isDevNull(oldP)) {
             return cacheAndReturn(`Delete: ${oldP}`);
         }
         // Fallback
         if (originalDiffSegment) {
             const [fallbackOldP] = extractPathsFromDiffSegmentInternal(originalDiffSegment);
-            if (fallbackOldP && fallbackOldP !== '/dev/null') {
+            if (fallbackOldP && !isDevNull(fallbackOldP)) {
                 return cacheAndReturn(`Delete: ${fallbackOldP}`);
             }
         }
@@ -235,7 +242,7 @@ export const renderFileHeader = (file: ReturnType<typeof parseDiff>[number], ori
     }
 
     if (type === 'rename' || type === 'copy') {
-        if (oldP && oldP !== '/dev/null' && newP && newP !== '/dev/null') {
+        if (oldP && !isDevNull(oldP) && newP && !isDevNull(newP)) {
             const similarityIndex = file.similarity || 100;
             return cacheAndReturn(`Rename${similarityIndex < 100 ? ' with changes' : ''}: ${oldP} -> ${newP}`);
         }
@@ -243,7 +250,7 @@ export const renderFileHeader = (file: ReturnType<typeof parseDiff>[number], ori
 
     if (type === 'modify' || (!type && (oldP || newP))) {
         const path = newP || oldP; // In modify, old and new path are usually the same
-        if (path && path !== '/dev/null') {
+        if (path && !isDevNull(path)) {
             return cacheAndReturn(`File: ${path}`);
         }
     }

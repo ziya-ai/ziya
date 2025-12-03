@@ -33,6 +33,11 @@ interface HealthReport {
     missingInMemory: Conversation[];
     missingInDB: Conversation[];
     backupData: any;
+    emergencyRecoveryData: {
+        exists: boolean;
+        data?: any;
+        size?: number;
+    };
 }
 
 const ConversationHealthDebug: React.FC = () => {
@@ -54,6 +59,21 @@ const ConversationHealthDebug: React.FC = () => {
                 backupData = backup ? JSON.parse(backup) : null;
             } catch (e) {
                 console.error('Error parsing backup data:', e);
+            }
+            
+            // Check for emergency recovery data
+            let emergencyRecoveryData = { exists: false };
+            try {
+                const emergencyBackup = localStorage.getItem('ZIYA_EMERGENCY_CONVERSATION_RECOVERY');
+                if (emergencyBackup) {
+                    emergencyRecoveryData = {
+                        exists: true,
+                        data: JSON.parse(emergencyBackup),
+                        size: emergencyBackup.length * 2 // UTF-16 bytes
+                    };
+                }
+            } catch (e) {
+                console.error('Error parsing emergency recovery data:', e);
             }
             
             // Find current conversation in both states
@@ -111,7 +131,8 @@ const ConversationHealthDebug: React.FC = () => {
                 inactiveConversations: allInactive,
                 missingInMemory,
                 missingInDB,
-                backupData
+                backupData,
+                emergencyRecoveryData
             });
             
         } catch (error) {
@@ -187,6 +208,32 @@ const ConversationHealthDebug: React.FC = () => {
                     message.error('Failed to reset database');
                 }
             }
+        });
+    };
+
+    const handleClearEmergencyBackup = () => {
+        Modal.confirm({
+            title: 'Clear Emergency Recovery Data',
+            content: 'This will remove emergency backup data from localStorage. Only do this if recovery has failed or you want to free up space.',
+            onOk: () => {
+                try {
+                    localStorage.removeItem('ZIYA_EMERGENCY_CONVERSATION_RECOVERY');
+                    localStorage.removeItem('ZIYA_CONVERSATION_BACKUP_WITH_RECOVERY');
+                    localStorage.removeItem('ZIYA_LAST_MESSAGES');
+                    localStorage.removeItem('ZIYA_LAST_CONVERSATION_ID');
+                    runHealthCheck();
+                    message.success('Emergency backup data cleared');
+                } catch (error) {
+                    message.error('Failed to clear backup data');
+                }
+            }
+        });
+    };
+
+    const handleTriggerRecovery = () => {
+        Modal.info({
+            title: 'Recovery Trigger',
+            content: 'Emergency recovery runs automatically on page reload. To trigger recovery, please reload the page.',
         });
     };
 
@@ -294,16 +341,22 @@ const ConversationHealthDebug: React.FC = () => {
                         <Button 
                             icon={<ExportOutlined />} 
                             onClick={handleExportDebugData}
-                            size="large"
-                        >
+                            size="large">
                             Export
                         </Button>
-                    </Space>
-                </div>
-
-                {/* Summary Stats */}
+                        {healthReport.emergencyRecoveryData.exists && (
+                                <Button 
+                                    icon={<DeleteOutlined />}
+                                    onClick={handleClearEmergencyBackup}
+                                    danger
+                                    size="large"
+                                >
+                                    Clear Recovery
+                                </Button>
+                        )}
+                        </Space>
                 <Row gutter={16} style={{ marginTop: '16px' }}>
-                    <Col span={6}>
+                    <Col xs={24} sm={12} md={8} lg={6} xl={4}>
                         <Statistic 
                             title="Memory" 
                             value={healthReport.memoryConversations.length}
@@ -311,7 +364,7 @@ const ConversationHealthDebug: React.FC = () => {
                             prefix="💾"
                         />
                     </Col>
-                    <Col span={6}>
+                    <Col xs={24} sm={12} md={8} lg={6} xl={4}>
                         <Statistic 
                             title="IndexedDB" 
                             value={healthReport.dbConversations.length}
@@ -319,7 +372,7 @@ const ConversationHealthDebug: React.FC = () => {
                             prefix="🗄️"
                         />
                     </Col>
-                    <Col span={6}>
+                    <Col xs={24} sm={12} md={8} lg={6} xl={4}>
                         <Statistic 
                             title="Active" 
                             value={healthReport.memoryConversations.filter(c => c.isActive !== false).length}
@@ -327,7 +380,7 @@ const ConversationHealthDebug: React.FC = () => {
                             prefix="✅"
                         />
                     </Col>
-                    <Col span={6}>
+                    <Col xs={24} sm={12} md={8} lg={6} xl={4}>
                         <Statistic 
                             title="Inactive" 
                             value={healthReport.inactiveConversations.length}
@@ -335,9 +388,12 @@ const ConversationHealthDebug: React.FC = () => {
                             prefix="🗑️"
                         />
                     </Col>
+                    <Col xs={24} sm={12} md={8} lg={6} xl={4}>
+                        {/* Placeholder for future stat */}
+                    </Col>
                 </Row>
+                </div>
             </div>
-
             {/* Scrollable Content Area */}
             <div style={{
                 flex: 1,
@@ -677,6 +733,87 @@ const ConversationHealthDebug: React.FC = () => {
                                 </div>
                             </Card>
                         </Space>
+                    </TabPane>
+
+                    {/* Emergency Recovery Tab */}
+                    <TabPane 
+                        tab={
+                            <span>
+                                Emergency Recovery {healthReport.emergencyRecoveryData.exists && 
+                                    <Tag color="orange">ACTIVE</Tag>}
+                            </span>
+                        }
+                        key="recovery"
+                    >
+                        <Card title="Emergency Recovery Status" size="small">
+                            <Alert
+                                message={healthReport.emergencyRecoveryData.exists ? 
+                                    'Emergency recovery data is available' : 
+                                    'No emergency recovery data found'}
+                                description={healthReport.emergencyRecoveryData.exists ?
+                                    'This data is automatically restored on page reload if conversations are missing.' :
+                                    'Emergency backups are created during streaming or before page unload.'}
+                                type={healthReport.emergencyRecoveryData.exists ? 'warning' : 'info'}
+                                style={{ marginBottom: '16px' }}
+                                showIcon
+                            />
+                            
+                            {healthReport.emergencyRecoveryData.exists && (
+                                <>
+                                    <Descriptions bordered size="small" column={1} style={{ marginBottom: '16px' }}>
+                                        <Descriptions.Item label="Data Size">
+                                            {healthReport.emergencyRecoveryData.size ? 
+                                                `${(healthReport.emergencyRecoveryData.size / 1024).toFixed(2)} KB` : 
+                                                'Unknown'}
+                                        </Descriptions.Item>
+                                        <Descriptions.Item label="Conversations">
+                                            {healthReport.emergencyRecoveryData.data?.conversations?.length || 0}
+                                        </Descriptions.Item>
+                                        <Descriptions.Item label="Was Streaming">
+                                            <Tag color={healthReport.emergencyRecoveryData.data?.wasStreaming ? 'orange' : 'default'}>
+                                                {healthReport.emergencyRecoveryData.data?.wasStreaming ? 'Yes' : 'No'}
+                                            </Tag>
+                                        </Descriptions.Item>
+                                        <Descriptions.Item label="Timestamp">
+                                            {healthReport.emergencyRecoveryData.data?.timestamp ? 
+                                                new Date(healthReport.emergencyRecoveryData.data.timestamp).toLocaleString() : 
+                                                'Unknown'}
+                                        </Descriptions.Item>
+                                    </Descriptions>
+                                    
+                                    <Space>
+                                        <Button 
+                                            icon={<ReloadOutlined />}
+                                            onClick={handleTriggerRecovery}
+                                        >
+                                            How to Trigger Recovery
+                                        </Button>
+                                        <Button 
+                                            icon={<DeleteOutlined />}
+                                            onClick={handleClearEmergencyBackup}
+                                            danger
+                                        >
+                                            Clear Recovery Data
+                                        </Button>
+                                    </Space>
+                                    
+                                    <details style={{ marginTop: '16px' }}>
+                                        <summary>View Recovery Data</summary>
+                                        <pre style={{ 
+                                            maxHeight: '400px',
+                                            overflow: 'auto',
+                                            backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
+                                            padding: '12px',
+                                            borderRadius: '4px',
+                                            fontSize: '12px',
+                                            marginTop: '8px'
+                                        }}>
+                                            {JSON.stringify(healthReport.emergencyRecoveryData.data, null, 2)}
+                                        </pre>
+                                    </details>
+                                </>
+                            )}
+                        </Card>
                     </TabPane>
 
                     {/* Backup Data Tab */}

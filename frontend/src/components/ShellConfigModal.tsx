@@ -22,7 +22,6 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
     const [config, setConfig] = useState<ShellConfig | null>(null);
     const [originalConfig, setOriginalConfig] = useState<ShellConfig | null>(null);
     const [newCommand, setNewCommand] = useState('');
-    const [persistConfig, setPersistConfig] = useState(false);
     const [loading, setLoading] = useState(false);
 
     useEffect(() => {
@@ -69,7 +68,7 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
         }
     };
 
-    const saveConfig = async () => {
+    const saveConfig = async (persist: boolean = false) => {
         if (!config) return;
 
         setLoading(true);
@@ -79,7 +78,7 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ ...config, persist: persistConfig }),
+                body: JSON.stringify({ ...config, persist }),
             });
 
             if (response.ok) {
@@ -94,7 +93,7 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                         }
                     }));
 
-                    message.success(result.message || 'Shell configuration updated instantly');
+                    message.success(result.message || (persist ? 'Configuration saved to file' : 'Configuration applied for this session'));
                 } else {
                     message.error(result.message || 'Failed to update shell configuration');
                 }
@@ -153,13 +152,13 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                 title: 'Unsaved Changes',
                 icon: <WarningOutlined style={{ color: '#faad14' }} />,
                 content: 'You have unsaved changes. What would you like to do?',
-                okText: 'Save Changes',
+                okText: 'Apply Changes',
                 cancelText: 'Discard Changes',
                 okButtonProps: {
                     loading: loading
                 },
                 onOk: async () => {
-                    await saveConfig();
+                    await saveConfig(false);
                 },
                 onCancel: () => {
                     onClose();
@@ -193,33 +192,26 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
             title="Shell Command Configuration"
             open={visible}
             onCancel={handleClose}
-            onOk={saveConfig}
-            confirmLoading={loading}
             width={600}
-            okText="Save Configuration"
             footer={[
-                <div key="footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
-                    <Checkbox
-                        checked={persistConfig}
-                        onChange={(e) => setPersistConfig(e.target.checked)}
-                        style={{ marginRight: 'auto' }}
-                    >
-                        Save to config file (~/.ziya/mcp_config.json)
-                    </Checkbox>
-                    <Space>
-                        <Button key="cancel" onClick={handleClose}>
-                            Cancel
-                        </Button>
-                        <Button
-                            key="submit"
-                            type="primary"
-                            loading={loading}
-                            onClick={saveConfig}
-                        >
-                            Save Configuration
-                        </Button>
-                    </Space>
-                </div>
+                <Button key="cancel" onClick={handleClose}>
+                    Cancel
+                </Button>,
+                <Button 
+                    key="apply" 
+                    loading={loading}
+                    onClick={() => saveConfig(false)}
+                >
+                    Apply
+                </Button>,
+                <Button
+                    key="save"
+                    type="primary"
+                    loading={loading}
+                    onClick={() => saveConfig(true)}
+                >
+                    Save
+                </Button>
             ]}
         >
             <Space direction="vertical" style={{ width: '100%' }} size="large">
@@ -279,7 +271,7 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
 
                             {config.allowedCommands && config.allowedCommands.length > 0 && (
                                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: 16 }}>
-                                    {config.allowedCommands.map((command) => (
+                                    {[...config.allowedCommands].sort().map((command) => (
                                         <Tag
                                             key={command}
                                             closable
