@@ -20,6 +20,13 @@ BUILTIN_TOOL_CATEGORIES: Dict[str, Dict[str, any]] = {
         "requires_dependencies": ["scapy", "dpkt"],
         "tools": [],  # Will be populated dynamically
         "hidden": True  # Hidden for release - not ready yet
+    },
+    "architecture_shapes": {
+        "name": "Architecture Shapes",
+        "description": "Architecture diagram shape catalog for DrawIO, Mermaid, and Graphviz",
+        "enabled_by_default": True,
+        "requires_dependencies": [],
+        "tools": [],
     }
 }
 
@@ -47,10 +54,24 @@ def get_pcap_analysis_tools() -> List[Type[BaseMCPTool]]:
         return []
 
 
+def get_architecture_shapes_tools() -> List[Type[BaseMCPTool]]:
+    """Get architecture shapes catalog tools."""
+    try:
+        from app.mcp.tools.architecture_shapes.tools import (
+            ListShapeCategoriesTool, SearchShapesTool, GetDiagramTemplateTool
+        )
+        return [ListShapeCategoriesTool, SearchShapesTool, GetDiagramTemplateTool]
+    except ImportError as e:
+        logger.warning(f"Could not import architecture shapes tools: {e}")
+        return []
+
+
 def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
     """Get builtin tools for a specific category."""
     if category == "pcap_analysis":
         return get_pcap_analysis_tools()
+    elif category == "architecture_shapes":
+        return get_architecture_shapes_tools()
     return []
 
 

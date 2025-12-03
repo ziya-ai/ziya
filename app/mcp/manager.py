@@ -75,19 +75,6 @@ class MCPManager:
         except ImportError:
             logger.error("Built-in MCP server package 'app.mcp_servers' not found. Built-in servers will be unavailable.")
         except Exception as e:
-            
-            # PCAP Analysis builtin server (disabled by default)
-            builtin_servers["pcap_analysis"] = {
-                "command": ["internal"],  # Special marker for direct MCP tools
-                "enabled": False,  # Disabled by default
-                "description": "PCAP analysis and network protocol correlation tools",
-                "builtin": True
-            }
-            
-            logger.info(f"Found built-in MCP server package at: {package_dir}")
-        except ImportError:
-            logger.error("Built-in MCP server package 'app.mcp_servers' not found. Built-in servers will be unavailable.")
-        except Exception as e:
             logger.error(f"Error defining built-in MCP servers: {e}")
         return builtin_servers
 
@@ -164,9 +151,47 @@ class MCPManager:
             try:
                 with open(self.config_path, 'r') as f:
                     user_config_data = json.load(f)
+            except json.JSONDecodeError as e:
+                logger.error(f"Invalid JSON in MCP config file {self.config_path}: {e}")
+                logger.error(f"Line {e.lineno}, Column {e.colno}: {e.msg}")
+                logger.warning("Skipping malformed config file, using built-in defaults only")
+                user_config_data = {}
+            except Exception as e:
+                logger.error(f"Error reading MCP config from {self.config_path}: {e}")
+                logger.warning("Skipping unreadable config file, using built-in defaults only")
+                user_config_data = {}
+            
+            try:
                 user_servers = user_config_data.get("mcpServers", {})
                 
                 for name, user_cfg in user_servers.items():
+                    # RESILIENCE: Normalize command format
+                    # MCP protocol expects: command = string, args = array
+                    # But some configs incorrectly have: command = array
+                    if "command" in user_cfg:
+                        command = user_cfg["command"]
+                        if isinstance(command, list):
+                            logger.warning(f"Server '{name}' has command as array (incorrect format), normalizing...")
+                            if len(command) > 0:
+                                # Split into command (first element) and args (rest)
+                                user_cfg["command"] = command[0]
+                                if len(command) > 1:
+                                    # Merge with existing args if present
+                                    existing_args = user_cfg.get("args", [])
+                                    user_cfg["args"] = command[1:] + existing_args
+                                logger.info(f"Normalized '{name}': command='{command[0]}', args={user_cfg.get('args', [])}")
+                            else:
+                                logger.error(f"Server '{name}' has empty command array, skipping")
+                                continue
+                        elif not isinstance(command, str):
+                            logger.error(f"Server '{name}' has invalid command type {type(command)}, skipping")
+                            continue
+                    
+                    # RESILIENCE: Ensure args is an array if present
+                    if "args" in user_cfg and not isinstance(user_cfg["args"], list):
+                        logger.warning(f"Server '{name}' has non-array args, converting to list")
+                        user_cfg["args"] = [str(user_cfg["args"])]
+                    
                     if name in server_configs and server_configs[name].get("builtin"):
                         logger.info(f"User configuration for '{name}' overrides built-in server.")
                         updated_config = server_configs[name].copy()
@@ -665,6 +690,25 @@ class MCPManager:
             except Exception as e:
                 logger.error(f"Dynamic tool execution failed: {e}", exc_info=True)
                 return {"error": True, "message": str(e)}
+        
+        # CRITICAL: Unwrap tool_input if present
+        # Some models (Claude, etc.) wrap parameters in {'tool_input': {...}}
+        # while others send parameters directly. Support both formats.
+        if isinstance(arguments, dict) and 'tool_input' in arguments and len(arguments) == 1:
+            logger.debug(f"Unwrapping tool_input for tool '{tool_name}': {arguments}")
+            tool_input = arguments['tool_input']
+            
+            # Handle case where tool_input is a JSON string instead of dict
+            if isinstance(tool_input, str):
+                try:
+                    arguments = json.loads(tool_input)
+                    logger.debug(f"Parsed tool_input JSON string: {arguments}")
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse tool_input JSON: {e}")
+                    return {"error": True, "message": f"Invalid tool_input JSON: {str(e)}", "code": -32602}
+            else:
+                arguments = tool_input
+            logger.debug(f"Unwrapped arguments: {arguments}")
 
         # Check tool permissions before execution
         from app.mcp.permissions import get_permissions_manager
@@ -735,11 +779,17 @@ class MCPManager:
                     return None
                     
                 return await client.call_tool(tool_name, arguments)
-                
+                    
             # If tool call fails with validation error, don't try other servers
             result = await client.call_tool(tool_name, arguments)
-            if isinstance(result, dict) and result.get("error") and "validation" in str(result.get("message", "")).lower():
+            
+            # Return validation errors immediately so the model can see them
+            if isinstance(result, dict) and result.get("error"):
+                error_msg = str(result.get("message", ""))
+                if "validation" in error_msg.lower() or "required field" in error_msg.lower():
+                    logger.info(f"Returning validation error to model: {error_msg}")
                 return result
+            
         else:
             # Try all connected servers
             for client in self.clients.values():
