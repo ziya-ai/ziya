@@ -2021,14 +2021,21 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                     pipeline.result.changes_written = True
                     
                     # Get list of failed hunk IDs from the error details
-                    failed_hunk_ids = [f['details'].get('hunk') for f in error_details.get('failures', []) if 'hunk' in f.get('details', {})]
+                    # Map difflib hunk numbers to pipeline hunk IDs
+                    difflib_failed = [f['details'].get('hunk') for f in error_details.get('failures', []) if 'hunk' in f.get('details', {})]
+                    failed_hunk_ids = [hunk_id_mapping.get(h, h) for h in difflib_failed]
                     
-                    # Mark successful hunks as succeeded, leave failed ones as PENDING for next stage
+                    # Mark successful hunks as succeeded, failed ones as FAILED
                     for hunk_id, tracker in pipeline.result.hunks.items():
                         if tracker.status == HunkStatus.PENDING:
                             if hunk_id in failed_hunk_ids:
-                                # Leave as PENDING so it can be tried in the next stage
-                                logger.info(f"Hunk #{hunk_id} failed in difflib stage, leaving as PENDING for next stage")
+                                pipeline.update_hunk_status(
+                                    hunk_id=hunk_id,
+                                    stage=PipelineStage.DIFFLIB,
+                                    status=HunkStatus.FAILED,
+                                    error_details={"error": "Hunk failed in difflib stage"}
+                                )
+                                logger.info(f"Hunk #{hunk_id} failed in difflib stage, marked as FAILED")
                             else:
                                 # Mark as succeeded
                                 pipeline.update_hunk_status(

@@ -116,7 +116,15 @@ def apply_diff_with_difflib_fixed(file_path: str, diff_content: str, skip_hunks:
         )
     except Exception as e:
         # Handle unexpected exceptions
-        logger.error(f"Error applying diff with hybrid forced mode: {str(e)}")
+        # Truncate partial_content to avoid massive log dumps
+        error_str = str(e)
+        if "'partial_content':" in error_str and len(error_str) > 500:
+            parts = error_str.split("'partial_content':")
+            summary = parts[0].rstrip(", {")[:300]
+            logger.error(f"Error applying diff: {summary}...[content truncated]")
+        else:
+            logger.error(f"Error applying diff: {error_str[:500]}")
+        
         raise PatchApplicationError(
             f"Failed to apply diff: {str(e)}",
             {

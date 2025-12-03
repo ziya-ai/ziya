@@ -84,6 +84,52 @@ def apply_surgical_changes(original_lines: List[str], hunk: Dict[str, Any], posi
     return result_lines
 
 
+def apply_surgical_changes_by_content(original_lines: List[str], hunk: Dict[str, Any], position: int) -> List[str]:
+    """
+    Apply changes by finding removed lines by content, not position.
+    Used when context doesn't match (diff has wrong context lines).
+    Context lines are NEVER modified - only removed_lines are touched.
+    """
+    removed_lines = hunk.get('removed_lines', [])
+    added_lines = hunk.get('added_lines', [])
+    
+    if not removed_lines or not added_lines:
+        return original_lines
+    
+    # Find each removed line in the file by content
+    removed_norm = [normalize_line_for_comparison(l) for l in removed_lines]
+    search_start = max(0, position - 20)
+    search_end = min(len(original_lines), position + 60)
+    
+    file_indices = []
+    search_from = search_start
+    for norm in removed_norm:
+        for i in range(search_from, search_end):
+            if normalize_line_for_comparison(original_lines[i]) == norm:
+                file_indices.append(i)
+                search_from = i + 1
+                break
+        else:
+            return original_lines  # Can't find removed line
+    
+    if not file_indices:
+        return original_lines
+    
+    result = original_lines.copy()
+    first_pos = min(file_indices)
+    ending = result[first_pos][len(result[first_pos].rstrip()):] or '\n'
+    
+    # Remove in reverse order
+    for idx in sorted(file_indices, reverse=True):
+        del result[idx]
+    
+    # Insert added lines at first removal position
+    for i, line in enumerate(added_lines):
+        result.insert(first_pos + i, line.rstrip() + ending)
+    
+    return result
+
+
 def is_whitespace_only_change(old_lines: List[str], new_lines: List[str]) -> bool:
     """
     Check if the difference between old_lines and new_lines is only whitespace.
@@ -715,6 +761,7 @@ def apply_diff_with_difflib_hybrid_forced(
 
                     # Relaxed verification for incorrect hunk offsets
                     # If the content doesn't match exactly, try to find a better match nearby
+                    h['_context_mismatch'] = False
                     if normalized_fuzzy_file_slice_verify != normalized_old_block_verify:
                         logger.warning(f"Hunk #{hunk_idx}: Initial verification failed at {fuzzy_best_pos}, trying relaxed verification")
                         
@@ -860,12 +907,14 @@ def apply_diff_with_difflib_hybrid_forced(
                                         found_match = True
                                         fuzzy_match_applied = True
                                 else:
-                                    # Standard fuzzy matching logic
+                                    # Standard fuzzy matching logic - context doesn't match well
                                     logger.warning(f"Hunk #{hunk_idx}: Forcing application at fuzzy position {fuzzy_best_pos} with ratio {fuzzy_best_ratio:.2f} (threshold: {confidence_threshold})")
                                     remove_pos = fuzzy_best_pos
                                     found_match = True
                                     # Mark this as a fuzzy match for surgical application
                                     fuzzy_match_applied = True
+                                    # Mark context mismatch for content-based fallback
+                                    h['_context_mismatch'] = True
                             else:
                                 logger.error(f"Hunk #{hunk_idx}: Fuzzy match found at {fuzzy_best_pos}, but content doesn't match old_block. Skipping.")
                                 failure_info = {
@@ -1403,13 +1452,29 @@ def apply_diff_with_difflib_hybrid_forced(
                             final_lines_with_endings = surgical_result
                             logger.info(f"Hunk #{hunk_idx}: Successfully applied surgical changes")
                         else:
-                            logger.warning(f"Hunk #{hunk_idx}: Surgical application made no changes, falling back to standard")
-                            # Fall back to standard application
-                            new_lines_with_endings = []
-                            for line in new_lines_content:
-                                new_lines_with_endings.append(line + dominant_ending)
-                            final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
-                            verify_line_delta(hunk_idx, h, insert_pos, end_remove_pos, len(new_lines_with_endings))
+                            # Surgical didn't work - check if we have context mismatch
+                            if h.get('_context_mismatch', False):
+                                # Context mismatch: use content-based application to avoid corrupting context
+                                logger.warning(f"Hunk #{hunk_idx}: Surgical made no changes with context mismatch, trying content-based")
+                                content_result = apply_surgical_changes_by_content(final_lines_with_endings, h, insert_pos)
+                                if content_result != final_lines_with_endings:
+                                    final_lines_with_endings = content_result
+                                    logger.info(f"Hunk #{hunk_idx}: Successfully applied content-based changes")
+                                else:
+                                    logger.warning(f"Hunk #{hunk_idx}: Content-based also made no changes, falling back to standard")
+                                    new_lines_with_endings = []
+                                    for line in new_lines_content:
+                                        new_lines_with_endings.append(line + dominant_ending)
+                                    final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
+                                    verify_line_delta(hunk_idx, h, insert_pos, end_remove_pos, len(new_lines_with_endings))
+                            else:
+                                logger.warning(f"Hunk #{hunk_idx}: Surgical application made no changes, falling back to standard")
+                                # Fall back to standard application
+                                new_lines_with_endings = []
+                                for line in new_lines_content:
+                                    new_lines_with_endings.append(line + dominant_ending)
+                                final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
+                                verify_line_delta(hunk_idx, h, insert_pos, end_remove_pos, len(new_lines_with_endings))
                     except Exception as e:
                         logger.warning(f"Hunk #{hunk_idx}: Surgical application failed ({str(e)}), falling back to standard")
                         # Fall back to standard application
