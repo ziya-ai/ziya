@@ -102,6 +102,39 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
     This centralizes message construction to avoid duplication.
     """
     logger.debug(f"🔍 FUNCTION_START: build_messages_for_streaming called with {len(files)} files")
+    
+    def format_content_with_images(text_content: str, images: List[dict] = None):
+        """
+        Format message content with images for Claude API.
+        Returns either a string (text-only) or a list of content blocks (with images).
+        """
+        if not images:
+            return text_content
+        
+        # Multi-modal format: list of content blocks
+        content_blocks = []
+        
+        # Add images first (Claude processes images before text typically)
+        for img in images:
+            content_blocks.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": img.get('mediaType', 'image/jpeg'),
+                    "data": img.get('data')
+                }
+            })
+            logger.debug(f"🖼️ Added image: {img.get('filename', 'unnamed')} ({img.get('mediaType')})")
+        
+        # Add text content after images
+        if text_content and text_content.strip():
+            content_blocks.append({
+                "type": "text",
+                "text": text_content
+            })
+        
+        logger.info(f"🖼️ Formatted content with {len(images)} images and text: {len(text_content)} chars")
+        return content_blocks
 
     # Always use precision prompt system
     from app.utils.precision_prompt_system import precision_system
@@ -109,6 +142,49 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
 
     model_info = get_model_info_from_config()
     request_path = "/streaming_tools"  # Default for streaming
+    
+    # Process chat history to format images properly
+    processed_chat_history = []
+    for msg in chat_history:
+        if isinstance(msg, dict):
+            content = msg.get('content', '')
+            images = msg.get('images')
+            formatted_content = format_content_with_images(content, images)
+            
+            processed_chat_history.append({
+                'type': msg.get('type', 'human'),
+                'content': formatted_content
+            })
+        elif isinstance(msg, (list, tuple)):
+            # Handle tuple format: [role, content] or [role, content, images_json]
+            if len(msg) == 2:
+                role, content = msg
+                processed_chat_history.append({
+                    'type': role,
+                    'content': content
+                })
+            elif len(msg) == 3:
+                # 3-element tuple with images: [role, content, images_json]
+                role, content, images_json = msg
+                
+                try:
+                    # Parse the images JSON
+                    images = json.loads(images_json) if isinstance(images_json, str) else images_json
+                    
+                    # Format content with images
+                    formatted_content = format_content_with_images(content, images)
+                    
+                    processed_chat_history.append({
+                        'type': role,
+                        'content': formatted_content
+                    })
+                    logger.info(f"🖼️ Processed message with {len(images)} images from tuple format")
+                except Exception as e:
+                    logger.error(f"Error processing images from tuple: {e}")
+                    # Fallback: add without images
+                    processed_chat_history.append({'type': role, 'content': content})
+        else:
+            processed_chat_history.append(msg)
 
     # Use precision system for 100% equivalence
     messages = precision_system.build_messages(
@@ -116,10 +192,15 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
         model_info=model_info,
         files=files,
         question=question,
-        chat_history=chat_history
+        chat_history=processed_chat_history
     )
 
     logger.debug(f"🎯 PRECISION_SYSTEM: Built {len(messages)} messages with {len(files)} files preserved")
+    
+    # Log if any messages contain images
+    image_message_count = sum(1 for msg in messages if isinstance(msg.get('content'), list))
+    if image_message_count > 0:
+        logger.info(f"🖼️ MULTI_MODAL: {image_message_count} messages contain images")
 
     # Convert to LangChain format if needed
     if use_langchain_format:
@@ -127,12 +208,15 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
         langchain_messages = []
         for msg in messages:
             if isinstance(msg, dict) and "role" in msg:
+                content = msg["content"]
+                
+                # Handle both string and list content (multi-modal)
                 if msg["role"] == "system":
-                    langchain_messages.append(SystemMessage(content=msg["content"]))
+                    langchain_messages.append(SystemMessage(content=content))
                 elif msg["role"] == "user":
-                    langchain_messages.append(HumanMessage(content=msg["content"]))
+                    langchain_messages.append(HumanMessage(content=content))
                 elif msg["role"] == "assistant":
-                    langchain_messages.append(AIMessage(content=msg["content"]))
+                    langchain_messages.append(AIMessage(content=content))
         return langchain_messages
 
     return messages
@@ -299,6 +383,11 @@ async def chat_endpoint(request: Request):
         files = body.get('files', [])
         conversation_id = body.get('conversation_id')
         
+        # Log if we received any messages with images
+        messages_with_images = sum(1 for msg in messages if isinstance(msg, (list, tuple)) and len(msg) >= 3)
+        if messages_with_images > 0:
+            logger.info(f"🖼️ CHAT_ENDPOINT: Received {messages_with_images} messages with images")
+        
         logger.debug(f"🔍 CHAT_ENDPOINT: question='{question[:50]}...', messages={len(messages)}, files={len(files)}")
         
         # Check current model to determine routing
@@ -326,34 +415,53 @@ async def chat_endpoint(request: Request):
             messages_to_process = messages
             if messages and question:
                 last_msg = messages[-1]
+                has_images = False
+                
                 if isinstance(last_msg, list) and len(last_msg) >= 2:
                     last_content = last_msg[1]
+                    # Check if this is a 3-element tuple with images
+                    has_images = len(last_msg) >= 3 and last_msg[2]
                 elif isinstance(last_msg, dict):
                     last_content = last_msg.get('content', '')
+                    has_images = bool(last_msg.get('images'))
                 else:
                     last_content = ''
                 
                 # If the last message content matches the question, exclude it
-                if last_content.strip() == question.strip():
+                # UNLESS it has images - then keep it because question doesn't have image data
+                if last_content.strip() == question.strip() and not has_images:
                     messages_to_process = messages[:-1]
+                    logger.debug(f"Excluded duplicate last message (no images)")
+                elif has_images:
+                    logger.info(f"🖼️ Keeping last message despite matching question - has images")
             
             for msg in messages_to_process:
                 if isinstance(msg, list) and len(msg) >= 2:
                     # Frontend tuple format: ["human", "content"]
+                    # or ["human", "content", json_encoded_images]
                     role, content = msg[0], msg[1]
+                    images = None
+                    if len(msg) >= 3:
+                        try:
+                            import json
+                            images = json.loads(msg[2])
+                        except (json.JSONDecodeError, TypeError):
+                            logger.warning(f"Failed to parse images from message: {msg[2][:100] if len(msg[2]) > 100 else msg[2]}")
+                    
                     if role in ['human', 'user']:
-                        chat_history.append({'type': 'human', 'content': content})
+                        chat_history.append({'type': 'human', 'content': content, 'images': images})
                     elif role in ['assistant', 'ai']:
-                        chat_history.append({'type': 'ai', 'content': content})
+                        chat_history.append({'type': 'ai', 'content': content, 'images': images})
                 elif isinstance(msg, dict):
                     # Already in dict format
                     role = msg.get('role', msg.get('type', 'user'))
                     content = msg.get('content', '')
+                    images = msg.get('images')
                     if role and content:
                         if role in ['human', 'user']:
-                            chat_history.append({'type': 'human', 'content': content})
+                            chat_history.append({'type': 'human', 'content': content, 'images': images})
                         elif role in ['assistant', 'ai']:
-                            chat_history.append({'type': 'ai', 'content': content})
+                            chat_history.append({'type': 'ai', 'content': content, 'images': images})
             
             # Format the data for stream_chunks - LangChain expects files at top level
             formatted_body = {
@@ -853,6 +961,39 @@ async def check_context_overflow(
         continuation_point = find_continuation_point(current_response)
         
         if continuation_point:
+            # Helper function to detect markdown block state at position
+            def get_markdown_state_at_position(text: str, position: int) -> dict:
+                """Analyze markdown structure at a specific position."""
+                lines_before = text[:position].split('\n')
+                
+                # Track code block state using a stack
+                code_fences = []
+                for i, line in enumerate(lines_before):
+                    stripped = line.lstrip()
+                    # Match code fences at line start
+                    fence_match = re.match(r'^(`{3,}|~{3,})(\w*)', stripped)
+                    if fence_match:
+                        fence_chars = fence_match.group(1)
+                        language = fence_match.group(2) or ''
+                        fence_type = fence_chars[0]  # '`' or '~'
+                        
+                        # Check if this closes an existing fence
+                        if code_fences and code_fences[-1]['type'] == fence_type:
+                            code_fences.pop()
+                        else:
+                            # Open a new block
+                            code_fences.append({
+                                'type': fence_type,
+                                'language': language,
+                                'line': i
+                            })
+                
+                return {
+                    'in_code_block': len(code_fences) > 0,
+                    'code_fence_language': code_fences[-1]['language'] if code_fences else None,
+                    'code_fence_type': code_fences[-1]['type'] if code_fences else None
+                }
+            
             # Find the last complete line before continuation point
             lines = current_response[:continuation_point].split('\n')
             complete_lines = lines[:-1]  # All but the potentially partial last line
@@ -860,15 +1001,27 @@ async def check_context_overflow(
             
             completed_part = '\n'.join(complete_lines)
             
+            # Analyze markdown state at the continuation point
+            markdown_state = get_markdown_state_at_position(current_response, len(completed_part))
+            
+            # Build rewind marker with code block state information
+            state_info = ""
+            if markdown_state['in_code_block']:
+                fence_type = markdown_state['code_fence_type']
+                fence_language = markdown_state['code_fence_language'] or ''
+                state_info = f"|FENCE:{fence_type}{fence_language}"
+                logger.info(f"🔄 CONTEXT: Rewind point is inside code block: {fence_type * 3}{fence_language}")
+            
             # Add rewind marker that identifies exactly where to splice
-            rewind_marker = f"\n\n<!-- REWIND_MARKER: {len(complete_lines)} -->\n**🔄 Response continues...**\n"
+            rewind_marker = f"\n\n<!-- REWIND_MARKER: {len(complete_lines)}{state_info} -->\n**🔄 Response continues...**\n"
             completed_part += rewind_marker
             
             # Prepare continuation state
             continuation_state = {
                 "rewind_line_number": len(complete_lines),
                 "partial_last_line": partial_last_line,
-                "rewind_marker": f"<!-- REWIND_MARKER: {len(complete_lines)} -->",
+                "rewind_marker": f"<!-- REWIND_MARKER: {len(complete_lines)}{state_info} -->",
+                "markdown_state": markdown_state,
                 "conversation_id": conversation_id,
                 "completed_response": completed_part,
                 "messages": messages,
@@ -893,6 +1046,34 @@ def find_continuation_point(text: str) -> Optional[int]:
     4. Natural word boundaries
     """
     
+    # Helper to check if we're inside a code block at a given position
+    def is_inside_code_block(text: str, position: int) -> bool:
+        """Check if a position is inside a code block."""
+        lines_before = text[:position].split('\n')
+        code_block_stack = []
+        
+        for line in lines_before:
+            stripped = line.lstrip()
+            fence_match = re.match(r'^(`{3,}|~{3,})', stripped)
+            if fence_match:
+                fence_type = fence_match.group(1)[0]
+                # Toggle stack
+                if code_block_stack and code_block_stack[-1] == fence_type:
+                    code_block_stack.pop()
+                else:
+                    code_block_stack.append(fence_type)
+        
+        return len(code_block_stack) > 0
+    
+    # Helper to find safe paragraph breaks (not inside code blocks)
+    def find_safe_breaks(breaks: list[int]) -> list[int]:
+        """Filter breaks to only those outside code blocks."""
+        safe_breaks = []
+        for break_point in breaks:
+            if not is_inside_code_block(text, break_point):
+                safe_breaks.append(break_point)
+        return safe_breaks
+    
     # For code/structured content, prioritize complete lines
     lines = text.split('\n')
     if len(lines) > 10:
@@ -907,18 +1088,26 @@ def find_continuation_point(text: str) -> Optional[int]:
     
     # Look for paragraph breaks first
     paragraph_breaks = [m.end() for m in re.finditer(r'\n\n+', text)]
-    if paragraph_breaks:
+    safe_paragraph_breaks = find_safe_breaks(paragraph_breaks)
+    if safe_paragraph_breaks:
         # Find the last paragraph break that's not too close to the end
-        for break_point in reversed(paragraph_breaks):
+        for break_point in reversed(safe_paragraph_breaks):
             if break_point < len(text) * 0.8:  # Not in last 20% of text
+                logger.debug(f"🔄 CONTINUATION: Found safe paragraph break at {break_point}")
                 return break_point
     
     # Look for sentence endings
     sentence_endings = [m.end() for m in re.finditer(r'[.!?]\s+', text)]
-    if sentence_endings:
-        for break_point in reversed(sentence_endings):
+    safe_sentence_endings = find_safe_breaks(sentence_endings)
+    if safe_sentence_endings:
+        for break_point in reversed(safe_sentence_endings):
             if break_point < len(text) * 0.8:
+                logger.debug(f"🔄 CONTINUATION: Found safe sentence ending at {break_point}")
                 return break_point
+    
+    # If no safe breaks found, log warning
+    if paragraph_breaks or sentence_endings:
+        logger.warning(f"🔄 CONTINUATION: No safe breaks found outside code blocks. Total paragraph breaks: {len(paragraph_breaks)}, safe: {len(safe_paragraph_breaks)}")
     
     # Look for code block endings
     code_block_endings = [m.end() for m in re.finditer(r'```\n+', text)]
@@ -1128,8 +1317,13 @@ async def stream_chunks(body):
                 # Send initial heartbeat
                 yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\n\n"
                 
+                # Get MCP tools to pass to executor
+                from app.mcp.enhanced_tools import create_secure_mcp_tools
+                mcp_tools = create_secure_mcp_tools()
+                logger.debug(f"🚀 DIRECT_STREAMING: Passing {len(mcp_tools)} tools to executor")
+                
                 chunk_count = 0
-                async for chunk in executor.stream_with_tools(messages, conversation_id=conversation_id):
+                async for chunk in executor.stream_with_tools(messages, tools=mcp_tools, conversation_id=conversation_id):
                     chunk_count += 1
                     
                     # Convert to expected format and yield all chunk types
@@ -3450,7 +3644,8 @@ def get_current_model():
             'endpoint': endpoint,
             'region': region,
             'settings': model_settings,
-            'token_limit': model_config.get("extended_context_limit" if model_config.get("supports_extended_context") else "token_limit", 4096)
+            'token_limit': model_config.get("extended_context_limit" if model_config.get("supports_extended_context") else "token_limit", 4096),
+            'ephemeral': os.environ.get("ZIYA_EPHEMERAL", "false").lower() == "true"
         }
     except Exception as e:
         logger.error(f"Error getting current model: {str(e)}")
@@ -3830,8 +4025,29 @@ async def set_model(request: SetModelRequest):
 
             # Recreate agent chain and executor with new model
             try:
-                agent = create_agent_chain(new_model)
-                agent_executor = create_agent_executor(agent)
+                # Check if this is a Google model with native function calling
+                endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+                model_name = os.environ.get("ZIYA_MODEL")
+                
+                # For Google models with native function calling, skip agent creation
+                if endpoint == "google" and model_name:
+                    model_config = ModelManager.get_model_config(endpoint, model_name)
+                    uses_native_calling = model_config.get("native_function_calling", False)
+                    
+                    if uses_native_calling:
+                        logger.info(f"Model {model_name} uses native function calling, skipping XML agent creation")
+                        # Store the model directly without wrapping in XML agent
+                        agent = None  # No XML agent needed
+                        agent_executor = None  # No executor needed
+                    else:
+                        # Create XML agent for models that need it
+                        agent = create_agent_chain(new_model)
+                        agent_executor = create_agent_executor(agent)
+                else:
+                    # For Bedrock and other models, create XML agent normally
+                    agent = create_agent_chain(new_model)
+                    agent_executor = create_agent_executor(agent)
+                
                 # Get the updated llm_with_stop from ModelManager
                 llm_with_stop = ModelManager._state.get('llm_with_stop')
                 logger.info("Created new agent chain and executor")
@@ -3966,6 +4182,7 @@ def get_model_capabilities(model: str = None):
 
         capabilities = {
             "supports_thinking": effective_settings.get("thinking_mode", base_model_config.get("supports_thinking", False)),
+            "supports_vision": base_model_config.get("supports_vision", False),
         }
         
         # Add thinking level support for Gemini 3 models

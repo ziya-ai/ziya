@@ -9,8 +9,23 @@ class FeedbackWebSocket {
     private ws: WebSocket | null = null;
     private conversationId: string | null = null;
     private connectionPromise: Promise<void> | null = null;
+    private isConnected: boolean = false;
+    private isConnecting: boolean = false;
 
     connect(conversationId: string): Promise<void> {
+        // Prevent duplicate connections for the same conversation
+        if (this.conversationId === conversationId && (this.isConnected || this.isConnecting)) {
+            console.log('🔄 FEEDBACK: Already connected/connecting to:', conversationId);
+            return this.connectionPromise || Promise.resolve();
+        }
+
+        // Disconnect any existing connection before creating new one
+        if (this.ws && this.isConnected) {
+            console.log('🔄 FEEDBACK: Disconnecting previous WebSocket before new connection');
+            this.disconnect();
+        }
+
+        this.isConnecting = true;
         this.connectionPromise = new Promise((resolve, reject) => {
             this.conversationId = conversationId;
 
@@ -28,12 +43,16 @@ class FeedbackWebSocket {
 
             this.ws.onopen = () => {
                 clearTimeout(connectionTimeout);
+                this.isConnected = true;
+                this.isConnecting = false;
                 console.log('🔄 FEEDBACK: WebSocket connected');
                 resolve();
             };
 
             this.ws.onerror = (error) => {
                 clearTimeout(connectionTimeout);
+                this.isConnected = false;
+                this.isConnecting = false;
                 console.error('🔄 FEEDBACK: WebSocket error:', error);
                 console.error('🔄 FEEDBACK: WebSocket URL was:', wsUrl);
                 console.error('🔄 FEEDBACK: WebSocket readyState:', this.ws?.readyState);
@@ -42,6 +61,8 @@ class FeedbackWebSocket {
 
             this.ws.onclose = () => {
                 clearTimeout(connectionTimeout);
+                this.isConnected = false;
+                this.isConnecting = false;
                 console.log('🔄 FEEDBACK: WebSocket closed');
             };
         });
@@ -50,6 +71,12 @@ class FeedbackWebSocket {
     }
 
     sendFeedback(toolId: string, feedback: string) {
+        // Guard against sending on closed/closing WebSocket
+        if (!this.ws || !this.isConnected || this.ws.readyState !== WebSocket.OPEN) {
+            console.warn('🔄 FEEDBACK: Cannot send - WebSocket not ready:', { isConnected: this.isConnected, readyState: this.ws?.readyState });
+            return;
+        }
+        
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             this.ws.send(JSON.stringify({
                 type: 'tool_feedback',
@@ -65,8 +92,27 @@ class FeedbackWebSocket {
     }
 
     disconnect() {
+        // Prevent duplicate disconnect calls
+        if (!this.ws || (!this.isConnected && !this.isConnecting)) {
+            console.log('🔄 FEEDBACK: Already disconnected or never connected');
+            return;
+        }
+
+        console.log('🔄 FEEDBACK: Disconnecting WebSocket for:', this.conversationId);
+        
+        // Mark as disconnecting immediately to prevent race conditions
+        this.isConnected = false;
+        this.isConnecting = false;
+        
+        // Close the WebSocket connection
+        try {
         this.ws?.close();
+        } catch (error) {
+            console.error('🔄 FEEDBACK: Error closing WebSocket:', error);
+        }
+        
         this.ws = null;
+        this.conversationId = null;
         this.connectionPromise = null;
     }
 }
@@ -506,6 +552,11 @@ export const sendPayload = async (
     // Connect feedback WebSocket
     let feedbackConnected = false;
     try {
+        // Check if already connected before attempting connection
+        if ((window as any).feedbackWebSocketReady && feedbackWebSocket['conversationId'] === conversationId) {
+            console.log('🔄 FEEDBACK: WebSocket already connected for this conversation');
+            feedbackConnected = true;
+        } else {
         console.log('🔄 FEEDBACK: Attempting to connect WebSocket for conversation:', conversationId);
         await feedbackWebSocket.connect(conversationId);
         console.log('🔄 FEEDBACK: WebSocket connected successfully');
@@ -513,6 +564,7 @@ export const sendPayload = async (
         // Notify components that WebSocket is ready
         (window as any).feedbackWebSocketReady = true;
         feedbackConnected = true;
+        }
     } catch (e) {
         console.error('🔄 FEEDBACK: Failed to connect WebSocket:', e);
         console.warn('Failed to connect feedback WebSocket:', e);
@@ -553,11 +605,13 @@ export const sendPayload = async (
             removeStreamingConversation(conversationId);
             setIsStreaming(false);
 
-            // Disconnect feedback WebSocket only if we connected it
-            if (feedbackConnected) {
+            // Disconnect feedback WebSocket only if we connected it in this call
+            // AND if there are no other active streaming conversations
+            if (feedbackConnected && streamingConversations.size <= 1) {
+                console.log('🔄 FEEDBACK: Last streaming conversation ending, disconnecting WebSocket');
                 (window as any).feedbackWebSocketReady = false;
+                feedbackWebSocket.disconnect();
             }
-            feedbackWebSocket.disconnect();
         }
     };
     document.addEventListener('abortStream', abortListener as EventListener);
@@ -677,6 +731,10 @@ export const sendPayload = async (
 
         // Extract the single data message processing logic into a separate function
         const processSingleDataMessage = (data: string) => {
+            // Declare at function scope so it's accessible in all try blocks
+            let jsonData: any;
+            let unwrappedData: any;
+            
             try {
                 // Skip heartbeat messages entirely
                 if (data.includes('"heartbeat": true') || data.includes('"type": "heartbeat"')) {
@@ -685,7 +743,16 @@ export const sendPayload = async (
                 }
 
                 // Parse JSON first to check message type
-                const jsonData = JSON.parse(data);
+                jsonData = JSON.parse(data);
+                
+                // Unwrap tool_start and tool_result if they're wrapped
+                unwrappedData = jsonData;
+                if (jsonData.tool_start) {
+                    unwrappedData = jsonData.tool_start;
+                } else if (jsonData.tool_result) {
+                    unwrappedData = jsonData.tool_result;
+                    unwrappedData.type = 'tool_display';
+                }
 
                 // Check if this is a hunk status update
                 if (jsonData.request_id && jsonData.details && jsonData.details.hunk_statuses) {
@@ -698,13 +765,11 @@ export const sendPayload = async (
                     }));
                 }
 
-                // Unwrap tool_start and tool_result if they're wrapped
-                let unwrappedData = jsonData;
-                if (jsonData.tool_start) {
-                    unwrappedData = jsonData.tool_start;
-                } else if (jsonData.tool_result) {
-                    unwrappedData = jsonData.tool_result;
-                    unwrappedData.type = 'tool_display';
+                // Filter internal tools using flag from backend
+                if ((unwrappedData.type === 'tool_start' || unwrappedData.type === 'tool_display') && 
+                    unwrappedData.is_internal === true) {
+                    console.log('🔇 INTERNAL_TOOL: Skipping display for', unwrappedData.tool_name);
+                    return; // Skip displaying this tool entirely
                 }
 
                 // CRITICAL: Check if this is tool-related content BEFORE doing any pattern detection
@@ -887,18 +952,6 @@ export const sendPayload = async (
             }
 
             try {
-                // Parse the JSON data
-                const jsonData = JSON.parse(data);
-
-                // Unwrap tool_start and tool_result if they're wrapped
-                let unwrappedData = jsonData;
-                if (jsonData.tool_start) {
-                    unwrappedData = jsonData.tool_start;
-                } else if (jsonData.tool_result) {
-                    unwrappedData = jsonData.tool_result;
-                    unwrappedData.type = 'tool_display';
-                }
-
                 // Process the JSON object
                 if (unwrappedData.heartbeat) {
                     console.log("Received heartbeat, skipping");
@@ -1005,18 +1058,90 @@ export const sendPayload = async (
 
                 // Check for rewind markers in accumulated content first
                 if (currentContent.includes('<!-- REWIND_MARKER:')) {
-                    const rewindMatch = currentContent.match(/<!-- REWIND_MARKER: (\d+)(?:\|PARTIAL:([^-]*))? -->/);
+                    const rewindMatch = currentContent.match(/<!-- REWIND_MARKER: (\d+)(?:\|FENCE:([`~])(\w*))? -->/);
                     if (rewindMatch) {
-                        const partialContent = rewindMatch[2] || '';
-                        console.log(`🔄 REWIND: Detected marker in accumulated content with partial: "${partialContent}"`);
-                        console.log(`🔄 REWIND: Trimming last incomplete line and continuing`);
-
+                        const rewindLineNumber = parseInt(rewindMatch[1], 10);
+                        const fenceType = rewindMatch[2]; // '`' or '~' or undefined
+                        const fenceLanguage = rewindMatch[3]; // language tag or undefined
+                        
+                        console.log(`🔄 REWIND: Marker detected - line ${rewindLineNumber}, fence: ${fenceType ? fenceType.repeat(3) + fenceLanguage : 'none'}`);
+                        
+                        /**
+                         * Parse markdown structure to detect unclosed blocks
+                         * This is more robust than counting fences because it:
+                         * 1. Only counts fences at line start (not in code/strings)
+                         * 2. Matches fence types (``` with ```, ~~~ with ~~~)
+                         * 3. Respects fence length (`````` opens/closes with ``````, not ```)
+                         */
+                        const parseMarkdownState = (content: string): {
+                            inCodeBlock: boolean;
+                            codeFenceType?: string;
+                            codeFenceLanguage?: string;
+                        } => {
+                            const lines = content.split('\n');
+                            const codeBlockStack: Array<{ type: string; language: string }> = [];
+                            
+                            for (const line of lines) {
+                                const trimmed = line.trimStart();
+                                
+                                // Only match fences at line start (after optional whitespace)
+                                const fenceMatch = trimmed.match(/^(`{3,}|~{3,})(\w*)/);
+                                if (fenceMatch) {
+                                    const fenceChars = fenceMatch[1];
+                                    const language = fenceMatch[2] || '';
+                                    const fenceType = fenceChars[0]; // '`' or '~'
+                                    
+                                    // Check if this closes the current block
+                                    if (codeBlockStack.length > 0 && 
+                                        codeBlockStack[codeBlockStack.length - 1].type === fenceType &&
+                                        fenceChars.length >= 3) {
+                                        // Closing fence - must be same type and at least 3 chars
+                                        codeBlockStack.pop();
+                                    } else if (fenceChars.length >= 3) {
+                                        // Opening fence
+                                        codeBlockStack.push({ type: fenceType, language });
+                                    }
+                                }
+                            }
+                            
+                            return {
+                                inCodeBlock: codeBlockStack.length > 0,
+                                codeFenceType: codeBlockStack.length > 0 ? codeBlockStack[codeBlockStack.length - 1].type : undefined,
+                                codeFenceLanguage: codeBlockStack.length > 0 ? codeBlockStack[codeBlockStack.length - 1].language : undefined
+                            };
+                        };
+                        
                         // Remove everything from the rewind marker onwards
                         const lines = currentContent.split('\n');
                         const markerIndex = lines.findIndex(line => line.includes('<!-- REWIND_MARKER:'));
                         if (markerIndex >= 0) {
                             const beforeRewind = lines.slice(0, markerIndex).join('\n');
-                            currentContent = beforeRewind;
+                            
+                            // Parse markdown state at the rewind point
+                            const markdownState = parseMarkdownState(beforeRewind);
+                            
+                            // If backend told us we're in a code block, trust that
+                            // Otherwise, use our own analysis
+                            const inCodeBlock = fenceType ? true : markdownState.inCodeBlock;
+                            const needsFenceClosure = inCodeBlock && !fenceType; // We detected it but backend didn't tell us
+                            
+                            if (inCodeBlock) {
+                                console.log(`🔄 REWIND: At rewind point, we're inside a code block`, {
+                                    backendFence: fenceType ? fenceType.repeat(3) + (fenceLanguage || '') : 'not specified',
+                                    detectedFence: markdownState.codeFenceType?.repeat(3) + (markdownState.codeFenceLanguage || ''),
+                                    willCloseFence: needsFenceClosure || !!fenceType
+                                });
+                                
+                                // Close the code block so the accumulated content is valid markdown
+                                const fenceToUse = fenceType || markdownState.codeFenceType || '`';
+                                currentContent = beforeRewind + '\n' + fenceToUse.repeat(3) + '\n';
+                                
+                                // The continuation should re-open the fence
+                                // If backend sent fence info, we know continuation will have raw code
+                                // If we detected it ourselves, continuation might be malformed
+                            } else {
+                                currentContent = beforeRewind;
+                            }
                             console.log(`🔄 REWIND: Reset content to before marker, length: ${currentContent.length}`);
                             // Update the map immediately
                             setStreamedContentMap((prev: Map<string, string>) => {
@@ -1030,20 +1155,43 @@ export const sendPayload = async (
 
                 // Check for rewind markers that indicate continuation splicing
                 if (jsonData.content && jsonData.content.includes('<!-- REWIND_MARKER:')) {
-                    const rewindMatch = jsonData.content.match(/<!-- REWIND_MARKER: (\d+)/);
+                    const rewindMatch = jsonData.content.match(/<!-- REWIND_MARKER: (\d+)(?:\|FENCE:([`~])(\w*))? -->/);
                     if (rewindMatch) {
                         const rewindLine = parseInt(rewindMatch[1], 10);
+                        const fenceType = rewindMatch[2];
+                        const fenceLanguage = rewindMatch[3];
+                        
                         console.log(`🔄 REWIND: Detected marker at line ${rewindLine}`);
 
                         // Rewind to the specified line number
                         const lines = currentContent.split('\n');
                         currentContent = lines.slice(0, rewindLine).join('\n');
+                        
+                        // If backend told us we're in a code block, close it
+                        if (fenceType) {
+                            console.log(`🔄 REWIND: Backend indicates we're in a code block, closing it`);
+                            currentContent += '\n' + fenceType.repeat(3) + '\n';
+                        }
 
                         // Strip the marker and "Block continues" text from this chunk's content
                         // but keep any actual content that comes after
                         jsonData.content = jsonData.content
                             .replace(/<!-- REWIND_MARKER: \d+ -->\n?/, '')
+                            .replace(/<!-- REWIND_MARKER: \d+\|FENCE:[`~]\w* -->\n?/, '')
                             .replace(/\*\*🔄 Block continues\.\.\.\*\*\n?/, '');
+                        
+                        // If backend told us we're continuing a code block, 
+                        // prepend the opening fence to the continuation content
+                        if (fenceType && jsonData.content && jsonData.content.trim()) {
+                            const fence = fenceType.repeat(3) + (fenceLanguage || '');
+                            console.log(`🔄 REWIND: Prepending fence to continuation: ${fence}`);
+                            
+                            // Only add fence if the continuation doesn't already start with one
+                            const startsWithFence = jsonData.content.trimStart().match(/^(`{3,}|~{3,})/);
+                            if (!startsWithFence) {
+                                jsonData.content = fence + '\n' + jsonData.content;
+                            }
+                        }
 
                         console.log(`🔄 REWIND: Rewound to line ${rewindLine}, stripped marker text`);
                         // Update the map immediately to reflect the rewound content
@@ -1910,11 +2058,21 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
 
     // Messages are already filtered in SendChatContainer, no need to filter again
     for (const message of messages) {
-        messageTuples.push([message.role, message.content]);
+        // Include images if present
+        if (message.images && message.images.length > 0) {
+            messageTuples.push([
+                message.role,
+                message.content,
+                JSON.stringify(message.images)
+            ]);
+        } else {
+            messageTuples.push([message.role, message.content]);
+        }
     }
 
     // Debug log the conversation ID being sent
     console.log('🔍 API: Sending conversation_id to server:', conversationId);
+    console.log('🖼️ API: Messages with images:', messages.filter(m => m.images?.length > 0).length);
 
     const payload = {
         messages: messageTuples,
