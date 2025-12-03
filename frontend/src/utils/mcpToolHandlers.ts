@@ -26,9 +26,11 @@ const sequentialThinkingHandler: ToolHandler = {
     console.log('🤔 THINKING_START: Received jsonData:', JSON.stringify(jsonData, null, 2));
     
     // Extract the actual thinking content from the args
-    const thinkingContent = jsonData.args?.thought || jsonData.input?.thought || '';
-    const thoughtNumber = jsonData.args?.thoughtNumber || jsonData.input?.thoughtNumber || 1;
-    const totalThoughts = jsonData.args?.totalThoughts || jsonData.input?.totalThoughts || 1;
+    const toolInput = jsonData.args?.tool_input || jsonData.args || {};
+    
+    const thinkingContent = toolInput.thought || jsonData.input?.thought || '';
+    const thoughtNumber = toolInput.thoughtNumber || jsonData.input?.thoughtNumber || 1;
+    const totalThoughts = toolInput.totalThoughts || jsonData.input?.totalThoughts || 1;
     
     console.log('🤔 THINKING_START: Extracted values:', { thinkingContent: thinkingContent.substring(0, 50), thoughtNumber, totalThoughts });
     

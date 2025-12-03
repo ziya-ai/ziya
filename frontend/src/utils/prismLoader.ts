@@ -115,6 +115,7 @@ const loadPrismCore = async (): Promise<PrismStatic | null> => {
                     return null;
                 } catch (error) {
                     console.error('Failed to initialize Prism:', error);
+                    initializationPromise = null; // Reset to allow retry
                     return null;
                 }
             })();
@@ -155,9 +156,8 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
 
     const prism = await loadPrismCore();
     if (!prism) {
-        const error = new Error('Failed to load Prism core');
-        console.error(error);
-        return;
+        // Throw error so caller knows loading failed
+        throw new Error('Failed to load Prism core');
     }
 
     // Special handling for "typescript jsx" format
