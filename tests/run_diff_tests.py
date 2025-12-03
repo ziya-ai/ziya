@@ -720,6 +720,10 @@ class DiffRegressionTest(unittest.TestCase):
         """Test case where fuzzy matching fails due to incorrect line numbers in diff, causing no application at all"""
         self.run_diff_test('MRE_fuzzy_mismatch_wrong_lines')
 
+    def test_mcp_manager_duplicate_exception(self):
+        """Test removing duplicate exception handling code incorrectly marked as already applied"""
+        self.run_diff_test('mcp_manager_duplicate_exception')
+
     def test_delete_end_block(self):
         """Test deletion of final codeblock"""
         self.run_diff_test("delete-end-block")

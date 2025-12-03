@@ -1,0 +1,23 @@
+--- a/app/mcp/manager.py
++++ b/app/mcp/manager.py
+@@ -74,21 +74,8 @@
+             logger.info(f"Found built-in MCP server package at: {package_dir}")
+         except ImportError:
+             logger.error("Built-in MCP server package 'app.mcp_servers' not found. Built-in servers will be unavailable.")
+         except Exception as e:
+-            
+-            # PCAP Analysis builtin server (disabled by default)
+-            builtin_servers["pcap_analysis"] = {
+-                "command": ["internal"],  # Special marker for direct MCP tools
+-                "enabled": False,  # Disabled by default
+-                "description": "PCAP analysis and network protocol correlation tools",
+-                "builtin": True
+-            }
+-            
+-            logger.info(f"Found built-in MCP server package at: {package_dir}")
+-        except ImportError:
+-            logger.error("Built-in MCP server package 'app.mcp_servers' not found. Built-in servers will be unavailable.")
+-        except Exception as e:
+-            logger.error(f"Error defining built-in MCP servers: {e}")
++            logger.error(f"Error defining built-in MCP servers: {e}")
+         return builtin_servers
