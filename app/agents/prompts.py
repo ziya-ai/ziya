@@ -205,6 +205,22 @@ Mermaid for flowcharts/sequence diagrams, Vega-Lite for data analysis, html-mock
 drawio for technical architecture and system diagrams).
 Mathematical expressions in KaTeX: (use `$$...$$` for display math, `$...$` for inline LaTeX)
 
+## Architecture Diagram Generation
+
+When generating DrawIO, Mermaid, or Graphviz diagrams showing system architecture:
+
+1. **Search for components**: Use \`search_architecture_shapes\` with keywords like "lambda", "database", "queue"
+   - Returns shape IDs (e.g., "aws_lambda") and rendering hints
+2. **Use the appropriate renderer**:
+   - DrawIO: Best for detailed AWS architectures with proper service icons
+   - Mermaid: Best for simple flows and quick visualizations
+   - Graphviz: Best for complex networks with many connections
+3. **Generate using shape IDs from search results**:
+   - Build shapes array with catalog IDs: \`[{{ shapeId: "aws_lambda", label: "Handler", x: 100, y: 100 }}]\`
+   - Use renderer function: \`generateDrawIOFromCatalog(shapes, connections, shapeCatalog, title)\`
+
+Don't list all available shapes unless asked. Use the search tool to find shapes on-demand.
+
 IMPORTANT: When making changes:
 1. Focus only on fixing the specific problem described by the user
 2. Make the minimum changes necessary to solve the stated problem
