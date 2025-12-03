@@ -338,9 +338,28 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
     if removed_lines:
         removal_matches = _validate_removal_content(file_lines, removed_lines, pos)
         if not removal_matches:
-            # Removal content doesn't match
+            # Removal content doesn't match at pos
             # For modifications (has additions), check if the new content is already there
             if added_lines and _check_expected_content_match(file_lines, new_lines, pos, ignore_whitespace):
+                # CRITICAL: Before marking as "already applied", verify the removal content
+                # is actually gone. For multi-line distinctive blocks, check if a significant
+                # portion still exists in the file - if so, we're likely matching against
+                # duplicate code, not a previously-applied hunk.
+                if len(removed_lines) >= 3:
+                    # Check if a distinctive portion of removal content exists in file
+                    # Use middle lines (skip first/last which are often generic like braces)
+                    mid_start = len(removed_lines) // 4
+                    mid_end = len(removed_lines) - mid_start
+                    distinctive_lines = removed_lines[mid_start:mid_end]
+                    
+                    if len(distinctive_lines) >= 2:
+                        # Check if these distinctive lines exist consecutively in the file
+                        file_content = "\n".join(file_lines)
+                        distinctive_content = "\n".join(distinctive_lines)
+                        if distinctive_content in file_content:
+                            logger.debug(f"Removal content still exists in file (checked {len(distinctive_lines)} distinctive lines) - NOT already applied")
+                            return False
+                
                 logger.debug(f"Hunk appears already applied: removal content gone, new content present at {pos}")
                 return True
             # For pure deletions or when new content doesn't match - not applied
