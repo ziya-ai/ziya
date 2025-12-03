@@ -3616,6 +3616,11 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
     if (tokenType === 'code' && 'lang' in token && typeof token.lang === 'string' && token.lang) {
         const lang = token.lang.toLowerCase().trim();
 
+        // Check for DrawIO blocks
+        if (lang === 'drawio' || lang === 'draw.io') {
+            return 'drawio';
+        }
+
         // Check for HTML mockup blocks
         if (lang === 'html-mockup' || lang === 'ui-mockup' || lang === 'mockup') {
             return 'html-mockup';
@@ -3737,6 +3742,18 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
     if (tokenType === 'code' && 'text' in token && typeof token.text === 'string') {
         const text = token.text;
         const trimmedText = text.trim();
+
+        // Check for DrawIO XML content
+        if (trimmedText.includes('<mxGraphModel') || 
+            trimmedText.includes('<mxfile') || 
+            trimmedText.includes('<diagram')) {
+            if (isDebugLoggingEnabled()) {
+                debugLog('DETECTED AS DRAWIO (content-based)');
+            }
+            // Set the token type so it can be rendered properly
+            (token as TokenWithText).lang = 'drawio';
+            return 'drawio';
+        }
 
         // Check for tool blocks by content if lang detection failed
         if (trimmedText.startsWith('$ ') || trimmedText.includes('🔧') || trimmedText.includes('🛠️')) {
@@ -3982,6 +3999,21 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     };
                     console.log(`🎯 CALLING D3RENDERER WITH MERMAID SPEC:`, mermaidSpec);
                     return <D3Renderer key={index} spec={mermaidSpec} type="d3" isStreaming={isStreaming} />;
+
+                case 'drawio':
+                    if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
+                    return (
+                        <D3Renderer
+                            spec={{
+                                type: 'drawio',
+                                definition: tokenWithText.text,
+                                isStreaming: isStreaming,
+                                forceRender: true
+                            }}
+                            type="d3"
+                            isStreaming={isStreaming}
+                        />
+                    );
 
                 case 'vega-lite':
                     if (!hasText(tokenWithText)) return null;
