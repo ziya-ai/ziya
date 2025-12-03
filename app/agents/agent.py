@@ -133,13 +133,63 @@ def _format_chat_history(chat_history: List[Tuple[str, str]]) -> List[Union[Huma
                         buffer.append(AIMessage(content=str(content)))
                 except Exception as e:
                     logger.error(f"Error creating message: {str(e)}")
-            elif isinstance(item, (list, tuple)) and len(item) == 2:
-                # Handle legacy tuple format (human_content, ai_content)
-                human_content, ai_content = item
-                if human_content and isinstance(human_content, str):
-                    buffer.append(HumanMessage(content=str(human_content)))
-                if ai_content and isinstance(ai_content, str):
-                    buffer.append(AIMessage(content=str(ai_content)))
+            elif isinstance(item, (list, tuple)):
+                # Handle tuple formats
+                if len(item) == 2:
+                    # Handle legacy tuple format (human_content, ai_content)
+                    human_content, ai_content = item
+                    if human_content and isinstance(human_content, str):
+                        buffer.append(HumanMessage(content=str(human_content)))
+                    if ai_content and isinstance(ai_content, str):
+                        buffer.append(AIMessage(content=str(ai_content)))
+                elif len(item) == 3:
+                    # Handle 3-element tuple with images: [role, content, images_json]
+                    role, content, images_json = item
+                    
+                    try:
+                        # Parse the images JSON
+                        images = json.loads(images_json) if isinstance(images_json, str) else images_json
+                        
+                        if not images or not isinstance(images, list):
+                            # No images, treat as regular message
+                            if role == 'human':
+                                buffer.append(HumanMessage(content=str(content)))
+                            elif role == 'ai':
+                                buffer.append(AIMessage(content=str(content)))
+                            continue
+                        
+                        # Build multi-modal content for messages with images
+                        message_content = [
+                            {"type": "text", "text": str(content)}
+                        ]
+                        
+                        # Add each image to the content array
+                        for img in images:
+                            if isinstance(img, dict) and 'data' in img and 'mediaType' in img:
+                                message_content.append({
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": img['mediaType'],
+                                        "data": img['data']
+                                    }
+                                })
+                        
+                        # Create message with multi-modal content
+                        if role == 'human':
+                            buffer.append(HumanMessage(content=message_content))
+                        elif role == 'ai':
+                            buffer.append(AIMessage(content=message_content))
+                            
+                    except Exception as e:
+                        logger.error(f"Error processing message with images: {str(e)}")
+                        # Fallback: create message without images
+                        if role == 'human':
+                            buffer.append(HumanMessage(content=str(content)))
+                        elif role == 'ai':
+                            buffer.append(AIMessage(content=str(content)))
+                else:
+                    logger.warning(f"Unknown tuple length: {len(item)} - {item}")
             else:
                 logger.warning(f"Unknown chat history format: {type(item)} - {item}")
     except Exception as e:

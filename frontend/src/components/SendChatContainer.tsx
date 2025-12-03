@@ -2,13 +2,13 @@ import React, { useEffect, useRef, memo, useState, useCallback, useMemo, useLayo
 import { useChatContext } from '../context/ChatContext';
 import { detectIncompleteResponse } from '../utils/responseUtils';
 import { sendPayload } from "../apis/chatApi";
-import { Message } from "../utils/types";
+import { Message, ImageAttachment } from "../utils/types";
 import { convertKeysToStrings } from "../utils/types";
 import { useFolderContext } from "../context/FolderContext";
-import { Button, Input, message } from 'antd';
-import { SendOutlined, StopOutlined } from "@ant-design/icons";
+import { Button, Input, message, Upload, Image as AntImage } from 'antd';
+import { SendOutlined, StopOutlined, PictureOutlined, CloseCircleOutlined } from "@ant-design/icons";
 import StopStreamButton from './StopStreamButton';
-import { useQuestionContext } from '../context/QuestionContext';
+import { useQuestion, useSetQuestion } from '../context/QuestionContext';
 import { ThrottlingErrorDisplay } from './ThrottlingErrorDisplay';
 import { useTheme } from '../context/ThemeContext';
 
@@ -54,8 +54,27 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
     const [currentToolName, setCurrentToolName] = useState<string | null>(null);
     const [isSendingFeedback, setIsSendingFeedback] = useState(false);
     const [throttlingError, setThrottlingError] = useState<any>(null);
+    const question = useQuestion();
+    const setQuestion = useSetQuestion();
+    const [attachedImages, setAttachedImages] = useState<ImageAttachment[]>([]);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const [supportsVision, setSupportsVision] = useState(false);
+    const [isDraggingOver, setIsDraggingOver] = useState(false);
 
-    const { question, setQuestion } = useQuestionContext();
+    // PERFORMANCE FIX: Use local state for input to prevent cascading re-renders
+    const [localInput, setLocalInput] = useState(question);
+
+    // Sync local input to context only on blur or send
+    // Only sync when conversation changes or question is explicitly cleared/set programmatically
+    const prevConversationIdRef = useRef(currentConversationId);
+    useEffect(() => {
+        if (prevConversationIdRef.current !== currentConversationId) {
+            setLocalInput(question);
+            prevConversationIdRef.current = currentConversationId;
+        }
+    }, [currentConversationId, question]);
+
+    // Track if we've received any content yet to distinguish "Sending" vs "Processing"
 
     // Track if we've received any content yet to distinguish "Sending" vs "Processing"
     const [hasReceivedContent, setHasReceivedContent] = useState(false);
@@ -118,6 +137,21 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         }
     }, [isCurrentlyStreaming]);
 
+    // Check if current model supports vision
+    useEffect(() => {
+        const checkVisionSupport = async () => {
+            try {
+                const response = await fetch('/api/model-capabilities');
+                const capabilities = await response.json();
+                setSupportsVision(capabilities.supports_vision || false);
+            } catch (error) {
+                console.error('Failed to check vision support:', error);
+                setSupportsVision(false);
+            }
+        };
+        checkVisionSupport();
+    }, [currentConversationId]); // Re-check when conversation changes (model might change)
+
     // Focus management
     useLayoutEffect(() => {
         if (question === '' && textareaRef.current) {
@@ -130,26 +164,19 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         const inputStart = performance.now();
         const newValue = e.target.value;
 
-        // Update immediately for responsive UI
-        setQuestion(newValue);
+        // PERFORMANCE FIX: Update local state immediately (fast)
+        setLocalInput(newValue);
 
-        // Clear any existing timeout for debounced operations
-        if (inputChangeTimeoutRef.current) {
-            clearTimeout(inputChangeTimeoutRef.current);
-        }
-
-        // Debounce expensive operations (like token counting)
-        inputChangeTimeoutRef.current = setTimeout(() => {
-            // Any expensive operations that don't need to happen on every keystroke
-            // can be moved here
-        }, 300);
+        // Update context on debounce to prevent re-render cascade
+        clearTimeout(inputChangeTimeoutRef.current);
+        inputChangeTimeoutRef.current = setTimeout(() => setQuestion(newValue), 50);
 
         // Monitor input performance
         const inputTime = performance.now() - inputStart;
         if (inputTime > 5) {
             console.warn(`🐌 Input change slow: ${inputTime.toFixed(2)}ms for ${newValue.length} chars`);
         }
-    }, [setQuestion]);
+    }, []);
 
     // Cleanup timeout on unmount
     useEffect(() => {
@@ -190,23 +217,23 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
     }, [currentConversationId]); // Keep dependency to recreate listener with current conversation ID
 
     const isDisabled = useMemo(() =>
-        isQuestionEmpty(question) || streamingConversations.has(currentConversationId),
-        [question, streamingConversations, currentConversationId]
+        (isQuestionEmpty(localInput) && attachedImages.length === 0) || streamingConversations.has(currentConversationId),
+        [localInput, attachedImages, streamingConversations, currentConversationId]
     );
 
     // Allow textarea input during streaming for real-time feedback
     const isTextAreaDisabled = useMemo(() =>
         false, // Never disable textarea - allow typing during streaming
-        [question, streamingConversations, currentConversationId]
+        [localInput, streamingConversations, currentConversationId]
     );
 
     // Allow feedback anytime during streaming (tools are running)
-    const shouldSendAsFeedback = isCurrentlyStreaming && question.trim().length > 0;
+    const shouldSendAsFeedback = isCurrentlyStreaming && localInput.trim().length > 0;
 
     const sendToolFeedback = async () => {
-        if (!question.trim() || isSendingFeedback) return;
+        if (!localInput.trim() || isSendingFeedback) return;
 
-        const feedbackText = question.trim();
+        const feedbackText = localInput.trim();
 
         setIsSendingFeedback(true);
 
@@ -254,6 +281,128 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         [isCurrentlyStreaming, currentMessages]
     );
 
+    // Refactored to handle both file input and drag-drop
+    const processImageFiles = useCallback(async (files: FileList | null) => {
+        if (!files || files.length === 0) return;
+
+        const maxSize = 5 * 1024 * 1024; // 5MB limit (Claude's limit)
+        const maxImages = 5; // Reasonable limit per message
+
+        if (attachedImages.length + files.length > maxImages) {
+            message.warning(`Maximum ${maxImages} images per message`);
+            return;
+        }
+
+        for (let i = 0; i < files.length; i++) {
+            const file = files[i];
+
+            // Validate file type
+            if (!file.type.startsWith('image/')) {
+                message.error(`${file.name} is not an image file`);
+                continue;
+            }
+
+            // Validate file size
+            if (file.size > maxSize) {
+                message.error(`${file.name} is too large (max 5MB)`);
+                continue;
+            }
+
+            try {
+                // Read file as base64
+                const reader = new FileReader();
+                const imageData = await new Promise<string>((resolve, reject) => {
+                    reader.onload = () => resolve(reader.result as string);
+                    reader.onerror = reject;
+                    reader.readAsDataURL(file);
+                });
+
+                // Extract base64 data and media type
+                const matches = imageData.match(/^data:(.+);base64,(.+)$/);
+                if (!matches) {
+                    throw new Error('Invalid image data format');
+                }
+
+                const [, mediaType, data] = matches;
+
+                // Get image dimensions
+                const img = new Image();
+                await new Promise((resolve, reject) => {
+                    img.onload = resolve;
+                    img.onerror = reject;
+                    img.src = imageData;
+                });
+
+                const attachment: ImageAttachment = {
+                    data,
+                    mediaType: mediaType as ImageAttachment['mediaType'],
+                    filename: file.name,
+                    size: file.size,
+                    width: img.width,
+                    height: img.height
+                };
+
+                setAttachedImages(prev => [...prev, attachment]);
+                message.success(`Added ${file.name}`);
+            } catch (error) {
+                console.error('Error reading image:', error);
+                message.error(`Failed to load ${file.name}`);
+            }
+        }
+
+        // Reset input
+        if (fileInputRef.current) {
+            fileInputRef.current.value = '';
+        }
+    }, [attachedImages, message]);
+
+    // Handle image file selection from file input
+    const handleImageSelect = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+        await processImageFiles(event.target.files);
+    }, [processImageFiles]);
+
+    // Drag and drop handlers
+    const handleDragEnter = useCallback((e: React.DragEvent<HTMLTextAreaElement>) => {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        // Only show drag feedback if vision is supported and we have files
+        if (supportsVision && e.dataTransfer.types.includes('Files')) {
+            setIsDraggingOver(true);
+        }
+    }, [supportsVision]);
+
+    const handleDragLeave = useCallback((e: React.DragEvent<HTMLTextAreaElement>) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsDraggingOver(false);
+    }, []);
+
+    const handleDragOver = useCallback((e: React.DragEvent<HTMLTextAreaElement>) => {
+        e.preventDefault();
+        e.stopPropagation();
+    }, []);
+
+    const handleDrop = useCallback(async (e: React.DragEvent<HTMLTextAreaElement>) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsDraggingOver(false);
+
+        if (!supportsVision) {
+            message.warning('Current model does not support image attachments');
+            return;
+        }
+
+        const files = e.dataTransfer.files;
+        if (files && files.length > 0) {
+            await processImageFiles(files);
+        }
+    }, [supportsVision, processImageFiles, message]);
+
+    const removeImage = useCallback((index: number) => {
+        setAttachedImages(prev => prev.filter((_, i) => i !== index));
+    }, []);
+
     const handleSendPayload = async (isRetry: boolean = false, retryContent?: string) => {
 
         // If we have a tool waiting for feedback and we're streaming, send as feedback instead
@@ -279,12 +428,15 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         }
 
         // Store the question before clearing it
-        const currentQuestion = retryContent || question;
+        const currentQuestion = retryContent || localInput;
+
+        console.log('📸 IMAGE_DEBUG: Sending message with images:', attachedImages.length, attachedImages);
 
         // Clear any existing error states when starting a new request
         setThrottlingError(null);
 
         setQuestion('');
+        setLocalInput('');
         setStreamedContentMap(new Map());
 
         // Reset user scroll state when sending a new message
@@ -300,11 +452,17 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         // Create new human message
         const newHumanMessage: Message = {
             content: currentQuestion,
-            role: 'human'
+            role: 'human',
+            images: attachedImages.length > 0 ? attachedImages : undefined
         };
+        
+        console.log('📸 IMAGE_DEBUG: Created message:', newHumanMessage);
 
         // Add the human message immediately
         addMessageToConversation(newHumanMessage, currentConversationId);
+        
+        // Clear images after message is added to conversation
+        setAttachedImages([]);
 
         // Clear streamed content and add the human message immediately
         setStreamedContentMap(new Map());
@@ -397,6 +555,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
 
         const continuePrompt = "Please continue your previous response.";
         setQuestion(continuePrompt);
+        setLocalInput(continuePrompt);  // Also update local input for continue
         handleSendPayload(false, continuePrompt);
         setShowContinueButton(false);
 
@@ -416,6 +575,49 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
 
     return (
         <div>
+            {/* Image preview area */}
+            {attachedImages.length > 0 && (
+                <div style={{
+                    marginBottom: '10px',
+                    padding: '12px',
+                    background: isDarkMode ? '#1f1f1f' : '#f5f5f5',
+                    borderRadius: '8px',
+                    border: `1px solid ${isDarkMode ? '#424242' : '#d9d9d9'}`
+                }}>
+                    <div style={{
+                        display: 'flex',
+                        gap: '8px',
+                        flexWrap: 'wrap',
+                        alignItems: 'center'
+                    }}>
+                        {attachedImages.map((img, index) => (
+                            <div key={index} style={{
+                                position: 'relative',
+                                display: 'inline-block'
+                            }}>
+                                <AntImage
+                                    src={`data:${img.mediaType};base64,${img.data}`}
+                                    alt={img.filename}
+                                    width={80}
+                                    height={80}
+                                    style={{ objectFit: 'cover', borderRadius: '4px' }}
+                                    preview={{ mask: '👁️ Preview' }}
+                                />
+                                <Button
+                                    icon={<CloseCircleOutlined />}
+                                    size="small"
+                                    danger
+                                    shape="circle"
+                                    style={{ position: 'absolute', top: -8, right: -8 }}
+                                    onClick={() => removeImage(index)}
+                                />
+                                <div style={{ fontSize: '11px', textAlign: 'center', marginTop: '4px', maxWidth: '80px', overflow: 'hidden', textOverflow: 'ellipsis' }}>{img.filename}</div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
             {showContinueButton && (
                 <div style={{ marginBottom: '10px', textAlign: 'center' }}>
                     <Button type="default" onClick={handleContinue} style={{ background: '#f0f8ff', borderColor: '#1890ff', color: '#1890ff' }} disabled={streamingConversations.has(currentConversationId)}>
@@ -423,7 +625,13 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
                     </Button>
                 </div>
             )}
-            <div className={`input-container ${empty ? 'empty-state' : ''} ${isProcessing || streamingConversations.has(currentConversationId) ? 'sending' : ''}`}>
+            <div
+                className={`input-container ${empty ? 'empty-state' : ''} ${isProcessing || streamingConversations.has(currentConversationId) ? 'sending' : ''}`}
+                style={{
+                    willChange: 'transform',
+                    contain: 'layout style'
+                }}
+            >
                 {/* Display throttling error */}
                 {throttlingError && (
                     <ThrottlingErrorDisplay
@@ -434,7 +642,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
 
                 <TextArea
                     ref={textareaRef}
-                    value={question}
+                    value={localInput}
                     onChange={handleQuestionChange}
                     id="chat-question-textarea"
                     placeholder={
@@ -445,13 +653,21 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
                     autoComplete="off"
                     autoSize={{ minRows: 1 }}
                     className={`input-textarea ${isCurrentlyStreaming ? 'streaming-input' : ''
-                        } ${isCurrentlyStreaming ? 'feedback-mode' : ''}`}
+                    } ${isCurrentlyStreaming ? 'feedback-mode' : ''}`}
                     style={{
-                        borderColor: isCurrentlyStreaming ? '#52c41a' : undefined
+                        borderColor: isCurrentlyStreaming 
+                            ? '#52c41a' 
+                            : isDraggingOver 
+                                ? '#1890ff' 
+                                : undefined,
+                        backgroundColor: isDraggingOver 
+                            ? (isDarkMode ? 'rgba(24, 144, 255, 0.1)' : 'rgba(24, 144, 255, 0.05)') 
+                            : undefined,
+                        transition: 'border-color 0.3s ease, background-color 0.3s ease'
                     }}
                     disabled={isTextAreaDisabled}
                     onPressEnter={(event) => {
-                        if (!event.shiftKey && !isQuestionEmpty(question)) {
+                        if (!event.shiftKey && !isQuestionEmpty(localInput)) {
                             event.preventDefault();
                             if (shouldSendAsFeedback) {
                                 sendToolFeedback();
@@ -460,8 +676,37 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
                             }
                         }
                     }}
+                    onDragEnter={handleDragEnter}
+                    onDragLeave={handleDragLeave}
+                    onDragOver={handleDragOver}
+                    onDrop={handleDrop}
                 />
+
+                {/* Hidden file input */}
+                <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    style={{ display: 'none' }}
+                    onChange={handleImageSelect}
+                />
+
                 <div style={{ marginLeft: '10px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    {/* Image upload button - only show when not streaming */}
+                    {!isCurrentlyStreaming && supportsVision && (
+                        <Button
+                            icon={<PictureOutlined />}
+                            onClick={() => fileInputRef.current?.click()}
+                            title="Attach image"
+                            disabled={attachedImages.length >= 5}
+                            style={{
+                                backgroundColor: isDarkMode ? '#1f1f1f' : '#ffffff',
+                                borderColor: isDarkMode ? '#424242' : '#d9d9d9'
+                            }}
+                        />
+                    )}
+
                     {/* Always show stop button when streaming */}
                     {isCurrentlyStreaming && (
                         <StopStreamButton
@@ -480,7 +725,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
                         <Button
                             type="default"
                             onClick={sendToolFeedback}
-                            disabled={isQuestionEmpty(question) || isSendingFeedback}
+                            disabled={isQuestionEmpty(localInput) || isSendingFeedback}
                             icon={<SendOutlined />}
                             title="Send feedback to running tools"
                             loading={isSendingFeedback}
