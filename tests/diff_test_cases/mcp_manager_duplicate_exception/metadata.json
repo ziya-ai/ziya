@@ -1,0 +1,6 @@
+{
+    "target_file": "app/mcp/manager.py",
+    "description": "Test removing duplicate exception handling code incorrectly marked as already applied",
+    "date_added": "2025-12-03",
+    "issue_reference": "false_already_applied_duplicate_exception"
+}
