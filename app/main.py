@@ -33,7 +33,10 @@ def get_available_models(endpoint=None):
 
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(description="Run with custom options")
+    parser = argparse.ArgumentParser(
+        description="Run with custom options",
+        formatter_class=argparse.RawTextHelpFormatter
+    )
     
     # File inclusion/exclusion options
     parser.add_argument("--include", default=[], type=lambda x: x.split(','),
@@ -51,14 +54,39 @@ def parse_arguments():
     # Get default model alias from config
     default_model = config.DEFAULT_MODELS[config.DEFAULT_ENDPOINT]
     
-    # Get available models for the default endpoint
-    available_models = get_available_models(config.DEFAULT_ENDPOINT)
-    model_list = ", ".join(f"`{m}`" for m in available_models)
+    # Build model list for all endpoints
+    model_help_lines = []
+    for endpoint in ["bedrock", "google"]:
+        models = get_available_models(endpoint)
+        
+        # Sort models: extract family and version, sort by family then version descending
+        def sort_key(m):
+            # Extract family (e.g., "sonnet", "opus", "haiku", "gemini")
+            parts = m.split('-') if '-' in m else [m]
+            family = parts[0].rstrip('0123456789.')
+            
+            # Extract version (e.g., "4.5", "3.5", "1.5")
+            version_str = m.replace(family, '').lstrip('-')
+            try:
+                # Parse version as float for proper sorting (4.5 > 4.0 > 3.5)
+                version = float(version_str) if version_str and version_str[0].isdigit() else 0
+            except:
+                version = 0
+            
+            return (family, -version)  # Negative version for descending order
+        
+        sorted_models = sorted(models, key=sort_key)
+        
+        # Get default for this endpoint and mark with star
+        endpoint_default = config.DEFAULT_MODELS.get(endpoint)
+        formatted_models = [f"*{m}" if m == endpoint_default else m for m in sorted_models]
+        model_list = ", ".join(f"`{m}`" for m in formatted_models)
+        model_help_lines.append(f"{endpoint}: {model_list}")
     
     parser.add_argument("--endpoint", type=str, choices=["bedrock", "google"], default=config.DEFAULT_ENDPOINT,
                         help=f"Model endpoint to use (default: {config.DEFAULT_ENDPOINT})")
     parser.add_argument("--model", type=str, default=None,
-                        help=f"Model to use from selected endpoint (default: {default_model}). Available models: {model_list}")
+                        help=f"Model to use from selected endpoint (default: {default_model})\n" + "\n".join(model_help_lines))
     parser.add_argument("--model-id", type=str, default=None,
                         help="Override the model ID directly (advanced usage, bypasses model name lookup)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT,
@@ -95,6 +123,8 @@ def parse_arguments():
                        help="Enable MCP (Model Context Protocol) server integration (enabled by default)")
     parser.add_argument("--no-mcp", action="store_false", dest="mcp",
                        help="Disable MCP (Model Context Protocol) server integration")
+    parser.add_argument("--ephemeral", action="store_true",
+                       help="Don't persist conversations or data to database beyond current session")
     return parser.parse_args()
 
 
@@ -219,6 +249,11 @@ def setup_environment(args):
     if args.ast:
         os.environ["ZIYA_ENABLE_AST"] = "true"
         os.environ["ZIYA_AST_RESOLUTION"] = args.ast_resolution
+    
+    # Set ephemeral mode if requested
+    if args.ephemeral:
+        os.environ["ZIYA_EPHEMERAL"] = "true"
+        logger.info("Ephemeral mode enabled - conversations will not be persisted")
         
     # Set model parameter environment variables if provided
     if args.temperature is not None:
