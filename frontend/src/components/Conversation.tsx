@@ -2,13 +2,13 @@ import React, { useEffect, useRef, Suspense, memo, useCallback, useMemo, useStat
 import { VariableSizeList as List } from 'react-window';
 import { useChatContext } from '../context/ChatContext';
 import { EditSection } from "./EditSection";
-import { Spin, Button, Tooltip } from 'antd';
-import { RedoOutlined, SoundOutlined, MutedOutlined } from "@ant-design/icons";
+import { Spin, Button, Tooltip, Image as AntImage } from 'antd';
+import { RedoOutlined, SoundOutlined, MutedOutlined, PictureOutlined } from "@ant-design/icons";
 import { sendPayload } from "../apis/chatApi";
 
 import ModelChangeNotification from './ModelChangeNotification';
 import { convertKeysToStrings } from "../utils/types";
-import { useQuestionContext } from '../context/QuestionContext';
+import { useSetQuestion } from '../context/QuestionContext';
 import { useFolderContext } from '../context/FolderContext';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 
@@ -42,7 +42,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     } = useChatContext();
 
     const { checkedKeys } = useFolderContext();
-    const { setQuestion } = useQuestionContext();
+    const setQuestion = useSetQuestion();
     const visibilityRef = useRef<boolean>(true);
     // Memoize conversation-specific streaming state to prevent unnecessary re-renders
     const conversationStreamingState = useMemo(() => ({
@@ -51,14 +51,19 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                            streamedContentMap.get(currentConversationId) !== '',
         streamedContent: streamedContentMap.get(currentConversationId) || ''
     }), [streamingConversations, streamedContentMap, currentConversationId]);
-    const previousStreamingStateRef = useRef<boolean>(false);
     
-    // Use memoized state instead of direct context access
+    // Extract for use in component
     const { isCurrentlyStreaming, hasStreamedContent } = conversationStreamingState;
     
+    const previousStreamingStateRef = useRef<boolean>(false);
+    
+    
     // Virtualized rendering for large conversations to improve performance
-    const VIRTUAL_THRESHOLD = 100; // Start virtualizing after 100 messages
-    const shouldVirtualize = currentMessages.length > VIRTUAL_THRESHOLD;
+    // DISABLED: Virtualization causes rendering corruption with dynamic markdown content
+    // TODO: Implement proper virtualization with accurate height measurement
+    const shouldVirtualize = false;
+    
+    // Refs for virtualization
     
     // Refs for virtualization
     const listRef = useRef<List>(null);
@@ -88,19 +93,27 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
         // Estimate height based on content characteristics
         if (msg.role === 'system') return 60;
         
-        if (msg.content?.includes('```')) {
-            // Code blocks: estimate 20px per 80 chars + 100px base
-            return Math.min(2000, 150 + Math.floor(contentLength / 80) * 20);
+        // More accurate estimates for different content types
+        if (msg.content?.includes('```diff') || msg.content?.includes('diff --git')) {
+            // Diffs: larger base size + more per line
+            const lines = msg.content.split('\n').length;
+            return Math.min(5000, 200 + lines * 22);
         }
         
-        if (msg.content?.includes('diff --git')) {
-            // Diffs: estimate 18px per line
+        if (msg.content?.includes('```')) {
+            // Code blocks: more generous estimate
             const lines = msg.content.split('\n').length;
-            return Math.min(3000, 100 + lines * 18);
+            return Math.min(3000, 180 + lines * 20);
+        }
+        
+        if (msg.content?.includes('<!-- TOOL_BLOCK')) {
+            // Tool blocks: moderate size
+            return Math.min(2000, 150 + Math.floor(contentLength / 100) * 15);
         }
         
         // Regular text: estimate 20px per 100 chars + 80px base
-        return Math.min(1500, 80 + Math.floor(contentLength / 100) * 20);
+        // Increase estimates for safety
+        return Math.min(2000, 100 + Math.floor(contentLength / 80) * 22);
     }, [currentMessages, isTopToBottom]);
     
     // Set measured height after render
@@ -345,6 +358,33 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                             {msg.role === 'human' && editingMessageIndex === actualIndex ? (
                                 <EditSection index={actualIndex} isInline={false} />
                             ) : msg.role === 'human' && msg.content ? (
+                                <>
+                                    {/* Display attached images if present */}
+                                    {msg.images && msg.images.length > 0 && (
+                                        <div style={{
+                                            marginBottom: '12px',
+                                            display: 'flex',
+                                            gap: '8px',
+                                            flexWrap: 'wrap'
+                                        }}>
+                                            {msg.images.map((img, imgIndex) => (
+                                                <div key={imgIndex} style={{
+                                                    position: 'relative',
+                                                    display: 'inline-block'
+                                                }}>
+                                                    <AntImage
+                                                        src={`data:${img.mediaType};base64,${img.data}`}
+                                                        alt={img.filename || 'Attached image'}
+                                                        width={120}
+                                                        height={120}
+                                                        style={{ objectFit: 'cover', borderRadius: '4px', border: '1px solid #d9d9d9' }}
+                                                        preview={{ mask: <PictureOutlined /> }}
+                                                    />
+                                                    {img.filename && <div style={{ fontSize: '11px', textAlign: 'center', marginTop: '4px', maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis' }}>{img.filename}</div>}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
                                 <div className="message-content">
                                 <MarkdownRenderer
                                     markdown={msg.content}
@@ -353,6 +393,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                     isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
                                 />
                             </div>
+                                </>
                             ) : msg.role === 'assistant' && msg.content ? (
                                 <>
                                     <div style={{ display: 'flex', justifyContent: 'space-between' }}>
@@ -611,15 +652,44 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                     {/* Only show edit section when editing, otherwise show message content */}
                                     {msg.role === 'human' && editingMessageIndex === actualIndex ? (
                                         <EditSection index={actualIndex} isInline={false} />
-                                    ) : msg.role === 'human' && msg.content ? (
-                                        <div className="message-content">
+                                    ) : msg.role === 'human' && (msg.content || (msg.images && msg.images.length > 0)) ? (
+                                        <>
+                                            {/* Display attached images if present */}
+                                            {msg.images && msg.images.length > 0 && (
+                                                <div style={{
+                                                    marginBottom: '12px',
+                                                    display: 'flex',
+                                                    gap: '8px',
+                                                    flexWrap: 'wrap'
+                                                }}>
+                                                    {msg.images.map((img, imgIndex) => (
+                                                        <div key={imgIndex} style={{
+                                                            position: 'relative',
+                                                            display: 'inline-block'
+                                                        }}>
+                                                            <AntImage
+                                                                src={`data:${img.mediaType};base64,${img.data}`}
+                                                                alt={img.filename || 'Attached image'}
+                                                                width={120}
+                                                                height={120}
+                                                                style={{ objectFit: 'cover', borderRadius: '4px', border: '1px solid #d9d9d9' }}
+                                                                preview={{ mask: <PictureOutlined /> }}
+                                                            />
+                                                            {img.filename && <div style={{ fontSize: '11px', textAlign: 'center', marginTop: '4px', maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis' }}>{img.filename}</div>}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        {/* Only render message content if there's actual text content */}
+                                        {msg.content && <div className="message-content">
                                             <MarkdownRenderer
                                                 markdown={msg.content}
                                                 enableCodeApply={enableCodeApply}
                                                 onOpenShellConfig={onOpenShellConfig}
                                                 isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
                                             />
-                                        </div>
+                                        </div>}
+                                        </>
                                     ) : msg.role === 'assistant' && msg.content ? (
                                         <>
                                             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
