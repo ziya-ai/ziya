@@ -253,10 +253,21 @@ class StreamingToolExecutor:
         mcp_manager = get_mcp_manager()
         if not mcp_manager.is_initialized:
             await mcp_manager.initialize()
+        from app.mcp.enhanced_tools import DirectMCPTool
 
-        mcp_tools = mcp_manager.get_all_tools()
-        # Convert tools to JSON-serializable format and deduplicate by name
-        converted_tools = [self._convert_tool_schema(tool) for tool in mcp_tools]
+        # Get ALL tools (both MCP server tools and builtin tools)
+        from app.mcp.enhanced_tools import create_secure_mcp_tools
+        all_tools = create_secure_mcp_tools()
+        
+        # Separate builtin from external MCP tools for proper naming
+        builtin_tool_names = {tool.name for tool in all_tools if isinstance(tool, DirectMCPTool)}
+        
+        logger.info(f"🔍 TOOL_LOADING: Total tools={len(all_tools)}, builtin={len(builtin_tool_names)}, external={len(all_tools)-len(builtin_tool_names)}")
+        logger.info(f"🔍 BUILTIN_TOOLS: {sorted(builtin_tool_names)}")
+        
+        # Convert ALL tools to JSON-serializable format and deduplicate by name
+        converted_tools = [self._convert_tool_schema(tool) for tool in all_tools]
+        
         # Deduplicate tools by name (keep first occurrence)
         seen_names = set()
         bedrock_tools = []
@@ -264,8 +275,8 @@ class StreamingToolExecutor:
             tool_name = tool.get('name', 'unknown')
             if tool_name not in seen_names:
                 seen_names.add(tool_name)
-                # Add mcp_ prefix if not already present
-                if not tool_name.startswith('mcp_'):
+                # Add mcp_ prefix only for actual MCP tools, not builtin tools
+                if not tool_name.startswith('mcp_') and tool_name not in builtin_tool_names:
                     tool['name'] = f'mcp_{tool_name}'
                 bedrock_tools.append(tool)
 
@@ -290,6 +301,11 @@ class StreamingToolExecutor:
                 content = msg.get('content', '')
             
             logger.debug(f"🔍 STREAMING_TOOL_EXECUTOR: Message {i}: role={role}, content_length={len(content)}")
+            
+            # CRITICAL: Preserve list content for multi-modal (images)
+            if isinstance(content, list):
+                logger.debug(f"🖼️ STREAMING_TOOL_EXECUTOR: Message {i} has multi-modal content with {len(content)} blocks")
+            
             if role == 'system':
                 system_content = content
                 logger.debug(f"🔍 STREAMING_TOOL_EXECUTOR: Found system message with {len(content)} characters")
@@ -870,19 +886,39 @@ class StreamingToolExecutor:
                                                 pass  # No feedback available, continue normally
                                     except Exception as e:
                                         logger.debug(f"Error checking feedback: {e}")
-                                
+                               
                                 # Execute the tool immediately
                                 try:
-                                    result = await mcp_manager.call_tool(actual_tool_name, args)
+                                   # Check if this is a builtin DirectMCPTool
+                                   logger.info(f"🔍 BUILTIN_CHECK: Looking for tool '{actual_tool_name}' in {len(tools) if tools else 0} tools")
+                                   builtin_tool = None
+                                   if tools:
+                                       for tool in tools:
+                                           logger.debug(f"🔍 BUILTIN_CHECK: Checking tool {tool.name}, type={type(tool).__name__}, isinstance DirectMCPTool={isinstance(tool, DirectMCPTool)}")
+                                           if isinstance(tool, DirectMCPTool) and tool.name == actual_tool_name:
+                                               builtin_tool = tool
+                                               logger.info(f"🔧 BUILTIN_FOUND: Found builtin tool {actual_tool_name}")
+                                               break
+                                   
+                                   if not builtin_tool:
+                                       logger.info(f"🔍 BUILTIN_NOT_FOUND: Tool '{actual_tool_name}' not found in builtin tools, routing to MCP manager")
+                                   
+                                   if builtin_tool:
+                                        # Call builtin tool directly
+                                        logger.info(f"🔧 Calling builtin tool directly: {actual_tool_name}")
+                                        result = builtin_tool._run(**args)
+                                   else:
+                                        # Call through MCP manager for external tools
+                                        result = await mcp_manager.call_tool(actual_tool_name, args)
                                     
                                     # Add successfully executed command to recent commands for deduplication
-                                    if actual_tool_name == 'run_shell_command' and args.get('command'):
+                                   if actual_tool_name == 'run_shell_command' and args.get('command'):
                                         recent_commands.append(args['command'])
                                         # Keep only last 20 commands to prevent memory bloat
                                         recent_commands = recent_commands[-20:]
                                     
                                     # Process result
-                                    if isinstance(result, dict) and result.get('error') and result.get('error') != False:
+                                   if isinstance(result, dict) and result.get('error') and result.get('error') != False:
                                         error_msg = result.get('message', 'Unknown error')
                                         if 'repetitive execution' in error_msg:
                                             result_text = f"BLOCKED: {error_msg} Previous attempts may have succeeded - check the results above before retrying."
@@ -894,22 +930,22 @@ class StreamingToolExecutor:
                                             result_text = f"PARAMETER ERROR: {error_msg}. Check the tool's parameter requirements."
                                         else:
                                             result_text = f"ERROR: {error_msg}. Please try a different approach or fix the command."
-                                    elif isinstance(result, dict) and 'content' in result:
+                                   elif isinstance(result, dict) and 'content' in result:
                                         content = result['content']
                                         if isinstance(content, list) and len(content) > 0:
                                             result_text = content[0].get('text', str(result))
                                         else:
                                             result_text = str(result)
-                                    else:
+                                   else:
                                         result_text = str(result)
 
-                                    tool_results.append({
+                                   tool_results.append({
                                         'tool_id': tool_id,
                                         'tool_name': tool_name,
                                         'result': result_text
                                     })
 
-                                    yield {
+                                   yield {
                                         'type': 'tool_display',
                                         'tool_id': tool_id,
                                         'tool_name': tool_name,
@@ -919,17 +955,17 @@ class StreamingToolExecutor:
                                     }
 
                                     # Add clean tool result for model conversation
-                                    yield {
+                                   yield {
                                         'type': 'tool_result_for_model',
                                         'tool_use_id': tool_id,
                                         'content': result_text.strip()
                                     }
                                                     
                                     # Immediate flush to reduce delay
-                                    await asyncio.sleep(0)
+                                   await asyncio.sleep(0)
                                     
-                                    tools_executed_this_iteration = True
-                                    logger.debug(f"🔍 TOOL_EXECUTED_FLAG: Set tools_executed_this_iteration = True for tool {tool_id}")
+                                   tools_executed_this_iteration = True
+                                   logger.debug(f"🔍 TOOL_EXECUTED_FLAG: Set tools_executed_this_iteration = True for tool {tool_id}")
                                     
                                 except Exception as e:
                                     error_msg = f"Tool error: {str(e)}"
@@ -1214,6 +1250,90 @@ class StreamingToolExecutor:
                         break
                     else:
                         continue
+                
+                # CRITICAL: Check for pending feedback after the iteration loop completes
+                # This ensures feedback that arrived during the last iteration or after completion
+                # is not lost and gives the model a chance to respond
+                if conversation_id:
+                    try:
+                        from app.server import active_feedback_connections
+                        if conversation_id in active_feedback_connections:
+                            feedback_queue = active_feedback_connections[conversation_id]['feedback_queue']
+                            
+                            # Collect ALL pending feedback messages
+                            pending_feedback = []
+                            try:
+                                while True:
+                                    try:
+                                        feedback_data = feedback_queue.get_nowait()
+                                        if feedback_data.get('type') == 'tool_feedback':
+                                            pending_feedback.append(feedback_data.get('message', ''))
+                                        elif feedback_data.get('type') == 'interrupt':
+                                            # Handle interrupt - stop processing
+                                            logger.info(f"🔄 POST-LOOP FEEDBACK: Received interrupt after tool chain")
+                                            yield track_yield({'type': 'text', 'content': '\n\n**User requested stop.**\n\n'})
+                                            yield track_yield({'type': 'stream_end'})
+                                            return
+                                    except asyncio.QueueEmpty:
+                                        break
+                            except Exception as queue_error:
+                                logger.debug(f"Error draining feedback queue: {queue_error}")
+                            
+                            # If we have pending feedback, send it to the model
+                            if pending_feedback:
+                                combined_feedback = ' '.join(pending_feedback)
+                                logger.info(f"🔄 POST-LOOP FEEDBACK: Processing {len(pending_feedback)} feedback message(s) after tool chain completion")
+                                
+                                # Add feedback to conversation
+                                conversation.append({
+                                    "role": "user",
+                                    "content": f"[User feedback after tool execution]: {combined_feedback}"
+                                })
+                                
+                                # Notify user that feedback is being processed
+                                yield track_yield({
+                                    'type': 'text',
+                                    'content': f"\n\n**📝 Processing your feedback:** {combined_feedback}\n\n",
+                                    'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                                })
+                                
+                                # Make ONE additional API call to get model's response to feedback
+                                try:
+                                    body = {
+                                        "anthropic_version": "bedrock-2023-05-31",
+                                        "max_tokens": self.model_config.get('max_output_tokens', 4000),
+                                        "messages": conversation
+                                    }
+                                    
+                                    if system_content:
+                                        body["system"] = system_content
+                                    
+                                    # Don't send tools for feedback response - just let model respond
+                                    response = self.bedrock.invoke_model_with_response_stream(
+                                        modelId=self.model_id,
+                                        body=json.dumps(body)
+                                    )
+                                    
+                                    # Stream the feedback response
+                                    for event in response['body']:
+                                        chunk = json.loads(event['chunk']['bytes'])
+                                        
+                                        if chunk['type'] == 'content_block_delta':
+                                            delta = chunk.get('delta', {})
+                                            if delta.get('type') == 'text_delta':
+                                                text = delta.get('text', '')
+                                                yield track_yield({
+                                                    'type': 'text',
+                                                    'content': text,
+                                                    'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                                                })
+                                        elif chunk['type'] == 'message_stop':
+                                            break
+                                            
+                                except Exception as feedback_error:
+                                    logger.error(f"Error processing post-loop feedback: {feedback_error}")
+                    except Exception as e:
+                        logger.debug(f"Error checking post-loop feedback: {e}")
 
             except Exception as e:
                 error_str = str(e)
