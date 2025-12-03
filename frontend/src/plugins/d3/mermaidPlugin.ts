@@ -1,5 +1,5 @@
 import { D3RenderPlugin } from '../../types/d3';
-import initMermaidSupport from './mermaidEnhancer';
+import initMermaidSupport, { enhancePacketDarkMode } from './mermaidEnhancer';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 import { getZoomScript } from '../../utils/popupScriptUtils';
@@ -96,25 +96,25 @@ const renderQueue = new MermaidRenderQueue();
  * Lazy load mermaid library
  */
 async function loadMermaid(): Promise<any> {
-  if (typeof window !== 'undefined' && window.__mermaidLoaded && window.mermaid) {
-    return window.mermaid;
-  }
-  
-  // If already loading, wait for it
-  if (window.__mermaidLoading) {
+    if (typeof window !== 'undefined' && window.__mermaidLoaded && window.mermaid) {
+        return window.mermaid;
+    }
+
+    // If already loading, wait for it
+    if (window.__mermaidLoading) {
+        return await window.__mermaidLoading;
+    }
+
+    // Start loading
+    window.__mermaidLoading = import('mermaid').then(module => {
+        const mermaid = module.default;
+        initMermaidSupport(mermaid);
+        window.mermaid = mermaid;
+        window.__mermaidLoaded = true;
+        return mermaid;
+    });
+
     return await window.__mermaidLoading;
-  }
-  
-  // Start loading
-  window.__mermaidLoading = import('mermaid').then(module => {
-    const mermaid = module.default;
-    initMermaidSupport(mermaid);
-    window.mermaid = mermaid;
-    window.__mermaidLoaded = true;
-    return mermaid;
-  });
-  
-  return await window.__mermaidLoading;
 }
 
 export const mermaidPlugin: D3RenderPlugin = {
@@ -130,7 +130,7 @@ export const mermaidPlugin: D3RenderPlugin = {
             maxWidth: '100%',
             height: 'auto',
             minHeight: 'auto',
-            overflow: 'visible',
+            overflow: 'hidden',
             // Safari-specific: ensure container can grow to accommodate scaled content
             display: 'flex',
             flexDirection: 'column',
@@ -182,7 +182,7 @@ export const mermaidPlugin: D3RenderPlugin = {
         if (!mermaid) {
             throw new Error('Failed to load mermaid library');
         }
-        
+
         // Skip queue for Safari to avoid delays - Mermaid can handle concurrent renders
         const isSafari = typeof navigator !== 'undefined' && /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
         if (isSafari) {
@@ -493,16 +493,41 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             console.warn('Could not remove loading spinner (this is normal for multiple renders):', e instanceof Error ? e.message : String(e));
         }
 
+        // CRITICAL: Remove old wrapper before adding new one to prevent duplicate diagrams
+        const oldWrapper = container.querySelector('.mermaid-wrapper');
+        if (oldWrapper) {
+            console.log('🧹 REMOVING old wrapper before adding new one');
+            container.removeChild(oldWrapper);
+        }
+
         // Add wrapper to container
         container.appendChild(wrapper);
-
-        if (!renderSuccessful) return;
 
         // Get the SVG element after it's in the DOM
         const svgElement = wrapper.querySelector('svg');
         if (!svgElement) {
             throw new Error('Failed to get SVG element after rendering');
         }
+
+        if (!renderSuccessful) return;
+
+        // CRITICAL: Clean up any previous theme-specific inline styles before applying new theme
+        // This ensures light/dark mode switches work correctly
+        const cleanPreviousThemeStyles = (svg: SVGElement) => {
+            console.log('🧹 CLEANUP: Removing previous theme inline styles');
+            // Remove inline style attributes that were added by previous theme enhancements
+            svg.querySelectorAll('[style]').forEach(el => {
+                const htmlEl = el as HTMLElement;
+                const style = htmlEl.style;
+                // Remove theme-related properties that were added with !important
+                style.removeProperty('fill');
+                style.removeProperty('stroke');
+                style.removeProperty('stroke-width');
+                style.removeProperty('color');
+            });
+        };
+
+        cleanPreviousThemeStyles(svgElement);
 
         // Helper function to apply custom styles from the diagram definition
         const applyCustomStyles = (svgElement: SVGElement) => {
@@ -723,18 +748,18 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
         // Helper function to enhance Sankey diagram visibility in dark mode
         const enhanceSankeyDarkMode = (svgElement: SVGElement) => {
             console.log('🎨 SANKEY-DARK-MODE: Enhancing Sankey diagram visibility');
-            
+
             // Define bright, saturated colors for dark mode
             const sankeyColors = [
                 '#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#ffd93d',
                 '#ff9ff3', '#54a0ff', '#5f27cd', '#ff9f43', '#0abde3',
                 '#10ac84', '#ee5a6f', '#c56cf0', '#ffbe76', '#7bed9f'
             ];
-            
+
             // Enhance flow paths (the main sankey links)
             const paths = svgElement.querySelectorAll('path[class*="link"], path[class*="flow"], .sankey-link, [id*="link"]');
             console.log(`🎨 SANKEY-DARK-MODE: Found ${paths.length} flow paths`);
-            
+
             paths.forEach((path, index) => {
                 const pathEl = path as SVGPathElement;
                 const color = sankeyColors[index % sankeyColors.length];
@@ -742,17 +767,17 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                 pathEl.style.fillOpacity = '0.5';
                 pathEl.style.stroke = 'none';
             });
-            
+
             // Enhance all text elements for visibility
             const textElements = svgElement.querySelectorAll('text');
             console.log(`🎨 SANKEY-DARK-MODE: Found ${textElements.length} text elements`);
-            
+
             textElements.forEach(textEl => {
                 textEl.setAttribute('fill', '#ffffff');
                 (textEl as SVGElement).style.setProperty('fill', '#ffffff', 'important');
                 textEl.setAttribute('stroke', 'none');
             });
-            
+
             // Enhance rectangles (nodes) if present
             const rects = svgElement.querySelectorAll('rect[class*="node"], .sankey-node');
             rects.forEach((rect, index) => {
@@ -766,6 +791,8 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
         // Enhance dark theme visibility for specific elements
         if (isDarkMode && svgElement) {
             requestAnimationFrame(() => {
+                console.log('🎨 DARK-MODE: Applying dark mode enhancements');
+
                 // Enhance specific elements that might still have poor contrast
                 svgElement.querySelectorAll('.edgePath path').forEach(el => {
                     el.setAttribute('stroke', '#88c0d0');
@@ -794,7 +821,7 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                 if (rawDefinition.trim().startsWith('sankey')) {
                     enhanceSankeyDarkMode(svgElement);
                 }
-
+                
                 svgElement.querySelectorAll('path.path, path.messageText, .flowchart-link').forEach(el => {
                     el.setAttribute('stroke', '#88c0d0');
                     el.setAttribute('stroke-width', '1.5px');
@@ -838,6 +865,18 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             });
             applyCustomStyles(svgElement);
         }
+        
+        // Apply Packet-specific enhancements for BOTH dark and light mode
+        // This must run outside the isDarkMode check to handle mode switching
+        if (rawDefinition.trim().startsWith('packet')) {
+            // CRITICAL: Delay packet enhancement to run AFTER Mermaid applies its inline styles
+            setTimeout(() => {
+                console.log('🎨 DELAYED-PACKET: Calling enhancePacketDarkMode');
+                enhancePacketDarkMode(svgElement, isDarkMode);
+                console.log('🎨 DELAYED-PACKET: Complete');
+            }, 200);
+        }
+
         // CRITICAL: Add a delayed fix to ensure text visibility is applied after all other processing
         setTimeout(() => {
             console.log('🔍 DELAYED TEXT FIX: Applying final text visibility fixes');
@@ -1711,13 +1750,13 @@ function applyUnifiedResponsiveScaling(container: HTMLElement, svgElement: SVGEl
             });
 
             // Only scale if the diagram is significantly smaller than the container
-            if (svgRect.width > 0 && containerRect.width > 0 && 
+            if (svgRect.width > 0 && containerRect.width > 0 &&
                 svgRect.width < containerRect.width * 0.6) {
                 const targetScale = Math.min(containerRect.width * 0.9 / svgRect.width, 4.0);
                 svgElement.style.transform = `scale(${targetScale})`;
                 svgElement.style.transformOrigin = 'center center';
                 console.log(`🎯 SAFARI-SCALE: Applied scaling ${targetScale}x (${svgRect.width}px → ${svgRect.width * targetScale}px)`);
-                
+
                 // Adjust wrapper to accommodate scaled content
                 mermaidWrapper.style.minHeight = `${svgRect.height * targetScale + 40}px`;
                 mermaidWrapper.style.minWidth = `${svgRect.width * targetScale}px`;
@@ -1727,7 +1766,7 @@ function applyUnifiedResponsiveScaling(container: HTMLElement, svgElement: SVGEl
             }
         }, 200); // Give Mermaid time to finish positioning
     }
-    
+
     // Configure wrapper for responsive behavior without breaking Mermaid's positioning
     mermaidWrapper.style.width = '100%';
     mermaidWrapper.style.maxWidth = '100%';

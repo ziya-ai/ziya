@@ -3,6 +3,32 @@ import { D3RenderPlugin } from '../../types/d3';
 // Import maxGraph CSS for proper rendering
 import '@maxgraph/core/css/common.css';
 
+import { loadStencilsForShapes } from './drawioStencilLoader';
+import { iconRegistry } from './iconRegistry';
+import { hexToRgb, isLightBackground, getOptimalTextColor } from '../../utils/colorUtils';
+import { DrawIOEnhancer } from './drawioEnhancer';
+
+// Export architecture shapes renderers
+export { generateDrawIOFromCatalog } from './renderers/drawioRenderer';
+export { generateMermaidFromCatalog } from './renderers/mermaidRenderer';
+export {
+    generateGraphvizFromCatalog,
+    generateGraphvizWithClusters
+} from './renderers/graphvizRenderer';
+
+// Export types
+export type {
+    ArchitectureShape,
+    ShapeCategory,
+    ColorPalette,
+} from './architectureShapesCatalog';
+export type { DrawIOShape, DrawIOConnection } from './renderers/drawioRenderer';
+export type { MermaidShape, MermaidConnection } from './renderers/mermaidRenderer';
+export type { GraphvizShape, GraphvizConnection, GraphvizCluster } from './renderers/graphvizRenderer';
+
+// Export color palettes
+export { COLOR_PALETTES } from './architectureShapesCatalog';
+
 // Extend window interface for maxgraph
 declare global {
     interface Window {
@@ -63,6 +89,28 @@ const isDefinitionComplete = (definition: string): boolean => {
 const normalizeDrawIOXml = (xml: string): string => {
     let normalized = xml.trim();
 
+    // Clean up any text content after closing tags (LLM sometimes adds descriptions)
+    // Find the last proper closing tag (</mxfile>, </diagram>, or </mxGraphModel>)
+    const lastMxfileClose = normalized.lastIndexOf('</mxfile>');
+    const lastDiagramClose = normalized.lastIndexOf('</diagram>');
+    const lastGraphModelClose = normalized.lastIndexOf('</mxGraphModel>');
+
+    // If we have a closing diagram tag but content after it, truncate
+    if (lastDiagramClose !== -1) {
+        const afterDiagram = normalized.substring(lastDiagramClose + '</diagram>'.length).trim();
+        if (afterDiagram && !afterDiagram.startsWith('</mxfile>')) {
+            // Remove any text after </diagram> that isn't a closing tag
+            console.log('📐 DrawIO: Removing extra content after </diagram>:', afterDiagram.substring(0, 100));
+            normalized = normalized.substring(0, lastDiagramClose + '</diagram>'.length);
+        }
+    }
+
+    // Ensure proper closing tags
+    if (normalized.includes('<mxfile') && !normalized.includes('</mxfile>')) {
+        console.log('📐 DrawIO: Adding missing </mxfile> closing tag');
+        normalized = normalized + '\n</mxfile>';
+    }
+
     if (normalized.includes('<mxGraphModel') && !normalized.includes('<mxfile')) {
         normalized = `<?xml version="1.0" encoding="UTF-8"?>
 <mxfile host="ziya" modified="${new Date().toISOString()}" version="1.0">
@@ -113,163 +161,12 @@ async function loadMaxGraph(): Promise<any> {
 
 const createControls = (container: HTMLElement, spec: DrawIOSpec, xml: string, isDarkMode: boolean, graph?: any): void => {
     const controlsDiv = document.createElement('div');
-    controlsDiv.style.cssText = 'display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 12px; background-color: rgba(0, 0, 0, 0.03); border-bottom: 1px solid rgba(0, 0, 0, 0.1);';
-
-    // Title
-    const titleDiv = document.createElement('div');
-    titleDiv.style.cssText = 'font-weight: 600; font-size: 14px; color: #6b46c1;';
-    titleDiv.textContent = `📐 ${spec.title || 'DrawIO Diagram'}`;
-
-    // Buttons container
-    const buttonsDiv = document.createElement('div');
-    buttonsDiv.style.cssText = 'display: flex; gap: 8px;';
-
-    const downloadBtn = document.createElement('button');
-    downloadBtn.innerHTML = '💾 Download';
-    downloadBtn.title = 'Download as .drawio file';
-    downloadBtn.style.cssText = 'padding: 4px 12px; border: 1px solid #d9d9d9; background: white; border-radius: 4px; cursor: pointer; font-size: 13px; transition: all 0.2s;';
-    downloadBtn.onmouseenter = () => {
-        downloadBtn.style.background = '#f0f0f0';
-        downloadBtn.style.transform = 'translateY(-1px)';
-    };
-    downloadBtn.onmouseleave = () => {
-        downloadBtn.style.background = 'white';
-        downloadBtn.style.transform = 'translateY(0)';
-    };
-    downloadBtn.onclick = () => {
-        // Export the restyled version from the graph if available
-        let exportXml = xml;
-        if (graph) {
-            try {
-                const { Codec } = window.maxGraph;
-                const codec = new Codec();
-                const model = graph.getModel();
-                const node = codec.encode(model);
-                
-                // Wrap in proper DrawIO XML structure
-                const xmlDoc = document.implementation.createDocument(null, 'mxfile', null);
-                const mxfile = xmlDoc.documentElement;
-                mxfile.setAttribute('host', 'ziya');
-                mxfile.setAttribute('modified', new Date().toISOString());
-                mxfile.setAttribute('version', '1.0');
-                
-                const diagram = xmlDoc.createElement('diagram');
-                diagram.setAttribute('name', spec.title || 'Diagram');
-                diagram.appendChild(node);
-                mxfile.appendChild(diagram);
-                
-                exportXml = new XMLSerializer().serializeToString(xmlDoc);
-            } catch (e) {
-                console.warn('Failed to export restyled version, using original:', e);
-            }
-        }
-        const blob = new Blob([exportXml], { type: 'application/xml' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        const filename = (spec.title?.replace(/[^a-z0-9]/gi, '_') || 'diagram') + '.drawio';
-        a.download = filename;
-        a.click();
-        URL.revokeObjectURL(url);
-    };
-
-    // Export to DesignInspector button
-    const exportBtn = document.createElement('button');
-    exportBtn.innerHTML = '📤 Export';
-    exportBtn.title = 'Export to DesignInspector';
-    exportBtn.style.cssText = 'padding: 4px 12px; border: 1px solid #1890ff; background: #1890ff; color: white; border-radius: 4px; cursor: pointer; font-size: 13px; transition: all 0.2s;';
-    exportBtn.onmouseenter = () => {
-        exportBtn.style.background = '#096dd9';
-        exportBtn.style.transform = 'translateY(-1px)';
-    };
-    exportBtn.onmouseleave = () => {
-        exportBtn.style.background = '#1890ff';
-        exportBtn.style.transform = 'translateY(0)';
-    };
-    exportBtn.onclick = () => {
-        downloadBtn.click();
-
-        const modal = document.createElement('div');
-        modal.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0,0,0,0.5);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 10000;
-        `;
-
-        const content = document.createElement('div');
-        content.style.cssText = `
-            background: white;
-            padding: 24px;
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            max-width: 500px;
-        `;
-        content.innerHTML = `
-            <h3 style="margin-top: 0; color: #1890ff;">📤 Export to DesignInspector</h3>
-            <p>Diagram downloaded as <code>${spec.title || 'diagram'}.drawio</code></p>
-            <p><strong>Upload to DesignInspector:</strong></p>
-            <ol style="padding-left: 20px; line-height: 1.8;">
-                <li>Go to <a href="https://design-inspector.a2z.com" target="_blank" style="color: #1890ff;">design-inspector.a2z.com</a></li>
-                <li>Click <strong>"Upload"</strong> or <strong>"Import"</strong></li>
-                <li>Select the downloaded .drawio file</li>
-            </ol>
-            <button onclick="this.closest('[style*=fixed]').remove()" style="padding: 8px 16px; background: #1890ff; color: white; border: none; border-radius: 4px; cursor: pointer; width: 100%; margin-top: 12px;">Got it</button>
-        `;
-
-        modal.appendChild(content);
-        modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
-        document.body.appendChild(modal);
-        setTimeout(() => modal.remove(), 30000);
-    };
-
-    // Edit button
-    const editBtn = document.createElement('button');
-    editBtn.innerHTML = '✏️ Edit';
-    editBtn.title = 'Open in DrawIO editor';
-    editBtn.style.cssText = 'padding: 4px 12px; border: 1px solid #d9d9d9; background: white; border-radius: 4px; cursor: pointer; font-size: 13px; transition: all 0.2s;';
-    editBtn.onmouseenter = () => {
-        editBtn.style.background = '#f0f0f0';
-        editBtn.style.transform = 'translateY(-1px)';
-    };
-    editBtn.onmouseleave = () => {
-        editBtn.style.background = 'white';
-        editBtn.style.transform = 'translateY(0)';
-    };
-    editBtn.onclick = () => {
-        const encoded = encodeURIComponent(exportXml || xml);
-        const title = encodeURIComponent(spec.title || 'diagram');
-        const url = 'https://app.diagrams.net/?title=' + title + '#R' + encoded;
-        window.open(url, '_blank');
-    };
+    controlsDiv.className = 'diagram-actions';
 
     // View Source button
     const viewSourceBtn = document.createElement('button');
     viewSourceBtn.innerHTML = '📄 Source';
-    viewSourceBtn.title = 'View DrawIO XML source';
-    viewSourceBtn.style.cssText = `
-        padding: 4px 12px;
-        border: 1px solid #d9d9d9;
-        background: white;
-        border-radius: 4px;
-        cursor: pointer;
-        font-size: 13px;
-        transition: all 0.2s;
-    `;
-    viewSourceBtn.onmouseenter = () => {
-        viewSourceBtn.style.background = '#f0f0f0';
-        viewSourceBtn.style.transform = 'translateY(-1px)';
-    };
-    viewSourceBtn.onmouseleave = () => {
-        viewSourceBtn.style.background = 'white';
-        viewSourceBtn.style.transform = 'translateY(0)';
-    };
+    viewSourceBtn.className = 'diagram-action-button';
     viewSourceBtn.onclick = () => {
         const modal = document.createElement('div');
         modal.style.cssText = `
@@ -317,13 +214,117 @@ const createControls = (container: HTMLElement, spec: DrawIOSpec, xml: string, i
         document.body.appendChild(modal);
     };
 
-    buttonsDiv.appendChild(downloadBtn);
-    buttonsDiv.appendChild(exportBtn);
-    buttonsDiv.appendChild(editBtn);
-    buttonsDiv.appendChild(viewSourceBtn);
+    // Edit button - DISABLED: External site access is a privacy/security concern
+    // This opens diagrams.net which could expose private data
+    // TODO: Implement local editing capability or make this opt-in via user preferences
+    /*
+    const editBtn = document.createElement('button');
+    editBtn.innerHTML = '✏️ Edit';
+    editBtn.className = 'diagram-action-button';
+    editBtn.title = 'Open in diagrams.net editor (external site)';
+    editBtn.onclick = () => {
+        const encoded = encodeURIComponent(xml);
+        const title = encodeURIComponent(spec.title || 'diagram');
+        const url = 'https://app.diagrams.net/?title=' + title + '#R' + encoded;
+        // WARNING: This sends diagram data to external site
+        // Only enable if user explicitly opts in via preferences
+        window.open(url, '_blank');
+    };
+    */
 
-    controlsDiv.appendChild(titleDiv);
-    controlsDiv.appendChild(buttonsDiv);
+    // Download button - saves locally as .drawio file
+    const exportBtn = document.createElement('button');
+    exportBtn.innerHTML = '⬇️ Download';
+    exportBtn.className = 'diagram-action-button';
+    exportBtn.title = 'Download as .drawio file';
+    exportBtn.onclick = () => {
+        let exportXml = xml;
+        if (graph) {
+            try {
+                const { Codec } = window.maxGraph;
+                const codec = new Codec();
+                const model = graph.getModel();
+                const node = codec.encode(model);
+
+                const xmlDoc = document.implementation.createDocument(null, 'mxfile', null);
+                const mxfile = xmlDoc.documentElement;
+                mxfile.setAttribute('host', 'ziya');
+                mxfile.setAttribute('modified', new Date().toISOString());
+                mxfile.setAttribute('version', '1.0');
+
+                const diagram = xmlDoc.createElement('diagram');
+                diagram.setAttribute('name', spec.title || 'Diagram');
+                diagram.appendChild(node);
+                mxfile.appendChild(diagram);
+
+                exportXml = new XMLSerializer().serializeToString(xmlDoc);
+            } catch (e) {
+                console.warn('Failed to export restyled version, using original:', e);
+            }
+        }
+        const blob = new Blob([exportXml], { type: 'application/xml' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const filename = (spec.title?.replace(/[^a-z0-9]/gi, '_') || 'diagram') + '.drawio';
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
+    // Copy to clipboard button - useful for pasting into other tools
+    const copyBtn = document.createElement('button');
+    copyBtn.innerHTML = '📋 Copy';
+    copyBtn.className = 'diagram-action-button';
+    copyBtn.title = 'Copy XML to clipboard';
+    copyBtn.onclick = async () => {
+        let exportXml = xml;
+        if (graph) {
+            try {
+                const { Codec } = window.maxGraph;
+                const codec = new Codec();
+                const model = graph.getModel();
+                const node = codec.encode(model);
+
+                // Wrap in proper DrawIO XML structure
+                const xmlDoc = document.implementation.createDocument(null, 'mxfile', null);
+                const mxfile = xmlDoc.documentElement;
+                mxfile.setAttribute('host', 'ziya');
+                mxfile.setAttribute('modified', new Date().toISOString());
+                mxfile.setAttribute('version', '1.0');
+
+                const diagram = xmlDoc.createElement('diagram');
+                diagram.setAttribute('name', spec.title || 'Diagram');
+                diagram.appendChild(node);
+                mxfile.appendChild(diagram);
+
+                exportXml = new XMLSerializer().serializeToString(xmlDoc);
+            } catch (e) {
+                console.warn('Failed to export restyled version, using original:', e);
+            }
+        }
+
+        try {
+            await navigator.clipboard.writeText(exportXml);
+            const originalText = copyBtn.innerHTML;
+            copyBtn.innerHTML = '✅ Copied';
+            setTimeout(() => {
+                copyBtn.innerHTML = originalText;
+            }, 2000);
+        } catch (err) {
+            console.error('Failed to copy to clipboard:', err);
+            copyBtn.innerHTML = '❌ Failed';
+            setTimeout(() => {
+                copyBtn.innerHTML = '📋 Copy';
+            }, 2000);
+        }
+    };
+
+    controlsDiv.appendChild(viewSourceBtn);
+    // controlsDiv.appendChild(editBtn); // Disabled - external site privacy concern
+    controlsDiv.appendChild(exportBtn);
+    controlsDiv.appendChild(copyBtn);
+
     container.appendChild(controlsDiv);
 };
 
@@ -347,31 +348,18 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
             return;
         }
 
-        // Handle URL references (DesignInspector links)
-        if (spec.url) {
-            const linkDiv = document.createElement('div');
-            linkDiv.style.cssText = `
-            padding: 16px;
-            background: ${isDarkMode ? '#1a1a1a' : '#f8f9fa'};
-            border: 2px solid ${isDarkMode ? '#444' : '#ddd'};
-            border-radius: 8px;
-            text-align: center;
-        `;
-            linkDiv.innerHTML = `
-            <div style="margin-bottom: 12px; font-weight: bold; color: #6b46c1;">
-                📐 DesignInspector Diagram
-            </div>
-            <a href="${spec.url}" target="_blank" style="color: #1890ff; text-decoration: none;">
-                ${spec.url}
-            </a>
-            <div style="margin-top: 12px;">
-                <button onclick="window.open('${spec.url}', '_blank')" style="padding: 8px 16px; background: #1890ff; color: white; border: none; border-radius: 4px; cursor: pointer;">
-                    Open in DesignInspector →
-                </button>
-            </div>
-        `;
-            container.appendChild(linkDiv);
-            return;
+        // If this diagram uses catalog shapes, ensure stencils are loaded
+        if (xml) {
+            const shapeIds = extractShapeIdsFromXml(xml);
+            if (shapeIds.length > 0) {
+                console.log('📦 Loading stencils for shapes:', shapeIds);
+                try {
+                    await loadStencilsForShapes(shapeIds);
+                    console.log('✅ Stencils loaded');
+                } catch (stencilError) {
+                    console.warn('⚠️ Could not load stencils, shapes may render as boxes:', stencilError);
+                }
+            }
         }
 
         try {
@@ -379,6 +367,40 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
             console.log('📐 DrawIO: About to load maxGraph');
             const maxGraphModule = await loadMaxGraph();
             console.log('📐 DrawIO: maxGraph loaded, module keys:', Object.keys(maxGraphModule).slice(0, 10));
+
+            // CRITICAL FIX: Override arrow size constants BEFORE any rendering
+            // MaxGraph uses Constants.ARROW_SIZE (default 30) for arrow head sizing
+            // We must override this constant and the marker creation function
+            if (!maxGraphModule.MarkerShape.__arrowSizeOverridden) {
+                console.log('📐 DrawIO: Installing arrow size overrides for smaller arrows');
+
+                // Override the Constants.ARROW_SIZE global constant
+                if (maxGraphModule.Constants) {
+                    const originalArrowSize = maxGraphModule.Constants.ARROW_SIZE;
+                    maxGraphModule.Constants.ARROW_SIZE = 6;
+                    console.log(`📐 DrawIO: Changed Constants.ARROW_SIZE from ${originalArrowSize} to 6`);
+                }
+
+                // Override the marker creation function as backup
+                const originalCreateMarker = maxGraphModule.MarkerShape.createMarker;
+                maxGraphModule.MarkerShape.createMarker = function(canvas, shape, type, pe, dx, dy, size, source, sw, filled) {
+                    // Force arrow size to 6 (override any provided size)
+                    // Log all parameters to understand what's happening
+                    if (!this.__loggedOnce) {
+                        console.log(`🎯 createMarker called:`, {
+                            size, type, source, sw, filled,
+                            pe: pe?.toString().substring(0, 50),
+                            dx, dy
+                        });
+                        this.__loggedOnce = true;
+                    }
+                    // FORCE size to 1.4 (6 / 4.27 to compensate for the scaling)
+                    const customSize = 1.4;
+                    return originalCreateMarker.call(this, canvas, shape, type, pe, dx, dy, customSize, source, sw, filled);
+                };
+
+                maxGraphModule.MarkerShape.__arrowSizeOverridden = true;
+            }
 
             if (!maxGraphModule.Graph) throw new Error('maxGraph.Graph not found in module');
 
@@ -402,20 +424,44 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
             // Parse the XML
             // CRITICAL FIX: Clean up common XML syntax errors before parsing
             let cleanedXml = xml!;
-            
+
+            // CRITICAL FIX: Fix ampersands in attribute values
+            // The problem: value="Security & Monitoring" should be value="Security &amp; Monitoring"
+            // Strategy: Fix ampersands within quoted attribute values specifically
+            cleanedXml = cleanedXml.replace(/(\w+)="([^"]*)"/g, (match, attrName, attrValue) => {
+                // Escape any bare ampersands in the attribute value
+                const fixed = attrValue.replace(/&(?!(amp|lt|gt|quot|apos|#[0-9]+|#x[0-9a-fA-F]+);)/g, '&amp;');
+                return `${attrName}="${fixed}"`;
+            });
+
+            // Also handle single-quoted attributes
+            cleanedXml = cleanedXml.replace(/(\w+)='([^']*)'/g, (match, attrName, attrValue) => {
+                const fixed = attrValue.replace(/&(?!(amp|lt|gt|quot|apos|#[0-9]+|#x[0-9a-fA-F]+);)/g, '&amp;');
+                return `${attrName}='${fixed}'`;
+            });
+
+            console.log('📐 DrawIO: Fixed ampersand entities');
+
+            // Additional safety: fix any double-escaped entities that might result
+            // This handles cases where &#xa; might have been escaped to &amp;#xa;
+            cleanedXml = cleanedXml.replace(/&amp;(#[0-9]+;)/g, '&$1');
+            cleanedXml = cleanedXml.replace(/&amp;(#x[0-9a-fA-F]+;)/g, '&$1');
+
+            console.log('📐 DrawIO: Fixed ampersands sample:', cleanedXml.substring(cleanedXml.indexOf('Security'), cleanedXml.indexOf('Security') + 50));
+
             // Fix common attribute errors like strokeColor="#6c8ebf;" -> strokeColor=#6c8ebf
             // Remove quotes before # in hex colors
             cleanedXml = cleanedXml.replace(/(\w+)=["']#/g, '$1=#');
-            
+
             // Remove trailing semicolons in attribute values (DrawIO artifact)
             cleanedXml = cleanedXml.replace(/#([0-9a-fA-F]{6});"/g, '#$1"');
             cleanedXml = cleanedXml.replace(/#([0-9a-fA-F]{6});'/g, "#$1'");
-            
+
             // Remove semicolons at end of attribute values that don't have closing quotes
             cleanedXml = cleanedXml.replace(/=([^"'\s>]+);(\s)/g, '=$1$2');
-            
+
             console.log('📐 DrawIO: Cleaned XML preview:', cleanedXml.substring(0, 500));
-            
+
             // Now parse the cleaned XML
             const parserX = new DOMParser();
             const xmlDocX = parserX.parseFromString(cleanedXml, 'application/xml');
@@ -496,6 +542,13 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
             console.log('📐 DrawIO: Creating Graph instance');
             const graph = new Graph(graphContainer);
 
+            // Disable tree images to avoid 404s - use CSS styling instead
+            if (maxGraphModule.Constants) {
+                maxGraphModule.Constants.STYLE_IMAGE = null;
+            }
+            graph.collapsedImage = null;
+            graph.expandedImage = null;
+
             // Configure graph for read-only viewing
             graph.setEnabled(false); // Disable editing
             graph.setHtmlLabels(true); // Enable HTML labels for better text rendering
@@ -503,6 +556,38 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
             graph.setTooltips(true);
             graph.autoSizeCells = true; // Ensure labels are sized properly
             graph.setConnectable(false); // Read-only mode
+
+
+            // CRITICAL: Configure stylesheet defaults BEFORE adding any cells
+            // This prevents maxGraph's huge default arrow sizes from being used
+            console.log('📐 DrawIO: Configuring stylesheet defaults early');
+            const stylesheet = graph.getStylesheet();
+
+            // Configure default edge style with reasonable arrow sizes
+            const defaultEdgeStyle = stylesheet.getDefaultEdgeStyle();
+            defaultEdgeStyle['endArrow'] = 'classic';
+            defaultEdgeStyle['endSize'] = 6; // Small arrow heads (6px instead of default ~20-30px)
+            defaultEdgeStyle['startArrow'] = 'none';
+            defaultEdgeStyle['startSize'] = 6;
+            defaultEdgeStyle['strokeWidth'] = 1;
+
+            // Edge label defaults for readability
+            defaultEdgeStyle['labelBackgroundColor'] = '#ffffff';
+            defaultEdgeStyle['labelBorderColor'] = '#333333';
+            defaultEdgeStyle['align'] = 'center';
+            defaultEdgeStyle['verticalAlign'] = 'middle';
+            defaultEdgeStyle['spacingTop'] = 6;
+            defaultEdgeStyle['spacingBottom'] = 6;
+            defaultEdgeStyle['spacingLeft'] = 10;
+            defaultEdgeStyle['spacingRight'] = 10;
+
+            stylesheet.putDefaultEdgeStyle(defaultEdgeStyle);
+
+            // Configure default vertex style
+            const defaultVertexStyle = stylesheet.getDefaultVertexStyle();
+            defaultVertexStyle['fontColor'] = '#000000';
+            defaultVertexStyle['fontSize'] = 12;
+            stylesheet.putDefaultVertexStyle(defaultVertexStyle);
 
             console.log('📐 DrawIO: Graph created');
 
@@ -557,8 +642,8 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
 
                 // Build maps and collections for proper ordering
                 const cellMap = new Map<string, any>();
-                const vertexCells: Array<{id: string, element: Element}> = [];
-                const edgeCells: Array<{id: string, element: Element}> = [];
+                const vertexCells: Array<{ id: string, element: Element }> = [];
+                const edgeCells: Array<{ id: string, element: Element }> = [];
 
                 // First pass: decode all cells and categorize them
                 // We need to add vertices before edges for proper z-ordering
@@ -582,26 +667,26 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                         cell.setId(cellId);
                         cell.setVertex(vertex);
                         cell.setEdge(edge);
-                        
+
                         // Parse and modify style string
                         if (style) {
                             // CRITICAL: maxGraph 0.11+ requires style OBJECTS, not strings
                             // Detect special styles that need preprocessing
                             const isSwimlane = style.includes('swimlane');
                             const isCurved = style.includes('curved=1') || style.includes('rounded=1');
-                            
+
                             // For swimlanes, ensure we have proper label positioning
                             if (isSwimlane && !style.includes('startSize=')) {
                                 // Add default startSize for swimlane label area (26px is standard)
                                 style = style + ';startSize=26';
                             }
-                            
+
                             // Parse style string into proper object format
                             const styleObj: Record<string, any> = {};
                             style.split(';').forEach(pair => {
                                 const trimmedPair = pair.trim();
                                 if (!trimmedPair) return;
-                                
+
                                 if (trimmedPair.includes('=')) {
                                     const [key, value] = trimmedPair.split('=');
                                     if (key && value !== undefined && value !== '') {
@@ -617,7 +702,7 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                                     }
                                 }
                             });
-                            
+
                             // Fix arrow sizes for edges
                             if (edge) {
                                 // Edge label positioning fixes
@@ -625,39 +710,80 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                                 styleObj['labelBorderColor'] = '#cccccc';
                                 styleObj['align'] = 'center';
                                 styleObj['verticalAlign'] = 'middle';
-                                
+
                                 // Ensure edge labels are readable with padding
                                 styleObj['spacingTop'] = 2;
                                 styleObj['spacingBottom'] = 2;
                                 styleObj['spacingLeft'] = 4;
                                 styleObj['spacingRight'] = 4;
-                                
+
                                 // Arrow size fixes
                                 styleObj['endSize'] = 6;
                                 styleObj['startSize'] = 6;
-                                
+
                                 // Handle curved edges properly
                                 if (isCurved || styleObj['curved'] || styleObj['rounded']) {
                                     styleObj['curved'] = 1;
                                     styleObj['rounded'] = 1;
                                 }
                             }
-                            
+
                             // Swimlane label positioning fixes
-                            if (vertex && styleObj['fillColor'] && !styleObj['fontColor']) {
+                            if (vertex && !styleObj['fontColor']) {
+                                // Set appropriate font color based on fill color
+                                const fillColor = styleObj['fillColor'];
+                                if (fillColor && fillColor !== 'none') {
+                                    styleObj['fontColor'] = getOptimalTextColor(fillColor);
+                                } else {
+                                    // No fill color - use theme-based default
+                                    styleObj['fontColor'] = isDarkMode ? '#e0e0e0' : '#000000';
+                                }
+                            } else if (vertex && styleObj['fontColor'] === '#000000' && isDarkMode) {
+                                // Check background color before overriding
+                                const fillColor = styleObj['fillColor'];
+                                if (fillColor && fillColor !== 'none') {
+                                    // Only override if the background is dark
+                                    if (!isLightBackground(fillColor)) {
+                                        styleObj['fontColor'] = getOptimalTextColor(fillColor);
+                                    }
+                                } else {
+                                    // No fill color - use light text in dark mode
+                                    styleObj['fontColor'] = '#e0e0e0';
+                                }
+                            } else if (vertex && styleObj['fontColor']) {
+                                // Check if existing font color has good contrast with fill
+                                const fillColor = styleObj['fillColor'];
+                                const fontColor = styleObj['fontColor'];
+
+                                if (fillColor && fillColor !== 'none' && fontColor) {
+                                    // Check if we need to adjust for better contrast
+                                    const fillRgb = hexToRgb(fillColor);
+                                    const fontRgb = hexToRgb(fontColor);
+
+                                    if (fillRgb && fontRgb) {
+                                        // If both colors are light or both are dark, fix it
+                                        const fillIsLight = isLightBackground(fillColor);
+                                        const fontIsLight = isLightBackground(fontColor);
+
+                                        if (fillIsLight === fontIsLight) {
+                                            styleObj['fontColor'] = getOptimalTextColor(fillColor);
+                                        }
+                                    }
+                                }
+                            } else if (vertex && styleObj['fillColor']) {
                                 if (isSwimlane) {
                                     // Swimlane labels should be at the top, not centered
                                     styleObj['verticalAlign'] = 'top';
                                     styleObj['align'] = 'center';
-                                    styleObj['spacingTop'] = 4;
+                                    styleObj['spacingTop'] = 8;
                                     styleObj['fontSize'] = styleObj['fontSize'] || 12;
                                     styleObj['fontStyle'] = styleObj['fontStyle'] || 1; // Bold
-                                    
+
                                     // Ensure label area is visible
                                     if (!styleObj['startSize']) {
-                                        styleObj['startSize'] = 26;
+                                        styleObj['startSize'] = 35;
                                     }
-                                    
+
                                     // Make swimlane backgrounds semi-transparent to see contents
                                     if (!styleObj['fillColor'].includes('opacity')) {
                                         // Keep the color but make it lighter
@@ -667,13 +793,11 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                                         }
                                     }
                                 }
-                                
-                                styleObj['fontColor'] = '#000000';
                             }
-                            
+
                             // Set style as OBJECT, not string (maxGraph 0.11+ requirement)
                             cell.setStyle(styleObj);
-                            
+
                             console.log('📐 DEBUG: Set style object for cell', cellId, ':', styleObj);
                         } else {
                             cell.setStyle({});
@@ -688,7 +812,7 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                             const height = parseFloat(geometryElement.getAttribute('height') || '0');
 
                             const geometry = new Geometry(x, y, width, height);
-                            
+
                             // For edges, parse waypoints
                             if (edge) {
                                 const relative = geometryElement.getAttribute('relative');
@@ -696,7 +820,7 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                                     geometry.relative = true;
                                 }
                             }
-                            
+
                             cell.setGeometry(geometry);
 
                             console.log(`📐 DrawIO: Created cell ${cellId} with geometry:`, { x, y, width, height });
@@ -705,15 +829,57 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                         }
 
                         cellMap.set(cellId, cell);
-                        
+
                         // Categorize for ordered addition
                         if (edge) {
-                            edgeCells.push({id: cellId, element: cellElement});
+                            edgeCells.push({ id: cellId, element: cellElement });
                         } else if (vertex) {
-                            vertexCells.push({id: cellId, element: cellElement});
+                            vertexCells.push({ id: cellId, element: cellElement });
                         }
                     }
                 });
+                console.log('📦 Applying loaded icons to cells');
+                for (const [cellId, cell] of cellMap.entries()) {
+                    if (!cell.isVertex()) continue;
+
+                    const style = cell.getStyle();
+                    if (!style || typeof style !== 'object') continue;
+
+                    // Check if this cell uses mxgraph.aws4 resource icons
+                    // Icons can be in either 'resIcon' or 'shape' properties
+                    const resIcon = style['resIcon'] || style['shape'];
+
+                    if (resIcon && typeof resIcon === 'string' && resIcon.startsWith('mxgraph.aws4.')) {
+                        // Extract service name: mxgraph.aws4.api_gateway -> api_gateway
+                        const serviceName = resIcon.replace('mxgraph.aws4.', '');
+                        console.log(`📦 Cell ${cellId} needs icon: ${serviceName}`);
+
+                        // Get icon from registry
+                        const iconDataUri = await iconRegistry.getIconAsDataUri('aws', serviceName);
+                        if (iconDataUri) {
+                            // Set as image on the cell
+                            style['image'] = iconDataUri;
+                            style['shape'] = 'image';
+
+                            // CRITICAL FIX: Set proper label positioning for AWS icons
+                            // Without these, labels render far to the right instead of below the icon
+                            style['verticalLabelPosition'] = 'bottom';
+                            style['verticalAlign'] = 'top';
+                            style['align'] = 'center';
+                            style['imageAlign'] = 'center';
+                            style['imageVerticalAlign'] = 'top';
+                            style['spacingTop'] = 5;
+
+                            console.log(`🔧 LABEL-FIX: Applied label positioning for AWS icon ${cellId}`, {
+                                serviceName,
+                                labelPosition: 'bottom-center'
+                            });
+
+                            cell.setStyle(style);
+                            console.log(`✅ Applied icon to cell ${cellId}`);
+                        }
+                    }
+                }
 
                 // Get the model's default root cells - these MUST NOT be re-added
                 // In maxGraph, cells 0 and 1 are special root cells created automatically
@@ -736,22 +902,116 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                 // Replace our created cells 0 and 1 with the model's existing ones
                 if (cellMap.has('0')) cellMap.set('0', modelRoot);
                 if (cellMap.has('1')) cellMap.set('1', defaultParent);
-                
+
+                // Build edge direction and bidirectional pair maps
+                const vertexEdgeDirections = new Map<string, {
+                    incoming: string[],
+                    outgoing: string[]
+                }>();
+                const edgePairs = new Map<string, string[]>();
+
+                edgeCells.forEach(({ id, element }) => {
+                    const sourceId = element.getAttribute('source');
+                    const targetId = element.getAttribute('target');
+
+                    if (sourceId && targetId) {
+                        // Track edge directions
+                        if (!vertexEdgeDirections.has(sourceId)) {
+                            vertexEdgeDirections.set(sourceId, { incoming: [], outgoing: [] });
+                        }
+                        vertexEdgeDirections.get(sourceId)!.outgoing.push(id);
+
+                        if (!vertexEdgeDirections.has(targetId)) {
+                            vertexEdgeDirections.set(targetId, { incoming: [], outgoing: [] });
+                        }
+                        vertexEdgeDirections.get(targetId)!.incoming.push(id);
+
+                        // Track bidirectional pairs (A↔B)
+                        const pairKey = sourceId < targetId ? `${sourceId}-${targetId}` : `${targetId}-${sourceId}`;
+                        if (!edgePairs.has(pairKey)) edgePairs.set(pairKey, []);
+                        edgePairs.get(pairKey)!.push(id);
+                    }
+                });
+
+                console.log('📐 DrawIO: Edge analysis:', {
+                    verticesWithBothDirections: Array.from(vertexEdgeDirections.entries())
+                        .filter(([_, dirs]) => dirs.incoming.length > 0 && dirs.outgoing.length > 0)
+                        .map(([vId, dirs]) => ({ vId, in: dirs.incoming.length, out: dirs.outgoing.length })),
+                    bidirectionalPairs: Array.from(edgePairs.entries()).filter(([_, edges]) => edges.length > 1)
+                });
+
+                // Handle bidirectional pairs separately (they need offset)
+                console.log('📐 DrawIO: Processing bidirectional edge pairs');
+                edgeCells.forEach(({ id, element }) => {
+                    const cell = cellMap.get(id);
+                    if (!cell) return;
+
+                    const sourceId = element.getAttribute('source');
+                    const targetId = element.getAttribute('target');
+                    if (!sourceId || !targetId) return;
+
+                    // Check if this is a bidirectional pair (A↔B)
+                    const pairKey = sourceId < targetId ? `${sourceId}-${targetId}` : `${targetId}-${sourceId}`;
+                    const pairEdges = edgePairs.get(pairKey) || [];
+
+                    if (pairEdges.length === 2) {
+                        // Bidirectional pair - offset to separate
+                        const sourceCell = cellMap.get(sourceId);
+                        const targetCell = cellMap.get(targetId);
+                        if (!sourceCell || !targetCell) return;
+
+                        const sourceGeom = sourceCell.getGeometry();
+                        const targetGeom = targetCell.getGeometry();
+                        if (sourceGeom && targetGeom) {
+                            const dx = targetGeom.x + targetGeom.width / 2 - (sourceGeom.x + sourceGeom.width / 2);
+                            const dy = targetGeom.y + targetGeom.height / 2 - (sourceGeom.y + sourceGeom.height / 2);
+                            const isHorizontal = Math.abs(dx) > Math.abs(dy);
+                            const edgeIndex = pairEdges.indexOf(id);
+                            // Use offset for visual separation
+                            const offset = edgeIndex === 0 ? -0.2 : 0.2;
+
+                            const currentStyle = cell.getStyle();
+
+                            if (isHorizontal) {
+                                // For horizontal flow, offset vertically
+                                // One arrow goes above center, one below
+                                currentStyle['exitY'] = 0.5 + offset;
+                                currentStyle['entryY'] = 0.5 + offset;
+                                // Keep X centered on left/right edges
+                                currentStyle['exitX'] = dx > 0 ? 1.0 : 0.0;
+                                currentStyle['entryX'] = dx > 0 ? 0.0 : 1.0;
+                            } else {
+                                // For vertical flow, offset horizontally
+                                currentStyle['exitX'] = 0.5 + offset;
+                                currentStyle['entryX'] = 0.5 + offset;
+                                // Keep Y centered on top/bottom edges
+                                currentStyle['exitY'] = dy > 0 ? 1.0 : 0.0;
+                                currentStyle['entryY'] = dy > 0 ? 0.0 : 1.0;
+                            }
+                            cell.setStyle(currentStyle);
+
+                            console.log(`📐 PRE: Bidirectional pair ${id} offset by ${offset}`, {
+                                direction: isHorizontal ? 'horizontal' : 'vertical'
+                            });
+                        }
+                    }
+                });
+
                 // Separate swimlanes/containers from regular vertices for proper z-ordering
-                const swimlaneVertices = vertexCells.filter(({id}) => {
+                const swimlaneVertices = vertexCells.filter(({ id }) => {
                     const cell = cellMap.get(id);
                     const style = cell?.getStyle();
                     return style && (style['swimlane'] || style['container']);
                 });
-                const regularVertices = vertexCells.filter(({id}) => !swimlaneVertices.find(v => v.id === id));
-                
+                const regularVertices = vertexCells.filter(({ id }) => !swimlaneVertices.find(v => v.id === id));
+
                 // Build ordered list: swimlanes → vertices → edges
                 const nonRootIds = [...swimlaneVertices, ...regularVertices, ...edgeCells].map(item => item.id).filter(id => id !== '0' && id !== '1');
 
                 nonRootIds.forEach(id => {
                     const cell = cellMap.get(id);
                     const cellElement = Array.from(cellElements).find(el => el.getAttribute('id') === id);
-                    
+
                     if (cell) {
                         // Look up parent from XML
                         const parentId = cellElement?.getAttribute('parent');
@@ -769,315 +1029,559 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                                 const targetCell = cellMap.get(targetId);
                                 cell.setTerminal(sourceCell, true);  // true = source
                                 cell.setTerminal(targetCell, false); // false = target
+
+                                // CRITICAL: Apply connection points from style to geometry
+                                // MaxGraph needs these on the geometry, not just in style
+                                const style = cell.getStyle();
+                                const geometry = cell.getGeometry();
+
+                                if (style && geometry && typeof style === 'object') {
+                                    // Set terminal points on geometry if style has connection points
+                                    if (style['exitX'] !== undefined && style['exitY'] !== undefined) {
+                                        const sourcePoint = new Point(
+                                            parseFloat(style['exitX']),
+                                            parseFloat(style['exitY'])
+                                        );
+                                        geometry.setTerminalPoint(sourcePoint, true); // true = source
+                                        console.log(`📐 GEOM: Set source point for ${id}: [${style['exitX']}, ${style['exitY']}]`);
+                                    }
+
+                                    if (style['entryX'] !== undefined && style['entryY'] !== undefined) {
+                                        const targetPoint = new Point(
+                                            parseFloat(style['entryX']),
+                                            parseFloat(style['entryY'])
+                                        );
+                                        geometry.setTerminalPoint(targetPoint, false); // false = target
+                                        console.log(`📐 GEOM: Set target point for ${id}: [${style['entryX']}, ${style['entryY']}]`);
+                                    }
+
+                                    // Update the cell's geometry
+                                    cell.setGeometry(geometry);
+                                }
                             }
                         }
                     }
                 });
-                // CRITICAL FIX: After adding all cells, refresh the view to apply styles
-                console.log('📐 DrawIO: Refreshing graph view to apply cell styles');
-                
-                // DEBUG: Check what styles the graph sees
-                console.log('📐 DEBUG: Checking cell styles in graph model:');
-                Object.keys(model.cells || {}).forEach(cellId => {
-                    const cell = model.cells[cellId];
-                    if (cell && cellId !== '0' && cellId !== '1') {
-                        console.log('📐 DEBUG: Cell', cellId, {
-                            value: cell.getValue(),
-                            style: cell.getStyle(),
-                            isVertex: cell.isVertex(),
-                            isEdge: cell.isEdge()
-                        });
+
+                // PLACEMENT OPTIMIZATION: Reorder shapes within containers to minimize crossings
+                console.log('📐 PLACEMENT: Optimizing shape positions within containers');
+
+                // Group vertices by parent and Y-position (row)
+                const containerRows = new Map<string, Map<number, Array<{ id: string, cell: any, geom: any }>>>();
+
+                vertexCells.forEach(({ id }) => {
+                    const cell = cellMap.get(id);
+                    if (!cell) return;
+                    const geom = cell.getGeometry();
+                    if (!geom) return;
+
+                    // Skip containers themselves
+                    const style = cell.getStyle();
+                    if (style && (style['swimlane'] || style['container'])) return;
+
+                    const parent = cell.getParent();
+                    const parentId = parent?.getId() || 'root';
+
+                    if (!containerRows.has(parentId)) {
+                        containerRows.set(parentId, new Map());
                     }
+                    const rows = containerRows.get(parentId)!;
+
+                    const rowKey = Math.round(geom.y / 30) * 30; // Group within 30px
+                    if (!rows.has(rowKey)) rows.set(rowKey, []);
+                    rows.get(rowKey)!.push({ id, cell, geom });
                 });
-                
-                // CRITICAL FIX: Set reasonable arrow size defaults before rendering
-                // maxGraph uses very large default arrow sizes, we need to override them
-                console.log('📐 DrawIO: Configuring stylesheet defaults');
-                const stylesheet = graph.getStylesheet();
-                
-                // Configure default vertex style
-                const defaultVertexStyle = stylesheet.getDefaultVertexStyle();
-                
-                const defaultEdgeStyle = stylesheet.getDefaultEdgeStyle();
-                defaultEdgeStyle['endArrow'] = 'classic';
-                defaultEdgeStyle['endSize'] = 6; // Small arrow heads (6px instead of default ~20-30px)
-                defaultEdgeStyle['startArrow'] = 'none';
-                defaultEdgeStyle['startSize'] = 6;
-                defaultEdgeStyle['strokeWidth'] = 1;
-                
-                // Edge label defaults for readability
-                defaultEdgeStyle['labelBackgroundColor'] = '#ffffff';
-                defaultEdgeStyle['labelBorderColor'] = '#333333';
-                defaultEdgeStyle['align'] = 'center';
-                defaultEdgeStyle['verticalAlign'] = 'middle';
-                defaultEdgeStyle['spacingTop'] = 6;
-                defaultEdgeStyle['spacingBottom'] = 6;
-                defaultEdgeStyle['spacingLeft'] = 10;
-                defaultEdgeStyle['spacingRight'] = 10;
-                
-                stylesheet.putDefaultEdgeStyle(defaultEdgeStyle);
-                
-                // Vertex label defaults
-                defaultVertexStyle['fontColor'] = '#000000';
-                defaultVertexStyle['fontSize'] = 12;
-                stylesheet.putDefaultVertexStyle(defaultVertexStyle);
-                
-                console.log('📐 DEBUG: Graph stylesheet:', stylesheet);
-                graph.view.clear(); // Clear any cached view states
-                graph.view.validate(); // Rebuild view states with current cell styles
-                graph.refresh(); // Force complete redraw with styles
-                
-                // DEBUG: Check view states after refresh
-                console.log('📐 DEBUG: After refresh, checking view states:');
-                console.log('📐 DEBUG: graph.view.states type:', typeof graph.view.states);
-                console.log('📐 DEBUG: graph.view.states:', graph.view.states);
-                
-                // CRITICAL FIX: graph.view.states is NOT a Map, it's a CellStatePreview object
-                // with a .map property that IS a Map. We need to access .map directly
-                const statesMap = (graph.view.states as any)?.map;
-                console.log('📐 DEBUG: statesMap extracted:', statesMap);
-                console.log('📐 DEBUG: statesMap type:', typeof statesMap);
-                console.log('📐 DEBUG: statesMap constructor:', statesMap?.constructor?.name);
-                console.log('📐 DEBUG: is Map?:', statesMap instanceof Map);
-                console.log('📐 DEBUG: statesMap keys:', statesMap ? Array.from(Object.keys(statesMap)).slice(0, 5) : 'none');
-                
-                if (statesMap && typeof statesMap === 'object') {
-                    const stateEntries = Object.entries(statesMap);
-                    console.log('📐 DEBUG: View states object found, entries:', stateEntries.length);
-                    
-                    console.log('📐 DEBUG: model.cells keys:', Object.keys(model.cells || {}));
-                    
-                    // View states are now created correctly with object styles
-                    console.log('📐 DEBUG: Styles applied via cell.setStyle() object format');
-                } else {
-                    console.warn('📐 DEBUG: statesMap is not an object or is null, cannot apply styles');
-                }
 
-                const cellCount = model.cells ? Object.keys(model.cells).length : 0;
-                console.log('📐 DrawIO: Decode complete, cells in model:', cellCount);
+                // Optimize each row in each container
+                containerRows.forEach((rows, parentId) => {
+                    rows.forEach((rowShapes, rowY) => {
+                        if (rowShapes.length <= 1) return;
 
-                if (cellCount <= 2) {
-                    throw new Error('Diagram appears empty - only root cells exist');
-                }
+                        // Calculate optimal X position for each shape based on connections
+                        const optimalX = new Map<string, number>();
 
-                // Force immediate view update
+                        rowShapes.forEach(({ id, cell }) => {
+                            const xPositions: number[] = [];
+                            const weights: number[] = [];
+
+                            // Find all edges and calculate where they connect
+                            edgeCells.forEach(({ element }) => {
+                                const sourceId = element.getAttribute('source');
+                                const targetId = element.getAttribute('target');
+
+                                if (sourceId === id && targetId) {
+                                    const target = cellMap.get(targetId);
+                                    if (target) {
+                                        // Calculate absolute X
+                                        let absX = 0;
+                                        let current = target;
+                                        while (current && current.getId() !== '0') {
+                                            const g = current.getGeometry();
+                                            if (g) {
+                                                // For calculating position, use center X
+                                                if (current === target) {
+                                                    absX += g.x + g.width / 2;
+                                                } else {
+                                                    // Parent container offset
+                                                    absX += g.x;
+                                                }
+                                            }
+                                            current = current.getParent();
+                                            if (current && (current.getId() === '0' || current.getId() === '1')) break;
+                                        }
+
+                                        // Weight vertical connections more heavily (they benefit most from alignment)
+                                        const targetParent = target.getParent()?.getId();
+                                        const sourceParent = cell.getParent()?.getId();
+                                        const weight = targetParent !== sourceParent ? 3.0 : 1.0; // Cross-container edges weighted 3x
+
+                                        xPositions.push(absX);
+                                        weights.push(weight);
+                                    }
+                                } else if (targetId === id && sourceId) {
+                                    const source = cellMap.get(sourceId);
+                                    if (source) {
+                                        let absX = 0;
+                                        let current = source;
+                                        while (current && current.getId() !== '0') {
+                                            const g = current.getGeometry();
+                                            if (g) {
+                                                if (current === source) {
+                                                    absX += g.x + g.width / 2;
+                                                } else {
+                                                    absX += g.x;
+                                                }
+                                            }
+                                            current = current.getParent();
+                                            if (current && (current.getId() === '0' || current.getId() === '1')) break;
+                                        }
+
+                                        const sourceParent = source.getParent()?.getId();
+                                        const targetParent = cell.getParent()?.getId();
+                                        const weight = sourceParent !== targetParent ? 3.0 : 1.0;
+
+                                        xPositions.push(absX);
+                                        weights.push(weight);
+                                    }
+                                }
+                            });
+
+                            // Set optimal X as average of connections, or keep current if no connections
+                            // Use weighted average to prioritize cross-container vertical connections
+                            if (xPositions.length > 0) {
+                                const weightedSum = xPositions.reduce((sum, x, i) => sum + x * weights[i], 0);
+                                const totalWeight = weights.reduce((a, b) => a + b, 0);
+                                optimalX.set(id, weightedSum / totalWeight);
+
+                                console.log(`📐 PLACEMENT: ${id} connection analysis:`, {
+                                    connections: xPositions.map((x, i) => ({ x: x.toFixed(1), weight: weights[i] })),
+                                    optimalX: (weightedSum / totalWeight).toFixed(1)
+                                });
+                            } else {
+                                optimalX.set(id, rowShapes.find(s => s.id === id)!.geom.x);
+                            }
+                        });
+
+                        // Sort by optimal X
+                        const sorted = [...rowShapes].sort((a, b) =>
+                            (optimalX.get(a.id) || 0) - (optimalX.get(b.id) || 0)
+                        );
+
+                        // Get existing X positions (sorted) to redistribute
+                        const existingXPositions = rowShapes.map(s => s.geom.x).sort((a, b) => a - b);
+
+                        // Assign new positions
+                        sorted.forEach((shape, idx) => {
+                            const oldX = shape.geom.x;
+                            const newX = existingXPositions[idx];
+                            if (Math.abs(oldX - newX) > 5) {
+                                console.log(`📐 PLACEMENT: ${shape.id} x: ${oldX.toFixed(1)} → ${newX.toFixed(1)} (optimal: ${optimalX.get(shape.id)?.toFixed(1)})`);
+                                shape.geom.x = newX;
+                                shape.cell.setGeometry(shape.geom);
+                            }
+                        });
+                    });
+                });
+
+                console.log('✅ PLACEMENT: Optimization complete');
+
+                console.log('📐 DrawIO: POST-PROCESS - Setting proper connection points on geometry objects');
+                // POST-PROCESS: After cells are added, calculate optimal connection points for ALL edges
+                // This ensures clean orthogonal routing without overlaps
+                edgeCells.forEach(({ id, element }) => {
+                    const cell = cellMap.get(id);
+                    if (!cell) return;
+
+                    const sourceId = element.getAttribute('source');
+                    const targetId = element.getAttribute('target');
+                    if (!sourceId || !targetId) return;
+
+                    const sourceCell = cellMap.get(sourceId);
+                    const targetCell = cellMap.get(targetId);
+                    if (!sourceCell || !targetCell) return;
+
+                    // Get absolute positions (accounting for parent containers)
+                    const getAbsoluteGeometry = (cell: any) => {
+                        let geom = cell.getGeometry();
+                        if (!geom) return null;
+
+                        let x = geom.x;
+                        let y = geom.y;
+
+                        // Walk up parent chain to get absolute position
+                        let parent = cell.getParent();
+                        while (parent && parent.getId() !== '0' && parent.getId() !== '1') {
+                            const parentGeom = parent.getGeometry();
+                            if (parentGeom) {
+                                x += parentGeom.x;
+                                y += parentGeom.y;
+                            }
+                            parent = parent.getParent();
+                        }
+
+                        return { x, y, width: geom.width, height: geom.height };
+                    };
+
+                    const sourceGeom = getAbsoluteGeometry(sourceCell);
+                    const targetGeom = getAbsoluteGeometry(targetCell);
+                    if (!sourceGeom || !targetGeom) return;
+
+
+                    const currentStyle = cell.getStyle() || {};
+
+                    // ALWAYS calculate connection points - don't trust defaults
+
+                    // Calculate angle between centers
+                    const dx = targetGeom.x + targetGeom.width / 2 - (sourceGeom.x + sourceGeom.width / 2);
+                    const dy = targetGeom.y + targetGeom.height / 2 - (sourceGeom.y + sourceGeom.height / 2);
+                    const angle = Math.atan2(dy, dx) * (180 / Math.PI);
+
+                    // Calculate flow direction upfront - needed for routing decisions
+                    const isHorizontal = Math.abs(dx) > Math.abs(dy);
+
+                    // Calculate edge-to-edge distances (gaps between shapes)
+                    const horizontalGap = Math.abs(dx) - (sourceGeom.width + targetGeom.width) / 2;
+                    const verticalGap = Math.abs(dy) - (sourceGeom.height + targetGeom.height) / 2;
+
+                    // Check if shapes are aligned on an axis
+                    // Horizontally aligned means their horizontal centers are close (can route vertically)
+                    const horizontallyAligned = Math.abs(dx) < (sourceGeom.width + targetGeom.width) / 2;
+                    // Vertically aligned means their vertical centers are close (can route horizontally)  
+                    const verticallyAligned = Math.abs(dy) < (sourceGeom.height + targetGeom.height) / 2;
+
+                    // Alignment determines routing direction regardless of distance
+                    // If horizontally aligned → route vertically (straight up/down)
+                    // If vertically aligned → route horizontally (straight left/right)
+                    const shouldRouteVertically = horizontallyAligned;
+                    const shouldRouteHorizontally = verticallyAligned;
+
+                    console.log(`📐 ROUTING: ${id} adjacency check:`, {
+                        dx: dx.toFixed(1),
+                        dy: dy.toFixed(1),
+                        horizontallyAligned,
+                        verticallyAligned,
+                        shouldRouteHorizontally,
+                        shouldRouteVertically
+                    });
+
+                    // PRIORITY 1: Adjacent shapes on primary axis - use straight paths
+                    if (shouldRouteHorizontally) {
+                        // Horizontally adjacent - connect on left/right sides
+                        if (dx > 0) {
+                            // Target is to the right
+                            currentStyle['exitX'] = 1.0; currentStyle['exitY'] = 0.5;
+                            currentStyle['entryX'] = 0.0; currentStyle['entryY'] = 0.5;
+                        } else {
+                            // Target is to the left
+                            currentStyle['exitX'] = 0.0; currentStyle['exitY'] = 0.5;
+                            currentStyle['entryX'] = 1.0; currentStyle['entryY'] = 0.5;
+                        }
+                        console.log(`📐 ROUTING: ${id} - horizontal neighbors (straight path)`);
+                    } else if (shouldRouteVertically) {
+                        // Vertically adjacent - connect on top/bottom sides
+                        if (dy > 0) {
+                            // Target is below
+                            currentStyle['exitX'] = 0.5; currentStyle['exitY'] = 1.0;
+                            currentStyle['entryX'] = 0.5; currentStyle['entryY'] = 0.0;
+                        } else {
+                            // Target is above
+                            currentStyle['exitX'] = 0.5; currentStyle['exitY'] = 0.0;
+                            currentStyle['entryX'] = 0.5; currentStyle['entryY'] = 1.0;
+                        }
+                        console.log(`📐 ROUTING: ${id} - vertical neighbors (straight path)`);
+                    } else {
+                        // Non-adjacent: use dominant axis routing
+                        const isHorizontal = Math.abs(dx) > Math.abs(dy);
+
+                        // For diagonal routes crossing multiple layers, use edge routing
+                        const isCrossingMultipleLayers = Math.abs(dy) > 150 && Math.abs(dx) > 150;
+
+                        if (isCrossingMultipleLayers) {
+                            // Route around perimeter instead of through center
+                            if (dx > 0 && dy > 0) {
+                                // Bottom-right diagonal: exit right, enter top
+                                currentStyle['exitX'] = 1.0; currentStyle['exitY'] = 0.5;
+                                currentStyle['entryX'] = 0.5; currentStyle['entryY'] = 0.0;
+                            } else if (dx < 0 && dy > 0) {
+                                // Bottom-left diagonal: exit left, enter top
+                                currentStyle['exitX'] = 0.0; currentStyle['exitY'] = 0.5;
+                                currentStyle['entryX'] = 0.5; currentStyle['entryY'] = 0.0;
+                            } else if (dx > 0 && dy < 0) {
+                                // Top-right diagonal: exit right, enter bottom
+                                currentStyle['exitX'] = 1.0; currentStyle['exitY'] = 0.5;
+                                currentStyle['entryX'] = 0.5; currentStyle['entryY'] = 1.0;
+                            } else {
+                                // Top-left diagonal: exit left, enter bottom
+                                currentStyle['exitX'] = 0.0; currentStyle['exitY'] = 0.5;
+                                currentStyle['entryX'] = 0.5; currentStyle['entryY'] = 1.0;
+                            }
+                            console.log(`📐 ROUTING: ${id} - diagonal edge route`);
+                        } else if (isHorizontal) {
+                            if (dx > 0) {
+                                currentStyle['exitX'] = 1.0; currentStyle['exitY'] = 0.5;
+                                currentStyle['entryX'] = 0.0; currentStyle['entryY'] = 0.5;
+                            } else {
+                                currentStyle['exitX'] = 0.0; currentStyle['exitY'] = 0.5;
+                                currentStyle['entryX'] = 1.0; currentStyle['entryY'] = 0.5;
+                            }
+                        } else {
+                            // Vertical flow dominates
+                            if (dy > 0) {
+                                currentStyle['exitX'] = 0.5; currentStyle['exitY'] = 1.0;
+                                currentStyle['entryX'] = 0.5; currentStyle['entryY'] = 0.0;
+                            } else {
+                                currentStyle['exitX'] = 0.5; currentStyle['exitY'] = 0.0;
+                                currentStyle['entryX'] = 0.5; currentStyle['entryY'] = 1.0;
+                            }
+                        }
+                        console.log(`📐 ROUTING: ${id} - non-adjacent (${isCrossingMultipleLayers ? 'diagonal edge' : isHorizontal ? 'horizontal' : 'vertical'} flow)`);
+                    }
+
+                    // Configure orthogonal routing with proper constraints
+                    currentStyle['edgeStyle'] = 'orthogonalEdgeStyle';
+                    currentStyle['orthogonal'] = '1';
+                    currentStyle['rounded'] = '1';
+                    currentStyle['jumpStyle'] = 'arc';
+                    currentStyle['jumpSize'] = '10';
+
+                    // Routing preferences for cleaner paths
+                    currentStyle['jettySize'] = 'auto';
+                    currentStyle['exitPerimeter'] = '1';
+                    currentStyle['entryPerimeter'] = '1';
+
+                    // Improve edge label positioning to avoid overlaps
+                    currentStyle['labelBackgroundColor'] = '#ffffff';
+                    currentStyle['labelBorderColor'] = '#d9d9d9';
+                    currentStyle['spacingTop'] = 8;
+                    currentStyle['spacingBottom'] = 8;
+                    currentStyle['spacingLeft'] = 12;
+                    currentStyle['spacingRight'] = 12;
+
+                    // Check if edge value/label exists
+                    const edgeValue = cell.getValue();
+                    const hasLabel = edgeValue && typeof edgeValue === 'string' && edgeValue.trim().length > 0;
+                    const isLongLabel = hasLabel && edgeValue.length > 20;
+
+                    if (!hasLabel) {
+                        // No label - no need to adjust positioning
+                        cell.setStyle(currentStyle);
+                        return;
+                    }
+
+                    // Determine primary flow direction
+                    const flowAngle = Math.atan2(dy, dx) * (180 / Math.PI);
+                    const absAngle = Math.abs(flowAngle);
+
+                    // Classify edge direction more precisely
+                    const isMainlyHorizontal = absAngle < 45 || absAngle > 135;
+                    const isMainlyVertical = absAngle >= 45 && absAngle <= 135;
+
+                    console.log(`📐 LABEL: ${id} flow analysis:`, {
+                        dx: dx.toFixed(1),
+                        dy: dy.toFixed(1),
+                        angle: flowAngle.toFixed(1),
+                        isMainlyHorizontal,
+                        isMainlyVertical,
+                        label: edgeValue.substring(0, 30)
+                    });
+
+                    // Position labels based on edge direction
+                    if (isMainlyVertical) {
+                        // VERTICAL edges: position labels to the LEFT side of the line
+                        currentStyle['labelPosition'] = 'center';
+                        currentStyle['align'] = 'left';
+                        currentStyle['verticalAlign'] = 'middle';
+                        currentStyle['spacingLeft'] = isLongLabel ? 28 : 22;
+                        currentStyle['labelBackgroundColor'] = 'rgba(255,255,255,0.95)';
+                        console.log(`📐 LABEL: ${id} positioned LEFT of vertical line`);
+                    } else if (isMainlyHorizontal) {
+                        // HORIZONTAL edges: position labels ABOVE the line
+                        currentStyle['labelPosition'] = 'center';
+                        currentStyle['align'] = 'center';
+                        currentStyle['verticalAlign'] = 'bottom';
+                        currentStyle['spacingBottom'] = isLongLabel ? 18 : 14;
+                        currentStyle['labelBackgroundColor'] = 'rgba(255,255,255,0.95)';
+                        console.log(`📐 LABEL: ${id} positioned ABOVE horizontal line`);
+                    } else {
+                        // DIAGONAL edges: position above and to the side
+                        currentStyle['labelPosition'] = 'center';
+                        currentStyle['align'] = dx > 0 ? 'left' : 'right';
+                        currentStyle['verticalAlign'] = 'top';
+                        currentStyle['spacingTop'] = 14;
+                        currentStyle['spacingLeft'] = dx > 0 ? 16 : 0;
+                        currentStyle['spacingRight'] = dx < 0 ? 16 : 0;
+                        currentStyle['labelBackgroundColor'] = 'rgba(255,255,255,0.95)';
+                        console.log(`📐 LABEL: ${id} positioned for diagonal line`);
+                    }
+
+                    // Extra adjustments for long labels
+                    if (isLongLabel) {
+                        currentStyle['labelBackgroundColor'] = '#ffffff';
+                        currentStyle['spacingTop'] = 10;
+                        currentStyle['spacingBottom'] = 10;
+                        currentStyle['spacingLeft'] = 14;
+                        currentStyle['spacingRight'] = 14;
+                    }
+
+                    // Detect edges that will overlap on similar paths and offset them
+                    // Group edges by their routing "signature" (direction + approximate path)
+                    const routingSignature = `${Math.sign(dx)}_${Math.sign(dy)}_${Math.round(sourceGeom.x / 100)}_${Math.round(sourceGeom.y / 100)}`;
+                    // If so, add offset to separate parallel edges
+                    const vertexPairKey = sourceId < targetId ? `${sourceId}-${targetId}` : `${targetId}-${sourceId}`;
+                    const edgesForPair = edgeCells.filter(({ id: edgeId, element: el }) => {
+                        const src = el.getAttribute('source');
+                        const tgt = el.getAttribute('target');
+                        if (!src || !tgt) return false;
+                        const pairKey = src < tgt ? `${src}-${tgt}` : `${tgt}-${src}`;
+                        return pairKey === vertexPairKey;
+                    });
+
+                    // Handle parallel edges (multiple edges between same vertices)
+                    if (edgesForPair.length > 1) {
+                        // Multiple edges between same vertices - add offset
+                        const edgeIndex = edgesForPair.findIndex(e => e.id === id);
+                        const offset = (edgeIndex - (edgesForPair.length - 1) / 2) * 15;
+                        currentStyle['sourcePortConstraint'] = 'center';
+                        currentStyle['targetPortConstraint'] = 'center';
+
+                        // Offset the edge routing
+                        if (isHorizontal) {
+                            currentStyle['exitDy'] = offset;
+                            currentStyle['entryDy'] = offset;
+                        } else {
+                            currentStyle['exitDx'] = offset;
+                            currentStyle['entryDx'] = offset;
+                        }
+                    }
+
+                    // Apply to cell style
+                    cell.setStyle(currentStyle);
+                });
+
+                // Refresh graph after all routing configured
                 graph.view.validate();
-                graph.sizeDidChange();
+                graph.refresh();
+
             } finally {
                 model.endUpdate();
             }
-            
-            console.log('📐 DrawIO: Model update complete, cells in model:', {
-                totalCells: model.cells ? Object.keys(model.cells).length : 0,
-                cellIds: model.cells ? Object.keys(model.cells) : []
-            });
-            
-            // Force immediate view update
+
+            console.log('📐 DrawIO: Model update complete');
+
+            // Force final view update
             graph.view.validate();
             graph.sizeDidChange();
-
-            const zoomControlSpace = 80; // 64px for controls + 16px bottom margin
 
             console.log('📐 DrawIO: ==================== FIT AND CENTER START ====================');
 
             try {
+                // Use maxGraph's built-in fit function to maximize the diagram
+                // This automatically calculates the optimal scale and centers the content
+                graph.fit();
+                graph.center(true, true);
+                
+                // Wait a moment for the fit to apply
+                await new Promise(resolve => setTimeout(resolve, 50));
+                
+                // Validate and refresh to ensure everything is rendered
+                graph.view.validate();
                 graph.refresh();
-
-                const bounds = graph.getGraphBounds();
-                console.log('📐 DrawIO: Content bounds from graph:', {
-                    x: bounds.x,
-                    y: bounds.y,
-                    width: bounds.width,
-                    height: bounds.height,
-                    right: bounds.x + bounds.width,
-                    bottom: bounds.y + bounds.height
-                });
-
-                if (bounds && bounds.width > 0 && bounds.height > 0) {
-                    // Use a fixed container width for initial calculation
-                    const containerWidth = 800;
-                    const marginX = 40;
-                    const marginY = 40;
-                    
-                    // Calculate scale to fit content in original container dimensions
-                    const scaleX = (containerWidth - marginX * 2) / bounds.width;
-                    const scaleY = 4; // Allow reasonable vertical scaling
-                    const scale = Math.min(scaleX, scaleY, 1);
-
-                    console.log('📐 DrawIO: Scale calculation:', {
-                        scaleX: scaleX,
-                        scaleY: scaleY,
-                        finalScale: scale,
-                        limitedBy: scale === scaleX ? 'width' : (scale === scaleY ? 'height' : 'max(1)')
-                    });
-
-                    // Calculate needed height to fit scaled content plus space for zoom controls
-                    const scaledContentHeight = bounds.height * scale;
-                    const scaledContentWidth = bounds.width * scale;
-                    const neededHeight = Math.max(scaledContentHeight + marginY * 2, 400) + zoomControlSpace;
-
-                    console.log('📐 DrawIO: Adjusting container height:', {
-                        boundsHeight: bounds.height,
-                        scaledContentHeight: scaledContentHeight,
-                        withMargins: scaledContentHeight + marginY * 2,
-                        minHeight: 400,
-                        zoomControlSpace: zoomControlSpace,
-                        neededHeight: neededHeight,
-                        scale: scale
-                    });
-
-                    // Set the container to the calculated height
-                    graphContainer.style.height = `${neededHeight}px`;
-
-                    console.log('📐 DrawIO: Set container style.height to:', neededHeight);
-                    // Wait for browser to apply the height change
-                    await new Promise(resolve => setTimeout(resolve, 50));
-                    
-                    // Force graph to update with new dimensions
-                    graph.sizeDidChange();
-
-                    console.log('📐 DrawIO: Graph after sizeDidChange:', {
-                        viewScale: graph.view.scale,
-                        viewTranslate: { x: graph.view.translate.x, y: graph.view.translate.y }
-                    });
-
-                    console.log('📐 DrawIO: Container after height adjustment:', {
-                        clientHeight: graphContainer.clientHeight,
-                        styleHeight: graphContainer.style.height
-                    });
-                    
-                    // Check if SVG exists and has content
-                    const svgCheck = graphContainer.querySelector('svg');
-                    console.log('📐 DrawIO: SVG check before scaling:', {
-                        exists: !!svgCheck,
-                        children: svgCheck?.children.length
-                    });
-
-                    // Set scale
-                    graph.view.setScale(scale);
-                    
-                    // Center the scaled bounds in the viewport
-                    // Make sure we account for the actual position of the content bounds
-                    const finalContainerHeight = neededHeight - zoomControlSpace;
-                    
-                    console.log('📐 DrawIO: Centering calculation inputs:', {
-                        containerWidth: containerWidth,
-                        finalContainerHeight: finalContainerHeight,
-                        boundsX: bounds.x,
-                        boundsY: bounds.y,
-                        boundsWidth: bounds.width,
-                        boundsHeight: bounds.height,
-                        scale: scale
-                    });
-
-                    // Calculate translation to center content
-                    // We want to move the content so its center aligns with the container center
-                    const contentCenterX = bounds.x + bounds.width / 2;
-                    const contentCenterY = bounds.y + bounds.height / 2;
-                    const containerCenterX = containerWidth / 2;
-                    const containerCenterY = finalContainerHeight / 2;
-                    
-                    console.log('📐 DrawIO: Center points:', {
-                        contentCenterX, contentCenterY,
-                        containerCenterX, containerCenterY
-                    });
-                    
-                    const dx = (containerCenterX - contentCenterX * scale);
-                    const dy = (containerCenterY - contentCenterY * scale);
-                    graph.view.setTranslate(dx, dy);
-
-                    console.log('📐 DrawIO: About to refresh graph after transforms');
-                    
-                    // Critical: validate view and refresh to apply transformations
-                    graph.view.validate();
-                    graph.refresh();
-                    
-                    console.log('📐 DrawIO: Graph refreshed, checking rendering');
-                    
-                    // Verify cells are actually rendered
-                    const renderedCells = graph.view.states.size;
-                    console.log('📐 DrawIO: Rendered cell states:', renderedCells);
-
-                    await new Promise(resolve => setTimeout(resolve, 100));
-
-                    console.log('📐 DrawIO: Manual center with translate:', { dx, dy });
-                    
-                    // Fix SVG dimensions
-                    const svgElement = graphContainer.querySelector('svg');
-                    if (svgElement) {
-                        svgElement.style.width = '100%';
-                        svgElement.style.height = `${neededHeight}px`;
-                        svgElement.setAttribute('width', containerWidth.toString());
-                        svgElement.setAttribute('height', neededHeight.toString());
-                        
-                        // Log SVG content
-                        console.log('📐 DrawIO: SVG structure:', {
-                            children: svgElement.children.length,
-                            childTags: Array.from(svgElement.children).map(c => c.tagName),
-                            innerHTML: svgElement.innerHTML.substring(0, 500)
-                        });
-
-                        console.log('📐 DrawIO: Final graph state:', {
-                            scale: graph.view.scale,
-                            translateX: graph.view.translate.x,
-                            translateY: graph.view.translate.y,
-                            containerWidth,
-                            containerHeight: neededHeight
-                        });
-                        console.log('📐 DrawIO: SVG dimensions after fit:', {
-                        width: svgElement.getAttribute('width'),
-                        height: svgElement.getAttribute('height'),
-                        viewBox: svgElement.getAttribute('viewBox'),
-                        styleWidth: svgElement.style.width,
-                        styleHeight: svgElement.style.height
+                
+                console.log('📐 DrawIO: Fit completed - diagram maximized to container');
+                
+                // Log final state
+                const svgElement = graphContainer.querySelector('svg');
+                if (svgElement) {
+                    console.log('📐 DrawIO: Final graph state:', {
+                        scale: graph.view.scale,
+                        translateX: graph.view.translate.x,
+                        translateY: graph.view.translate.y,
+                        containerWidth: graphContainer.clientWidth,
+                        containerHeight: graphContainer.clientHeight,
+                        svgWidth: svgElement.getAttribute('width'),
+                        svgHeight: svgElement.getAttribute('height')
                     });
                 }
-                } else {
-                    console.warn('📐 DrawIO: Invalid bounds:', bounds);
-                    graph.view.setScale(1);
-                    graph.view.setTranslate(0, 0);
-                    graphContainer.style.height = '600px';
-                }
+                
             } catch (fitError) {
                 console.error('📐 DrawIO: Error during fit/center:', fitError);
                 // Fallback to reasonable defaults
-                graph.view.setScale(1);
+                graph.fit();
                 graph.center(true, true);
             }
 
             console.log('📐 DrawIO: ==================== FIT AND CENTER END ====================');
-            
+
             // Add zoom controls to graphContainer before appending
             console.log('📐 DrawIO: Adding zoom controls');
             addZoomControls(graphContainer, graph);
-            
+
             // Now append everything to parent container
             container.innerHTML = ''; // Clear any previous content
+
+            // Make container relatively positioned for absolute controls
+            container.style.position = 'relative';
+
+            // Append graph container with zoom controls
             container.appendChild(graphContainer);
-            
-            console.log('📐 DrawIO: Container appended, zoom controls should be visible');
-            console.log('📐 DrawIO: ==================== FIT AND CENTER END ====================');
-            
-            // Add zoom controls to graphContainer before appending
-            console.log('📐 DrawIO: Adding zoom controls to graphContainer');
-            addZoomControls(graphContainer, graph);
-            
-            // Add controls AFTER graph is fully rendered so we can export the restyled version
+
+            // Add controls AFTER appending to prevent them being cleared
             if (xml) {
                 createControls(container, spec, xml, isDarkMode, graph);
             }
-            
-            // Now append everything to parent container
-            container.innerHTML = ''; // Clear any previous content
-            container.appendChild(graphContainer);
-            
             console.log('✅ DrawIO diagram rendered successfully');
+            // POST-RENDER FIXES: Apply enhancement library to fix rendering issues
+            console.log('📐 DrawIO: Applying post-render enhancements');
+            try {
+                const svgElement = graphContainer.querySelector('svg') as SVGSVGElement;
+                if (svgElement) {
+                    DrawIOEnhancer.fixForeignObjectPositioning(svgElement);
+                    DrawIOEnhancer.fixAWSIconLabeling(svgElement);
+                    console.log('✅ Post-render enhancements applied successfully');
+                }
+            } catch (enhancerError) {
+                console.warn('⚠️ Post-render enhancement failed:', enhancerError);
+            }
 
         } catch (error) {
             console.error('📐 DrawIO rendering error:', error);
             console.error('📐 DrawIO error stack:', error instanceof Error ? error.stack : 'no stack');
 
+            // Helper function to escape HTML for display
+            const escapeHtml = (str: string): string => {
+                return str.replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#039;');
+            };
+
             // Show error in container
+            // Reset container styles to allow error content to display properly
+            container.style.height = 'auto';
+            container.style.minHeight = '200px';
+            container.style.overflow = 'visible';
+
             container.innerHTML = '';
 
             container.innerHTML = `
@@ -1091,16 +1595,50 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                     <strong>DrawIO Rendering Error:</strong>
                     <pre style="margin: 10px 0; white-space: pre-wrap;">${error instanceof Error ? error.message : 'Unknown error'}</pre>
                     <details>
-                        <summary>Show Definition</summary>
-                        <pre><code>${spec.definition || ''}</code></pre>
+                        <summary style="
+                            cursor: pointer;
+                            font-weight: bold;
+                            margin: 10px 0;
+                            color: ${isDarkMode ? '#ff7875' : '#cf1322'};
+                        ">Show Definition</summary>
+                        <pre style="
+                            max-height: 400px;
+                            overflow: auto;
+                            background: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'};
+                            padding: 12px;
+                            border-radius: 4px;
+                            margin: 0;
+                            word-break: break-word;
+                        "><code>${escapeHtml(spec.definition || '')}</code></pre>
                     </details>
                 </div>
             `;
+
+            // Add controls even for error cases so user can download/view source
+            if (xml) {
+                createControls(container, spec, xml, isDarkMode);
+            }
         }
     };
 
     await attemptRender();
 };
+
+/**
+ * Extract shape IDs from DrawIO XML
+ * Used to determine which stencils need to be loaded
+ */
+function extractShapeIdsFromXml(xml: string): string[] {
+    const shapeIds: string[] = [];
+
+    // Look for resIcon attributes (AWS shapes)
+    const resIconMatches = xml.matchAll(/resIcon=mxgraph\.aws4\.(\w+)/g);
+    for (const match of resIconMatches) {
+        shapeIds.push(`aws_${match[1]}`);
+    }
+
+    return shapeIds;
+}
 
 // Helper function to create zoom buttons
 function createZoomButton(label: string, onClick: () => void): HTMLButtonElement {
@@ -1126,7 +1664,7 @@ function addZoomControls(graphContainer: HTMLElement, graph: any): void {
     const zoomControls = document.createElement('div');
     zoomControls.id = 'drawio-zoom-controls';
     zoomControls.style.cssText = 'position: absolute; bottom: 16px; right: 16px; display: flex; flex-direction: row; gap: 8px; z-index: 10000; pointer-events: auto;';
-    
+
     console.log('📐 DrawIO: Adding zoom controls to container:', {
         containerId: graphContainer.id,
         containerPosition: graphContainer.style.position,
@@ -1140,7 +1678,7 @@ function addZoomControls(graphContainer: HTMLElement, graph: any): void {
 
     const zoomInBtn = createZoomButton('+', () => graph.zoomIn());
     const zoomOutBtn = createZoomButton('-', () => graph.zoomOut());
-    const zoomFitBtn = createZoomButton('⊡', () => { 
+    const zoomFitBtn = createZoomButton('⊡', () => {
         graph.fit();
         graph.center(true, true);
         graph.refresh();
@@ -1150,7 +1688,7 @@ function addZoomControls(graphContainer: HTMLElement, graph: any): void {
     zoomControls.appendChild(zoomOutBtn);
     zoomControls.appendChild(zoomFitBtn);
     graphContainer.appendChild(zoomControls);
-    
+
     console.log('📐 DrawIO: Zoom controls added, verifying:', {
         controlsInDOM: !!document.getElementById('drawio-zoom-controls'),
         controlsParent: zoomControls.parentElement?.tagName,

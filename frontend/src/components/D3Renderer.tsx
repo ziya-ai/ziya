@@ -9,6 +9,12 @@ import { isSafari } from '../utils/browserUtils';
 
 type RenderType = 'auto' | 'vega-lite' | 'd3';
 
+// Global cache to survive component remounting
+const globalRenderCache = new Map<string, {
+    rendered: boolean;
+    timestamp: number;
+}>();
+
 interface D3RendererProps {
     spec: any;
     width?: number;
@@ -108,14 +114,27 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     const renderIdRef = useRef<number>(0);
     const mounted = useRef(true);
     const isRenderingRef = useRef(false);
+    const isLoadingPluginRef = useRef(false);
     const lastSpecRef = useRef<any>(null);
     const specHashRef = useRef<string>('');
     const streamingContentRef = useRef<string | null>(null);
     const lastUsedPluginRef = useRef<D3RenderPlugin | null>(null);
     const lastValidSpecRef = useRef<any>(null);
     const [renderingStarted, setRenderingStarted] = useState<boolean>(false);
-    const initialThemeRef = useRef<boolean>(isDarkMode);
     const hasSuccessfulRenderRef = useRef<boolean>(false);
+    const lastThemeRef = useRef<boolean>(isDarkMode);
+    const isDarkModeRef = useRef<boolean>(isDarkMode);
+
+    // Generate a stable cache key for this spec
+    const cacheKey = useMemo(() => {
+        if (typeof spec === 'string') {
+            return spec;
+        } else if (spec?.definition) {
+            return spec.definition;
+        } else {
+            return JSON.stringify(spec);
+        }
+    }, [spec]);
 
     // New state for size reservation and rendering control
     const cleanupFunctionsRef = useRef<(() => void)[]>([]);
@@ -124,6 +143,11 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
 
     // Store the spec in a ref to avoid unnecessary re-renders
     useEffect(() => { lastSpecRef.current = spec; }, [spec]);
+
+    // Keep isDarkMode ref in sync
+    useEffect(() => {
+        isDarkModeRef.current = isDarkMode;
+    }, [isDarkMode]);
 
     // Get raw content for display during streaming
     const getRawContent = useCallback(() => {
@@ -182,6 +206,14 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     // Comprehensive cleanup on unmount
     useEffect(() => {
         return () => {
+            // Clean up old cache entries (> 30 seconds old) to prevent memory leak
+            const now = Date.now();
+            for (const [key, entry] of globalRenderCache.entries()) {
+                if (now - entry.timestamp > 30000) {
+                    globalRenderCache.delete(key);
+                }
+            }
+
             // Clean up sizing manager
             if (sizingManagerRef.current) {
                 sizingManagerRef.current.cleanup();
@@ -230,9 +262,27 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     const initializeVisualization = useCallback(async (forceRender = false): Promise<void> => {
         if (!mounted.current) return;
 
+        // Check global cache to avoid duplicate work across component instances
+        const cacheEntry = globalRenderCache.get(cacheKey);
+        const wasCachedRecently = cacheEntry && (Date.now() - cacheEntry.timestamp) < 5000;
+
+        if (wasCachedRecently && !forceRender && cacheEntry.rendered) {
+            console.log('🔧 D3RENDERER: Skipping - already rendered by another instance within 5s');
+            hasSuccessfulRenderRef.current = true;
+            setIsLoading(false);
+            setShowRawContent(false);  // Critical: hide raw content since we already rendered
+            return;
+        }
+
         // If we already have a successful render and not forcing, skip
         if (hasSuccessfulRenderRef.current && !forceRender) {
             console.log('🔧 D3RENDERER: Skipping render - already successfully rendered and not forcing');
+            return;
+        }
+
+        // Prevent concurrent plugin loading
+        if (isLoadingPluginRef.current) {
+            console.log('🔧 D3RENDERER: Plugin already loading, skipping duplicate call');
             return;
         }
 
@@ -248,8 +298,10 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
 
         // Load the appropriate plugin for this spec
         if (!plugin && spec) {
+            isLoadingPluginRef.current = true;
             console.log('🔧 D3RENDERER: Loading plugin for spec:', spec.type);
             loadedPlugin = await findPluginForSpec(spec);
+            isLoadingPluginRef.current = false;
             if (!loadedPlugin) {
                 console.error('🔧 D3RENDERER: No compatible plugin found for spec:', spec);
                 setRenderError('No compatible plugin found for this visualization');
@@ -258,14 +310,13 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             }
             console.log('🔧 D3RENDERER: Plugin loaded:', loadedPlugin.name);
             setPlugin(loadedPlugin);
-
-            // Also load d3 if needed (most plugins need it)
-            if (!d3) {
-                console.log('🔧 D3RENDERER: Loading d3 module');
-                loadedD3 = await import('d3');
-                setD3(loadedD3);
-            }
-
+        }
+        
+        // Load d3 separately if needed (not tied to plugin loading)
+        if (!d3 && !loadedD3) {
+            console.log('🔧 D3RENDERER: Loading d3 module');
+            loadedD3 = await import('d3');
+            setD3(loadedD3);
         }
 
         // Get current values (either from state or just loaded)
@@ -277,6 +328,11 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             console.log('🔧 D3RENDERER: Waiting for plugin and d3 to load...', { hasPlugin: !!plugin, hasD3: !!d3 });
             return;
         }
+        
+        // CRITICAL: Once we have both plugin and d3, don't reload them
+        // This prevents the 19 redundant "Plugin loaded" messages during streaming
+        if (!plugin) setPlugin(currentPlugin);
+        if (!d3) setD3(currentD3);
 
         // Once we start rendering, hide the spinner permanently
         if (!renderingStarted) {
@@ -417,7 +473,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 // Initialize sizing manager if we have a plugin with sizing config
                 if (currentPlugin?.sizingConfig && !sizingManagerRef.current) {
                     sizingManagerRef.current = new ContainerSizingManager();
-                    sizingManagerRef.current.applySizingConfig(container, currentPlugin.sizingConfig, isDarkMode);
+                    sizingManagerRef.current.applySizingConfig(container, currentPlugin.sizingConfig, isDarkModeRef.current);
                     cleanupFunctionsRef.current.push(() => {
                         sizingManagerRef.current?.cleanup();
                     });
@@ -434,17 +490,21 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                     simulationRef.current = null;
                 }
 
-                // Set container dimensions - but allow height to grow for joint-renderer
+                // Set container dimensions - but allow height to grow for joint-renderer and drawio-renderer
                 const isJointRenderer = plugin?.name === 'joint-renderer';
                 const isDrawioRenderer = currentPlugin?.name === 'drawio-renderer';
 
-                container.style.width = (isJointRenderer || isDrawioRenderer) ? '100%' : `${width}px`;
-                container.style.height = isJointRenderer ? 'auto' : `${height}px`;
-                container.style.minHeight = isJointRenderer ? '400px' : 'unset';
-                container.style.maxHeight = isJointRenderer ? 'none' : 'unset';
-                container.style.position = 'relative';
-                container.style.overflow = isJointRenderer ? 'visible' : 'hidden';
+                // Also check if container will contain error content
+                const willHaveError = renderError !== null;
 
+                container.style.width = (isJointRenderer || isDrawioRenderer) ? '100%' : `${width}px`;
+                // Allow auto height for joint, drawio, and error states
+                container.style.height = (isJointRenderer || isDrawioRenderer || willHaveError) ? 'auto' : `${height}px`;
+                container.style.minHeight = isJointRenderer ? '400px' : 'unset';
+                container.style.maxHeight = (isJointRenderer || willHaveError) ? 'none' : 'unset';
+                container.style.position = 'relative';
+                // Use visible/auto overflow for joint, drawio, and errors
+                container.style.overflow = (isJointRenderer || isDrawioRenderer || willHaveError) ? 'visible' : 'hidden';
                 const isGraphvizOrMermaid = currentPlugin?.name === 'graphviz-renderer' || currentPlugin?.name === 'mermaid-renderer';
                 // For Graphviz or Mermaid, override the container style to be more flexible
                 if (isGraphvizOrMermaid) {
@@ -499,7 +559,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                                 isStreaming: isStreaming,
                                 isMarkdownBlockClosed: isMarkdownBlockClosed,
                                 forceRender: forceRender,
-                            }, isDarkMode),
+                            }, isDarkModeRef.current),
                             new Promise((_, reject) =>
                                 setTimeout(() => reject(new Error('Plugin render timeout after 10s')), 10000)
                             )
@@ -560,6 +620,12 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 console.log('🔍 RENDERER: Render successful, setting hasSuccessfulRenderRef=true');
                 onLoad?.();
                 hasSuccessfulRenderRef.current = true;
+
+                // Update global cache
+                globalRenderCache.set(cacheKey, {
+                    rendered: true,
+                    timestamp: Date.now()
+                });
                 return;
             }
         } catch (error: any) {
@@ -579,25 +645,39 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             }
         } finally {
             console.log('🔧 D3RENDERER: Setting isRendering=false');
-            isRenderingRef.current = false;
-        }
-    }, [spec, type, width, height, isStreaming, isMarkdownBlockClosed, config, onLoad, onError]);
+        };
+    }, []);
 
     // Separate effect to trigger re-render when plugin/d3 loads
+    // This effect runs ONLY when plugin or d3 changes from null to loaded
     useEffect(() => {
+        // Don't trigger if we already have a successful render and spec hasn't changed
+        // This prevents ~10 redundant trigger attempts after initial success
+        if (hasSuccessfulRenderRef.current) {
+            console.log('🔧 D3RENDERER: Plugin/d3 available but already rendered, skipping');
+            return;
+        }
+
         if (plugin && d3 && spec) {
             console.log('🔧 D3RENDERER: Plugin and d3 available, triggering render');
             initializeVisualization(forceRender);
         }
-    }, [plugin, d3, spec, initializeVisualization, forceRender]);
+    }, [plugin, d3]); // Removed spec, initializeVisualization, forceRender to prevent redundant triggers
+    // Note: spec changes are already handled by the main rendering useEffect below
+    // This effect only needs to trigger when dependencies become available
 
     // Main rendering useEffect with stable dependencies
     useEffect(() => {
         if (!mounted.current) return;
 
-        // Create a simple hash of the spec to detect changes without JSON.stringify
+        // Create a stable hash that excludes timestamp and streaming flags
         const specHash = typeof spec === 'string' ? spec :
-            (spec?.definition || '') + (spec?.type || '') + (spec?.timestamp || '');
+            [
+                spec?.definition || '',
+                spec?.type || '',
+                spec?.width || '',
+                spec?.height || ''
+            ].join('|');
 
         // Skip if spec hasn't changed AND we already have a successful render
         if (specHash === specHashRef.current && !forceRender && hasSuccessfulRenderRef.current) {
@@ -636,11 +716,21 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             console.warn('🍎 SAFARI-NOTICE: Diagram rendering failed on Safari. This is a known compatibility issue.');
         }
 
+        console.log('🎨 THEME-EFFECT: Theme effect triggered', {
+            isDarkMode,
+            lastTheme: lastThemeRef.current,
+            themeChanged: isDarkMode !== lastThemeRef.current,
+            hasSpec: !!lastSpecRef.current,
+            hasSuccessfulRender: hasSuccessfulRenderRef.current,
+            renderingStarted
+        });
+
         // Only re-render for theme changes if we've already had a successful render
-        // and this isn't the initial theme setting  
+        // and the theme actually changed from the last render
         if (lastSpecRef.current && hasSuccessfulRenderRef.current && renderingStarted &&
-            isDarkMode !== initialThemeRef.current) {
+            isDarkMode !== lastThemeRef.current) {
             console.log('Theme changed, re-rendering visualization');
+            lastThemeRef.current = isDarkMode; // Update to track the new theme
 
             // Use a longer debounce for Safari to prevent render loops
             const debounceTime = safariDetected ? 1000 : 100; // Even longer for Safari
@@ -667,14 +757,8 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
         return type === 'd3' || (typeof spec === 'object' && (spec?.renderer === 'd3' || !!plugin));
     }, [type, spec]);
 
-    // Get current plugin for styling decisions
-    const currentPlugin = useMemo(() => {
-        return plugin;
-    }, [spec]);
-
     // Get container styles from plugin config or use defaults
     const containerStyles = useMemo(() => {
-        const plugin = currentPlugin;
         if (plugin?.sizingConfig?.containerStyles) {
             const baseStyles = plugin.sizingConfig.containerStyles;
 
@@ -694,7 +778,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                     maxWidth: '100%'
                 };
             }
-            
+
             // For plugins that need responsive width, don't use the width prop
             if (plugin?.name === 'drawio-renderer') {
                 return {
@@ -710,8 +794,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             height: 'auto',
             overflow: 'auto'
         };
-    }, [currentPlugin, height]);
-
+    }, [plugin, height]);
     const outerContainerStyle: CSSProperties = {
         position: 'relative',
         width: '100%',
@@ -979,9 +1062,9 @@ ${svgData}`;
                     )}
                     <div
                         ref={d3ContainerRef}
-                        className={`d3-container ${currentPlugin?.name ? `${currentPlugin.name}-container` : ''}`}
+                        className={`d3-container ${plugin?.name ? `${plugin.name}-container` : ''}`}
                         style={{
-                            width: currentPlugin?.name === 'drawio-renderer' ? '100%' : (containerStyles.width || '100%'),
+                            width: plugin?.name === 'drawio-renderer' ? '100%' : (containerStyles.width || '100%'),
                             height: containerStyles.height || 'auto',
                             display: 'flex',
                             flexDirection: 'column',
