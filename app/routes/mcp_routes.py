@@ -613,7 +613,8 @@ async def update_shell_config(config: ShellConfig):
         
         # Create new shell server configuration
         new_shell_config = {
-            "command": ["python", "-u", "app/mcp_servers/shell_server.py"],
+            "command": "python",
+            "args": ["-u", "app/mcp_servers/shell_server.py"],
             "enabled": config.enabled,
             "env": {
                 "ALLOW_COMMANDS": ",".join(config.allowedCommands),
@@ -648,7 +649,8 @@ async def update_shell_config(config: ShellConfig):
                     # Get the base command from builtin definitions
                     import sys
                     mcp_config["mcpServers"]["shell"] = {
-                        "command": [sys.executable, "-u", "app/mcp_servers/shell_server.py"],
+                        "command": sys.executable,
+                        "args": ["-u", "app/mcp_servers/shell_server.py"],
                         "enabled": config.enabled,
                         "description": "Shell command execution server"
                     }

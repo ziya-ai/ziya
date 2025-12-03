@@ -788,6 +788,25 @@ class MCPClient:
     async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Call a tool on the MCP server."""
         try:
+            # CRITICAL: Unwrap tool_input if present
+            # Some models wrap parameters in {'tool_input': {...}}
+            # while the MCP server expects unwrapped parameters
+            if isinstance(arguments, dict) and 'tool_input' in arguments and len(arguments) == 1:
+                logger.debug(f"Unwrapping tool_input for tool '{name}': {arguments}")
+                tool_input = arguments['tool_input']
+                
+                # Handle case where tool_input is a JSON string instead of dict
+                if isinstance(tool_input, str):
+                    try:
+                        arguments = json.loads(tool_input)
+                        logger.debug(f"Parsed tool_input JSON string: {arguments}")
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Failed to parse tool_input JSON: {e}")
+                        return {"error": True, "message": f"Invalid tool_input JSON: {str(e)}", "code": -32602}
+                else:
+                    arguments = tool_input
+                logger.debug(f"Unwrapped arguments: {arguments}")
+            
             # Validate arguments against tool schema before sending
             tool_schema = None
             for tool in self.tools:
@@ -795,13 +814,18 @@ class MCPClient:
                     tool_schema = tool.inputSchema
                     break
             
+            
             if tool_schema:
                 validated_args = self._validate_and_convert_arguments(arguments, tool_schema)
-                if validated_args is None:
+                
+                # Check if validation returned an error
+                if isinstance(validated_args, dict) and validated_args.get("__validation_error__"):
+                    error_msg = validated_args.get("message", "Invalid arguments")
                     return {
                         "error": True,
-                        "message": f"Invalid arguments for tool {name}. Check parameter types and required fields.",
-                        "code": -32602
+                        "message": error_msg,
+                        "code": -32602,
+                        "content": [{"type": "text", "text": f"❌ **Parameter Validation Error**: {error_msg}\n\nPlease check the tool's parameter requirements and try again with correct parameter types."}]
                     }
                 arguments = validated_args
             
@@ -857,6 +881,30 @@ class MCPClient:
             
     def _validate_and_convert_arguments(self, arguments: Dict[str, Any], schema: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Validate and convert argument types based on tool schema."""
+        validation_errors = []
+        
+        # Handle string arguments - convert to dict with the string as the primary parameter
+        if isinstance(arguments, str):
+            logger.debug(f"Converting string argument to dict: '{arguments}'")
+            # Try to determine the primary parameter from schema
+            if schema and "properties" in schema:
+                # Use the first required field as the key, or first property if no required fields
+                required = schema.get("required", [])
+                primary_key = required[0] if required else list(schema["properties"].keys())[0]
+                arguments = {primary_key: arguments}
+                logger.debug(f"Converted to dict: {arguments}")
+            else:
+                logger.error(f"Cannot convert string argument without schema")
+                return {
+                    "__validation_error__": True,
+                    "message": "Cannot convert string argument without schema"
+                }
+        
+        # Ensure arguments is actually a dict
+        if not isinstance(arguments, dict):
+            logger.error(f"Arguments must be a dict, got {type(arguments)}: {arguments}")
+            return None
+            
         if not schema or "properties" not in schema:
             return arguments
             
@@ -868,7 +916,13 @@ class MCPClient:
         for field in required:
             if field not in arguments:
                 logger.error(f"Missing required field: {field}")
-                return None
+                validation_errors.append(f"Missing required field: {field}")
+        
+        if validation_errors:
+            return {
+                "__validation_error__": True,
+                "message": " -- ".join(validation_errors)
+            }
                 
         # Validate and convert each argument
         for key, value in arguments.items():
@@ -900,7 +954,10 @@ class MCPClient:
                     validated[key] = int(value)
                 except ValueError:
                     logger.error(f"Cannot convert {key}='{value}' to integer")
-                    return None
+                    return {
+                        "__validation_error__": True,
+                        "message": f"Cannot convert {key}='{value}' to integer"
+                    }
             elif expected_type == "boolean" and isinstance(value, str):
                 validated[key] = value.lower() in ("true", "1", "yes")
             else:
