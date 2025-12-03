@@ -177,25 +177,93 @@ class ContinuationMiddleware(BaseHTTPMiddleware):
     def _has_continuation_marker(self, chunk: str) -> bool:
         """Check if chunk already has continuation marker."""
         return "continuation_started" in chunk
-    
     def _find_continuation_point(self, text: str) -> Optional[int]:
         """Find appropriate continuation point in text."""
-        # Reuse the logic from server.py
         import re
         
+        # Helper to check if we're inside a code block at a given position
+        def is_inside_code_block(text: str, position: int) -> tuple[bool, Optional[str]]:
+            """
+            Returns (is_inside, fence_language) where fence_language is the 
+            language tag if we're inside a code block, None otherwise.
+            
+            This properly handles code fences by only counting those that are:
+            1. At start of a line (possibly after whitespace)
+            2. Not inside other code blocks
+            """
+            lines_before = text[:position].split('\n')
+            
+            code_block_stack = []  # Stack to track nested blocks (though rare)
+            
+            for line in lines_before:
+                stripped = line.lstrip()
+                
+                # Check for code fence (``` or ~~~)
+                fence_match = re.match(r'^(`{3,}|~{3,})(\w*)', stripped)
+                if fence_match:
+                    fence_chars = fence_match.group(1)
+                    language = fence_match.group(2) or None
+                    
+                    # Check if this closes an existing block
+                    if code_block_stack and code_block_stack[-1]['fence'] == fence_chars[0]:
+                        code_block_stack.pop()
+                    else:
+                        # Open a new block
+                        code_block_stack.append({
+                            'fence': fence_chars[0],  # '`' or '~'
+                            'language': language
+                        })
+            
+            if code_block_stack:
+                return (True, code_block_stack[-1]['language'])
+            return (False, None)
+        
+        # Helper to find safe paragraph breaks (not inside code blocks)
+        def find_safe_paragraph_breaks(text: str) -> list[int]:
+            """Find paragraph breaks that are outside code blocks."""
+            breaks = [m.end() for m in re.finditer(r'\n\n+', text)]
+            safe_breaks = []
+            
+            for break_point in breaks:
+                inside_block, _ = is_inside_code_block(text, break_point)
+                if not inside_block:
+                    safe_breaks.append(break_point)
+            
+            return safe_breaks
+
         # Look for paragraph breaks
-        paragraph_breaks = [m.end() for m in re.finditer(r'\n\n+', text)]
+        paragraph_breaks = find_safe_paragraph_breaks(text)
         if paragraph_breaks:
             for break_point in reversed(paragraph_breaks):
                 if break_point < len(text) * 0.8:
+                    logger.debug(f"🔄 CONTINUATION: Found safe paragraph break at position {break_point}")
                     return break_point
-        
+
         # Look for sentence endings
         sentence_endings = [m.end() for m in re.finditer(r'[.!?]\s+', text)]
         if sentence_endings:
             for break_point in reversed(sentence_endings):
+                # Check if this sentence ending is safe (not inside code block)
+                inside_block, _ = is_inside_code_block(text, break_point)
+                if inside_block:
+                    continue
+                    
+                if break_point < len(text) * 0.8:
+                    logger.debug(f"🔄 CONTINUATION: Found safe sentence ending at position {break_point}")
+                    return break_point
+        
+        # If we couldn't find a safe break point, log warning
+        logger.warning(f"🔄 CONTINUATION: No safe continuation point found in {len(text)} chars, will split at paragraph break regardless")
+        
+        # Fallback: use the last paragraph break even if inside code block
+        # But include metadata about the code block state
+        all_breaks = [m.end() for m in re.finditer(r'\n\n+', text)]
+        if all_breaks:
+            for break_point in reversed(all_breaks):
                 if break_point < len(text) * 0.8:
                     return break_point
+
+        return None
         
         return None
     
