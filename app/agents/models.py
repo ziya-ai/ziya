@@ -1138,7 +1138,7 @@ class ModelManager:
         model_id = model_config.get("model_id")
         temperature = model_config.get("temperature", 0.3)
         max_output_tokens = model_config.get("max_output_tokens", 2048)
-        thinking_level = model_config.get("thinking_level", "high")  # Get thinking_level for Gemini 3, default to high
+        thinking_level = model_config.get("thinking_level")  # Get thinking_level for Gemini 3, default to None
         
         logger.info(f"Google model config: thinking_level={thinking_level}")
         
@@ -1154,6 +1154,12 @@ class ModelManager:
             if env_thinking_level:
                 thinking_level = env_thinking_level
                 logger.info(f"Overriding thinking_level from environment: {thinking_level}")
+        
+        # Only pass thinking_level to models that support it
+        supports_thinking = model_config.get("supports_thinking", False)
+        if not supports_thinking:
+            thinking_level = None
+            logger.debug(f"Model {model_id} does not support thinking, setting thinking_level to None")
         
         # Check Google credentials (this also loads GOOGLE_API_KEY if not already set)
         cls._check_google_credentials()

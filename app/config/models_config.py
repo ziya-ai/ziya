@@ -10,7 +10,7 @@ import os
 DEFAULT_ENDPOINT = "bedrock"
 DEFAULT_MODELS = {
     "bedrock": "sonnet4.5",
-    "google": "gemini-pro"
+    "google": "gemini-3-pro"
 }
 
 # Default regions for specific models
@@ -28,6 +28,7 @@ GLOBAL_MODEL_DEFAULTS = {
     "max_request_size_mb": None,
     "temperature": 0.3,
     "supports_thinking": False,
+    "supports_vision": False,  # Default: no vision support
     "supports_max_input_tokens": False,
     "default_max_output_tokens": 32768,  # Default value for max_output_tokens
     "parameter_mappings": {
@@ -67,6 +68,7 @@ MODEL_FAMILIES = {
         "message_format": "nova",  # Add message format for Nova family
         "max_output_tokens": 5000,
         "supports_max_input_tokens": True,
+        "supports_vision": True,  # Nova supports multimodal
         "supports_multimodal": True,
         "context_window": 300000,
         "inference_parameters": {
@@ -91,6 +93,7 @@ MODEL_FAMILIES = {
         "supports_thinking": True,
         "token_limit": 1000000,  # Explicitly set token limit for nova-premier
         "supports_multimodal": True,
+        "supports_vision": True,
         "context_window": 1000000
     },
     "deepseek": {
@@ -198,6 +201,7 @@ MODEL_CONFIGS = {
             "default_max_output_tokens": 36000,  # Default value for max_output_tokens
             "supports_max_input_tokens": True,
             "supports_thinking": True,  # Override global default
+            "supports_vision": True,  # Sonnet 4.0+ supports vision
             "family": "claude",
             "supports_context_caching": True,
             "supports_extended_context": True,  # Supports 1M token context window
@@ -218,6 +222,7 @@ MODEL_CONFIGS = {
             "default_max_output_tokens": 36000,  # Default value for max_output_tokens
             "supports_max_input_tokens": True,
             "supports_thinking": True,  # Override global default
+            "supports_vision": True,  # Sonnet 4.5 supports vision
             "family": "claude",
             "supports_context_caching": True,
             "supports_extended_context": True,  # Supports 1M token context window
@@ -234,6 +239,7 @@ MODEL_CONFIGS = {
             "default_max_output_tokens": 10000,  # Default value for max_output_tokens
             "supports_max_input_tokens": True,
             "supports_thinking": True,  # Override global default
+            "supports_vision": True,  # Sonnet 3.7 supports vision
             "family": "claude",
             "supports_context_caching": True,
             "region": "eu-west-1"  # Ensure sonnet3.7 uses EU region
@@ -244,6 +250,7 @@ MODEL_CONFIGS = {
                 # Only available in US regions presently
             },
             "family": "claude",
+            "supports_vision": True,
             "supports_context_caching": True,
         },
         "sonnet3.5": {
@@ -252,6 +259,7 @@ MODEL_CONFIGS = {
                 "eu": "anthropic.claude-3-5-sonnet-20240620-v1:0"
             },
             "family": "claude",
+            "supports_vision": True,
             "supports_context_caching": True,
         },
         "opus3": {
@@ -262,6 +270,7 @@ MODEL_CONFIGS = {
             "region_restricted": True,  # Only available in US regions
             "preferred_region": "us-east-1",
             "family": "claude",
+            "supports_vision": True,
             "region": "us-east-1"  # Model-specific region preference
         },
         "opus4": {
@@ -280,6 +289,7 @@ MODEL_CONFIGS = {
             "preferred_region": "us-east-1",
             "family": "claude",
             "supports_context_caching": True,
+            "supports_vision": True,
         },
         "opus4.1": {
             "model_id": {
@@ -298,6 +308,24 @@ MODEL_CONFIGS = {
             "supports_thinking": True,  # Override global default
             "family": "claude",
             "supports_context_caching": True,
+            "supports_vision": True,
+        },
+        "opus4.5": {
+            "model_id": "global.anthropic.claude-opus-4-5-20251101-v1:0",  # Global inference profile
+            "token_limit": 200000,
+            "max_output_tokens": 64000,
+            "default_max_output_tokens": 32000,
+            "max_iterations": 8,
+            "timeout_multiplier": 6,
+            "is_advanced_model": True,
+            "supports_max_input_tokens": True,
+            "supports_thinking": True,
+            "family": "claude",
+            "supports_context_caching": True,
+            "supports_vision": True,
+            "supports_extended_context": True,  # Test if Bedrock allows it
+            "extended_context_limit": 1000000,
+            "extended_context_header": "context-1m-2025-08-07",
         },
         "sonnet": {
             "model_id": {
@@ -305,6 +333,7 @@ MODEL_CONFIGS = {
                 "eu": "anthropic.claude-3-sonnet-20240229-v1:0"
             },
             "family": "claude",
+            "supports_vision": True,
             "supports_context_caching": True,
         },
         "haiku": {
@@ -313,11 +342,12 @@ MODEL_CONFIGS = {
                 "eu": "anthropic.claude-3-haiku-20240307-v1:0"
             },
             "family": "claude",
+            "supports_vision": True,
             "supports_context_caching": True,
         },
         "haiku-4.5": {
             "model_id": {
-                "us": "anthropic.claude-haiku-4-5-20251001-v1:0"
+                "us": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
             },
             "token_limit": 200000,
             "max_output_tokens": 64000,
@@ -326,6 +356,7 @@ MODEL_CONFIGS = {
             "supports_thinking": False,
             "family": "claude",
             "supports_context_caching": True,
+            "supports_vision": True,
         },
         "nova-pro": {
             "model_id": {
@@ -401,12 +432,13 @@ MODEL_CONFIGS = {
         }
     },
     "google": {
-        "gemini-pro": {
+        "gemini-2.5-pro": {
             "model_id": "gemini-2.5-pro",
             "token_limit": 1048576,
             "family": "gemini-pro",
             "max_output_tokens": 65536,  # Gemini 2.5 Pro supports up to 65K output tokens
             "convert_system_message_to_human": False,
+            "supports_vision": True,  # Gemini Pro supports vision
             "supports_function_calling": True,
             "native_function_calling": True,
         },
@@ -416,6 +448,7 @@ MODEL_CONFIGS = {
             "family": "gemini-flash",
             "max_output_tokens": 65535,
             "convert_system_message_to_human": False,
+            "supports_vision": True,  # Gemini Flash supports vision
             "supports_function_calling": True,
             "native_function_calling": True,
         },
@@ -426,6 +459,7 @@ MODEL_CONFIGS = {
             "family": "gemini-flash",
             "max_output_tokens": 8192,
             "convert_system_message_to_human": False,
+            "supports_vision": True,
             "supports_function_calling": True,
             "native_function_calling": False,
         },
@@ -435,6 +469,7 @@ MODEL_CONFIGS = {
             "family": "gemini-flash",
             "max_output_tokens": 8192,
             "convert_system_message_to_human": False,
+            "supports_vision": True,
             "supports_function_calling": False,  # This model doesn't support function calling per Google docs
             "native_function_calling": False,
         },
@@ -444,6 +479,7 @@ MODEL_CONFIGS = {
             "family": "gemini-flash",
             "max_output_tokens": 8192,
             "convert_system_message_to_human": False,
+            "supports_vision": True,
             "supports_function_calling": True,
             "native_function_calling": False,
         },
@@ -453,6 +489,7 @@ MODEL_CONFIGS = {
             "family": "gemini-pro",
             "max_output_tokens": 2048,
             "convert_system_message_to_human": False,
+            "supports_vision": True,
             "supports_function_calling": True,
             "native_function_calling": False,
         },
@@ -463,9 +500,10 @@ MODEL_CONFIGS = {
             "max_output_tokens": 65536,
             "default_max_output_tokens": 8192,
             "convert_system_message_to_human": False,
+            "supports_vision": True,
             "supports_function_calling": True,
             "native_function_calling": True,
-            "thinking_level": "high"
+            "thinking_level": "medium"
         },
     }
 }
