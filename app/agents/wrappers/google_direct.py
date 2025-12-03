@@ -3,7 +3,7 @@ import asyncio
 import re
 from typing import List, Dict, Optional, AsyncIterator, Any, Tuple, Union, TYPE_CHECKING
 import inspect
-from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
+from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage, ToolMessage
 from app.utils.logging_utils import logger
 from app.mcp.manager import get_mcp_manager
 from langchain_core.tools import BaseTool
@@ -103,28 +103,108 @@ class DirectGoogleModel:
                     else:
                          google_messages.append({'role': 'user', 'parts': [{'text': f"System Note: {message.content}"}]})
                 continue
+            elif isinstance(message, ToolMessage):
+                # Handle tool results (FunctionResponse)
+                part = types.FunctionResponse(
+                    name=message.name,
+                    response={"content": message.content}
+                )
+                # Merge into previous function message if it exists (for parallel tool calls)
+                if google_messages and google_messages[-1]['role'] == 'function':
+                    google_messages[-1]['parts'].append(part)
+                else:
+                    google_messages.append({'role': 'function', 'parts': [part]})
+                continue
 
             if role:
                 content = message.content
+                
                 # Clean out tool blocks from historical AI messages to avoid confusing the model
-                if role == "model":
+                # CRITICAL: Only clean string content, not multimodal lists (images)
+                if role == "model" and isinstance(content, str):
                     # Remove XML-style tool blocks (legacy/sentinel)
                     content = re.sub(r'<TOOL_SENTINEL>.*?</TOOL_SENTINEL>', '', content, flags=re.DOTALL)
                     # Remove markdown-style tool blocks
-                    content = re.sub(r'\`\`\`tool:.*?\`\`\`', '', content, flags=re.DOTALL).strip()
+                    content = re.sub(r'```tool:.*?```', '', content, flags=re.DOTALL).strip()
                 
                 # Skip empty messages to avoid API errors
-                if not content.strip():
+                # Handle both string content and multimodal content (list with images)
+                if isinstance(content, str):
+                    if not content.strip():
+                        continue
+                elif isinstance(content, list):
+                    # Multimodal content - check if it has any parts
+                    if not content:
+                        continue
+                else:
+                    # Unknown content type
                     continue
 
                 # Merge consecutive messages of the same role to satisfy API requirements
                 if google_messages and google_messages[-1]['role'] == role:
-                    google_messages[-1]['parts'][0]['text'] += f"\n\n{content}"
+                    # Only merge text content, not multimodal lists
+                    if isinstance(content, str):
+                        # Try to append to existing text part, or add new text part
+                        last_parts = google_messages[-1]['parts']
+                        text_part_found = False
+                        for part in last_parts:
+                            if 'text' in part:
+                                part['text'] += f"\n\n{content}"
+                                text_part_found = True
+                                break
+                        if not text_part_found:
+                            # No text part exists, add a new one
+                            last_parts.append({'text': content})
+                    else:
+                        # Can't merge multimodal content, add as new message
+                        google_messages.append({'role': role, 'parts': self._format_content_parts(content)})
                 else:
-                    google_messages.append({'role': role, 'parts': [{'text': content}]})
+                    google_messages.append({'role': role, 'parts': self._format_content_parts(content)})
 
         # The SDK expects the system instruction as a separate argument, not in the list.
         return google_messages, system_instruction
+    
+    def _format_content_parts(self, content):
+        """Format content into Google API parts format."""
+        if isinstance(content, str):
+            return [{'text': content}]
+        elif isinstance(content, list):
+            # Convert from Claude/LangChain format to Google format
+            google_parts = []
+            
+            for part in content:
+                if isinstance(part, str):
+                    # Plain string part
+                    google_parts.append({'text': part})
+                elif isinstance(part, dict):
+                    part_type = part.get('type')
+                    
+                    if part_type == 'text':
+                        # Text part: {"type": "text", "text": "..."}
+                        google_parts.append({'text': part.get('text', '')})
+                    
+                    elif part_type == 'image':
+                        # Claude/Bedrock format: {"type": "image", "source": {"type": "base64", "media_type": "...", "data": "..."}}
+                        source = part.get('source', {})
+                        if source.get('type') == 'base64':
+                            google_parts.append({
+                                'inline_data': {
+                                    'mime_type': source.get('media_type', 'image/jpeg'),
+                                    'data': source.get('data', '')
+                                }
+                            })
+                    
+                    elif 'text' in part:
+                        # Direct text in dict
+                        google_parts.append({'text': part['text']})
+                    
+                    elif 'inline_data' in part:
+                        # Already in Google format
+                        google_parts.append(part)
+            
+            return google_parts if google_parts else [{'text': ''}]
+        else:
+            return [{'text': str(content)}]
     async def astream(self, messages: List[BaseMessage], **kwargs) -> AsyncIterator[Dict]:
         """
         Streams responses from the Google Gemini model, handling native tool calls correctly.
@@ -145,12 +225,23 @@ class DirectGoogleModel:
                     "max_output_tokens": self.max_output_tokens,
                 }
                 
+                # Add system instruction to config if available
+                if system_instruction:
+                    gen_config_params["system_instruction"] = system_instruction
+                    logger.info(f"Added system instruction to config (length: {len(system_instruction)})")
+                
                 # Add thinking_config for Gemini 3 models (fully supported in new SDK)
-                if self.thinking_level:
+                # Only apply if thinking_level is set AND model supports it
+                supports_thinking = (
+                    "gemini-3" in self.model_name.lower() or 
+                    "thinking" in self.model_name.lower()
+                )
+                if self.thinking_level and supports_thinking:
                     # Convert thinking_level to ThinkingConfig format
                     gen_config_params["thinking_config"] = types.ThinkingConfig(
                         thinking_level=self.thinking_level.upper()  # Convert "low" to "LOW", etc.
                     )
+                    logger.info(f"Applied thinking_config with level: {self.thinking_level}")
                 
                 # Use new SDK's async streaming API
                 config = types.GenerateContentConfig(**gen_config_params)
@@ -158,11 +249,22 @@ class DirectGoogleModel:
                 # Add tools if available
                 if google_tool:
                     config.tools = [google_tool]
+                    # Explicitly set tool config to AUTO to ensure the model knows it can use them
+                    config.tool_config = types.ToolConfig(
+                        function_calling_config=types.FunctionCallingConfig(
+                            mode=types.FunctionCallingConfigMode.AUTO
+                        )
+                    )
+                # Build request parameters
+                request_params = {
+                    'model': self.model_name,
+                    'contents': history,
+                    'config': config
+                }
+                
                 
                 response = await self.client.aio.models.generate_content_stream(
-                    model=self.model_name,
-                    contents=history,
-                    config=config
+                    **request_params
                 )
             except Exception as e:
                 error_message = f"Google API Error ({type(e).__name__}): {str(e)}"
