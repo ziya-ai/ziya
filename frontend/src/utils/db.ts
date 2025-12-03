@@ -220,6 +220,7 @@ class ConversationDB implements DB {
             conv.id.length > 0 &&
             typeof conv.title === 'string' &&
             Array.isArray(conv.messages) &&
+            conv.messages.length > 0 &&
             conv.messages.every(msg =>
                 typeof msg === 'object' &&
                 typeof msg.content === 'string' &&
@@ -231,20 +232,24 @@ class ConversationDB implements DB {
 
     private mergeConversations(local: Conversation[], remote: Conversation[]): Conversation[] {
         const merged = new Map<string, Conversation>();
+        
+        // Don't filter out empty conversations - they're valid while waiting for first message
+        const localFiltered = local;
+        const remoteFiltered = remote;
 
         // Protect active conversations first
-        const activeConvs = local.filter(conv =>
+        const activeConvs = localFiltered.filter(conv =>
             conv.messages &&
             conv.messages.length > 0 &&
             conv.isActive !== false
         );
 
         console.debug('Merging conversations:', {
-            localCount: local.length,
-            remoteCount: remote.length,
+            localCount: localFiltered.length,
+            remoteCount: remoteFiltered.length,
             activeCount: activeConvs.length,
-            localIds: local.map(c => c.id),
-            remoteIds: remote.map(c => c.id)
+            localIds: localFiltered.map(c => c.id),
+            remoteIds: remoteFiltered.map(c => c.id)
         });
 
         // Add active conversations first
@@ -257,7 +262,7 @@ class ConversationDB implements DB {
         });
 
         // Add remaining local conversations
-        local.forEach(conv => {
+        localFiltered.forEach(conv => {
             if (!merged.has(conv.id)) {
                 merged.set(conv.id, {
                     ...conv,
@@ -268,7 +273,7 @@ class ConversationDB implements DB {
         });
 
         // Merge remote conversations
-        remote.forEach(conv => {
+        remoteFiltered.forEach(conv => {
             const existingConv = merged.get(conv.id);
             if (existingConv) {
                 if (existingConv.isActive === false ||
@@ -350,6 +355,36 @@ class ConversationDB implements DB {
 
     private async _saveConversationsWithLock(conversations: Conversation[]): Promise<void> {
         console.debug('Starting _saveConversationsWithLock with', conversations.length, 'conversations');
+        
+        // CRITICAL: Deduplicate conversations before saving
+        const deduped = new Map<string, Conversation>();
+        conversations.forEach(conv => {
+            const existing = deduped.get(conv.id);
+            if (!existing) {
+                deduped.set(conv.id, conv);
+            } else {
+                // Keep the one with more messages or newer version
+                const existingMsgCount = existing.messages?.length || 0;
+                const currentMsgCount = conv.messages?.length || 0;
+                const existingVersion = existing._version || 0;
+                const currentVersion = conv._version || 0;
+                
+                if (currentMsgCount > existingMsgCount || 
+                    (currentMsgCount === existingMsgCount && currentVersion > existingVersion)) {
+                    console.warn('🔄 Replacing duplicate conversation:', conv.id.substring(0, 8), 
+                        `(${existingMsgCount} -> ${currentMsgCount} messages)`);
+                    deduped.set(conv.id, conv);
+                } else {
+                    console.warn('⚠️ Skipping duplicate conversation:', conv.id.substring(0, 8),
+                        `(keeping ${existingMsgCount} messages, discarding ${currentMsgCount})`);
+                }
+            }
+        });
+        
+        const uniqueConversations = Array.from(deduped.values());
+        if (uniqueConversations.length !== conversations.length) {
+            console.warn(`🔧 Deduplicated: ${conversations.length} -> ${uniqueConversations.length} conversations`);
+        }
 
         // Check if database is available and not closing
         if (!this.db || this.initializing) {
@@ -384,7 +419,7 @@ class ConversationDB implements DB {
             const store = tx.objectStore(STORE_NAME);
 
             return new Promise<void>((resolve, reject) => {
-                const conversationsToSave = conversations.map(conv => ({
+                const conversationsToSave = uniqueConversations.map(conv => ({
                     ...conv,
                     _version: Date.now(),
                     messages: conv.messages.map(msg => ({
@@ -394,13 +429,37 @@ class ConversationDB implements DB {
                     lastAccessedAt: conv.lastAccessedAt || Date.now(),
                     isActive: conv.isActive !== false
                 }));
+                
+                console.debug('📝 Conversations being saved:', conversationsToSave.map(c => ({
+                    id: c.id.substring(0, 8),
+                    title: c.title,
+                    messageCount: c.messages.length,
+                    isActive: c.isActive
+                })));
 
                 // Create a backup in localStorage before saving
                 try {
                     const activeConversations = conversationsToSave.filter(c => c.isActive !== false);
                     if (activeConversations.length > 0) {
-                        localStorage.setItem('ZIYA_CONVERSATION_BACKUP', JSON.stringify(activeConversations));
-                        console.debug('Created backup of', activeConversations.length, 'conversations in localStorage');
+                        // Strip out image data to avoid exceeding localStorage quota
+                        const conversationsWithoutImages = activeConversations.map(conv => ({
+                            ...conv,
+                            messages: conv.messages.map(msg => {
+                                if (msg.images && msg.images.length > 0) {
+                                    // Keep image metadata but remove the large base64 data
+                                    return {
+                                        ...msg,
+                                        images: msg.images.map(img => ({
+                                            ...img,
+                                            data: '' // Clear the base64 data
+                                        }))
+                                    };
+                                }
+                                return msg;
+                            })
+                        }));
+                        localStorage.setItem('ZIYA_CONVERSATION_BACKUP', JSON.stringify(conversationsWithoutImages));
+                        console.debug('Created backup of', activeConversations.length, 'conversations in localStorage (images excluded)');
                     }
                 } catch (e) {
                     console.error('Error backing up conversations to localStorage:', e);

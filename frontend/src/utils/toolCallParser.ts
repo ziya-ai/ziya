@@ -14,12 +14,25 @@ export function parseToolCall(content: string): ToolCall | null {
     
     if (match) {
         try {
+            const argsText = match[2].trim();
+            
+            // During streaming, check if JSON is complete before parsing
+            // Count braces to ensure we have balanced JSON
+            const openBraces = (argsText.match(/\{/g) || []).length;
+            const closeBraces = (argsText.match(/\}/g) || []).length;
+            
+            if (openBraces !== closeBraces || openBraces === 0) {
+                // Incomplete JSON - don't parse yet during streaming
+                return null;
+            }
+            
             return {
                 toolName: match[1].trim(),
-                arguments: JSON.parse(match[2])
+                arguments: JSON.parse(argsText)
             };
         } catch (e) {
-            console.warn('Failed to parse tool arguments:', e);
+            // Silently return null for incomplete JSON during streaming
+            return null;
         }
     }
     
@@ -29,12 +42,24 @@ export function parseToolCall(content: string): ToolCall | null {
     
     if (match) {
         try {
+            const argsText = match[2].trim();
+            
+            // During streaming, check if JSON is complete before parsing
+            const openBraces = (argsText.match(/\{/g) || []).length;
+            const closeBraces = (argsText.match(/\}/g) || []).length;
+            
+            if (openBraces !== closeBraces || openBraces === 0) {
+                // Incomplete JSON - don't parse yet during streaming
+                return null;
+            }
+            
             return {
                 toolName: match[1].trim(),
-                arguments: JSON.parse(match[2])
+                arguments: JSON.parse(argsText)
             };
         } catch (e) {
-            console.warn('Failed to parse tool arguments:', e);
+            // Silently return null for incomplete JSON during streaming
+            return null;
         }
     }
     

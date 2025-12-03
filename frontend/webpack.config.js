@@ -10,6 +10,9 @@ module.exports = {
     path: path.resolve(__dirname, 'build'),
     filename: 'bundle.js',
   },
+  resolve: {
+    fullySpecified: false,
+  },
   module: {
     rules: [
       {

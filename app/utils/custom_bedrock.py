@@ -181,7 +181,8 @@ class CustomBedrockClient:
         
         # Activate extended context for this conversation
         standard_limit, extended_limit = self._get_context_limits()
-        model_name = self.model_config.get("model_id", {}).get("us", "unknown")
+        model_id = self.model_config.get("model_id", "unknown")
+        model_name = model_id.get("us", "unknown") if isinstance(model_id, dict) else model_id
         
         notification_message = self.extended_context_manager.activate_extended_context(
             conversation_id,
@@ -451,7 +452,8 @@ class CustomBedrockClient:
                                 
                                 # Activate extended context and retry
                                 standard_limit, extended_limit = self._get_context_limits()
-                                model_name = self.model_config.get("model_id", {}).get("us", "unknown")
+                                model_id = self.model_config.get("model_id", "unknown")
+                                model_name = model_id.get("us", "unknown") if isinstance(model_id, dict) else model_id
                                 
                                 self.extended_context_manager.activate_extended_context(
                                     conversation_id,
