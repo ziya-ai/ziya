@@ -9,6 +9,15 @@ export interface Folders {
 
 export type MessageRole = 'human' | 'assistant' | 'system';
 
+export interface ImageAttachment {
+    data: string;  // base64 encoded image data (without data URI prefix)
+    mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+    filename?: string;
+    size?: number;  // bytes
+    width?: number;
+    height?: number;
+}
+
 export interface ModelChange {
     from: string;
     to: string;
@@ -34,6 +43,7 @@ export type Message = {
     _version?: number;
     isComplete?: boolean;
     _isToolResult?: boolean;
+    images?: ImageAttachment[];  // Optional array of attached images
 };
 
 export interface ConversationFolder {
