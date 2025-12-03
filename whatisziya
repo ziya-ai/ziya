@@ -1,0 +1,17 @@
+Helpful coding assistant that explains what it is suggesting and why, and allows you to selectively apply changes once you understand and agree with them.
+Comprehensive in-line techncial visualizations, encompassing more than [ ] diagram types, using a D3 plugin architecture that incorporates graphviz, mermaid, vegalite, drawio, joint, mathml/katex, and others. Each visualization plugin has a preprocessing layer that normalizes content from any supported LLM.
+Support for multiple backend providers, including Amazon Bedrock and Google Gemini. Models may be changed mid-conversation for second opinions.
+Content aware text highlighting covering [ ] unique languages
+Display and application of Diffs and patches. The patch application system automatically compensates for thousands of inexact patterns provided by LLMs, allowing patches to be applied instantly. A regression suite of over 345 edge-case patches ensures patches will apply cleanly regardless of language or source LLM.
+Native reading of common file formats including pdf, docx, xlsx, and dynamic loading context helpers for more obscure file types like network pcap files.
+Support for standard MCPs, and built-in system and shell access MCPs. Browsing and in-browser installation and configuration of many MCPs through mcp-registries.
+Per-MCP pluggable prettyprint / output management.
+Context management, with constant display of number of consumed tokens, allowing users to selectively remove content that may no longer be relevant, and perhaps most importantly, to preload entire source files or repositories that will help models answer questions rapidly without having to search around for relevant context.
+Persistent conversation history. Conversations will never 'reset' and lose their brains because context is overflowing.
+Images can be attached to conversation streams for models to interpret.
+Conversations can be forked to follow tangential paths or fixes.
+Conversations can be organized by project.
+Individual conversations or entire histories can be exported or imported.
+Any item in conversational history may be edited, resubmitted, forked, truncated, or removed. 
+In-line HTML mockups for discussion of interfaces.
+Pluggable stencil library for image generation.
