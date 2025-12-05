@@ -246,12 +246,19 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
                 feedbackWebSocket.sendFeedback(toolId, feedbackText);
                 console.log('🔄 FEEDBACK:', feedbackText);
 
+
                 // Clear the input after sending feedback
+                setLocalInput('');
                 setQuestion('');
 
                 // Show confirmation that feedback was sent
                 message.success({
-                    content: 'Feedback sent to running tools',
+                    content: (
+                        <span>
+                            ✅ Feedback sent: <strong>{feedbackText.length > 50 ? feedbackText.substring(0, 50) + '...' : feedbackText}</strong>
+                            <br /><span style={{ fontSize: '12px', opacity: 0.8 }}>The model will see this after the current tool completes</span>
+                        </span>
+                    ),
                     duration: 2,
                     key: 'feedback-sent'
                 });

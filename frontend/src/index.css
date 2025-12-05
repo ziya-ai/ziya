@@ -92,6 +92,18 @@ div.diff-view.smaller-diff-view.diff-view-split > table.diff-table > tbody > tr 
   position: relative;
 }
 
+.ephemeral-badge {
+  background: linear-gradient(135deg, #ff6b6b, #ee5a24);
+  color: white;
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .app-header > div:last-child {
   position: absolute;
   display: flex;

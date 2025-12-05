@@ -21,7 +21,7 @@ import { useChatContext } from '../context/ChatContext';
 import { ProfilerWrapper } from './ProfilerWrapper';
 import { SafariWarning } from './SafariWarning';
 import { loadInternalFormatters } from '../utils/mcpFormatterLoader';
-
+import { useConfig } from '../context/ConfigContext'
 import { useScrollManager } from '../hooks/useScrollManager';
 import { ScrollIndicator } from './ScrollIndicator';
 const ShellConfigModal = React.lazy(() => import("./ShellConfigModal"));
@@ -107,6 +107,7 @@ export const App: React.FC = () => {
         const saved = localStorage.getItem(PANEL_COLLAPSED_KEY);
         return saved ? JSON.parse(saved) : false;
     });
+    const { isEphemeralMode } = useConfig();
 
     // Validate panel width from localStorage
     const getValidPanelWidth = (width: number): number => {
@@ -148,7 +149,7 @@ export const App: React.FC = () => {
         loadInternalFormatters().catch(error => {
             console.debug('Internal formatters not available:', error);
         });
-        
+
         // Set initial panel width to 33% of viewport width
         const initialWidth = Math.round(window.innerWidth * 0.33);
         document.documentElement.style.setProperty('--folder-panel-width', `${initialWidth}px`);
@@ -200,11 +201,11 @@ export const App: React.FC = () => {
 
         const handleScroll = () => {
             const scrollDelta = Math.abs(chatContainer.scrollTop - lastScrollPositionRef.current);
-            
+
             if (scrollDelta > 10) {
                 setUserHasScrolled(true);
             }
-            
+
             lastScrollPositionRef.current = chatContainer.scrollTop;
         };
 
@@ -384,6 +385,19 @@ export const App: React.FC = () => {
                                     </Tooltip>
                                 </div>
                                 Ziya: Code Assist
+                                {isEphemeralMode && (
+                                    <Tooltip title="Ephemeral mode: No data persisted after closing. Each browser tab has independent, non-shared state.">
+                                        <span 
+                                        className="ephemeral-badge"
+                                        style={{ 
+                                            marginLeft: '12px',
+                                            fontSize: '12px'
+                                        }}
+                                        >
+                                            🔒 Ephemeral
+                                        </span>
+                                    </Tooltip>
+                                )}
                             </h2>
                             <div style={{ position: 'absolute', right: '10px', display: 'flex', gap: '10px' }}>
                                 <Tooltip title="Toggle theme">
@@ -432,14 +446,14 @@ export const App: React.FC = () => {
                             </div>
                         </div>
                     </div>
-                    
+
                     <ScrollIndicator
                         visible={hasNewContentWhileAway || streamCompletedWhileAway}
                         isCompleted={streamCompletedWhileAway}
                         onClick={scrollToActiveEnd}
                         isTopToBottom={isTopToBottom}
                     />
-                    
+
                     {astEnabled && (
                         <Suspense fallback={null}>
                             <AstStatusIndicator />
@@ -464,7 +478,7 @@ export const App: React.FC = () => {
                             </>
                         )}
                     </Suspense>
-                    
+
                     <Suspense fallback={null}>
                         <ExportConversationModal visible={showExportModal} onClose={() => setShowExportModal(false)} />
                     </Suspense>
