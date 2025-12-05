@@ -451,6 +451,12 @@ def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_dif
         
         corrected_hunks = correct_hunk_line_numbers(hunks, file_lines)
         
+        # Update pipeline hunk_data with corrected hunks (includes confidence metadata)
+        for i, corrected_hunk in enumerate(corrected_hunks, 1):
+            if i in pipeline.result.hunks:
+                conf = corrected_hunk.get('correction_confidence', 'MISSING')
+                pipeline.result.hunks[i].hunk_data = corrected_hunk
+        
         # Check if all hunks are already applied before attempting to apply
         all_already_applied = True
         for hunk in corrected_hunks:
@@ -688,11 +694,14 @@ def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_dif
             
             if status_value == "succeeded":
                 any_hunk_succeeded = True
+                # Get confidence from hunk data if available
+                hunk_confidence = pipeline.result.hunks[hunk_id].hunk_data.get('correction_confidence', 1.0)
                 pipeline.update_hunk_status(
                     hunk_id=hunk_id,
                     stage=PipelineStage.SYSTEM_PATCH,
                     status=HunkStatus.SUCCEEDED,
-                    position=status_info.get("position")
+                    position=status_info.get("position"),
+                    confidence=hunk_confidence
                 )
             elif status_value == "already_applied":
                 pipeline.update_hunk_status(
@@ -1202,7 +1211,7 @@ def run_git_apply_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_diff
         if 'temp_path' in locals() and os.path.exists(temp_path):
             os.unlink(temp_path)
 
-def update_merged_hunk_status(pipeline, merged_hunk_mapping, new_hunk_index, status, stage, error_details=None):
+def update_merged_hunk_status(pipeline, merged_hunk_mapping, new_hunk_index, status, stage, error_details=None, confidence=0.0):
     """
     Update the status of all original hunks that were merged into a single new hunk.
     
@@ -1213,6 +1222,7 @@ def update_merged_hunk_status(pipeline, merged_hunk_mapping, new_hunk_index, sta
         status: Status to set for all original hunks
         stage: Pipeline stage
         error_details: Optional error details
+        confidence: Optional confidence score
     """
     if new_hunk_index in merged_hunk_mapping:
         original_indices = merged_hunk_mapping[new_hunk_index]
@@ -1226,11 +1236,14 @@ def update_merged_hunk_status(pipeline, merged_hunk_mapping, new_hunk_index, sta
         for orig_idx in original_indices:
             if orig_idx < len(pending_hunks):
                 hunk_id = pending_hunks[orig_idx]
+                # Get confidence from hunk_data if not provided
+                hunk_confidence = confidence if confidence > 0 else pipeline.result.hunks[hunk_id].hunk_data.get('correction_confidence', 0.0)
                 pipeline.update_hunk_status(
                     hunk_id=hunk_id,
                     stage=stage,
                     status=status,
-                    error_details=error_details
+                    error_details=error_details,
+                    confidence=hunk_confidence
                 )
                 logger.info(f"Updated original hunk #{hunk_id} (index {orig_idx}) to {status}")
 
@@ -1312,7 +1325,8 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                 new_content = '\n'.join(new_content_lines) + '\n' if not any('\n' in l for l in new_content_lines) else ''.join(new_content_lines)
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(new_content)
-                pipeline.update_hunk_status(1, PipelineStage.DIFFLIB, HunkStatus.SUCCEEDED)
+                hunk_confidence = pipeline.result.hunks[1].hunk_data.get('correction_confidence', 1.0)
+                pipeline.update_hunk_status(1, PipelineStage.DIFFLIB, HunkStatus.SUCCEEDED, confidence=hunk_confidence)
                 pipeline.complete()
                 return True
         
@@ -1632,10 +1646,12 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                             if merged_hunk_mapping and (i-1) in merged_hunk_mapping:
                                 update_merged_hunk_status(pipeline, merged_hunk_mapping, i-1, HunkStatus.SUCCEEDED, PipelineStage.DIFFLIB)
                             else:
+                                hunk_confidence = pipeline.result.hunks[pipeline_hunk_id].hunk_data.get('correction_confidence', 0.0)
                                 pipeline.update_hunk_status(
                                     hunk_id=pipeline_hunk_id,
                                     stage=PipelineStage.DIFFLIB,
-                                    status=HunkStatus.SUCCEEDED
+                                    status=HunkStatus.SUCCEEDED,
+                                    confidence=hunk_confidence
                                 )
                             logger.info(f"Hunk #{i} (original ID #{pipeline_hunk_id}) was applied by previous stage")
                         else:
@@ -2037,13 +2053,15 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                                 )
                                 logger.info(f"Hunk #{hunk_id} failed in difflib stage, marked as FAILED")
                             else:
-                                # Mark as succeeded
+                                # Mark as succeeded with confidence from hunk data
+                                hunk_confidence = tracker.hunk_data.get('correction_confidence', 0.0)
                                 pipeline.update_hunk_status(
                                     hunk_id=hunk_id,
                                     stage=PipelineStage.DIFFLIB,
-                                    status=HunkStatus.SUCCEEDED
+                                    status=HunkStatus.SUCCEEDED,
+                                    confidence=hunk_confidence
                                 )
-                                logger.info(f"Marked hunk #{hunk_id} as SUCCEEDED in difflib stage")
+                                logger.info(f"Marked hunk #{hunk_id} as SUCCEEDED in difflib stage (confidence: {hunk_confidence:.2f})")
                     
                     return True
                 else:
@@ -2145,13 +2163,15 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                             logger.info("Successfully applied diff with regular difflib mode - verified content changes")
                         
                         # Update all hunks to SUCCEEDED regardless of previous status
-                        for hunk_id in pipeline.result.hunks:
+                        for hunk_id, tracker in pipeline.result.hunks.items():
+                            hunk_confidence = tracker.hunk_data.get('correction_confidence', 0.0)
                             pipeline.update_hunk_status(
                                 hunk_id=hunk_id,
                                 stage=PipelineStage.DIFFLIB,
-                                status=HunkStatus.SUCCEEDED
+                                status=HunkStatus.SUCCEEDED,
+                                confidence=hunk_confidence
                             )
-                            logger.info(f"Marked hunk #{hunk_id} as SUCCEEDED in regular difflib mode")
+                            logger.info(f"Marked hunk #{hunk_id} as SUCCEEDED in regular difflib mode (confidence: {hunk_confidence:.2f})")
                         
                         pipeline.result.changes_written = True
                         return True
@@ -2197,8 +2217,9 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                                         # Mark remaining pending hunks as succeeded (since file was modified)
                                         for hunk_id, tracker in pipeline.result.hunks.items():
                                             if tracker.status == HunkStatus.PENDING and hunk_id not in failed_hunk_ids:
-                                                pipeline.update_hunk_status(hunk_id=hunk_id, stage=PipelineStage.DIFFLIB, status=HunkStatus.SUCCEEDED)
-                                                logger.info(f"Marked hunk #{hunk_id} as SUCCEEDED (partial success)")
+                                                hunk_confidence = tracker.hunk_data.get('correction_confidence', 0.0)
+                                                pipeline.update_hunk_status(hunk_id=hunk_id, stage=PipelineStage.DIFFLIB, status=HunkStatus.SUCCEEDED, confidence=hunk_confidence)
+                                                logger.info(f"Marked hunk #{hunk_id} as SUCCEEDED (partial success, confidence: {hunk_confidence:.2f})")
                                         
                                         return True  # Partial success is still success
                                 except Exception as read_error:
