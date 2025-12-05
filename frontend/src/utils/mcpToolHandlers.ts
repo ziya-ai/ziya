@@ -26,13 +26,37 @@ const sequentialThinkingHandler: ToolHandler = {
     console.log('🤔 THINKING_START: Received jsonData:', JSON.stringify(jsonData, null, 2));
     
     // Extract the actual thinking content from the args
-    const toolInput = jsonData.args?.tool_input || jsonData.args || {};
+    // CRITICAL: tool_input can be either an object OR a JSON string!
+    let toolInput = jsonData.args?.tool_input || jsonData.args || {};
     
-    const thinkingContent = toolInput.thought || jsonData.input?.thought || '';
-    const thoughtNumber = toolInput.thoughtNumber || jsonData.input?.thoughtNumber || 1;
-    const totalThoughts = toolInput.totalThoughts || jsonData.input?.totalThoughts || 1;
+    // Parse tool_input if it's a JSON string
+    if (typeof toolInput === 'string') {
+      try {
+        toolInput = JSON.parse(toolInput);
+        console.log('🤔 THINKING_START: Parsed tool_input from JSON string');
+      } catch (e) {
+        console.error('🤔 THINKING_START: Failed to parse tool_input JSON string:', e);
+        // Fallback to treating it as an object
+        toolInput = {};
+      }
+    }
     
-    console.log('🤔 THINKING_START: Extracted values:', { thinkingContent: thinkingContent.substring(0, 50), thoughtNumber, totalThoughts });
+    // Also try jsonData.input as fallback
+    if (!toolInput || Object.keys(toolInput).length === 0) {
+      toolInput = jsonData.input || {};
+    }
+    
+    const thinkingContent = toolInput.thought || '';
+    const thoughtNumber = Number(toolInput.thoughtNumber || 1);
+    const totalThoughts = Number(toolInput.totalThoughts || 1);
+    
+    console.log('🤔 THINKING_START: Extracted values:', { 
+      hasContent: !!thinkingContent,
+      contentLength: thinkingContent.length,
+      contentPreview: thinkingContent.substring(0, 100), 
+      thoughtNumber, 
+      totalThoughts 
+    });
     
     if (thinkingContent) {
       // Escape any code fences in the thinking content to prevent breaking the outer fence

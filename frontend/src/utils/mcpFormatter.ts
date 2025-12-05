@@ -3,6 +3,56 @@
  */
 
 /**
+ * Generic function to create tool display headers with parameters
+ * Plugin interface allows internal formatter to override for Amazon-specific tools
+ */
+let enhanceToolHeaderPlugin: ((toolName: string, baseHeader: string, args: Record<string, any>) => string | null) | null = null;
+
+export function registerToolHeaderEnhancer(enhancer: (toolName: string, baseHeader: string, args: Record<string, any>) => string | null) {
+  enhanceToolHeaderPlugin = enhancer;
+}
+
+/**
+ * Enhance tool display header with arguments for better visibility
+ * Generic implementation that can be overridden by internal formatter
+ */
+export function enhanceToolDisplayHeader(
+  toolName: string,
+  baseHeader: string,
+  args: Record<string, any>
+): string {
+  // Try internal formatter first if registered
+  if (enhanceToolHeaderPlugin) {
+    const internalResult = enhanceToolHeaderPlugin(toolName, baseHeader, args);
+    if (internalResult) return internalResult;
+  }
+
+  // Generic fallback: extract the most meaningful parameter
+  // Common parameter names that indicate what was searched/queried
+  const meaningfulParams = [
+    'query', 'searchQuery', 'command', 'url',
+    'acronym', 'taskId', 'ticketId', 'pipelineName'
+  ];
+
+  for (const param of meaningfulParams) {
+    if (args[param] && typeof args[param] === 'string') {
+      // Truncate long values
+      let value = args[param];
+      if (value.length > 60) {
+        value = value.substring(0, 60) + '...';
+      }
+
+      // Format the header with the parameter
+      const paramLabel = param.replace(/([A-Z])/g, ' $1').trim();
+      return `${baseHeader}: ${value}`;
+    }
+  }
+
+  // No meaningful parameters found, return base header
+  return baseHeader;
+}
+
+/**
  * Detect and parse rich text formats in tool outputs
  */
 function detectAndParseRichContent(content: string): {
@@ -106,6 +156,71 @@ export interface FormattedOutput {
   }>;
 }
 
+/**
+ * Convert plain text URLs to markdown links
+ */
+function convertUrlsToMarkdownLinks(content: string): string {
+  // Match URLs that aren't already in markdown link format [text](url)
+  // This regex looks for URLs not preceded by ]( to avoid double-converting
+  const urlRegex = /(?<!\]\()https?:\/\/[^\s<>]+/g;
+
+  return content.replace(urlRegex, (url) => {
+    // Extract a readable display name from the URL
+    let displayText = url;
+
+    // Remove trailing punctuation that might not be part of the URL
+    const trailingPunct = url.match(/[.,;:!?)]+$/);
+    if (trailingPunct) {
+      url = url.slice(0, -trailingPunct[0].length);
+      displayText = url;
+    }
+
+    // For long URLs, show domain + truncated path
+    if (url.length > 60) {
+      try {
+        const urlObj = new URL(url);
+        const pathSnippet = urlObj.pathname.length > 25
+          ? urlObj.pathname.substring(0, 25) + '...'
+          : urlObj.pathname;
+        displayText = `${urlObj.hostname}${pathSnippet}`;
+      } catch {
+        displayText = `${url.substring(0, 60)}...`;
+      }
+    }
+
+    // Return markdown link format
+    return `[${displayText}](${url})${trailingPunct ? trailingPunct[0] : ''}`;
+  });
+}
+
+/**
+ * Convert HTML details/summary tags to markdown-friendly format
+ * This prevents HTML from breaking out of TOOL_BLOCK fences
+ */
+function convertDetailsToMarkdown(content: string): string {
+  // Match <details><summary>...</summary>...</details> patterns
+  const detailsRegex = /<details>\s*<summary>(.*?)<\/summary>\s*([\s\S]*?)<\/details>/g;
+
+  let result = content.replace(detailsRegex, (match, summary, body) => {
+    // Strip HTML tags from summary
+    const cleanSummary = summary.replace(/<[^>]+>/g, '');
+
+    // Strip HTML tags from body but preserve code blocks
+    const cleanBody = body.replace(/<[^>]+>/g, '').trim();
+
+    // Convert URLs in the body to clickable links
+    const bodyWithLinks = convertUrlsToMarkdownLinks(cleanBody);
+
+    // Format as expandable section with bold header
+    return `<details>\n<summary><strong>${cleanSummary}</strong></summary>\n\n${bodyWithLinks}\n\n</details>`;
+  });
+
+  // Convert URLs that are outside details blocks
+  result = convertUrlsToMarkdownLinks(result);
+
+  return result;
+}
+
 export function formatMCPOutput(
   toolName: string,
   result: any,
@@ -123,6 +238,12 @@ export function formatMCPOutput(
   // Create a generic tool summary from input parameters
   const toolSummary = createToolSummary(toolName, input);
 
+  // CRITICAL: If result is a string with HTML, convert details tags to markdown
+  // This prevents HTML from breaking out of TOOL_BLOCK fences
+  if (typeof result === 'string' && (result.includes('<details>') || result.includes('<summary>'))) {
+    result = convertDetailsToMarkdown(result);
+  }
+
   // EARLY CHECK: Detect rich content and render it appropriately
   if (typeof result === 'string') {
     const richContent = detectAndParseRichContent(result);
@@ -130,6 +251,11 @@ export function formatMCPOutput(
     if (richContent.hasRichContent && richContent.parsed) {
       const lines = richContent.parsed.split('\n');
       const shouldCollapse = richContent.parsed.length > 1000 || lines.length > 20;
+
+      // Also convert URLs to links in rich content
+      if (richContent.parsed) {
+        richContent.parsed = convertUrlsToMarkdownLinks(richContent.parsed);
+      }
 
       return {
         content: richContent.parsed,
@@ -141,7 +267,7 @@ export function formatMCPOutput(
   }
 
   // Try internal formatter first (if available)
-  const internalResult = tryInternalFormatter?.(toolName, result, options);
+  const internalResult = tryInternalFormatter?.(toolName, result, { ...options, input });
   if (internalResult) {
     return internalResult;
   }
@@ -197,8 +323,8 @@ export function formatMCPOutput(
     return formatSequentialThinking(result, input, options);
   }
 
-  // Handle time tool outputs specially
-  if (toolName === 'mcp_get_current_time') {
+  // Handle time tool outputs specially (public builtin tool)
+  if (toolName === 'mcp_get_current_time' || toolName === 'get_current_time') {
     let cleanResult = typeof result === 'string' ? result : String(result);
 
     // Clean up common formatting patterns
@@ -218,11 +344,6 @@ export function formatMCPOutput(
       showInput: false,
       collapsed: false
     };
-  }
-
-  // Generic search results pattern detection
-  if (hasSearchResultsPattern(result)) {
-    return formatSearchResults(result.content, { showInput, input, maxLength });
   }
 
   // Handle wrapped response pattern (common in MCP responses)
@@ -272,6 +393,9 @@ export function formatMCPOutput(
 
   // Handle string results
   if (typeof result === 'string') {
+    // Convert URLs to markdown links
+    result = convertUrlsToMarkdownLinks(result);
+
     // Check if it's a large text output that should be collapsed
     const lines = result.split('\n');
     const shouldCollapse = result.length > 500 || lines.length > 5;
@@ -429,110 +553,6 @@ function formatShellCommand(result: string, options: any): FormattedOutput {
     summary: shouldCollapse && displayCommand
       ? `${toolSummary || `$ ${displayCommand}`} - Output (${lineCount} lines, ${result.length} chars)`
       : shouldCollapse ? `Command output (${lineCount} lines)` : undefined
-  };
-}
-
-function formatWorkspaceSearch(result: any, options: any): FormattedOutput {
-  const { input } = options;
-
-  // Extract search parameters - handle both direct input and nested in result
-  const effectiveInput = input || {};
-  const searchQuery = effectiveInput.searchQuery !== undefined ? effectiveInput.searchQuery : '';
-  const searchType = effectiveInput.searchType || 'contentLiteral';
-  const contextLines = effectiveInput.contextLines || 0;
-  const globPatterns = effectiveInput.globPatterns;
-
-  // Handle both direct result and wrapped content
-  const searchData = result.content || result;
-  const results = searchData.results || [];
-  const totalCount = searchData.totalCount || 0;
-  const hasMore = searchData.hasMore || false;
-
-  if (!results.length) {
-    // Include query, search type, and context info in a compact format
-    const contextInfo = contextLines > 0 ? ` with ${contextLines} context lines` : '';
-
-    // Always include search query information, even if empty
-    const queryDisplay = searchQuery || '(empty query)';
-    const searchSummary = `No matches found for "${queryDisplay}" (${searchType})${contextInfo}`;
-
-    // Add helpful context if glob patterns were used
-    const globInfo = globPatterns
-      ? ` in patterns: ${Array.isArray(globPatterns) ? JSON.stringify(globPatterns) : globPatterns}`
-      : '';
-
-    const fullSummary = searchSummary + globInfo;
-
-    return {
-      content: fullSummary,
-      type: 'search_results',
-      collapsed: false,
-      summary: fullSummary
-    };
-  }
-
-  // Create detailed summary with query information
-  const queryInfo = searchQuery ? `Query: "${searchQuery}" (${searchType})` : '';
-  const resultSummary = `${results.length}${hasMore ? '+' : ''} result${results.length === 1 ? '' : 's'}${totalCount && totalCount !== results.length ? ` of ${totalCount} total` : ''}`;
-  const summary = queryInfo ? `${queryInfo} - ${resultSummary}` : resultSummary;
-
-  // Create hierarchical results for two-level collapsible rendering
-  const hierarchicalResults = results.map((result: any, index: number) => {
-    const matchCount = result.lines?.length || 0;
-    const title = `${index + 1}. ${result.filepath} (${matchCount} matching line${matchCount === 1 ? '' : 's'})`;
-
-    let codeContent = '';
-    if (result.lines && result.lines.length > 0) {
-      // Extract file extension for syntax highlighting
-      const ext = result.filepath.split('.').pop()?.toLowerCase() || '';
-      const langMap: { [key: string]: string } = {
-        'js': 'javascript', 'jsx': 'javascript', 'ts': 'typescript', 'tsx': 'typescript',
-        'py': 'python', 'rb': 'ruby', 'php': 'php', 'java': 'java', 'go': 'go',
-        'rs': 'rust', 'cpp': 'cpp', 'c': 'c', 'cs': 'csharp', 'css': 'css',
-        'html': 'html', 'xml': 'xml', 'md': 'markdown', 'sh': 'bash', 'yml': 'yaml', 'yaml': 'yaml'
-      };
-      const language = langMap[ext] || 'text';
-
-      codeContent = result.lines.join('\n');
-
-      return {
-        title,
-        content: codeContent,
-        language,
-        metadata: {
-          filepath: result.filepath,
-          matchCount
-        }
-      };
-    } else {
-      return {
-        title,
-        content: 'No content available',
-        language: 'text',
-        metadata: {
-          filepath: result.filepath,
-          matchCount: 0
-        }
-      };
-    }
-  });
-
-  const shouldCollapse = results.length > 5;
-
-  // Create a more descriptive summary for workspace search
-  let summaryText = summary;
-  if (searchQuery && shouldCollapse) {
-    summaryText = `Search "${searchQuery}" - ${summary}`;
-  } else if (shouldCollapse) {
-    summaryText = summary;
-  }
-
-  return {
-    content: summary,
-    type: 'search_results',
-    collapsed: shouldCollapse,
-    summary: summaryText,
-    hierarchicalResults
   };
 }
 
@@ -734,7 +754,7 @@ function formatGenericArray(arr: any[], toolName: string, options: { showInput: 
         queryInfo = `**Search parameters:**\n${formatInput(input)}`;
       }
     }
-    
+
     const message = queryInfo ? `${queryInfo}\n\nNo results found` : 'No results found';
     return { content: message, type: 'text', collapsed: false };
   }
@@ -928,7 +948,7 @@ function extractQueryFromSearchResults(content: any): string | null {
 function formatSearchResults(searchContent: any, options: { showInput: boolean; input?: any; maxLength: number }): FormattedOutput {
   const { showInput, input, maxLength } = options;
   const results = searchContent.results || [];
-  
+
   // Extract query information for display (needed for both success and no-results cases)
   const query = input?.query || input?.searchQuery || extractQueryFromSearchResults(searchContent) || '';
   const domain = input?.domain || 'ALL';
@@ -941,9 +961,9 @@ function formatSearchResults(searchContent: any, options: { showInput: boolean; 
     } else if (showInput && input) {
       queryInfo = `**Search parameters:**\n${formatInput(input)}`;
     }
-    
+
     const message = queryInfo ? `${queryInfo}\n\nNo results found` : 'No results found';
-    
+
     return {
       content: message,
       type: 'search_results',
