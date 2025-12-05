@@ -346,6 +346,7 @@ class StreamingToolExecutor:
                                         "role": "user",
                                         "content": f"[User feedback]: {feedback_message}"
                                     })
+                                    logger.info(f"🔄 FEEDBACK_DELIVERED: Added iteration-level feedback to conversation at iteration {iteration}")
                                     
                                     # Let user know feedback was received
                                     yield track_yield({
@@ -870,6 +871,7 @@ class StreamingToolExecutor:
                                                             "role": "user", 
                                                             "content": f"[Real-time feedback]: {feedback_message}"
                                                         })
+                                                        logger.info(f"🔄 FEEDBACK_DELIVERED: Added tool-level feedback to conversation before tool execution")
                                                         
                                                         # Acknowledge the feedback to user
                                                         yield track_yield({
@@ -1112,14 +1114,25 @@ class StreamingToolExecutor:
                         # Just break out of chunk processing, handle completion logic below
                         break
 
+                # CRITICAL: Validate tool_results match tool_use blocks before building conversation
+                # Remove any tool_use blocks that don't have corresponding results
+                valid_tool_ids = {tr['tool_id'] for tr in tool_results}
+                if all_tool_calls:
+                    # Filter all_tool_calls to only include those with results
+                    all_tool_calls = [tc for tc in all_tool_calls if tc['id'] in valid_tool_ids]
+                    
+                    if len(all_tool_calls) != len(tool_results):
+                        logger.warning(f"🔍 TOOL_MISMATCH: {len(all_tool_calls)} tool calls but {len(tool_results)} results - filtered orphaned calls")
+                
                 # Add assistant response to conversation with proper tool_use blocks
+                # ONLY include tool_use blocks that have corresponding tool_results
                 if assistant_text.strip() or tools_executed_this_iteration:
                     # Build content as list with text and tool_use blocks
                     content_blocks = []
                     if assistant_text.strip():
                         content_blocks.append({"type": "text", "text": assistant_text.rstrip()})
                     
-                    # Add tool_use blocks for each tool that was executed with actual args
+                    # Add tool_use blocks ONLY for tools that have results
                     for tool_result in tool_results:
                         # Find the corresponding tool call to get the actual args
                         tool_args = {}
@@ -1165,6 +1178,26 @@ class StreamingToolExecutor:
                             ]
                         })
                 
+                # SAFETY CHECK: Ensure conversation is in valid Bedrock format
+                # Verify that every tool_use in assistant messages has a corresponding tool_result
+                if conversation:
+                    tool_use_ids = set()
+                    tool_result_ids = set()
+                    
+                    for msg in conversation:
+                        if msg.get('role') == 'assistant' and isinstance(msg.get('content'), list):
+                            for block in msg['content']:
+                                if block.get('type') == 'tool_use':
+                                    tool_use_ids.add(block.get('id'))
+                        elif msg.get('role') == 'user' and isinstance(msg.get('content'), list):
+                            for block in msg['content']:
+                                if block.get('type') == 'tool_result':
+                                    tool_result_ids.add(block.get('tool_use_id'))
+                    
+                    orphaned_ids = tool_use_ids - tool_result_ids
+                    if orphaned_ids:
+                        logger.error(f"🚨 ORPHANED_TOOL_USE: Found {len(orphaned_ids)} tool_use blocks without results: {orphaned_ids}")
+                
                 # The conversation should now be in proper Bedrock format
                 # Remove the filter call since we're constructing messages correctly
                 logger.info(f"🤖 MODEL_RESPONSE: {assistant_text}")
@@ -1198,6 +1231,56 @@ class StreamingToolExecutor:
                     await asyncio.sleep(0)
                     continue  # Immediately start next iteration
                 else:
+                    # CRITICAL: Check for pending feedback BEFORE deciding to end stream
+                    # This ensures feedback sent during the last tool execution is not lost
+                    pending_feedback_before_end = []
+                    if conversation_id:
+                        try:
+                            from app.server import active_feedback_connections
+                            if conversation_id in active_feedback_connections:
+                                feedback_queue = active_feedback_connections[conversation_id]['feedback_queue']
+                                
+                                # Drain any pending feedback
+                                try:
+                                    while True:
+                                        try:
+                                            feedback_data = feedback_queue.get_nowait()
+                                            if feedback_data.get('type') == 'tool_feedback':
+                                                pending_feedback_before_end.append(feedback_data.get('message', ''))
+                                            elif feedback_data.get('type') == 'interrupt':
+                                                logger.info(f"🔄 PRE-END FEEDBACK: Received interrupt before stream end")
+                                                yield track_yield({'type': 'text', 'content': '\n\n**User requested stop.**\n\n'})
+                                                yield track_yield({'type': 'stream_end'})
+                                                return
+                                        except asyncio.QueueEmpty:
+                                            break
+                                except Exception as queue_error:
+                                    logger.debug(f"Error draining pre-end feedback queue: {queue_error}")
+                        except Exception as e:
+                            logger.debug(f"Error checking pre-end feedback: {e}")
+                    
+                    # If we found pending feedback, deliver it before ending
+                    if pending_feedback_before_end:
+                        combined_feedback = ' '.join(pending_feedback_before_end)
+                        logger.info(f"🔄 PRE-END FEEDBACK: Processing {len(pending_feedback_before_end)} feedback message(s) before stream end")
+                        
+                        # Add feedback to conversation
+                        conversation.append({
+                            "role": "user",
+                            "content": f"[User feedback]: {combined_feedback}"
+                        })
+                        
+                        # Notify user
+                        yield track_yield({
+                            'type': 'text',
+                            'content': f"\n\n**📝 Feedback received:** {combined_feedback}\n\n",
+                            'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                        })
+                        
+                        # Continue to next iteration so model can respond
+                        logger.debug(f"🔄 PRE-END FEEDBACK: Continuing to next iteration to process feedback")
+                        continue
+                    
                     # Check if too many tools were blocked (indicates runaway loop)
                     if blocked_tools_this_iteration >= 3:
                         logger.warning(f"🔍 RUNAWAY_LOOP_DETECTED: {blocked_tools_this_iteration} tools blocked in iteration {iteration}, ending stream")
@@ -1266,9 +1349,11 @@ class StreamingToolExecutor:
                                 while True:
                                     try:
                                         feedback_data = feedback_queue.get_nowait()
-                                        if feedback_data.get('type') == 'tool_feedback':
+                                        feedback_type = feedback_data.get('type')
+                                        if feedback_type == 'tool_feedback':
                                             pending_feedback.append(feedback_data.get('message', ''))
-                                        elif feedback_data.get('type') == 'interrupt':
+                                            logger.info(f"🔄 POST-LOOP FEEDBACK: Queued tool_feedback: {feedback_data.get('message', '')[:50]}...")
+                                        elif feedback_type == 'interrupt':
                                             # Handle interrupt - stop processing
                                             logger.info(f"🔄 POST-LOOP FEEDBACK: Received interrupt after tool chain")
                                             yield track_yield({'type': 'text', 'content': '\n\n**User requested stop.**\n\n'})
@@ -1289,11 +1374,12 @@ class StreamingToolExecutor:
                                     "role": "user",
                                     "content": f"[User feedback after tool execution]: {combined_feedback}"
                                 })
+                                logger.info(f"🔄 FEEDBACK_DELIVERED: Added post-loop feedback to conversation: {combined_feedback[:50]}...")
                                 
                                 # Notify user that feedback is being processed
                                 yield track_yield({
                                     'type': 'text',
-                                    'content': f"\n\n**📝 Processing your feedback:** {combined_feedback}\n\n",
+                            'content': f"\n\n**📝 Feedback received:** {combined_feedback}\n\n",
                                     'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
                                 })
                                 
@@ -1401,7 +1487,7 @@ class StreamingToolExecutor:
                     elif "Status code: 401" in error_str:
                         error_message = "Authentication failed (401 Unauthorized). Please check your AWS credentials and try again."
                     
-                    yield {
+                    auth_error_chunk = {
                         'type': 'error',
                         'error': 'authentication_error',
                         'content': error_message,
@@ -1409,6 +1495,9 @@ class StreamingToolExecutor:
                         'can_retry': True,
                         'retry_message': 'Please refresh your credentials and try again.'
                     }
+                    logger.info(f"🔐 AUTH_ERROR: Yielding authentication error chunk: {auth_error_chunk}")
+                    yield auth_error_chunk
+                    logger.info(f"🔐 AUTH_ERROR: Successfully yielded authentication error chunk")
                     return
                 else:
                     # For non-throttling errors, yield generic error

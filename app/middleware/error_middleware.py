@@ -537,7 +537,6 @@ class ErrorHandlingMiddleware:
                             (b"cache-control", b"no-cache"),
                         ]
                     })
-                                    logger.info("Sent preserved content before error message")
                     
                     # Send error message as SSE data
                     error_content = format_error_response(
