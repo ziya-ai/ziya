@@ -252,7 +252,7 @@ def setup_environment(args):
     
     # Set ephemeral mode if requested
     if args.ephemeral:
-        os.environ["ZIYA_EPHEMERAL"] = "true"
+        os.environ["ZIYA_EPHEMERAL_MODE"] = "true"
         logger.info("Ephemeral mode enabled - conversations will not be persisted")
         
     # Set model parameter environment variables if provided
