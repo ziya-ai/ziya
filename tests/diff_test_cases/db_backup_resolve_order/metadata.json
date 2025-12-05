@@ -1,0 +1,4 @@
+{
+  "description": "Test fixing backup restore order - should try backup BEFORE resolving empty array",
+  "target_file": "frontend/src/utils/db.ts"
+}
