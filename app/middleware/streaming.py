@@ -79,6 +79,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
         """
         # Reset repetition detection state for this stream
         self._recent_lines = []
+        content_buffer = ""  # Initialize buffer
         accumulated_content = ""
         accumulated_chunks = []  # Track all chunks for better preservation
 
