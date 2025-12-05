@@ -1,0 +1,16 @@
+diff --git a/frontend/src/utils/db.ts b/frontend/src/utils/db.ts
+--- a/frontend/src/utils/db.ts
++++ b/frontend/src/utils/db.ts
+@@ -604,12 +604,11 @@ class ZiyaDB implements DB {
+                         resolve(validConversations);
+                         return;
+                     }
+                 }
+-                resolve([]);
+-                // If we got no valid conversations, try to restore from backup
++                // No valid conversations found - try backup BEFORE resolving empty
+                 this.restoreFromBackup().then(backupConversations => {
+-                    resolve(backupConversations);
++                    resolve(backupConversations.length > 0 ? backupConversations : []);
+                 }).catch(() => resolve([]));
+             };
