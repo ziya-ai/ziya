@@ -1326,6 +1326,10 @@ async def stream_chunks(body):
                 async for chunk in executor.stream_with_tools(messages, tools=mcp_tools, conversation_id=conversation_id):
                     chunk_count += 1
                     
+                    # Log all chunks for debugging
+                    chunk_type = chunk.get('type', 'unknown')
+                    logger.debug(f"🔍 CHUNK_RECEIVED: type={chunk_type}, chunk_count={chunk_count}")
+                    
                     # Convert to expected format and yield all chunk types
                     if chunk.get('type') == 'text':
                         content = chunk.get('content', '')
@@ -1342,7 +1346,8 @@ async def stream_chunks(body):
                     elif chunk.get('type') == 'stream_end':
                         break
                     elif chunk.get('type') == 'error':
-                        yield f"data: {json.dumps({'error': chunk.get('content', 'Unknown error')})}\n\n"
+                        logger.info(f"🔐 ERROR_CHUNK: Received error chunk: {chunk}")
+                        yield f"data: {json.dumps({'error': chunk.get('content', 'Unknown error'), 'error_type': chunk.get('error', 'unknown'), 'can_retry': chunk.get('can_retry', False), 'retry_message': chunk.get('retry_message', '')})}\n\n"
                     elif chunk.get('type') == 'heartbeat':
                         # Pass through heartbeat messages
                         yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\\n\\n"
@@ -1368,19 +1373,34 @@ async def stream_chunks(body):
                 # Expected error for non-Bedrock endpoints - fall through to LangChain silently
                 logger.debug(f"🚀 DIRECT_STREAMING: {ve} - falling back to LangChain")
             except Exception as e:
-                # Check if this is a connectivity-related error
-                error_str = str(e)
-                if any(indicator in error_str.lower() for indicator in ['i/o timeout', 'dial tcp', 'lookup', 'network', 'connection']):
-                    yield f"data: {json.dumps({'error': 'Network connectivity issue. Please check your internet connection and try again.', 'error_type': 'connectivity', 'technical_details': str(e)[:200]})}\n\n"
-                    return
-                    
-            except Exception as e:
                 import traceback
+                error_str = str(e)
                 error_details = traceback.format_exc()
                 logger.error(f"🚀 DIRECT_STREAMING: Error in StreamingToolExecutor: {e}")
                 logger.error(f"🚀 DIRECT_STREAMING: Full traceback:\n{error_details}")
-                # Fall through to LangChain path
-                yield f"data: {json.dumps({'error': f'Service initialization failed: {str(e)[:100]}...', 'error_type': 'initialization'})}\n\n"
+                
+                # Check for auth/credential errors
+                from app.utils.custom_exceptions import KnownCredentialException
+                is_auth_error = (
+                    isinstance(e, KnownCredentialException) or
+                    any(indicator in error_str for indicator in [
+                        'credential', 'mwinit', 'midway-auth', 'ExpiredToken',
+                        'InvalidClientTokenId', 'UnauthorizedOperation', 'Status code: 401'
+                    ])
+                )
+                
+                if is_auth_error:
+                    error_message = "AWS credentials have expired. Please run 'mwinit' to refresh your credentials and try again."
+                    yield f"data: {json.dumps({'error': error_message, 'error_type': 'authentication_error', 'can_retry': True})}\n\n"
+                    return
+                
+                # Check for connectivity errors
+                if any(indicator in error_str.lower() for indicator in ['i/o timeout', 'dial tcp', 'lookup', 'network', 'connection']):
+                    yield f"data: {json.dumps({'error': 'Network connectivity issue. Please check your internet connection and try again.', 'error_type': 'connectivity'})}\n\n"
+                    return
+                
+                # Generic error - always send to frontend
+                yield f"data: {json.dumps({'error': f'Error: {str(e)[:200]}', 'error_type': type(e).__name__})}\n\n"
                 return
         
         logger.info("🚀 DIRECT_STREAMING: No question found or error occurred, falling back to LangChain")
@@ -3574,6 +3594,19 @@ async def get_folders_with_accurate_tokens():
             }
         )
 
+@app.get('/api/config')
+def get_config():
+    """Get application configuration for frontend."""
+    return {
+        'theme': os.environ.get('ZIYA_THEME', 'light'),
+        'defaultModel': os.environ.get('ZIYA_MODEL'),
+        'endpoint': os.environ.get('ZIYA_ENDPOINT', 'bedrock'),
+        'port': int(os.environ.get('ZIYA_PORT', DEFAULT_PORT)),
+        'mcpEnabled': os.environ.get('ZIYA_ENABLE_MCP', 'true').lower() in ('true', '1', 'yes'),
+        'version': os.environ.get('ZIYA_VERSION', 'development'),
+        'ephemeralMode': os.environ.get('ZIYA_EPHEMERAL_MODE', 'false').lower() in ('true', '1', 'yes'),
+    }
+
 @app.get('/api/current-model')
 def get_current_model():
     """Get detailed information about the currently active model."""
@@ -3645,7 +3678,7 @@ def get_current_model():
             'region': region,
             'settings': model_settings,
             'token_limit': model_config.get("extended_context_limit" if model_config.get("supports_extended_context") else "token_limit", 4096),
-            'ephemeral': os.environ.get("ZIYA_EPHEMERAL", "false").lower() == "true"
+            'ephemeral': os.environ.get("ZIYA_EPHEMERAL_MODE", "false").lower() in ("true", "1", "yes")
         }
     except Exception as e:
         logger.error(f"Error getting current model: {str(e)}")
