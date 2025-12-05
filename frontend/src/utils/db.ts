@@ -214,25 +214,20 @@ class ConversationDB implements DB {
     }
 
     private validateConversations(conversations: Conversation[]): boolean {
+        // Minimal validation - only check structural integrity
+        // We should NEVER silently discard user data based on content
         return conversations.every(conv =>
             typeof conv === 'object' &&
+            conv !== null &&
             typeof conv.id === 'string' &&
             conv.id.length > 0 &&
-            typeof conv.title === 'string' &&
-            Array.isArray(conv.messages) &&
-            conv.messages.length > 0 &&
-            conv.messages.every(msg =>
-                typeof msg === 'object' &&
-                typeof msg.content === 'string' &&
-                msg.content.length > 0 &&
-                (msg.role === 'human' || msg.role === 'assistant')
-            )
+            Array.isArray(conv.messages)
         );
     }
 
     private mergeConversations(local: Conversation[], remote: Conversation[]): Conversation[] {
         const merged = new Map<string, Conversation>();
-        
+
         // Don't filter out empty conversations - they're valid while waiting for first message
         const localFiltered = local;
         const remoteFiltered = remote;
@@ -355,7 +350,7 @@ class ConversationDB implements DB {
 
     private async _saveConversationsWithLock(conversations: Conversation[]): Promise<void> {
         console.debug('Starting _saveConversationsWithLock with', conversations.length, 'conversations');
-        
+
         // CRITICAL: Deduplicate conversations before saving
         const deduped = new Map<string, Conversation>();
         conversations.forEach(conv => {
@@ -368,10 +363,10 @@ class ConversationDB implements DB {
                 const currentMsgCount = conv.messages?.length || 0;
                 const existingVersion = existing._version || 0;
                 const currentVersion = conv._version || 0;
-                
-                if (currentMsgCount > existingMsgCount || 
+
+                if (currentMsgCount > existingMsgCount ||
                     (currentMsgCount === existingMsgCount && currentVersion > existingVersion)) {
-                    console.warn('🔄 Replacing duplicate conversation:', conv.id.substring(0, 8), 
+                    console.warn('🔄 Replacing duplicate conversation:', conv.id.substring(0, 8),
                         `(${existingMsgCount} -> ${currentMsgCount} messages)`);
                     deduped.set(conv.id, conv);
                 } else {
@@ -380,7 +375,7 @@ class ConversationDB implements DB {
                 }
             }
         });
-        
+
         const uniqueConversations = Array.from(deduped.values());
         if (uniqueConversations.length !== conversations.length) {
             console.warn(`🔧 Deduplicated: ${conversations.length} -> ${uniqueConversations.length} conversations`);
@@ -429,7 +424,7 @@ class ConversationDB implements DB {
                     lastAccessedAt: conv.lastAccessedAt || Date.now(),
                     isActive: conv.isActive !== false
                 }));
-                
+
                 console.debug('📝 Conversations being saved:', conversationsToSave.map(c => ({
                     id: c.id.substring(0, 8),
                     title: c.title,
@@ -606,10 +601,9 @@ class ConversationDB implements DB {
                         return;
                     }
                 }
-                resolve([]);
-                // If we got no valid conversations, try to restore from backup
+                // No valid conversations found - try backup BEFORE resolving empty
                 this.restoreFromBackup().then(backupConversations => {
-                    resolve(backupConversations);
+                    resolve(backupConversations.length > 0 ? backupConversations : []);
                 }).catch(() => resolve([]));
             };
 
@@ -705,7 +699,7 @@ class ConversationDB implements DB {
         }
         return this._importConversations(data);
     }
-    
+
     private validateImportedConversation(conv: any): boolean {
         return !!(
             conv &&
@@ -719,7 +713,7 @@ class ConversationDB implements DB {
             Array.isArray(conv.messages)
         );
     }
-    
+
     private async _importConversations(data: string): Promise<void> {
         if (!this.db) {
             throw new Error('Database not initialized');
@@ -735,7 +729,7 @@ class ConversationDB implements DB {
                 // Old format - just conversations
                 importedConversations = parsedData;
                 console.log('Importing legacy format:', data.length, 'conversations');
-                
+
                 // Validate all conversations before importing
                 importedConversations = importedConversations.filter(c => {
                     const valid = this.validateImportedConversation(c);
@@ -754,7 +748,7 @@ class ConversationDB implements DB {
                     conversations: importedConversations.length,
                     folders: importedFolders.length
                 });
-                
+
                 // Validate all conversations
                 const invalidCount = importedConversations.length;
                 importedConversations = importedConversations.filter(c => {
@@ -762,7 +756,7 @@ class ConversationDB implements DB {
                     if (!valid) console.warn('⚠️ Skipping invalid conversation:', c.id?.substring(0, 8) || 'no-id');
                     return valid;
                 });
-                
+
                 if (importedConversations.length < invalidCount) {
                     console.warn(`⚠️ IMPORT: Filtered out ${invalidCount - importedConversations.length} invalid conversations`);
                 }
@@ -773,15 +767,15 @@ class ConversationDB implements DB {
             // Get existing conversations to prevent duplicates
             const existingConversations = await this.getConversations();
             const existingIds = new Set(existingConversations.map(c => c.id));
-            
+
             // Only import conversations that don't already exist
             const newConversations = importedConversations.filter(c => !existingIds.has(c.id));
             const duplicateCount = importedConversations.length - newConversations.length;
-            
+
             if (duplicateCount > 0) {
                 console.warn(`⚠️ IMPORT: Skipping ${duplicateCount} duplicate conversations`);
             }
-            
+
             if (newConversations.length === 0) {
                 console.log('ℹ️ IMPORT: No new conversations to import');
                 return;
@@ -804,7 +798,7 @@ class ConversationDB implements DB {
                 console.warn('⚠️ IMPORT: No valid conversations after filtering');
                 return;
             }
-            
+
             console.log(`📥 IMPORT: Validated ${validConversations.length} conversations for import`);
 
             // Import folders first (if any)
@@ -815,7 +809,7 @@ class ConversationDB implements DB {
 
                 // Only import folders that don't already exist
                 const newFolders = importedFolders.filter(folder => !existingFolderIds.has(folder.id));
-                
+
                 console.log(`📁 IMPORT: Adding ${newFolders.length} new folders (${importedFolders.length - newFolders.length} already exist)`);
 
                 // Save new folders
@@ -834,13 +828,13 @@ class ConversationDB implements DB {
 
             // Merge conversations, keeping existing ones if IDs conflict
             const mergedConversations = [...existingConversations, ...validConversations];
-            
+
             console.log(`💾 IMPORT: Final merge - ${existingConversations.length} existing + ${validConversations.length} new = ${mergedConversations.length} total`);
-            
+
             // Start a transaction
             const tx = this.db.transaction([STORE_NAME], 'readwrite');
             const store = tx.objectStore(STORE_NAME);
-            
+
             return new Promise((resolve, reject) => {
                 const request = store.put(mergedConversations, 'current');
 
@@ -850,7 +844,7 @@ class ConversationDB implements DB {
                 };
 
                 request.onerror = () => reject(request.error);
-                
+
                 tx.onerror = () => {
                     console.error('❌ Import transaction failed:', tx.error);
                     reject(tx.error);
@@ -1175,16 +1169,16 @@ class ConversationDB implements DB {
                 // Search through messages
                 conv.messages.forEach((msg, index) => {
                     const contentToSearch = caseSensitive ? msg.content : msg.content.toLowerCase();
-                    
+
                     if (contentToSearch.includes(searchTerm)) {
                         // Find all occurrences in this message
                         const occurrences: Array<{ start: number; length: number }> = [];
                         let pos = 0;
-                        
+
                         while (pos < contentToSearch.length) {
                             const foundPos = contentToSearch.indexOf(searchTerm, pos);
                             if (foundPos === -1) break;
-                            
+
                             occurrences.push({
                                 start: foundPos,
                                 length: searchTerm.length
@@ -1200,13 +1194,13 @@ class ConversationDB implements DB {
                                 msg.content.length,
                                 firstOccurrence.start + searchTerm.length + 100
                             );
-                            
+
                             let snippet = msg.content.substring(snippetStart, snippetEnd);
-                            
+
                             // Add ellipsis if truncated
                             if (snippetStart > 0) snippet = '...' + snippet;
                             if (snippetEnd < msg.content.length) snippet = snippet + '...';
-                            
+
                             // Limit snippet length
                             if (snippet.length > maxSnippetLength) {
                                 snippet = snippet.substring(0, maxSnippetLength) + '...';
