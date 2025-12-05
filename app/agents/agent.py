@@ -1506,11 +1506,6 @@ class RetryingChatBedrock(Runnable):
                     # Last attempt failed, raise the exception
                     logger.error(f"All {max_retries} attempts failed")
                     raise
-
-            formatted_messages.append({
-                'role': role,
-                'content': content
-            })
  
         return formatted_messages
  

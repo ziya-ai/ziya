@@ -801,3 +801,38 @@ def list_model_capabilities(endpoint=None, model_name=None):
             result.append("")  # Empty line between models
     
     return "\n".join(result)
+
+def get_model_capabilities(endpoint=None, model_name=None):
+    """
+    Get comprehensive capabilities for a model endpoint.
+    Single source of truth for model capabilities.
+    
+    Args:
+        endpoint: Endpoint name (e.g., "bedrock", "google"). If None, uses environment.
+        model_name: Model name. If None, uses environment.
+        
+    Returns:
+        dict: Dictionary of capability flags
+    """
+    # Get from environment if not provided
+    if endpoint is None:
+        endpoint = os.environ.get("ZIYA_ENDPOINT", DEFAULT_ENDPOINT)
+    if model_name is None:
+        model_name = os.environ.get("ZIYA_MODEL", DEFAULT_MODELS.get(endpoint))
+    
+    # Get model config
+    config = MODEL_CONFIGS.get(endpoint, {}).get(model_name, {})
+    endpoint_config = ENDPOINT_DEFAULTS.get(endpoint, {})
+    
+    # Build capabilities dict
+    return {
+        "native_function_calling": config.get("native_function_calling", 
+                                             endpoint == "bedrock"),  # Bedrock defaults to native
+        "supports_vision": config.get("supports_vision", False),
+        "supports_thinking": config.get("supports_thinking", False),
+        "supports_streaming": True,  # All current models support streaming
+        "supports_context_caching": config.get("supports_context_caching", False),
+        "supports_multimodal": config.get("supports_multimodal", False),
+        "endpoint": endpoint,
+        "model_name": model_name
+    }

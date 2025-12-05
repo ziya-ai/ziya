@@ -316,7 +316,7 @@ class ZiyaBedrock(Runnable):
         return file_contents
 
     def _generate(
-        self, messages: List[BaseMessage], stop: Optional[List[str]] = None, **kwargs: Any
+        self, messages: List[BaseMessage], stop: Optional[List[str]] = None, config: Optional[Dict] = None, **kwargs: Any
     ) -> ChatResult:
         """
         Generate a response from the model.
@@ -325,7 +325,7 @@ class ZiyaBedrock(Runnable):
         # Add our stored parameters to kwargs if not already present
 
         # Prepare messages with caching if supported
-        conversation_id = kwargs.get("conversation_id") if config else None
+        conversation_id = config.get("conversation_id") if config else None
         messages = self._prepare_messages_with_smart_caching(messages, conversation_id, config)
 
         # Ensure system messages are properly ordered after caching
@@ -967,7 +967,7 @@ class ZiyaBedrock(Runnable):
             messages = input
             
         # Prepare messages with caching if supported
-        conversation_id = kwargs.get("conversation_id") if config else None
+        conversation_id = config.get("conversation_id") if config and isinstance(config, dict) else None
         messages = self._prepare_messages_with_smart_caching(messages, conversation_id, config)
 
         # Ensure system messages are properly ordered after caching

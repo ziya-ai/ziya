@@ -73,9 +73,6 @@ class ModelManager:
         })
         
         return model_config
-        for message in messages:
-            if not message.content or not message.content.strip():
-                raise ValueError("Empty message content detected")
 
 class ModelManager:
     """
