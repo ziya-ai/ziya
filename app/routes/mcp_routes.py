@@ -573,13 +573,19 @@ async def get_shell_config():
                 "timeout": timeout
             }
         else:
-            # Shell server not connected, return default config with enabled=False
-            # But still check for environment timeout override
+            # Shell server not connected, but check the actual server config
+            # to see if it's supposed to be enabled
             default_config = get_default_shell_config()
             timeout = int(os.environ.get("COMMAND_TIMEOUT", default_config["timeout"]))
+            
+            # Check if shell server is in server_configs and what its enabled state is
+            server_config = mcp_manager.server_configs.get("shell", {})
+            configured_enabled = server_config.get("enabled", True)
+            
             return {
                 **default_config,
-                "enabled": False,
+                "enabled": configured_enabled,
+                "connected": False,  # Add this to distinguish config vs connection state
                 "timeout": timeout
             }
         
@@ -616,6 +622,8 @@ async def update_shell_config(config: ShellConfig):
             "command": "python",
             "args": ["-u", "app/mcp_servers/shell_server.py"],
             "enabled": config.enabled,
+            "builtin": True,  # Preserve builtin flag
+            "description": "Provides shell command execution",
             "env": {
                 "ALLOW_COMMANDS": ",".join(config.allowedCommands),
                 "GIT_OPERATIONS_ENABLED": "true" if config.gitOperationsEnabled else "false",
@@ -646,11 +654,21 @@ async def update_shell_config(config: ShellConfig):
                 
                 # Update or create shell server config
                 if "shell" not in mcp_config["mcpServers"]:
-                    # Get the base command from builtin definitions
+                    # Get the base command and script path
                     import sys
+                    from pathlib import Path
+                    
+                    # Find the shell_server.py script using the same logic as builtin definitions
+                    try:
+                        import app.mcp_servers
+                        package_dir = Path(app.mcp_servers.__file__).parent
+                        shell_script_path = str(package_dir / "shell_server.py")
+                    except ImportError:
+                        shell_script_path = "app/mcp_servers/shell_server.py"  # Fallback to relative
+                    
                     mcp_config["mcpServers"]["shell"] = {
                         "command": sys.executable,
-                        "args": ["-u", "app/mcp_servers/shell_server.py"],
+                        "args": ["-u", shell_script_path],
                         "enabled": config.enabled,
                         "description": "Shell command execution server"
                     }

@@ -8,6 +8,7 @@ with MCP (Model Context Protocol) servers and tools.
 from app.utils.prompt_extensions import prompt_extension
 from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
 from app.utils.logging_utils import logger
+import os
 
 logger.info("MCP_GUIDELINES: mcp_prompt_extensions.py module being imported")
 
@@ -28,14 +29,21 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
         context: Extension context
         
     Returns:
-        str: Modified prompt with MCP guidelines
-     """
+    """
     logger.info("MCP_GUIDELINES: @prompt_extension decorator applied to mcp_usage_guidelines")
     logger.info("MCP_GUIDELINES: mcp_usage_guidelines function called")
+    
     import os
-    endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
-    logger.info(f"MCP_DEBUG: Checking endpoint from environment: '{endpoint}'")
-    is_google_endpoint = endpoint == "google"
+    
+    # Get model capabilities from central source
+    from app.config.models_config import get_model_capabilities
+    endpoint = context.get("endpoint", os.environ.get("ZIYA_ENDPOINT", "bedrock"))
+    model_name = context.get("model_name", os.environ.get("ZIYA_MODEL"))
+    capabilities = get_model_capabilities(endpoint, model_name)
+    
+    logger.info(f"MCP_GUIDELINES: Model capabilities: {capabilities}")
+    
+    native_function_calling = capabilities["native_function_calling"]
  
     if not context.get("config", {}).get("enabled", True):
         logger.info("MCP_GUIDELINES: Extension disabled by config, returning original prompt")
@@ -62,7 +70,6 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
         return prompt
     
     # Check if MCP is enabled
-    import os
     if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
         logger.info("MCP_GUIDELINES: MCP is disabled, returning original prompt")
         return prompt
@@ -83,56 +90,56 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
         logger.info("MCP_GUIDELINES: No MCP tools available or list is empty, returning original prompt.")
         return prompt
 
- 
-    # For Google models, native function calling is used. Do not add XML tool instructions.
-    if is_google_endpoint:
-        logger.info("MCP_GUIDELINES: Google model detected. Skipping XML tool instructions in prompt.")
-        return prompt
-    
-    # Check if native tools are available - if so, skip XML instructions
-    native_tools_available = context.get("native_tools_available", False)
-    if native_tools_available:
-        logger.info("MCP_GUIDELINES: Native tools available. Skipping XML tool instructions in prompt.")
-        return prompt
-    else:
-        logger.info("MCP_DEBUG: Not a Google endpoint and no native tools, adding XML tool instructions.")
-        # For other models (Bedrock, etc.), provide XML-based tool instructions
-        mcp_guidelines = """
+    # Start building MCP guidelines
+    logger.info(f"MCP_GUIDELINES: Building guidelines. Native function calling: {native_function_calling}")
+    mcp_guidelines = """
 
 🚨 CRITICAL FILE MODIFICATION PROHIBITION 🚨
 ═══════════════════════════════════════════════
 NEVER use tools to:
-- Copy files (cp, backup, etc.)
-- Modify files directly (sed, awk, etc.) 
-- Create new files
-- Move or rename files
-- Change file permissions
-
-ONLY suggest changes through Git diff patches in your response text.
-If you catch yourself about to modify a file with a tool - STOP and provide a diff instead.
-═══════════════════════════════════════════════
-
 ## MCP Tool Usage - CRITICAL INSTRUCTIONS
 **EXECUTE TOOLS WHEN REQUESTED - Never simulate or describe what you would do.**
+
+"""
+    
+    # Always include parameter examples - they're helpful regardless of calling mechanism
+    logger.info("MCP_GUIDELINES: Adding parameter call examples")
+    mcp_guidelines += """
+CRITICAL: TOOL PARAMETER CALL EXAMPLES
+When calling tools, ensure you match the exact parameter structure from the schema.
+Many tools use a 'tool_input' wrapper - verify the nesting structure carefully.
+
+"""
+    
+    # Add call examples for all tools
+    mcp_guidelines += _get_tool_call_examples_for_native(available_tools)
+    
+    # Only add XML format examples if NOT using native function calling
+    if not native_function_calling:
+        logger.info("MCP_GUIDELINES: Adding XML format examples for non-native function calling")
+        mcp_guidelines += """
 
 """ + _get_tool_descriptions_from_mcp(available_tools) + """
 
 """ + _get_tool_parameter_schemas(available_tools) + """
 
 CRITICAL: PARAMETER VERIFICATION
-Before ANY tool call: Find tool schema -> Verify EXACT parameter names -> Match character-for-character
+Before ANY tool call: Find tool schema → Verify EXACT parameter names → Match character-for-character
 Common error: Using 'query' when schema says 'searchQuery' (or similar name mismatches)
 DO NOT guess names from similar tools. Each tool has its own parameter names.
 
 """ + _get_tool_call_formats_from_mcp(available_tools) + """
 
-**Usage 
+"""
+    
+    # Add usage rules (same for all models)
+    mcp_guidelines += """
+**Usage Rules:**
 
 0. **Answer from context first** - Only use tools when you need information not available in the provided context
 1. **Prefer local context and AST over tools** when either can provide similar information
 2. **When using tools, use actual results** - Never fabricate output
 
-⚠️  BEFORE EVERY TOOL CALL ASK YOURSELF: ⚠️
 "Do I need information not in the context? Am I about to modify a file? If modifying files, I must provide a Git diff patch instead!"
 3. **Shell commands**: Use read-only commands (ls, cat, grep) when possible; format output as terminal session
 4. **Error handling**: Show actual errors and try alternatives
@@ -140,9 +147,9 @@ DO NOT guess names from similar tools. Each tool has its own parameter names.
 6. **No Empty Calls**: Do not generate empty or incomplete tool calls. Only output a tool call block if you have a valid command to execute.
 """
 
-        # Add shell-specific warning if shell command tool is available
-        if any("shell" in tool.lower() or "run_shell_command" in tool for tool in available_tools):
-            mcp_guidelines += """
+    # Add shell-specific warning if shell command tool is available
+    if any("shell" in tool.lower() or "run_shell_command" in tool for tool in available_tools):
+        mcp_guidelines += """
 
 🛑 SHELL COMMAND RESTRICTIONS 🛑
 Tools are for READING and ANALYZING code, not changing it.
@@ -360,5 +367,44 @@ def _get_example_value_for_property(prop_info: dict, prop_name: str, tool_name: 
  
 # Removed _get_fallback_tool_formats() function as it was hardcoding shell tool examples
 # even when shell server was disabled. Now we only show formats for actually enabled tools.
+
+def _get_tool_call_examples_for_native(available_tools: list) -> str:
+    """Generate call examples for native function calling (without XML format)."""
+    try:
+        from app.mcp.manager import get_mcp_manager
+        mcp_manager = get_mcp_manager()
+        
+        if not mcp_manager.is_initialized:
+            return ""
+            
+        # Get all MCP tools with their schemas
+        mcp_tools = mcp_manager.get_all_tools()
+        tool_schemas = {tool.name: tool.inputSchema for tool in mcp_tools}
+        
+        examples = []
+        
+        for tool_name in available_tools:
+            clean_name = tool_name[4:] if tool_name.startswith("mcp_") else tool_name
+            display_name = f"mcp_{clean_name}" if not tool_name.startswith("mcp_") else tool_name
+            
+            schema = tool_schemas.get(clean_name)
+            if clean_name in tool_schemas and schema and "properties" in schema:
+                # Generate example arguments from schema
+                example_args = _generate_example_args_from_schema(schema, clean_name)
+                
+                examples.append(f"""**{display_name} Example:**
+```json
+{example_args}
+```
+""")
+        
+        if examples:
+            return "\n".join(examples)
+        else:
+            return ""
+            
+    except Exception as e:
+        logger.warning(f"Could not generate tool call examples: {e}")
+        return ""
 
 

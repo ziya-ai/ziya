@@ -60,13 +60,15 @@ class MCPManager:
             package_dir = Path(app.mcp_servers.__file__).parent
 
             builtin_servers["time"] = {
-                "command": [sys.executable, "-u", str(package_dir / "time_server.py")],
+                "command": sys.executable,
+                "args": ["-u", str(package_dir / "time_server.py")],
                 "enabled": True,
                 "description": "Provides current time functionality",
                 "builtin": True
             }
             builtin_servers["shell"] = {
-                "command": [sys.executable, "-u", str(package_dir / "shell_server.py")],
+                "command": sys.executable,
+                "args": ["-u", str(package_dir / "shell_server.py")],
                 "enabled": True,
                 "description": "Provides shell command execution",
                 "builtin": True
@@ -196,6 +198,18 @@ class MCPManager:
                         logger.info(f"User configuration for '{name}' overrides built-in server.")
                         updated_config = server_configs[name].copy()
                         updated_config.update(user_cfg)
+                        
+                        # CRITICAL: For builtin servers, ensure script path is absolute
+                        # User configs may have relative paths that won't resolve correctly
+                        if "args" in updated_config and len(updated_config["args"]) > 0:
+                            script_arg = updated_config["args"][-1]  # Last arg is typically the script
+                            if script_arg.endswith('.py') and not os.path.isabs(script_arg):
+                                # Replace with absolute path from builtin definition
+                                builtin_args = server_configs[name].get("args", [])
+                                if builtin_args:
+                                    updated_config["args"] = builtin_args
+                                    logger.info(f"Preserved absolute script path for builtin server '{name}': {builtin_args[-1]}")
+                        
                         updated_config["builtin"] = True 
                         server_configs[name] = updated_config
                     else:
@@ -227,12 +241,15 @@ class MCPManager:
                     server_env.update(server_config["env"])
                 
                 # Verify server command exists
-                command = server_config.get("command", [])
+                command = server_config.get("command")
+                args = server_config.get("args", [])
+                
                 if command:
                     # For built-in servers, the command path is already absolute.
                     # For user-defined relative paths, MCPClient will resolve them.
                     if not server_config.get("builtin", False): # For non-builtin, check if script exists if relative
-                        script_path_part = command[-1] if command else ""
+                        # Check if script is in args (new format) or command (old format)
+                        script_path_part = args[-1] if args and args[-1].endswith('.py') else ""
                         if script_path_part.endswith('.py') and not os.path.isabs(script_path_part):
                             # Attempt to resolve relative to project root for user-defined scripts
                             # This matches MCPClient's behavior for resolving relative paths
@@ -243,8 +260,8 @@ class MCPManager:
                                 logger.error(f"User-defined MCP server script not found: {script_path_part} (checked relative to {proj_root_for_check})")
                                 continue
                     elif server_config.get("builtin", False):
-                        # For built-in, command[2] is the absolute path to the script
-                        builtin_script_path = command[2] if len(command) > 2 else ""
+                        # For built-in, args[-1] should be the absolute path to the script
+                        builtin_script_path = args[-1] if args else ""
                         if not Path(builtin_script_path).exists():
                             logger.error(f"Built-in MCP server script not found at resolved path: {builtin_script_path}")
                             continue
@@ -255,7 +272,12 @@ class MCPManager:
                 enhanced_config["name"] = server_name  # Add server name to config
                 
                 # Add external server specific configuration
-                if any(keyword in ' '.join(command).lower() for keyword in ['fetch', 'uvx', 'npx']):
+                # Handle both string command and array args for keyword detection
+                command_str = command if isinstance(command, str) else (' '.join(command) if isinstance(command, list) else '')
+                args_str = ' '.join(args) if isinstance(args, list) else ''
+                full_command = f"{command_str} {args_str}"
+                
+                if any(keyword in full_command.lower() for keyword in ['fetch', 'uvx', 'npx']):
                     enhanced_config["external_server"] = True
                     enhanced_config["max_retries"] = 5
                     enhanced_config["timeout"] = 60
@@ -267,6 +289,7 @@ class MCPManager:
                 connection_tasks.append(self._connect_server(server_name, client))
             
             # Wait for all connections to complete
+            results = []
             if connection_tasks:
                 results = await asyncio.gather(*connection_tasks, return_exceptions=True)
                 # Invalidate cache after initial connections are established
@@ -661,6 +684,92 @@ class MCPManager:
         
         return coerced
 
+    def _normalize_tool_parameters(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Normalize tool parameters to handle tool_input wrapper inconsistency.
+        
+        This allows models to call tools with or without the tool_input wrapper,
+        and automatically converts to the format the tool expects.
+        
+        Args:
+            tool_name: Name of the tool being called
+            arguments: Parameters passed by the model
+            
+        Returns:
+            Normalized parameters matching the tool's expected schema
+        """
+        if not isinstance(arguments, dict):
+            return arguments
+        
+        # CRITICAL: Handle JSON string arguments at the top level
+        # Models sometimes pass the entire arguments as a JSON string
+        # This can happen with native function calling when serialization is involved
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+                logger.info(f"Parsed top-level JSON string arguments for {tool_name}")
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.error(f"Failed to parse arguments as JSON string: {e}")
+                return arguments
+        
+        # Handle tool_input as JSON string BEFORE schema normalization
+        # This is critical because we need dict operations later
+        if isinstance(arguments, dict) and 'tool_input' in arguments:
+            tool_input = arguments['tool_input']
+            if isinstance(tool_input, str):
+                try:
+                    arguments['tool_input'] = json.loads(tool_input)
+                    logger.info(f"Parsed tool_input JSON string for {tool_name}")
+                except (json.JSONDecodeError, TypeError) as e:
+                    logger.error(f"Failed to parse tool_input as JSON string: {e}")
+                    # Return error immediately rather than letting it fail downstream
+                    return {"__validation_error__": True, "message": f"Invalid JSON in tool_input: {str(e)}"}
+        
+        try:
+            # Find the tool schema
+            tool_schema = None
+            for client in self.clients.values():
+                if client.is_connected:
+                    for tool in client.tools:
+                        if tool.name == tool_name:
+                            tool_schema = tool.inputSchema
+                            break
+                    if tool_schema:
+                        break
+            
+            if not tool_schema or 'properties' not in tool_schema:
+                return arguments
+            
+            properties = tool_schema['properties']
+            
+            # Check if schema expects tool_input wrapper
+            schema_uses_wrapper = (
+                len(properties) == 1 and 
+                "tool_input" in properties and
+                isinstance(properties["tool_input"], dict) and
+                "properties" in properties["tool_input"]
+            )
+            
+            # Check if parameters are wrapped
+            params_are_wrapped = "tool_input" in arguments and len(arguments) == 1
+            
+            # Case 1: Schema expects wrapper, params are NOT wrapped -> wrap them
+            if schema_uses_wrapper and not params_are_wrapped:
+                logger.info(f"Auto-wrapping parameters for {tool_name} with tool_input")
+                return {"tool_input": arguments}
+            
+            # Case 2: Schema does NOT expect wrapper, params ARE wrapped -> unwrap them
+            if not schema_uses_wrapper and params_are_wrapped:
+                logger.info(f"Auto-unwrapping tool_input for {tool_name}")
+                return arguments["tool_input"]
+            
+            # Case 3: Both match - return as-is
+            return arguments
+            
+        except Exception as e:
+            logger.warning(f"Error normalizing parameters for {tool_name}: {e}")
+            return arguments
+
     async def call_tool(self, tool_name: str, arguments: Dict[str, Any], server_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Call an MCP tool.
@@ -691,25 +800,6 @@ class MCPManager:
                 logger.error(f"Dynamic tool execution failed: {e}", exc_info=True)
                 return {"error": True, "message": str(e)}
         
-        # CRITICAL: Unwrap tool_input if present
-        # Some models (Claude, etc.) wrap parameters in {'tool_input': {...}}
-        # while others send parameters directly. Support both formats.
-        if isinstance(arguments, dict) and 'tool_input' in arguments and len(arguments) == 1:
-            logger.debug(f"Unwrapping tool_input for tool '{tool_name}': {arguments}")
-            tool_input = arguments['tool_input']
-            
-            # Handle case where tool_input is a JSON string instead of dict
-            if isinstance(tool_input, str):
-                try:
-                    arguments = json.loads(tool_input)
-                    logger.debug(f"Parsed tool_input JSON string: {arguments}")
-                except json.JSONDecodeError as e:
-                    logger.error(f"Failed to parse tool_input JSON: {e}")
-                    return {"error": True, "message": f"Invalid tool_input JSON: {str(e)}", "code": -32602}
-            else:
-                arguments = tool_input
-            logger.debug(f"Unwrapped arguments: {arguments}")
-
         # Check tool permissions before execution
         from app.mcp.permissions import get_permissions_manager
         permissions_manager = get_permissions_manager()
@@ -749,34 +839,48 @@ class MCPManager:
                 "code": -32001
             }
             
-        # Fail fast on validation errors instead of retrying
-        if any(keyword in str(arguments).lower() for keyword in ["validation", "invalid", "required"]):
-            return {
-                "error": True,
-                "message": f"Tool call blocked: {tool_name} has been called repeatedly with similar arguments. Please try a different approach or check if the previous results contain what you need.",
-                "code": -32001,
-                "content": [{"type": "text", "text": f"Tool call blocked due to repetitive execution pattern. Consider using different parameters or checking previous results."}]
-            }        
         # Periodic cleanup of stuck external servers
         if time.time() % 300 < 1:  # Every 5 minutes
             asyncio.create_task(self._cleanup_stuck_external_servers())
-            return {"content": [{"type": "text", "text": "Tool call blocked due to repetitive execution pattern"}]}
+            # Don't return here - this is just a background cleanup task
         
         # Remove mcp_ prefix if present for internal tool lookup
         internal_tool_name = tool_name
         if tool_name.startswith("mcp_"):
             internal_tool_name = tool_name[4:]
         
+        # Normalize parameters to handle tool_input wrapper inconsistency
+        # This must happen AFTER internal tool name resolution but BEFORE type coercion
+        arguments = self._normalize_tool_parameters(internal_tool_name, arguments)
+        
+        # Handle JSON string tool_input (kept for backward compatibility)
+        if isinstance(arguments, dict) and 'tool_input' in arguments and isinstance(arguments['tool_input'], str):
+            try:
+                arguments['tool_input'] = json.loads(arguments['tool_input'])
+            except json.JSONDecodeError:
+                pass  # Let it fail naturally downstream
+        
         # Coerce argument types based on tool schema
         arguments = self._coerce_argument_types(internal_tool_name, arguments)
+
+        # Final safety check: If normalization/coercion produced a validation error, return it immediately
+        if isinstance(arguments, dict) and arguments.get("__validation_error__"):
+            return {
+                "error": True,
+                "message": arguments.get("message", "Invalid arguments"),
+                "code": -32602
+            }
         
         if server_name:
             client = self.clients.get(server_name)
-            if client and client.is_connected:
+            if client:
+                if not client.is_connected:
+                    return {"error": True, "message": f"Server '{server_name}' is not connected", "code": -32002}
+                    
                 # Ensure client is healthy before making the call
                 if hasattr(client, '_is_process_healthy') and not await self._ensure_client_healthy(client):
                     logger.error(f"Client {server_name} is unhealthy, cannot execute tool")
-                    return None
+                    return {"error": True, "message": f"Server '{server_name}' is unhealthy", "code": -32002}
                     
                 return await client.call_tool(tool_name, arguments)
                     
@@ -810,7 +914,19 @@ class MCPManager:
                             logger.debug(f"🔍 MCP_MANAGER: Tool execution result: {result}")
                             return result
             
+            # Tool not found - provide helpful error message
             logger.warning(f"🔍 MCP_MANAGER: Tool '{internal_tool_name}' not found in any connected server")
+            
+            # Check if tool exists in a disconnected server
+            disconnected_server = None
+            for srv_name, config in self.server_configs.items():
+                if config.get("builtin") and srv_name == "shell" and internal_tool_name == "run_shell_command":
+                    disconnected_server = srv_name
+                    break
+            
+            if disconnected_server:
+                return {"error": True, "message": f"Tool '{internal_tool_name}' is available in the '{disconnected_server}' server, but that server is currently disconnected. Please check MCP Server Settings to reconnect it.", "code": -32002}
+            
         return None
     
     async def get_prompt_content(self, prompt_name: str, arguments: Optional[Dict[str, Any]] = None, server_name: Optional[str] = None) -> Optional[str]:
@@ -841,22 +957,38 @@ class MCPManager:
     def get_server_status(self) -> Dict[str, Dict[str, Any]]:
         """Get status of all MCP servers."""
         status = {}
-        for server_name, client in self.clients.items():
-            # Determine if this is a built-in server
-            is_builtin = self.server_configs.get(server_name, {}).get("builtin", False)
-            status[server_name] = {
-                "connected": client.is_connected,
-                "resources": len(client.resources),
-                "tools": len(client.tools),
-                "prompts": len(client.prompts),
-                "capabilities": client.capabilities,
-                "builtin": is_builtin
-            }
+        
+        # Iterate over all configured servers, not just connected clients
+        # This ensures we show status for servers that failed to connect
+        for server_name, server_config in self.server_configs.items():
+            client = self.clients.get(server_name)
+            is_builtin = server_config.get("builtin", False)
+            
+            # If client exists, get actual connection status
+            if client:
+                status[server_name] = {
+                    "connected": client.is_connected,
+                    "resources": len(client.resources),
+                    "tools": len(client.tools),
+                    "prompts": len(client.prompts),
+                    "capabilities": client.capabilities,
+                    "builtin": is_builtin
+                }
+            else:
+                # Server is configured but not in clients (failed to start or never started)
+                status[server_name] = {
+                    "connected": False,
+                    "resources": 0,
+                    "tools": 0,
+                    "prompts": 0,
+                    "capabilities": {},
+                    "builtin": is_builtin
+                }
         return status
 
 # Global MCP manager instance
 _mcp_manager: Optional[MCPManager] = None
-def get_mcp_manager() -> MCPManager:
+def get_mcp_manager():
     """Get the global MCP manager instance."""
     import os
     
@@ -878,7 +1010,7 @@ def get_mcp_manager() -> MCPManager:
             def get_server_status(self):
                 return {}
                 
-        return DisabledMCPManager()
+        return DisabledMCPManager()  # type: ignore
     
     global _mcp_manager
     if _mcp_manager is None:
