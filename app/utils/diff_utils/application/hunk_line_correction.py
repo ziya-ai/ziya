@@ -181,7 +181,6 @@ def correct_hunk_line_numbers(hunks: List[Dict[str, Any]], file_lines: List[str]
     Filters out large deletions with low confidence to prevent corruption.
     Also validates function context from hunk headers to prevent applying diffs to wrong functions.
     """
-    print(f"DEBUG: correct_hunk_line_numbers called with {len(hunks) if hunks else 0} hunks")
     if not hunks or not file_lines:
         return hunks
     
@@ -190,11 +189,9 @@ def correct_hunk_line_numbers(hunks: List[Dict[str, Any]], file_lines: List[str]
     skipped = 0
     
     for i, hunk in enumerate(hunks, 1):
-        print(f"DEBUG: Processing hunk {i}")
         old_start = hunk.get('old_start', 1)
         context = extract_context_from_hunk(hunk)
         
-        print(f"DEBUG: Hunk {i} has context: {len(context) if context else 0} lines")
         
         if not context:
             corrected.append(hunk)
@@ -203,25 +200,26 @@ def correct_hunk_line_numbers(hunks: List[Dict[str, Any]], file_lines: List[str]
         # Extract and validate function context from hunk header
         header = hunk.get('header', '')
         function_context = extract_function_context_from_header(header)
-        if function_context:
-            print(f"DEBUG: Hunk {i} has function context: {function_context}")
         
         # Find best match, passing original line for proximity preference
         result = find_best_match_position(context, file_lines, old_start)
         
-        print(f"DEBUG: Hunk {i} result: {result}")
         
         if result:
             pos, confidence = result
             new_start = pos + 1  # Convert to 1-based
             
             # Validate function context if present in hunk header
-            # This prevents applying diffs to wrong functions when context lines partially match
-            if function_context:
+            # Only enforce when fuzzy match confidence is not perfect
+            # High confidence (>= 0.95) means context is distinctive enough, skip function name check
+            # Lower confidence means we need function context to prevent corruption
+            if function_context and confidence < 0.95:
                 if not validate_function_context_at_position(function_context, file_lines, pos):
-                    logger.warning(f"Hunk {i}: function context '{function_context}' not found near target position {new_start} - skipping to prevent corruption")
+                    logger.warning(f"Hunk {i}: function context '{function_context}' not found, confidence {confidence:.2f} - skipping to prevent corruption")
                     skipped += 1
                     continue
+            elif function_context and confidence >= 0.95:
+                logger.debug(f"Hunk {i}: skipping function context validation due to high confidence match ({confidence:.2f})")
             
             # For large deletions, require higher confidence to avoid removing wrong content
             old_count = hunk.get('old_count', 0)
@@ -229,12 +227,10 @@ def correct_hunk_line_numbers(hunks: List[Dict[str, Any]], file_lines: List[str]
             is_large_deletion = (old_count - new_count) > 20
             min_confidence = 0.90 if is_large_deletion else 0.80
             
-            print(f"DEBUG: Hunk {i}: old_count={old_count}, new_count={new_count}, deletion_size={old_count - new_count}, is_large={is_large_deletion}, conf={confidence:.2f}, min={min_confidence}")
             
             # Special case: if this is a large deletion with low confidence,
             # check if there are duplicate occurrences later in the file
             if is_large_deletion and confidence < min_confidence:
-                print(f"DEBUG: Entering large deletion low confidence block for hunk {i}")
                 # Search for better matches further in the file
                 better_matches = []
                 for i in range(len(file_lines) - len(context) + 1):
@@ -268,6 +264,8 @@ def correct_hunk_line_numbers(hunks: List[Dict[str, Any]], file_lines: List[str]
                 corrections += 1
                 logger.info(f"Hunk {i}: corrected line {old_start} → {new_start} (confidence {confidence:.2f})")
             else:
+                # Add confidence metadata without changing flow
+                hunk['correction_confidence'] = confidence
                 corrected.append(hunk)
         else:
             corrected.append(hunk)
