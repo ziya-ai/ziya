@@ -8,12 +8,13 @@ import './index.css';
 import './styles/mermaid-theme.css';
 import './styles/mui-overrides.css';
 import '@fortawesome/fontawesome-free/css/all.min.css';
-import {App} from "./components/App";
-import {Debug} from "./components/Debug";
-import {ChatProvider} from "./context/ChatContext";
-import {FolderProvider} from "./context/FolderContext";
-import {ThemeProvider} from "./context/ThemeContext";
-import {QuestionProvider} from "./context/QuestionContext";
+import { App } from "./components/App";
+import { Debug } from "./components/Debug";
+import { ChatProvider } from "./context/ChatContext";
+import { FolderProvider } from "./context/FolderContext";
+import { ThemeProvider } from "./context/ThemeContext";
+import { ConfigProvider } from './context/ConfigContext';
+import { QuestionProvider } from "./context/QuestionContext";
 
 // hide unhandled promise rejections from making console spam
 window.addEventListener('unhandledrejection', (event) => {
@@ -32,6 +33,7 @@ const root = ReactDOM.createRoot(
 root.render(
     // StrictMode temporarily disabled to eliminate duplicate API calls in development
     // <React.StrictMode>
+    <ConfigProvider>
         <ThemeProvider>
             <ChatProvider>
                 <FolderProvider>
@@ -49,5 +51,6 @@ root.render(
                 </FolderProvider>
             </ChatProvider>
         </ThemeProvider>
+    </ConfigProvider>
     // </React.StrictMode>
 );

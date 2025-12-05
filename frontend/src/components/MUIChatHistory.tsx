@@ -1725,8 +1725,24 @@ const MUIChatHistory = () => {
   };
 
   // Build tree data from folders and conversations
+  // Stability refs to prevent unnecessary rebuilds
+  const lastTreeDataInputsRef = useRef<string>('');
+  const lastTreeDataRef = useRef<any[]>([]);
+
   const treeData = useMemo(() => {
-    // Add logging to see why this rebuilds so often
+    // Create a stable hash of inputs to detect actual changes
+    const inputHash = JSON.stringify({
+      folders: folders.map(f => ({ id: f.id, name: f.name, parentId: f.parentId })),
+      conversations: conversations.map(c => ({ id: c.id, title: c.title, folderId: c.folderId, isActive: c.isActive, lastAccessedAt: c.lastAccessedAt })),
+      pinnedFolders: Array.from(pinnedFolders)
+    });
+
+    // If inputs haven't changed, return cached result
+    if (inputHash === lastTreeDataInputsRef.current && lastTreeDataRef.current.length > 0) {
+      return lastTreeDataRef.current;
+    }
+    lastTreeDataInputsRef.current = inputHash;
+
     console.log('🔄 REBUILDING TREE DATA:', {
       foldersCount: folders.length,
       conversationsCount: conversations.length,
@@ -1884,7 +1900,9 @@ const MUIChatHistory = () => {
       return sorted;
     };
 
-    return sortRecursive(rootItems);
+    const result = sortRecursive(rootItems);
+    lastTreeDataRef.current = result;
+    return result;
   }, [conversations, folders, pinnedFolders]);
 
   // Create a unified folder configuration dialog that works for both creation and editing

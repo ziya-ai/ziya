@@ -158,6 +158,7 @@ interface ToolBlockProps {
 
 const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode, onOpenShellConfig }) => {
     const [isExpanded, setIsExpanded] = useState(false);
+    const [renderedHtml, setRenderedHtml] = useState('');
 
     // Extract command/query from toolName if it contains encoded information
     const [actualToolName, encodedCommand] = toolName.includes('|')
@@ -196,6 +197,52 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode, on
             summary: shouldCollapse ? `Output (${content.length} chars, ${content.split('\n').length} lines)` : undefined
         };
     }, [toolName, content]);
+
+    // Check if content should be rendered as markdown (contains markdown formatting)
+    const shouldRenderAsMarkdown = useMemo(() => {
+        return content.includes('**') || content.includes('[') || content.includes('###') || content.includes('<a href');
+    }, [content]);
+
+    // Render markdown content to HTML
+    useEffect(() => {
+        if (shouldRenderAsMarkdown) {
+            const result = marked.parse(content, { breaks: true, gfm: true });
+            if (typeof result === 'string') {
+                // Post-process HTML to add link styling for dark mode
+                let styledHtml = result;
+                if (isDarkMode) {
+                    // Add inline styles to links for dark mode readability
+                    styledHtml = styledHtml.replace(
+                        /<a href=/g,
+                        '<a style="color: #58a6ff; text-decoration: none;" onmouseover="this.style.color=\'#79c0ff\'; this.style.textDecoration=\'underline\';" onmouseout="this.style.color=\'#58a6ff\'; this.style.textDecoration=\'none\';" href='
+                    );
+                }
+                // Reduce excessive spacing from multiple consecutive line breaks
+                styledHtml = styledHtml
+                    .replace(/<p><\/p>/g, '') // Remove empty paragraphs
+                    .replace(/(<\/p>)\s*<p>/g, '$1<p>') // Tighten spacing between paragraphs
+                    .replace(/(<h3[^>]*>.*?<\/h3>)\s+/g, '$1\n') // Reduce space after headers
+                    .replace(/<br>\s*<br>/g, '<br>'); // Remove double line breaks
+
+                setRenderedHtml(result);
+                setRenderedHtml(styledHtml);
+            } else {
+                result.then(setRenderedHtml);
+                result.then(html => {
+                    let styledHtml = html;
+                    if (isDarkMode) {
+                        styledHtml = styledHtml.replace(/<a href=/g, '<a style="color: #58a6ff; text-decoration: none;" onmouseover="this.style.color=\'#79c0ff\'; this.style.textDecoration=\'underline\';" onmouseout="this.style.color=\'#58a6ff\'; this.style.textDecoration=\'none\';" href=');
+                    }
+                    styledHtml = styledHtml
+                        .replace(/<p><\/p>/g, '')
+                        .replace(/(<\/p>)\s*<p>/g, '$1<p>')
+                        .replace(/(<h3[^>]*>.*?<\/h3>)\s+/g, '$1\n')
+                        .replace(/<br>\s*<br>/g, '<br>');
+                    setRenderedHtml(styledHtml);
+                });
+            }
+        }
+    }, [content, shouldRenderAsMarkdown]);
 
     // Extract command/query information for display in header
     const getToolSummary = () => {
@@ -310,6 +357,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode, on
 
     // Render hierarchical results if available (e.g., workspace search)
     if (hierarchicalResults && hierarchicalResults.length > 0) {
+        const isCodeContent = hierarchicalResults[0].language && hierarchicalResults[0].language !== 'text' && hierarchicalResults[0].language !== 'markdown';
         return (
             <div style={{
                 backgroundColor: colors.bg,
@@ -366,18 +414,30 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode, on
                                     marginBottom: '4px'
                                 }}
                             >
-                                <pre style={{
-                                    margin: 0,
-                                    padding: '12px',
-                                    backgroundColor: isDarkMode ? '#0d1117' : '#f6f8fa',
-                                    borderRadius: '4px',
-                                    overflow: 'auto',
-                                    maxHeight: '400px',
-                                    fontSize: '12px',
-                                    lineHeight: '1.5'
-                                }}>
-                                    <code className={`language-${result.language || 'text'}`}>{result.content}</code>
-                                </pre>
+                                {isCodeContent ? (
+                                    <pre style={{
+                                        margin: 0,
+                                        padding: '12px',
+                                        backgroundColor: isDarkMode ? '#0d1117' : '#f6f8fa',
+                                        borderRadius: '4px',
+                                        overflow: 'auto',
+                                        maxHeight: '400px',
+                                        fontSize: '12px',
+                                        lineHeight: '1.5'
+                                    }}>
+                                        <code className={`language-${result.language}`}>{result.content}</code>
+                                    </pre>
+                                ) : (
+                                    <div
+                                        style={{
+                                            margin: 0,
+                                            padding: '12px',
+                                            fontSize: '13px',
+                                            lineHeight: '1.4'
+                                        }}
+                                        dangerouslySetInnerHTML={{ __html: marked.parse(result.content, { breaks: true, gfm: true }) as string }}
+                                    />
+                                )}
                             </Panel>
                         ))}
                     </Collapse>
@@ -470,17 +530,30 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode, on
                     );
                 })()
             ) : (
-                <pre style={{
-                    margin: 0,
-                    padding: '16px',
-                    color: colors.contentText,
-                    whiteSpace: 'pre-wrap',
-                    wordBreak: 'break-word',
-                    maxHeight: isExpanded ? 'none' : '400px',
-                    overflow: isExpanded ? 'visible' : 'auto'
-                }}>
-                    {cleanContent}
-                </pre>
+                shouldRenderAsMarkdown ? (
+                    <div style={{
+                        padding: '16px',
+                        color: colors.contentText,
+                        maxHeight: isExpanded ? 'none' : '400px',
+                        overflow: isExpanded ? 'visible' : 'auto',
+                        fontSize: '14px',
+                        lineHeight: '1.3'
+                    }}
+                        dangerouslySetInnerHTML={{ __html: renderedHtml }}
+                    />
+                ) : (
+                    <pre style={{
+                        margin: 0,
+                        padding: '16px',
+                        color: colors.contentText,
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        maxHeight: isExpanded ? 'none' : '400px',
+                        overflow: isExpanded ? 'visible' : 'auto'
+                    }}>
+                        {cleanContent}
+                    </pre>
+                )
             )}
         </div>
     );
@@ -3744,8 +3817,8 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         const trimmedText = text.trim();
 
         // Check for DrawIO XML content
-        if (trimmedText.includes('<mxGraphModel') || 
-            trimmedText.includes('<mxfile') || 
+        if (trimmedText.includes('<mxGraphModel') ||
+            trimmedText.includes('<mxfile') ||
             trimmedText.includes('<diagram')) {
             if (isDebugLoggingEnabled()) {
                 debugLog('DETECTED AS DRAWIO (content-based)');
@@ -4907,6 +4980,28 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
             // Pre-process tool blocks to clean up ONLY duplicate tool markers
             processedMarkdown = processedMarkdown.replace(/```tool:(mcp_\w+)\n```tool:\1/g, '```tool:$1');
+
+            // CRITICAL FIX: Escape backticks inside diff code blocks before markdown parsing
+            // This prevents backticks in diff content from being interpreted as fence delimiters
+            processedMarkdown = processedMarkdown.replace(
+                /```diff\n([\s\S]*?)```/g,
+                (match, diffContent) => {
+                    // Only escape fence sequences (3+ consecutive backticks) to prevent breaking out of diff block
+                    // Single/double backticks are safe and should remain unescaped for proper rendering
+                    const escapedContent = diffContent.replace(/```+/g, (fence) => '&#96;'.repeat(fence.length));
+                    return `\`\`\`diff\n${escapedContent}\`\`\``;
+                }
+            );
+
+            // Also handle multi-fence diff blocks (````)
+            processedMarkdown = processedMarkdown.replace(
+                /````diff\n([\s\S]*?)````/g,
+                (match, diffContent) => {
+                    // Only escape fence sequences (3+ consecutive backticks)
+                    const escapedContent = diffContent.replace(/```+/g, (fence) => '&#96;'.repeat(fence.length));
+                    return `\`\`\`\`diff\n${escapedContent}\`\`\`\``;
+                }
+            );
 
             // First check if this is a diff or code block that shouldn't have math processing
             const isDiff = processedMarkdown.includes('diff --git') ||
