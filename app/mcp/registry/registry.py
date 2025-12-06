@@ -8,7 +8,6 @@ import boto3
 from botocore.exceptions import ClientError
 
 from app.mcp.registry.interface import RegistryProvider
-from app.mcp.registry.providers.amazon_internal import AmazonInternalRegistryProvider
 from app.mcp.registry.providers.official_mcp import OfficialMCPRegistryProvider
 from app.mcp.registry.providers.smithery import SmitheryRegistryProvider
 from app.mcp.registry.providers.pulsemcp import PulseMCPRegistryProvider
@@ -147,72 +146,44 @@ def initialize_registry_providers():
         is_default=False
     )
     
-    # Register Amazon internal provider only if we're in an Amazon environment
-    if _is_amazon_environment():
-        logger.info("Amazon environment detected, registering internal registry")
-        registry.register_provider_class(
-            "amazon-internal", 
-            AmazonInternalRegistryProvider,
-            is_default=True
-        )
-    else:
-        logger.info("External environment, skipping Amazon internal registry")
+    # Register any providers from plugin system
+    from app.plugins import get_registry_providers as get_plugin_providers
+    
+    try:
+        plugin_providers = get_plugin_providers()
+        for provider in plugin_providers:
+            registry.register_provider(provider, is_default=True)
+        
+        if plugin_providers:
+            logger.info(f"Registered {len(plugin_providers)} registry provider(s) from plugins")
+    except Exception as e:
+        logger.debug(f"No plugin providers available: {e}")
     
     # Future: Add other providers here
     # registry.register_provider_class("npm", NPMRegistryProvider)
     # registry.register_provider_class("pypi", PyPIRegistryProvider)
 
 
-def _is_amazon_environment(profile_name: str = None) -> bool:
-    """Detect if we're running in an Amazon environment."""
-    # Check filesystem indicators first (doesn't require boto3)
-    if os.path.exists('/apollo'):
-        logger.info("Amazon environment detected via /apollo filesystem")
-        return True
+def is_internal_environment(profile_name: str = None) -> bool:
+    """
+    Detect if running in an internal/enterprise environment.
     
-    # Check environment variables
-    aws_profile = os.environ.get('AWS_PROFILE', '')
-    if 'isengard' in aws_profile.lower():
-        logger.info(f"Amazon environment detected via AWS_PROFILE: {aws_profile}")
-        return True
+    Uses plugin system to detect environment rather than hardcoding specific
+    environment checks. This allows any enterprise to provide their own
+    detection logic via plugins.
+    """
+    from app.plugins import get_active_auth_provider
     
-    aws_config = os.environ.get('AWS_CONFIG_FILE', '')
-    if 'midway' in aws_config.lower():
-        logger.info(f"Amazon environment detected via AWS_CONFIG_FILE: {aws_config}")
-        return True
-    
-    # Try AWS identity check if boto3 is available
     try:
-        if not profile_name:
-            try:
-                from app.agents.models import ModelManager
-                profile_name = ModelManager.get_state().get('aws_profile')
-            except Exception:
-                pass
-            if not profile_name:
-                profile_name = os.environ.get('AWS_PROFILE')
+        auth_provider = get_active_auth_provider()
         
-        if profile_name:
-            session = boto3.Session(profile_name=profile_name)
-            sts = session.client('sts')
+        # Internal/enterprise if provider is not the default (community) provider
+        if auth_provider and auth_provider.provider_id != "default":
+            logger.info(f"Internal environment detected via '{auth_provider.provider_id}' provider")
+            return True
         else:
-            sts = boto3.client('sts')
-        
-        identity = sts.get_caller_identity()
-        user_id = identity.get('UserId', '')
-        arn = identity.get('Arn', '')
-        account = identity.get('Account', '')
-        
-        is_amazon = any([
-            'amazon.com' in user_id.lower(),
-            'midway.amazon.com' in user_id.lower(),
-            '/amazon' in arn.lower(),
-            account in ['339712844704']
-        ])
-        
-        if is_amazon:
-            logger.info(f"Amazon environment detected via AWS identity: {arn}")
-        return is_amazon
+            return False
+            
     except Exception as e:
-        logger.debug(f"Could not check AWS identity (not fatal): {e}")
+        logger.debug(f"Could not detect environment: {e}")
         return False

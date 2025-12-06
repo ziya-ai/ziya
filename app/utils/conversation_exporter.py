@@ -1,7 +1,7 @@
 """
 Conversation Export Utility
 
-Exports conversations to formats suitable for paste services (GitHub Gist, paste.amazon.com)
+Exports conversations to formats suitable for paste services (GitHub Gist and others)
 with full preservation of formatting, code blocks, diffs, and visualizations.
 """
 
@@ -15,7 +15,7 @@ from datetime import datetime
 def export_conversation_for_paste(
     messages: List[Dict[str, Any]],
     format_type: str = 'markdown',
-    target: str = 'public',
+    target: str = 'public',  # Target paste service ID (extensible via plugins)
     captured_diagrams: Optional[List[Dict[str, Any]]] = None,
     version: str = '0.3.8',
     model: str = 'unknown',
@@ -664,15 +664,35 @@ def _create_footer(
 ) -> str:
     """Create footer with metadata and links."""
     
-    # URLs based on target
-    if target == 'internal':
-        # Amazon internal URLs
-        ziya_url = "https://w.amazon.com/bin/view/Ziya/"
-        repo_url = "https://code.amazon.com/packages/Ziya"
-    else:
-        # Public URLs
+    # Default to public URLs
+    ziya_url = "https://github.com/ziya-ai/ziya"
+    repo_url = "https://github.com/ziya-ai/ziya"
+    
+    # Try to get URLs from active config provider (allows internal customization)
+    try:
+        from app.plugins import get_active_config_providers
+        from app.utils.logging_utils import logger
+        
+        config_providers = get_active_config_providers()
+        for provider in config_providers:
+            try:
+                provider_defaults = provider.get_defaults()
+                if 'urls' in provider_defaults:
+                    urls = provider_defaults['urls']
+                    if 'ziya_url' in urls:
+                        ziya_url = urls['ziya_url']
+                    if 'repo_url' in urls:
+                        repo_url = urls['repo_url']
+                    logger.debug(f"Using URLs from {provider.provider_id} config provider")
+                    break
+            except Exception as e:
+                logger.debug(f"Error getting URLs from provider: {e}")
+    except ImportError:
+        # Plugin system not available, use defaults
         ziya_url = "https://github.com/ziya-ai/ziya"
         repo_url = ziya_url
+    except Exception as e:
+        logger.debug(f"Could not get URLs from config providers: {e}")
     
     if format_type == 'html':
         return f'''

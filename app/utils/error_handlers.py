@@ -18,34 +18,16 @@ ERROR_BEDROCK = "bedrock_error"
 ERROR_STREAM = "stream_error"
 ERROR_SERVER = "server_error"
 
-# Helper function to check if we're in an Amazon internal environment
-def is_amazon_internal_env(error_message=""):
-    """Check if we're in an Amazon internal environment."""
-    try:
-        import os
-        return (
-            os.path.exists('/apollo') or 
-            os.path.exists('/home/ec2-user') or
-            'AWS_PROFILE' in os.environ and 'isengard' in os.environ.get('AWS_PROFILE', '').lower() or
-            'AWS_CONFIG_FILE' in os.environ and 'midway' in os.environ.get('AWS_CONFIG_FILE', '').lower() or
-            any(pattern in error_message.lower() for pattern in ["amazon.com", "corp.amazon", "midway", "isengard"])
-        )
-    except (AttributeError, TypeError):
-        return False
-
 def _handle_aws_credential_error(error_message):
     """Handle AWS credential errors with appropriate messages."""
     error_type = ERROR_AUTH
     
-    # Check if this is an Amazon internal environment
-    if is_amazon_internal_env(error_message):
-        detail = """Your Amazon internal credentials have expired.
-
-Please run the following command to refresh your credentials:
-
-    mwinit
-
-Then try your query again."""
+    # Get help from active auth provider
+    from app.plugins import get_active_auth_provider
+    auth_provider = get_active_auth_provider()
+    
+    if auth_provider:
+        detail = auth_provider.get_credential_help_message()
     else:
         detail = "AWS credentials have expired. Please refresh your credentials."
         

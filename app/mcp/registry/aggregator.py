@@ -91,12 +91,11 @@ class RegistryAggregator:
         
         # Provider priority for merging
         provider_priority = {
-            'official-mcp': 1,
-            'pulsemcp': 2,
-            'smithery': 3,
-            'awesome-lists': 4,
-            'github': 5,
-            'amazon-internal': 0  # Highest priority
+            'official-mcp': 0,  # Highest priority
+            'pulsemcp': 1,
+            'smithery': 2,
+            'awesome-lists': 3,
+            'github': 4,
         }
         
         # Sort by priority

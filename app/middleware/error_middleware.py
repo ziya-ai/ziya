@@ -68,10 +68,12 @@ class ErrorHandlingMiddleware:
         # Try to run the app, catch any exceptions
         try:
             await self.app(scope, receive, safe_send)
-        except ValidationError as exc:
+        if isinstance(exc, RequestValidationError):
             # Handle pydantic validation errors that contain credential issues
             error_message = str(exc)
-            if "mwinit" in error_message.lower() or "credential" in error_message.lower() or "authentication" in error_message.lower():
+            from app.plugins import get_active_auth_provider
+            auth_provider = get_active_auth_provider()
+            if auth_provider and auth_provider.is_auth_error(error_message):
                 logger.warning(f"Credential validation error: {error_message}")
                 
                 # Check if this is a streaming request
@@ -96,7 +98,7 @@ class ErrorHandlingMiddleware:
                         
                         error_content = {
                             "error": "auth_error",
-                            "detail": "AWS credentials have expired. Please run 'mwinit' to authenticate and try again.",
+                            "detail": auth_provider.get_credential_help_message(),
                             "status_code": 401
                         }
                         
@@ -113,7 +115,7 @@ class ErrorHandlingMiddleware:
                         response = JSONResponse(
                             content={
                                 "error": "auth_error",
-                                "detail": "AWS credentials have expired. Please run 'mwinit' to authenticate and try again.",
+                                "detail": auth_provider.get_credential_help_message(),
                                 "status_code": 401
                             },
                             status_code=401

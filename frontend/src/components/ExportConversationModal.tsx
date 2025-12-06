@@ -19,6 +19,15 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
     const [exportedContent, setExportedContent] = useState<string | null>(null);
     const [captureProgress, setCaptureProgress] = useState<number>(0);
     const [captureStatus, setCaptureStatus] = useState<string>('');
+    const [availableTargets, setAvailableTargets] = useState<any[]>([
+        {
+            id: 'public',
+            name: 'GitHub Gist',
+            url: 'https://gist.github.com',
+            icon: 'GithubOutlined',
+            description: 'Public paste service with markdown support'
+        }
+    ]);
     const { currentConversationId, currentMessages } = useChatContext();
     const { isDarkMode } = useTheme();
 
@@ -31,8 +40,23 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
             setCaptureStatus('');
             setFormat('markdown');
             setTarget('public');
+        } else {
+            // Load available targets when modal opens
+            loadExportTargets();
         }
     }, [visible]);
+
+    const loadExportTargets = async () => {
+        try {
+            const response = await fetch('/api/export/targets');
+            if (response.ok) {
+                const data = await response.json();
+                setAvailableTargets(data.targets);
+            }
+        } catch (error) {
+            console.error('Error loading export targets:', error);
+        }
+    };
 
     const handleExport = async () => {
         setIsExporting(true);
@@ -123,35 +147,20 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
     };
 
     const openPasteService = () => {
-        const url = target === 'public' 
-            ? 'https://gist.github.com'
-            : 'https://paste.amazon.com';
+        const serviceInfo = getPasteServiceInfo();
+        const url = serviceInfo?.url || 'https://gist.github.com';
         window.open(url, '_blank');
     };
 
     const getPasteServiceInfo = () => {
-        if (target === 'public') {
-            return {
-                name: 'GitHub Gist',
-                url: 'https://gist.github.com',
-                icon: <GithubOutlined />,
-                description: 'Public paste service with markdown support, syntax highlighting, and version control. Embedded visualizations will be visible.'
-            };
-        } else {
-            return {
-                name: 'paste.amazon.com',
-                url: 'https://paste.amazon.com',
-                icon: <CloudOutlined />,
-                description: 'Amazon internal paste service for sharing code and text securely within Amazon'
-            };
-        }
+        return availableTargets.find(t => t.id === target) || availableTargets[0];
     };
 
     const serviceInfo = getPasteServiceInfo();
 
     return (
         <Modal
-            title="📤 Export Conversation"
+            title="Export Conversation"
             open={visible}
             onCancel={onClose}
             width={700}
@@ -229,26 +238,17 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
                                 style={{ marginTop: 8, display: 'block' }}
                             >
                                 <Space direction="vertical">
-                                    <Radio value="public">
+                                    {availableTargets.map(target => (
+                                        <Radio key={target.id} value={target.id}>
                                         <Space>
-                                            <GithubOutlined />
-                                            <span>GitHub Gist (Public)</span>
+                                                {target.icon === 'GithubOutlined' && <GithubOutlined />}
+                                                {target.icon === 'CloudOutlined' && <CloudOutlined />}
+                                                <span>{target.name}</span>
                                         </Space>
                                     </Radio>
-                                    <Radio value="internal">
-                                        <Space>
-                                            <CloudOutlined />
-                                            <span>paste.amazon.com (Internal Amazon)</span>
-                                        </Space>
-                                    </Radio>
+                                    ))}
                                 </Space>
                             </Radio.Group>
-                        </div>
-
-                        <Divider style={{ margin: '12px 0' }} />
-
-                        <div>
-                            <Text strong>Export Format</Text>
                             <Radio.Group
                                 value={format}
                                 onChange={(e) => setFormat(e.target.value)}

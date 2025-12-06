@@ -1431,21 +1431,17 @@ class StreamingToolExecutor:
                     "Too many tokens",
                     "Too many requests", 
                     "Rate exceeded",
-                    "rate limit"
                 ])
                 
-                # Check if this is a credential/authentication error
-                is_auth_error = any(indicator in error_str for indicator in [
-                    "CredentialRetrievalError",
-                    "Error when retrieving credentials",
-                    "mwinit",
-                    "midway-auth",
-                    "Status code: 401",
-                    "UnauthorizedOperation",
-                    "InvalidClientTokenId",
-                    "SignatureDoesNotMatch",
-                    "ExpiredToken"
-                ])
+                # Check for authentication/credential errors
+                from app.plugins import get_active_auth_provider
+                from app.utils.custom_exceptions import KnownCredentialException
+
+                auth_provider = get_active_auth_provider()
+                is_auth_error = (
+                    isinstance(e, KnownCredentialException) or
+                    (auth_provider and auth_provider.is_auth_error(error_str))
+                )
                 
                 if is_throttling:
                     # Extract suggested wait time if available
@@ -1481,11 +1477,7 @@ class StreamingToolExecutor:
                     logger.error(f"Authentication error in iteration {iteration}: {error_str}")
                     
                     # Extract the most relevant part of the error message
-                    error_message = error_str
-                    if "You may need to authenticate by running mwinit" in error_str:
-                        error_message = "AWS credentials have expired. Please run 'mwinit' to refresh your credentials and try again."
-                    elif "Status code: 401" in error_str:
-                        error_message = "Authentication failed (401 Unauthorized). Please check your AWS credentials and try again."
+                    error_message = auth_provider.get_credential_help_message() if auth_provider else "AWS credentials have expired."
                     
                     auth_error_chunk = {
                         'type': 'error',
@@ -1493,7 +1485,7 @@ class StreamingToolExecutor:
                         'content': error_message,
                         'detail': error_str,
                         'can_retry': True,
-                        'retry_message': 'Please refresh your credentials and try again.'
+                        'retry_message': error_message
                     }
                     logger.info(f"🔐 AUTH_ERROR: Yielding authentication error chunk: {auth_error_chunk}")
                     yield auth_error_chunk

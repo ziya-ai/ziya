@@ -385,11 +385,14 @@ def print_info(args):
                     error_msg = str(sts_error)
                     if 'ExpiredToken' in error_msg:
                         print(f"  Access Key: {credentials.access_key[:8]}...")
-                        # Check if using Midway/mwinit
-                        if os.path.exists(os.path.expanduser('~/.midway')) or 'midway' in (args.profile or '').lower():
-                            print(f"  Status: Expired (run 'mwinit' to refresh)")
+                        # Get credential help from active auth provider
+                        from app.plugins import get_active_auth_provider
+                        auth_provider = get_active_auth_provider()
+                        if auth_provider:
+                            print(f"  Status: Expired")
+                            print(f"  {auth_provider.get_credential_help_message()}")
                         else:
-                            print(f"  Status: Expired (run 'ada credentials update' or refresh your credentials)")
+                            print(f"  Status: Expired (please refresh your credentials)")
                     elif 'InvalidClientTokenId' in error_msg:
                         print(f"  Status: Invalid credentials")
                     else:
@@ -414,25 +417,7 @@ def print_info(args):
     print(f"  AST: {'Enabled' if args.ast else 'Disabled'}")
     if args.ast:
         print(f"  AST Resolution: {args.ast_resolution}")
-    print(f"  MCP: {'Enabled' if args.mcp else 'Disabled'}")
-    print()
-    
-    # Environment detection
-    print("Environment Detection:")
-    from app.mcp.registry.registry import _is_amazon_environment
-    is_amazon = _is_amazon_environment(profile_name=args.profile)
-    print(f"  Amazon Internal: {'Yes' if is_amazon else 'No'}")
-    
-    if is_amazon:
-        # Check for toolbox
-        try:
-            result = subprocess.run(['which', 'toolbox'], capture_output=True, text=True)
-            toolbox_installed = result.returncode == 0
-            print(f"  Toolbox: {'Installed' if toolbox_installed else 'Not found'}")
-        except Exception as e:
-            logger.debug(f"Error checking for toolbox: {e}")
-            print(f"  Toolbox: Not found")
-        
+        print(f"  MCP: {'Enabled' if args.mcp else 'Disabled'}")
         # Check for mcp-registry
         try:
             result = subprocess.run(['which', 'mcp-registry'], capture_output=True, text=True)
@@ -675,6 +660,11 @@ def check_auth(args):
 
 
 def main():
+    # Initialize plugin system FIRST (before any auth checks)
+    from app.plugins import initialize as initialize_plugins
+    initialize_plugins()
+    logger.info("Plugin system initialized")
+    
     # Check for version flag first to avoid unnecessary imports
     if "--version" in sys.argv:
         print_version()

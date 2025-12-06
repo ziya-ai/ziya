@@ -64,10 +64,10 @@ class RegistryIntegrationManager:
     
     def _should_include_internal_providers(self) -> bool:
         """Determine if internal providers should be included."""
-        # Auto-include internal providers in Amazon environments
+        # Check if any internal providers are registered via plugins
         try:
-            from app.mcp.registry.registry import _is_amazon_environment
-            if _is_amazon_environment():
+            from app.mcp.registry.registry import is_internal_environment
+            if is_internal_environment():
                 return True
         except Exception:
             pass
@@ -241,8 +241,7 @@ class RegistryIntegrationManager:
                     'version': registry_match.version,
                     'provider': {
                         'id': registry_match.provider_metadata.get('provider_id'),
-                        'name': registry_match.provider_metadata.get('provider_name', 'Unknown'),
-                        'isInternal': registry_match.provider_metadata.get('provider_id') == 'amazon-internal'
+                        'isInternal': registry_match.provider_metadata.get('is_internal', False)
                     },
                     'tags': registry_match.tags,
                     'securityReviewLink': registry_match.security_review_url,

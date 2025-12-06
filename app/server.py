@@ -623,6 +623,10 @@ app.include_router(conversation_router)
 from app.routes.mcp_registry_routes import router as mcp_registry_router
 app.include_router(mcp_registry_router)
 
+# Import and include export routes
+from app.routes.export_routes import router as export_router
+app.include_router(export_router)
+
 # Import and include model routes
 # Disabled duplicate routers - server.py already defines all these routes
 # The route modules were attempting to forward to @app decorated functions which doesn't work
@@ -1380,17 +1384,16 @@ async def stream_chunks(body):
                 logger.error(f"🚀 DIRECT_STREAMING: Full traceback:\n{error_details}")
                 
                 # Check for auth/credential errors
+                from app.plugins import get_active_auth_provider
+                auth_provider = get_active_auth_provider()
                 from app.utils.custom_exceptions import KnownCredentialException
                 is_auth_error = (
                     isinstance(e, KnownCredentialException) or
-                    any(indicator in error_str for indicator in [
-                        'credential', 'mwinit', 'midway-auth', 'ExpiredToken',
-                        'InvalidClientTokenId', 'UnauthorizedOperation', 'Status code: 401'
-                    ])
+                    (auth_provider and auth_provider.is_auth_error(error_str))
                 )
                 
                 if is_auth_error:
-                    error_message = "AWS credentials have expired. Please run 'mwinit' to refresh your credentials and try again."
+                    error_message = auth_provider.get_credential_help_message() if auth_provider else "AWS credentials have expired."
                     yield f"data: {json.dumps({'error': error_message, 'error_type': 'authentication_error', 'can_retry': True})}\n\n"
                     return
                 
@@ -2083,7 +2086,9 @@ async def stream_chunks(body):
         except Exception as e:
             # Handle credential errors specifically
             error_str = str(e)
-            if "mwinit" in error_str.lower() or "authentication" in error_str.lower() or "credential" in error_str.lower():
+            from app.plugins import get_active_auth_provider
+            auth_provider = get_active_auth_provider()
+            if auth_provider and auth_provider.is_auth_error(error_str):
                 # Preserve conversation context in error response
                 conversation_id = body.get("conversation_id")
                 if conversation_id:
@@ -2093,7 +2098,7 @@ async def stream_chunks(body):
                 logger.error(f"Credential error during model binding: {e}")
                 credential_error = {
                     "error": "auth_error",
-                    "detail": "AWS credentials have expired. Please run 'mwinit' to authenticate and try again.",
+                    "detail": auth_provider.get_credential_help_message(),
                     "status_code": 401,
                     "technical_details": error_str
                 }
@@ -2842,6 +2847,14 @@ async def stream_endpoint(request: Request, body: dict = None):
 @app.get("/")
 async def root(request: Request):
     try:
+        # Get formatter scripts from plugins
+        formatter_scripts = []
+        from app.plugins import get_active_config_providers
+        for provider in get_active_config_providers():
+            config = provider.get_defaults()
+            if 'frontend' in config and 'formatters' in config['frontend']:
+                formatter_scripts.extend(config['frontend']['formatters'])
+        
         # Log detailed information about templates
         logger.info(f"Rendering index.html using custom template loader")
         
@@ -2849,7 +2862,8 @@ async def root(request: Request):
         context = {
             "request": request,
             "diff_view_type": os.environ.get("ZIYA_DIFF_VIEW_TYPE", "unified"),
-            "api_poth": "/ziya"
+            "api_path": "/ziya",
+            "formatter_scripts": formatter_scripts
         }
         
         # Try to render the template

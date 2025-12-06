@@ -174,22 +174,13 @@ class TestProviderHealthChecks:
         await provider.close()
     
     @pytest.mark.asyncio
-    @pytest.mark.skipif(
-        "not os.environ.get('AWS_PROFILE')",
-        reason="Requires AWS credentials"
-    )
-    async def test_amazon_internal_health(self):
-        """Test Amazon internal registry (requires credentials)."""
-        from app.mcp.registry.providers.amazon_internal import AmazonInternalRegistryProvider
-        
-        provider = AmazonInternalRegistryProvider()
-        
-        # Test connection
-        can_connect = await provider.test_connection()
-        
-        if can_connect:
-            result = await provider.list_services(max_results=1)
-            assert 'services' in result
-            print(f"✓ Amazon Internal Registry: {len(result['services'])} services accessible")
-        else:
-            print("⚠ Amazon Internal Registry: Connection failed (expected if not on VPN)")
+    async def test_internal_registry_via_plugins(self):
+        """Test that internal registries load via plugin system."""
+        # This test only runs if internal plugins are installed
+        try:
+            from app.plugins import get_registry_providers
+            providers = get_registry_providers()
+            # If internal plugins installed, should have internal providers
+            print(f"Found {len(providers)} registry providers via plugin system")
+        except ImportError:
+            pytest.skip("Plugin system not available")
