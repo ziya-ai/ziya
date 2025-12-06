@@ -3,7 +3,11 @@
 ## Documentation
 See the [GitHub Repository](https://github.com/ziya-ai/ziya)
 
-## Overview
+## Overview  
+
+> **Note**: This is the community edition of Ziya. Enterprise users should check with their
+> IT department for internal editions with additional integrations.
+
 Ziya is a full-stack AI development environment with a cooperative web frontend and server backend that provides comprehensive code-related integrations including code analysis, edits, and visualizations. It can analyze your codebase within context limits, answer questions, and apply suggested code changes directly to your files.
 
 Key features include:

@@ -215,14 +215,14 @@ async def search_tools(request: ToolSearchRequest):
                     "serviceId": result.service.service_id,
                     "serviceName": result.service.service_name,
                     "serviceDescription": result.service.service_description,
-                    "supportLevel": result.service.support_level.value,
-                    "status": result.service.status.value,
-                    "provider": {
-                        "id": result.service.provider_metadata.get('provider_id'),
-                        "name": result.service.provider_metadata.get('provider_name'),
-                        "isInternal": result.service.provider_metadata.get('provider_id') == 'amazon-internal'
+                    'supportLevel': result.service.support_level.value,
+                    'status': result.service.status.value,
+                    'provider': {
+                        'id': result.service.provider_metadata.get('provider_id'),
+                        'name': result.service.provider_metadata.get('provider_name'),
+                        'isInternal': result.service.provider_metadata.get('is_internal', False)
                     },
-                    "availableIn": result.service.provider_metadata.get('available_in', [result.service.provider_metadata.get('provider_name', 'Unknown')])
+                    'availableIn': result.service.provider_metadata.get('available_in', [result.service.provider_metadata.get('provider_name', 'Unknown')])
                 },
                 "matchingTools": [
                     {
