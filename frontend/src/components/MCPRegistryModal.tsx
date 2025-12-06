@@ -132,7 +132,6 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
     const [searchQuery, setSearchQuery] = useState('');
     const [activeTab, setActiveTab] = useState('browse');
     const [selectedProviders, setSelectedProviders] = useState<string[]>([]);
-    const [includeInternal, setIncludeInternal] = useState(true);
     const [expandedServices, setExpandedServices] = useState<Record<string, boolean>>({});
     const [stats, setStats] = useState<any>(null);
     const [filterSupport, setFilterSupport] = useState<string>('all');
@@ -151,8 +150,6 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
     const [currentPage, setCurrentPage] = useState(1);
     const [pageSize, setPageSize] = useState(10);
     const browseServicesScrollRef = useRef<HTMLDivElement>(null);
-    const [mcpRegistryMissingModal, setMcpRegistryMissingModal] = useState(false);
-    const [pendingInstallServiceId, setPendingInstallServiceId] = useState<string | null>(null);
 
     useEffect(() => {
         if (visible) {
@@ -363,67 +360,28 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
             }
         }, 500);
         return () => clearTimeout(timeoutId);
-    }, [searchQuery, activeTab, selectedProviders]);
-
-    const checkMcpRegistryBinary = async (): Promise<boolean> => {
-        try {
-            const response = await fetch('/api/mcp/registry/check-binary');
-            if (response.ok) {
-                const data = await response.json();
-                return data.available === true;
-            }
-            return false;
-        } catch (error) {
-            console.error('Error checking mcp-registry binary:', error);
-            return false;
+    }, [searchQuery, activeTab]);
+    
+    const installService = async (serviceId: string) => {
+        // Handle builtin services differently
+        if (serviceId.startsWith('builtin_')) {
+            const category = serviceId.replace('builtin_', '');
+            
+            // ... builtin handling code ...
+            return;
         }
-    };
-
-    const isAmazonInternalService = (serviceId: string): boolean => {
-        // Check if this service is from amazon-internal registry
-        const service = availableServices.find(s => s.serviceId === serviceId);
-        if (!service) return false;
         
-        // Check provider ID or availableIn array
-        return service.provider.id === 'amazon-internal' || 
-               service.provider.availableIn?.includes('amazon-internal') || false;
-    };
-
-    const handleMcpRegistryRetry = async () => {
-        setMcpRegistryMissingModal(false);
-        
-        if (!pendingInstallServiceId) return;
-        
-        // Retry the check
-        const binaryExists = await checkMcpRegistryBinary();
-        if (binaryExists) {
-            // Proceed with installation
-            await proceedWithInstallation(pendingInstallServiceId);
-            setPendingInstallServiceId(null);
-        } else {
-            // Still missing, show the modal again
-            setMcpRegistryMissingModal(true);
-        }
-    };
-
-    const handleMcpRegistryCancel = () => {
-        setMcpRegistryMissingModal(false);
-        setPendingInstallServiceId(null);
-        // Remove the installing state for this service
-        setInstalling(prev => ({ ...prev, [pendingInstallServiceId!]: false }));
-    };
-
-    const proceedWithInstallation = async (serviceId: string) => {
+        setInstalling(prev => ({ ...prev, [serviceId]: true }));
         try {
             const response = await fetch('/api/mcp/registry/services/install', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     service_id: serviceId,
-                    provider_id: null // Let the system find the right provider
+                    provider_id: null
                 })
             });
-
+            
             if (response.ok) {
                 const result = await response.json();
                 if (result.status === 'success') {
@@ -443,74 +401,6 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
         } catch (error) {
             console.error('Installation error:', error);
             message.error('Installation failed');
-        } finally {
-            setInstalling(prev => ({ ...prev, [serviceId]: false }));
-        }
-    };
-
-    const installService = async (serviceId: string) => {
-        // Check if this is an amazon-internal service
-        if (isAmazonInternalService(serviceId)) {
-            // Check if mcp-registry binary exists
-            const binaryExists = await checkMcpRegistryBinary();
-            if (!binaryExists) {
-                // Show modal and store the pending service ID
-                setPendingInstallServiceId(serviceId);
-                setMcpRegistryMissingModal(true);
-                return;
-            }
-        }
-
-        // Handle builtin services differently
-        if (serviceId.startsWith('builtin_')) {
-            const category = serviceId.replace('builtin_', '');
-            
-            // Handle builtin MCP servers (time, shell)
-            if (category === 'time' || category === 'shell') {
-                try {
-                    const response = await fetch('/api/mcp/toggle-server', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ server_name: category, enabled: true })
-                    });
-
-                    if (response.ok) {
-                        message.success(`Enabled ${category} server`);
-                        await loadInstalledServices();
-                        window.dispatchEvent(new Event('mcpStatusChanged'));
-                    } else {
-                        message.error(`Failed to enable ${category} server`);
-                    }
-                } catch (error) {
-                    message.error(`Failed to enable ${category} server`);
-                }
-                return;
-            }
-            
-            // Handle builtin tool categories (pcap_analysis, etc.)
-            try {
-                const response = await fetch('/api/mcp/builtin-tools/toggle', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ category, enabled: true })
-                });
-
-                if (response.ok) {
-                    message.success(`Enabled ${category} builtin tools`);
-                    await loadAvailableServices();
-                    window.dispatchEvent(new Event('mcpStatusChanged'));
-                } else {
-                    message.error('Failed to enable builtin tools');
-                }
-            } catch (error) {
-                message.error('Failed to enable builtin tools');
-            }
-            return;
-        }
-
-        setInstalling(prev => ({ ...prev, [serviceId]: true }));
-        try {
-            await proceedWithInstallation(serviceId);
         } finally {
             setInstalling(prev => ({ ...prev, [serviceId]: false }));
         }
@@ -1904,16 +1794,6 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                             <Row gutter={16}>
                                 <Col span={24} style={{ marginBottom: 12 }}>
                                     <Space>
-                                        <Checkbox
-                                            checked={includeInternal}
-                                            onChange={(e) => {
-                                                setIncludeInternal(e.target.checked);
-                                                setTimeout(loadAvailableServices, 100);
-                                            }}
-                                        >
-                                            Include Amazon Internal
-                                        </Checkbox>
-                                        <Divider type="vertical" />
                                         <Text type="secondary" style={{ fontSize: '12px', display: 'flex', justifyContent: 'space-between' }}>
                                             {providers.length} registries active
                                         </Text>
@@ -2339,43 +2219,6 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                         )}
                     </Space>
                 ) : null}
-            </Modal>
-
-            {/* MCP Registry Binary Missing Modal */}
-            <Modal
-                title={
-                    <Space>
-                        <WarningOutlined style={{ color: '#faad14' }} />
-                        <span>MCP Registry Required</span>
-                    </Space>
-                }
-                open={mcpRegistryMissingModal}
-                onCancel={handleMcpRegistryCancel}
-                footer={[
-                    <Button key="cancel" onClick={handleMcpRegistryCancel}>
-                        Cancel
-                    </Button>,
-                    <Button key="retry" type="primary" onClick={handleMcpRegistryRetry}>
-                        Retry
-                    </Button>
-                ]}
-                width={500}
-            >
-                <Alert
-                    message="Installation Blocked"
-                    description={
-                        <div>
-                            <p>To install Amazon internal MCP servers, you need to install the <code>mcp-registry</code> tool locally using Toolbox.</p>
-                            <p style={{ marginTop: '12px', marginBottom: '8px' }}>Please run:</p>
-                            <pre style={{ backgroundColor: '#f5f5f5', padding: '8px', borderRadius: '4px', fontSize: '13px' }}>
-                                <code>toolbox install mcp-registry</code>
-                            </pre>
-                            <p style={{ marginTop: '12px' }}>After installation, click <strong>Retry</strong> to continue.</p>
-                        </div>
-                    }
-                    type="warning"
-                    showIcon
-                />
             </Modal>
         </Modal >
     );

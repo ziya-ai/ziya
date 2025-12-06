@@ -5,7 +5,7 @@
   "source": "AWS Architecture Icons (Public)",
   "description": "Complete catalog of AWS services using public AWS Architecture Icons from https://aws.amazon.com/architecture/icons/",
   "shapes": [
-    {
+  "description": "Complete catalog of AWS services using public AWS Architecture Icons",
       "id": "aws_ec2",
       "name": "EC2",
       "category": "compute",
