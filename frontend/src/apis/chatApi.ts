@@ -280,19 +280,17 @@ function extractErrorFromSSE(content: string): ErrorResponse | null {
 
             // Check for throttling errors - but only in error-formatted messages
 <<<<<<< HEAD
-||||||| 69c5c7e
+            }
+
             // Check for authentication errors in plain text
-            if (dataContent.includes('mwinit') ||
-                (dataContent.includes('credential') && dataContent.includes('error')) ||
-                dataContent.includes('authentication') ||
+            if (dataContent.includes('authentication') ||
                 dataContent.includes('AWS credentials have expired')) {
                 return {
                     error: 'auth_error',
-                    detail: 'AWS credentials have expired. Please run mwinit to authenticate and try again.',
+                    detail: 'AWS credentials have expired. Please refresh your credentials and try again.',
                     status_code: 401
                 };
             }
-
             // Be much more strict about what constitutes a throttling error
             if ((dataContent.includes('ThrottlingException') || dataContent.includes('Too many requests')) &&
                 !dataContent.includes('reached max retries') &&
@@ -491,11 +489,10 @@ function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
                 // Check for authentication errors (these may not have status_code)
                 if (data.error_type === 'authentication_error' ||
                     data.error === 'authentication_error' ||
-                    (data.error && typeof data.error === 'string' && data.error.includes('credentials'))) {
-<<<<<<< HEAD
-                    data.error.includes('Authentication failed') || data.error.includes('AWS credentials')))) {
-                        return {
-                            error: 'authentication_error',
+                    (data.error && typeof data.error === 'string' && (data.error.includes('credentials') ||
+                            data.error.includes('Authentication failed') || data.error.includes('AWS credentials')))) {
+                    return {
+                        error: 'authentication_error',
                             detail: data.error || data.content || data.detail || 'Authentication failed',
                             status_code: 401
                         };
