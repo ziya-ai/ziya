@@ -279,62 +279,6 @@ function extractErrorFromSSE(content: string): ErrorResponse | null {
             }
 
             // Check for throttling errors - but only in error-formatted messages
-<<<<<<< HEAD
-            }
-
-            // Check for authentication errors in plain text
-            if (dataContent.includes('authentication') ||
-                dataContent.includes('AWS credentials have expired')) {
-                return {
-                    error: 'auth_error',
-                    detail: 'AWS credentials have expired. Please refresh your credentials and try again.',
-                    status_code: 401
-                };
-            }
-            // Be much more strict about what constitutes a throttling error
-            if ((dataContent.includes('ThrottlingException') || dataContent.includes('Too many requests')) &&
-                !dataContent.includes('reached max retries') &&
-                !dataContent.includes('tool_execution') && !dataContent.includes('⟩') && !dataContent.includes('⟨') &&
-                !dataContent.includes('```') && // Not in code block
-                !dataContent.includes('diff --git') && // Not in diff
-                !dataContent.includes('MATH_INLINE') && // Not in tool output
-                !dataContent.includes('Shell Command') && // Not in shell command output
-                !dataContent.includes('result') && // Not in tool result
-                !dataContent.includes('"type": "text"') && // Not regular text content
-                !dataContent.includes('"content":') && // Not content field
-                (dataContent.includes('"error"') && dataContent.includes('"detail"'))) { // Must be structured error
-                return {
-                    error: 'throttling_error',
-                    detail: 'Too many requests to AWS Bedrock. Please wait a moment before trying again.',
-                    status_code: 429
-                };
-            }
-
-            // Check for exhausted retry throttling errors
-            if ((dataContent.includes('ThrottlingException') || dataContent.includes('Too many requests')) &&
-                (dataContent.includes('reached max retries') || dataContent.includes('exhausted')) &&
-                !dataContent.includes('tool_execution') && !dataContent.includes('```')) {
-                return {
-                    error: 'throttling_error_exhausted',
-                    detail: 'AWS Bedrock rate limit exceeded. All automatic retries have been exhausted.',
-                    status_code: 429
-                };
-            }
-
-            // Catch-all for any other error-like content that wasn't handled above
-            if (dataContent.includes('Exception') && dataContent.includes('error') &&
-                !dataContent.includes('tool_execution') &&
-                !dataContent.includes('⟩') && !dataContent.includes('⟨') &&
-                !dataContent.includes('```')) {
-                return {
-                    error: 'unknown_error',
-                    detail: dataContent.replace(/^data:\s*/, '').trim(),
-                    status_code: 500
-                };
-            }
-
-            return null;
-=======
             }
 
             // Check for authentication errors in plain text
@@ -387,60 +331,7 @@ function extractErrorFromSSE(content: string): ErrorResponse | null {
             }
 
             return null;
->>>>>>> refs/remotes/origin/main
         }
-
-        // Check for authentication errors in plain text
-        if (dataContent.includes('AWS credentials have expired') || dataContent.includes('authentication')) {
-            return {
-                error: 'auth_error',
-                detail: 'AWS credentials have expired. Please refresh your credentials and try again.',
-                status_code: 401
-            };
-        }
-        if ((dataContent.includes('ThrottlingException') || dataContent.includes('Too many requests')) &&
-            !dataContent.includes('reached max retries') &&
-            !dataContent.includes('tool_execution') && !dataContent.includes('⟩') && !dataContent.includes('⟨') &&
-            !dataContent.includes('```') && // Not in code block
-            !dataContent.includes('diff --git') && // Not in diff
-            !dataContent.includes('MATH_INLINE') && // Not in tool output
-            !dataContent.includes('Shell Command') && // Not in shell command output
-            !dataContent.includes('result') && // Not in tool result
-            !dataContent.includes('"type": "text"') && // Not regular text content
-            !dataContent.includes('"content":') && // Not content field
-            (dataContent.includes('"error"') && dataContent.includes('"detail"'))) { // Must be structured error
-            return {
-                error: 'throttling_error',
-                detail: 'Too many requests to AWS Bedrock. Please wait a moment before trying again.',
-                status_code: 429
-            };
-        }
-
-        // Check for exhausted retry throttling errors
-        if ((dataContent.includes('ThrottlingException') || dataContent.includes('Too many requests')) &&
-            (dataContent.includes('reached max retries') || dataContent.includes('exhausted')) &&
-            !dataContent.includes('tool_execution') && !dataContent.includes('```')) {
-            return {
-                error: 'throttling_error_exhausted',
-                detail: 'AWS Bedrock rate limit exceeded. All automatic retries have been exhausted.',
-                status_code: 429
-            };
-        }
-
-        // Catch-all for any other error-like content that wasn't handled above
-        if (dataContent.includes('Exception') && dataContent.includes('error') &&
-            !dataContent.includes('tool_execution') &&
-            !dataContent.includes('⟩') && !dataContent.includes('⟨') &&
-            !dataContent.includes('```')) {
-            return {
-                error: 'unknown_error',
-                detail: dataContent.replace(/^data:\s*/, '').trim(),
-                status_code: 500
-            };
-        }
-
-        return null;
-    }
     } catch (error) {
     console.warn('Error in extractErrorFromSSE:', error);
     return null;
@@ -493,29 +384,10 @@ function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
                             data.error.includes('Authentication failed') || data.error.includes('AWS credentials')))) {
                     return {
                         error: 'authentication_error',
-                            detail: data.error || data.content || data.detail || 'Authentication failed',
-                            status_code: 401
-                        };
-                    }
-||||||| 69c5c7e
-                    (data.error && typeof data.error === 'string' &&
-                        (data.error.includes('mwinit') || data.error.includes('credentials') ||
-                            data.error.includes('Authentication failed') || data.error.includes('AWS credentials')))) {
-                    return {
-                        error: data.error_type || 'authentication_error',
                         detail: data.error || data.content || data.detail || 'Authentication failed',
                         status_code: 401
                     };
                 }
-=======
-                            data.error.includes('Authentication failed') || data.error.includes('AWS credentials')))) {
-                    return {
-                        error: 'authentication_error',
-                        detail: data.error || data.content || data.detail || 'Authentication failed',
-                        status_code: 401
-                    };
-                }
->>>>>>> refs/remotes/origin/main
 
                     // Only treat as error if it has error AND status_code (actual error response structure)
                     // This prevents false positives when model discusses errors in tool output
