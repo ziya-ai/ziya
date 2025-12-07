@@ -169,7 +169,7 @@ Please set up your AWS credentials using one of these methods:
             return False, auth_provider.get_credential_help_message()
             
         # Standard error detection for non-Amazon environments
-        if any(pattern in error_msg.lower() for pattern in ["mwinit", "midway-auth", "iibs-midway", "authenticate by running"]):
+        if "authenticate by running" in error_msg.lower():
             # Format the error message nicely but preserve the original content
             return False, f"⚠️ AWS CREDENTIALS ERROR: {error_msg}"
         elif "ExpiredToken" in error_msg:
