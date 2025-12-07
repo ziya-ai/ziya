@@ -27,7 +27,7 @@ def export_conversation_for_paste(
     Args:
         messages: List of conversation messages
         format_type: 'markdown' or 'html'
-        target: 'public' (GitHub Gist) or 'internal' (paste.amazon.com)
+        target: Target paste service ID (extensible via plugins)
         captured_diagrams: List of captured visualization data URIs with metadata
         version: Ziya version
         model: Model name/alias
@@ -68,7 +68,7 @@ def _clean_tool_blocks(content: str) -> str:
     import re
 
     # Pattern to match tool blocks
-    pattern = r'<!-- TOOL_BLOCK_START:(mcp_\w+)\|([^-]+) -->\s*(.*?)\s*<!-- TOOL_BLOCK_END:\1 -->'
+    pattern = r'<!-- TOOL_BLOCK_START:(mcp_\w+)\|(.+?) -->\s*(.*?)\s*<!-- TOOL_BLOCK_END:\1 -->'
 
     def replace_tool_block(match):
         tool_name = match.group(1)

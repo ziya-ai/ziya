@@ -1587,7 +1587,7 @@ async def stream_chunks(body):
         #     yield "data: [DONE]\n\n"
         #     return
         # except CredentialRetrievalError as e:
-        #     # Handle credential errors (including mwinit failures) with proper SSE error response
+        #     # Handle credential errors with proper SSE error response
         #     from app.utils.error_handlers import handle_streaming_error
         #     async for error_chunk in handle_streaming_error(None, e):
         #         yield error_chunk

@@ -105,7 +105,8 @@ async def handle_streaming_error(request: Request, exc: Exception) -> AsyncItera
         "botocore" in error_message or "AWS" in error_message or "credentials" in error_message
     ):
         error_type, detail, status_code, retry_after = _handle_aws_credential_error(error_message)
-    elif "CredentialRetrievalError" in error_message or "You may need to authenticate by running mwinit" in error_message:
+    elif "CredentialRetrievalError" in error_message or "You may need to authenticate" in error_message:
+        return error_type, detail, status_code, retry_after
         error_type, detail, status_code, retry_after = _handle_aws_credential_error(error_message)
     elif "Resource has been exhausted" in error_message and "check quota" in error_message:
         error_type = ERROR_QUOTA
