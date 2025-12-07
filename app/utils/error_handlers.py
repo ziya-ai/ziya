@@ -102,11 +102,9 @@ async def handle_streaming_error(request: Request, exc: Exception) -> AsyncItera
         detail = "Selected content is too large for the model. Please reduce the number of files."
         status_code = 413
     elif ("ExpiredToken" in error_message or "InvalidIdentityToken" in error_message or "InvalidClientTokenId" in error_message) and (
-        "botocore" in error_message or "AWS" in error_message or "credentials" in error_message
-    ):
+        "botocore" in error_message or "AWS" in error_message or "credentials" in error_message):
         error_type, detail, status_code, retry_after = _handle_aws_credential_error(error_message)
     elif "CredentialRetrievalError" in error_message or "You may need to authenticate" in error_message:
-        return error_type, detail, status_code, retry_after
         error_type, detail, status_code, retry_after = _handle_aws_credential_error(error_message)
     elif "Resource has been exhausted" in error_message and "check quota" in error_message:
         error_type = ERROR_QUOTA
