@@ -278,9 +278,6 @@ function extractErrorFromSSE(content: string): ErrorResponse | null {
                 }
             }
 
-            // Check for throttling errors - but only in error-formatted messages
-            }
-
             // Check for authentication errors in plain text
             if (dataContent.includes('AWS credentials have expired') || dataContent.includes('authentication')) {
                 return {
