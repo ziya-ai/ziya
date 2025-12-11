@@ -1,0 +1,7 @@
+{
+  "description": "Test case for drawioPlugin.ts where diff claims ELK code removal has been applied but it has not",
+  "target_file": "frontend/src/plugins/d3/drawioPlugin.ts",
+  "expected_to_fail": true,
+  "expected_to_bypass_because_already_applied": false,
+  "failure_reason": "Diff incorrectly reports as already applied when ELK code is still present - should either apply successfully or fail with context mismatch, not claim already applied"
+}
