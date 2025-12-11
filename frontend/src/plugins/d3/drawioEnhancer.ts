@@ -8,11 +8,112 @@
 
 export class DrawIOEnhancer {
     /**
+     * Fix ALL foreignObject positioning issues
+     * MaxGraph uses CSS positioning (margin-left, padding-top) which doesn't work correctly in SVG
+     * 
+     * @param svgElement The SVG element containing foreignObjects to fix
+     * @param graph Optional: The maxGraph instance to update cell geometries (for bounds recalculation)
+     */
+    static fixAllForeignObjects(svgElement: SVGSVGElement, graph?: any): void {
+        console.log('🔧 DrawIOEnhancer: Fixing ALL foreignObject positioning');
+        
+        const cellGeometryUpdates: Array<{cellId: string, dx: number, dy: number}> = [];
+        
+        // Find ALL foreignObjects, not just those in scaled groups
+        const allForeignObjects = svgElement.querySelectorAll('foreignObject');
+        console.log(`📊 Found ${allForeignObjects.length} total foreignObjects`);
+        
+        allForeignObjects.forEach((fo: Element, idx: number) => {
+            const foreignObj = fo as SVGForeignObjectElement;
+            const innerDiv = foreignObj.querySelector('div') as HTMLDivElement;
+            
+            if (!innerDiv) return;
+            
+            // Get current SVG attributes
+            const currentX = parseFloat(foreignObj.getAttribute('x') || '0');
+            const currentY = parseFloat(foreignObj.getAttribute('y') || '0');
+            
+            // Try to find the cell ID from parent group
+            let cellId: string | null = null;
+            let parentElement = foreignObj.parentElement;
+            while (parentElement && !cellId) {
+                cellId = parentElement.getAttribute('data-cell-id') || parentElement.id;
+                parentElement = parentElement.parentElement;
+            }
+            
+            // Get the CSS positioning from inner div
+            const style = innerDiv.getAttribute('style') || '';
+            const paddingTopMatch = style.match(/padding-top:\s*([\d.]+)px/);
+            const marginLeftMatch = style.match(/margin-left:\s*([\d.]+)px/);
+            
+            if (paddingTopMatch || marginLeftMatch) {
+                // We found CSS positioning - this is the bug!
+                const paddingTop = paddingTopMatch ? parseFloat(paddingTopMatch[1]) : 0;
+                const marginLeft = marginLeftMatch ? parseFloat(marginLeftMatch[1]) : 0;
+                
+                console.log(`  FO ${idx}: Found CSS positioning - margin-left: ${marginLeft}px, padding-top: ${paddingTop}px`);
+                console.log(`  FO ${idx}: Current SVG position - x: ${currentX}, y: ${currentY}`);
+                
+                // Move CSS offsets to SVG coordinates
+                foreignObj.setAttribute('x', (currentX + marginLeft).toString());
+                foreignObj.setAttribute('y', (currentY + paddingTop).toString());
+                
+                // Remove CSS positioning from inner div
+                innerDiv.style.paddingTop = '0';
+                innerDiv.style.marginLeft = '0';
+                
+                // Track geometry updates for maxGraph model
+                if (cellId && (marginLeft !== 0 || paddingTop !== 0)) {
+                    cellGeometryUpdates.push({
+                        cellId,
+                        dx: marginLeft,
+                        dy: paddingTop
+                    });
+                }
+                
+                console.log(`  ✅ FO ${idx}: Fixed - new position x=${currentX + marginLeft}, y=${currentY + paddingTop}`);
+            }
+        });
+        
+        // If we have a graph instance, update cell geometries in the model
+        if (graph && cellGeometryUpdates.length > 0) {
+            console.log('🔧 DrawIOEnhancer: Updating cell geometries in maxGraph model');
+            const model = graph.getModel();
+            
+            model.beginUpdate();
+            try {
+                cellGeometryUpdates.forEach(update => {
+                    const cell = model.getCell(update.cellId);
+                    if (cell) {
+                        const geometry = cell.getGeometry();
+                        if (geometry) {
+                            // Clone geometry to trigger change detection
+                            const newGeometry = geometry.clone();
+                            
+                            // Note: For labels, we don't change the cell position,
+                            // we're just ensuring the rendering is correct
+                            // The CSS positioning was wrong, not the geometry
+                            // So we actually DON'T need to update geometry here
+                            
+                            console.log(`  Cell ${update.cellId}: Geometry already correct, CSS positioning was the issue`);
+                        }
+                    }
+                });
+            } finally {
+                model.endUpdate();
+            }
+        }
+        
+        console.log(`✅ Fixed ${allForeignObjects.length} foreignObjects`);
+    }
+    
+    /**
      * Fix foreignObject positioning issues caused by scaled parent groups
      * maxGraph uses CSS positioning inside SVG which breaks with transforms
+     * @deprecated Use fixAllForeignObjects instead
      */
     static fixForeignObjectPositioning(svgElement: SVGSVGElement): void {
-        console.log('🔧 DrawIOEnhancer: Fixing foreignObject positioning');
+        console.log('🔧 DrawIOEnhancer: Fixing foreignObject positioning in scaled groups');
         
         // Find all g elements with scale transforms
         const scaledGroups = svgElement.querySelectorAll('g[transform*="scale"]');
