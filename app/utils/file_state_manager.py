@@ -108,11 +108,28 @@ class FileStateManager:
         if temp_convs:
             logger.info(f"Cleaned up {len(temp_convs)} temporary conversations from memory")
     
-    def initialize_conversation(self, conversation_id: str, files: Dict[str, str]) -> None:
-        """Initialize or reset file states for a conversation"""
-        self.conversation_states[conversation_id] = {}
-        logger.info(f"Initializing conversation {conversation_id} with {len(files)} files")
+    def initialize_conversation(self, conversation_id: str, files: Dict[str, str], force_reset: bool = False) -> None:
+        """
+        Initialize file states for a conversation.
         
+        Args:
+            conversation_id: The conversation ID
+            files: Dict mapping file paths to their content
+            force_reset: If True, completely reset the conversation state. 
+                        If False (default), preserve existing state and only add new files.
+        """
+        # Check if conversation already exists
+        if conversation_id in self.conversation_states and not force_reset:
+            logger.info(f"Conversation {conversation_id} already exists with {len(self.conversation_states[conversation_id])} files, updating with {len(files)} files")
+            # Don't reset - just update with new files
+            self.update_files_in_state(conversation_id, files)
+            return
+        
+        # Only reset if force_reset=True or conversation doesn't exist
+        if force_reset or conversation_id not in self.conversation_states:
+            self.conversation_states[conversation_id] = {}
+            logger.info(f"Initializing new conversation {conversation_id} with {len(files)} files")
+            
         for file_path, content in files.items():
             # Split content into lines and initialize state
             lines = content.splitlines()
@@ -154,6 +171,160 @@ class FileStateManager:
                     logger.debug(f"Recent changes in {file_path}: {len(changed_lines)} lines")
         
         return recent_changes
+    
+    def refresh_file_from_disk(self, conversation_id: str, file_path: str, base_dir: str) -> bool:
+        """
+        Refresh a file's current_content from disk without resetting the baseline.
+        
+        This is critical for detecting when a user has NOT applied a suggested diff -
+        the file on disk won't have changed, but we need to make sure we're tracking
+        the actual file content, not what we previously saw or suggested.
+        
+        Args:
+            conversation_id: The conversation ID
+            file_path: Relative path to the file
+            base_dir: Base directory for resolving full paths
+            
+        Returns:
+            True if the file was refreshed and had changes, False otherwise
+        """
+        if conversation_id not in self.conversation_states:
+            logger.warning(f"Cannot refresh file for unknown conversation {conversation_id}")
+            return False
+            
+        state = self.conversation_states[conversation_id].get(file_path)
+        if not state:
+            logger.debug(f"File {file_path} not in conversation {conversation_id}, skipping refresh")
+            return False
+        
+        # Read current content from disk
+        full_path = os.path.join(base_dir, file_path)
+        try:
+            with open(full_path, 'r', encoding='utf-8') as f:
+                disk_content = f.read()
+        except Exception as e:
+            logger.warning(f"Could not read {full_path} from disk: {e}")
+            return False
+        
+        disk_lines = disk_content.splitlines()
+        current_hash = self._compute_hash(disk_lines)
+        
+        # Check if disk content differs from what we have
+        if current_hash != state.content_hash:
+            logger.info(f"File {file_path} changed on disk since last check")
+            # Update current content but preserve original baseline
+            changed_lines = self._compute_changes(state.original_content, state.current_content, disk_lines)
+            state.current_content = disk_lines
+            state.content_hash = current_hash
+            
+            # Update line states for changed lines
+            for line_num in changed_lines:
+                if line_num not in state.line_states:
+                    state.line_states[line_num] = '+'
+                elif state.line_states[line_num] != '+':
+                    state.line_states[line_num] = '*'
+            
+            return True
+        
+        return False
+    
+    def refresh_all_files_from_disk(self, conversation_id: str, base_dir: str) -> Dict[str, bool]:
+        """
+        Refresh all files in a conversation from disk.
+        
+        Args:
+            conversation_id: The conversation ID
+            base_dir: Base directory for resolving full paths
+            
+        Returns:
+            Dict mapping file paths to whether they changed
+        """
+        if conversation_id not in self.conversation_states:
+            return {}
+        
+        results = {}
+        for file_path in list(self.conversation_states[conversation_id].keys()):
+            results[file_path] = self.refresh_file_from_disk(conversation_id, file_path, base_dir)
+        
+        changed_files = [f for f, changed in results.items() if changed]
+        if changed_files:
+            logger.info(f"Refreshed {len(changed_files)} files from disk for conversation {conversation_id}: {changed_files}")
+            self._save_state()
+        
+        return recent_changes
+    
+    def has_changes_since_last_context_submission(self, conversation_id: str, file_path: str) -> bool:
+        """Check if a file has changes since the last context submission."""
+        if conversation_id not in self.conversation_states:
+            return False
+        
+        state = self.conversation_states[conversation_id].get(file_path)
+        if not state:
+            return False
+        
+        return state.current_content != state.last_context_submission_content
+    
+    def refresh_file_from_disk(self, conversation_id: str, file_path: str, base_dir: str) -> bool:
+        """
+        Refresh a file's current_content from disk without resetting the baseline.
+        
+        This is critical for detecting when a user has NOT applied a suggested diff -
+        the file on disk won't have changed, but we need to track the actual state.
+        
+        Returns:
+            True if the file was refreshed and had changes, False otherwise
+        """
+        if conversation_id not in self.conversation_states:
+            logger.warning(f"Cannot refresh file for unknown conversation {conversation_id}")
+            return False
+            
+        state = self.conversation_states[conversation_id].get(file_path)
+        if not state:
+            logger.debug(f"File {file_path} not in conversation {conversation_id}, skipping refresh")
+            return False
+        
+        full_path = os.path.join(base_dir, file_path)
+        try:
+            with open(full_path, 'r', encoding='utf-8') as f:
+                disk_content = f.read()
+        except Exception as e:
+            logger.warning(f"Could not read {full_path} from disk: {e}")
+            return False
+        
+        disk_lines = disk_content.splitlines()
+        current_hash = self._compute_hash(disk_lines)
+        
+        if current_hash != state.content_hash:
+            logger.info(f"File {file_path} changed on disk since last check")
+            changed_lines = self._compute_changes(state.original_content, state.current_content, disk_lines)
+            state.current_content = disk_lines
+            state.content_hash = current_hash
+            
+            for line_num in changed_lines:
+                if line_num not in state.line_states:
+                    state.line_states[line_num] = '+'
+                elif state.line_states[line_num] != '+':
+                    state.line_states[line_num] = '*'
+            
+            return True
+        
+        return False
+    
+    def refresh_all_files_from_disk(self, conversation_id: str, base_dir: str) -> Dict[str, bool]:
+        """Refresh all files in a conversation from disk."""
+        if conversation_id not in self.conversation_states:
+            return {}
+        
+        results = {}
+        for file_path in list(self.conversation_states[conversation_id].keys()):
+            results[file_path] = self.refresh_file_from_disk(conversation_id, file_path, base_dir)
+        
+        changed_files = [f for f, changed in results.items() if changed]
+        if changed_files:
+            logger.info(f"Refreshed {len(changed_files)} files from disk: {changed_files}")
+            self._save_state()
+        
+        return results
     
     def mark_context_submission(self, conversation_id: str) -> None:
         """Mark the current state as the last context submission point."""
@@ -223,7 +394,6 @@ class FileStateManager:
             # Compare current content with last seen content
             recent_changes = self._compute_changes(
                 state.last_seen_content,
-                state.last_seen_content,
                 state.current_content
             )
             if recent_changes:
@@ -244,6 +414,84 @@ class FileStateManager:
             annotated_lines.append(f"[{i:03d}{line_state}] {line}")
             
         return annotated_lines, True
+
+    def has_changes_since_last_context_submission(self, conversation_id: str, file_path: str) -> bool:
+        """Check if file has changed since last context submission."""
+        if conversation_id not in self.conversation_states:
+            logger.debug(f"No conversation state for {conversation_id}, treating as changed")
+            return True
+        
+        state = self.conversation_states[conversation_id].get(file_path)
+        if not state:
+            logger.debug(f"No file state for {file_path} in conversation {conversation_id}, treating as changed")
+            return True
+            
+        has_changes = state.current_content != state.last_context_submission_content
+        logger.debug(f"File {file_path} change check: current={len(state.current_content)} lines, "
+                    f"baseline={len(state.last_context_submission_content)} lines, changed={has_changes}")
+        return has_changes
+    
+    def refresh_file_from_disk(self, conversation_id: str, file_path: str, base_dir: str) -> bool:
+        """
+        Refresh a file's current_content from disk without resetting the baseline.
+        
+        This is critical for detecting when a user has NOT applied a suggested diff -
+        the file on disk won't have changed, but we need to track the actual state.
+        
+        Returns:
+            True if the file was refreshed and had changes, False otherwise
+        """
+        if conversation_id not in self.conversation_states:
+            logger.warning(f"Cannot refresh file for unknown conversation {conversation_id}")
+            return False
+            
+        state = self.conversation_states[conversation_id].get(file_path)
+        if not state:
+            logger.debug(f"File {file_path} not in conversation {conversation_id}, skipping refresh")
+            return False
+        
+        full_path = os.path.join(base_dir, file_path)
+        try:
+            with open(full_path, 'r', encoding='utf-8') as f:
+                disk_content = f.read()
+        except Exception as e:
+            logger.warning(f"Could not read {full_path} from disk: {e}")
+            return False
+        
+        disk_lines = disk_content.splitlines()
+        current_hash = self._compute_hash(disk_lines)
+        
+        if current_hash != state.content_hash:
+            logger.info(f"File {file_path} changed on disk since last check")
+            changed_lines = self._compute_changes(state.original_content, state.current_content, disk_lines)
+            state.current_content = disk_lines
+            state.content_hash = current_hash
+            
+            for line_num in changed_lines:
+                if line_num not in state.line_states:
+                    state.line_states[line_num] = '+'
+                elif state.line_states[line_num] != '+':
+                    state.line_states[line_num] = '*'
+            
+            return True
+        
+        return False
+    
+    def refresh_all_files_from_disk(self, conversation_id: str, base_dir: str) -> Dict[str, bool]:
+        """Refresh all files in a conversation from disk."""
+        if conversation_id not in self.conversation_states:
+            return {}
+        
+        results = {}
+        for file_path in list(self.conversation_states[conversation_id].keys()):
+            results[file_path] = self.refresh_file_from_disk(conversation_id, file_path, base_dir)
+        
+        changed_files = [f for f, changed in results.items() if changed]
+        if changed_files:
+            logger.info(f"Refreshed {len(changed_files)} files from disk: {changed_files}")
+            self._save_state()
+        
+        return results
 
     def update_file_state(self, conversation_id: str, file_path: str, new_content: str) -> Optional[Set[int]]:
         """Update file state and return set of changed line numbers"""
@@ -317,10 +565,55 @@ class FileStateManager:
             elif tag == 'insert':
                 # New lines
                 changed_lines.update(range(j1 + 1, j2 + 1))
-        
+                
         return changed_lines
 
-    def format_context_message(self, conversation_id: str, include_recent: bool = True) -> Tuple[str, str]:
+    def format_file_authority_message(self, conversation_id: str) -> str:
+        """
+        Generate a message emphasizing that the file content shown is authoritative.
+        
+        This helps the model understand that if it previously suggested changes that
+        were NOT applied, the files shown here reflect the ACTUAL state, not the
+        model's suggestions.
+        """
+        if conversation_id not in self.conversation_states:
+            return ""
+        
+        # Check if there are any files with changes since the original
+        files_with_changes = []
+        for file_path, state in self.conversation_states[conversation_id].items():
+            if state.line_states:  # Has some changes tracked
+                files_with_changes.append(file_path)
+        
+        if not files_with_changes:
+            return ""
+        
+        return """CRITICAL: FILE CONTENT AUTHORITY
+========================================
+⚠️  WARNING: VERIFY FILE STATE BEFORE GENERATING DIFFS ⚠️
+========================================
+
+The file content shown below is read directly from the filesystem and represents 
+the ACTUAL current state of the files. If you previously suggested changes that 
+were not applied, the file content here will NOT include those changes. 
+
+REQUIRED VERIFICATION (perform silently before ANY diff):
+1. Look at the file content below - check [NNN+], [NNN*], [NNN ] markers
+2. Count the actual lines in the file content shown
+3. Verify if your previous suggestions appear in this content
+4. If they don't appear, they were NOT applied by the user
+5. Base your diff on THIS content, not on what you suggested before
+
+FAIL-SAFE RULE:
+If you are about to generate a diff and have not looked at the file content
+below in the last 10 seconds of your reasoning, STOP. Look at the file content
+first, verify the current state, THEN generate the diff.
+
+========================================
+
+Files being tracked for changes: """ + ", ".join(files_with_changes) + "\n"
+
+    def format_context_message(self, conversation_id: str, include_recent: bool = True, include_authority: bool = True) -> Tuple[str, str]:
         """Format context message about file changes for the prompt"""
         changes = self.get_file_changes(conversation_id)
         if not changes:
@@ -340,6 +633,12 @@ class FileStateManager:
             lines.append(f"  - {file_path}:")
             lines.append(f"    • {added} new lines (marked with +)")
             lines.append(f"    • {modified} modified lines (marked with *)")
+        
+        # Add authority message if requested
+        if include_authority:
+            authority_msg = self.format_file_authority_message(conversation_id)
+            if authority_msg:
+                lines.insert(0, authority_msg)
         
         # Format recent changes if any
         recent_message = ""
