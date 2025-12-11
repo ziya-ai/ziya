@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ziya"
-version = "0.3.11.0"
+version = "0.3.12.0"
 description = ""
 authors = ["Dan Cohn <chroma@gmail.com>",
            "Vishnu Krishnaprasad <vishnukool@gmail.com>"]
@@ -70,6 +70,7 @@ local = ["torch"]
 
 [tool.poetry.scripts]
 ziya = 'app.ziya_exec:ziya'
+ziya-public = 'app.ziya_exec:ziya'
 dev = 'app.ziya_exec:dev'
 finstall = "app.ziya_exec:frontend_install"
 fstart = "app.ziya_exec:frontend_start"
