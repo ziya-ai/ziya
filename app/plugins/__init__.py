@@ -6,6 +6,7 @@ environment-specific authentication, configuration, and integrations
 without modifying the core codebase.
 """
 
+import os
 from typing import List, Optional
 from app.utils.logging_utils import logger
 
@@ -35,6 +36,7 @@ def register_registry_provider(provider):
     """Register an MCP registry provider plugin."""
     _registry_providers.append(provider)
     logger.info(f"Registered registry provider: {getattr(provider, 'identifier', 'unknown')}")
+
 
 def get_active_auth_provider():
     """
@@ -81,14 +83,25 @@ def initialize():
     register_auth_provider(DefaultAuthProvider())
     register_config_provider(DefaultConfigProvider())
     
-    # Try to load internal plugins if available
-    try:
-        import internal.plugins
-        internal.plugins.register()
-        logger.info("✓ Internal plugins loaded successfully")
-    except ImportError:
-        logger.debug("No internal plugins found (community edition)")
-    except Exception as e:
-        logger.warning(f"Failed to load internal plugins: {e}")
+    # Only load internal plugins if ZIYA_LOAD_INTERNAL_PLUGINS is set
+    if os.environ.get('ZIYA_LOAD_INTERNAL_PLUGINS') == '1':
+        loaded = False
+        for module_name in ['plugins', 'internal.plugins']:
+            try:
+                import importlib
+                internal_plugins = importlib.import_module(module_name)
+                internal_plugins.register()
+                logger.info(f"✓ Enterprise plugins loaded from {module_name}")
+                loaded = True
+                break
+            except ImportError:
+                continue
+            except Exception as e:
+                logger.warning(f"Failed to load enterprise plugins from {module_name}: {e}")
+        
+        if not loaded:
+            logger.debug("No enterprise plugins found")
+    else:
+        logger.debug("Enterprise plugins disabled")
     
     _initialized = True
