@@ -940,9 +940,56 @@ class DiffRegressionTest(unittest.TestCase):
         """Test deletion of _astream method - should fail when incorrectly reported as already applied"""
         self.run_diff_test('google_genai_astream_deletion')
 
-    def test_mui_chat_history_tree_optimization(self):
-        """Test tree data optimization with stable signature dependency - reproduces corruption from useMemo dependency change"""
-        self.run_diff_test('mui_chat_history_tree_optimization')
+    def test_drawio_elk_removal_false_applied(self):
+        """Test case for drawioPlugin.ts where diff claims ELK code removal has been applied but it has not"""
+        metadata, original, diff, expected = self.load_test_case('drawio_elk_removal_false_applied')
+        
+        # Set up the test file in the temp directory
+        test_file_path = os.path.join(self.temp_dir, metadata['target_file'])
+        os.makedirs(os.path.dirname(test_file_path), exist_ok=True)
+        
+        with open(test_file_path, 'w', encoding='utf-8') as f:
+            f.write(original)
+        
+        # Apply the diff and get the result
+        result_dict = use_git_to_apply_code_diff(diff, test_file_path)
+        
+        # Read the modified content
+        with open(test_file_path, 'r', encoding='utf-8') as f:
+            modified_content = f.read()
+        
+        # Check configuration flags
+        expected_to_fail = metadata.get('expected_to_fail', False)
+        expected_to_bypass_because_already_applied = metadata.get('expected_to_bypass_because_already_applied', True)
+        
+        # Only proceed with special logic if both flags are configured correctly
+        if expected_to_fail and not expected_to_bypass_because_already_applied:
+            # This test is configured to expect failure but NOT to bypass because of already applied
+            
+            # Check if system incorrectly claims "already applied"
+            if result_dict.get('status') == 'success' and not result_dict.get('changes_written', True):
+                already_applied_hunks = result_dict.get('details', {}).get('already_applied', [])
+                if len(already_applied_hunks) > 0:
+                    # System claims already applied - this is the bug we're testing for
+                    self.fail(
+                        f"False 'already applied' detection: System claims hunks {already_applied_hunks} "
+                        f"are already applied, but this test is configured to expect failure without "
+                        f"bypassing due to already applied status."
+                    )
+            
+            # If we get here, the system either:
+            # 1. Applied successfully (content matches expected) - PASS
+            # 2. Failed properly without claiming already applied - PASS
+            if modified_content == expected:
+                # Successfully applied - PASS
+                return
+            else:
+                # Failed without claiming already applied - PASS
+                logger.info(f"Test passed: Diff failed properly without incorrectly claiming 'already applied'")
+                return
+        else:
+            # Use standard test logic for other configurations
+            self.run_diff_test('drawio_elk_removal_false_applied')
 
 
 # Dynamically generate test methods for all test case directories

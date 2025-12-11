@@ -1,0 +1,20 @@
+diff --git a/frontend/src/plugins/d3/drawioPlugin.ts b/frontend/src/plugins/d3/drawioPlugin.ts
+--- a/frontend/src/plugins/d3/drawioPlugin.ts
++++ b/frontend/src/plugins/d3/drawioPlugin.ts
+@@ -1410,200 +1410,30 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec,
+                 
+                 console.log('✅ ROUTER: All edges routed');
+                 
+-                // Remove all ELK code below - lines 1271-1974
+-                console.log('📐 ELK: Preparing graph for automatic layout');
+-                // ... [REMOVE ~600 lines of ELK edge routing and manual connection point code]
++                // SIMPLIFIED: Let maxGraph handle edge routing
++                // Configure edge style defaults
++                const defaultEdgeStyle = stylesheet.getDefaultEdgeStyle();
++                defaultEdgeStyle['edgeStyle'] = 'orthogonalEdgeStyle';
++                defaultEdgeStyle['rounded'] = 1;
++                defaultEdgeStyle['jettySize'] = 'auto';
++                defaultEdgeStyle['orthogonalLoop'] = 1;
++                stylesheet.putDefaultEdgeStyle(defaultEdgeStyle);
++                
++                console.log('📐 ROUTING: Using maxGraph built-in orthogonal routing');
