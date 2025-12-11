@@ -1,11 +1,12 @@
 import React, { useState, useRef, useEffect } from "react";
 import { useChatContext } from '../context/ChatContext';
 import { sendPayload } from "../apis/chatApi";
-import { Message } from "../utils/types";
+import { Message, ImageAttachment } from "../utils/types";
 import { useFolderContext } from "../context/FolderContext";
-import { Button, Tooltip, Input, Space } from "antd";
+import { Button, Tooltip, Input, Space, message, Image as AntImage } from "antd";
 import { convertKeysToStrings } from '../utils/types';
-import { EditOutlined, CheckOutlined, CloseOutlined, SaveOutlined } from "@ant-design/icons";
+import { EditOutlined, CheckOutlined, CloseOutlined, SaveOutlined, 
+         PictureOutlined, PaperClipOutlined, DeleteOutlined } from "@ant-design/icons";
 
 interface EditSectionProps {
     index: number;
@@ -30,6 +31,9 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
 
     const [editedMessage, setEditedMessage] = useState(currentMessages[index].content);
     const { checkedKeys } = useFolderContext();
+    const [attachedImages, setAttachedImages] = useState<ImageAttachment[]>([]);
+    const [supportsVision, setSupportsVision] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
 
     const { TextArea } = Input;
@@ -46,6 +50,136 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
         }
     }, [isEditing]);
 
+    // Check vision support on mount
+    useEffect(() => {
+        const checkVisionSupport = async () => {
+            try {
+                const response = await fetch('/api/model-capabilities');
+                const capabilities = await response.json();
+                setSupportsVision(capabilities.supports_vision || false);
+            } catch (error) {
+                console.error('Failed to check vision support:', error);
+                setSupportsVision(false);
+            }
+        };
+        checkVisionSupport();
+    }, []);
+
+    // Initialize attachedImages when editing starts
+    useEffect(() => {
+        if (isEditing) {
+            const messageImages = currentMessages[index].images || [];
+            setAttachedImages(messageImages);
+        }
+    }, [isEditing, index, currentMessages]);
+
+    // Process image files (from file input or drag-drop)
+    const processImageFiles = async (files: FileList | null) => {
+        if (!files || files.length === 0) return;
+
+        const maxSize = 5 * 1024 * 1024; // 5MB limit
+        const maxImages = 5;
+
+        if (attachedImages.length + files.length > maxImages) {
+            message.warning(`Maximum ${maxImages} images per message`);
+            return;
+        }
+
+        for (let i = 0; i < files.length; i++) {
+            const file = files[i];
+
+            if (!file.type.startsWith('image/')) {
+                message.error(`${file.name} is not an image file`);
+                continue;
+            }
+
+            if (file.size > maxSize) {
+                message.error(`${file.name} is too large (max 5MB)`);
+                continue;
+            }
+
+            try {
+                const reader = new FileReader();
+                const imageData = await new Promise<string>((resolve, reject) => {
+                    reader.onload = () => resolve(reader.result as string);
+                    reader.onerror = reject;
+                    reader.readAsDataURL(file);
+                });
+
+                const matches = imageData.match(/^data:(.+);base64,(.+)$/);
+                if (!matches) {
+                    throw new Error('Invalid image data format');
+                }
+
+                const [, mediaType, data] = matches;
+
+                const img = new Image();
+                await new Promise((resolve, reject) => {
+                    img.onload = resolve;
+                    img.onerror = reject;
+                    img.src = imageData;
+                });
+
+                const attachment: ImageAttachment = {
+                    data,
+                    mediaType: mediaType as ImageAttachment['mediaType'],
+                    filename: file.name,
+                    size: file.size,
+                    width: img.width,
+                    height: img.height
+                };
+
+                setAttachedImages(prev => [...prev, attachment]);
+                message.success(`Added ${file.name}`);
+            } catch (error) {
+                console.error('Error reading image:', error);
+                message.error(`Failed to load ${file.name}`);
+            }
+        }
+
+        if (fileInputRef.current) {
+            fileInputRef.current.value = '';
+        }
+    };
+
+    // Handle image selection from file input
+    const handleImageSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        await processImageFiles(event.target.files);
+    };
+
+    // Handle drag and drop
+    const handleDragOver = (e: React.DragEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+    };
+
+    const handleDrop = async (e: React.DragEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        if (!supportsVision) {
+            message.warning('Current model does not support image attachments');
+            return;
+        }
+
+        const files = e.dataTransfer.files;
+        if (files && files.length > 0) {
+            await processImageFiles(files);
+        }
+    };
+
+    const removeImage = (imgIndex: number) => {
+        setAttachedImages(prev => prev.filter((_, i) => i !== imgIndex));
+    };
+
+    const triggerFileInput = () => {
+        if (!supportsVision) {
+            message.warning('Current model does not support image attachments');
+            return;
+        }
+        fileInputRef.current?.click();
+    };
+
     const handleEdit = () => {
         setEditingMessageIndex(index);
     };
@@ -59,6 +193,7 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
                         return {
                             ...msg,
                             content: editedMessage,
+                            images: attachedImages.length > 0 ? attachedImages : undefined,
                             _timestamp: Date.now()  // Update timestamp to mark as modified
                         };
                     }
@@ -78,6 +213,7 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
 
     const handleSubmit = async () => {
         setEditingMessageIndex(null);
+        setAttachedImages([]);
 
         // Clear any existing streamed content
         setStreamedContentMap(new Map());
@@ -89,6 +225,7 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
         truncatedMessages[index] = {
             ...truncatedMessages[index],
             content: editedMessage,
+            images: attachedImages.length > 0 ? attachedImages : undefined,
             _timestamp: Date.now(),
             // Add a marker to indicate this message was edited and truncated
             _edited: true,
@@ -155,6 +292,9 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
                     }}>
                         <div className="message-sender">You:</div>
                         <Space>
+                            <Tooltip title="Attach image">
+                                <Button icon={<PaperClipOutlined />} onClick={triggerFileInput} size="small" disabled={!supportsVision || attachedImages.length >= 5} />
+                            </Tooltip>
                             <Tooltip title="Cancel editing">
                                 <Button icon={<CloseOutlined />} onClick={handleCancel} size="small">
                                     Cancel
@@ -173,6 +313,51 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
                         </Space>
                     </div>
 
+                    {/* Display attached images */}
+                    {attachedImages.length > 0 && (
+                        <div style={{
+                            marginBottom: '12px',
+                            display: 'flex',
+                            gap: '8px',
+                            flexWrap: 'wrap'
+                        }}>
+                            {attachedImages.map((img, imgIndex) => (
+                                <div key={imgIndex} style={{
+                                    position: 'relative',
+                                    display: 'inline-block'
+                                }}>
+                                    <AntImage
+                                        src={`data:${img.mediaType};base64,${img.data}`}
+                                        alt={img.filename || 'Attached image'}
+                                        width={120}
+                                        height={120}
+                                        style={{ 
+                                            objectFit: 'cover', 
+                                            borderRadius: '4px', 
+                                            border: '1px solid #d9d9d9' 
+                                        }}
+                                        preview={{ mask: <PictureOutlined /> }}
+                                    />
+                                    <Button
+                                        type="primary"
+                                        danger
+                                        size="small"
+                                        icon={<DeleteOutlined />}
+                                        onClick={() => removeImage(imgIndex)}
+                                        style={{
+                                            position: 'absolute',
+                                            top: 4,
+                                            right: 4,
+                                            minWidth: '24px',
+                                            height: '24px',
+                                            padding: '0 4px'
+                                        }}
+                                    />
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
                     {/* Full-width textarea */}
                     <TextArea
                         ref={textareaRef}
@@ -189,6 +374,18 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
                             maxRows: 20
                         }}
                         placeholder="Edit your message..."
+                        onDragOver={handleDragOver}
+                        onDrop={handleDrop}
+                    />
+
+                    {/* Hidden file input for image selection */}
+                    <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        style={{ display: 'none' }}
+                        onChange={handleImageSelect}
                     />
                 </div>
             )}

@@ -1584,6 +1584,11 @@ ${errorDetail}
 
                                 // Unescape common escape sequences
                                 // Don't unescape backslashes inside math blocks as \\ is meaningful in LaTeX
+                                // CRITICAL: Don't unescape \n inside mermaid/code blocks
+                                const isMermaidBlock = extractedContent.includes('```mermaid') || 
+                                                       extractedContent.includes('graph ') ||
+                                                       extractedContent.includes('flowchart ');
+                                
                                 const mathBlockRegex = /(\$\$[\s\S]*?\$\$|\$[^$\n]+?\$)/g;
                                 const parts = extractedContent.split(mathBlockRegex);
 
@@ -1597,14 +1602,20 @@ ${errorDetail}
                                             .replace(/\\'/g, "'")
                                             .replace(/\\"/g, '"');
                                     } else {
-                                        // In regular text, unescape everything including backslashes
-                                        return part
+                                        // In regular text, unescape everything EXCEPT \n in mermaid blocks
+                                        let processed = part
                                             .replace(/\\'/g, "'")
                                             .replace(/\\"/g, '"')
-                                            .replace(/\\n/g, '\n')
                                             .replace(/\\t/g, '\t')
                                             .replace(/\\r/g, '\r')
                                             .replace(/\\\\/g, '\\');
+                                        
+                                        // Only unescape \n if NOT in a mermaid block
+                                        if (!isMermaidBlock) {
+                                            processed = processed.replace(/\\n/g, '\n');
+                                        }
+                                        
+                                        return processed;
                                     }
                                 }).join('');
                             }
