@@ -34,9 +34,20 @@ class PrecisionPromptSystem:
             from app.agents.prompts_manager import get_extended_prompt
             from app.agents.agent import extract_codebase
             
+            # CRITICAL: Use the actual conversation_id, not a temporary hash-based one
+            # This ensures file state tracking works correctly across the conversation
+            conversation_id = None
+            if chat_history and len(chat_history) > 0:
+                # Try to extract conversation_id from context
+                conversation_id = model_info.get("conversation_id")
+            
+            # Fall back to a stable ID based on the request path if no conversation_id
+            if not conversation_id:
+                conversation_id = f"precision_{request_path}" if request_path else "precision_default"
+            
             file_context = extract_codebase({
                 "config": {"files": files},
-                "conversation_id": f"precision_{hash(str(files))}"
+                "conversation_id": conversation_id
             })
             
             # Build context with native_tools_available for Bedrock

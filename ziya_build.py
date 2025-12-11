@@ -101,10 +101,10 @@ def main():
 
             except subprocess.CalledProcessError as e:
                 print(f"Frontend build failed: {e}")
-                return 1
+                sys.exit(1)
             except FileNotFoundError:
                 print("npm command not found. Please ensure Node.js and npm are installed and in your PATH.")
-                return 1
+                sys.exit(1)
         else:
             print("Frontend source unchanged since last build, skipping TypeScript compilation")
     else:

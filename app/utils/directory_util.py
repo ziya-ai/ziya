@@ -135,12 +135,31 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
                     ignored_patterns.append(("!**/" + include_pattern, user_codebase_dir))
                     logger.info(f"Also including pattern in all subdirectories: **/{include_pattern}")
             else:
-                # For directory/file paths, include the path and all its subdirectories
+                # For directory/file paths, we need to un-ignore all parent directories
+                # for the gitignore parser to allow traversal down to the target path
+                
+                # Split the path into components
+                path_parts = include_pattern.split('/')
+                
+                # Add negation patterns for each parent directory leading to the target
+                # This is for nested paths like 'Package/src' to work
+                # Without this, gitignore won't traverse into 'Package' to find 'src'
+                accumulated_path = ""
+                for i, part in enumerate(path_parts):
+                    if i == 0:
+                        accumulated_path = part
+                    else:
+                        accumulated_path = accumulated_path + "/" + part
+                    
+                    # Add negation for this path level
+                    ignored_patterns.append(("!" + accumulated_path, user_codebase_dir))
+                    logger.info(f"Including parent path for traversal: {accumulated_path}")
+                
+                # Add the wildcard pattern for all subdirectories of the final target
+                # This is in addition to the individual parent patterns above
                 logger.info(f"Including only: {include_pattern} and its subdirectories")
-                ignored_patterns.append(("!" + include_pattern, user_codebase_dir))
-                # Also explicitly include all subdirectories and files
                 ignored_patterns.append(("!" + include_pattern + "/**", user_codebase_dir))
-        
+                
         # Return early - in include-only mode we don't use the standard exclusion patterns
         return ignored_patterns
     
@@ -331,6 +350,30 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
         # Only scan recursively for project directories
         ignored_patterns.extend(get_patterns_recursive(directory))
         logger.debug(f"Found {len(ignored_patterns)} total patterns after recursive scan")
+    
+    # CRITICAL: Add negation patterns for --include paths to override ALL gitignore patterns
+    # This must happen AFTER all gitignore patterns are collected
+    if include_patterns_override:
+        logger.info(f"Adding negation patterns to force inclusion of: {include_patterns_override}")
+        for include_path in include_patterns_override:
+            # Add negation pattern for the path itself
+            ignored_patterns.append((f"!{include_path}", user_codebase_dir))
+            # Add negation pattern for all contents within the path
+            ignored_patterns.append((f"!{include_path}/**", user_codebase_dir))
+            
+            # Also add negation patterns for parent directories to ensure traversal
+            # This is necessary because gitignore won't traverse into ignored parent dirs
+            if '/' in include_path:
+                path_parts = include_path.split('/')
+                accumulated_path = ""
+                for i, part in enumerate(path_parts[:-1]):  # Exclude the last part (already handled above)
+                    if i == 0:
+                        accumulated_path = part
+                    else:
+                        accumulated_path = accumulated_path + "/" + part
+                    ignored_patterns.append((f"!{accumulated_path}", user_codebase_dir))
+            
+            logger.info(f"Added negation patterns for --include path: {include_path}")
     
     # Cache the results for future calls
     _ignored_patterns_cache = ignored_patterns

@@ -123,6 +123,23 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                 logger.debug(f"Thinking mode enabled: {thinking_mode_enabled}")
                 
                 chunk_content = ""
+                
+                # CRITICAL: Check if chunk is already a dict with error information
+                # This must happen BEFORE any other processing to catch authentication errors
+                if isinstance(chunk, dict):
+                    # If this is an error dict, send it immediately as SSE
+                    if 'error' in chunk or 'type' in chunk:
+                        logger.info(f"🔐 MIDDLEWARE: Detected error dict, sending as SSE: {chunk.get('error', chunk.get('type'))}")
+                        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                        
+                        # If this is a terminal error, send DONE marker
+                        if chunk.get('type') == 'error' or chunk.get('error') in ['authentication_error', 'model_error']:
+                            logger.info("🔐 MIDDLEWARE: Sending DONE marker after error")
+                            yield "data: [DONE]\n\n"
+                            return
+                        
+                        continue
+                
                 # Process the chunk
                 try:
                     # Handle ChatGoogleGenerativeAIError specifically
