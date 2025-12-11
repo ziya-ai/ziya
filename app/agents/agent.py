@@ -1779,20 +1779,35 @@ def extract_codebase(x):
         except Exception as e:
             logger.error(f"Error reading file {file_path}: {str(e)}")
             continue
- 
-    # Initialize conversation state immediately after loading files
-    logger.debug(f"🔍 FILE_STATE: Initializing conversation {conversation_id} with {len(file_contents)} files")
-    file_state_manager.initialize_conversation(conversation_id, file_contents)
-    logger.info(f"Initialized conversation {conversation_id} with {len(file_contents)} files")
-    # Set initial context submission baseline
-    file_state_manager.mark_context_submission(conversation_id)
-    logger.info(f"Set initial context submission baseline for conversation {conversation_id}")
+    
+    # CRITICAL: Check if this is a new conversation or an existing one
+    is_new_conversation = conversation_id not in file_state_manager.conversation_states
+    
+    if is_new_conversation:
+        # Initialize conversation state for NEW conversations only
+        logger.debug(f"🔍 FILE_STATE: Initializing NEW conversation {conversation_id} with {len(file_contents)} files")
+        file_state_manager.initialize_conversation(conversation_id, file_contents, force_reset=True)
+        logger.info(f"Initialized new conversation {conversation_id} with {len(file_contents)} files")
+        # Set initial context submission baseline for new conversations
+        file_state_manager.mark_context_submission(conversation_id)
+        logger.info(f"Set initial context submission baseline for conversation {conversation_id}")
+    else:
+        # For EXISTING conversations, refresh files from disk to catch external changes
+        logger.info(f"🔍 FILE_STATE: Refreshing existing conversation {conversation_id} from disk")
+        base_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
+        refresh_results = file_state_manager.refresh_all_files_from_disk(conversation_id, base_dir)
+        changed_count = sum(1 for changed in refresh_results.values() if changed)
+        logger.info(f"Refreshed conversation {conversation_id}: {changed_count} files changed on disk")
     
     # Update any files that may have changed
     file_state_manager.update_files_in_state(conversation_id, file_contents)
 
     # Get layered changes (cumulative + recent)
     overall_changes, recent_changes = file_state_manager.format_layered_context_message(conversation_id)
+
+    # Get file authority message to help model understand actual file state
+    authority_message = file_state_manager.format_file_authority_message(conversation_id)
+    logger.debug(f"Authority message: {authority_message[:200] if authority_message else 'None'}...")
 
     codebase = get_combined_docs_from_files(files, conversation_id)
 
@@ -1805,6 +1820,10 @@ def extract_codebase(x):
     logger.info(f"Changes detected - Overall: {bool(overall_changes)}, Recent: {bool(recent_changes)}")
 
     result = []
+
+    # Add file authority message first (most important for model to see)
+    if authority_message:
+        result.append(authority_message)
 
     # Add recent changes first if any
     if recent_changes:
