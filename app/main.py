@@ -332,7 +332,20 @@ def update_package(current_version: str, latest_version: Optional[str]) -> None:
 
 def print_version():
     current_version = get_current_version()
-    print(f"Ziya version {current_version}")
+    
+    # Get branding from active config provider
+    edition = "Community Edition"
+    try:
+        from app.plugins import get_active_config_providers
+        for provider in get_active_config_providers():
+            config = provider.get_defaults()
+            if 'branding' in config:
+                edition = config['branding'].get('edition', edition)
+                break
+    except:
+        pass
+    
+    print(f"Ziya version {current_version} - {edition}")
 
 
 def print_info(args):
@@ -350,17 +363,55 @@ def print_info(args):
     print("Ziya System Information")
     print("=" * 60 + "\n")
     
+    # Edition from plugins
+    from app.plugins import _auth_providers, _config_providers, _registry_providers, get_active_auth_provider, _initialized
+    edition = "Community Edition"
+    try:
+        for provider in _config_providers:
+            if hasattr(provider, 'get_defaults'):
+                config = provider.get_defaults()
+                if 'branding' in config and 'edition' in config['branding']:
+                    edition = config['branding']['edition']
+                    break
+    except:
+        pass
+    
     # Version info
     current_version = get_current_version()
+    print(f"Edition: {edition}")
     print(f"Ziya Version: {current_version}")
     print(f"Python Version: {sys.version.split()[0]}")
     print(f"Python Executable: {sys.executable}")
     print(f"Platform: {platform.platform()}")
     print()
     
+    # Plugin information (only if initialized)
+    if _initialized:
+        print("Plugins:")
+        print(f"  Auth Providers: {len(_auth_providers)}")
+        for p in _auth_providers:
+            provider_id = getattr(p, 'provider_id', 'unknown')
+            is_active = p == get_active_auth_provider()
+            print(f"    - {provider_id}{' (active)' if is_active else ''}")
+        print(f"  Config Providers: {len(_config_providers)}")
+        for p in _config_providers:
+            print(f"    - {getattr(p, 'provider_id', 'unknown')}")
+        print(f"  Registry Providers: {len(_registry_providers)}")
+        for p in _registry_providers:
+            print(f"    - {getattr(p, 'identifier', 'unknown')}")
+        
+        # Check for any enterprise formatter files
+        import glob
+        static_dir = os.path.join(os.path.dirname(__file__), 'templates', 'static', 'js')
+        formatter_files = glob.glob(os.path.join(static_dir, '*[Ff]ormatter*.js')) if os.path.exists(static_dir) else []
+        if formatter_files:
+            print(f"  Enterprise Output Formatters: {len(formatter_files)}")
+        print()
+    
     # Endpoint and model configuration
+    from app.config.models_config import DEFAULT_MODELS
     print(f"Endpoint: {args.endpoint}")
-    print(f"Model: {args.model or config.DEFAULT_MODELS.get(args.endpoint, 'N/A')}")
+    print(f"Model: {args.model or DEFAULT_MODELS.get(args.endpoint, 'N/A')}")
     if args.model_id:
         print(f"Model ID Override: {args.model_id}")
     print()
