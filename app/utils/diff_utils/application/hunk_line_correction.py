@@ -174,19 +174,23 @@ def find_best_match_position(context: List[str], file_lines: List[str], original
     return (best_pos, best_ratio)
 
 
-def correct_hunk_line_numbers(hunks: List[Dict[str, Any]], file_lines: List[str]) -> List[Dict[str, Any]]:
+def correct_hunk_line_numbers(hunks: List[Dict[str, Any]], file_lines: List[str]) -> Tuple[List[Dict[str, Any]], List[int]]:
     """
     Correct hunk line numbers by finding best context matches in the file.
     Adds 'line_number_corrected' and 'correction_confidence' metadata to corrected hunks.
     Filters out large deletions with low confidence to prevent corruption.
     Also validates function context from hunk headers to prevent applying diffs to wrong functions.
+    
+    Returns:
+        Tuple of (corrected_hunks, skipped_hunk_numbers)
     """
     if not hunks or not file_lines:
-        return hunks
+        return hunks, []
     
     corrected = []
     corrections = 0
     skipped = 0
+    skipped_hunk_numbers = []
     
     for i, hunk in enumerate(hunks, 1):
         old_start = hunk.get('old_start', 1)
@@ -217,6 +221,7 @@ def correct_hunk_line_numbers(hunks: List[Dict[str, Any]], file_lines: List[str]
                 if not validate_function_context_at_position(function_context, file_lines, pos):
                     logger.warning(f"Hunk {i}: function context '{function_context}' not found, confidence {confidence:.2f} - skipping to prevent corruption")
                     skipped += 1
+                    skipped_hunk_numbers.append(i)
                     continue
             elif function_context and confidence >= 0.95:
                 logger.debug(f"Hunk {i}: skipping function context validation due to high confidence match ({confidence:.2f})")
@@ -250,6 +255,7 @@ def correct_hunk_line_numbers(hunks: List[Dict[str, Any]], file_lines: List[str]
                     # No better match found and confidence too low - skip this hunk entirely
                     logger.warning(f"Hunk {i}: large deletion has low confidence ({confidence:.2f}) and no better match found - skipping to prevent corruption")
                     skipped += 1
+                    skipped_hunk_numbers.append(i)
                     logger.info(f"DEBUG: About to continue, skipped count is now {skipped}")
                     continue
             
@@ -275,4 +281,4 @@ def correct_hunk_line_numbers(hunks: List[Dict[str, Any]], file_lines: List[str]
     if skipped:
         logger.warning(f"Skipped {skipped}/{len(hunks)} hunks to prevent corruption")
     
-    return corrected
+    return corrected, skipped_hunk_numbers

@@ -449,7 +449,16 @@ def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_dif
         original_file_content = '\n'.join(file_lines)
         hunks = fix_overlapping_hunks(hunks, original_file_content)
         
-        corrected_hunks = correct_hunk_line_numbers(hunks, file_lines)
+        corrected_hunks, skipped_hunk_numbers = correct_hunk_line_numbers(hunks, file_lines)
+        
+        # Mark skipped hunks as failed
+        for hunk_num in skipped_hunk_numbers:
+            pipeline.update_hunk_status(
+                hunk_id=hunk_num,
+                stage=PipelineStage.SYSTEM_PATCH,
+                status=HunkStatus.FAILED,
+                error_details={"error": "Hunk skipped due to low confidence to prevent corruption"}
+            )
         
         # Update pipeline hunk_data with corrected hunks (includes confidence metadata)
         for i, corrected_hunk in enumerate(corrected_hunks, 1):
@@ -1314,7 +1323,8 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
             
             # If actual new lines is much larger than new_count header (miscounted)
             # AND covers most of the file, treat as full replacement
-            if actual_new_lines > new_count and actual_new_lines > file_line_count and old_count >= file_line_count * 0.9:
+            # But only if the discrepancy is significant (not just a few lines off)
+            if actual_new_lines > new_count * 1.5 and actual_new_lines > file_line_count and old_count >= file_line_count * 0.9:
                 new_content_lines = []
                 for line in lines:
                     if line.startswith(('+', ' ')):
@@ -1359,7 +1369,17 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
         
         # Try to correct hunk line numbers if they appear to be wrong
         from ..application.hunk_line_correction import correct_hunk_line_numbers
-        corrected_hunks = correct_hunk_line_numbers(hunks, original_lines)
+        corrected_hunks, skipped_hunk_numbers = correct_hunk_line_numbers(hunks, original_lines)
+        
+        # Mark skipped hunks as failed
+        for hunk_num in skipped_hunk_numbers:
+            pipeline.update_hunk_status(
+                hunk_id=hunk_num,
+                stage=PipelineStage.DIFFLIB,
+                status=HunkStatus.FAILED,
+                error_details={"error": "Hunk skipped due to low confidence to prevent corruption"}
+            )
+            
         if corrected_hunks != hunks:
             logger.info("Applied hunk line number corrections")
             hunks = corrected_hunks
@@ -1403,7 +1423,8 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
             return False
         
         # Check if all hunks are already applied        
-        all_hunks_found_applied = True # Assume true initially
+        all_hunks_found_applied = False # Start as false, only set true if we actually find applied hunks
+        any_hunks_processed = False # Track if we actually processed any hunks
         already_applied_hunks = []
         
         # Map hunk numbers to their IDs in the pipeline
@@ -1471,8 +1492,9 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
         
         # Check each hunk
         hunk_id = None
+        if hunks:  # Only set to True if we have hunks to process
+            all_hunks_found_applied = True
         for i, hunk in enumerate(hunks, 1):
-            all_hunks_found_applied = False  # Reset for each hunk to avoid false positives
             
             # FIXED: Use the correct hunk ID from the mapping
             original_hunk_id = hunk_id_mapping.get(i)
@@ -1760,7 +1782,15 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
             
             if not found_applied_at_any_pos:
                 logger.info(f"Hunk #{i} (original ID #{original_hunk_id}) is not already applied")
+                any_hunks_processed = True
                 all_hunks_found_applied = False
+            else:
+                any_hunks_processed = True
+                
+        # Only consider all hunks applied if we actually processed some hunks and found them all applied
+        if not any_hunks_processed:
+            all_hunks_found_applied = False
+            logger.info("No hunks were processed (likely all skipped), not marking as already applied")
                 
         # Special handling for misordered hunks and multi-hunk same function cases
         from ..application.hunk_ordering import is_misordered_hunks_case, is_multi_hunk_same_function_case
@@ -1771,7 +1801,7 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
         
         if all_hunks_found_applied:
             logger.info("All hunks already applied, returning original content")
-            # Mark all pending hunks as already applied
+            # Mark all pending hunks as already applied (but don't override failed hunks)
             for hunk_id, tracker in pipeline.result.hunks.items():
                 if tracker.status == HunkStatus.PENDING:
                     # Clear any previous error details since the hunk is actually already applied
@@ -1782,12 +1812,15 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                         error_details=None  # Clear previous errors
                     )
                     logger.info(f"Marked hunk #{hunk_id} as ALREADY_APPLIED (ignoring previous errors)")
+                elif tracker.status == HunkStatus.FAILED:
+                    logger.info(f"Hunk #{hunk_id} remains FAILED (not overriding with already applied)")
             
-            # Explicitly add all hunks to already_applied_hunks
+            # Explicitly add all hunks to already_applied_hunks (except failed ones)
             for i, hunk in enumerate(hunks, 1):
                 # FIXED: Use the correct hunk ID from the mapping
                 pipeline_hunk_id = hunk_id_mapping.get(i, hunk.get('number', i))
-                if pipeline_hunk_id not in pipeline.result.already_applied_hunks:
+                tracker = pipeline.result.hunks.get(pipeline_hunk_id)
+                if tracker and tracker.status != HunkStatus.FAILED and pipeline_hunk_id not in pipeline.result.already_applied_hunks:
                     pipeline.result.already_applied_hunks.append(pipeline_hunk_id)
             
             # Set the status to success for already applied hunks

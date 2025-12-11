@@ -17,6 +17,11 @@ def unescape_backticks_from_llm(text: str) -> str:
     In template literals, \\` is used to include a literal backtick.
     Multiple consecutive \\` (like \\`\\`\\`) represent literal backticks and should be preserved.
     """
+    # Special case: \\`\\`\\`${variable} pattern in template literals should be unescaped
+    # This handles markdown code blocks within template literals
+    if '\\`\\`\\`${' in text:
+        return text.replace('\\`', '`')
+    
     # Check if we have multiple consecutive escaped backticks (e.g., \\`\\`\\`)
     # This pattern indicates literal backticks in code, not LLM escaping
     if '\\`\\`' in text:

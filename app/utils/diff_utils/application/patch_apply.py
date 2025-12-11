@@ -1098,11 +1098,16 @@ def apply_diff_with_difflib_hybrid_forced(
             if old_count_from_header > old_block_len:
                 # Check if using old_count would extend to or past EOF
                 would_reach_eof = (remove_pos + old_count_from_header >= len(final_lines_with_endings))
-                if would_reach_eof:
+                # Only use "remove to EOF" if the truncation is significant (more than 3 lines)
+                # and we would actually reach EOF. This prevents incorrect removal for diffs
+                # where the header count includes context lines.
+                significant_truncation = (old_count_from_header - old_block_len) > 3
+                if would_reach_eof and significant_truncation:
                     actual_remove_count = old_count_from_header
                     logger.info(f"Hunk #{hunk_idx}: Using old_count {old_count_from_header} to remove to EOF (old_block: {old_block_len})")
                 else:
                     actual_remove_count = old_block_len
+                    logger.info(f"Hunk #{hunk_idx}: Using old_block length {old_block_len} (old_count: {old_count_from_header}, truncation not significant)")
             else:
                 actual_remove_count = old_block_len
             
