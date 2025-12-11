@@ -852,7 +852,6 @@ const extractAllFilesFromDiff = (diffContent: string): string[] => {
         !file.includes('\\')
     );
 
-    console.log('🔄 CONTEXT_ENHANCEMENT: File analysis:', { allFiles: uniqueFiles, newFiles: Array.from(newFiles), existingFiles });
     return existingFiles;
 };
 
@@ -882,7 +881,6 @@ const checkFilesInContext = (filePaths: string[], currentFiles: string[] = []): 
         }
     }
 
-    console.log('🔄 CONTEXT_ENHANCEMENT: Local check result:', { filePaths, currentFiles: currentFiles.slice(0, 5), missingFiles, availableFiles });
     return { missingFiles, availableFiles };
 };
 
@@ -2908,21 +2906,17 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
             !hasCheckedFilesRef.current &&
             token.text.includes('diff --git')) {
 
-            console.log('🔄 CONTEXT_ENHANCEMENT: Checking after streaming completed');
             hasCheckedAfterStreamingRef.current = true;
 
             const checkAfterStreaming = async () => {
                 const referencedFiles = extractAllFilesFromDiff(token.text);
-                console.log('🔄 CONTEXT_ENHANCEMENT: Files extracted from diff:', referencedFiles);
                 if (referencedFiles.length > 0) {
                     const currentFiles = Array.from(checkedKeys).map(String);
                     const response = checkFilesInContext(referencedFiles, currentFiles);
-                    console.log('🔄 CONTEXT_ENHANCEMENT: API response after streaming for files', referencedFiles, ':', response);
                     if (response.missingFiles.length > 0) {
                         await addFilesToContext(response.missingFiles);
                         setMissingFilesList(response.missingFiles);
                         setNeedsContextEnhancement(true);
-                        console.log('🔄 CONTEXT_ENHANCEMENT: Set overlay after streaming for missing files:', response.missingFiles);
                     }
                 }
             };
@@ -2956,8 +2950,6 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
             const referencedFiles = extractAllFilesFromDiff(token.text);
             if (referencedFiles.length === 0) return;
 
-            console.log('🔄 CONTEXT_ENHANCEMENT: Checking files in diff:', referencedFiles);
-
             // Mark as checked BEFORE doing the work to prevent race conditions
             hasCheckedFilesRef.current = true;
             setIsCheckingFiles(true);
@@ -2965,11 +2957,9 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
             try {
                 const currentFiles = Array.from(checkedKeys).map(String);
                 const response = checkFilesInContext(referencedFiles, currentFiles);
-                console.log('🔄 CONTEXT_ENHANCEMENT: API response:', response);
                 const { missingFiles } = response;
 
                 if (missingFiles.length > 0) {
-                    console.log('🔄 CONTEXT_ENHANCEMENT: Missing files detected:', missingFiles);
 
                     // Add files to context using the proper context method
                     await addFilesToContext(missingFiles);
@@ -3005,8 +2995,6 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
     // Restart stream with enhanced context
     const restartStreamWithFiles = async (addedFiles: string[]) => {
         try {
-            console.log('🔄 CONTEXT_ENHANCEMENT: Starting stream restart process');
-
             // First, explicitly abort the current stream
             document.dispatchEvent(new CustomEvent('abortStream', {
                 detail: { conversationId: currentConversationId }
@@ -3017,7 +3005,6 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
 
             // Use the imported function
             const allCurrentFiles = Array.from(checkedKeys).map(String);
-            console.log('🔄 CONTEXT_ENHANCEMENT: Restarting with files:', { added: addedFiles, total: allCurrentFiles.length });
             await restartStreamWithEnhancedContext(currentConversationId, addedFiles, allCurrentFiles);
 
             // Show subtle notification
@@ -3027,7 +3014,6 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
                 key: `context-enhanced-${currentConversationId}`
             });
         } catch (error) {
-            console.error('Error restarting stream with enhanced context:', error);
             console.error('🔄 CONTEXT_ENHANCEMENT: Failed to restart stream:', error);
 
             // Show fallback message
@@ -4396,8 +4382,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'html':
                     if (!hasText(tokenWithText)) return null;
 
-                    // Check for tool block HTML comments
-                    const HTMLtoolBlockMatch = tokenWithText.text.match(/<!-- TOOL_BLOCK_START:(mcp_\w+)\|([^-]+) -->\s*([\s\S]*?)\s*<!-- TOOL_BLOCK_END:\1 -->/);
+                    const HTMLtoolBlockMatch = tokenWithText.text.match(/<!-- TOOL_BLOCK_START:(mcp_\w+)\|(.+?) -->\s*([\s\S]*?)\s*<!-- TOOL_BLOCK_END:\1 -->/);
                     if (HTMLtoolBlockMatch) {
                         const [, toolName, displayHeader, toolContent] = HTMLtoolBlockMatch;
 
@@ -4884,7 +4869,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             // Pre-process HTML comment tool blocks to prevent marked.js from fragmenting them
             // This handles cases where marked doesn't recognize them as 'html' tokens
             try {
-                const toolBlockRegex = /<!-- TOOL_BLOCK_START:(mcp_\w+)\|([^-]+) -->\s*([\s\S]*?)\s*<!-- TOOL_BLOCK_END:\1 -->/g;
+                const toolBlockRegex = /<!-- TOOL_BLOCK_START:(mcp_\w+)\|(.+?) -->\s*([\s\S]*?)\s*<!-- TOOL_BLOCK_END:\1 -->/g;
                 const toolBlocks: Array<{ match: string, toolName: string, displayHeader: string, content: string }> = [];
 
                 let match;
