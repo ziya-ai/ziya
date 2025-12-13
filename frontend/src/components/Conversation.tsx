@@ -47,75 +47,75 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     // Memoize conversation-specific streaming state to prevent unnecessary re-renders
     const conversationStreamingState = useMemo(() => ({
         isCurrentlyStreaming: streamingConversations.has(currentConversationId),
-        hasStreamedContent: streamedContentMap.has(currentConversationId) && 
-                           streamedContentMap.get(currentConversationId) !== '',
+        hasStreamedContent: streamedContentMap.has(currentConversationId) &&
+            streamedContentMap.get(currentConversationId) !== '',
         streamedContent: streamedContentMap.get(currentConversationId) || ''
     }), [streamingConversations, streamedContentMap, currentConversationId]);
-    
+
     // Extract for use in component
     const { isCurrentlyStreaming, hasStreamedContent } = conversationStreamingState;
-    
+
     const previousStreamingStateRef = useRef<boolean>(false);
-    
-    
+
+
     // Virtualized rendering for large conversations to improve performance
     // DISABLED: Virtualization causes rendering corruption with dynamic markdown content
     // TODO: Implement proper virtualization with accurate height measurement
     const shouldVirtualize = false;
-    
+
     // Refs for virtualization
-    
+
     // Refs for virtualization
     const listRef = useRef<List>(null);
     const rowHeightsRef = useRef<{ [index: number]: number }>({});
-    
+
     // Reset height cache when messages change significantly
     useEffect(() => {
         rowHeightsRef.current = {};
         listRef.current?.resetAfterIndex(0);
     }, [currentMessages.length]);
-    
+
     // Function to get estimated/measured item size
     const getItemSize = useCallback((index: number): number => {
         // Return cached height if available
         if (rowHeightsRef.current[index]) {
             return rowHeightsRef.current[index];
         }
-        
+
         // Estimate based on message type and content length
         const actualIndex = isTopToBottom ? index : currentMessages.length - 1 - index;
         const msg = currentMessages[actualIndex];
-        
+
         if (!msg) return 100;
-        
+
         const contentLength = msg.content?.length || 0;
-        
+
         // Estimate height based on content characteristics
         if (msg.role === 'system') return 60;
-        
+
         // More accurate estimates for different content types
         if (msg.content?.includes('```diff') || msg.content?.includes('diff --git')) {
             // Diffs: larger base size + more per line
             const lines = msg.content.split('\n').length;
             return Math.min(5000, 200 + lines * 22);
         }
-        
+
         if (msg.content?.includes('```')) {
             // Code blocks: more generous estimate
             const lines = msg.content.split('\n').length;
             return Math.min(3000, 180 + lines * 20);
         }
-        
+
         if (msg.content?.includes('<!-- TOOL_BLOCK')) {
             // Tool blocks: moderate size
             return Math.min(2000, 150 + Math.floor(contentLength / 100) * 15);
         }
-        
+
         // Regular text: estimate 20px per 100 chars + 80px base
         // Increase estimates for safety
         return Math.min(2000, 100 + Math.floor(contentLength / 80) * 22);
     }, [currentMessages, isTopToBottom]);
-    
+
     // Set measured height after render
     const setItemHeight = useCallback((index: number, size: number) => {
         if (rowHeightsRef.current[index] !== size) {
@@ -123,20 +123,20 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
             listRef.current?.resetAfterIndex(index);
         }
     }, []);
-    
+
     // Check if we should show retry button for a message
     const shouldShowRetry = useCallback((index: number) => {
         const message = currentMessages[index];
         if (!message || message.role !== 'human') return false;
-        
+
         const nextIndex = index + 1;
         const hasNextMessage = nextIndex < currentMessages.length;
         const nextMessage = hasNextMessage ? currentMessages[nextIndex] : null;
-        
+
         // Show retry if this human message doesn't have an assistant response following it
         return !hasNextMessage || nextMessage?.role !== 'assistant';
     }, [currentMessages]);
-    
+
     // Render retry button with explanation
     const renderRetryButton = useCallback((index: number) => {
         if (!shouldShowRetry(index)) return null;
@@ -149,19 +149,19 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                     size="small"
                     onClick={async () => {
                         const message = currentMessages[index];
-                        
+
                         const chatContainer = document.querySelector('.chat-container');
                         if (chatContainer) {
                             const isAtEnd = isTopToBottom ?
                                 (chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight) < 50 :
                                 chatContainer.scrollTop < 50;
-                            
+
                             if (!isAtEnd) {
                                 recordManualScroll();
                                 console.log('📜 Retry while scrolled away - position locked');
                             }
                         }
-                        
+
                         addStreamingConversation(currentConversationId);
                         try {
                             const messagesToSend = currentMessages.filter(msg => !msg.muted);
@@ -256,7 +256,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
 
                         const truncatedMessages = currentMessages.slice(0, index + 1);
                         const messagesToSend = truncatedMessages.filter(msg => !msg.muted);
-                        
+
                         setConversations(prev => prev.map(conv =>
                             conv.id === currentConversationId
                                 ? { ...conv, messages: truncatedMessages, _version: Date.now() }
@@ -292,11 +292,11 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
             </Tooltip>
         );
     }, [editingMessageIndex, currentMessages, shouldShowRetry, isCurrentlyStreaming, setStreamedContentMap, setConversations, currentConversationId, addStreamingConversation, checkedKeys, streamedContentMap, setStreamedContentMap, setIsStreaming, removeStreamingConversation, addMessageToConversation, streamingConversations, updateProcessingState, setQuestion]);
-    
+
     // Render message for both virtualized and non-virtualized views
     // Measure height after render for virtualization
     const measuredRefs = useRef<Map<number, HTMLDivElement>>(new Map());
-    
+
     useEffect(() => {
         measuredRefs.current.forEach((el, index) => {
             if (el) {
@@ -305,28 +305,28 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
             }
         });
     });
-    
+
     const renderMessage = useCallback(({ index, style }: { index: number; style: React.CSSProperties }) => {
         const actualIndex = isTopToBottom ? index : currentMessages.length - 1 - index;
         const msg = currentMessages[actualIndex];
         const nextActualIndex = actualIndex + 1;
         const hasNextMessage = nextActualIndex < currentMessages.length;
         const nextMessage = hasNextMessage ? currentMessages[nextActualIndex] : null;
-        
+
         if (!msg) return <div style={style} />;
-        
+
         const needsResponse = msg.role === 'human' &&
             !isCurrentlyStreaming &&
             !hasStreamedContent &&
             (actualIndex === currentMessages.length - 1 ||
                 (hasNextMessage && nextMessage?.role !== 'assistant'));
-        
+
         const systemMessageKey = msg.role === 'system' && msg.modelChange ?
             `${msg.modelChange.from}->${msg.modelChange.to}` :
             msg.content;
-        
+
         return (
-            <div 
+            <div
                 ref={(el) => {
                     if (el) measuredRefs.current.set(index, el);
                 }}
@@ -345,7 +345,16 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                         <>
                             {msg.role === 'human' && (
                                 <div style={{ display: editingMessageIndex === actualIndex ? 'none' : 'flex', justifyContent: 'space-between' }}>
-                                    <div className="message-sender">You:</div>
+                                    <div className="message-sender">
+                                        You{msg._isFeedback && msg._feedbackStatus === 'pending' && (
+                                            <span style={{
+                                                color: '#faad14',
+                                                fontSize: '12px',
+                                                marginLeft: '4px',
+                                                fontStyle: 'italic'
+                                            }}>(pending feedback)</span>
+                                        )}:
+                                    </div>
                                     <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginRight: '8px' }}>
                                         {renderMuteButton(actualIndex)}
                                         {renderResubmitButton(actualIndex)}
@@ -354,7 +363,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                     </div>
                                 </div>
                             )}
-                            
+
                             {msg.role === 'human' && editingMessageIndex === actualIndex ? (
                                 <EditSection index={actualIndex} isInline={false} />
                             ) : msg.role === 'human' && msg.content ? (
@@ -385,14 +394,14 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                             ))}
                                         </div>
                                     )}
-                                <div className="message-content">
-                                <MarkdownRenderer
-                                    markdown={msg.content}
-                                    enableCodeApply={enableCodeApply}
-                                    onOpenShellConfig={onOpenShellConfig}
-                                    isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
-                                />
-                            </div>
+                                    <div className="message-content">
+                                        <MarkdownRenderer
+                                            markdown={msg.content}
+                                            enableCodeApply={enableCodeApply}
+                                            onOpenShellConfig={onOpenShellConfig}
+                                            isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
+                                        />
+                                    </div>
                                 </>
                             ) : msg.role === 'assistant' && msg.content ? (
                                 <>
@@ -404,13 +413,13 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                         {renderRetryButton(actualIndex)}
                                     </div>
                                     <div className="message-content">
-                                    <MarkdownRenderer
-                                        markdown={msg.content}
-                                        enableCodeApply={enableCodeApply}
-                                        onOpenShellConfig={onOpenShellConfig}
-                                        isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
-                                    />
-                                </div>
+                                        <MarkdownRenderer
+                                            markdown={msg.content}
+                                            enableCodeApply={enableCodeApply}
+                                            onOpenShellConfig={onOpenShellConfig}
+                                            isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
+                                        />
+                                    </div>
                                 </>
                             ) : null}
                         </>
@@ -418,10 +427,10 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                 )}
             </div>
         );
-    }, [currentMessages, isTopToBottom, isCurrentlyStreaming, hasStreamedContent, editingMessageIndex, 
+    }, [currentMessages, isTopToBottom, isCurrentlyStreaming, hasStreamedContent, editingMessageIndex,
         renderMuteButton, renderResubmitButton, renderRetryButton, enableCodeApply, isStreaming,
         streamingConversations, currentConversationId, setItemHeight]);
-    
+
     const displayMessages = shouldVirtualize ? null : (isTopToBottom ? currentMessages : [...currentMessages].reverse());
 
     // Keep track of rendered messages for performance monitoring
@@ -467,17 +476,17 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
         // Track which conversations just stopped streaming
         const previousSet = previousStreamingStateRef.current ? new Set([currentConversationId]) : new Set();
         const currentSet = new Set(Array.from(streamingConversations));
-        
+
         const wasStreaming = previousStreamingStateRef.current;
         const isNowStreaming = isCurrentlyStreaming;
-        
+
         // Update ref
         previousStreamingStateRef.current = isNowStreaming;
-        
+
         // Detect if ANY conversation finished (including background ones)
-        const streamingEnded = streamingConversations.size < previousSet.size || 
-                              (wasStreaming && !isNowStreaming);
-        
+        const streamingEnded = streamingConversations.size < previousSet.size ||
+            (wasStreaming && !isNowStreaming);
+
         if (streamingEnded) {
             // Check if it was the current conversation or a background one
             if (wasStreaming && !isNowStreaming) {
@@ -590,15 +599,15 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                 {displayMessages?.map((msg, index) => {
                     // Convert display index to actual index for bottom-up mode
                     const actualIndex = isTopToBottom ? index : currentMessages.length - 1 - index;
-        const nextActualIndex = actualIndex + 1;
-        const hasNextMessage = nextActualIndex < currentMessages.length;
-        const nextMessage = hasNextMessage ? currentMessages[nextActualIndex] : null;
+                    const nextActualIndex = actualIndex + 1;
+                    const hasNextMessage = nextActualIndex < currentMessages.length;
+                    const nextMessage = hasNextMessage ? currentMessages[nextActualIndex] : null;
 
-        const needsResponse = msg.role === 'human' &&
-            !isCurrentlyStreaming &&
-            !hasStreamedContent &&
-            (actualIndex === currentMessages.length - 1 ||
-                (hasNextMessage && nextMessage?.role !== 'assistant'));
+                    const needsResponse = msg.role === 'human' &&
+                        !isCurrentlyStreaming &&
+                        !hasStreamedContent &&
+                        (actualIndex === currentMessages.length - 1 ||
+                            (hasNextMessage && nextMessage?.role !== 'assistant'));
 
                     // Create a unique key for system messages to prevent duplicate logging
                     const systemMessageKey = msg.role === 'system' && msg.modelChange ?
@@ -606,8 +615,8 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                         msg.content;
 
                     // Only log system messages once and only in development mode
-                    if (process.env.NODE_ENV === 'development' && 
-                        msg.role === 'system' && 
+                    if (process.env.NODE_ENV === 'development' &&
+                        msg.role === 'system' &&
                         !renderedSystemMessagesRef.current.has(systemMessageKey)) {
                         renderedSystemMessagesRef.current.add(systemMessageKey);
                     }
@@ -634,7 +643,16 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                 <>
                                     {msg.role === 'human' && (
                                         <div style={{ display: editingMessageIndex === actualIndex ? 'none' : 'flex', justifyContent: 'space-between' }}>
-                                            <div className="message-sender">You:</div>
+                                            <div className="message-sender">
+                                                You{msg._isFeedback && msg._feedbackStatus === 'pending' && (
+                                                    <span style={{
+                                                        color: '#faad14',
+                                                        fontSize: '12px',
+                                                        marginLeft: '4px',
+                                                        fontStyle: 'italic'
+                                                    }}>(pending feedback)</span>
+                                                )}:
+                                            </div>
                                             <div style={{
                                                 display: 'flex',
                                                 gap: '8px',
@@ -680,15 +698,15 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                                     ))}
                                                 </div>
                                             )}
-                                        {/* Only render message content if there's actual text content */}
-                                        {msg.content && <div className="message-content">
-                                            <MarkdownRenderer
-                                                markdown={msg.content}
-                                                enableCodeApply={enableCodeApply}
-                                                onOpenShellConfig={onOpenShellConfig}
-                                                isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
-                                            />
-                                        </div>}
+                                            {/* Only render message content if there's actual text content */}
+                                            {msg.content && <div className="message-content">
+                                                <MarkdownRenderer
+                                                    markdown={msg.content}
+                                                    enableCodeApply={enableCodeApply}
+                                                    onOpenShellConfig={onOpenShellConfig}
+                                                    isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
+                                                />
+                                            </div>}
                                         </>
                                     ) : msg.role === 'assistant' && msg.content ? (
                                         <>
@@ -733,13 +751,13 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                         </List>
                     </div>
                 ) : null)}
-                
+
                 {/* Fallback for when no messages to display */}
                 {(!displayMessages || displayMessages.length === 0) && !shouldVirtualize && (
-                    <div style={{ 
-                        textAlign: 'center', 
-                        padding: '2rem', 
-                        color: '#999' 
+                    <div style={{
+                        textAlign: 'center',
+                        padding: '2rem',
+                        color: '#999'
                     }}>
                         No messages in this conversation yet.
                     </div>
