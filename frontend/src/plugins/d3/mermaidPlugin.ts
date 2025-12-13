@@ -94,6 +94,7 @@ const renderQueue = new MermaidRenderQueue();
 
 /**
  * Lazy load mermaid library
+ * Uses dynamic import with timeout, falls back to CDN if chunk loading fails
  */
 async function loadMermaid(): Promise<any> {
     if (typeof window !== 'undefined' && window.__mermaidLoaded && window.mermaid) {
@@ -105,8 +106,58 @@ async function loadMermaid(): Promise<any> {
         return await window.__mermaidLoading;
     }
 
-    // Start loading
-    window.__mermaidLoading = import('mermaid').then(module => {
+    // Helper: Import with timeout protection
+    const importWithTimeout = (moduleSpecifier: string, timeoutMs: number = 3000): Promise<any> => {
+        return Promise.race([
+            import(moduleSpecifier),
+            new Promise((_, reject) => 
+                setTimeout(() => reject(new Error(`Import timeout after ${timeoutMs}ms`)), timeoutMs)
+            )
+        ]);
+    };
+
+    // Helper: Load mermaid from CDN as fallback
+    const loadFromCDN = (): Promise<any> => {
+        return new Promise((resolve, reject) => {
+            console.warn('⚠️ MERMAID-LOAD: Loading from CDN fallback');
+            
+            // Check if already loaded by CDN in a previous attempt
+            if (window.mermaid && typeof window.mermaid.render === 'function') {
+                console.log('✅ MERMAID-LOAD: Already available on window');
+                return resolve({ default: window.mermaid });
+            }
+            
+            const script = document.createElement('script');
+            script.src = 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js';
+            
+            script.onload = () => {
+                console.log('✅ MERMAID-LOAD: Loaded from CDN successfully');
+                if (window.mermaid && typeof window.mermaid.render === 'function') {
+                    // Wrap in module-like object to match import() structure
+                    resolve({ default: window.mermaid });
+                } else {
+                    reject(new Error('Mermaid script loaded but window.mermaid not available'));
+                }
+            };
+            
+            script.onerror = (e) => {
+                console.error('❌ MERMAID-LOAD: CDN fallback also failed:', e);
+                reject(new Error('Failed to load Mermaid from CDN'));
+            };
+            
+            document.head.appendChild(script);
+        });
+    };
+
+    // Start loading with timeout protection and CDN fallback
+    window.__mermaidLoading = importWithTimeout('mermaid', 3000)
+        .catch(error => {
+            console.error('❌ MERMAID-LOAD: Chunk import failed:', error.message);
+            // Fall back to CDN
+            return loadFromCDN();
+        })
+        .then(module => {
+            console.log('✅ MERMAID-LOAD: Module loaded successfully');
         const mermaid = module.default;
         initMermaidSupport(mermaid);
         window.mermaid = mermaid;

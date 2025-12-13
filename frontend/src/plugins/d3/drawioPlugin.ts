@@ -102,6 +102,51 @@ const normalizeDrawIOXml = (xml: string): string => {
 
     console.log('📐 DrawIO: Normalized Unicode quotes to ASCII');
 
+    // CRITICAL FIX: Remove over-quoted color values in style attributes
+    // This handles the malformed pattern: style="...fillColor="#fff9c4";..." 
+    // which breaks XML parsing because the quote before # ends the style attribute
+    // 
+    // Strategy: Find patterns like ="#hexcolor" or ="number" within what looks like
+    // a style context (preceded by a style key like fillColor, strokeColor, etc.)
+    // and remove the quotes around the value
+    
+    // Fix quoted hex colors: fillColor="#fff9c4" -> fillColor=#fff9c4
+    // This pattern looks for colorKeyword="# and removes the quotes
+    normalized = normalized.replace(
+        /(\w*[Cc]olor\w*)="(#[0-9a-fA-F]{3,8})"/g,
+        '$1=$2'
+    );
+    
+    // Fix quoted numbers: fontSize="16" -> fontSize=16 (within style context)
+    normalized = normalized.replace(
+        /(fontSize|strokeWidth|opacity|spacing\w*)="(\d+)"/g,
+        '$1=$2'
+    );
+    
+    console.log('📐 DrawIO: Removed over-quoted values in style attributes');
+
+    // CRITICAL FIX: Add quotes to unquoted XML attribute values at TAG LEVEL
+    // which breaks XML parsing because the quote before # ends the style attribute
+    // 
+    // Strategy: Find patterns like ="#hexcolor" or ="number" within what looks like
+    // a style context (preceded by a style key like fillColor, strokeColor, etc.)
+    // and remove the quotes around the value
+    
+    // Fix quoted hex colors: fillColor="#fff9c4" -> fillColor=#fff9c4
+    // This pattern looks for colorKeyword="# and removes the quotes
+    normalized = normalized.replace(
+        /(\w*[Cc]olor\w*)="(#[0-9a-fA-F]{3,8})"/g,
+        '$1=$2'
+    );
+    
+    // Fix quoted numbers: fontSize="16" -> fontSize=16 (within style context)
+    normalized = normalized.replace(
+        /(fontSize|strokeWidth|opacity|spacing\w*)="(\d+)"/g,
+        '$1=$2'
+    );
+    
+    console.log('📐 DrawIO: Removed over-quoted values in style attributes');
+
     // CRITICAL FIX: Add quotes to unquoted XML attribute values at TAG LEVEL
     // This must happen BEFORE any other processing to create valid XML
 
