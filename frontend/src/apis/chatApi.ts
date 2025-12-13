@@ -66,6 +66,26 @@ class FeedbackWebSocket {
                 this.isConnecting = false;
                 console.log('🔄 FEEDBACK: WebSocket closed');
             };
+
+            this.ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    console.log('🔄 FEEDBACK: Received message from server:', data);
+
+                    // Handle feedback acknowledgment
+                    if (data.type === 'feedback_acknowledged') {
+                        console.log('🔄 FEEDBACK: Acknowledgment received for:', data.feedback_id);
+                        document.dispatchEvent(new CustomEvent('feedbackAcknowledged', {
+                            detail: {
+                                feedbackId: data.feedback_id,
+                                conversationId: this.conversationId
+                            }
+                        }));
+                    }
+                } catch (error) {
+                    console.warn('🔄 FEEDBACK: Error parsing WebSocket message:', error);
+                }
+            };
         });
 
         return this.connectionPromise;
@@ -82,7 +102,8 @@ class FeedbackWebSocket {
             this.ws.send(JSON.stringify({
                 type: 'tool_feedback',
                 tool_id: toolId,
-                message: feedback
+                message: feedback,
+                feedback_id: (window as any).__lastFeedbackId || Date.now().toString()
             }));
             console.log('🔄 FEEDBACK: Sent feedback:', feedback);
         } else {
@@ -199,14 +220,26 @@ function extractErrorFromSSE(content: string): ErrorResponse | null {
                 };
             }
 
-            // Check for authentication/credential errors specifically (these may not have status_code)
+            // CRITICAL: Check for authentication/credential errors BEFORE requiring status_code
             // Server sends {error: 'message', error_type: 'authentication_error'}
             if (parsed.error_type === 'authentication_error' ||
                 (parsed.error && typeof parsed.error === 'string' && (parsed.error.includes('credential') ||
-                    parsed.error.includes('authentication') || parsed.error.includes('AWS credentials')))) {
+                    parsed.error.includes('authentication') || 
+                    parsed.error.includes('AWS credentials') ||
+                    parsed.error.includes('mwinit')))) {
                 return {
-                    error: 'auth_error',
-                    detail: parsed.error || 'Authentication error',
+                    error: 'authentication_error',
+                    detail: parsed.retry_message || parsed.error || 'Authentication error',
+                    status_code: 401
+                };
+            }
+            
+            // Also check retry_message field for credential errors
+            if (parsed.retry_message && typeof parsed.retry_message === 'string' && 
+                (parsed.retry_message.includes('credential') || parsed.retry_message.includes('mwinit'))) {
+                return {
+                    error: 'authentication_error',
+                    detail: parsed.retry_message,
                     status_code: 401
                 };
             }
@@ -375,13 +408,23 @@ function extractErrorFromNestedOps(chunk: string): ErrorResponse | null {
                     continue;
                 }
                 // Check for authentication errors (these may not have status_code)
-                if (data.error_type === 'authentication_error' ||
+                if (data.error_type === 'authentication_error' || 
                     data.error === 'authentication_error' ||
-                    (data.error && typeof data.error === 'string' && (data.error.includes('credentials') ||
-                            data.error.includes('Authentication failed') || data.error.includes('AWS credentials')))) {
+                    (data.error && typeof data.error === 'string' && 
+                        (data.error.includes('credential') ||
+                         data.error.includes('Authentication failed') || 
+                         data.error.includes('AWS credentials') ||
+                         data.error.includes('mwinit'))) ||
+                    (data.retry_message && typeof data.retry_message === 'string' &&
+                        (data.retry_message.includes('credential') || 
+                         data.retry_message.includes('mwinit')))) {
                     return {
                         error: 'authentication_error',
-                        detail: data.error || data.content || data.detail || 'Authentication failed',
+                        detail: data.retry_message || 
+                                data.error || 
+                                data.content || 
+                                data.detail || 
+                                'Authentication failed',
                         status_code: 401
                     };
                 }
