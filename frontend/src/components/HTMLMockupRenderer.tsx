@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useId } from 'react';
 import { Button, Tooltip, Modal, message } from 'antd';
 import { EyeOutlined, CodeOutlined, CopyOutlined, ExpandOutlined } from '@ant-design/icons';
 import { useTheme } from '../context/ThemeContext';
@@ -29,7 +29,10 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
     const [showSource, setShowSource] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const iframeRef = useRef<HTMLIFrameElement>(null);
-    const [iframeHeight, setIframeHeight] = useState(400);
+    const [iframeHeight, setIframeHeight] = useState(100); // Start very small
+    
+    // Generate unique ID for this mockup instance
+    const mockupId = useId();
     
     // Sanitize the HTML
     const sanitizedHTML = sanitizeHTML(html);
@@ -44,7 +47,7 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
     <style>
         body {
             margin: 0;
-            padding: 16px;
+            padding: 0;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
             background-color: ${isDarkMode ? '#1f1f1f' : '#ffffff'};
             color: ${isDarkMode ? '#e6e6e6' : '#000000'};
@@ -52,26 +55,45 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
         * {
             box-sizing: border-box;
         }
+        html, body {
+            height: auto !important;
+            min-height: 0 !important;
+            overflow: visible !important;
+        }
     </style>
 </head>
 <body>
     ${sanitizedHTML}
     <script>
-        // Send height updates to parent
+        let heightSent = false;
+        
         function updateHeight() {
-            const height = Math.max(
-                document.body.scrollHeight,
-                document.body.offsetHeight,
-                document.documentElement.scrollHeight,
-                document.documentElement.offsetHeight
-            );
-            window.parent.postMessage({ type: 'resize', height: height + 32 }, '*');
+            // Only send height once to prevent feedback loops
+            if (heightSent) return;
+            
+            const firstChild = document.body.firstElementChild;
+            if (firstChild) {
+                // Measure the actual element directly - no cloning needed
+                // Force a reflow to ensure layout is complete
+                void firstChild.offsetHeight;
+                
+                // Use scrollHeight which includes all content and padding
+                const height = firstChild.scrollHeight;
+                
+                const finalHeight = height + 32;
+                
+                heightSent = true;
+                window.parent.postMessage({ type: 'resize', height: finalHeight, mockupId: '${mockupId}' }, '*');
+                
+                console.log('📐 Mockup height measured:', height, 'final:', finalHeight);
+            } else {
+                heightSent = true;
+                window.parent.postMessage({ type: 'resize', height: 100 }, '*');
+            }
         }
         
-        // Update on load and when content changes
-        window.addEventListener('load', updateHeight);
-        new ResizeObserver(updateHeight).observe(document.body);
-        updateHeight();
+        // Measure after a short delay to ensure content is fully rendered
+        setTimeout(updateHeight, 100);
     </script>
 </body>
 </html>
@@ -80,14 +102,15 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
     // Listen for height updates from iframe
     useEffect(() => {
         const handleMessage = (event: MessageEvent) => {
-            if (event.data.type === 'resize' && event.data.height) {
-                setIframeHeight(Math.min(event.data.height, 800)); // Cap at 800px
+            // Only handle messages from OUR iframe
+            if (event.data.type === 'resize' && event.data.height && event.data.mockupId === mockupId) {
+                setIframeHeight(event.data.height);
             }
         };
         
         window.addEventListener('message', handleMessage);
         return () => window.removeEventListener('message', handleMessage);
-    }, []);
+    }, [mockupId]);
     
     // Copy HTML to clipboard
     const copyHTML = () => {
@@ -184,7 +207,7 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
                             borderRadius: '4px',
                             transition: 'height 0.3s ease'
                         }}
-                        sandbox="allow-same-origin"
+                        sandbox="allow-same-origin allow-scripts"
                         title="HTML Mockup Preview"
                     />
                 </div>
@@ -207,7 +230,7 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
                         border: 'none',
                         borderRadius: '4px'
                     }}
-                    sandbox="allow-same-origin"
+                    sandbox="allow-same-origin allow-scripts"
                     title="HTML Mockup Fullscreen"
                 />
             </Modal>

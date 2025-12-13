@@ -52,6 +52,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
     const [isProcessing, setIsProcessing] = useState(false);
     const [currentToolId, setCurrentToolId] = useState<string | null>(null);
     const [currentToolName, setCurrentToolName] = useState<string | null>(null);
+    const [pendingFeedbackIds, setPendingFeedbackIds] = useState<Set<string>>(new Set());
     const [isSendingFeedback, setIsSendingFeedback] = useState(false);
     const [throttlingError, setThrottlingError] = useState<any>(null);
     const question = useQuestion();
@@ -136,6 +137,36 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
             setCurrentToolName(null);
         }
     }, [isCurrentlyStreaming]);
+
+    // Listen for feedback acknowledgments
+    useEffect(() => {
+        const handleFeedbackAck = (event: CustomEvent) => {
+            const { feedbackId, conversationId } = event.detail;
+            
+            // Only handle acknowledgments for the current conversation
+            if (conversationId !== currentConversationId) return;
+
+            console.log('🔄 FEEDBACK-ACK: Received acknowledgment for:', feedbackId);
+
+            // Update the pending feedback message to acknowledged
+            setPendingFeedbackIds(prev => {
+                const next = new Set(prev);
+                next.delete(feedbackId);
+                return next;
+            });
+
+            // Dispatch event to update message status in the UI
+            document.dispatchEvent(new CustomEvent('updateFeedbackStatus', {
+                detail: {
+                    feedbackId,
+                    status: 'acknowledged'
+                }
+            }));
+        };
+
+        document.addEventListener('feedbackAcknowledged', handleFeedbackAck as EventListener);
+        return () => document.removeEventListener('feedbackAcknowledged', handleFeedbackAck as EventListener);
+    }, [currentConversationId]);
 
     // Check if current model supports vision
     useEffect(() => {
@@ -234,10 +265,33 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         if (!localInput.trim() || isSendingFeedback) return;
 
         const feedbackText = localInput.trim();
+        const feedbackId = `feedback-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+
+        // Store feedbackId globally so chatApi can access it
+        (window as any).__lastFeedbackId = feedbackId;
 
         setIsSendingFeedback(true);
 
         try {
+            // Add pending feedback message to conversation immediately
+            const feedbackMessage: Message = {
+                role: 'human',
+                content: feedbackText,
+                _timestamp: Date.now(),
+                _isFeedback: true,
+                _feedbackStatus: 'pending',
+                _feedbackId: feedbackId
+            };
+
+            addMessageToConversation(feedbackMessage, currentConversationId);
+
+            // Track this as pending
+            setPendingFeedbackIds(prev => {
+                const next = new Set(prev);
+                next.add(feedbackId);
+                return next;
+            });
+
             // Use the global WebSocket if available
             const feedbackWebSocket = (window as any).feedbackWebSocket;
             if (feedbackWebSocket && (window as any).feedbackWebSocketReady) {
@@ -255,8 +309,8 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
                 message.success({
                     content: (
                         <span>
-                            ✅ Feedback sent: <strong>{feedbackText.length > 50 ? feedbackText.substring(0, 50) + '...' : feedbackText}</strong>
-                            <br /><span style={{ fontSize: '12px', opacity: 0.8 }}>The model will see this after the current tool completes</span>
+                            ✅ Feedback queued
+                            <br /><span style={{ fontSize: '12px', opacity: 0.8 }}>The model will incorporate this at the next opportunity</span>
                         </span>
                     ),
                     duration: 2,

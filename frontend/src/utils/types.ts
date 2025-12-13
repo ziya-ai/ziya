@@ -43,6 +43,9 @@ export type Message = {
     _version?: number;
     isComplete?: boolean;
     _isToolResult?: boolean;
+    _isFeedback?: boolean;          // Flag to indicate this is tool feedback
+    _feedbackStatus?: 'pending' | 'acknowledged';  // Status of feedback message
+    _feedbackId?: string;           // Unique ID for tracking feedback acknowledgment
     images?: ImageAttachment[];  // Optional array of attached images
 };
 
