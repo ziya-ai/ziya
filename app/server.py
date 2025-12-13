@@ -2099,6 +2099,7 @@ async def stream_chunks(body):
                 credential_error = {
                     "error": "auth_error",
                     "detail": auth_provider.get_credential_help_message(),
+                    "error_type": "authentication_error",
                     "status_code": 401,
                     "technical_details": error_str
                 }

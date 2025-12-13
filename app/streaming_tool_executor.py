@@ -1482,6 +1482,7 @@ class StreamingToolExecutor:
                     auth_error_chunk = {
                         'type': 'error',
                         'error': 'authentication_error',
+                        'error_type': 'authentication_error',
                         'content': error_message,
                         'detail': error_str,
                         'can_retry': True,
