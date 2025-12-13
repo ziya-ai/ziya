@@ -98,6 +98,7 @@ class ErrorHandlingMiddleware:
                         
                         error_content = {
                             "error": "auth_error",
+                            "error_type": "authentication_error",
                             "detail": auth_provider.get_credential_help_message(),
                             "status_code": 401
                         }
@@ -115,6 +116,7 @@ class ErrorHandlingMiddleware:
                         response = JSONResponse(
                             content={
                                 "error": "auth_error",
+                                "error_type": "authentication_error",
                                 "detail": auth_provider.get_credential_help_message(),
                                 "status_code": 401
                             },
@@ -281,12 +283,13 @@ class ErrorHandlingMiddleware:
                             error_type, detail, status_code, retry_after = detect_error_type(error_message)
                         
                         # Format error as SSE
-                        error_data = {
-                            "error": error_type,
+                        "event": "error",
+                        "data": json.dumps({
+                            "error": detail,
+                            "error_type": error_type,
                             "detail": detail,
-                            "status_code": status_code
-                        }
-                        if retry_after:
+                            "status_code": status_code,
+                            "retry_after": retry_after,
                             error_data["retry_after"] = retry_after
                         
                         # Send error message as SSE data
