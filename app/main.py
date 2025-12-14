@@ -39,6 +39,8 @@ def parse_arguments():
     )
     
     # File inclusion/exclusion options
+    parser.add_argument("--root", type=str, default=None,
+                        help="Set the root directory for the codebase (default: current working directory)")
     parser.add_argument("--include", default=[], type=lambda x: x.split(','),
                         help="Include paths outside of the current working directory. Supports comma-separated lists. (e.g., --include '/path/to/external/lib,/another/external/path')")
     parser.add_argument("--exclude", default=[], type=lambda x: x.split(','),
@@ -172,7 +174,10 @@ def validate_model_and_endpoint(endpoint, model):
 
 def setup_environment(args):
     import os
-    os.environ["ZIYA_USER_CODEBASE_DIR"] = os.getcwd()
+    
+    # Set root directory if specified, otherwise use current working directory
+    root_dir = args.root if args.root else os.getcwd()
+    os.environ["ZIYA_USER_CODEBASE_DIR"] = root_dir
 
     # Handle file inclusion/exclusion options
     additional_excluded_dirs = ','.join(args.exclude)

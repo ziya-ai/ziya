@@ -21,23 +21,20 @@ requests = "^2.32.0"
 pydantic = "^2.10.0"
 tiktoken = {version = "^0.8.0", optional = true}
 boto3 = "^1.35.0"
-langchain-aws = "^1.0.0"
 cryptography = "^46.0.0"
 pyOpenSSL = "^25.0.0"
-numpy = [
-    {version = ">=1.24.0,<2.3.0", python = ">=3.10,<3.12"},
-    {version = ">=1.24.0,<3.0.0", python = ">=3.12,<3.15"}
-]
 # New Google GenAI SDK for Gemini 3 support
 google-genai = "^1.7.0"
 langchain-google-genai = "^2.0.0"
 httpx = "^0.28.1"  # Required by google-genai, overrides older version needed by mcp-server-fetch
+#langchain-core = "^0.4.0"
+langchain-aws = "^1.1.0"
+langgraph = "^1.0.0"
+langgraph-prebuilt = "^1.0.0"
 langchain = "^1.0.0"
 langchain-classic = "^1.0.0"
 langchain-community = "^0.4.1"
 langchain-text-splitters = "^1.0.0"
-langgraph = "^1.0.0"
-langgraph-prebuilt = "^1.0.0"
 torch = {version = "^2.8.0", optional = true}
 setuptools = ">=75.8.0"
 cssutils = "^2.11.0"
