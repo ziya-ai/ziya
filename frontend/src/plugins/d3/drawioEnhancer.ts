@@ -46,6 +46,39 @@ export class DrawIOEnhancer {
             const paddingTopMatch = style.match(/padding-top:\s*([\d.]+)px/);
             const marginLeftMatch = style.match(/margin-left:\s*([\d.]+)px/);
             
+            // CRITICAL FIX: Also fix percentage-based dimensions (width="100%", height="100%")
+            // These cause foreignObjects to extend infinitely, breaking bounds calculation
+            const currentWidth = foreignObj.getAttribute('width');
+            const currentHeight = foreignObj.getAttribute('height');
+            
+            if (currentWidth === '100%' || currentHeight === '100%') {
+                console.log(`  FO ${idx}: Found percentage dimensions - width: ${currentWidth}, height: ${currentHeight}`);
+                
+                // Calculate actual content dimensions from inner div
+                const contentDiv = innerDiv.querySelector('div:last-child') as HTMLElement;
+                
+                if (contentDiv) {
+                    // Force layout calculation
+                    const computedStyle = window.getComputedStyle(contentDiv);
+                    const contentWidth = contentDiv.offsetWidth || parseFloat(computedStyle.width) || 100;
+                    const contentHeight = contentDiv.offsetHeight || parseFloat(computedStyle.height) || 30;
+                    
+                    // Set fixed dimensions based on actual content
+                    foreignObj.setAttribute('width', Math.max(contentWidth, 100).toString());
+                    foreignObj.setAttribute('height', Math.max(contentHeight, 30).toString());
+                    
+                    console.log(`  ✅ FO ${idx}: Fixed dimensions - width=${contentWidth}px, height=${contentHeight}px`);
+                } else {
+                    // Fallback: use reasonable defaults
+                    foreignObj.setAttribute('width', '100');
+                    foreignObj.setAttribute('height', '30');
+                    console.log(`  ⚠️ FO ${idx}: Used fallback dimensions - width=100px, height=30px`);
+                }
+                
+                // Mark as enhanced
+                foreignObj.setAttribute('data-enhanced', 'true');
+            }
+            
             if (paddingTopMatch || marginLeftMatch) {
                 // We found CSS positioning - this is the bug!
                 const paddingTop = paddingTopMatch ? parseFloat(paddingTopMatch[1]) : 0;
@@ -72,6 +105,9 @@ export class DrawIOEnhancer {
                 }
                 
                 console.log(`  ✅ FO ${idx}: Fixed - new position x=${currentX + marginLeft}, y=${currentY + paddingTop}`);
+                
+                // Mark as enhanced
+                foreignObj.setAttribute('data-enhanced', 'true');
             }
         });
         
