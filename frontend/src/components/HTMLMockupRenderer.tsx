@@ -29,7 +29,7 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
     const [showSource, setShowSource] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const iframeRef = useRef<HTMLIFrameElement>(null);
-    const [iframeHeight, setIframeHeight] = useState(100); // Start very small
+    const [iframeHeight, setIframeHeight] = useState(600); // Start with reasonable default
     
     // Generate unique ID for this mockup instance
     const mockupId = useId();
@@ -57,7 +57,7 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
         }
         html, body {
             height: auto !important;
-            min-height: 0 !important;
+            min-height: 100% !important;
             overflow: visible !important;
         }
     </style>
@@ -65,39 +65,47 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
 <body>
     ${sanitizedHTML}
     <script>
+        console.log('🚀 MOCKUP SCRIPT STARTED');
+        
         let heightSent = false;
         
         function updateHeight() {
+            console.log('📏 UPDATE HEIGHT CALLED, heightSent:', heightSent);
             // Only send height once to prevent feedback loops
             if (heightSent) return;
             
-            const firstChild = document.body.firstElementChild;
-            if (firstChild) {
-                // Measure the actual element directly - no cloning needed
-                // Force a reflow to ensure layout is complete
-                void firstChild.offsetHeight;
-                
-                // Use scrollHeight which includes all content and padding
-                const height = firstChild.scrollHeight;
-                
-                const finalHeight = height + 32;
-                
-                heightSent = true;
-                window.parent.postMessage({ type: 'resize', height: finalHeight, mockupId: '${mockupId}' }, '*');
-                
-                console.log('📐 Mockup height measured:', height, 'final:', finalHeight);
-            } else {
-                heightSent = true;
-                window.parent.postMessage({ type: 'resize', height: 100 }, '*');
-            }
+            // Force a reflow to ensure layout is complete
+            void document.body.offsetHeight;
+            
+            // Use document.body.scrollHeight instead of firstChild.scrollHeight
+            // This gives us the full content height regardless of overflow settings on children
+            const height = document.body.scrollHeight;
+            
+            // Add padding for better spacing
+            const finalHeight = height + 40;
+            
+            heightSent = true;
+            window.parent.postMessage({ type: 'resize', height: finalHeight, mockupId: "${mockupId}" }, '*');
+            
+            console.log('📐 Mockup height measured:', height, 'final:', finalHeight, 'body dimensions:', {
+                scrollHeight: document.body.scrollHeight,
+                offsetHeight: document.body.offsetHeight
+            });
         }
         
+        console.log('⏰ SETTING TIMEOUT');
         // Measure after a short delay to ensure content is fully rendered
-        setTimeout(updateHeight, 100);
+        setTimeout(updateHeight, 200);
     </script>
+    <script>console.log('✅ SECOND SCRIPT BLOCK EXECUTING');</script>
 </body>
 </html>
     `;
+    
+    // Debug: Log the actual iframe content being rendered
+    useEffect(() => {
+        console.log('📄 iframeContent being set:', iframeContent.substring(0, 500));
+    }, [iframeContent]);
     
     // Listen for height updates from iframe
     useEffect(() => {
