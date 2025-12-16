@@ -738,6 +738,8 @@ class StreamingToolExecutor:
                                     break
                             if tool_id:
                                 active_tools[tool_id]['partial_json'] += delta.get('partial_json', '')
+                                logger.debug(f"🔍 JSON_DELTA: Tool {tool_id} received delta: '{delta.get('partial_json', '')}'")
+                                logger.debug(f"🔍 JSON_ACCUMULATED: Tool {tool_id} total: '{active_tools[tool_id]['partial_json']}'")
 
                     elif chunk['type'] == 'content_block_stop':
                         # Find and execute tool
@@ -752,6 +754,17 @@ class StreamingToolExecutor:
                             tool_name = tool_data['name']
                             args_json = tool_data['partial_json']
                             
+                            # CRITICAL: Validate we have complete JSON before proceeding
+                            if not args_json or not args_json.strip():
+                                logger.warning(f"🔍 EMPTY_JSON: Tool {tool_name} has no argument JSON, skipping execution")
+                                completed_tools.add(tool_id)
+                                continue
+                            
+                            # Validate JSON is complete (starts with { and ends with })
+                            if not (args_json.strip().startswith('{') and args_json.strip().endswith('}')):
+                                logger.warning(f"🔍 INCOMPLETE_JSON: Tool {tool_name} has incomplete JSON: {args_json}")
+                                completed_tools.add(tool_id)
+                                continue
                             logger.debug(f"🔍 TOOL_ARGS: Tool '{tool_name}' (id: {tool_id}) has args_json: '{args_json}'")
 
                             try:
@@ -768,7 +781,19 @@ class StreamingToolExecutor:
                                 
                                 # Detect empty tool calls for tools that require arguments
                                 actual_tool_name = tool_name[4:] if tool_name.startswith('mcp_') else tool_name
-                                if actual_tool_name == 'run_shell_command' and not args.get('command'):
+                                
+                                # ENHANCED: Check for empty args dict first
+                                if not args or len(args) == 0:
+                                    logger.warning(f"🔍 EMPTY_ARGS_DICT: Model called {tool_name} with empty arguments dict")
+                                    logger.warning(f"🔍 RAW_JSON: args_json was: '{args_json}'")
+                                    empty_tool_calls_this_iteration += 1
+                                    consecutive_empty_tool_calls += 1
+                                    
+                                    error_result = f"Error: Tool call failed - no arguments provided. The tool requires parameters but received an empty arguments object. JSON received: {args_json}"
+                                    # ... rest of error handling
+                                    continue
+                                
+                                elif actual_tool_name == 'run_shell_command' and not args.get('command'):
                                     logger.warning(f"🔍 EMPTY_TOOL_CALL: Model called {tool_name} without required 'command' argument")
                                     logger.warning(f"🔍 EMPTY_TOOL_CONTEXT: Assistant text before call: '{assistant_text[-200:]}'")
                                     empty_tool_calls_this_iteration += 1
