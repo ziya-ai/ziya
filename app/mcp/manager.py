@@ -751,7 +751,9 @@ class MCPManager:
             )
             
             # Check if parameters are wrapped
-            params_are_wrapped = "tool_input" in arguments and len(arguments) == 1
+            # Allow detection even if other metadata keys (like conversation_id) are present
+            # Only check if tool_input exists, not if it's the only key
+            params_are_wrapped = "tool_input" in arguments
             
             # Case 1: Schema expects wrapper, params are NOT wrapped -> wrap them
             if schema_uses_wrapper and not params_are_wrapped:
