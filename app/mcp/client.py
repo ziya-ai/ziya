@@ -63,6 +63,7 @@ class MCPClient:
         self.process: Optional[subprocess.Popen] = None
         self.request_id = 0
         self.is_connected = False
+        self._response_buffer: Dict[int, Dict[str, Any]] = {}  # Buffer for out-of-order responses
         self.capabilities: Dict[str, Any] = {}
         self.resources: List[MCPResource] = []
         self.tools: List[MCPTool] = []
@@ -389,7 +390,11 @@ class MCPClient:
         max_retries = 5  # Increased for external servers
         base_delay = 1.0  # Base delay for exponential backoff
         
-        if not self.process or not self.process.stdin:
+        if not self.process:
+            return create_error_response("No active process")
+        
+        if not self.process.stdin or not self.process.stdout:
+            logger.error(f"Process streams not available: stdin={self.process.stdin}, stdout={self.process.stdout}")
             return create_error_response("No active process or stdin not available")
             
         # Check process health before sending request
@@ -430,6 +435,40 @@ class MCPClient:
             try:
                 read_start = time.time()
                 
+                # First, check if we already have this response in the buffer
+                if self.request_id in self._response_buffer:
+                    logger.debug(f"Found response for request {self.request_id} in buffer")
+                    buffered_response = self._response_buffer.pop(self.request_id)
+                    
+                    # Update timing
+                    read_time = time.time() - read_start
+                    logger.debug(f"🔍 MCP_TIMING: Read from buffer took {read_time*1000:.1f}ms")
+                    
+                    # Skip to response parsing (jump to line ~497)
+                    response = buffered_response
+                    
+                    # Validate response ID matches request ID (should always match since we used it as key)
+                    response_id = response.get("id")
+                    if response_id != self.request_id:
+                        logger.error(f"Buffer consistency error: expected {self.request_id}, got {response_id}")
+                        return create_error_response(f"Buffer consistency error: expected {self.request_id}, got {response_id}")
+                    
+                    # Skip to error handling and result return
+                    if "error" in response:
+                        error_info = response['error']
+                        error_code = error_info.get("code", -1)
+                        error_message = str(error_info.get("message", "Unknown error"))
+                        logger.error(f"MCP server error (from buffer): {error_info}")
+                        return {
+                            "error": True,
+                            "message": error_message,
+                            "code": error_code
+                        }
+                    
+                    # Success - return result
+                    self._last_successful_call = time.time()
+                    return response.get("result")
+                
                 # Use longer timeout for external servers that may do complex processing
                 server_name = self.server_config.get('name', 'unknown')
                 is_external_server = any(keyword in server_name.lower() 
@@ -438,36 +477,73 @@ class MCPClient:
                 
                 logger.debug(f"Using {timeout_duration}s timeout for server: {server_name}")
                 
-                try:
-                    response_line_bytes = await asyncio.wait_for(
-                        self.process.stdout.readline(),
-                        timeout=timeout_duration
-                    )
-                except asyncio.TimeoutError:
-                    # For external servers, try one immediate retry before giving up
-                    if is_external_server and _retry_count == 0:
-                        logger.warning(f"External server {server_name} timed out, trying immediate retry")
-                        await asyncio.sleep(1.0)
-                        return await self._send_request(method, params, _retry_count + 1)
-                    raise  # Re-raise timeout for normal handling
+                # Read responses until we find the one matching our request ID
+                max_read_attempts = 10  # Prevent infinite loops
+                read_attempts = 0
+                response = None  # Initialize to avoid unbound variable
+                
+                while read_attempts < max_read_attempts:
+                    read_attempts += 1
+                    
+                    try:
+                        response_line_bytes = await asyncio.wait_for(
+                            self.process.stdout.readline(),
+                            timeout=timeout_duration
+                        )
+                    except asyncio.TimeoutError:
+                        # For external servers, try one immediate retry before giving up
+                        if is_external_server and _retry_count == 0:
+                            logger.warning(f"External server {server_name} timed out, trying immediate retry")
+                            await asyncio.sleep(1.0)
+                            return await self._send_request(method, params, _retry_count + 1)
+                        raise  # Re-raise timeout for normal handling
+                    
+                    if not response_line_bytes:
+                        # EOF, process likely terminated
+                        logger.error("No response from MCP server (EOF)")
+                        if self.process.returncode is not None:
+                            logger.error(f"MCP server process has terminated with code: {self.process.returncode}")
+                        return create_error_response("No response from MCP server (EOF)")
+                    
+                    response_text = response_line_bytes.decode('utf-8').strip()
+                    
+                    if not response_text:
+                        logger.warning("Empty response line, continuing to read...")
+                        continue
+                    
+                    # Parse response to check ID
+                    try:
+                        response = json.loads(response_text)
+                    except json.JSONDecodeError as je:
+                        logger.error(f"JSON decode error: {je}, response: {response_text[:200]}")
+                        continue  # Try next line
+                    
+                    response_id = response.get("id")
+                    
+                    if response_id == self.request_id:
+                        # Found our response!
+                        logger.debug(f"Found matching response for request {self.request_id} on attempt {read_attempts}")
+                        break
+                    else:
+                        # This is a response for a different request - buffer it
+                        logger.warning(f"Got response for request {response_id}, expecting {self.request_id}. Buffering it.")
+                        self._response_buffer[response_id] = response
+                        
+                        # Continue reading to find our response
+                        continue
+                
+                if read_attempts >= max_read_attempts:
+                    logger.error(f"Failed to find response for request {self.request_id} after {max_read_attempts} attempts")
+                    logger.error(f"Buffered responses: {list(self._response_buffer.keys())}")
+                    return create_error_response(f"Response not found after {max_read_attempts} read attempts")
+                
+                # Safety check - should never happen if loop logic is correct
+                if response is None:
+                    logger.error("Response is None after successful loop exit - this should not happen")
+                    return create_error_response("Internal error: response not set")
+                
                 read_time = time.time() - read_start
                 logger.debug(f"🔍 MCP_TIMING: Read took {read_time*1000:.1f}ms")
-                
-                if not response_line_bytes:
-                    # EOF, process likely terminated
-                    logger.error("No response from MCP server (EOF)")
-                    if self.process.returncode is not None:
-                        logger.error(f"MCP server process has terminated with code: {self.process.returncode}")
-                        # Try to read any remaining output
-                        try:
-                            remaining_output_bytes = await self.process.stdout.read()
-                            if remaining_output_bytes:
-                                logger.error(f"Remaining output: {remaining_output_bytes.decode('utf-8', errors='ignore')}")
-                        except (UnicodeDecodeError, AttributeError):
-                            pass
-                    return create_error_response("No response from MCP server (EOF)")
-                
-                response_line = response_line_bytes.decode('utf-8')
 
             except asyncio.TimeoutError:
                 logger.error(f"Timeout waiting for response from MCP server for method '{method}'")
@@ -479,31 +555,6 @@ class MCPClient:
             except Exception as e:
                 logger.error(f"Error reading from MCP server: {e}")
                 return create_error_response(f"Error reading from MCP server: {str(e)}")
-
-            # Enhanced JSON parsing with validation
-            try:
-                response_text = response_line.strip()
-                logger.debug(f"Raw MCP response: {response_text[:200]}...")
-                
-                if not response_text:
-                    logger.error("Empty response from MCP server")
-                    return create_error_response("Empty response from MCP server")
-                
-                # Validate JSON structure before parsing
-                if not (response_text.startswith('{') and response_text.endswith('}')):
-                    logger.error(f"Invalid JSON format from MCP server: {response_text[:100]}...")
-                    return create_error_response(f"Invalid response format: expected JSON-RPC, got: {response_text[:100]}...")
-                
-                response = json.loads(response_text)
-                
-            except json.JSONDecodeError as je:
-                logger.error(f"JSON decode error from MCP server: {je}")
-                logger.error(f"Raw response: {response_line.strip()[:500]}...")
-                return create_error_response(f"Invalid JSON response from MCP server: {str(je)}")
-            
-            except Exception as parse_error:
-                logger.error(f"Unexpected error parsing MCP response: {parse_error}")
-                return create_error_response(f"Response parsing error: {str(parse_error)}")
 
             if "error" in response:
                 error_info = response['error']
@@ -791,7 +842,8 @@ class MCPClient:
             # CRITICAL: Unwrap tool_input if present
             # Some models wrap parameters in {'tool_input': {...}}
             # while the MCP server expects unwrapped parameters
-            if isinstance(arguments, dict) and 'tool_input' in arguments and len(arguments) == 1:
+            # Allow unwrapping even if other metadata keys (like conversation_id) are present
+            if isinstance(arguments, dict) and 'tool_input' in arguments:
                 logger.debug(f"Unwrapping tool_input for tool '{name}': {arguments}")
                 tool_input = arguments['tool_input']
                 
@@ -850,14 +902,9 @@ class MCPClient:
             # Don't retry on validation errors - fail fast
             if isinstance(result, dict) and result.get("error") and "validation" in str(result.get("message", "")).lower():
                 return result
-                
-            return result
-        except Exception as e:
-            logger.error(f"Error calling MCP tool {name} on {self.server_config.get('name', 'unknown')}: {str(e)}")
-            return None
-    
+            
             # Validate and clean the response
-            result = self._validate_and_clean_response(raw_result)
+            result = self._validate_and_clean_response(result)
             
             # Record success/failure for health monitoring
             if result and not result.get("error"):
@@ -878,6 +925,10 @@ class MCPClient:
                     }
             
             return result
+            
+        except Exception as e:
+            logger.error(f"Error calling MCP tool {name} on {self.server_config.get('name', 'unknown')}: {str(e)}")
+            return None
             
     def _validate_and_convert_arguments(self, arguments: Dict[str, Any], schema: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Validate and convert argument types based on tool schema."""
