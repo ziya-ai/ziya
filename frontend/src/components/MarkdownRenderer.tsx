@@ -4869,6 +4869,11 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             // Pre-process HTML comment tool blocks to prevent marked.js from fragmenting them
             // This handles cases where marked doesn't recognize them as 'html' tokens
             try {
+                // Strip out TOOL_MARKER comments before rendering
+                // These are internal anchors used by chatApi.ts for replacement logic
+                // and should never be visible to users
+                processedMarkdown = processedMarkdown.replace(/<!-- TOOL_MARKER:[^>]+ -->\n?/g, '');
+                
                 const toolBlockRegex = /<!-- TOOL_BLOCK_START:(mcp_\w+)\|(.+?) -->\s*([\s\S]*?)\s*<!-- TOOL_BLOCK_END:\1 -->/g;
                 const toolBlocks: Array<{ match: string, toolName: string, displayHeader: string, content: string }> = [];
 
