@@ -1606,6 +1606,28 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
 
                 console.log('✅ ROUTER: All edges routed');
 
+                // CRITICAL: Check if diagram has explicit positioning from XML
+                // If vertices have non-zero positions, skip ELK auto-layout
+                console.log('📐 SKIP-CHECK: Starting explicit layout detection');
+                let hasExplicitLayout = false;
+                cellMap.forEach((cell, id) => {
+                    if (id === '0' || id === '1') return;
+                    if (cell.isVertex()) {
+                        const geom = cell.getGeometry();
+                        if (geom && (geom.x !== 0 || geom.y !== 0)) {
+                            hasExplicitLayout = true;
+                        }
+                    }
+                });
+                console.log('📐 SKIP-CHECK: hasExplicitLayout =', hasExplicitLayout);
+
+                if (hasExplicitLayout) {
+                    console.log('📐 ELK: Diagram has explicit positioning - SKIPPING automatic layout');
+                    graph.__elkLayoutSkipped = true;
+                    // Skip the entire ELK section below
+                } else {
+                    console.log('📐 ELK: No explicit positioning detected - running automatic layout');
+
                 console.log('📐 ELK: Preparing graph for automatic layout');
                 console.log('📐 ELK: Current cellMap size:', cellMap.size);
 
@@ -1810,6 +1832,7 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                         stack: elkError.stack
                     });
                 }
+                } // Close the hasExplicitLayout else block
 
                 // CRITICAL: If ELK layout was successful, extract and apply edge routing from ELK results
                 if (graph.__elkLayoutApplied && layoutResult && layoutResult.edges) {

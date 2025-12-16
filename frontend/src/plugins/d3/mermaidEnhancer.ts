@@ -60,6 +60,7 @@ let mermaidInstance: any = null;
  */
 export function detectSupportedDiagramTypes(mermaid: any): Set<string> {
   if (supportedDiagramTypes && mermaidInstance === mermaid) {
+    console.log('🔍 TYPE-DETECTION: Using cached types:', Array.from(supportedDiagramTypes));
     return supportedDiagramTypes;
   }
 
@@ -68,6 +69,7 @@ export function detectSupportedDiagramTypes(mermaid: any): Set<string> {
   // Don't run detection if mermaid is not properly initialized
   if (!mermaid || !mermaid.parse) {
     console.warn('Mermaid not properly initialized for type detection');
+    console.warn('Mermaid object:', mermaid);
     return supportedTypes;
   }
 
@@ -105,9 +107,11 @@ export function detectSupportedDiagramTypes(mermaid: any): Set<string> {
   for (const testCase of testCases) {
     try {
       mermaid.parse(testCase.def);
+      console.log('✅ TYPE-DETECTION: Supported:', testCase.type);
       supportedTypes.add(testCase.type);
     } catch (error) {
       // Type not supported - this is expected for beta types
+      console.log('❌ TYPE-DETECTION: Not supported:', testCase.type, error.message);
     }
   }
 
@@ -127,8 +131,16 @@ export function detectSupportedDiagramTypes(mermaid: any): Set<string> {
 export function normalizeDiagramType(diagramType: string, mermaid: any): string {
   const supportedTypes = detectSupportedDiagramTypes(mermaid);
 
+  console.log('🔍 TYPE-NORMALIZE: Normalizing type:', {
+    input: diagramType,
+    supportedTypes: Array.from(supportedTypes),
+    hasExact: supportedTypes.has(diagramType),
+    hasWithoutBeta: supportedTypes.has(diagramType.replace('-beta', ''))
+  });
+
   // If the exact type is supported, use it
   if (supportedTypes.has(diagramType)) {
+    console.log('✅ TYPE-NORMALIZE: Exact match found');
     return diagramType;
   }
 
@@ -136,6 +148,7 @@ export function normalizeDiagramType(diagramType: string, mermaid: any): string 
   if (diagramType.endsWith('-beta')) {
     const stableType = diagramType.replace('-beta', '');
     if (supportedTypes.has(stableType)) {
+      console.log('✅ TYPE-NORMALIZE: Beta promoted to stable:', stableType);
       return stableType;
     }
   }
@@ -144,11 +157,13 @@ export function normalizeDiagramType(diagramType: string, mermaid: any): string 
   if (!diagramType.endsWith('-beta')) {
     const betaType = diagramType + '-beta';
     if (supportedTypes.has(betaType)) {
+      console.log('✅ TYPE-NORMALIZE: Stable needs beta suffix:', betaType);
       return betaType;
     }
   }
 
   // Return original if no alternative found
+  console.warn('⚠️ TYPE-NORMALIZE: No normalization found, returning original:', diagramType);
   return diagramType;
 }
 
@@ -2571,14 +2586,37 @@ export function initMermaidEnhancer(): void {
 
       const lines = definition.split('\n');
       const fixedLines: string[] = [];
+      let previousLineWasBlank = false;
+      let inParticipantSection = false;
 
       for (const line of lines) {
         let fixedLine = line;
         const trimmedLine = line.trim();
+        
+        // Track if we're in the participant declaration section
+        if (trimmedLine.startsWith('sequenceDiagram')) {
+          inParticipantSection = true;
+        } else if (inParticipantSection && trimmedLine && !trimmedLine.startsWith('participant')) {
+          inParticipantSection = false;
+        }
+        
+        // Skip excessive blank lines after participant declarations
+        if (inParticipantSection && trimmedLine === '' && previousLineWasBlank) {
+          continue; // Skip consecutive blank lines in participant section
+        }
+        
+        previousLineWasBlank = (trimmedLine === '');
+
+        // Skip excessive blank lines after participant declarations
+        if (!inParticipantSection && trimmedLine === '' && previousLineWasBlank) {
+          continue; // Skip consecutive blank lines anywhere in sequence diagrams
+        }
+        
+        previousLineWasBlank = (trimmedLine === '');
 
         // Fix participant declarations with special characters
         if (trimmedLine.startsWith('participant ')) {
-          const participantMatch = trimmedLine.match(/^participant\s+(.+)$/);
+          const participantMatch = trimmedLine.match(/^participant\\s+(.+)$/);
           if (participantMatch) {
             const participantName = participantMatch[1];
             // If participant name contains spaces or special chars, don't quote it
@@ -2597,6 +2635,63 @@ export function initMermaidEnhancer(): void {
       priority: 290,
       diagramTypes: ['sequencediagram']
     });
+
+  // Add a graceful fallback for unsupported diagram types
+  registerPreprocessor(
+    (definition: string, diagramType: string) => {
+      // Check if this is a packet-beta diagram
+      if (!definition.trim().startsWith('packet-beta')) {
+        return definition;
+      }
+      
+      console.log('🔍 PACKET-BETA-CHECK: Detected packet-beta diagram');
+      console.log('🔍 PACKET-BETA-CHECK: Converting to flowchart alternative');
+      
+      // Convert packet-beta to a flowchart showing the data structure
+      const lines = definition.split('\n').filter(line => line.trim());
+      const title = lines.find(line => line.trim().startsWith('title'))?.replace(/^title\s+"?(.+?)"?\s*$/, '$1') || 'Data Structure';
+      
+      const fields = lines
+        .filter(line => line.trim().match(/^\d+-\d+:/))
+        .map(line => {
+          const match = line.trim().match(/^(\d+-\d+):\s*"?(.+?)"?\s*$/);
+          if (match) {
+            return { range: match[1], label: match[2] };
+          }
+          return null;
+        })
+        .filter(f => f !== null);
+      
+      // Build flowchart alternative
+      let flowchart = `graph TD\n`;
+      flowchart += `    Title["${title}"]\n`;
+      
+      fields.forEach((field, idx) => {
+        const nodeId = `F${idx}`;
+        flowchart += `    ${nodeId}["Bits ${field.range}: ${field.label}"]\n`;
+        if (idx === 0) {
+          flowchart += `    Title --> ${nodeId}\n`;
+        } else {
+          flowchart += `    F${idx - 1} --> ${nodeId}\n`;
+        }
+      });
+      
+      flowchart += `\n    style Title fill:#ffd700,stroke:#ff8c00,stroke-width:3px\n`;
+      fields.forEach((_, idx) => {
+        const colors = ['#e1bee7', '#bbdefb', '#c8e6c9', '#ffccbc', '#f8bbd0', '#ffe0b2', '#b2dfdb', '#d1c4e9'];
+        const color = colors[idx % colors.length];
+        flowchart += `    style F${idx} fill:${color},stroke:#333,stroke-width:2px\n`;
+      });
+      
+      console.log('🔍 PACKET-BETA-CHECK: Converted to flowchart');
+      return flowchart;
+    },
+    {
+      name: 'packet-beta-compatibility-check',
+      priority: 800, // Very high priority to check before other processing
+      diagramTypes: ['packet', 'packet-beta']
+    }
+  );
 
   // Add preprocessor for beta diagram types
   registerPreprocessor((def: string, type: string) => {
