@@ -5,7 +5,7 @@ import '@maxgraph/core/css/common.css';
 
 import { loadStencilsForShapes } from './drawioStencilLoader';
 import { iconRegistry } from './iconRegistry';
-import { hexToRgb, isLightBackground, getOptimalTextColor } from '../../utils/colorUtils';
+import { enhanceSVGVisibility, isLightBackground, getOptimalTextColor, hexToRgb } from '../../utils/colorUtils';
 import { DrawIOEnhancer } from './drawioEnhancer';
 import { runLayout, applyLayoutToMaxGraph, LayoutNode, LayoutEdge, LayoutContainer } from './layoutEngine';
 
@@ -2448,6 +2448,13 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
             console.log('✅ DrawIO: Render complete, container marked stable');
 
             graph.view.validate();
+            
+            // Apply universal visibility enhancement after render
+            const svgElement = graphContainer.querySelector('svg');
+            if (svgElement) {
+                const result = enhanceSVGVisibility(svgElement, isDarkMode, { debug: true });
+                console.log(`✅ DrawIO visibility enhanced:`, result);
+            }
             // NEVER call refresh() - it destroys our ELK routing
             // graph.refresh();
         } catch (error) {
