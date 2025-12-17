@@ -1652,9 +1652,14 @@ export function initMermaidEnhancer(): void {
         return match;
       }
 
+      // CRITICAL: Don't quote if the name is already quoted
+      if (trimmedName.startsWith('"') && trimmedName.endsWith('"')) {
+        return match;
+      }
+
       // Only quote if name contains spaces or parentheses AND is not already quoted
       if (trimmedName.includes(' ') || trimmedName.includes('(') || trimmedName.includes(')')) {
-        return trimmedName.startsWith('"') ? match : `${subgraphKeyword}"${trimmedName}"${ending}`;
+        return `${subgraphKeyword}"${trimmedName}"${ending}`;
       }
       return match;
     });

@@ -1,13 +1,7 @@
 import { D3RenderPlugin } from '../../types/d3';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
-import { 
-    hexToRgb, 
-    getLuminanceComponent, 
-    luminance, 
-    isLightBackground, 
-    getOptimalTextColor 
-} from '../../utils/colorUtils';
+import { enhanceSVGVisibility, isLightBackground } from '../../utils/colorUtils';
 import { zoomIn, zoomOut, resetZoom, storeOriginalViewBox } from '../../utils/zoomUtils';
 import { downloadSvg } from '../../utils/svgUtils';
 import { getZoomScript, getDownloadSvgScript } from '../../utils/popupScriptUtils';
@@ -38,64 +32,6 @@ const isGraphvizSpec = (spec: any): spec is GraphvizSpec => {
 
 // Store the current theme for each container to detect changes
 const containerThemes = new WeakMap<HTMLElement, boolean>();
-
-// Enhanced text visibility function
-const enhanceTextVisibility = (svgElement: SVGElement, isDarkMode: boolean) => {
-    // Process all text elements with comprehensive background detection
-    const textElements = svgElement.querySelectorAll('text');
-    let fixedCount = 0;
-    
-    textElements.forEach((textEl, index) => {
-        const textContent = textEl.textContent?.trim();
-        if (!textContent) return;
-        
-        let backgroundColor: string | null = null;
-        const currentTextColor = textEl.getAttribute('fill') || '';
-        
-        // Strategy 1: Check parent group for background shapes (most reliable)
-        const parentGroup = textEl.closest('g');
-        if (parentGroup) {
-            const backgroundShape = parentGroup.querySelector('ellipse, polygon, rect, circle, path[fill]:not([fill="none"])');
-            if (backgroundShape) {
-                const fill = backgroundShape.getAttribute('fill');
-                const computedFill = window.getComputedStyle(backgroundShape).fill;
-                backgroundColor = (computedFill !== 'none' && computedFill !== 'rgb(0, 0, 0)') ? computedFill : fill;
-            }
-        }
-        
-        // Strategy 2: Check if this is an edge label - use page background for contrast
-        if (!backgroundColor && parentGroup?.classList.contains('edge')) {
-            backgroundColor = isDarkMode ? '#2e3440' : '#ffffff'; // Use page background
-        }
-        
-        // Strategy 3: Check if this is a cluster label
-        if (!backgroundColor && parentGroup?.classList.contains('cluster')) {
-            const clusterBg = parentGroup.querySelector('polygon');
-            if (clusterBg) {
-                const fill = clusterBg.getAttribute('fill');
-                const computedFill = window.getComputedStyle(clusterBg).fill;
-                backgroundColor = (computedFill !== 'none' && computedFill !== 'rgb(0, 0, 0)') ? computedFill : fill;
-            }
-        }
-        
-        if (backgroundColor) {
-            const isLight = isLightBackground(backgroundColor);
-            const optimalColor = getOptimalTextColor(backgroundColor);
-            
-            if (isLight) {
-                textEl.setAttribute('fill', optimalColor);
-                (textEl as SVGElement).style.setProperty('fill', optimalColor, 'important');
-                fixedCount++;
-            }
-        } else {
-            // Fallback: use high contrast color based on page mode
-            const fallbackColor = isDarkMode ? '#ffffff' : '#000000';
-            if (currentTextColor !== fallbackColor) {
-                textEl.setAttribute('fill', fallbackColor);
-            }
-        }
-    });
-};
 
 export const graphvizPlugin: D3RenderPlugin = {
     name: 'graphviz-renderer',
@@ -471,13 +407,11 @@ export const graphvizPlugin: D3RenderPlugin = {
                 }
             }
             
-            // Apply enhanced text visibility immediately
-            enhanceTextVisibility(element, isDarkMode);
-            
-            // Apply delayed text visibility fix (borrowed from Mermaid approach)
+            // Apply universal visibility enhancement
             setTimeout(() => {
-                enhanceTextVisibility(element, isDarkMode);
-            }, 500);
+                const result = enhanceSVGVisibility(element, isDarkMode, { debug: true });
+                console.log(`✅ Graphviz visibility enhanced:`, result);
+            }, 300);
             
             // Apply edge and path styling
             for (let i = 0; i < elements.length; i++) {
