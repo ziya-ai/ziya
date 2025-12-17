@@ -1082,6 +1082,22 @@ const normalizeGitDiff = (diff: string): string => {
     if (diff.startsWith('diff --git') || diff.match(/^---\s+\S+/m) || diff.includes('/dev/null') ||
         diff.match(/^@@\s+-\d+/m)) {
         const lines: string[] = diff.split('\n');
+        
+        // CRITICAL: Handle XX placeholder patterns in hunk headers
+        // Convert @@ -XX,X +XX,X @@ to @@ -1,1 +1,1 @@ for parseDiff compatibility
+        for (let i = 0; i < lines.length; i++) {
+            const xxPatternMatch = lines[i].match(/^@@\s+-XX,X\s+\+XX,X\s+@@/);
+            if (xxPatternMatch) {
+                console.log('🔧 DIFF-PARSE: Converting XX placeholder hunk header to valid format');
+                lines[i] = lines[i].replace(/@@\s+-XX,X\s+\+XX,X\s+@@/, '@@ -1,1 +1,1 @@');
+            }
+            // Also handle single-number variant: @@ -XX +XX @@
+            const xxSingleMatch = lines[i].match(/^@@\s+-XX\s+\+XX\s+@@/);
+            if (xxSingleMatch) {
+                lines[i] = lines[i].replace(/@@\s+-XX\s+\+XX\s+@@/, '@@ -1 +1 @@');
+            }
+        }
+        
         const normalizedLines: string[] = [];
 
         // Check if this is a properly formatted diff
@@ -1094,7 +1110,8 @@ const normalizeGitDiff = (diff: string): string => {
         const hasHunkHeader = lines.some(line =>
             /^@@\s+-\d+,?\d*\s+\+\d+,?\d*\s+@@/.test(line) ||
             /^@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@/.test(line) ||
-            /^@@\s+-\d+,\d+\s+@@/.test(line)
+            /^@@\s+-\d+,\d+\s+@@/.test(line) ||
+            /^@@\s+-XX,X\s+\+XX,X\s+@@/.test(line) // Accept XX placeholder format
         );
 
         // Check for Haiku-style diffs that have git headers but missing unified diff headers

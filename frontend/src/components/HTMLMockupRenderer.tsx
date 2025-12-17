@@ -49,8 +49,10 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
             margin: 0;
             padding: 0;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background-color: ${isDarkMode ? '#1f1f1f' : '#ffffff'};
-            color: ${isDarkMode ? '#e6e6e6' : '#000000'};
+            /* Don't set background or color on body - let mockups define their own */
+            /* Mockups are self-contained designs that should look the same in any theme */
+            background-color: transparent;
+            /* Remove color property entirely so it doesn't inherit to mockup content */
         }
         * {
             box-sizing: border-box;
