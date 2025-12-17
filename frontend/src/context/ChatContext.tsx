@@ -1297,14 +1297,19 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     messages[messages.length - 1] !== currentMessages[currentMessages.length - 1]);
 
             if (messagesChanged) {
-                // ADDITIONAL FIX: Check if this change is from the current conversation or another
+                // Check if this change is from the current conversation or another
                 const triggeringConversation = conversations.find(c =>
                     c._version && c._version > (Date.now() - 100)
                 );
 
-                if (triggeringConversation && triggeringConversation.id !== currentConversationId) {
-                    console.log('📌 Another conversation updated - preserving scroll for current conversation');
-                    // Don't update currentMessages if the change came from a different conversation
+                // CRITICAL FIX: Only skip update if we can CONFIRM it's a different conversation
+                // AND the current conversation's messages haven't actually changed
+                const isDefinitelyDifferentConversation = triggeringConversation && 
+                    triggeringConversation.id !== currentConversationId &&
+                    messages.length === currentMessages.length;
+                
+                if (isDefinitelyDifferentConversation) {
+                    console.log('📌 Another conversation updated - preserving current conversation display');
                     return;
                 }
 
