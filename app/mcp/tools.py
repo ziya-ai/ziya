@@ -72,8 +72,8 @@ def parse_tool_call(content: str) -> Optional[Dict[str, Any]]:
     Returns:
         Dict with tool_name and arguments, or None if no valid tool call found
     """
-    logger.error(f"🚨 PARSE_TOOL_CALL: Attempting to parse content length={len(content)}")
-    logger.error(f"🚨 PARSE_TOOL_CALL: Content preview: {content[:200]}...")
+    logger.debug(f"PARSE_TOOL_CALL: Attempting to parse content length={len(content)}")
+    logger.debug(f"PARSE_TOOL_CALL: Content preview: {content[:200]}...")
     import json
     
     logger.debug(f"🔍 PARSE: Parsing tool call from content: {content[:200]}...")
