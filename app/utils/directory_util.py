@@ -318,11 +318,6 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
             
             subdir = entry.path + os.sep
             
-            # Skip symlinks to prevent infinite loops
-            if entry.is_symlink():
-                logger.debug(f"Skipping symlink directory: {subdir}")
-                continue
-                
             # Skip directories with problematic characters that cause regex errors
             dir_name = entry.name
             if '[' in dir_name or ']' in dir_name:
@@ -389,11 +384,10 @@ def get_complete_file_list(user_codebase_dir: str, ignored_patterns: List[str], 
     for pattern in included_relative_dirs:
         for root, dirs, files in os.walk(os.path.normpath(os.path.join(user_codebase_dir, pattern))):
             # Filter out ignored directories and hidden directories
-            # Also filter out symlinks to prevent following them into ignored directories
+            # CRITICAL: Add trailing slash to directory paths for gitignore matching
             dirs[:] = [d for d in dirs 
-                      if not should_ignore_fn(os.path.join(root, d)) 
-                      and not d.startswith('.') 
-                      and not os.path.islink(os.path.join(root, d))]
+                      if not should_ignore_fn(os.path.join(root, d) + os.sep) 
+                      and not d.startswith('.')]
 
             for file in files:
                 file_path = os.path.join(root, file)
@@ -768,13 +762,13 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
             if path_join_time > 0.01:
                 logger.warning(f"🔍 PERF: Slow path join for {entry}: {path_join_time*1000:.1f}ms")
             
-            # Skip symlinks to prevent infinite loops
-            if os.path.islink(entry_path):  # Skip symlinks
-                logger.debug(f"Skipping symlink: {entry_path}")
-                continue
-                
             ignore_start = time.time()
-            if should_ignore_fn(entry_path):  # Skip ignored files
+            # CRITICAL: For directories, add trailing slash to match directory-only gitignore patterns
+            check_path = entry_path
+            if os.path.isdir(entry_path):
+                check_path = entry_path + os.sep
+                
+            if should_ignore_fn(check_path):  # Skip ignored files/directories
                 ignore_time = time.time() - ignore_start
                 if ignore_time > 0.01:
                     logger.warning(f"🔍 PERF: Slow gitignore check for {entry}: {ignore_time*1000:.1f}ms")
