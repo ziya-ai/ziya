@@ -1602,6 +1602,9 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
         try:
             from app.utils.file_utils import read_file_content
             # Get annotated content with change tracking
+            # CRITICAL: Refresh file from disk before getting annotated content
+            # This ensures we're showing the actual current state, not stale cached state
+            file_state_manager.refresh_file_from_disk(conversation_id, file_path, user_codebase_dir)
             logger.debug(f"Getting annotated content for {file_path}")
             annotated_lines, success = file_state_manager.get_annotated_content(conversation_id, file_path)
             logger.debug(f"First few annotated lines: {annotated_lines[:3] if annotated_lines else []}")
