@@ -337,7 +337,11 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
     # If removal validation fails, check if it's because the hunk was already applied
     if removed_lines:
         removal_matches = _validate_removal_content(file_lines, removed_lines, pos)
-        if not removal_matches:
+        if removal_matches:
+            # The content to be removed IS in the file - hunk is NOT already applied
+            logger.debug(f"Removal content found at pos {pos} - hunk NOT already applied")
+            return False
+        else:
             # Removal content doesn't match at pos
             # For modifications (has additions), check if the new content is already there
             if added_lines and _check_expected_content_match(file_lines, new_lines, pos, ignore_whitespace):
