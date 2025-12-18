@@ -1,0 +1,11 @@
+diff --git a/src/ZiyaInternal/public/frontend/src/plugins/d3/vegaLitePlugin.ts b/src/ZiyaInternal/public/frontend/src/plugins/d3/vegaLitePlugin.ts
+index 1234567..89abcdef 100644
+--- a/src/ZiyaInternal/public/frontend/src/plugins/d3/vegaLitePlugin.ts
++++ b/src/ZiyaInternal/public/frontend/src/plugins/d3/vegaLitePlugin.ts
+@@ -612,7 +612,6 @@ export const vegaLitePlugin: D3RenderPlugin = {
+               }
+             }
+           });
+-          }
+         }
+       }

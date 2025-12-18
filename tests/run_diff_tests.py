@@ -380,6 +380,10 @@ class DiffRegressionTest(unittest.TestCase):
         """Test applying a multi-hunk diff where line numbers need adjustment after earlier hunks are applied"""
         self.run_diff_test('multi_hunk_line_adjustment')
 
+    def test_vega_lite_closing_brace_fix(self):
+        """Test removing extra closing brace from vegaLitePlugin.ts"""
+        self.run_diff_test('vega_lite_closing_brace_fix')
+
     # MRE test cases
     def test_MRE_binary_file_changes(self):
         """Test handling of binary file changes"""
