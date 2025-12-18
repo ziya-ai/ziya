@@ -89,7 +89,13 @@ export function isLightBackground(color: string): boolean {
  */
 export function getOptimalTextColor(backgroundColor: string): string {
     const rgb = hexToRgb(backgroundColor);
-    if (!rgb) return '#000000';
+    if (!rgb) {
+        // If we can't parse as hex, try rgb() format
+        const rgbMatch = backgroundColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+        if (!rgbMatch) return '#ffffff'; // Default to white for unparseable colors
+        const r = parseInt(rgbMatch[1]), g = parseInt(rgbMatch[2]), b = parseInt(rgbMatch[3]);
+        return getOptimalTextColor(`#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`);
+    }
 
     // Calculate proper sRGB luminance
     const lum = luminance(rgb.r, rgb.g, rgb.b);
@@ -100,16 +106,22 @@ export function getOptimalTextColor(backgroundColor: string): string {
         return '#000000'; // Always use black on yellow/light yellow
     }
     
-    // Special handling for light blue/cyan (high blue but appears light despite low luminance)
+    // Special handling for light blue colors (including journey diagram blue #aed6f1)
+    // These colors have high blue component and appear light, needing dark text
+    if (rgb.b > 200 && rgb.r > 150 && rgb.g > 180) {
+        return '#000000'; // Use black on light blue backgrounds
+    }
+    
+    // Special handling for medium blue/cyan (high blue but appears light despite low luminance)
     // Blue coefficient in luminance is only 0.0722, so these colors appear darker than they look
     if (rgb.b > 180 && rgb.r > 100 && rgb.g > 100 && Math.abs(rgb.r - rgb.g) < 60) {
         return '#000000'; // Use black on light blue/cyan (baby blue)
     }
     
     // Special handling for grey colors (all channels similar, medium to high brightness)
-    // Expanded from >180 to >120 to catch medium greys
-    if (Math.abs(rgb.r - rgb.g) < 30 && Math.abs(rgb.g - rgb.b) < 30 && rgb.r > 120) {
-        return '#000000'; // Use black on grey (medium to light)
+    // Only use black on LIGHT greys (>160), otherwise use white
+    if (Math.abs(rgb.r - rgb.g) < 30 && Math.abs(rgb.g - rgb.b) < 30) {
+        return rgb.r > 160 ? '#000000' : '#ffffff';
     }
     
     // SIMPLE AGGRESSIVE RULE: If ANY channel is very bright, likely needs black text
@@ -136,6 +148,28 @@ export function getOptimalTextColor(backgroundColor: string): string {
 export function calculateContrastRatio(color1: string, color2: string): number {
     // Handle various color formats
     const parseColor = (color: string): { r: number; g: number; b: number } | null => {
+        // Handle named colors
+        const namedColors: Record<string, string> = {
+            'white': '#ffffff',
+            'black': '#000000',
+            'red': '#ff0000',
+            'green': '#008000',
+            'blue': '#0000ff',
+            'yellow': '#ffff00',
+            'cyan': '#00ffff',
+            'magenta': '#ff00ff',
+            'gray': '#808080',
+            'grey': '#808080',
+            'transparent': '#ffffff',
+            'none': '#ffffff'
+        };
+        
+        // Convert named color to hex
+        const normalizedColor = color.toLowerCase().trim();
+        if (namedColors[normalizedColor]) {
+            color = namedColors[normalizedColor];
+        }
+        
         // Try hex first
         const hexResult = hexToRgb(color);
         if (hexResult) return hexResult;
@@ -156,7 +190,12 @@ export function calculateContrastRatio(color1: string, color2: string): number {
     const rgb1 = parseColor(color1);
     const rgb2 = parseColor(color2);
 
-    if (!rgb1 || !rgb2) return 1;
+    if (!rgb1 || !rgb2) {
+        console.warn('🔍 COLOR-PARSE-FAIL:', {
+            color1, color2, rgb1, rgb2
+        });
+        return 1;
+    }
 
     const lum1 = luminance(rgb1.r, rgb1.g, rgb1.b);
     const lum2 = luminance(rgb2.r, rgb2.g, rgb2.b);
@@ -282,7 +321,35 @@ export function enhanceSVGVisibility(
 
     log('🔍 UNIVERSAL-SVG-FIX: Starting visibility enhancement');
 
-    // FIX 1: ALL text elements - ensure readable contrast
+    // FIX 1a: Check for foreignObject HTML text (Mermaid v10+)
+    const foreignObjects = svgElement.querySelectorAll('foreignObject');
+    foreignObjects.forEach((fo) => {
+        const htmlElements = fo.querySelectorAll('div, span, p');
+        htmlElements.forEach((htmlEl) => {
+            const textContent = htmlEl.textContent?.trim();
+            if (!textContent) return;
+
+            const backgroundColor = findElementBackground(htmlEl, pageBg);
+            const optimalColor = getOptimalTextColor(backgroundColor);
+            const currentStyle = window.getComputedStyle(htmlEl);
+            const currentColor = currentStyle.color || defaultTextColor;
+
+            const contrast = calculateContrastRatio(currentColor, backgroundColor);
+            const textInvisible = currentColor === backgroundColor ||
+                                 (isDarkMode && currentColor === '#000000') ||
+                                 (!isDarkMode && currentColor === '#ffffff');
+
+            log(`🔍 HTML-TEXT: "${textContent.substring(0, 30)}" contrast=${contrast.toFixed(2)} current=${currentColor} bg=${backgroundColor}`);
+
+            if (contrast < minContrast || textInvisible) {
+                (htmlEl as HTMLElement).style.setProperty('color', optimalColor, 'important');
+                textFixed++;
+                log(`🔧 HTML text fix: "${textContent.substring(0, 30)}" -> ${optimalColor}`);
+            }
+        });
+    });
+
+    // FIX 1b: SVG text elements (older Mermaid, Graphviz, etc.)
     const textElements = svgElement.querySelectorAll('text');
     textElements.forEach((textEl) => {
         // Skip if in skip list
@@ -294,7 +361,22 @@ export function enhanceSVGVisibility(
 
         const backgroundColor = findElementBackground(textEl, pageBg);
         const optimalColor = getOptimalTextColor(backgroundColor);
-        const currentColor = textEl.getAttribute('fill') || defaultTextColor;
+        
+        // CRITICAL: Use computed style if no fill attribute (ER diagrams use CSS classes)
+        const fillAttr = textEl.getAttribute('fill');
+        const currentColor = fillAttr || window.getComputedStyle(textEl).fill || defaultTextColor;
+        
+        // CRITICAL DEBUG: Log every text element analysis
+        log(`🔍 TEXT-ANALYSIS: "${textContent.substring(0, 30)}"`, {
+            currentColor,
+            backgroundColor,
+            optimalColor,
+            pageBg,
+            defaultTextColor,
+            element: textEl.tagName,
+            parentClass: textEl.parentElement?.getAttribute('class'),
+            hasComputedStyle: !!window.getComputedStyle(textEl).fill
+        });
         
         // Check if current color has sufficient contrast
         const contrast = calculateContrastRatio(currentColor, backgroundColor);
@@ -304,6 +386,14 @@ export function enhanceSVGVisibility(
                              (isDarkMode && currentColor === '#000000') ||
                              (!isDarkMode && currentColor === '#ffffff');
         
+        // CRITICAL DEBUG: Log contrast analysis before fix decision
+        log(`🔍 CONTRAST-CHECK: "${textContent.substring(0, 30)}"`, {
+            contrast: contrast.toFixed(2),
+            minContrast,
+            textInvisible,
+            willFix: contrast < minContrast || textInvisible
+        });
+        
         if (contrast < minContrast || textInvisible) {
             textEl.setAttribute('fill', optimalColor);
             (textEl as SVGElement).style.setProperty('fill', optimalColor, 'important');
@@ -312,56 +402,45 @@ export function enhanceSVGVisibility(
         }
     });
 
-    // FIX 2: ALL shapes - ensure visible strokes and fills
+    // FIX 2: ALL shapes - ensure visible strokes ONLY (preserve fill colors)
     const shapes = svgElement.querySelectorAll('rect, ellipse, polygon, circle, path[fill]');
     shapes.forEach((shape) => {
         const fill = shape.getAttribute('fill');
         const stroke = shape.getAttribute('stroke');
 
-        // CRITICAL: Don't fix strokes on pie chart slices or other intentionally styled shapes
-        // Check if this is a pie slice (path with fill and d attribute) or has explicit class
+        // Only fix strokes for shapes that have an explicit stroke or should have one
+        // Don't add strokes to pie slices (path with fill but no stroke)
         const isPieSlice = shape.tagName === 'path' && 
-                          shape.getAttribute('d') && 
-                          fill && 
-                          fill !== 'none' &&
-                          !stroke; // Pie slices typically don't have strokes
+                          fill && fill !== 'none' && 
+                          !stroke;
         
-        const hasExplicitStyle = shape.getAttribute('class') && 
-                                (shape.getAttribute('class')?.includes('slice') ||
-                                 shape.getAttribute('class')?.includes('pie'));
-        
-        if (!isPieSlice && !hasExplicitStyle) {
-            // Fix invisible/missing strokes only for non-pie elements
-            if (!stroke || stroke === 'none' || 
+        if (!isPieSlice) {
+            // Fix invisible strokes (but don't add strokes where none exist)
+            if (stroke && (stroke === 'none' || 
                 (isDarkMode && (stroke === '#000000' || stroke === pageBg)) ||
-                (!isDarkMode && (stroke === '#ffffff' || stroke === 'white'))) {
-                
+                (!isDarkMode && (stroke === '#ffffff' || stroke === 'white')))) {
                 shape.setAttribute('stroke', defaultStrokeColor);
-                const strokeWidth = shape.getAttribute('stroke-width');
-                if (!strokeWidth || parseFloat(strokeWidth) < 1) {
-                    shape.setAttribute('stroke-width', '1.5');
-                }
                 shapesFixed++;
+                log(`🔧 Shape stroke fix: ${stroke} -> ${defaultStrokeColor}`);
             }
         }
-
-        // CRITICAL: Don't fix fills on pie slices or colored legend boxes
-        const isLegendBox = shape.closest('.legend') && shape.tagName === 'rect';
-        
-        if (fill && fill !== 'none' && !isPieSlice && !hasExplicitStyle && !isLegendBox) {
-            const fillContrast = calculateContrastRatio(fill, pageBg);
-            // Use lower threshold (1.2) to only fix truly invisible fills
-            if (fillContrast < 1.2) {
-                const newFill = isDarkMode ? '#4c566a' : '#e8e8e8';
-                shape.setAttribute('fill', newFill);
-                log(`🔧 Shape fill fix: ${fill} -> ${newFill} (contrast too low: ${fillContrast.toFixed(2)})`);
-                shapesFixed++;
-            }
-        }
+        // REMOVED: Fill color modification - preserve user's color choices
     });
 
     // FIX 3: ALL lines and connection paths - ensure visible strokes
-    const lines = svgElement.querySelectorAll('line, path[d]:not([fill]), path[fill="none"]');
+    // CRITICAL: Be VERY aggressive - catch ALL path elements that might be lines
+    // This includes journey diagrams, flowcharts, sequence diagrams, etc.
+    const lines = svgElement.querySelectorAll(
+        'line, ' +
+        'path[d]:not([fill]), ' +
+        'path[fill="none"], ' +
+        'path.path, ' +
+        'path[class*="journey"], ' +
+        'path[class*="line"], ' +
+        'path[stroke]');  // ANY path with a stroke attribute
+    
+    log(`🔍 LINE-SCAN: Found ${lines.length} line elements to check`);
+    
     lines.forEach((line) => {
         const stroke = line.getAttribute('stroke');
         const currentStrokeWidth = parseFloat(line.getAttribute('stroke-width') || '0');
@@ -372,11 +451,30 @@ export function enhanceSVGVisibility(
             (isDarkMode && (stroke === '#000000' || stroke === 'black' || stroke === '#2e3440')) ||
             (!isDarkMode && (stroke === '#ffffff' || stroke === 'white'));
 
+        // CRITICAL: Also check for low-contrast grey strokes in dark mode
+        // Grey (#808080, #999999, etc.) is invisible on dark grey backgrounds
+        const isLowContrastGrey = isDarkMode && stroke && (
+            stroke.toLowerCase() === '#808080' ||
+            stroke.toLowerCase() === '#999999' ||
+            stroke.toLowerCase() === '#666666' ||
+            stroke.toLowerCase() === 'grey' ||
+            stroke.toLowerCase() === 'gray'
+        );
+
         if (strokeInvisible) {
             line.setAttribute('stroke', defaultStrokeColor);
             line.setAttribute('stroke-width', '2');
             linesFixed++;
             log(`🔧 Line fix: invisible stroke -> ${defaultStrokeColor}`);
+        } else if (isLowContrastGrey) {
+            // Fix low-contrast grey lines in dark mode
+            line.setAttribute('stroke', defaultStrokeColor);
+            (line as SVGElement).style.setProperty('stroke', defaultStrokeColor, 'important');
+            if (currentStrokeWidth < 1.5) {
+                line.setAttribute('stroke-width', '2');
+            }
+            linesFixed++;
+            log(`🔧 Line fix: low-contrast grey (${stroke}) -> ${defaultStrokeColor}`);
         } else if (currentStrokeWidth < 0.5) {
             // Stroke exists but is too thin to see
             line.setAttribute('stroke-width', '1.5');
