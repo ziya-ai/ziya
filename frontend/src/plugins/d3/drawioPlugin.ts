@@ -279,7 +279,7 @@ async function loadMaxGraph(): Promise<any> {
 
 const createControls = (container: HTMLElement, spec: DrawIOSpec, xml: string, isDarkMode: boolean, graph?: any): void => {
     const controlsDiv = document.createElement('div');
-    controlsDiv.className = 'diagram-actions';
+    controlsDiv.className = 'diagram-actions drawio-controls';
 
     // View Source button
     const viewSourceBtn = document.createElement('button');
@@ -438,10 +438,89 @@ const createControls = (container: HTMLElement, spec: DrawIOSpec, xml: string, i
         }
     };
 
+    // Edit button - toggle edit mode with grid
+    const editBtn = document.createElement('button');
+    editBtn.innerHTML = '✏️ Edit';
+    editBtn.className = 'diagram-action-button';
+    editBtn.title = 'Enable editing mode with grid';
+    
+    let isEditMode = false;
+    
+    editBtn.onclick = () => {
+        if (!graph) return;
+        
+        isEditMode = !isEditMode;
+        
+        const graphContainer = container.querySelector('.drawio-graph-container') as HTMLElement;
+        
+        if (isEditMode) {
+            // Enable edit mode
+            editBtn.innerHTML = '👁️ View';
+            editBtn.title = 'Exit editing mode';
+            
+            // Enable graph interaction
+            graph.setEnabled(true);
+            graph.setConnectable(true);
+            
+            // Enable grid
+            graph.view.gridEnabled = true;
+            
+            // Set background to show grid properly
+            if (graphContainer) {
+                graphContainer.style.background = isDarkMode ? '#0d1117' : '#ffffff';
+                // Add grid pattern
+                graphContainer.style.backgroundImage = `
+                    linear-gradient(${isDarkMode ? '#ffffff11' : '#00000011'} 1px, transparent 1px),
+                    linear-gradient(90deg, ${isDarkMode ? '#ffffff11' : '#00000011'} 1px, transparent 1px)
+                `;
+                graphContainer.style.backgroundSize = '10px 10px';
+            }
+            
+            // Enable snap to grid
+            graph.setGridEnabled(true);
+            graph.setGridSize(10);
+            
+            // Allow moving and resizing
+            graph.setCellsMovable(true);
+            graph.setCellsResizable(true);
+            
+            console.log('📐 DrawIO: Edit mode ENABLED');
+        } else {
+            // Disable edit mode
+            editBtn.innerHTML = '✏️ Edit';
+            editBtn.title = 'Enable editing mode with grid';
+            
+            // Disable graph interaction
+            graph.setEnabled(false);
+            graph.setConnectable(false);
+            
+            // Disable grid
+            graph.view.gridEnabled = false;
+            
+            // Restore transparent background
+            if (graphContainer) {
+                graphContainer.style.background = 'transparent';
+                graphContainer.style.backgroundImage = 'none';
+            }
+            
+            // Disable snap to grid
+            graph.setGridEnabled(false);
+            
+            // Disable moving and resizing
+            graph.setCellsMovable(false);
+            graph.setCellsResizable(false);
+            
+            console.log('📐 DrawIO: Edit mode DISABLED');
+        }
+        
+        graph.refresh();
+    };
+
     controlsDiv.appendChild(viewSourceBtn);
     // controlsDiv.appendChild(editBtn); // Disabled - external site privacy concern
     controlsDiv.appendChild(exportBtn);
     controlsDiv.appendChild(copyBtn);
+    controlsDiv.appendChild(editBtn);
 
     container.appendChild(controlsDiv);
 };
@@ -538,12 +617,12 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
 
             // Create container for the graph
             const graphContainer = document.createElement('div');
+            graphContainer.className = 'drawio-graph-container';
             graphContainer.style.cssText = `
             position: relative;
-            width: 100%;
             min-height: 600px;
-            background: ${isDarkMode ? '#0d1117' : '#ffffff'};
-            border: 1px solid ${isDarkMode ? '#30363d' : '#d0d7de'};
+            background: transparent;
+            border: 1px solid ${isDarkMode ? '#30363d88' : '#d0d7de88'};;
             overflow: hidden;
         `;
 
@@ -2302,8 +2381,11 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
             console.log('📐 DrawIO: Adding zoom controls');
             addZoomControls(graphContainer, graph);
 
-            // Make container relatively positioned for absolute controls
+            // Make container centered and relatively positioned for absolute controls
             container.style.position = 'relative';
+            container.style.display = 'flex';
+            container.style.justifyContent = 'center';
+            container.style.alignItems = 'flex-start'; // Align to top, center horizontally
 
             // CRITICAL: Only clear if not already rendered
             if (!container.querySelector('svg')) {
@@ -2384,45 +2466,72 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                     });
                 }
             } catch (enhanceError) {
-                console.error('📐 DrawIO: Error fixing labels:', enhanceError);
+                console.error('📐 Error getting bounds before fix:', e);
             }
 
-            // Get the actual content bounds
-            const contentBounds = graph.getGraphBounds();
-            console.log('📐 DrawIO: Content bounds:', {
-                x: contentBounds.x,
-                y: contentBounds.y,
-                width: contentBounds.width,
-                height: contentBounds.height
+            // CRITICAL: Use maxGraph's built-in fit() and center() functions
+            // instead of manual sizing - this ensures proper scaling and positioning
+            console.log('📐 DrawIO: Fitting and centering diagram using maxGraph functions');
+            
+            // Wait for DOM to be fully rendered before calling fit()
+            // Multiple attempts with increasing delays to handle slow rendering
+            const applyFitAndCenter = () => {
+                try {
+                    graph.fit(20); // 20px padding
+                    graph.center(true, true); // Center both horizontally and vertically
+                    
+                    // CRITICAL: After fit(), resize graphContainer to match content bounds
+                    // This allows the parent container to center it properly
+                    const bounds = graph.getGraphBounds();
+                    const padding = 40; // Match the fit() padding (20px * 2 for both sides)
+                    const neededWidth = Math.ceil(bounds.width + padding);
+                    const neededHeight = Math.ceil(bounds.height + padding);
+                    
+                    graphContainer.style.width = `${neededWidth}px`;
+                    graphContainer.style.height = `${neededHeight}px`;
+                    graphContainer.style.minHeight = `${neededHeight}px`;
+                    
+                    console.log('✅ DrawIO: Fit and center applied, container resized to content', {
+                        contentBounds: { width: bounds.width, height: bounds.height },
+                        containerSize: { width: neededWidth, height: neededHeight }
+                    });
+                    console.log('✅ DrawIO: Fit and center applied successfully');
+                } catch (fitError) {
+                    console.warn('📐 DrawIO: Fit/center error:', fitError);
+                }
+            };
+            
+            // Try immediately and then with increasing delays
+            setTimeout(applyFitAndCenter, 50);
+            setTimeout(applyFitAndCenter, 200);
+            setTimeout(applyFitAndCenter, 500);
+
+            // Add ResizeObserver to re-fit and re-center when parent container resizes
+            console.log('📐 DrawIO: Setting up ResizeObserver for responsive resizing');
+            
+            const resizeObserver = new ResizeObserver((entries) => {
+                for (const entry of entries) {
+                    // Only respond to significant size changes (> 50px difference)
+                    const newWidth = entry.contentRect.width;
+                    const oldWidth = (container as any).__lastWidth || 0;
+                    
+                    if (Math.abs(newWidth - oldWidth) > 50) {
+                        console.log('📐 DrawIO: Container resized, re-fitting diagram', {
+                            oldWidth,
+                            newWidth,
+                            delta: newWidth - oldWidth
+                        });
+                        
+                        (container as any).__lastWidth = newWidth;
+                        
+                        // Re-apply fit and center with a small delay to let layout settle
+                        setTimeout(() => applyFitAndCenter(), 100);
+                    }
+                }
             });
-
-            // Set the graph container to the exact size needed for content
-            const padding = 40;
-            const containerWidth = contentBounds.width + (padding * 2);
-            const containerHeight = contentBounds.height + (padding * 2);
-
-            graphContainer.style.width = `${containerWidth}px`;
-            graphContainer.style.height = `${containerHeight}px`;
-            graphContainer.style.overflow = 'hidden';
-
-            console.log('📐 DrawIO: Set container to content size:', {
-                contentWidth: contentBounds.width,
-                contentHeight: contentBounds.height,
-                containerWidth,
-                containerHeight
-            });
-
-            // Center the content within the padded container
-            const view = graph.getView();
-            view.scale = 1.0; // Keep at 1:1 scale
-            view.translate.x = padding - contentBounds.x;
-            view.translate.y = padding - contentBounds.y;
-
-            console.log('📐 DrawIO: Centered content at 1:1 scale:', {
-                scale: view.scale,
-                translateX: view.translate.x,
-                translateY: view.translate.y
-            });
+            
+            resizeObserver.observe(container);
+            console.log('📐 DrawIO: ResizeObserver attached to graphContainer');
 
             // DIAGNOSTIC: Monitor if diagram gets removed from DOM
             const observer = new MutationObserver((mutations) => {
@@ -2570,9 +2679,13 @@ function addZoomControls(graphContainer: HTMLElement, graph: any): void {
     const zoomInBtn = createZoomButton('+', () => graph.zoomIn());
     const zoomOutBtn = createZoomButton('-', () => graph.zoomOut());
     const zoomFitBtn = createZoomButton('⊡', () => {
-        graph.fit();
-        graph.center(true, true);
-        graph.refresh();
+        try {
+            graph.fit(20); // 20px padding
+            graph.center(true, true, true); // Center with resize
+            console.log('📐 DrawIO: Manual fit triggered from zoom button');
+        } catch (e) {
+            console.warn('📐 DrawIO: Fit error from button:', e);
+        }
     });
 
     zoomControls.appendChild(zoomInBtn);
