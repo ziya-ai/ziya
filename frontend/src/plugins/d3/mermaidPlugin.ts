@@ -3,7 +3,7 @@ import initMermaidSupport, { enhancePacketDarkMode } from './mermaidEnhancer';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 import { getZoomScript } from '../../utils/popupScriptUtils';
-import { enhanceSVGVisibility } from '../../utils/colorUtils';
+import { hexToRgb, enhanceSVGVisibility } from '../../utils/colorUtils';
 
 // Add mermaid to window for TypeScript
 declare global {
@@ -388,7 +388,7 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                 tertiaryColor: '#2e3440',
 
                 // Text colors
-                textColor: '#eceff4',
+                textColor: '#2e3440',
                 loopTextColor: '#eceff4',
 
                 // Node colors
@@ -408,10 +408,10 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                 titleColor: '#88c0d0',
 
                 // Class diagram specific
-                classText: '#ffffff',
+                classText: '#000000',
 
                 // State diagram specific
-                labelColor: '#ffffff',
+                labelColor: '#000000',
 
                 // Sequence diagram specific
                 actorBkg: '#4c566a',
@@ -571,12 +571,28 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
 
         if (!renderSuccessful) return;
 
-        // UNIVERSAL FIX: Apply centralized visibility enhancement
+        // UNIVERSAL FIX: Apply centralized visibility enhancement with DELAYED execution
+        // CRITICAL: Must run AFTER Mermaid finishes all its CSS styling (500ms ensures this)
+        // This catches journey diagram lines, low-contrast greys, and other visibility issues
         setTimeout(() => {
+            console.log('🎨 DELAYED-VISIBILITY-FIX: Starting universal enhancement');
             const result = enhanceSVGVisibility(svgElement, isDarkMode, { debug: true });
-            console.log(`✅ Mermaid visibility enhanced:`, result);
-            console.log(`🎯 Detected diagram type: "${diagramType}"`);
-        }, 300);
+            console.log('🎨 DELAYED-VISIBILITY-FIX: Complete');
+            
+            console.group('🎨 MERMAID-CONTRAST: Visibility Enhancement Results');
+            console.log(`Diagram Type: "${diagramType}"`);
+            console.log(`Dark Mode: ${isDarkMode}`);
+            console.log(`Elements Processed:`, result.elementsProcessed || 0);
+            console.log(`Elements Modified:`, result.elementsModified || 0);
+            console.log(`Details:`, result);
+            
+            // Log any specific contrast issues found
+            if (result.contrastIssues && result.contrastIssues.length > 0) {
+                console.warn(`⚠️ Contrast issues found:`, result.contrastIssues);
+            }
+            
+            console.groupEnd();
+        }, 500);
 
         // Apply unified responsive scaling for all browsers
         applyUnifiedResponsiveScaling(container, svgElement, isDarkMode);

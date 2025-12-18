@@ -293,8 +293,15 @@ export function preprocessDefinition(definition: string, diagramType?: string, m
   for (const processor of preprocessors) {
     if (processor.diagramTypes.includes('*') || processor.diagramTypes.includes(normalizedType)) {
       try {
+        const before = processedDef.substring(0, 100);
         const result = processor.process(processedDef, normalizedType);
         if (result) {
+          const after = result.substring(0, 100);
+          if (before !== after && (after.includes('graph -->') || after.includes('TB -->'))) {
+            console.error(`🔥 CORRUPTION DETECTED by ${processor.name}!`);
+            console.error('Before:', before);
+            console.error('After:', after);
+          }
           processedDef = result;
         }
       } catch (error) {
@@ -337,6 +344,52 @@ export function handleRenderError(error: Error, context: ErrorContext): boolean 
  */
 export function initMermaidEnhancer(): void {
   // Register default preprocessors
+
+  // CRITICAL: Fix class names with dots - HIGHEST PRIORITY for class diagrams
+  // Mermaid doesn't support dots in class names (e.g., System.Collections.List)
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (diagramType !== 'classdiagram' && !definition.trim().startsWith('classDiagram')) {
+        return definition;
+      }
+
+      console.log('🔍 CLASS-DOT-FIX: Removing dots from class names');
+      
+      let result = definition;
+      
+      // Find all class definitions with dots and convert dots to underscores
+      result = result.replace(
+        /class\s+([\w.]+)(\s*\{)/g, 
+        (match, className, bracket) => {
+          if (className.includes('.')) {
+            const safeName = className.replace(/\./g, '_');
+            console.log(`🔍 CLASS-DOT-FIX: "${className}" -> "${safeName}"`);
+            return `class ${safeName}${bracket}`;
+          }
+          return match;
+        }
+      );
+      
+      // Also fix any references to dotted class names in relationships
+      result = result.replace(
+        /(^|\s)([\w.]+)(\s+(?:--|\.\.>|<\.\.|-->|<--|==|<==|\|>|<\||<\|--|-->\||\*--|o--|\.\.|--|<>|>|<))/gm,
+        (match, prefix, className, relationship) => {
+          if (className.includes('.') && /^[A-Z]/.test(className)) {
+            // Only convert if it looks like a class name (starts with uppercase)
+            const safeName = className.replace(/\./g, '_');
+            return `${prefix}${safeName}${relationship}`;
+          }
+          return match;
+        }
+      );
+      
+      console.log('🔍 CLASS-DOT-FIX: Processing complete');
+      return result;
+    }, {
+    name: 'class-diagram-dot-fix',
+    priority: 700,
+    diagramTypes: ['classdiagram']
+  });
 
   // Add preprocessor for quadrant charts
   registerPreprocessor(
@@ -397,9 +450,33 @@ export function initMermaidEnhancer(): void {
 
       console.log('🔍 NODE-QUOTE-FIX: Processing node labels with quotes and parentheses');
 
-      // Fix node labels that contain quotes and parentheses that cause parsing errors
-      // Pattern: B{My "Brain" (Gemini LLM)} -> B{My Brain - Gemini LLM}
-      let result = definition.replace(/(\w+)(\{|\[)([^}\]]*?)(\}|\])/g, (match, nodeId, openBracket, content, closeBracket) => {
+      let result = definition;
+      
+      // CRITICAL: Don't process Mermaid special shape syntax
+      // These have multi-character delimiters that must be preserved:
+      // [[...]]  = subroutine
+      // ((...))  = double circle
+      // (((...))) = triple circle  
+      // ([...])  = stadium
+      // [(...)   = cylindrical
+      // {{...}}  = diamond/decision
+      
+      // Pre-scan: find all nodes with special syntax and skip them
+      const specialShapePattern = /(\w+)(\[\[|\(\(|\(\(\(|\(\[|\[\(|\{\{)/g;
+      const specialNodes = new Set<string>();
+      let match;
+      while ((match = specialShapePattern.exec(definition)) !== null) {
+        specialNodes.add(match[1]); // Add the node ID
+      }
+      
+      // Process only simple single-delimiter nodes: A[text], B(text), C{text}
+      result = definition.replace(/(\w+)([\{\[\(])([^\}\]\)]*?)([\}\]\)])/g, (match, nodeId, openBracket, content, closeBracket) => {
+        // Skip nodes that use special multi-character delimiters
+        if (specialNodes.has(nodeId)) {
+          console.log(`🔍 NODE-QUOTE-FIX: Skipping special shape node: ${nodeId}`);
+          return match;
+        }
+        
         let processedContent = content;
 
         // Remove quotes and replace with safe alternatives
@@ -1074,8 +1151,9 @@ export function initMermaidEnhancer(): void {
       // Fix inconsistent arrow syntax with labels: "B -- Yes --> C" should be "B -->|Yes| C"
       result = result.replace(/(\w+)\s+--\s+([^-\n]+?)\s+-->\s+(\w+)/g, '$1 -->|$2| $3');
 
-      // Fix pipe syntax - convert A |label| B to A -->|label| B
-      result = result.replace(/(\w+)\s*\|([^|]+)\|\s*(\w+)/g, '$1 -->|$2| $3');
+      // Fix pipe syntax - convert A |label| B to A -->|label| B (ONLY when pipes are adjacent to node IDs)
+      // CRITICAL: Must have no spaces between node ID and pipe to avoid false matches
+      result = result.replace(/(\w+)\|([^|\n]+)\|(\w+)/g, '$1 -->|$2| $3');
 
       // Remove semicolons from flowchart lines (they're not needed in Mermaid)
       result = result.replace(/;(\s*$)/gm, '$1');
@@ -1702,7 +1780,8 @@ export function initMermaidEnhancer(): void {
     });
 
     // Now handle regular shapes (single bracket/paren)
-    finalDef = finalDef.replace(/(\w+)(\[|\()(?!\[)([\s\S]*?)(\]|\))(?!\])/g, (match, nodeId, open, content, close) => {
+    // CRITICAL: Skip double circles ((...)) and triple circles (((...))) with negative lookaheads
+    finalDef = finalDef.replace(/(\w+)(\[|\()(?!\[)(?!\()([\s\S]*?)(\]|\))(?!\])(?!\))/g, (match, nodeId, open, content, close) => {
       // Skip subgraph display names - they should not be modified
       const beforeMatch = finalDef.substring(Math.max(0, finalDef.indexOf(match) - 50), finalDef.indexOf(match));
       if (beforeMatch.includes('subgraph')) {
@@ -2711,20 +2790,37 @@ export function initMermaidEnhancer(): void {
   // Add a specific preprocessor to handle the exact parsing errors we're seeing
   registerPreprocessor((def: string, type: string) => {
     // Fix incomplete flowchart connections that cause "NODE_STRING" errors
-    let processedDef = def;
-
-    // Fix patterns like "F  H    G  I" (incomplete connections)
-    processedDef = processedDef.replace(/^(\s*)(\w+)\s+(\w+)\s+(\w+)\s+(\w+)\s*$/gm, (match, indent, w1, w2, w3, w4) => {
-      // Don't transform subgraph declarations
-      if (w1 === 'subgraph') {
-        return match; // Keep original subgraph line unchanged
+    // SAFE IMPLEMENTATION: Process line-by-line to avoid regex matching across newlines
+    const lines = def.split('\n');
+    const processedLines = lines.map((line, index) => {
+      // Never modify the first line (diagram type declaration)
+      if (index === 0) return line;
+      
+      // Split by whitespace and check if we have exactly 4 words
+      const trimmed = line.trim();
+      const words = trimmed.split(/\s+/).filter(w => w.length > 0);
+      
+      if (words.length !== 4) return line;
+      
+      const [w1, w2, w3, w4] = words;
+      const indent = line.match(/^(\s*)/)?.[1] || '';
+      
+      // Don't transform subgraph declarations or Mermaid keywords
+      const keywords = ['subgraph', 'end', 'direction', 'style', 'class', 'click', 'linkStyle'];
+      if (keywords.includes(w1)) {
+        return line;
       }
-
-      // Only transform lines that look like incomplete node connections
+      
+      // Transform incomplete node connections (4 bare words with no arrows/brackets)
+      // Only if none of the words contain special Mermaid syntax
+      if (words.some(w => /[[\]{}()<>|:;,."'`~!@#$%^&*=+\\/-]/.test(w))) {
+        return line;
+      }
+      
       return `${indent}${w1} --> ${w2}\n    ${w2} --> ${w3}\n    ${w3} --> ${w4}`;
     });
-
-    return processedDef;
+    
+    return processedLines.join('\n');
   }, {
     name: 'incomplete-connection-fix',
     priority: 90,

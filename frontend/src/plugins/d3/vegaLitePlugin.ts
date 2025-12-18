@@ -129,7 +129,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
   render: async (container: HTMLElement, d3: any, spec: VegaLiteSpec, isDarkMode: boolean): Promise<void> => {
     console.log('Vega-Lite plugin render called with spec:', spec);
-    
+
     // Lazy load vega-embed
     const vegaEmbedModule = await import('vega-embed');
     const vegaEmbed = vegaEmbedModule.default;
@@ -415,6 +415,167 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
       console.log('🔧 VEGA-PREPROCESS: Starting comprehensive preprocessing');
 
+      // Fix 0.3: Handle row/column faceting with binning where some facets have very few points
+      // This causes data to disappear (e.g., Category C with only 2 points)
+      // Solution: Auto-convert to overlay layout when sample sizes are too small
+      if ((spec.row || spec.column) && spec.encoding && spec.data?.values) {
+        const xHasBin = spec.encoding.x?.bin === true || (typeof spec.encoding.x?.bin === 'object');
+        const yHasBin = spec.encoding.y?.bin === true || (typeof spec.encoding.y?.bin === 'object');
+        const xHasCountAggregate = spec.encoding.x?.aggregate === 'count';
+        const yHasCountAggregate = spec.encoding.y?.aggregate === 'count';
+
+        const isHistogramPattern = (xHasBin && yHasCountAggregate) || (yHasBin && xHasCountAggregate);
+
+        if (isHistogramPattern) {
+          const facetField = spec.row?.field || spec.column?.field;
+
+          if (facetField) {
+            // Check sample size per facet
+            const facetCounts: Record<string, number> = {};
+            spec.data.values.forEach((d: any) => {
+              const facetValue = d[facetField];
+              facetCounts[facetValue] = (facetCounts[facetValue] || 0) + 1;
+            });
+
+            const minSampleSize = Math.min(...Object.values(facetCounts));
+            const avgSampleSize = Object.values(facetCounts).reduce((a, b) => a + b, 0) / Object.keys(facetCounts).length;
+
+            console.log('🔧 FACET-BIN-FIX: Histogram with faceting detected', {
+              facetField,
+              facetCounts,
+              minSampleSize,
+              avgSampleSize
+            });
+
+            // If any facet has < 3 points, or average is < 5, convert to overlay
+            if (minSampleSize < 3 || avgSampleSize < 5) {
+              console.log('🔧 FACET-BIN-FIX: Small sample sizes detected, converting to overlay layout for better visibility');
+
+              const countAxis = xHasBin ? 'y' : 'x';
+              const binAxis = xHasBin ? 'x' : 'y';
+              const binConfig = spec.encoding[binAxis].bin;
+
+              // Calculate bin extent from full data if not specified
+              let binParams = binConfig;
+              if (binConfig === true || !binConfig.extent) {
+                const binField = spec.encoding[binAxis].field;
+                const values = spec.data.values
+                  .map((d: any) => d[binField])
+                  .filter((v: any) => typeof v === 'number' && !isNaN(v));
+
+                const minVal = Math.min(...values);
+                const maxVal = Math.max(...values);
+                const range = maxVal - minVal;
+                const padding = range * 0.05;
+
+                binParams = {
+                  extent: [minVal - padding, maxVal + padding],
+                  step: Math.max(1, Math.ceil(range / 15))
+                };
+              }
+
+              // Convert to overlay layout
+              const newSpec = {
+                ...spec,
+                row: undefined,
+                column: undefined,
+                mark: {
+                  type: 'bar',
+                  opacity: 0.6
+                },
+                encoding: {
+                  ...spec.encoding,
+                  [binAxis]: {
+                    ...spec.encoding[binAxis],
+                    bin: binParams
+                  },
+                  [countAxis]: {
+                    aggregate: 'count',
+                    type: 'quantitative',
+                    stack: null,
+                    title: 'Count'
+                  },
+                  color: {
+                    field: facetField,
+                    type: 'nominal',
+                    title: facetField.charAt(0).toUpperCase() + facetField.slice(1)
+                  }
+                }
+              };
+
+              console.log('🔧 FACET-BIN-FIX: Converted to overlay layout - all categories will be visible');
+              return preprocessVegaSpec(newSpec);
+            }
+          }
+        }
+      }
+
+      // Fix 0.5: Auto-detect and fix fold transforms missing 'as' parameter  
+      if (spec.transform && spec.transform.some((t: any) => t.fold && !t.as)) {
+        console.log('🔧 VEGA-PREPROCESS: Found fold transform without "as" parameter');
+
+        const foldTransform = spec.transform.find((t: any) => t.fold && !t.as);
+        if (foldTransform && spec.data?.values && Array.isArray(spec.data.values) && spec.data.values.length > 0) {
+          // Get fields available in the original data
+          const originalDataFields = new Set(Object.keys(spec.data.values[0]));
+          console.log('🔧 FOLD-AS-FIX: Original data fields:', Array.from(originalDataFields));
+
+          // Collect all field names referenced in encodings
+          const referencedFields = new Set<string>();
+          if (spec.encoding) {
+            Object.values(spec.encoding).forEach((encoding: any) => {
+              if (encoding?.field) {
+                referencedFields.add(encoding.field);
+              }
+            });
+          }
+
+          // Also check layer encodings
+          if (spec.layer) {
+            spec.layer.forEach((layer: any) => {
+              if (layer.encoding) {
+                Object.values(layer.encoding).forEach((encoding: any) => {
+                  if (encoding?.field) {
+                    referencedFields.add(encoding.field);
+                  }
+                });
+              }
+            });
+          }
+
+          console.log('🔧 FOLD-AS-FIX: Referenced fields in encodings:', Array.from(referencedFields));
+
+          // Find fields that are referenced but don't exist in original data
+          // These are likely the intended output fields from the fold transform
+          const missingFields = Array.from(referencedFields).filter(
+            field => !originalDataFields.has(field)
+          );
+
+          console.log('🔧 FOLD-AS-FIX: Fields referenced but not in data:', missingFields);
+
+          // If we found missing fields, use them as the 'as' parameter
+          if (missingFields.length > 0) {
+            // Fold transform outputs two fields: key field (category name) and value field (numeric value)
+            // Try to identify which is which based on common naming patterns
+            const keyFieldCandidates = missingFields.filter(f =>
+              !f.includes('value') && !f.includes('amount') && !f.includes('count') && !f.includes('score')
+            );
+            const valueFieldCandidates = missingFields.filter(f =>
+              f.includes('value') || f.includes('amount') || f.includes('count') || f.includes('score')
+            );
+
+            const keyField = keyFieldCandidates[0] || missingFields[0] || 'key';
+            const valueField = valueFieldCandidates[0] || missingFields[1] || 'value';
+
+            foldTransform.as = [keyField, valueField];
+            console.log(`🔧 FOLD-AS-FIX: Added 'as' parameter to fold transform: ["${keyField}", "${valueField}"]`);
+          } else {
+            console.log('🔧 FOLD-AS-FIX: No missing fields found in encoding, adding default ["key", "value"]');
+            foldTransform.as = ['key', 'value'];
+          }
+        }
+      }
+
       // Fix 1: Remove problematic shape encodings entirely - this is the most common cause
       if (spec.encoding?.shape) {
         console.log('🔧 VEGA-PREPROCESS: Found shape encoding, analyzing...');
@@ -472,6 +633,64 @@ export const vegaLitePlugin: D3RenderPlugin = {
               if (channelSpec.field === 'dimension' && keyField !== 'dimension') {
                 console.log(`🔧 FOLD-FIX: Fixed fold transform field mismatch: "dimension" -> "${keyField}" in ${channel} encoding`);
                 channelSpec.field = keyField;
+              }
+            }
+          });
+        }
+      }
+
+      // Fix 1.6: Handle encodings that reference non-existent fields after fold transform
+      // This fixes population pyramids and similar charts where encodings use semantic names
+      // (like 'gender', 'signed_population') instead of fold output names ('key', 'value')
+      if (spec.transform && spec.transform.some((t: any) => t.fold && t.as)) {
+        const foldTransform = spec.transform.find((t: any) => t.fold && t.as);
+        if (foldTransform && spec.encoding && spec.data?.values && spec.data.values.length > 0) {
+          const [foldKeyField, foldValueField] = foldTransform.as;
+          console.log(`🔧 FOLD-FIELD-MAP-FIX: Fold transform outputs ["${foldKeyField}", "${foldValueField}"]`);
+
+          // Get fields available in original data (before fold)
+          const originalDataFields = new Set(Object.keys(spec.data.values[0]));
+          console.log('🔧 FOLD-FIELD-MAP-FIX: Original data fields:', Array.from(originalDataFields));
+
+          // Check each encoding channel for non-existent field references
+          Object.keys(spec.encoding).forEach(channel => {
+            const channelSpec = spec.encoding[channel];
+            if (!channelSpec?.field) return;
+
+            const referencedField = channelSpec.field;
+
+            // If the field doesn't exist in original data AND doesn't match fold output names
+            if (!originalDataFields.has(referencedField) && 
+                referencedField !== foldKeyField && 
+                referencedField !== foldValueField) {
+              console.log(`🔧 FOLD-FIELD-MAP-FIX: Channel "${channel}" references non-existent field "${referencedField}"`);
+
+              // Determine if this should map to key or value field
+              // Heuristic: fields that sound like categories/types -> key field
+              //            fields that sound like numeric values -> value field
+              const categoryPatterns = ['gender', 'type', 'category', 'key', 'group', 'series', 'class'];
+              const valuePatterns = ['population', 'value', 'amount', 'count', 'total', 'sum', 'size'];
+
+              const looksLikeCategory = categoryPatterns.some(pattern => 
+                referencedField.toLowerCase().includes(pattern)
+              );
+              const looksLikeValue = valuePatterns.some(pattern => 
+                referencedField.toLowerCase().includes(pattern)
+              );
+
+              if (looksLikeCategory && !looksLikeValue) {
+                // Map to key field
+                console.log(`🔧 FOLD-FIELD-MAP-FIX: Mapping "${referencedField}" -> "${foldKeyField}" (category pattern)`);
+                channelSpec.field = foldKeyField;
+              } else if (looksLikeValue || channel === 'x' || channel === 'y') {
+                // Map to value field (also default for x/y axes)
+                console.log(`🔧 FOLD-FIELD-MAP-FIX: Mapping "${referencedField}" -> "${foldValueField}" (value pattern)`);
+                channelSpec.field = foldValueField;
+              } else {
+                // Default fallback: color/detail -> key, x/y -> value
+                const mappedField = ['color', 'detail', 'row', 'column'].includes(channel) ? foldKeyField : foldValueField;
+                console.log(`🔧 FOLD-FIELD-MAP-FIX: Mapping "${referencedField}" -> "${mappedField}" (channel default)`);
+                channelSpec.field = mappedField;
               }
             }
           });
@@ -580,7 +799,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
                   type: 'ordinal'
                 };
 
-                console.log(`🔧 LEGEND-LABEL-FIX: Switched to meaningful field "${labelField}" with color mapping:`, 
+                console.log(`🔧 LEGEND-LABEL-FIX: Switched to meaningful field "${labelField}" with color mapping:`,
                   uniqueLabels.map((label, i) => `${label} -> ${colorRange[i]}`));
               }
             }
@@ -624,7 +843,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
         // If color field matches an axis field (or is the categorical field in a bar chart), hide the legend
         if (colorField === xField || colorField === yField) {
           console.log(`🔧 LEGEND-REMOVE-FIX: Color field "${colorField}" is redundant with axis, hiding legend`);
-          
+
           if (!encoding.color.legend) {
             encoding.color.legend = null;
           } else if (typeof encoding.color.legend === 'object') {
@@ -886,40 +1105,40 @@ export const vegaLitePlugin: D3RenderPlugin = {
       if (spec.data?.values) {
         addDomainForNominalScales(spec.encoding, spec.data.values);
         fixLiteralColorFields(spec.encoding, spec.data.values);
-      if (spec.data?.values) {
-        addDomainForNominalScales(spec.encoding, spec.data.values);
-        fixLiteralColorFields(spec.encoding, spec.data.values);
-        fixGridLayoutIssues(spec);
-      }
-      if (spec.hconcat) {
-        spec.hconcat.forEach((s: any) => {
-          const dataValues = s.data?.values || spec.data?.values;
-          if (dataValues) {
-            addDomainForNominalScales(s.encoding, dataValues);
-            fixLiteralColorFields(s.encoding, dataValues);
-          }
-        });
-      }
-      if (spec.vconcat) {
-        spec.vconcat.forEach((s: any) => {
-          const dataValues = s.data?.values || spec.data?.values;
-          if (dataValues) {
-            addDomainForNominalScales(s.encoding, dataValues);
-            fixLiteralColorFields(s.encoding, dataValues);
-          }
-        });
-      }
-      if (spec.layer) {
-        spec.layer.forEach((s: any) => {
-          const dataValues = s.data?.values || spec.data?.values;
-          if (dataValues) {
-            addDomainForNominalScales(s.encoding, dataValues);
-            fixLiteralColorFields(s.encoding, dataValues);
-          }
-        });
-      }
+        if (spec.data?.values) {
+          addDomainForNominalScales(spec.encoding, spec.data.values);
+          fixLiteralColorFields(spec.encoding, spec.data.values);
+          fixGridLayoutIssues(spec);
+        }
+        if (spec.hconcat) {
+          spec.hconcat.forEach((s: any) => {
+            const dataValues = s.data?.values || spec.data?.values;
+            if (dataValues) {
+              addDomainForNominalScales(s.encoding, dataValues);
+              fixLiteralColorFields(s.encoding, dataValues);
+            }
+          });
+        }
+        if (spec.vconcat) {
+          spec.vconcat.forEach((s: any) => {
+            const dataValues = s.data?.values || spec.data?.values;
+            if (dataValues) {
+              addDomainForNominalScales(s.encoding, dataValues);
+              fixLiteralColorFields(s.encoding, dataValues);
+            }
+          });
+        }
+        if (spec.layer) {
+          spec.layer.forEach((s: any) => {
+            const dataValues = s.data?.values || spec.data?.values;
+            if (dataValues) {
+              addDomainForNominalScales(s.encoding, dataValues);
+              fixLiteralColorFields(s.encoding, dataValues);
+            }
+          });
+        }
 
-      console.log('🔧 VEGA-PREPROCESS: Preprocessing complete');
+        console.log('🔧 VEGA-PREPROCESS: Preprocessing complete');
         fixGridLayoutIssues(spec);
       }
       if (spec.hconcat) {
@@ -953,6 +1172,33 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // Fix 2: Validate all encoding field references
       if (spec.encoding && spec.data?.values && Array.isArray(spec.data.values) && spec.data.values.length > 0) {
         const availableFields = Object.keys(spec.data.values[0]);
+        
+        // CRITICAL: If there's a fold transform, add the fold output fields to available fields
+        if (spec.transform) {
+          spec.transform.forEach((t: any) => {
+            if (t.fold && t.as) {
+              // Add fields created by fold transform
+              availableFields.push(t.as[0]);
+              availableFields.push(t.as[1]);
+              console.log(`🔧 VEGA-PREPROCESS: Fold transform will create fields: ${t.as[0]}, ${t.as[1]}`);
+            }
+            // Add fields created by calculate transforms
+            if (t.calculate && t.as) {
+              availableFields.push(t.as);
+              console.log(`🔧 VEGA-PREPROCESS: Calculate transform will create field: ${t.as}`);
+            }
+            // Add fields created by window transforms
+            if (t.window && Array.isArray(t.window)) {
+              t.window.forEach((w: any) => {
+                if (w.as) {
+                  availableFields.push(w.as);
+                  console.log(`🔧 VEGA-PREPROCESS: Window transform will create field: ${w.as}`);
+                }
+              });
+            }
+          });
+        }
+        
         console.log('🔧 VEGA-PREPROCESS: Available fields:', availableFields);
 
         Object.keys(spec.encoding).forEach(channel => {
@@ -1512,7 +1758,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       parsedSpec = { ...spec };
       ['type', 'isStreaming', 'forceRender', 'definition', 'isMarkdownBlockClosed'].forEach(prop => delete parsedSpec[prop]);
     }
-    
+
     // Sanitize and apply all chart fixes in one place
     let fixedSpec = sanitizeSpec(parsedSpec);
     fixedSpec = fixRectChartsWithFixedY(fixedSpec);
@@ -1526,7 +1772,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
     fixedSpec = fixBarChartsWithFoldMissingEncodings(fixedSpec);
     fixedSpec = fixLLMGeneratedCharts(fixedSpec);
     fixedSpec = fixTooltipEncodings(fixedSpec);
-    
+
     // Now preprocess the fixed spec
     vegaSpec = preprocessVegaSpec(fixedSpec);
 
@@ -1556,23 +1802,23 @@ export const vegaLitePlugin: D3RenderPlugin = {
       if (vegaSpec.mark && (vegaSpec.mark === 'bar' || vegaSpec.mark.type === 'bar') &&
         vegaSpec.encoding?.xOffset?.field && vegaSpec.encoding?.y?.field &&
         vegaSpec.data?.values && Array.isArray(vegaSpec.data.values) && vegaSpec.data.values.length > 0) {
-        
+
         const metricField = vegaSpec.encoding.xOffset.field;
         const currentYField = vegaSpec.encoding.y.field;
         const firstRow = vegaSpec.data.values[0];
-        
+
         // Find all fields in the data that look like rate fields (end with _rate)
-        const rateFields = Object.keys(firstRow).filter(key => 
+        const rateFields = Object.keys(firstRow).filter(key =>
           key.endsWith('_rate') && typeof firstRow[key] === 'number'
         );
-        
+
         console.log('🔧 XOFFSET-RATE-FIX: Checking bar chart with xOffset:', {
           metricField,
           currentYField,
           rateFields,
           hasMultipleRates: rateFields.length > 1
         });
-        
+
         // Only apply fix if:
         // 1. We have multiple rate fields in the data
         // 2. The y-axis is currently hardcoded to one of them
@@ -1580,28 +1826,28 @@ export const vegaLitePlugin: D3RenderPlugin = {
         if (rateFields.length > 1 && rateFields.includes(currentYField)) {
           // Get unique metric values from the data
           const metricValues = [...new Set(vegaSpec.data.values.map(d => d[metricField]))].filter(v => v !== null && v !== undefined);
-          
+
           // Check if metric values correspond to rate field names
           // e.g., "Hospitalization" -> "hospitalization_rate", "Mortality" -> "mortality_rate"
           const metricToFieldMap: { [key: string]: string } = {};
           metricValues.forEach(metricValue => {
             const metricKey = String(metricValue);
             const normalizedMetric = String(metricValue).toLowerCase().replace(/\s+/g, '_');
-            const matchingField = rateFields.find(field => 
-              field.toLowerCase().startsWith(normalizedMetric) || 
+            const matchingField = rateFields.find(field =>
+              field.toLowerCase().startsWith(normalizedMetric) ||
               normalizedMetric.includes(field.replace('_rate', ''))
             );
             if (matchingField) {
               metricToFieldMap[metricKey] = matchingField;
             }
           });
-          
+
           console.log('🔧 XOFFSET-RATE-FIX: Metric to field mapping:', metricToFieldMap);
-          
+
           // If we found mappings for all metrics, apply the fix
           if (Object.keys(metricToFieldMap).length === metricValues.length && metricValues.length > 1) {
             console.log('🔧 XOFFSET-RATE-FIX: Applying fix - adding calculate transform to select correct rate field');
-            
+
             // Build a conditional expression: datum.metric === 'X' ? datum.x_rate : datum.metric === 'Y' ? datum.y_rate : ...
             const conditions = metricValues.map((metricValue, idx) => {
               const metricKey = String(metricValue);
@@ -1612,17 +1858,17 @@ export const vegaLitePlugin: D3RenderPlugin = {
               }
               return `datum['${metricField}'] === '${metricValue}' ? datum['${field}'] :`;
             }).join(' ');
-            
+
             // Add transform to calculate the correct rate
             if (!vegaSpec.transform) vegaSpec.transform = [];
             vegaSpec.transform.push({
               calculate: conditions,
               as: 'calculated_rate'
             });
-            
+
             // Update y-axis to use the calculated field
             vegaSpec.encoding.y.field = 'calculated_rate';
-            
+
             console.log('🔧 XOFFSET-RATE-FIX: Updated y-axis to use calculated_rate field');
           }
         }
@@ -1799,6 +2045,18 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // Fix layered charts missing legends for hardcoded colors
       if (vegaSpec.layer && Array.isArray(vegaSpec.layer) && vegaSpec.layer.length > 1) {
         console.log('🔧 VEGA-POST-PROCESS: Adding legends for layered chart with hardcoded colors');
+
+        // Check if any layer already has a proper color legend
+        const hasExistingColorLegend = vegaSpec.layer.some(layer =>
+          layer.encoding?.color?.field && 
+          layer.encoding.color.legend !== null &&
+          layer.encoding.color.legend !== false
+        );
+
+        if (hasExistingColorLegend) {
+          console.log('🔧 VEGA-POST-PROCESS: Skipping legend fix - layer already has proper color legend');
+          return vegaSpec;
+        }
 
         const layersWithHardcodedColors = vegaSpec.layer.filter(layer =>
           layer.encoding?.color?.value || layer.mark?.color
@@ -2562,7 +2820,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // Fix bar charts with fold transforms missing y-axis encoding for the 'value' field
       if (vegaSpec.mark && (vegaSpec.mark.type === 'bar' || vegaSpec.mark === 'bar') &&
         vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
-        vegaSpec.encoding && vegaSpec.encoding.x && 
+        vegaSpec.encoding && vegaSpec.encoding.x &&
         (!vegaSpec.encoding.y || !vegaSpec.encoding.y.field) &&
         !vegaSpec.encoding.xOffset) {  // Don't apply if xOffset is used (different pattern)
         console.log('Fixing bar chart with fold transform missing y-axis encoding for value field');
@@ -2597,13 +2855,13 @@ export const vegaLitePlugin: D3RenderPlugin = {
           vegaSpec.encoding.y.field = 'y';
           console.log('Added y field from calculated field: "y"');
         }
-        
+
         // If no fold transform or calculated field, look for a suitable field in the data
         if (!vegaSpec.encoding.y?.field && vegaSpec.data?.values && vegaSpec.data.values.length > 0) {
           const firstRow = vegaSpec.data.values[0];
           const flowField = vegaSpec.transform?.find(t => t.calculate && t.as)?.as;
           const categoricalFields = ['flow', 'source', 'target', 'category', 'group'];
-          
+
           const yField = flowField || categoricalFields.find(field => firstRow.hasOwnProperty(field));
           if (yField) {
             vegaSpec.encoding.y = {
