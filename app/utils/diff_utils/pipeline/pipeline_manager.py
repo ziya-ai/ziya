@@ -17,13 +17,13 @@ from app.utils.logging_utils import logger
 from ..core.exceptions import PatchApplicationError
 from ..parsing.diff_parser import parse_unified_diff_exact_plus, extract_target_file_from_diff, split_combined_diff
 from ..validation.validators import is_new_file_creation, is_hunk_already_applied, normalize_line_for_comparison
-from ..file_ops.file_handlers import create_new_file, cleanup_patch_artifacts
+from ..file_ops.file_handlers import create_new_file, cleanup_patch_artifacts, cleanup_workspace_artifacts
 from ..application.patch_apply import apply_diff_with_difflib, apply_diff_with_difflib_hybrid_forced, apply_diff_with_difflib_hybrid_forced_hunks
 from ..application.git_diff import parse_patch_output
 
 from .diff_pipeline import DiffPipeline, PipelineStage, HunkStatus, PipelineResult
 
-def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str] = None) -> Dict[str, Any]:
+def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str] = None, skip_already_applied_check: bool = False) -> Dict[str, Any]:
     """
     Apply a git diff using a structured pipeline approach.
     
@@ -39,6 +39,7 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
         git_diff: The git diff to apply
         file_path: Path to the target file
         request_id: (Optional) request ID for tracking
+        skip_already_applied_check: If True, skip the "already applied" detection (useful for reverse diffs)
         
     Returns:
         A dictionary with the result of the pipeline
@@ -142,6 +143,7 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
             pipeline.update_hunk_status(1, PipelineStage.SYSTEM_PATCH, HunkStatus.SUCCEEDED)
             
             pipeline.result.changes_written = True
+            pipeline.result.is_new_file = True  # Mark as new file creation (not safely reversible)
             pipeline.complete()
             return pipeline.result.to_dict()
         except Exception as e:
@@ -416,6 +418,9 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
             "error": str(final_result_dict.get('error', ''))
         }
         logger.info(f"Simplified result details: {json.dumps(simplified_details, indent=2)}")
+    
+    # Clean up any .rej files from workspace root
+    cleanup_workspace_artifacts()
         
     return final_result_dict
 

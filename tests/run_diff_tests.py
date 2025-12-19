@@ -13,6 +13,8 @@ import difflib
 import logging
 import time
 from app.utils.code_util import use_git_to_apply_code_diff, PatchApplicationError
+from app.utils.diff_utils.core.diff_reverser import reverse_diff
+from app.utils.diff_utils.pipeline.reverse_pipeline import apply_reverse_diff_pipeline
 
 # Configure logging - will be adjusted based on command line arguments
 logger = logging.getLogger(__name__)
@@ -93,6 +95,61 @@ class DiffRegressionTest(unittest.TestCase):
             
         return metadata, original, diff, expected
         
+    def run_reverse_diff_test(self, case_name):
+        """Run a reverse diff test case - apply diff then reverse it"""
+        metadata, original, diff, expected = self.load_test_case(case_name)
+        
+        # Set up the test file in the temp directory
+        test_file_path = os.path.join(self.temp_dir, metadata['target_file'])
+        os.makedirs(os.path.dirname(test_file_path), exist_ok=True)
+        
+        with open(test_file_path, 'w', encoding='utf-8') as f:
+            f.write(original)
+            
+        # Apply the forward diff
+        try:
+            use_git_to_apply_code_diff(diff, test_file_path)
+        except PatchApplicationError as e:
+            self.fail(f"Forward diff application failed: {str(e)}")
+        
+        # Read the result after forward application
+        with open(test_file_path, 'r', encoding='utf-8') as f:
+            forward_result = f.read()
+        
+        # Apply the reverse diff using the reverse pipeline
+        result = apply_reverse_diff_pipeline(diff, test_file_path, expected_content=original)
+        if result['status'] != 'success':
+            self.fail(f"Reverse diff application failed: {result.get('error', 'Unknown error')}")
+        
+        # Read the result after reverse application
+        with open(test_file_path, 'r', encoding='utf-8') as f:
+            reverse_result = f.read()
+        
+        # Verify we're back to the original
+        if reverse_result != original:
+            # Generate a readable diff if comparison fails
+            diff_lines = list(difflib.unified_diff(
+                original.splitlines(True),
+                reverse_result.splitlines(True),
+                fromfile=f'{case_name}_original',
+                tofile=f'{case_name}_after_reverse'
+            ))
+            diff_output = "".join(diff_lines)
+
+            error_msg = (
+                f"\n" + "="*80 +
+                f"\nREVERSE TEST FAILED: {case_name}\n" +
+                f"Description: {metadata.get('description', 'N/A')}\n" +
+                "-"*80 +
+                f"\nDifference between Original and After Reverse:\n" +
+                "-"*80 + f"\n{diff_output}\n" +
+                "-"*80 +
+                f"\nOriginal Length: {len(original.splitlines())} lines\n" +
+                f"After Reverse Length: {len(reverse_result.splitlines())} lines\n" +
+                "="*80
+            )
+            self.fail(error_msg)
+
     def run_diff_test(self, case_name):
         """Run a single diff test case"""
         metadata, original, diff, expected = self.load_test_case(case_name)
@@ -186,6 +243,13 @@ class DiffRegressionTest(unittest.TestCase):
                 self.fail(f"Test {case_name} was expected to fail but passed. Reason: {metadata.get('failure_reason', 'No reason provided')}")
             # If they are equal, the test passes implicitly 
             
+    def test_all_reverse_cases(self):
+        """Run reverse tests for all test cases found in the test cases directory"""
+        for case_name in os.listdir(self.TEST_CASES_DIR):
+            if os.path.isdir(os.path.join(self.TEST_CASES_DIR, case_name)):
+                with self.subTest(case=case_name):
+                    self.run_reverse_diff_test(case_name)
+
     def test_all_cases(self):
         """Run all test cases found in the test cases directory"""
         for case_name in os.listdir(self.TEST_CASES_DIR):
@@ -1378,6 +1442,8 @@ if __name__ == '__main__':
                       help='Save test results for future comparison')
     parser.add_argument('--double-apply', action='store_true',
                       help='Apply each diff twice to verify idempotency (second apply should be no-op)')
+    parser.add_argument('--reverse', action='store_true',
+                      help='Run reverse patch tests - apply diff then reverse it to verify we get back to original')
     
     def load_filtered_suite(test_filter):
         """Load test suite with support for 'or' syntax in filters"""
@@ -1423,6 +1489,197 @@ if __name__ == '__main__':
     if args.show_cases:
         print_test_case_details(args.test_filter)
         sys.exit(0)
+
+    # If --reverse is specified, run both forward and reverse tests with comparison
+    if args.reverse:
+        print("\n" + "=" * 80)
+        print("Running forward and reverse patch tests...")
+        print("=" * 80)
+        
+        # Clear any existing ZIYA_FORCE_DIFFLIB setting
+        if 'ZIYA_FORCE_DIFFLIB' in os.environ:
+            del os.environ['ZIYA_FORCE_DIFFLIB']
+        
+        # Ensure double_apply is False for reverse mode
+        DiffRegressionTest.double_apply = False
+        
+        # Get list of test cases to run
+        test_cases_to_run = []
+        if args.test_filter:
+            # Parse filter patterns
+            if ' or ' in args.test_filter.lower():
+                import re
+                patterns = [p.strip() for p in re.split(r'\s+or\s+', args.test_filter, flags=re.IGNORECASE)]
+                for pattern in patterns:
+                    # Find matching test cases
+                    for case_name in os.listdir(DiffRegressionTest.TEST_CASES_DIR):
+                        if os.path.isdir(os.path.join(DiffRegressionTest.TEST_CASES_DIR, case_name)):
+                            if pattern.lower() in case_name.lower():
+                                test_cases_to_run.append(case_name)
+            else:
+                # Single pattern
+                for case_name in os.listdir(DiffRegressionTest.TEST_CASES_DIR):
+                    if os.path.isdir(os.path.join(DiffRegressionTest.TEST_CASES_DIR, case_name)):
+                        if args.test_filter.lower() in case_name.lower():
+                            test_cases_to_run.append(case_name)
+        else:
+            # All test cases
+            test_cases_to_run = [d for d in os.listdir(DiffRegressionTest.TEST_CASES_DIR)
+                                if os.path.isdir(os.path.join(DiffRegressionTest.TEST_CASES_DIR, d))]
+        
+        test_cases_to_run = sorted(set(test_cases_to_run))
+        
+        # Run forward and reverse tests for each case
+        forward_results = {}
+        reverse_results = {}
+        
+        for case_name in test_cases_to_run:
+            # Run forward test using the specific test method if it exists
+            test = DiffRegressionTest()
+            test.setUp()
+            try:
+                # Check if there's a specific test method for this case
+                test_method_name = f'test_{case_name}'
+                if hasattr(test, test_method_name):
+                    test_method = getattr(test, test_method_name)
+                    # Check if the test method has expectedFailure decorator
+                    is_expected_failure = getattr(test_method, '__unittest_expecting_failure__', False)
+                    try:
+                        test_method()
+                        # If we get here and it was expected to fail, that's actually a failure
+                        if is_expected_failure:
+                            forward_results[case_name] = 'PASS'  # Unexpected pass is still a pass for our purposes
+                        else:
+                            forward_results[case_name] = 'PASS'
+                    except Exception as e:
+                        if is_expected_failure:
+                            # Expected failure - count as pass
+                            forward_results[case_name] = 'PASS'
+                        else:
+                            forward_results[case_name] = 'FAIL'
+                            if not args.quiet:
+                                print(f"Forward test {case_name} failed: {str(e)}")
+                else:
+                    # Fall back to run_diff_test
+                    test.run_diff_test(case_name)
+                    forward_results[case_name] = 'PASS'
+            except Exception as e:
+                forward_results[case_name] = 'FAIL'
+                if not args.quiet:
+                    print(f"Forward test {case_name} failed: {str(e)}")
+            finally:
+                test.tearDown()
+            
+            # Run reverse test
+            test = DiffRegressionTest()
+            test.setUp()
+            try:
+                test.run_reverse_diff_test(case_name)
+                reverse_results[case_name] = 'PASS'
+            except Exception as e:
+                reverse_results[case_name] = 'FAIL'
+                if not args.quiet:
+                    print(f"Reverse test {case_name} failed: {str(e)}")
+            finally:
+                test.tearDown()
+        
+        # Print comparison table
+        print("\n" + "=" * 80)
+        print("Forward vs Reverse Test Results")
+        print("=" * 80)
+        
+        # Define column widths
+        test_name_width = 40
+        mode_width = 20
+        total_tests = len(test_cases_to_run)
+        
+        # ANSI color codes
+        GREEN = "\033[92m"
+        RED = "\033[91m"
+        ORANGE = "\033[93m"
+        RESET = "\033[0m"
+        
+        # Helper function to calculate visible width
+        def visible_len(s):
+            s = s.replace(GREEN, "").replace(RED, "").replace(ORANGE, "").replace(RESET, "")
+            return len(s)
+        
+        # Helper function to center text with ANSI codes
+        def ansi_center(text, width):
+            visible_text_len = visible_len(text)
+            padding = width - visible_text_len
+            left_padding = padding // 2
+            right_padding = padding - left_padding
+            return " " * left_padding + text + " " * right_padding
+        
+        # Print table header
+        print("+" + "-" * test_name_width + "+" + "-" * mode_width + "+" + "-" * mode_width + "+")
+        print("| {:<38} | {:^18} | {:^18} |".format("Test Name", "Forward", "Reverse"))
+        print("+" + "-" * test_name_width + "+" + "-" * mode_width + "+" + "-" * mode_width + "+")
+        
+        # Count passes
+        forward_pass_count = 0
+        reverse_pass_count = 0
+        
+        for test_name in test_cases_to_run:
+            forward_status = forward_results.get(test_name, 'N/A')
+            reverse_status = reverse_results.get(test_name, 'N/A')
+            
+            # Determine test name color
+            if forward_status == 'PASS' and reverse_status == 'PASS':
+                test_name_color = GREEN
+            elif forward_status != 'PASS' and reverse_status != 'PASS':
+                test_name_color = RED
+            else:
+                test_name_color = ORANGE
+            
+            colored_test_name = f"{test_name_color}{test_name}{RESET}"
+            
+            if forward_status == 'PASS':
+                forward_pass_count += 1
+                forward_display = f"{GREEN}PASS{RESET}"
+            else:
+                forward_display = f"{RED}FAIL{RESET}"
+            
+            if reverse_status == 'PASS':
+                reverse_pass_count += 1
+                reverse_display = f"{GREEN}PASS{RESET}"
+            else:
+                reverse_display = f"{RED}FAIL{RESET}"
+            
+            # Format with fixed width
+            forward_centered = ansi_center(forward_display, mode_width-2)
+            reverse_centered = ansi_center(reverse_display, mode_width-2)
+            
+            # Calculate padding for test name
+            test_name_padding = test_name_width - visible_len(colored_test_name) - 2
+            
+            print("| {} | {} | {} |".format(
+                colored_test_name + " " * test_name_padding,
+                forward_centered,
+                reverse_centered
+            ))
+        
+        # Print summary
+        print("+" + "-" * test_name_width + "+" + "-" * mode_width + "+" + "-" * mode_width + "+")
+        
+        forward_summary = f"{GREEN}{forward_pass_count}{RESET}/{total_tests} passed"
+        reverse_summary = f"{GREEN}{reverse_pass_count}{RESET}/{total_tests} passed"
+        
+        forward_summary_centered = ansi_center(forward_summary, mode_width-2)
+        reverse_summary_centered = ansi_center(reverse_summary, mode_width-2)
+        
+        print("| {:<38} | {} | {} |".format(
+            "TOTAL",
+            forward_summary_centered,
+            reverse_summary_centered
+        ))
+        
+        print("+" + "-" * test_name_width + "+" + "-" * mode_width + "+" + "-" * mode_width + "+")
+        print("=" * 80)
+        
+        # Exit with appropriate status code
+        sys.exit(1 if (forward_pass_count < total_tests or reverse_pass_count < total_tests) else 0)
 
     if args.multi:
         # Run tests in both modes and show comparison table
