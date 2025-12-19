@@ -2484,8 +2484,10 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                     // This allows the parent container to center it properly
                     const bounds = graph.getGraphBounds();
                     const padding = 40; // Match the fit() padding (20px * 2 for both sides)
+                    const zoomControlsHeight = 60; // 32px controls + 16px bottom margin + 12px spacing
+                    
                     const neededWidth = Math.ceil(bounds.width + padding);
-                    const neededHeight = Math.ceil(bounds.height + padding);
+                    const neededHeight = Math.ceil(bounds.height + padding + zoomControlsHeight);
                     
                     graphContainer.style.width = `${neededWidth}px`;
                     graphContainer.style.height = `${neededHeight}px`;

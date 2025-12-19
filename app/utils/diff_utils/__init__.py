@@ -20,7 +20,7 @@ from .application import apply_diff_with_difflib, apply_diff_with_difflib_hybrid
 from .application import use_git_to_apply_code_diff
 
 # File operation utilities
-from .file_ops import create_new_file, cleanup_patch_artifacts
+from .file_ops import create_new_file, cleanup_patch_artifacts, cleanup_workspace_artifacts
 
 # Pipeline utilities
 from .pipeline import apply_diff_pipeline, DiffPipeline, PipelineStage, HunkStatus, PipelineResult

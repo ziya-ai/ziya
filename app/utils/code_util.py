@@ -55,16 +55,18 @@ def use_git_to_apply_code_diff_legacy(git_diff: str, file_path: str) -> None:
     return original_func(git_diff, file_path)
 
 # Replace the original function with the pipeline-based version
-def use_git_to_apply_code_diff(git_diff: str, file_path: str, request_id: Optional[str] = None):
+def use_git_to_apply_code_diff(git_diff: str, file_path: str, request_id: Optional[str] = None, skip_already_applied_check: bool = False):
     """
     Apply a git diff to a file using the refactored diff_utils package.
     
     Args:
         git_diff: The git diff to apply
         file_path: Path to the file to modify
+        request_id: Optional request ID for tracking
+        skip_already_applied_check: If True, skip the "already applied" detection (useful for reverse diffs)
         
     Returns:
         A dictionary with the result of the operation
     """
     # For all cases, use the pipeline implementation
-    return apply_diff_pipeline(git_diff, file_path)
+    return apply_diff_pipeline(git_diff, file_path, skip_already_applied_check=skip_already_applied_check)

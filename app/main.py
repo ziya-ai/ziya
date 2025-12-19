@@ -336,19 +336,12 @@ def update_package(current_version: str, latest_version: Optional[str]) -> None:
 
 
 def print_version():
+    """Print version information quickly."""
+    import os
     current_version = get_current_version()
     
-    # Get branding from active config provider
-    edition = "Community Edition"
-    try:
-        from app.plugins import get_active_config_providers
-        for provider in get_active_config_providers():
-            config = provider.get_defaults()
-            if 'branding' in config:
-                edition = config['branding'].get('edition', edition)
-                break
-    except:
-        pass
+    # Fast edition detection - use edition set by wrapper or default to community
+    edition = os.environ.get('ZIYA_EDITION', 'Community Edition')
     
     print(f"Ziya version {current_version} - {edition}")
 
@@ -716,15 +709,15 @@ def check_auth(args):
 
 
 def main():
+    # Check for version flag FIRST to avoid any initialization
+    if "--version" in sys.argv:
+        print_version()
+        return
+    
     # Initialize plugin system FIRST (before any auth checks)
     from app.plugins import initialize as initialize_plugins
     initialize_plugins()
     logger.info("Plugin system initialized")
-    
-    # Check for version flag first to avoid unnecessary imports
-    if "--version" in sys.argv:
-        print_version()
-        return
     
     # Check for list-models flag to avoid unnecessary imports
     if "--list-models" in sys.argv:

@@ -113,13 +113,35 @@ def cleanup_patch_artifacts(base_dir: str, file_path: str) -> None:
         # Get the directory containing the file
         file_dir = os.path.dirname(os.path.join(base_dir, file_path))
 
-        # Find and remove .rej and .orig files
+        # Find and remove .rej and .orig files in target directory
         for pattern in ['*.rej', '*.orig']:
             for artifact in glob.glob(os.path.join(file_dir, pattern)):
                 logger.info(f"Removing patch artifact: {artifact}")
                 os.remove(artifact)
+        
+        # Also clean up .rej files from current working directory
+        # (patch command may create them there if run from wrong directory)
+        cwd = os.getcwd()
+        for pattern in ['*.rej', 'Oops.rej']:
+            for artifact in glob.glob(os.path.join(cwd, pattern)):
+                logger.info(f"Removing patch artifact from cwd: {artifact}")
+                os.remove(artifact)
+                
     except Exception as e:
         logger.warning(f"Error cleaning up patch artifacts: {str(e)}")
+
+def cleanup_workspace_artifacts() -> None:
+    """
+    Clean up .rej files from current working directory that may be left by patch commands.
+    """
+    try:
+        cwd = os.getcwd()
+        for pattern in ['*.rej', 'Oops.rej']:
+            for artifact in glob.glob(os.path.join(cwd, pattern)):
+                logger.info(f"Removing workspace patch artifact: {artifact}")
+                os.remove(artifact)
+    except Exception as e:
+        logger.warning(f"Error cleaning up workspace artifacts: {str(e)}")
 
 def remove_reject_file_if_exists(file_path: str):
     """
