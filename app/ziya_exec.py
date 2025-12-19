@@ -44,20 +44,15 @@ def ziya():
     
     # Check for version flag first
     if "--version" in sys.argv:
-        # Initialize plugins to get branding
+        # Fast version check without plugin initialization
+        import os
         try:
-            from .plugins import initialize
-            initialize()
+            from .utils.version_util import get_current_version
         except ImportError:
-            from app.plugins import initialize
-            initialize()
-        
-        # Now print version with branding
-        try:
-            from .main import print_version
-        except ImportError:
-            from app.main import print_version
-        print_version()
+            from app.utils.version_util import get_current_version
+        version = get_current_version()
+        edition = os.environ.get('ZIYA_EDITION', 'Community Edition')
+        print(f"Ziya version {version} - {edition}")
         return
         
     # Only import main when needed

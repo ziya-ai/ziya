@@ -78,6 +78,7 @@ class PipelineResult:
     status: str = "pending"  # Add a status field to track the overall status
     request_id: Optional[str] = None  # Store the request ID for tracking
     _parsed_hunks_cache: Optional[List[Dict[str, Any]]] = field(default=None, init=False, repr=False)  # Cache for parsed hunks
+    is_new_file: bool = False  # Track if this was a new file creation
 
     # Removed redundant methods and properties to avoid confusion
     # We'll use the existing succeeded_hunks, failed_hunks, etc. properties consistently
@@ -176,6 +177,44 @@ class PipelineResult:
         """Check if the pipeline partially succeeded (some hunks applied)."""
         # Use the centralized logic
         return self.determine_final_status() == "partial"
+
+    def is_safely_reversible(self) -> bool:
+        """
+        Determine if this diff application can be safely reversed.
+        
+        Returns True if:
+        - All hunks succeeded via patch or git_apply stages (clean apply)
+        - No fuzzy matching was used
+        - Not a new file creation
+        - No already_applied hunks (indicates potential state mismatch)
+        
+        Returns False if:
+        - Any hunk used difflib stage (fuzzy matching)
+        - New file was created (reverse = deletion, risky)
+        - Any hunks were already applied
+        - Any hunks failed
+        """
+        # Not reversible if it was a new file creation
+        if self.is_new_file:
+            return False
+        
+        # Not reversible if any hunks failed
+        if self.failed_hunks:
+            return False
+        
+        # Not reversible if any hunks were already applied (state uncertainty)
+        if self.already_applied_hunks:
+            return False
+        
+        # Check each hunk's stage - only system_patch and git_apply are safely reversible
+        safe_stages = {PipelineStage.SYSTEM_PATCH, PipelineStage.GIT_APPLY}
+        for hunk_id, tracker in self.hunks.items():
+            if tracker.status == HunkStatus.SUCCEEDED:
+                if tracker.current_stage not in safe_stages:
+                    return False
+        
+        return True
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert the pipeline result to a dictionary for API response details."""
         # Clean up error details for already applied hunks
@@ -217,6 +256,9 @@ class PipelineResult:
         # Generate a user-friendly message
         final_message = self.get_summary_message()
         
+        # Determine if this diff can be safely reversed
+        reversible = self.is_safely_reversible()
+        
         # Use the actual lists, not property methods
         return {
             "status": final_status,
@@ -226,6 +268,7 @@ class PipelineResult:
             "failed": self.failed_hunks,
             "already_applied": already_applied_hunks, # Use the locally corrected list
             "changes_written": self.changes_written,
+            "reversible": reversible,  # Whether this diff can be safely un-applied
             "request_id": self.request_id,  # Include the request ID in the response
             "error": self.error,
             "hunk_statuses": hunk_details,
