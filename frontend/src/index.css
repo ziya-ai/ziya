@@ -13,6 +13,12 @@ body {
   width: 100%;
 }
 
+/* Allow scrolling for info/debug pages */
+body.allow-scroll {
+  overflow: auto;
+  position: static;
+}
+
 /* Ensure streaming content remains visible */
 .streaming .diff-container,
 .streaming pre,
@@ -128,6 +134,25 @@ div.diff-view.smaller-diff-view.diff-view-split > table.diff-table > tbody > tr 
 body.dark {
   background-color: #141414;
   color: #ffffff;
+}
+
+/* Dark mode link styling for readability */
+body.dark a {
+  color: #58a6ff;
+  text-decoration: none;
+}
+
+body.dark a:hover {
+  color: #79c0ff;
+  text-decoration: underline;
+}
+
+body.dark a:visited {
+  color: #a78bfa;
+}
+
+body.dark a:active {
+  color: #9ecbff;
 }
 
 /* Container Layout */
