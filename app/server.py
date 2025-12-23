@@ -78,6 +78,7 @@ from app.utils.error_handlers import (
     handle_streaming_error
 )
 from app.utils.diff_utils import apply_diff_pipeline
+from app.utils.diff_utils.pipeline.reverse_pipeline import apply_reverse_diff_pipeline
 from app.utils.custom_exceptions import ThrottlingException, ExpiredTokenException
 from app.utils.custom_exceptions import ValidationError
 from app.utils.file_utils import read_file_content
@@ -95,6 +96,9 @@ from fastapi.websockets import WebSocket, WebSocketDisconnect
  
 # Track active WebSocket connections for feedback
 active_feedback_connections = {}
+
+# Track active WebSocket connections for file tree updates
+active_file_tree_connections = set()
 
 def build_messages_for_streaming(question: str, chat_history: List, files: List, conversation_id: str, use_langchain_format: bool = False) -> List:
     """
@@ -319,7 +323,34 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"MCP shutdown failed: {str(e)}")
 
-# Create the FastAPI app
+
+async def broadcast_file_tree_update(event_type: str, rel_path: str, token_count: int = 0):
+    """Broadcast file tree updates to all connected clients."""
+    if not active_file_tree_connections:
+        return
+    
+    message = {
+        'type': event_type,  # 'file_added', 'file_modified', 'file_deleted'
+        'path': rel_path,
+        'token_count': token_count,
+        'timestamp': int(time.time() * 1000)
+    }
+    
+    # Send to all connected clients
+    disconnected = set()
+    for ws in active_file_tree_connections:
+        try:
+            await ws.send_json(message)
+        except Exception as e:
+            logger.debug(f"Failed to send to client: {e}")
+            disconnected.add(ws)
+    
+    # Clean up disconnected clients
+    for ws in disconnected:
+        active_file_tree_connections.discard(ws)
+    
+    logger.debug(f"📢 Broadcast {event_type} for {rel_path} to {len(active_file_tree_connections)} client(s)")
+
 app = FastAPI(
     title="Ziya API",
     description="API for Ziya, a code assistant powered by LLMs",
@@ -367,7 +398,39 @@ async def feedback_websocket(websocket: WebSocket, conversation_id: str):
         if conversation_id in active_feedback_connections:
             del active_feedback_connections[conversation_id]
 
+# Create the FastAPI app
+@app.websocket("/ws/file-tree")
+async def file_tree_websocket(websocket: WebSocket):
+    """WebSocket endpoint for real-time file tree update notifications."""
+    logger.info("🔄 FILE_TREE: WebSocket connection attempt")
+    await websocket.accept()
+    logger.info("🔄 FILE_TREE: WebSocket connected")
+    
+    # Register this connection
+    active_file_tree_connections.add(websocket)
+    
+    try:
+        # Send initial connection confirmation
+        await websocket.send_json({
+            'type': 'connected',
+            'message': 'File tree watcher connected'
+        })
+        
+        # Keep connection alive - just listen for pings/close
+        while True:
+            try:
+                # Wait for any message (pings, etc.)
+                await websocket.receive_text()
+            except WebSocketDisconnect:
+                logger.info("🔄 FILE_TREE: WebSocket disconnected")
+                break
+    finally:
+        # Clean up connection
+        if websocket in active_file_tree_connections:
+            active_file_tree_connections.remove(websocket)
+            logger.info(f"🔄 FILE_TREE: Connection removed, {len(active_file_tree_connections)} remaining")
 # PRIORITY ROUTE: /api/chat - MUST BE FIRST TO TAKE PRECEDENCE
+
 @app.post('/api/chat')
 async def chat_endpoint(request: Request):
     """Handle chat requests from the frontend with model-specific routing."""
@@ -2903,11 +2966,29 @@ async def root(request: Request):
 
 @app.get("/info")
 async def info_page(request: Request):
-    """Render a human-readable system information page."""
+    """Render the info page as part of the React app."""
+    try:
+        # Get formatter scripts from plugins
+        formatter_scripts = []
+        from app.plugins import get_active_config_providers
+        for provider in get_active_config_providers():
+            config = provider.get_defaults()
+            if 'frontend' in config and 'formatters' in config['frontend']:
+                formatter_scripts.extend(config['frontend']['formatters'])
+        
+        context = {"request": request, "formatter_scripts": formatter_scripts, "info_page": True}
+        return templates.TemplateResponse("index.html", context)
+    except Exception as e:
+        logger.error(f"Error rendering info page: {str(e)}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.get("/debug2")
+async def debug_page_old(request: Request):
+    """Legacy route - renders full HTML info page."""
     try:
         import platform
         import sys
-        from app.utils.version_util import get_current_version
+        from app.utils.version_util import get_current_version, get_build_info
         
         # Get all the system information
         edition = "Community Edition"
@@ -2931,8 +3012,9 @@ async def info_page(request: Request):
             '    <title>Ziya System Information</title>',
             '    <meta charset="UTF-8">',
             '    <meta name="viewport" content="width=device-width, initial-scale=1.0">',
-            '    <style>',
+            '            <style>',
             '        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; line-height: 1.6; }',
+            '        body { overflow: auto !important; position: static !important; height: auto !important; }',
             '        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }',
             '        h1 { color: #333; border-bottom: 3px solid #4a90e2; padding-bottom: 10px; margin-top: 0; }',
             '        h2 { color: #4a90e2; margin-top: 30px; border-bottom: 2px solid #e0e0e0; padding-bottom: 8px; }',
@@ -3174,9 +3256,19 @@ async def info_page(request: Request):
                     '            </ul>',
                     '        </div>',
                 ])
+                
+                # Formatter Providers (populated by JavaScript)
+                html_parts.extend([
+                    '        <div class="info-card">',
+                    '            <h3>Formatter Providers <span id="formatter-count" style="opacity: 0.7;"></span></h3>',
+                    '            <ul class="plugin-list" id="formatter-list">',
+                    '                <li style="opacity: 0.6;">Loading...</li>',
+                    '            </ul>',
+                    '        </div>',
+                ])
         except Exception as e:
-            html_parts.append(f'        <div class="info-card"><span class="status-badge status-error">Error loading plugins: {str(e)}</span></div>')
-        
+            logger.warning(f"Could not get plugin info: {e}")
+            info['plugins']['error'] = str(e)
         # Environment Variables
         ziya_vars = {k: v for k, v in os.environ.items() if k.startswith('ZIYA_')}
         html_parts.extend([
@@ -3193,6 +3285,35 @@ async def info_page(request: Request):
         
         html_parts.extend([
             '        </div>',
+            '    <script>',
+            '        // Populate formatter info from frontend registry',
+            '        window.addEventListener("load", function() {',
+            '            setTimeout(function() {',
+            '                if (window.FormatterRegistry) {',
+            '                    const formatters = window.FormatterRegistry.getAllFormatters();',
+            '                    const countSpan = document.getElementById("formatter-count");',
+            '                    const listEl = document.getElementById("formatter-list");',
+            '                    ',
+            '                    if (countSpan) countSpan.textContent = "(" + formatters.length + ")";',
+            '                    ',
+            '                    if (listEl) {',
+            '                        listEl.innerHTML = "";',
+            '                        formatters.forEach(function(f) {',
+            '                            var li = document.createElement("li");',
+            '                            li.className = "plugin-item";',
+            '                            li.innerHTML = f.formatterId + " <span style=\\"opacity: 0.7; font-size: 11px;\\">(priority: " + f.priority + ")</span>";',
+            '                            listEl.appendChild(li);',
+            '                        });',
+            '                        if (formatters.length === 0) {',
+            '                            listEl.innerHTML = "<li style=\\"opacity: 0.6;\\">No formatters registered</li>";',
+            '                        }',
+            '                    }',
+            '                } else {',
+            '                    document.getElementById("formatter-list").innerHTML = "<li style=\\"opacity: 0.6; color: #ff4d4f;\\">FormatterRegistry not available</li>";',
+            '                }',
+            '            }, 100);',
+            '        });',
+            '    </script>',
             '    </div>',
             '</body>',
             '</html>',
@@ -3205,31 +3326,8 @@ async def info_page(request: Request):
         logger.error(f"Error rendering info page: {str(e)}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-@app.get("/debug")
-async def debug(request: Request):
-    # Return the same app but with a query parameter to show debug mode
-    """Render the info page showing system configuration and debugging information."""
-    try:
-        # Get formatter scripts from plugins
-        formatter_scripts = []
-        from app.plugins import get_active_config_providers
-        for provider in get_active_config_providers():
-            config = provider.get_defaults()
-            if 'frontend' in config and 'formatters' in config['frontend']:
-                formatter_scripts.extend(config['frontend']['formatters'])
-        
-        context = {"request": request, "formatter_scripts": formatter_scripts, "info_page": True}
-        return templates.TemplateResponse("index.html", context)
-    except Exception as e:
-        logger.error(f"Error rendering info page: {str(e)}")
-        return JSONResponse(status_code=500, content={"error": str(e)})
+@app.get("/debug1")
 
-@app.get("/info")
-async def info_redirect(request: Request):
-    """Redirect /info to /api/info for convenience."""
-    return await get_system_info(request)
-
-@app.get("/debug")
 async def debug(request: Request):
     # Return the same app but with a query parameter to show debug mode
     return templates.TemplateResponse("index.html", {
@@ -3273,6 +3371,129 @@ def invalidate_folder_cache():
     _folder_cache['timestamp'] = 0
     _last_cache_invalidation = current_time
 
+
+    _folder_cache['timestamp'] = 0
+    _last_cache_invalidation = current_time
+
+def add_file_to_folder_cache(rel_path: str) -> bool:
+    """
+    Add a newly created file to the folder cache without full rescan.
+    
+    Args:
+        rel_path: Relative path from user_codebase_dir
+        
+    Returns:
+        True if successfully added, False otherwise
+    """
+    global _folder_cache, _cache_lock
+    
+    # Skip if no cache exists yet
+    if _folder_cache['data'] is None:
+        return False
+    
+    try:
+        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        full_path = os.path.join(user_codebase_dir, rel_path)
+        
+        # Calculate token count for new file
+        from app.utils.directory_util import estimate_tokens_fast
+        token_count = estimate_tokens_fast(full_path)
+        
+        # Navigate to correct position in cache structure
+        path_parts = rel_path.split(os.sep)
+        
+        with _cache_lock:
+            current_level = _folder_cache['data']
+            
+            # Navigate/create parent directories
+            for part in path_parts[:-1]:
+                if part not in current_level:
+                    current_level[part] = {'children': {}, 'token_count': 0}
+                current_level = current_level[part].get('children', {})
+            
+            # Add the file
+            filename = path_parts[-1]
+            current_level[filename] = {'token_count': token_count}
+            
+            logger.info(f"✅ Added file to cache: {rel_path} ({token_count} tokens)")
+            
+            # Notify all connected clients
+            asyncio.create_task(broadcast_file_tree_update('file_added', rel_path, token_count))
+            return True
+            
+    except Exception as e:
+        logger.error(f"Failed to add file to cache: {rel_path}, error: {e}")
+        return False
+
+def update_file_in_folder_cache(rel_path: str) -> bool:
+    """Update token count for modified file in cache."""
+    global _folder_cache, _cache_lock
+    
+    if _folder_cache['data'] is None:
+        return False
+    
+    try:
+        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        full_path = os.path.join(user_codebase_dir, rel_path)
+        
+        from app.utils.directory_util import estimate_tokens_fast
+        token_count = estimate_tokens_fast(full_path)
+        
+        path_parts = rel_path.split(os.sep)
+        
+        with _cache_lock:
+            current_level = _folder_cache['data']
+            
+            # Navigate to file location
+            for part in path_parts[:-1]:
+                if part not in current_level:
+                    return False  # Path doesn't exist in cache
+                current_level = current_level[part].get('children', {})
+            
+            filename = path_parts[-1]
+            if filename in current_level:
+                current_level[filename]['token_count'] = token_count
+                logger.debug(f"✅ Updated file in cache: {rel_path} ({token_count} tokens)")
+                
+                # Notify all connected clients
+                asyncio.create_task(broadcast_file_tree_update('file_modified', rel_path, token_count))
+                return True
+    except Exception as e:
+        logger.error(f"Failed to update file in cache: {rel_path}, error: {e}")
+    
+    return False
+
+def remove_file_from_folder_cache(rel_path: str) -> bool:
+    """Remove deleted file from cache."""
+    global _folder_cache, _cache_lock
+    
+    if _folder_cache['data'] is None:
+        return False
+    
+    try:
+        path_parts = rel_path.split(os.sep)
+        
+        with _cache_lock:
+            current_level = _folder_cache['data']
+            
+            # Navigate to parent directory
+            for part in path_parts[:-1]:
+                if part not in current_level:
+                    return False
+                current_level = current_level[part].get('children', {})
+            
+            filename = path_parts[-1]
+            if filename in current_level:
+                del current_level[filename]
+                logger.info(f"✅ Removed file from cache: {rel_path}")
+                
+                # Notify all connected clients
+                asyncio.create_task(broadcast_file_tree_update('file_deleted', rel_path, 0))
+                return True
+    except Exception as e:
+        logger.error(f"Failed to remove file from cache: {rel_path}, error: {e}")
+    
+    return False
 
 
 
@@ -3939,7 +4160,8 @@ async def get_folders_with_accurate_tokens():
 @app.get('/api/config')
 def get_config():
     """Get application configuration for frontend."""
-    return {
+    # Base config from environment
+    config = {
         'theme': os.environ.get('ZIYA_THEME', 'light'),
         'defaultModel': os.environ.get('ZIYA_MODEL'),
         'endpoint': os.environ.get('ZIYA_ENDPOINT', 'bedrock'),
@@ -3948,6 +4170,23 @@ def get_config():
         'version': os.environ.get('ZIYA_VERSION', 'development'),
         'ephemeralMode': os.environ.get('ZIYA_EPHEMERAL_MODE', 'false').lower() in ('true', '1', 'yes'),
     }
+    
+    # Merge frontend config from active config providers
+    try:
+        from app.plugins import get_all_config_providers
+        for provider in get_all_config_providers():
+            logger.info(f"Checking provider: {provider.provider_id}")
+            if hasattr(provider, 'get_defaults'):
+                defaults = provider.get_defaults()
+                logger.info(f"Provider {provider.provider_id} defaults keys: {defaults.keys()}")
+                if 'frontend' in defaults:
+                    logger.info(f"Found frontend config in {provider.provider_id}: {defaults['frontend']}")
+                    config['frontend'] = defaults['frontend']
+    except Exception as e:
+        logger.warning(f"Error loading frontend config from providers: {e}")
+        logger.exception(e)
+    
+    return config
 
 @app.get('/api/current-model')
 def get_current_model():
@@ -4135,10 +4374,22 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
     return {"_scanning": True, "children": {}}
 
 @app.get('/api/folders')
-async def api_get_folders():
-    """Get the folder structure for API compatibility with improved error handling."""
+async def api_get_folders(refresh: bool = False):
+    """Get folder structure for API compatibility with improved error handling."""
     
     # Add cache headers to help frontend avoid unnecessary requests
+    if refresh:
+        # If refresh requested, invalidate caches BEFORE any processing
+        logger.info("🔄 Refresh requested - invalidating caches")
+        invalidate_folder_cache()
+        
+        # Also invalidate the gitignore patterns cache to pick up new files
+        import app.utils.directory_util as dir_util
+        dir_util._ignored_patterns_cache = None
+        dir_util._ignored_patterns_cache_dir = None
+        dir_util._ignored_patterns_cache_time = 0
+        logger.info("🔄 Invalidated gitignore patterns cache")
+    
     from fastapi import Response
     response = Response()
     response.headers["Cache-Control"] = "public, max-age=30"
@@ -5052,6 +5303,7 @@ async def get_system_info(request: Request):
         import platform
         import sys
         from app.utils.version_util import get_current_version
+        from app.utils.version_util import get_build_info
         
         info = {}
         
@@ -5073,6 +5325,7 @@ async def get_system_info(request: Request):
         info['version'] = {
             'edition': edition,
             'ziya_version': get_current_version(),
+            'build_info': get_build_info(),
             'python_version': sys.version.split()[0],
             'python_executable': sys.executable,
             'platform': platform.platform()
@@ -5134,6 +5387,20 @@ async def get_system_info(request: Request):
         except Exception as e:
             logger.warning(f"Could not get plugin info: {e}")
             info['plugins']['error'] = str(e)
+        
+        # Frontend Formatter Registry (from plugins)
+        info['formatters'] = {}
+        try:
+            from app.plugins import get_formatter_providers
+            
+            formatter_providers = get_formatter_providers()
+            info['formatters'] = {
+                'count': len(formatter_providers),
+                'providers': [{'id': p.formatter_id, 'priority': p.priority} for p in formatter_providers]
+            }
+        except Exception as e:
+            logger.warning(f"Could not get formatter info: {e}")
+            info['formatters']['error'] = str(e)
         
         # Endpoint and model configuration
         info['model'] = {
@@ -5618,3 +5885,69 @@ async def apply_changes(request: Request):
                 'message': f"Unexpected error: {error_msg}"
             }
         )
+
+@app.post('/api/unapply-changes')
+async def unapply_changes(request: Request):
+    """Reverse/unapply a previously applied diff."""
+    try:
+        body = await request.json()
+        diff = body.get('diff', '')
+        file_path_from_request = body.get('filePath', '')
+        request_id = body.get('requestId', str(uuid.uuid4()))
+        
+        logger.info(f"Received unapply-changes request with ID: {request_id}")
+        
+        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+        if not user_codebase_dir:
+            raise ValueError("ZIYA_USER_CODEBASE_DIR environment variable is not set")
+        
+        # Extract file path from diff or use provided path
+        extracted_path = extract_target_file_from_diff(diff)
+        if extracted_path:
+            file_path = os.path.join(user_codebase_dir, extracted_path)
+        elif file_path_from_request:
+            file_path = os.path.join(user_codebase_dir, file_path_from_request)
+        else:
+            raise ValueError("Could not determine target file path")
+        
+        # Validate path is within codebase
+        resolved_path = os.path.abspath(file_path)
+        if not resolved_path.startswith(os.path.abspath(user_codebase_dir)):
+            raise ValueError("Invalid file path specified")
+        
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File does not exist: {file_path}")
+        
+        # Apply the reverse diff
+        result = await run_in_threadpool(apply_reverse_diff_pipeline, diff, file_path)
+        
+        if result.get('status') == 'success':
+            return JSONResponse(content={
+                'status': 'success',
+                'message': 'Changes successfully reversed',
+                'request_id': request_id,
+                'stage': result.get('stage')
+            }, status_code=200)
+        else:
+            return JSONResponse(content={
+                'status': 'error',
+                'message': result.get('error', 'Failed to reverse changes'),
+                'request_id': request_id
+            }, status_code=422)
+            
+    except FileNotFoundError as e:
+        return JSONResponse(content={
+            'status': 'error',
+            'message': str(e)
+        }, status_code=404)
+    except ValueError as e:
+        return JSONResponse(content={
+            'status': 'error', 
+            'message': str(e)
+        }, status_code=400)
+    except Exception as e:
+        logger.error(f"Error unapplying changes: {e}")
+        return JSONResponse(content={
+            'status': 'error',
+            'message': f"Unexpected error: {str(e)}"
+        }, status_code=500)
