@@ -54,6 +54,22 @@ class StreamingToolExecutor:
             self.bedrock = None
             logger.debug(f"🔍 Skipping Bedrock client initialization for endpoint: {endpoint}")
 
+    def _decode_chunk_bytes(self, chunk_bytes):
+        """
+        Safely decode chunk bytes to string for json.loads().
+        Handles both bytes and string types for compatibility across Python/boto3 versions.
+        """
+        if isinstance(chunk_bytes, bytes):
+            try:
+                return chunk_bytes.decode('utf-8')
+            except UnicodeDecodeError as e:
+                logger.error(f"Failed to decode chunk bytes: {e}")
+                raise
+        elif isinstance(chunk_bytes, str):
+            return chunk_bytes
+        else:
+            raise TypeError(f"Unexpected chunk type: {type(chunk_bytes)}")
+
     def _convert_tool_schema(self, tool):
         """Convert tool schema to JSON-serializable format"""
         if isinstance(tool, dict):
@@ -78,7 +94,16 @@ class StreamingToolExecutor:
             # Tool object - extract properties
             name = getattr(tool, 'name', 'unknown')
             description = getattr(tool, 'description', 'No description')
-            input_schema = getattr(tool, 'input_schema', getattr(tool, 'inputSchema', {}))
+            
+            # Try multiple ways to get the schema
+            input_schema = getattr(tool, 'input_schema', None)
+            if input_schema is None:
+                input_schema = getattr(tool, 'inputSchema', None)
+            # For SecureMCPTool, check metadata
+            if input_schema is None and hasattr(tool, 'metadata'):
+                input_schema = tool.metadata.get('input_schema', {})
+            if input_schema is None:
+                input_schema = {}
             
             logger.debug(f"🔍 TOOL_SCHEMA: Converting tool '{name}', input_schema type: {type(input_schema)}")
             
@@ -429,6 +454,10 @@ class StreamingToolExecutor:
                 base_delay = 2  # Start with 2 seconds
                 iteration_start_time = time.time()
                 
+                # Initialize tool_results early so it's available in exception handlers
+                tool_results = []
+                tool_use_blocks = []
+                
                 for retry_attempt in range(max_retries + 1):
                     try:
                         api_params = {
@@ -473,8 +502,6 @@ class StreamingToolExecutor:
 
                 # Process this iteration's stream - collect ALL tool calls first
                 assistant_text = ""
-                tool_results = []
-                tool_use_blocks = []  # Store actual tool_use blocks from Bedrock
                 yielded_text_length = 0  # Track how much text we've yielded
                 all_tool_calls = []  # Collect all tool calls from this response
                 
@@ -513,7 +540,8 @@ class StreamingToolExecutor:
                     # Reset activity timer on any event
                     last_activity_time = time.time()
                         
-                    chunk = json.loads(event['chunk']['bytes'])
+                    chunk_data = self._decode_chunk_bytes(event['chunk']['bytes'])
+                    chunk = json.loads(chunk_data)
 
                     if chunk['type'] == 'content_block_start':
                         content_block = chunk.get('content_block', {})
@@ -1637,7 +1665,8 @@ class StreamingToolExecutor:
                         'timestamp': f"{int((time.time() - start_time) * 1000)}ms"
                     }
                 
-                chunk = json.loads(event['chunk']['bytes'])
+                chunk_data = self._decode_chunk_bytes(event['chunk']['bytes'])
+                chunk = json.loads(chunk_data)
                 
                 if chunk['type'] == 'content_block_delta':
                     delta = chunk.get('delta', {})
