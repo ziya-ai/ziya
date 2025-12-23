@@ -313,7 +313,7 @@ class DirectMCPTool(BaseTool):
 class SecureMCPTool(BaseTool):
     """Secure wrapper around MCP tools."""
     
-    def __init__(self, name: str, description: str, mcp_tool_name: str, server_name: Optional[str] = None):
+    def __init__(self, name: str, description: str, mcp_tool_name: str, input_schema: Optional[Dict[str, Any]] = None, server_name: Optional[str] = None):
         """Initialize the secure MCP tool."""
         # Use description as-is
         enhanced_description = description
@@ -324,6 +324,10 @@ class SecureMCPTool(BaseTool):
             "server_name": server_name,
             "max_output_size": 10000  # Maximum size of tool output
         }
+        
+        # Store input_schema so it can be retrieved by streaming_tool_executor
+        if input_schema:
+            metadata["input_schema"] = input_schema
         
         # Initialize BaseTool with our metadata
         super().__init__(
@@ -819,6 +823,7 @@ def create_secure_mcp_tools() -> List[BaseTool]:
                 name=secure_name,
                 description=tool.description,
                 mcp_tool_name=tool.name,
+                input_schema=tool.inputSchema,
                 server_name=getattr(tool, "_server_name", None)
             )
             
