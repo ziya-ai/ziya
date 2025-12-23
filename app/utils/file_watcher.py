@@ -171,8 +171,13 @@ class FileChangeHandler(FileSystemEventHandler):
             # Update all conversations that include this file
             self._update_conversations(rel_path, content)
             
-            # Only invalidate cache if we actually updated conversations
-            self._debounced_cache_invalidation()
+            # Update folder cache incrementally instead of invalidating
+            from app.server import update_file_in_folder_cache
+            if update_file_in_folder_cache(rel_path):
+                logger.debug(f"✅ Incrementally updated cache for modified file: {rel_path}")
+            else:
+                # Fallback to invalidation if incremental update fails
+                self._debounced_cache_invalidation()
             
         except Exception as e:
             logger.error(f"Error processing modified file {rel_path}: {str(e)}")
@@ -220,7 +225,13 @@ class FileChangeHandler(FileSystemEventHandler):
         
         logger.info(f"File created: {rel_path}" + (" (in context)" if is_in_context else ""))
         
-        self._debounced_cache_invalidation()
+        # Add to cache incrementally instead of invalidating
+        from app.server import add_file_to_folder_cache
+        if add_file_to_folder_cache(rel_path):
+            logger.debug(f"✅ Incrementally added new file to cache: {rel_path}")
+        else:
+            # Fallback to invalidation if incremental add fails
+            self._debounced_cache_invalidation()
     
     def on_deleted(self, event: FileSystemEvent):
         """Handle file deletion events."""
@@ -262,7 +273,13 @@ class FileChangeHandler(FileSystemEventHandler):
         
         logger.info(f"File deleted: {rel_path}" + (" (was in context)" if was_in_context else ""))
         
-        self._debounced_cache_invalidation()
+        # Remove from cache incrementally instead of invalidating
+        from app.server import remove_file_from_folder_cache
+        if remove_file_from_folder_cache(rel_path):
+            logger.debug(f"✅ Incrementally removed file from cache: {rel_path}")
+        else:
+            # Fallback to invalidation if incremental remove fails
+            self._debounced_cache_invalidation()
     
     def _debounced_cache_invalidation(self):
         """Call cache invalidation with debouncing to prevent excessive calls."""
