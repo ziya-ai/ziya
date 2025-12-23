@@ -72,3 +72,20 @@ class ConfigProvider(ABC):
     def should_apply(self) -> bool:
         """Return True if this config should be applied."""
         return True
+
+
+class FormatterProvider(ABC):
+    """
+    Formatter provider interface.
+    
+    Plugins implement this to provide custom tool output formatters
+    that enhance the display of tool results in the UI.
+    """
+    
+    formatter_id: str = "default"
+    priority: int = 0
+    
+    @abstractmethod
+    def get_formatter_code(self) -> str:
+        """Return JavaScript module code that exports a ToolFormatter."""
+        pass
