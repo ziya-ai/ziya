@@ -528,12 +528,19 @@ async function handleStreamError(response: Response): Promise<Error> {
 }
 
 /**
- * Show error message inline if it's long, otherwise as popup
- */
-function showError(errorDetail: string, conversationId: string, addMessageToConversation: (message: Message, conversationId: string, isNonCurrentConversation?: boolean) => void, messageType: 'error' | 'warning' = 'error') {
-    if (errorDetail.length > 100) {
-        // Show inline as a collapsible message
-        const errorMessage: Message = {
+     * Show error message inline if it's long, otherwise as popup
+     */
+    function showError(errorDetail: string, conversationId: string, addMessageToConversation: (message: Message, conversationId: string, isNonCurrentConversation?: boolean) => void, messageType: 'error' | 'warning' = 'error') {
+        console.log('🔍 SHOW_ERROR_CALLED:', {
+            errorLength: errorDetail.length,
+            messageType,
+            conversationId,
+            errorPreview: errorDetail.substring(0, 100)
+        });
+        
+        if (errorDetail.length > 100) {
+            // Show inline as a collapsible message
+            const errorMessage: Message = {
             role: 'assistant',  // CRITICAL: Use 'assistant' role so message renders (system messages are filtered in Conversation.tsx:206)
             content: `<details style="margin: 16px 0; padding: 12px; background: ${messageType === 'error' ? '#fff2f0' : '#fffbe6'}; border: 1px solid ${messageType === 'error' ? '#ffccc7' : '#ffe58f'}; border-radius: 6px;">
 <summary style="cursor: pointer; font-weight: bold; color: ${messageType === 'error' ? '#cf1322' : '#d46b08'}; display: flex; align-items: center; gap: 8px;">
@@ -545,17 +552,20 @@ function showError(errorDetail: string, conversationId: string, addMessageToConv
 ${errorDetail}
 </div>
 </details>`,
-            _timestamp: Date.now()
-        };
-        addMessageToConversation(errorMessage, conversationId);
-    } else {
-        // Show as popup for short messages
-        if (messageType === 'error') {
-            message.error(errorDetail);
+                _timestamp: Date.now()
+            };
+            addMessageToConversation(errorMessage, conversationId);
+            console.log('✅ SHOW_ERROR: Added long error message to conversation');
         } else {
-            message.warning(errorDetail);
+            // Show as popup for short messages
+            if (messageType === 'error') {
+                message.error(errorDetail);
+                console.log('✅ SHOW_ERROR: Displayed short error as popup');
+            } else {
+                message.warning(errorDetail);
+                console.log('✅ SHOW_ERROR: Displayed short warning as popup');
+            }
         }
-    }
 }
 
 export const sendPayload = async (
@@ -719,18 +729,32 @@ export const sendPayload = async (
             // Split by double newlines to get complete SSE messages
             const messages = buffer.split('\n\n');
 
-            // Keep the last potentially incomplete message in buffer
-            buffer = messages.pop() || '';
+                // Keep the last potentially incomplete message in buffer
+                buffer = messages.pop() || '';
+                
+                // DEBUG: Log how many complete messages we're processing
+                if (messages.length > 0) {
+                    console.log(`🔍 CHUNK_DEBUG: Processing ${messages.length} complete SSE messages from buffer`);
+                }
 
-            // Process complete messages
-            for (const sseMessage of messages) {
+                // Process complete messages
+                for (const sseMessage of messages) {
                 if (!sseMessage.trim()) continue;
 
-                // Check if it's an SSE data line
-                if (sseMessage.startsWith('data:')) {
-                    let dataContent = sseMessage.slice(5).trim();
+                    // Check if it's an SSE data line
+                    if (sseMessage.startsWith('data:')) {
+                        let dataContent = sseMessage.slice(5).trim();
+                        
+                        // DEBUG: Log every data message we're about to process
+                        console.log('🔍 SSE_MESSAGE_DEBUG:', {
+                            preview: dataContent.substring(0, 100),
+                            hasError: dataContent.includes('"error"'),
+                            hasErrorType: dataContent.includes('"error_type"'),
+                            isDone: dataContent.includes('"done"'),
+                            isHeartbeat: dataContent.includes('"heartbeat"')
+                        });
 
-                    // Handle multiple data: messages concatenated in the extracted content
+                        // Handle multiple data: messages concatenated in the extracted content
                     // This happens when heartbeat messages get bundled with content messages
                     if (dataContent.includes('\n\ndata:') || dataContent.includes('\ndata:')) {
                         console.log('🔧 MULTI-DATA-FIX: Found concatenated data messages, splitting them');
@@ -770,12 +794,22 @@ export const sendPayload = async (
         const processSingleDataMessage = (data: string) => {
             // Declare at function scope so it's accessible in all try blocks
             let jsonData: any;
-            let unwrappedData: any;
+                let unwrappedData: any;
 
-            try {
-                // Skip heartbeat messages entirely
-                if (data.includes('"heartbeat": true') || data.includes('"type": "heartbeat"')) {
-                    console.log('📊 SSE: Skipping heartbeat message');
+                try {
+                    // DEBUG: Log entry into processSingleDataMessage
+                    console.log('🔍 PROCESS_MESSAGE_START:', {
+                        dataLength: data.length,
+                        dataPreview: data.substring(0, 100),
+                        hasError: data.includes('"error"'),
+                        hasErrorType: data.includes('"error_type"'),
+                        isDone: data.includes('"done"'),
+                        isHeartbeat: data.includes('"heartbeat"')
+                    });
+                    
+                    // Skip heartbeat messages entirely
+                    if (data.includes('"heartbeat": true') || data.includes('"type": "heartbeat"')) {
+                        console.log('📊 SSE: Skipping heartbeat message');
                     return;
                 }
 
@@ -788,12 +822,27 @@ export const sendPayload = async (
                     unwrappedData = jsonData.tool_start;
                 } else if (jsonData.tool_result) {
                     unwrappedData = jsonData.tool_result;
-                    unwrappedData.type = 'tool_display';
-                }
+                        unwrappedData.type = 'tool_display';
+                    }
 
-                // Check if this is a hunk status update
-                if (jsonData.request_id && jsonData.details && jsonData.details.hunk_statuses) {
-                    // Dispatch a custom event with the hunk status update
+                    // CRITICAL FIX: Check for errors BEFORE any other processing
+                    // This ensures errors are never skipped due to other conditions
+                    if (jsonData.error || jsonData.error_type === 'authentication_error') {
+                        console.log('🚨 EARLY_ERROR_DETECTION: Error detected in chunk:', {
+                            error: jsonData.error?.substring(0, 100),
+                            error_type: jsonData.error_type,
+                            has_status_code: !!jsonData.status_code,
+                            has_detail: !!jsonData.detail
+                        });
+                        
+                        // Don't skip error processing - continue to the error handling code below
+                        // But mark that we detected an error early
+                        (window as any)._errorDetectedInChunk = true;
+                    }
+                    
+                    // Check if this is a hunk status update
+                    if (jsonData.request_id && jsonData.details && jsonData.details.hunk_statuses) {
+                        // Dispatch a custom event with the hunk status update
                     window.dispatchEvent(new CustomEvent('hunkStatusUpdate', {
                         detail: {
                             requestId: jsonData.request_id,
@@ -850,25 +899,46 @@ export const sendPayload = async (
 
             // Check for errors using our new function - but be more careful
             // Skip error checking if the data looks like it contains tool execution results
-            const containsCodeBlock = data.includes('```');
-            const containsToolExecution = data.includes('tool_execution') || data.includes('⟩') || data.includes('⟨');
+                const containsCodeBlock = data.includes('```');
+                const containsToolExecution = data.includes('tool_execution') || data.includes('⟩') || data.includes('⟨');
 
-            const errorResponse = (containsCodeBlock || containsDiff || containsToolExecution) ? null : extractErrorFromSSE(data);
+                // DEBUG: Log error detection attempt for all potential errors
+                console.log('🔍 ERROR_DETECTION_ATTEMPT:', {
+                    willCheckForError: !(containsCodeBlock || containsDiff || containsToolExecution),
+                    containsCodeBlock,
+                    containsDiff,
+                    containsToolExecution,
+                    dataPreview: data.substring(0, 100)
+                });
+                
+                const errorResponse = (containsCodeBlock || containsDiff || containsToolExecution) ? null : extractErrorFromSSE(data);
+                
+                // DEBUG: Log error extraction result
+                if (data.includes('"error"') || data.includes('"error_type"')) {
+                    console.log('🔍 ERROR_EXTRACTION_RESULT:', {
+                        errorResponseFound: !!errorResponse,
+                        errorType: errorResponse?.error,
+                        errorDetail: errorResponse?.detail?.substring(0, 100),
+                        statusCode: errorResponse?.status_code
+                    });
+                }
 
-            // NEW LOGIC: Distinguish between fatal and recoverable errors
-            const hasSubstantialContent = currentContent.length > 1000; // More than 1KB of content
+                // NEW LOGIC: Distinguish between fatal and recoverable errors
+                const hasSubstantialContent = currentContent.length > 1000; // More than 1KB of content
             const isRecoverableError = errorResponse && (
                 errorResponse.error === 'timeout' ||
                 errorResponse.detail?.includes('timeout') ||
                 errorResponse.detail?.includes('ReadTimeoutError') ||
                 errorResponse.detail?.includes('Read timeout') ||
                 (errorResponse.error === 'stream_error' && hasSubstantialContent)
-            );
+                );
 
-            if (errorResponse) {
-                console.log('❌ ERROR DETECTED:', {
-                    errorType: errorResponse.error,
-                    contentLength: currentContent.length,
+                if (errorResponse) {
+                    console.log('🔍 ERROR_HANDLING_START: About to process error and call showError');
+                    
+                    console.log('❌ ERROR DETECTED:', {
+                        errorType: errorResponse.error,
+                        contentLength: currentContent.length,
                     dataPreview: data.substring(0, 200),
                     conversationId: conversationId
                 });
@@ -956,14 +1026,22 @@ export const sendPayload = async (
                     console.debug('Could not parse error data for preserved content:', e);
                 }
 
-                // Show different message for partial responses vs complete failures
-                const errorMessage = currentContent.length > 0
-                    ? `${errorResponse.detail} (Partial response preserved - ${currentContent.length} characters)`
-                    : errorResponse.detail || 'An error occurred';
-                showError(errorMessage, targetConversationId, addMessageToConversation, currentContent.length > 0 ? 'warning' : 'error');
-                errorOccurred = true;
+                    // Show different message for partial responses vs complete failures
+                    const errorMessage = currentContent.length > 0
+                        ? `${errorResponse.detail} (Partial response preserved - ${currentContent.length} characters)`
+                        : errorResponse.detail || 'An error occurred';
+                    
+                    console.log('🔍 CALLING_SHOW_ERROR:', {
+                        errorMessage: errorMessage.substring(0, 100),
+                        messageType: currentContent.length > 0 ? 'warning' : 'error',
+                        targetConversationId
+                    });
+                    
+                    showError(errorMessage, targetConversationId, addMessageToConversation, currentContent.length > 0 ? 'warning' : 'error');
+                    console.log('✅ SHOW_ERROR_COMPLETED');
+                    errorOccurred = true;
 
-                // If we have accumulated content, add it to the conversation before removing the stream
+                    // If we have accumulated content, add it to the conversation before removing the stream
                 if (currentContent && currentContent.trim()) {
                     const partialMessage: Message = {
                         role: 'assistant',
@@ -995,15 +1073,42 @@ export const sendPayload = async (
                     return;
                 }
 
-                // Handle done marker
-                if (unwrappedData.done) {
-                    console.log("Received done marker in JSON data");
-                    // Don't return here - let the stream complete naturally
-                    // The done marker just indicates no more content chunks
-                    return;
-                }
+                    // Handle done marker
+                    if (unwrappedData.done) {
+                        console.log("Received done marker in JSON data");
+                        
+                        // CRITICAL FIX: Before processing done, check if this chunk also contains an error
+                        // Sometimes the error and done marker arrive in the same parsed object
+                        if (jsonData.error || jsonData.error_type) {
+                            console.log('🚨 CRITICAL: Done marker received with error data in same chunk!', {
+                                hasError: !!jsonData.error,
+                                hasErrorType: !!jsonData.error_type,
+                                errorType: jsonData.error_type,
+                                errorPreview: jsonData.error?.substring(0, 100)
+                            });
+                            
+                            // Process the error before handling done
+                            const combinedErrorResponse = {
+                                error: jsonData.error_type || 'unknown_error',
+                                detail: jsonData.error || jsonData.detail || 'An error occurred',
+                                status_code: jsonData.status_code || 500
+                            };
+                            
+                            console.log('🚨 EMERGENCY_ERROR_DISPLAY: Showing error from done-marker chunk');
+                            showError(combinedErrorResponse.detail, conversationId, addMessageToConversation, 'error');
+                            errorOccurred = true;
+                            
+                            // Clean up and stop processing
+                            removeStreamingConversation(conversationId);
+                            setIsStreaming(false);
+                            return;
+                        }
+                        
+                        // No error, just a normal done marker
+                        return;
+                    }
 
-                // Handle throttling status messages
+                    // Handle throttling status messages
                 if (unwrappedData.type === 'throttling_status') {
                     console.log('Throttling status:', unwrappedData.message);
                     showError(unwrappedData.message, conversationId, addMessageToConversation, 'warning');
@@ -1385,10 +1490,25 @@ export const sendPayload = async (
 
                     // Format the content
                     const inputForFormatter = unwrappedData.args || storedInput;
+                    
+                    console.log('🔍 FORMATTING DEBUG:', {
+                        toolName,
+                        hasInput: !!inputForFormatter,
+                        inputKeys: inputForFormatter ? Object.keys(inputForFormatter) : [],
+                        hasRegistry: !!(window as any).FormatterRegistry,
+                        registryFormatters: (window as any).FormatterRegistry ? (window as any).FormatterRegistry.getAllFormatters().length : 0
+                    });
+                    
                     const formatted = formatMCPOutput(toolName, displayContent, inputForFormatter, {
                         showInput: false,
                         maxLength: 10000,
                         defaultCollapsed: true
+                    });
+                    
+                    console.log('🔍 FORMATTING RESULT:', {
+                        type: formatted.type,
+                        hasHierarchical: !!formatted.hierarchicalResults,
+                        hierarchicalCount: formatted.hierarchicalResults?.length || 0
                     });
 
                     console.log('🔧 FORMATTED CONTENT:', formatted.content.substring(0, 200));
@@ -1971,20 +2091,38 @@ export const sendPayload = async (
                 removeStreamingConversation(conversationId);
                 setIsStreaming(false);
                 throw error;
-            } finally {
-                // Flush any remaining bytes in the decoder
-                try {
-                    const finalChunk = decoder.decode();
-                    if (finalChunk) {
-                        processChunk(finalChunk);
-                    }
+                } finally {
+                    // Flush any remaining bytes in the decoder
+                    try {
+                        const finalChunk = decoder.decode();
+                        if (finalChunk) {
+                            console.log('🔍 FINAL_CHUNK_DEBUG: Processing final chunk from decoder:', finalChunk.substring(0, 100));
+                            processChunk(finalChunk);
+                        }
 
-                    // Process any remaining buffered message
-                    if (buffer.trim()) {
-                        processChunk('');  // This will process the final buffer content
-                    }
-                } catch (error) {
-                    console.warn("Error flushing decoder:", error);
+                        // Process any remaining buffered message
+                        if (buffer.trim()) {
+                            console.log('🔍 BUFFER_FLUSH_DEBUG: Processing remaining buffer:', buffer.substring(0, 100));
+                            processChunk('');  // This will process the final buffer content
+                        }
+                        
+                        // SAFETY NET: If no content was streamed and no error was shown, check for errors in the final state
+                        if (!currentContent && !errorOccurred) {
+                            console.log('🚨 SAFETY_NET: No content and no error shown, checking for missed errors');
+                            
+                            // Check if there's an error in the buffer that was never processed
+                            if (buffer.includes('"error"')) {
+                                console.log('🚨 RECOVERED_ERROR: Found error in unprocessed buffer');
+                                const missedError = extractErrorFromSSE('data: ' + buffer);
+                                if (missedError) {
+                                    console.log('🚨 DISPLAYING_RECOVERED_ERROR:', missedError);
+                                    showError(missedError.detail || 'An error occurred', conversationId, addMessageToConversation, 'error');
+                                    errorOccurred = true;
+                                }
+                            }
+                        }
+                    } catch (error) {
+                        console.warn("Error flushing decoder:", error);
                 }
 
                 // Log final streaming metrics
