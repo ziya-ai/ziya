@@ -106,7 +106,17 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, displayMode, showLi
     let files;
     try {
         files = parseDiff(diff);
-	// Special handling for deletion diffs that might not be parsed correctly
+        
+        // Fix incorrectly parsed deletion diffs - check ALL parsed files
+        if (files.length > 0 && isDeletionDiff(diff)) {
+            files = files.map(file => {
+                // Override type if parser got it wrong
+                return { ...file, type: 'delete' as const };
+            });
+            console.log('Corrected file type to delete:', files[0]);
+        }
+        
+        // Special handling for deletion diffs that might not be parsed correctly
         if (files.length === 0 && isDeletionDiff(diff)) {
             // Force parse as a deletion
             const match = diff.match(/--- a\/(.*)\n/);
@@ -222,7 +232,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, displayMode, showLi
                         ? `Create: ${file.newPath}`
                         : `File: ${file.oldPath || file.newPath}`
                 }</b>
-                {!['delete', 'rename'].includes(file.type) &&
+                {!['rename'].includes(file.type) &&
                     <ApplyChangesButton
                         diff={diff}
                         filePath={file.newPath || file.oldPath}

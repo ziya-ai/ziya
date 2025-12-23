@@ -11,7 +11,7 @@ import { parseThinkingContent, removeThinkingTags } from '../utils/thinkingParse
 import { useFolderContext } from '../context/FolderContext';
 import {
     SplitCellsOutlined, NumberOutlined, EyeOutlined, FileTextOutlined,
-    CheckCircleOutlined, CloseCircleOutlined, CheckOutlined
+    CheckCircleOutlined, CloseCircleOutlined, CheckOutlined, UndoOutlined
 } from '@ant-design/icons';
 import { loadPrismLanguage, type PrismStatic } from '../utils/prismLoader';
 import { useTheme } from '../context/ThemeContext';
@@ -156,9 +156,10 @@ interface ToolBlockProps {
     onOpenShellConfig?: () => void;
 }
 
-const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode, onOpenShellConfig }) => {
+const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode, toolInput, onOpenShellConfig }) => {
     const [isExpanded, setIsExpanded] = useState(false);
     const [renderedHtml, setRenderedHtml] = useState('');
+    const [renderedHeaderHtml, setRenderedHeaderHtml] = useState('');
 
     // Extract command/query from toolName if it contains encoded information
     const [actualToolName, encodedCommand] = toolName.includes('|')
@@ -179,7 +180,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode, on
             // Parse if it looks like JSON
             if (content.trim().startsWith('{') || content.trim().startsWith('[')) {
                 const parsed = JSON.parse(content);
-                return formatMCPOutput(toolName, parsed, null, {
+                return formatMCPOutput(toolName, parsed, toolInput, {
                     defaultCollapsed: true,
                     maxLength: 10000
                 });
@@ -243,6 +244,22 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode, on
             }
         }
     }, [content, shouldRenderAsMarkdown]);
+
+    // Render markdown in header text for proper formatting
+    useEffect(() => {
+        const headerText = formattedOutput.summary || formattedOutput.content;
+        if (headerText && typeof headerText === 'string') {
+            // Use parseInline for header text to avoid block elements
+            const result = marked.parseInline(headerText, { breaks: false, gfm: true });
+            if (typeof result === 'string') {
+                setRenderedHeaderHtml(result);
+            } else {
+                result.then(setRenderedHeaderHtml);
+            }
+        } else {
+            setRenderedHeaderHtml('');
+        }
+    }, [formattedOutput.summary, formattedOutput.content]);
 
     // Extract command/query information for display in header
     const getToolSummary = () => {
@@ -382,9 +399,15 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode, on
                 }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                         <span>{getToolSummary()}</span>
-                        <span style={{ fontSize: '11px', opacity: 0.7, fontWeight: 'normal' }}>
-                            {formattedContent || summary}
-                        </span>
+                        {(renderedHeaderHtml || summary) && (
+                            renderedHeaderHtml ? (
+                                <span style={{ fontSize: '11px', opacity: 0.7, fontWeight: 'normal' }}
+                                    dangerouslySetInnerHTML={{ __html: renderedHeaderHtml }}
+                                />
+                            ) : (
+                                <span style={{ fontSize: '11px', opacity: 0.7, fontWeight: 'normal' }}>{summary}</span>
+                            )
+                        )}
                     </div>
                 </div>
 
@@ -491,6 +514,9 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode, on
                 (() => {
                     const firstLine = cleanContent.split('\n')[0];
                     const truncatedFirstLine = firstLine.length > 200 ? firstLine.substring(0, 200) + '...' : firstLine;
+                    // Parse markdown for the preview line
+                    const previewHtml = shouldRenderAsMarkdown ? marked.parseInline(truncatedFirstLine) : truncatedFirstLine;
+                    
                     return (
                         <div
                             style={{
@@ -503,15 +529,24 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode, on
                         >
                             {cleanContent ? (
                                 <div>
-                                    <pre style={{
-                                        margin: 0,
-                                        padding: 0,
-                                        whiteSpace: 'pre-wrap',
-                                        wordBreak: 'break-word',
-                                        fontFamily: 'monospace'
-                                    }}>
-                                        {truncatedFirstLine}
-                                    </pre>
+                                    {shouldRenderAsMarkdown ? (
+                                        <div style={{
+                                            margin: 0,
+                                            padding: 0,
+                                            whiteSpace: 'pre-wrap',
+                                            wordBreak: 'break-word'
+                                        }} dangerouslySetInnerHTML={{ __html: typeof previewHtml === 'string' ? previewHtml : '' }} />
+                                    ) : (
+                                        <pre style={{
+                                            margin: 0,
+                                            padding: 0,
+                                            whiteSpace: 'pre-wrap',
+                                            wordBreak: 'break-word',
+                                            fontFamily: 'monospace'
+                                        }}>
+                                            {truncatedFirstLine}
+                                        </pre>
+                                    )}
                                     <div style={{
                                         marginTop: '8px',
                                         fontStyle: 'italic',
@@ -1068,13 +1103,45 @@ const fixHaikuStyleDiff = (diff: string): string => {
     return fixedDiff;
 };
 
+/**
+ * Validate and fix parsed diff files to prevent crashes from undefined hunks/changes
+ */
+const validateAndFixParsedFiles = (parsedFiles: any[]): any[] => {
+    if (!parsedFiles || !Array.isArray(parsedFiles)) {
+        return [];
+    }
+
+    return parsedFiles.map(file => {
+        // Ensure file has hunks array
+        if (!file.hunks || !Array.isArray(file.hunks)) {
+            return { ...file, hunks: [] };
+        }
+
+        // Filter out invalid hunks and ensure each hunk has changes
+        const validHunks = file.hunks.filter(hunk => {
+            return hunk && Array.isArray(hunk.changes) && hunk.changes.length > 0;
+        });
+
+        return {
+            ...file,
+            hunks: validHunks
+        };
+    }).filter(file => file.hunks.length > 0);
+};
+
 // Helper function to check if this is a deletion diff
 const isDeletionDiff = (content: string) => {
-    return content.includes('diff --git') &&
-        content.includes('/dev/null') &&
-        content.includes('deleted file mode') &&
-        content.includes('--- a/') &&
-        content.includes('+++ /dev/null');
+    const lines = content.split('\n');
+    // Check that 'deleted file mode' appears as an actual line (not in diff content)
+    const hasDeletedFileMode = lines.some(line => 
+        line.trim().startsWith('deleted file mode') && !line.startsWith('+') && !line.startsWith('-')
+    );
+    // Check that '+++ /dev/null' appears as an actual header line
+    const hasDevNullTarget = lines.some(line => 
+        line.trim() === '+++ /dev/null' || line.trim() === '+++ b/dev/null'
+    );
+    
+    return content.includes('diff --git') && hasDeletedFileMode && hasDevNullTarget;
 };
 
 const normalizeGitDiff = (diff: string): string => {
@@ -1466,7 +1533,17 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
         const parseAndSetFiles = () => {
             try {
                 const normalizedDiff = normalizeGitDiff(diff);
-                let parsedFiles = parseDiff(normalizedDiff);
+                let parsedFiles = validateAndFixParsedFiles(
+                    parseDiff(normalizedDiff)
+                );
+
+                // Fix incorrectly parsed deletion diffs - check ALL parsed files
+                if (parsedFiles.length > 0 && isDeletionDiff(diff)) {
+                    parsedFiles = parsedFiles.map(file => ({
+                        ...file,
+                        type: 'delete' as const
+                    }));
+                }
 
                 // After all parsing attempts, check if we have valid, renderable files/hunks
                 if (!parsedFiles || parsedFiles.length === 0 ||
@@ -1748,7 +1825,9 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     const renderContent = (hunk: any, filePath: string, status?: any, fileIndex?: number, hunkIndex?: number): JSX.Element[] => {
 
         // Define base style for rows
+        // Add defensive check for changes array
         const rowStyle: React.CSSProperties = {};
+        if (!hunk.changes || !Array.isArray(hunk.changes)) return [];
 
         return hunk.changes && hunk.changes.map((change: any, i: number) => {
             // Apply the status-based styling to each row
@@ -2029,7 +2108,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                         </span>
 
                         <div className="header-right">
-                            {!['delete'].includes(file.type) &&
+                            {!['rename'].includes(file.type) &&
                                 <ApplyChangesButton
                                     diff={diff}
                                     fileIndex={fileIndex}
@@ -2220,6 +2299,9 @@ const isDiffComplete = (diffContent: string, isStreaming: boolean): boolean => {
 const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath, fileIndex, diffElementId, enabled, isStreaming = false, setHunkStatuses }) => {
     const [isApplied, setIsApplied] = useState(false);
     const [isProcessing, setIsProcessing] = useState(false);
+    const [isReversible, setIsReversible] = useState(false);
+    const [isUndoing, setIsUndoing] = useState(false);
+    const [appliedDiff, setAppliedDiff] = useState<string>('');
     const [instanceHunkStatusMap, setInstanceHunkStatusMap] = useState<Map<string, HunkStatus>>(new Map());
     const statusUpdateCounterRef = useRef<number>(0);
     const isStreamingRef = useRef<boolean>(false);
@@ -2433,11 +2515,19 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                 if (data.status === 'success') {
                     console.log('Processing success status');
                     setIsApplied(true);  // Complete success
+                    // Store reversibility info for undo functionality
+                    if (data.reversible) {
+                        setIsReversible(true);
+                        setAppliedDiff(cleanDiff);
+                        console.log('Diff is reversible, undo will be available');
+                    }
                     // Update hunk statuses for successful application
                     // Check if we have detailed hunk statuses in the response
                     if (data.details?.hunk_statuses) {
-                        const hunkStatuses = data.hunk_statuses || data.details?.hunk_statuses || {};
-                        const files = parseDiff(cleanDiff);
+                        const hunkStatuses = data.details?.hunk_statuses || {};
+                        const files = validateAndFixParsedFiles(
+                            parseDiff(cleanDiff)
+                        );
                         files.forEach((file, fileIndex) => {
                             file.hunks.forEach((hunk, hunkIndex) => {
                                 const hunkKey = `${fileIndex}-${hunkIndex}`;
@@ -2503,7 +2593,9 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                         });
                     } else {
                         console.log('Setting success status for all hunks (no detailed statuses)');
-                        const files = parseDiff(cleanDiff);
+                        const files = validateAndFixParsedFiles(
+                            parseDiff(cleanDiff)
+                        );
                         files.forEach((file, fileIndex) => {
                             console.log(`Setting status for file hunks (${diffElementId}):`, file.hunks.length);
                             file.hunks.forEach((hunk, hunkIndex) => {
@@ -2530,7 +2622,9 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                     console.log('Setting isApplied to:', hasSuccessfulHunks);
 
                     // Handle the new format with hunk_statuses
-                    parseDiff(cleanDiff).forEach((file, fileIndex) => {
+                    validateAndFixParsedFiles(
+                        parseDiff(cleanDiff)
+                    ).forEach((file, fileIndex) => {
                         file.hunks.forEach((hunk, hunkIndex) => {
                             console.log(`Processing hunk #${hunkIndex + 1} status`);
                             // Create a stable key for this hunk
@@ -2673,7 +2767,9 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                     if (response.status === 422 || errorData.status === 'error') {
                         // Parse the diff to get the number of hunks
                         try {
-                            const files = parseDiff(cleanDiff);
+                            const files = validateAndFixParsedFiles(
+                                parseDiff(cleanDiff)
+                            );
                             files.forEach((file, fileIndex) => {
                                 file.hunks.forEach((hunk, hunkIndex) => {
                                     const hunkKey = `${fileIndex}-${hunkIndex}`;
@@ -2713,8 +2809,12 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                         console.log('Processing error status from error response');
                         setIsApplied(false);
 
+                        setIsApplied(false);
+
                         // Mark all hunks as failed
-                        parseDiff(cleanDiff).forEach((file, fileIndex) => {
+                        validateAndFixParsedFiles(
+                            parseDiff(cleanDiff)
+                        ).forEach((file, fileIndex) => {
                             file.hunks.forEach((hunk, hunkIndex) => {
                                 const hunkKey = `${fileIndex}-${hunkIndex}`;
                                 console.log(`Setting error status for hunk #${hunkIndex + 1}`);
@@ -2869,17 +2969,72 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
         return () => processedRequestIds.current.clear();
     }, []);
 
+    // Handle undo/unapply
+    const handleUndoChanges = async () => {
+        if (!appliedDiff || !isReversible) return;
+        
+        setIsUndoing(true);
+        try {
+            const response = await fetch('/api/unapply-changes', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    diff: appliedDiff,
+                    filePath: filePath.trim(),
+                    requestId: `undo-${Date.now()}`
+                }),
+            });
+            
+            const data = await response.json();
+            if (data.status === 'success') {
+                // Reset state to allow re-applying
+                setIsApplied(false);
+                setIsReversible(false);
+                setAppliedDiff('');
+                appliedRef.current = false;
+                
+                // Clear hunk statuses
+                if (setHunkStatuses) {
+                    setHunkStatuses(() => new Map());
+                }
+                
+                console.log('Successfully undid changes');
+            } else {
+                console.error('Failed to undo changes:', data.message);
+            }
+        } catch (error) {
+            console.error('Error undoing changes:', error);
+        } finally {
+            setIsUndoing(false);
+        }
+    };
+
     return enabled ? (
-        <Button
-            onClick={handleApplyChanges}
-            disabled={shouldDisableButton}
-            loading={isProcessing}
-            type={isApplied ? "default" : "primary"}
-            style={{ marginLeft: '8px' }} id={`apply-changes-${buttonId}`}
-            icon={<CheckOutlined />}
-        >
-            Apply Changes
-        </Button>
+        <>
+            <Button
+                onClick={handleApplyChanges}
+                disabled={shouldDisableButton}
+                loading={isProcessing}
+                type={isApplied ? "default" : "primary"}
+                style={{ marginLeft: '8px' }} id={`apply-changes-${buttonId}`}
+                icon={<CheckOutlined />}
+            >
+                Apply Changes
+            </Button>
+            {isApplied && isReversible && (
+                <Button
+                    onClick={handleUndoChanges}
+                    disabled={isUndoing}
+                    loading={isUndoing}
+                    type="default"
+                    style={{ marginLeft: '4px' }}
+                    icon={<UndoOutlined />}
+                    title="Undo this change"
+                >
+                    Undo
+                </Button>
+            )}
+        </>
     ) : null;
 };
 
@@ -3184,6 +3339,12 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
                 if (match) {
                     const oldPath = match[1];
                     const newPath = match[2];
+                    
+                    // Check for deletion FIRST - before any path comparisons
+                    // The 'deleted file mode' marker is definitive even if git header shows same path
+                    if (isDeletedFile) {
+                        return `Delete: ${oldPath}`;
+                    }
 
                     // Handle new file creation - check for isNewFile flag first
                     if (isNewFile) {
@@ -3299,7 +3460,9 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
 
     useEffect(() => {
         try {
-            const parsed = parseDiff(normalizeGitDiff(currentContent));
+            const parsed = validateAndFixParsedFiles(
+                parseDiff(normalizeGitDiff(currentContent))
+            );
             if (parsed.length > 0) {
                 parsedFilesRef.current = parsed;
                 lastValidDiffRef.current = currentContent;
@@ -3308,7 +3471,9 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
             // Use last valid parse if available
             if (lastValidDiffRef.current) {
                 try {
-                    parsedFilesRef.current = parseDiff(normalizeGitDiff(lastValidDiffRef.current));
+                    parsedFilesRef.current = validateAndFixParsedFiles(
+                        parseDiff(normalizeGitDiff(lastValidDiffRef.current))
+                    );
                 } catch (e) { }
             }
         }
@@ -3685,6 +3850,15 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
                 debugLog('DETECTED AS DIFF (content-based)');
             }
             return 'diff';
+        }
+    }
+
+    // 1.5: Filter out raw tool: fence blocks - these are internal markers only
+    // The backend sends tool_start/tool_display events to render tools properly
+    if (tokenType === 'code' && 'lang' in token && typeof token.lang === 'string') {
+        if (token.lang.startsWith('tool:')) {
+            // Skip rendering - this will be handled by tool_start event
+            return null;
         }
     }
 
