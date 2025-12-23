@@ -15,5 +15,45 @@
 <body>
 <div id="root"></div>
 
+<!-- Initialize FormatterRegistry before plugins load -->
+<script type="text/javascript">
+(function() {
+    class FormatterRegistry {
+        constructor() {
+            this.formatters = [];
+        }
+        
+        register(formatter) {
+            this.formatters.push(formatter);
+            this.formatters.sort((a, b) => b.priority - a.priority);
+            console.log('✅ Registered formatter: ' + formatter.formatterId);
+        }
+        
+        getFormatter(toolName) {
+            return this.formatters.find(f => f.canFormat(toolName)) || null;
+        }
+        
+        getAllFormatters() {
+            return [...this.formatters];
+        }
+        
+        clear() {
+            this.formatters = [];
+        }
+    }
+    
+    window.FormatterRegistry = new FormatterRegistry();
+})();
+</script>
+
+<!-- Inject formatter plugin scripts before React app loads -->
+{% if formatter_scripts %}
+    {% for script in formatter_scripts %}
+    <script type="text/javascript">
+        {{ script|safe }}
+    </script>
+    {% endfor %}
+{% endif %}
+
 </body>
 </html>
