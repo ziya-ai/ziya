@@ -36,6 +36,15 @@ export const Debug: React.FC = () => {
     const { folders } = useFolderContext();
     const { isDarkMode, toggleTheme } = useTheme();
 
+    useEffect(() => {
+        // Enable body scrolling for this page
+        document.body.classList.add('allow-scroll');
+        
+        return () => {
+            document.body.classList.remove('allow-scroll');
+        };
+    }, []);
+
     const runAllTests = async () => {
         setIsRunningTests(true);
         const testRunner = new DiffTestRunner();
