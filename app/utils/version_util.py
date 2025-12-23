@@ -21,3 +21,11 @@ def update_package() -> None:
 def get_current_version() -> str:
     from importlib.metadata import version
     return str(version('ziya'))
+
+
+def get_build_info() -> dict:
+    """Get build information if available."""
+    return {
+        "version": get_current_version(),
+        "dev_mode": 'dev' in get_current_version()
+    }
