@@ -151,7 +151,8 @@ export const MUIFileExplorer = () => {
       // Check for tool-backed files (marked as -1)
       if (estimatedTokens === -1 || (accurateData && accurateData.count === -1)) {
         return -1;
-      } else if (accurateData) {
+      } else if (accurateData && accurateData.count > 0) {
+        // Only use accurate data if it has a positive count
         return accurateData.count;
       } else if (estimatedTokens > 0) {
         return estimatedTokens;
@@ -322,7 +323,8 @@ export const MUIFileExplorer = () => {
                     (*)
                   </Typography>
                 );
-              } else if (accurateData) {
+              } else if (accurateData && accurateData.count > 0) {
+                // Only use accurate data if it has a positive count
                 nodeTokens = accurateData.count;
                 total = nodeTokens;
                 included = isChecked ? nodeTokens : 0;
@@ -675,13 +677,20 @@ export const MUIFileExplorer = () => {
 
         // Poll for actual data with a short interval
         const pollForData = async () => {
-          for (let attempt = 0; attempt < 10; attempt++) {
-            await new Promise(resolve => setTimeout(resolve, 500));
+          const maxAttempts = 30;  // Increase to 30 attempts
+          const pollInterval = 500;  // 500ms between attempts = 15s max wait
+          
+          for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            await new Promise(resolve => setTimeout(resolve, pollInterval));
 
             const pollResponse = await fetch('/api/folders-cached');
             if (!pollResponse.ok) continue;
 
             const pollData: Folders = await pollResponse.json();
+            
+            // Skip if we got an error response (no cached data yet)
+            if (pollData.error) continue;
+            
             if (!pollData._scanning && Object.keys(pollData).length > 1) {
               console.log('Polling successful, got actual data');
               return pollData;
@@ -922,13 +931,14 @@ export const MUIFileExplorer = () => {
         const isFile = !nodeHasChildren(child);
         let childTotal = 0;
 
-        if (isFile) {
-          // For files, use accurate count first, then fall back to estimated
-          const childAccurate = accurateTokenCounts[childKey];
-          childTotal = childAccurate ? childAccurate.count : getFolderTokenCount(childKey, folders || {});
-        } else {
-          // For directories, recursively calculate
-          childTotal = calculateChildrenTotal(child);
+      if (isFile) {
+        // For files, use accurate count first, then fall back to estimated
+        const childAccurate = accurateTokenCounts[childKey];
+        // Only use accurate data if it exists AND has a positive count
+        childTotal = (childAccurate && childAccurate.count > 0) ? childAccurate.count : getFolderTokenCount(childKey, folders || {});
+      } else {
+        // For directories, recursively calculate
+        childTotal = calculateChildrenTotal(child);
         }
 
         // Skip tool-backed files (indicated by -1)

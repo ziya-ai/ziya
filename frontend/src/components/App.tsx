@@ -20,7 +20,7 @@ import PanelResizer from './PanelResizer';
 import { useChatContext } from '../context/ChatContext';
 import { ProfilerWrapper } from './ProfilerWrapper';
 import { SafariWarning } from './SafariWarning';
-import { loadInternalFormatters } from '../utils/mcpFormatterLoader';
+import { loadFormatters } from '../utils/mcpFormatterLoader';
 import { useConfig } from '../context/ConfigContext'
 import { useScrollManager } from '../hooks/useScrollManager';
 import { ScrollIndicator } from './ScrollIndicator';
@@ -145,9 +145,13 @@ export const App: React.FC = () => {
 
     // Check MCP status on mount
     useEffect(() => {
-        // Load internal MCP formatters
-        loadInternalFormatters().catch(error => {
-            console.debug('Internal formatters not available:', error);
+        // Load formatter plugins
+        console.log('🔧 Loading external formatters...');
+        loadFormatters().then(() => {
+            console.log('✅ Formatters loaded successfully');
+            console.log('Registered formatters:', window.FormatterRegistry?.getAllFormatters?.());
+        }).catch(error => {
+            console.error('Failed to load formatters:', error);
         });
 
         // Set initial panel width to 33% of viewport width
@@ -387,12 +391,12 @@ export const App: React.FC = () => {
                                 Ziya: Code Assist
                                 {isEphemeralMode && (
                                     <Tooltip title="Ephemeral mode: No data persisted after closing. Each browser tab has independent, non-shared state.">
-                                        <span 
-                                        className="ephemeral-badge"
-                                        style={{ 
-                                            marginLeft: '12px',
-                                            fontSize: '12px'
-                                        }}
+                                        <span
+                                            className="ephemeral-badge"
+                                            style={{
+                                                marginLeft: '12px',
+                                                fontSize: '12px'
+                                            }}
                                         >
                                             🔒 Ephemeral
                                         </span>
