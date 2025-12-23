@@ -1,77 +1,92 @@
 /**
- * Tool Formatter Registry
+ * Formatter Registry for dynamic tool output formatting
  * 
- * Allows plugins to register custom formatters for tool outputs.
+ * This extends the existing toolFormatters system to support plugins.
+ * 
+ * This extends the existing toolFormatters system to support plugins.
+ * 
+ * Allows plugins to register custom formatters that enhance
+ * the display of tool outputs in the UI.
  */
+
+// Legacy formatter type from toolFormatters.ts
+export interface FormattedOutput {
+    content: string;
+    type?: string;
+    collapsed?: boolean;
+    summary?: string;
+}
 
 export interface ToolFormatter {
     formatterId: string;
     priority: number;
-    
     canFormat(toolName: string): boolean;
-    format(toolName: string, result: any, options: any): FormattedOutput | null;
+    format(toolName: string, result: any, options: any): any;
     enhanceHeader?(toolName: string, baseHeader: string, args: any): string | null;
 }
 
+// Legacy formatter type from toolFormatters.ts
 export interface FormattedOutput {
-    title?: string;
     content: string;
-    language?: string;
-    sections?: Array<{
-        title: string;
-        content: string;
-        language?: string;
-    }>;
+    type?: string;
+    collapsed?: boolean;
+    summary?: string;
 }
 
-class FormatterRegistryClass {
+class FormatterRegistry {
     private formatters: ToolFormatter[] = [];
-    
+
     register(formatter: ToolFormatter): void {
+        // Validate formatter before registering
+        if (!formatter || !formatter.formatterId) {
+            console.warn('Attempted to register invalid formatter:', formatter);
+            return;
+        }
         this.formatters.push(formatter);
-        // Sort by priority (higher first)
+        // Sort by priority (highest first)
         this.formatters.sort((a, b) => b.priority - a.priority);
-        console.log(`Registered formatter: ${formatter.formatterId} (priority: ${formatter.priority})`);
+        console.log(`✅ Registered formatter: ${formatter.formatterId}`);
     }
-    
-    format(toolName: string, result: any, options: any = {}): FormattedOutput {
-        // Try each registered formatter in priority order
-        for (const formatter of this.formatters) {
-            if (formatter.canFormat(toolName)) {
-                const output = formatter.format(toolName, result, options);
-                if (output) {
-                    return output;
-                }
-            }
-        }
-        
-        // Fall back to generic formatting
-        return this.genericFormat(result);
+
+    getFormatter(toolName: string): ToolFormatter | null {
+        return this.formatters.find(f => f.canFormat(toolName)) || null;
     }
-    
-    enhanceHeader(toolName: string, baseHeader: string, args: any): string {
-        // Try each formatter
-        for (const formatter of this.formatters) {
-            if (formatter.canFormat(toolName) && formatter.enhanceHeader) {
-                const enhanced = formatter.enhanceHeader(toolName, baseHeader, args);
-                if (enhanced) {
-                    return enhanced;
-                }
-            }
-        }
-        return baseHeader;
+
+    getAllFormatters(): ToolFormatter[] {
+        return [...this.formatters];
     }
-    
-    private genericFormat(result: any): FormattedOutput {
-        return {
-            content: typeof result === 'string' ? result : JSON.stringify(result, null, 2),
-            language: 'text'
-        };
+
+    clear(): void {
+        this.formatters = [];
     }
 }
 
-// Global singleton
-export const FormatterRegistry = new FormatterRegistryClass();
+// Global singleton registry
+export const formatterRegistry = new FormatterRegistry();
 
-// Make available globally for plugin scripts
-(window as any).FormatterRegistry = FormatterRegistry;
+// Expose on window for dynamic formatter scripts to register themselves
+declare global {
+    interface Window {
+        FormatterRegistry: FormatterRegistry;
+    }
+}
+
+// Make the registry available globally
+if (typeof window !== 'undefined') {
+    if (window.FormatterRegistry && window.FormatterRegistry.getAllFormatters) {
+        // Registry already exists - preserve it and merge our instance
+        const existingFormatters = window.FormatterRegistry.getAllFormatters();
+        if (existingFormatters.length > 0) {
+            console.log(`Preserving ${existingFormatters.length} pre-registered formatters`);
+            existingFormatters.forEach(f => formatterRegistry.register(f));
+        }
+        // Now replace with our instance that has the existing formatters
+        window.FormatterRegistry = formatterRegistry;
+    } else {
+        // First time - just set it
+        window.FormatterRegistry = formatterRegistry;
+    }
+    window.FormatterRegistry = formatterRegistry;
+}
+
+export default formatterRegistry;

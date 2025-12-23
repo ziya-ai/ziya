@@ -14,6 +14,7 @@ from app.utils.logging_utils import logger
 _auth_providers = []
 _config_providers = []
 _registry_providers = []
+_formatter_providers = []
 _initialized = False
 
 def register_auth_provider(provider):
@@ -36,6 +37,15 @@ def register_registry_provider(provider):
     """Register an MCP registry provider plugin."""
     _registry_providers.append(provider)
     logger.info(f"Registered registry provider: {getattr(provider, 'identifier', 'unknown')}")
+
+def register_formatter_provider(provider):
+    """Register a formatter provider plugin."""
+    _formatter_providers.append(provider)
+    logger.info(f"Registered formatter provider: {getattr(provider, 'formatter_id', 'unknown')}")
+
+def get_all_config_providers() -> List:
+    """Get all registered config providers (regardless of should_apply)."""
+    return _config_providers.copy()
 
 
 def get_active_auth_provider():
@@ -71,6 +81,10 @@ def get_active_config_providers() -> List:
 def get_registry_providers() -> List:
     """Get all registered MCP registry providers."""
     return _registry_providers.copy()
+
+def get_formatter_providers() -> List:
+    """Get all registered formatter providers."""
+    return _formatter_providers.copy()
 
 def initialize():
     """Initialize plugin system and load available plugins."""

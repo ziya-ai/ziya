@@ -266,10 +266,13 @@ export function formatMCPOutput(
     }
   }
 
-  // Try internal formatter first (if available)
-  const internalResult = tryInternalFormatter?.(toolName, result, { ...options, input });
-  if (internalResult) {
-    return internalResult;
+  // Try FormatterRegistry (plugin system)
+  if ((window as any).FormatterRegistry) {
+    const formatter = (window as any).FormatterRegistry.getFormatter(toolName);
+    if (formatter) {
+      const formatterResult = formatter.format(toolName, result, { ...options, input });
+      if (formatterResult) return formatterResult;
+    }
   }
 
   // Handle double-encoded JSON strings (common in MCP responses)
@@ -916,13 +919,6 @@ function formatGenericGroup(group: any): string {
   }
 
   return info;
-}
-
-// Plugin interface for internal formatters
-let tryInternalFormatter: ((toolName: string, result: any, options: any) => FormattedOutput | null) | null = null;
-
-export function registerInternalFormatter(formatter: (toolName: string, result: any, options: any) => FormattedOutput | null) {
-  tryInternalFormatter = formatter;
 }
 
 // Helper to extract query from search results content
