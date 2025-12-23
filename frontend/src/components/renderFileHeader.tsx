@@ -226,7 +226,7 @@ export const renderFileHeader = (file: ReturnType<typeof parseDiff>[number], ori
         return cacheAndReturn('Create: (unknown path)');
     }
 
-    if (type === 'delete' || (!newP && oldP && !isDevNull(oldP))) {
+    if (type === 'delete' || (oldP && !isDevNull(oldP) && (!newP || isDevNull(newP)))) {
         // For 'delete', oldP should be the filename. newP is /dev/null or undefined.
         if (oldP && !isDevNull(oldP)) {
             return cacheAndReturn(`Delete: ${oldP}`);

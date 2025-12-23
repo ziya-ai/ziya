@@ -71,10 +71,10 @@ async def save_file(request: SaveFileRequest):
 
 
 @router.get('/api/folders')
-async def get_folders():
+async def get_folders(refresh: bool = False):
     """Get folder structure - forwards to server.py implementation with all caching and error handling."""
     from app.server import api_get_folders
-    return await api_get_folders()
+    return await api_get_folders(refresh)
 
 
 @router.get('/api/default-included-folders')
