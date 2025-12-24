@@ -2108,7 +2108,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             muted: !updatedMessages[messageIndex].muted
                         };
                     }
-                    return { ...conv, messages: updatedMessages, _version: Date.now() };
+                    // Don't update _version for mute changes to avoid triggering scroll resets
+                    return { ...conv, messages: updatedMessages };
                 }
                 return conv;
             });
@@ -2121,8 +2122,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
             return updated;
         });
 
-        // Force currentMessages to update
-        setMessageUpdateCounter(prev => prev + 1);
+        // Don't force a full re-render via messageUpdateCounter
+        // The conversation state update will propagate through React's normal rendering
     }, [queueSave]);
 
     const value = useMemo(() => ({
