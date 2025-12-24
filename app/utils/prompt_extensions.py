@@ -95,6 +95,17 @@ class PromptExtensionManager:
         if context is None:
             context = {}
         
+        # Import prompt debugger (lazy import to avoid circular deps)
+        try:
+            from app.utils.prompt_debugger import log_prompt_assembly, is_prompt_debug_enabled
+            debug_enabled = is_prompt_debug_enabled()
+        except ImportError:
+            debug_enabled = False
+        
+        if debug_enabled:
+            log_prompt_assembly("before_extensions", prompt, 
+                               metadata={"model": model_name, "family": model_family, "endpoint": endpoint})
+        
         logger.debug(f"Applying extensions to prompt length: {len(prompt)}")
         
         # Start with the original prompt
@@ -112,6 +123,10 @@ class PromptExtensionManager:
                 modified_prompt = extension_fn(modified_prompt, extension_context)
                 logger.debug(f"Applied global extension '{name}' - new length: {len(modified_prompt)}")
                 logger.info(f"Applied global extension '{name}' - new length: {len(modified_prompt)}")
+                
+                if debug_enabled:
+                    log_prompt_assembly(f"after_global_ext_{name}", modified_prompt,
+                                       metadata={"extension": name, "type": "global"})
                 logger.debug(f"Applied global extension '{name}'")
             except Exception as e:
                 logger.error(f"Error applying global extension '{name}': {e}")
@@ -127,6 +142,10 @@ class PromptExtensionManager:
                 else:
                     modified_prompt = extension_fn(modified_prompt, extension_context)
                     logger.info(f"Applied endpoint extension for '{endpoint}' - new length: {len(modified_prompt)}")
+                    
+                    if debug_enabled:
+                        log_prompt_assembly(f"after_endpoint_ext_{endpoint}", modified_prompt,
+                                           metadata={"endpoint": endpoint})
                     logger.debug(f"Applied endpoint extension for '{endpoint}' - new length: {len(modified_prompt)}")
                     logger.debug(f"Applied endpoint extension for '{endpoint}'")
             except Exception as e:
@@ -143,6 +162,10 @@ class PromptExtensionManager:
                 else:
                     modified_prompt = extension_fn(modified_prompt, extension_context)
                     logger.info(f"Applied family extension for '{model_family}' - new length: {len(modified_prompt)}")
+                    
+                    if debug_enabled:
+                        log_prompt_assembly(f"after_family_ext_{model_family}", modified_prompt,
+                                           metadata={"family": model_family})
                     logger.debug(f"Applied family extension for '{model_family}' - new length: {len(modified_prompt)}")
                     logger.debug(f"Applied family extension for '{model_family}'")
             except Exception as e:
@@ -159,10 +182,19 @@ class PromptExtensionManager:
                 else:
                     modified_prompt = extension_fn(modified_prompt, extension_context)
                     logger.info(f"Applied model extension for '{model_name}' - new length: {len(modified_prompt)}")
+                    
+                    if debug_enabled:
+                        log_prompt_assembly(f"after_model_ext_{model_name}", modified_prompt,
+                                           metadata={"model": model_name})
                     logger.debug(f"Applied model extension for '{model_name}' - new length: {len(modified_prompt)}")
                     logger.debug(f"Applied model extension for '{model_name}'")
             except Exception as e:
                 logger.error(f"Error applying model extension for '{model_name}': {e}")
+        
+        if debug_enabled:
+            log_prompt_assembly("final_after_all_extensions", modified_prompt,
+                               metadata={"model": model_name, "family": model_family, "endpoint": endpoint},
+                               check_duplicates=True)
         
         logger.debug(f"Final modified prompt length: {len(modified_prompt)}")
         return modified_prompt
