@@ -587,6 +587,7 @@ export const sendPayload = async (
     let currentContent = '';
     let containsDiff = false;
     let errorOccurred = false;
+    let errorAlreadyDisplayed = false;  // Track if we've shown an error to prevent duplicates
     let toolInputsMap = new Map<string, any>(); // Store tool inputs by tool ID
 
     // Store original params but also track accumulated content for retry
@@ -908,10 +909,62 @@ export const sendPayload = async (
                     containsCodeBlock,
                     containsDiff,
                     containsToolExecution,
-                    dataPreview: data.substring(0, 100)
+                    dataPreview: data.substring(0, 200)
                 });
                 
-                const errorResponse = (containsCodeBlock || containsDiff || containsToolExecution) ? null : extractErrorFromSSE(data);
+                // CRITICAL FIX: Check parsed JSON directly for error patterns
+                // extractErrorFromSSE expects "data: " prefix which was already stripped
+                let errorResponse = null;
+                if (!(containsCodeBlock || containsDiff || containsToolExecution) && !errorAlreadyDisplayed) {
+                    if (jsonData && (jsonData.error || jsonData.error_type || jsonData.type === 'error')) {
+                        const errorText = jsonData.error || jsonData.content || jsonData.detail || '';
+                        
+                        // ValidationException handling (context too large)
+                        if (errorText.includes('ValidationException') && errorText.includes('Input is too long')) {
+                                errorResponse = {
+                                    error: 'context_size_error',
+                                    detail: 'The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.',
+                                    status_code: 413
+                                };
+                        } else if (errorText.includes('ValidationException')) {
+                            errorResponse = {
+                                error: 'validation_error',
+                                detail: errorText,
+                                status_code: 400
+                            };
+                        } else if (
+                            // Check error_type field
+                            jsonData.error_type === 'authentication_error' ||
+                            // Check if error field IS 'authentication_error'
+                            jsonData.error === 'authentication_error' ||
+                            // Check content/detail/retry_message for credential keywords
+                            errorText.includes('credential') || 
+                            errorText.includes('ExpiredToken') ||
+                            errorText.includes('mwinit') ||
+                            errorText.includes('AWS credentials') ||
+                            // Also check retry_message specifically (server puts helpful message there)
+                            (jsonData.retry_message && (
+                                jsonData.retry_message.includes('credential') ||
+                                jsonData.retry_message.includes('mwinit') ||
+                                jsonData.retry_message.includes('expired')
+                            ))
+                        ) {
+                            errorResponse = {
+                                error: 'authentication_error',
+                                detail: jsonData.retry_message || jsonData.content || errorText || 'Authentication failed. Please refresh your credentials.',
+                                status_code: 401
+                            };
+                        } else {
+                            // GENERIC FALLTHROUGH: Any error with meaningful text should be displayed
+                            // This ensures unknown errors still show their message to the user
+                            errorResponse = {
+                                error: jsonData.error_type || 'unknown_error',
+                                detail: errorText || jsonData.retry_message || 'An unknown error occurred',
+                                status_code: jsonData.status_code || 500
+                            };
+                        }
+                    }
+                }
                 
                 // DEBUG: Log error extraction result
                 if (data.includes('"error"') || data.includes('"error_type"')) {
@@ -924,7 +977,7 @@ export const sendPayload = async (
                 }
 
                 // NEW LOGIC: Distinguish between fatal and recoverable errors
-                const hasSubstantialContent = currentContent.length > 1000; // More than 1KB of content
+                const hasSubstantialContent = currentContent.length > 1000;
             const isRecoverableError = errorResponse && (
                 errorResponse.error === 'timeout' ||
                 errorResponse.detail?.includes('timeout') ||
@@ -935,6 +988,7 @@ export const sendPayload = async (
 
                 if (errorResponse) {
                     console.log('🔍 ERROR_HANDLING_START: About to process error and call showError');
+                    errorAlreadyDisplayed = true;  // Prevent duplicate error displays
                     
                     console.log('❌ ERROR DETECTED:', {
                         errorType: errorResponse.error,
@@ -1040,6 +1094,7 @@ export const sendPayload = async (
                     showError(errorMessage, targetConversationId, addMessageToConversation, currentContent.length > 0 ? 'warning' : 'error');
                     console.log('✅ SHOW_ERROR_COMPLETED');
                     errorOccurred = true;
+                    // Don't return here - let the stream finish naturally but prevent further content processing
 
                     // If we have accumulated content, add it to the conversation before removing the stream
                 if (currentContent && currentContent.trim()) {
@@ -1058,7 +1113,7 @@ export const sendPayload = async (
                     next.delete(targetConversationId);
                     return next;
                 });
-                return;
+                return;  // Exit processSingleDataMessage, stream will continue to done marker
             }
 
             // Skip [DONE] marker
@@ -1077,9 +1132,15 @@ export const sendPayload = async (
                     if (unwrappedData.done) {
                         console.log("Received done marker in JSON data");
                         
-                        // CRITICAL FIX: Before processing done, check if this chunk also contains an error
-                        // Sometimes the error and done marker arrive in the same parsed object
-                        if (jsonData.error || jsonData.error_type) {
+                        // If error was already displayed, just end cleanly
+                        if (errorAlreadyDisplayed) {
+                            console.log('🔍 DONE_MARKER: Error already displayed, ending stream');
+                            return;
+                        }
+                        
+                        // CRITICAL FIX: Check if there's an unhandled error in this chunk
+                        // This handles edge cases where error and done arrive together
+                        if ((jsonData.error || jsonData.error_type) && !errorAlreadyDisplayed) {
                             console.log('🚨 CRITICAL: Done marker received with error data in same chunk!', {
                                 hasError: !!jsonData.error,
                                 hasErrorType: !!jsonData.error_type,
@@ -1097,6 +1158,7 @@ export const sendPayload = async (
                             console.log('🚨 EMERGENCY_ERROR_DISPLAY: Showing error from done-marker chunk');
                             showError(combinedErrorResponse.detail, conversationId, addMessageToConversation, 'error');
                             errorOccurred = true;
+                            errorAlreadyDisplayed = true;
                             
                             // Clean up and stop processing
                             removeStreamingConversation(conversationId);
@@ -1148,51 +1210,14 @@ export const sendPayload = async (
                     // Mark that streaming has ended due to throttling
                     errorOccurred = false; // Not a fatal error - user can retry
 
-                    // Attach click handler after React renders the button
-                    setTimeout(() => {
-                        const retryButton = document.querySelector(`[data-conversation-id="${conversationId}"].throttle-retry-button`) as HTMLButtonElement;
-                        if (retryButton && !retryButton.dataset.handlerAttached) {
-                            retryButton.dataset.handlerAttached = 'true';
-                            retryButton.onclick = async () => {
-                                console.log('🔄 RETRY: User clicked retry button after throttling');
-
-                                // Disable the button during retry
-                                retryButton.disabled = true;
-
-                                // CRITICAL FIX: Build conversation history including content before throttle
-                                const messagesForRetry = [...originalRequestParams.messages];
-
-                                // Add the assistant's partial response before the throttle
-                                if (currentContent && currentContent.trim()) {
-                                    messagesForRetry.push({
-                                        role: 'assistant',
-                                        content: currentContent,
-                                        _timestamp: Date.now()
-                                    });
-
-                                    console.log('🔄 RETRY: Including partial response in retry context:',
-                                        currentContent.length, 'characters');
-                                }
-
-                                // Continue with the original question
-                                const continueQuestion = originalRequestParams.question;
-
-                                console.log('🔄 RETRY: Sending', messagesForRetry.length,
-                                    'messages (including partial response)');
-
-                                // Don't wait - user already waited by clicking the button
-                                // If they click too early, AWS will reject it and they can try again
-
-                                message.info('Retrying request...');
-                                await sendPayload(messagesForRetry, continueQuestion,
-                                    originalRequestParams.checkedItems, originalRequestParams.conversationId,
-                                    streamedContentMap, setStreamedContentMap, setIsStreaming,
-                                    removeStreamingConversation, addMessageToConversation, isStreamingToCurrentConversation, setProcessingState, setReasoningContentMap);
-                            };
-                        }
-                    }, 100);
-
                     // Don't return - let the stream complete naturally to save content
+                    
+                    // Dispatch event to notify MarkdownRenderer to attach handlers
+                    setTimeout(() => {
+                        document.dispatchEvent(new CustomEvent('throttleButtonRendered', {
+                            detail: { conversationId }
+                        }));
+                    }, 150);
                 }
 
                 // SIMPLIFIED CONTENT PROCESSING - Single path for all content
@@ -2106,14 +2131,25 @@ export const sendPayload = async (
                             processChunk('');  // This will process the final buffer content
                         }
                         
-                        // SAFETY NET: If no content was streamed and no error was shown, check for errors in the final state
-                        if (!currentContent && !errorOccurred) {
+                        // SAFETY NET: If no content was streamed and no error was shown, check for missed errors
+                        if (!currentContent && !errorOccurred && !errorAlreadyDisplayed) {
                             console.log('🚨 SAFETY_NET: No content and no error shown, checking for missed errors');
                             
                             // Check if there's an error in the buffer that was never processed
                             if (buffer.includes('"error"')) {
                                 console.log('🚨 RECOVERED_ERROR: Found error in unprocessed buffer');
-                                const missedError = extractErrorFromSSE('data: ' + buffer);
+                                // Try to extract meaningful error text from buffer
+                                let missedError = null;
+                                try {
+                                    const bufferJson = JSON.parse(buffer);
+                                    missedError = {
+                                        error: bufferJson.error_type || 'unknown_error',
+                                        detail: bufferJson.error || bufferJson.content || bufferJson.detail || 'An error occurred',
+                                        status_code: bufferJson.status_code || 500
+                                    };
+                                } catch (e) {
+                                    missedError = extractErrorFromSSE('data: ' + buffer);
+                                }
                                 if (missedError) {
                                     console.log('🚨 DISPLAYING_RECOVERED_ERROR:', missedError);
                                     showError(missedError.detail || 'An error occurred', conversationId, addMessageToConversation, 'error');
