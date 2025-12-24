@@ -100,6 +100,7 @@ class ShellServer:
         First tuple has empty operator string.
         
         Handles: &&, ||, ;, | (pipe), and command substitution $(...)
+        Respects backslash escaping (e.g., \; in find -exec)
         """
         segments = []
         current_segment = ""
@@ -146,6 +147,15 @@ class ShellServer:
             
             # Only detect operators outside quotes and command substitutions
             if not in_single_quote and not in_double_quote and not in_backtick and paren_depth == 0:
+                # Check for escaped characters (backslash before operator)
+                # In shell, \; and \| are literal characters, not operators
+                if i > 0 and command[i - 1] == '\\' and char in ';|':
+                    # This is an escaped operator (like \; in find -exec)
+                    # Keep it as part of the current segment
+                    current_segment += char
+                    i += 1
+                    continue
+                    
                 # Check for two-character operators: &&, ||
                 if char in '&|' and next_char == char:
                     if current_segment.strip():

@@ -189,7 +189,7 @@ class DirectMCPTool(BaseTool):
         self.tool_instance = tool_instance
         
         if is_internal:
-            logger.info(f"🔇 Initialized internal tool: {tool_instance.name}")
+            logger.debug(f"🔇 Initialized internal tool: {tool_instance.name}")
     
     def _run(self, **kwargs) -> str:
         """Run the tool synchronously."""
@@ -762,7 +762,7 @@ def create_secure_mcp_tools() -> List[BaseTool]:
     # Check if secure mode is enabled
     secure_mode_enabled = os.environ.get("ZIYA_SECURE_MCP", "true").lower() in ("true", "1", "yes")
     if not secure_mode_enabled:
-        logger.info("Secure MCP mode disabled, falling back to basic MCP tools")
+        logger.debug("Secure MCP mode disabled, falling back to basic MCP tools")
         from app.mcp.tools import create_mcp_tools
         return create_mcp_tools()
     
@@ -782,8 +782,7 @@ def create_secure_mcp_tools() -> List[BaseTool]:
         # Get all MCP tools
         mcp_tools = mcp_manager.get_all_tools()
         
-        logger.info(f"Loading {len(mcp_tools)} MCP tools (filtering disabled tools)")
-        
+        logger.debug(f"Loading {len(mcp_tools)} MCP tools (filtering disabled tools)")
         # Configure connection pool
         # Import here to avoid circular import
         from app.mcp.connection_pool import get_connection_pool  
@@ -837,10 +836,10 @@ def create_secure_mcp_tools() -> List[BaseTool]:
             for tool_instance in builtin_tools:
                 direct_tool = DirectMCPTool(tool_instance)
                 secure_tools.append(direct_tool)
-                logger.debug(f"Added builtin tool: {tool_instance.name}")
+                logger.debug(f"Initialized builtin tool: {tool_instance.name}")
                 
             if builtin_tools:
-                logger.info(f"Added {len(builtin_tools)} builtin MCP tools")
+                logger.debug(f"Added {len(builtin_tools)} builtin MCP tools")
                 
         except ImportError as e:
             logger.debug(f"Builtin tools not available: {e}")
@@ -859,8 +858,7 @@ def create_secure_mcp_tools() -> List[BaseTool]:
         logger.warning(f"Failed to create secure MCP tools: {str(e)}")
         return []
     
-    logger.info(f"Loaded {len(secure_tools)} enabled MCP tools for agent context")
-    logger.debug(f"Enabled tools: {[tool.name for tool in secure_tools]}")
+    logger.debug(f"Loaded {len(secure_tools)} enabled MCP tools for agent context")
     
     # Conversation management tools disabled - requires server-side conversation state implementation
     logger.debug("Conversation management tools disabled (not yet integrated with client-side state)")
@@ -869,7 +867,6 @@ def create_secure_mcp_tools() -> List[BaseTool]:
     _secure_tool_cache = secure_tools
     _tool_cache_timestamp = time.time()
     
-    logger.info(f"🔐 Created {len(secure_tools)} secure MCP tools")
     return secure_tools
 
 
