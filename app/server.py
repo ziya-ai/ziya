@@ -274,46 +274,45 @@ class PcapAnalyzeRequest(BaseModel):
 # Define lifespan context manager before app creation
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifespan context manager for startup and shutdown events."""
-    # Startup
-    # Check if MCP is enabled
+    """Lifespan context manager for startup and shutdown events.
+    
+    CRITICAL: This must return quickly to allow the server to start accepting requests.
+    All heavy initialization is deferred to background tasks.
+    """
+    # Startup - spawn background tasks for heavy initialization
+    
+    # MCP initialization - run in background to not block server startup
     if os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
-        try:
-            from app.mcp.manager import get_mcp_manager
-            mcp_manager = get_mcp_manager()
-            await mcp_manager.initialize()
-            
-            # Log MCP initialization status
-            if mcp_manager.is_initialized:
-                status = mcp_manager.get_server_status()
-                connected_servers = sum(1 for s in status.values() if s["connected"])
-                total_tools = sum(s["tools"] for s in status.values())
-                logger.info(f"MCP initialized: {connected_servers} servers connected, {total_tools} tools available")
-                
-                # Initialize secure MCP tools
-                from app.mcp.connection_pool import get_connection_pool as get_secure_pool
-                secure_pool = get_secure_pool()
-                secure_pool.set_server_configs(mcp_manager.server_configs)
-                logger.info("Initialized secure MCP connection pool")
-                
-                # Force garbage collection to ensure clean state
-                import gc; gc.collect()
-                from app.agents.agent import create_agent_chain, create_agent_executor, model
-                agent = create_agent_chain(model.get_model())
-                agent_executor = create_agent_executor(agent)
-                
-                logger.info("LangServe completely disabled to prevent duplicate execution - using /api/chat only")
-            else:
-                logger.warning("MCP initialization failed or no servers configured")
-            logger.info("MCP manager initialized successfully during startup")
-        except Exception as e:
-            logger.warning(f"MCP initialization failed during startup: {str(e)}")
+        # Start MCP initialization in background - don't await
+        asyncio.create_task(_initialize_mcp_background())
     else:
-        logger.info("MCP integration is disabled. Use --mcp flag to enable.")
+        logger.info("MCP integration is disabled.")
+    
+    # Start folder cache warming in background - don't block server startup
+    asyncio.create_task(_warm_folder_cache_background())
+    
+    # Print clear banner that server is ready
+    logger.info("=" * 80)
+    logger.info("🚀 SERVER READY - Accepting connections now")
+    logger.info("=" * 80)
+    logger.info("📋 Background tasks running:")
+    if os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+        logger.info("   🔧 MCP server initialization")
+    logger.info("   📂 Folder structure scanning")
+    logger.info("=" * 80)
     
     yield
     
-    # Shutdown
+    # Shutdown - cleanup
+    # Cancel any ongoing folder scans
+    try:
+        from app.utils.directory_util import cancel_scan
+        cancel_scan()
+        logger.debug("Cancelled any ongoing folder scans during shutdown")
+    except Exception as e:
+        logger.warning(f"Error cancelling folder scan: {e}")
+    
+    # MCP shutdown
     if os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
         try:
             from app.mcp.manager import get_mcp_manager
@@ -322,6 +321,126 @@ async def lifespan(app: FastAPI):
             logger.info("MCP manager shutdown completed")
         except Exception as e:
             logger.warning(f"MCP shutdown failed: {str(e)}")
+
+
+async def _initialize_mcp_background():
+    """Initialize MCP in the background without blocking server startup."""
+    # Track completion for final banner
+    global _mcp_ready, _folder_ready, _background_tasks_lock
+    _mcp_ready = False
+    
+    # Small delay to let the server finish starting
+    await asyncio.sleep(0.1)
+    
+    try:
+        logger.info("🔧 Starting background MCP initialization...")
+        from app.mcp.manager import get_mcp_manager
+        mcp_manager = get_mcp_manager()
+        await mcp_manager.initialize()
+        
+        # Log MCP initialization status
+        if mcp_manager.is_initialized:
+            status = mcp_manager.get_server_status()
+            connected_servers = sum(1 for s in status.values() if s["connected"])
+            total_tools = sum(s["tools"] for s in status.values())
+            logger.info(f"🔧 MCP initialized: {connected_servers} servers connected, {total_tools} tools available")
+            
+            # Initialize secure MCP tools
+            from app.mcp.connection_pool import get_connection_pool as get_secure_pool
+            secure_pool = get_secure_pool()
+            secure_pool.set_server_configs(mcp_manager.server_configs)
+            logger.debug("Initialized secure MCP connection pool")
+            
+            # Force garbage collection to ensure clean state
+            import gc; gc.collect()
+            from app.agents.agent import create_agent_chain, create_agent_executor, model
+            agent = create_agent_chain(model.get_model())
+            agent_executor = create_agent_executor(agent)
+            
+            _mcp_ready = True
+            _check_and_print_completion_banner()
+        else:
+            logger.warning("MCP initialization failed or no servers configured")
+    except Exception as e:
+        logger.warning(f"Background MCP initialization failed: {str(e)}")
+        _mcp_ready = True  # Mark as complete even on failure
+        _check_and_print_completion_banner()
+
+
+async def _warm_folder_cache_background():
+    """Warm the folder cache in the background without blocking server startup.
+    
+    This allows the server to start accepting requests immediately while
+    the folder structure is being scanned.
+    """
+    global _folder_ready
+    _folder_ready = False
+    
+    # Small delay to let the server finish starting up
+    await asyncio.sleep(0.5)
+    
+    try:
+        logger.info("📂 Starting background folder cache warming...")
+        
+        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        if not user_codebase_dir or not os.path.exists(user_codebase_dir):
+            logger.warning(f"Cannot warm folder cache: directory does not exist: {user_codebase_dir}")
+            return
+        
+        # Get max depth from environment
+        try:
+            max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
+        except ValueError:
+            max_depth = 15
+        
+        # Get ignored patterns
+        ignored_patterns = get_ignored_patterns(user_codebase_dir)
+        
+        # Trigger the cached folder structure - this will start background scanning
+        # The function returns immediately with {"_scanning": True} if no cache exists
+        result = get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth)
+        
+        if isinstance(result, dict) and result.get("_scanning"):
+            logger.debug("📂 Folder cache warming initiated (scanning in background)")
+        else:
+            logger.debug("📂 Folder cache already available")
+            _folder_ready = True
+            _check_and_print_completion_banner()
+            
+    except Exception as e:
+        logger.warning(f"Background folder cache warming failed: {e}")
+        _folder_ready = True  # Mark as complete even on failure
+        _check_and_print_completion_banner()
+
+
+def _mark_folder_scan_complete():
+    """Called by directory_util when folder scan completes."""
+    global _folder_ready
+    _folder_ready = True
+    _check_and_print_completion_banner()
+
+
+# Global state for tracking background task completion
+_mcp_ready = True  # Default to true if MCP is disabled
+_folder_ready = False
+_background_tasks_lock = threading.Lock()
+_completion_banner_shown = False
+
+def _check_and_print_completion_banner():
+    """Print completion banner when all background tasks are done."""
+    global _mcp_ready, _folder_ready, _completion_banner_shown, _background_tasks_lock
+    
+    with _background_tasks_lock:
+        # Check if we should print the banner
+        mcp_enabled = os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes")
+        mcp_done = _mcp_ready or not mcp_enabled
+        
+        if mcp_done and _folder_ready and not _completion_banner_shown:
+            _completion_banner_shown = True
+            # Print prominent completion banner
+            print("\n" + "=" * 80)
+            print("✅ INITIALIZATION COMPLETE - All systems ready")
+            print("=" * 80 + "\n")
 
 
 async def broadcast_file_tree_update(event_type: str, rel_path: str, token_count: int = 0):
@@ -722,7 +841,7 @@ def get_templates_dir():
     app_templates_dir = os.path.join(current_dir, "templates")
     
     if os.path.exists(app_templates_dir):
-        logger.info(f"Found templates in app package: {app_templates_dir}")
+        logger.debug(f"Found templates in app package: {app_templates_dir}")
         return app_templates_dir
     
     # Create minimal templates if none exist
@@ -744,13 +863,13 @@ templates = Jinja2Templates(directory=templates_dir)
 static_dir = os.path.join(templates_dir, "static")
 if os.path.exists(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
-    logger.info(f"Mounted static files from {static_dir}")
+    logger.debug(f"Mounted static files from {static_dir}")
 
 # Global flag to prevent multiple LangServe initializations
 _langserve_initialized = False
 
 # SELECTIVELY REMOVE ONLY CONFLICTING LANGSERVE ROUTES
-logger.info("=== REMOVING CONFLICTING LANGSERVE ROUTES ===")
+logger.debug("=== REMOVING CONFLICTING LANGSERVE ROUTES ===")
 routes_to_remove = []
 for route in app.routes:
     if hasattr(route, 'path'):
@@ -758,19 +877,19 @@ for route in app.routes:
         if (route.path == '/ziya/stream' and hasattr(route, 'endpoint') and 
             'langserve' in str(type(route.endpoint))):
             routes_to_remove.append(route)
-            logger.info(f"Removing conflicting LangServe route: {route.path}")
+            logger.debug(f"Removing conflicting LangServe route: {route.path}")
 
 for route in routes_to_remove:
     app.routes.remove(route)
 
-logger.info(f"Removed {len(routes_to_remove)} conflicting LangServe routes")
+logger.debug(f"Removed {len(routes_to_remove)} conflicting LangServe routes")
 
 # Log remaining /ziya routes
-logger.info("=== REMAINING /ziya ROUTES ===")
+logger.debug("=== REMAINING /ziya ROUTES ===")
 for route in app.routes:
     if hasattr(route, 'path') and route.path.startswith('/ziya'):
-        logger.info(f"Route: {route.methods if hasattr(route, 'methods') else 'N/A'} {route.path}")
-logger.info("=== END /ziya ROUTES ===")
+        logger.debug(f"Route: {route.methods if hasattr(route, 'methods') else 'N/A'} {route.path}")
+logger.debug("=== END /ziya ROUTES ===")
 
 # DISABLED: LangServe routes bypass custom streaming and extended context handling
 # add_routes(app, agent_executor, disabled_endpoints=["playground", "stream_log", "stream", "invoke"], path="/ziya")
@@ -4276,7 +4395,6 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
     """Get folder structure with caching and background scanning."""
     from app.utils.directory_util import get_folder_structure, get_scan_progress
     from app.utils.directory_util import is_scan_healthy, get_basic_folder_structure
-    import threading
     
     current_time = time.time()
     cache_age = current_time - _folder_cache['timestamp']
@@ -4299,44 +4417,27 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
             from app.utils.directory_util import cancel_scan  
             cancel_scan()
             is_scanning = False
-    # Check if scan is already in progress
-    scan_status = get_scan_progress()
-    is_scanning = scan_status.get("active", False)
-    scan_start_time = scan_status.get("start_time", 0)
     
-    # Check for stuck or unhealthy scans
+    # If scan is active and healthy, return scanning indicator immediately (non-blocking)
     if is_scanning:
-        scan_duration = time.time() - scan_start_time if scan_start_time > 0 else 0
-        if scan_duration > 300:  # 5 minutes timeout
-            logger.warning(f"Folder scan has been running for {scan_duration:.1f}s, considering it stuck")
-            from app.utils.directory_util import cancel_scan
-            cancel_scan()
-            is_scanning = False
-        elif not is_scan_healthy():
-            logger.warning("Folder scan appears unhealthy, cancelling")
-            from app.utils.directory_util import cancel_scan  
-            cancel_scan()
-            is_scanning = False
-    
-    # If scan is active and healthy, return scanning indicator
-    if is_scanning:
-        logger.info("Scan in progress, returning scanning indicator")
+        logger.debug("Scan in progress, returning scanning indicator (non-blocking)")
         return {"_scanning": True, "children": {}}
     
-    # Return cached results if available (even if old - cache is persistent)
+    # Return cached results immediately if available
     if _folder_cache['data'] is not None:
         # Add staleness indicator if cache is very old (> 1 hour)
         if cache_age > 3600:
+            logger.debug(f"Returning stale cached folder structure (age: {cache_age:.1f}s)")
             return {**_folder_cache['data'], "_stale": True}
-        logger.info(f"Returning cached folder structure (age: {cache_age:.1f}s)")
+        logger.debug(f"Returning cached folder structure (age: {cache_age:.1f}s)")
         return _folder_cache['data']
     
-    # No cache available - start background scan
+    # No cache available - start background scan and return immediately
     global _background_scan_thread
     if _background_scan_thread is None or not _background_scan_thread.is_alive():
         def background_scan():
             scan_start = time.time()
-            logger.info(f"Background scan starting for {directory}")
+            logger.info(f"📂 Background folder scan starting for {directory}")
             
             # Update scan progress to indicate start
             from app.utils.directory_util import _scan_progress
@@ -4346,31 +4447,27 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
             _scan_progress["progress"] = {"directories": 0, "files": 0, "elapsed": 0}
             
             try:
-                logger.debug(f"🔥 Background scan starting for {directory}")
                 result = get_folder_structure(directory, ignored_patterns, max_depth)
                 _scan_progress["last_update"] = time.time()  # Mark progress update
-                logger.debug(f"🔥 Scan complete: {len(result)} entries")
                 _folder_cache['data'] = result
                 _folder_cache['timestamp'] = time.time()
+                scan_duration = time.time() - scan_start
+                logger.info(f"📂 Background folder scan completed in {scan_duration:.1f}s")
             except Exception as e:
-                logger.error(f"🔥 Scan error: {e}", exc_info=True)
+                logger.error(f"📂 Background folder scan error: {e}", exc_info=True)
             finally:
                 _scan_progress["active"] = False
-                scan_end = time.time()
-                logger.info(f"Background scan completed in {scan_end - scan_start:.1f}s")
         
         # Clean up any stuck previous thread
         if _background_scan_thread and _background_scan_thread.is_alive():
             logger.warning("Abandoning stuck background scan thread")
-            # Don't join() stuck threads - just abandon them
             _background_scan_thread = None
         
         _background_scan_thread = threading.Thread(target=background_scan, daemon=True)
         _background_scan_thread.start()
-        logger.info("🔥 Started background scan")
-        time.sleep(0.1)  # Let thread start and initialize progress
+        logger.info("📂 Started background folder scan")
     
-    # Return scanning indicator
+    # Return scanning indicator immediately (non-blocking)
     return {"_scanning": True, "children": {}}
 
 @app.get('/api/folders')
