@@ -15,6 +15,7 @@ _auth_providers = []
 _config_providers = []
 _registry_providers = []
 _formatter_providers = []
+_tool_validator_providers = []
 _initialized = False
 
 def register_auth_provider(provider):
@@ -26,12 +27,12 @@ def register_auth_provider(provider):
     """
     _auth_providers.append(provider)
     _auth_providers.sort(key=lambda p: getattr(p, 'priority', 0), reverse=True)
-    logger.info(f"Registered auth provider: {getattr(provider, 'provider_id', 'unknown')}")
+    logger.debug(f"Registered auth provider: {getattr(provider, 'provider_id', 'unknown')}")
 
 def register_config_provider(provider):
     """Register a configuration provider plugin."""
     _config_providers.append(provider)
-    logger.info(f"Registered config provider: {getattr(provider, 'provider_id', 'unknown')}")
+    logger.debug(f"Registered config provider: {getattr(provider, 'provider_id', 'unknown')}")
 
 def register_registry_provider(provider):
     """Register an MCP registry provider plugin."""
@@ -42,6 +43,17 @@ def register_formatter_provider(provider):
     """Register a formatter provider plugin."""
     _formatter_providers.append(provider)
     logger.info(f"Registered formatter provider: {getattr(provider, 'formatter_id', 'unknown')}")
+
+def register_tool_validator_provider(provider):
+    """
+    Register a tool validator provider plugin.
+    
+    Validators can provide tool-specific argument validation and
+    self-correcting error messages for internal/enterprise tools.
+    """
+    _tool_validator_providers.append(provider)
+    logger.info(f"Registered tool validator provider: {getattr(provider, 'validator_id', 'unknown')}")
+
 
 def get_all_config_providers() -> List:
     """Get all registered config providers (regardless of should_apply)."""
@@ -85,6 +97,11 @@ def get_registry_providers() -> List:
 def get_formatter_providers() -> List:
     """Get all registered formatter providers."""
     return _formatter_providers.copy()
+
+def get_tool_validator_providers() -> List:
+    """Get all registered tool validator providers."""
+    return _tool_validator_providers.copy()
+
 
 def initialize():
     """Initialize plugin system and load available plugins."""

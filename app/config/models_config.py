@@ -323,9 +323,6 @@ MODEL_CONFIGS = {
             "family": "claude",
             "supports_context_caching": True,
             "supports_vision": True,
-            "supports_extended_context": True,  # Test if Bedrock allows it
-            "extended_context_limit": 1000000,
-            "extended_context_header": "context-1m-2025-08-07",
         },
         "sonnet": {
             "model_id": {

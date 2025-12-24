@@ -634,12 +634,19 @@ def start_server(args):
             # Restore the original working directory before starting the server
             os.chdir(original_cwd)
             
-            # Initialize file watcher with cache invalidation
+            # Initialize file watcher with cache invalidation (fast - just sets up observer)
             from app.utils.file_watcher import initialize_file_watcher
             from app.utils.file_state_manager import FileStateManager
             file_state_manager = FileStateManager()
             initialize_file_watcher(file_state_manager, os.getcwd(), invalidate_folder_cache)
-            logger.info("File watcher initialized with folder cache invalidation")
+            logger.info("File watcher initialized")
+            
+            # NOTE: Folder cache warming now happens in background via server lifespan
+            # The server will start immediately and scanning happens asynchronously
+            
+            logger.info("=" * 80)
+            logger.info("🚀 Starting Ziya server...")
+            logger.info("=" * 80)
             
             logger.info("=== STARTUP PHASE 3: Starting Server ===")
             # Use uvicorn directly instead of langchain_cli.serve()

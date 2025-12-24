@@ -31,7 +31,7 @@ class FileChangeHandler(FileSystemEventHandler):
         # Initialize gitignore patterns
         self.ignored_patterns = get_ignored_patterns(self.base_dir)
         self.should_ignore_fn = parse_gitignore_patterns(self.ignored_patterns)
-        logger.info(f"FileChangeHandler initialized with {len(self.ignored_patterns)} gitignore patterns")
+        logger.debug(f"FileChangeHandler initialized with {len(self.ignored_patterns)} gitignore patterns")
     
     def _is_editor_temp_file(self, path: str) -> bool:
         """Check if file is a temporary editor file."""
