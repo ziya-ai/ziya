@@ -146,10 +146,10 @@ class MCPManager:
         
         # Load configuration
         server_configs = self.builtin_server_definitions.copy()
-        logger.info(f"Initialized with {len(server_configs)} built-in server definitions.")
+        logger.debug(f"Initialized with {len(server_configs)} built-in server definitions.")
 
         if self.config_path and os.path.exists(self.config_path):
-            logger.info(f"Loading user MCP configuration from: {self.config_path}")
+            logger.debug(f"Loading user MCP configuration from: {self.config_path}")
             try:
                 with open(self.config_path, 'r') as f:
                     user_config_data = json.load(f)
@@ -195,7 +195,7 @@ class MCPManager:
                         user_cfg["args"] = [str(user_cfg["args"])]
                     
                     if name in server_configs and server_configs[name].get("builtin"):
-                        logger.info(f"User configuration for '{name}' overrides built-in server.")
+                        logger.debug(f"User configuration for '{name}' overrides built-in server.")
                         updated_config = server_configs[name].copy()
                         updated_config.update(user_cfg)
                         
@@ -208,15 +208,15 @@ class MCPManager:
                                 builtin_args = server_configs[name].get("args", [])
                                 if builtin_args:
                                     updated_config["args"] = builtin_args
-                                    logger.info(f"Preserved absolute script path for builtin server '{name}': {builtin_args[-1]}")
+                                    logger.debug(f"Preserved absolute script path for builtin server '{name}': {builtin_args[-1]}")
                         
                         updated_config["builtin"] = True 
                         server_configs[name] = updated_config
                     else:
-                        logger.info(f"Loaded user-defined server: '{name}'")
+                        logger.debug(f"Loaded user-defined server: '{name}'")
                         server_configs[name] = {**user_cfg, "builtin": False}
                 
-                logger.info(f"Loaded {len(user_servers)} user server configurations from {self.config_path}. Total servers: {len(server_configs)}")
+                logger.debug(f"Loaded {len(user_servers)} user server configurations from {self.config_path}. Total servers: {len(server_configs)}")
             except Exception as e:
                 logger.error(f"Error loading user MCP config from {self.config_path}: {e}")
         else:
@@ -232,7 +232,7 @@ class MCPManager:
 
             for server_name, server_config in self.server_configs.items():
                 if not server_config.get("enabled", True):
-                    logger.info(f"MCP server {server_name} is disabled, skipping")
+                    logger.debug(f"MCP server {server_name} is disabled, skipping")
                     continue
                 
                 # Set environment variables for the server process
@@ -282,7 +282,7 @@ class MCPManager:
                     enhanced_config["max_retries"] = 5
                     enhanced_config["timeout"] = 60
                     enhanced_config["enable_response_cleaning"] = True
-                    logger.info(f"Configured {server_name} as external server with enhanced settings")
+                    logger.debug(f"Configured {server_name} as external server with enhanced settings")
                 
                 client = MCPClient(enhanced_config)
                 self.clients[server_name] = client
@@ -299,17 +299,14 @@ class MCPManager:
             successful_connections = sum(1 for result in results if result is True)
             builtin_count = sum(1 for cfg in self.server_configs.values() if cfg.get("builtin", False))
             user_count = len(self.server_configs) - builtin_count
-            logger.info(f"MCP Manager initialized: {successful_connections}/{len(connection_tasks)} servers connected")
             
-            # Debug server status
+            # Build summary of connected servers and their tools
+            server_summary = []
             for server_name, client in self.clients.items():
                 if client.is_connected:
-                    logger.info(f"✅ {server_name}: {len(client.tools)} tools, {len(client.resources)} resources")
-                    logger.debug(f"   Tools: {', '.join(tool.name for tool in client.tools)}")
-                else:
-                    logger.warning(f"❌ {server_name}: Connection failed")
+                    server_summary.append(f"{server_name} ({len(client.tools)} tools)")
             
-            logger.info(f"Server breakdown: {builtin_count} built-in, {user_count} user-configured")
+            logger.debug(f"MCP servers connected: {', '.join(server_summary)}")
             
             self.is_initialized = True
             return True
@@ -460,7 +457,7 @@ class MCPManager:
         try:
             success = await client.connect()
             if success:
-                logger.info(f"Connected to MCP server: {server_name}")
+                logger.debug(f"Connected to MCP server: {server_name}")
             else:
                 logger.error(f"Failed to connect to MCP server: {server_name}")
             return success
