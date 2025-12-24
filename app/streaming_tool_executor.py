@@ -8,8 +8,79 @@ import os
 import time
 from typing import Dict, Any, List, AsyncGenerator, Optional
 from app.utils.conversation_filter import filter_conversation_for_model
-
 logger = logging.getLogger(__name__)
+
+
+def validate_tool_args_against_schema(tool_name: str, args: dict, schema: dict) -> Optional[str]:
+    """
+    Validate tool arguments against the tool's input schema.
+    
+    Returns None if valid, or a self-correcting error message string if invalid.
+    This enables the model to automatically retry with corrected parameters.
+    """
+    if not schema:
+        return None
+    
+    properties = schema.get('properties', {})
+    required = schema.get('required', [])
+    
+    errors = []
+    
+    # Check required parameters
+    for param in required:
+        if param not in args or args[param] is None or args[param] == '':
+            param_info = properties.get(param, {})
+            param_desc = param_info.get('description', 'No description')
+            errors.append(f"- '{param}' is REQUIRED but missing. Description: {param_desc}")
+    
+    # Check enum values
+    for param, value in args.items():
+        if param in properties:
+            param_schema = properties[param]
+            allowed_values = param_schema.get('enum')
+            if allowed_values and value not in allowed_values:
+                errors.append(f"- '{param}' value '{value}' is invalid. Allowed values: {allowed_values}")
+    
+    if not errors:
+        return None
+    
+    # Build self-correcting error message
+    error_lines = [
+        "TOOL CALL FAILED - PARAMETER VALIDATION ERROR",
+        "",
+        f"You called: {tool_name}",
+        f"You provided: {json.dumps(args)}",
+        "",
+        "PROBLEMS FOUND:",
+    ]
+    error_lines.extend(errors)
+    error_lines.append("")
+    error_lines.append(f"Required parameters: {required if required else 'None'}")
+    
+    # Add parameter details for guidance
+    if properties:
+        error_lines.append("")
+        error_lines.append("Parameter details:")
+        for param, param_schema in properties.items():
+            param_type = param_schema.get('type', 'any')
+            param_desc = param_schema.get('description', '')
+            param_enum = param_schema.get('enum')
+            req_marker = " (REQUIRED)" if param in required else ""
+            
+            line = f"- {param}{req_marker}: {param_type}"
+            if param_enum:
+                line += f" - allowed: {param_enum}"
+            error_lines.append(line)
+            if param_desc:
+                # Truncate long descriptions
+                desc_preview = param_desc[:100] + "..." if len(param_desc) > 100 else param_desc
+                error_lines.append(f"    {desc_preview}")
+    
+    error_lines.append("")
+    error_lines.append("Retry with corrected parameters.")
+    
+    return "\n".join(error_lines)
+
 
 class StreamingToolExecutor:
     def __init__(self, profile_name: str = 'ziya', region: str = 'us-west-2', model_id: str = None):
@@ -808,37 +879,109 @@ class StreamingToolExecutor:
                                         pass
                                 
                                 # Detect empty tool calls for tools that require arguments
+                                                
                                 actual_tool_name = tool_name[4:] if tool_name.startswith('mcp_') else tool_name
                                 
-                                # ENHANCED: Check for empty args dict first
+                                # Generic schema-based validation
+                                tool_schema = None
+                                for t in all_tools:
+                                    t_name = getattr(t, 'name', '')
+                                    if t_name == tool_name or t_name == actual_tool_name:
+                                        if hasattr(t, 'metadata') and t.metadata:
+                                            tool_schema = t.metadata.get('input_schema')
+                                        break
+                                
+                                if tool_schema:
+                                    validation_error = validate_tool_args_against_schema(
+                                        tool_name, args, tool_schema
+                                    )
+                                    if validation_error:
+                                        logger.error(f"🔍 SCHEMA_VALIDATION_FAILED: {tool_name} - {validation_error[:100]}")
+                                        empty_tool_calls_this_iteration += 1
+                                        consecutive_empty_tool_calls += 1
+                                        
+                                        tool_results.append({
+                                            'tool_id': tool_id,
+                                            'tool_name': tool_name,
+                                            'result': validation_error
+                                        })
+                                        yield {'type': 'tool_result_for_model', 'tool_use_id': tool_id, 'content': validation_error}
+                                        completed_tools.add(tool_id)
+                                        tools_executed_this_iteration = True
+                                        continue
+                                
+                                # Check for empty args dict - provide self-correcting feedback
                                 if not args or len(args) == 0:
-                                    logger.warning(f"🔍 EMPTY_ARGS_DICT: Model called {tool_name} with empty arguments dict")
-                                    logger.warning(f"🔍 RAW_JSON: args_json was: '{args_json}'")
-                                    empty_tool_calls_this_iteration += 1
+                                    logger.error(f"🔍 EMPTY_ARGS: {tool_name} called with no arguments")
                                     consecutive_empty_tool_calls += 1
                                     
-                                    error_result = f"Error: Tool call failed - no arguments provided. The tool requires parameters but received an empty arguments object. JSON received: {args_json}"
-                                    # ... rest of error handling
+                                    # Build tool-specific correction guidance
+                                    if actual_tool_name == 'run_shell_command':
+                                        error_result = """TOOL CALL FAILED - EMPTY ARGUMENTS
+
+You called: run_shell_command
+You provided: {} (empty)
+
+REQUIRED: The 'command' parameter must be provided.
+
+CORRECT FORMAT:
+{
+  "command": "your_shell_command_here"
+}
+
+EXAMPLE:
+{
+  "command": "ls -la"
+}
+
+Retry now with the command parameter."""
+                                    else:
+                                        error_result = f"""TOOL CALL FAILED - EMPTY ARGUMENTS
+
+You called: {tool_name}
+You provided: {{}} (empty)
+
+This tool requires arguments but received none.
+Check the tool schema for required parameters and retry."""
+
+                                    tool_results.append({'tool_id': tool_id, 'tool_name': tool_name, 'result': error_result})
+                                    # Don't show validation errors to user - just feed back to model for self-correction
+                                    yield {'type': 'tool_result_for_model', 'tool_use_id': tool_id, 'content': error_result}
+                                    completed_tools.add(tool_id)
+                                    tools_executed_this_iteration = True  # Continue iteration so model sees error and can retry
                                     continue
                                 
                                 elif actual_tool_name == 'run_shell_command' and not args.get('command'):
-                                    logger.warning(f"🔍 EMPTY_TOOL_CALL: Model called {tool_name} without required 'command' argument")
-                                    logger.warning(f"🔍 EMPTY_TOOL_CONTEXT: Assistant text before call: '{assistant_text[-200:]}'")
+                                    logger.error(f"🔍 MISSING_COMMAND: {tool_name} called without 'command' param, got: {args}")
                                     empty_tool_calls_this_iteration += 1
                                     consecutive_empty_tool_calls += 1
                                     
-                                    # Return helpful error immediately without executing
-                                    error_result = f"Error: Tool call failed - the 'command' parameter is required but was not provided. You must call run_shell_command with a JSON object containing the command string. Example: {{\"command\": \"ls -la\"}}. Please retry with the correct format."
-                                    
-                                    tool_results.append({
-                                        'tool_id': tool_id,
-                                        'tool_name': tool_name,
-                                        'result': error_result
-                                    })
-                                    
+                                    # Self-correcting feedback with exact format needed
+                                    error_result = f"""TOOL CALL FAILED - MISSING 'command' PARAMETER
+
+You called: run_shell_command
+You provided: {json.dumps(args)}
+
+PROBLEM: 'command' parameter is REQUIRED but missing.
+
+CORRECT FORMAT:
+{{
+  "command": "your_shell_command_here"
+}}
+
+EXAMPLE:
+{{
+  "command": "find . -name '*.md' -type f"
+}}
+Retry with the 'command' parameter included."""
+
+                                    tool_results.append({'tool_id': tool_id, 'tool_name': tool_name, 'result': error_result})
+                                    # Don't show validation errors to user - just feed back to model for self-correction
+                                    yield {'type': 'tool_result_for_model', 'tool_use_id': tool_id, 'content': error_result}
                                     completed_tools.add(tool_id)
-                                    tools_executed_this_iteration = True
-                                    logger.debug(f"🔍 TOOL_EXECUTED_FLAG: Set tools_executed_this_iteration = True for tool {tool_id}")
+                                    tools_executed_this_iteration = True  # Continue iteration so model sees error and can retry
+                                    continue
+                                    tools_executed_this_iteration = True  # Continue iteration so model sees error and can retry
                                     continue
                                 
                                 # Update the corresponding entry in all_tool_calls with parsed arguments
