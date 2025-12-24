@@ -1846,6 +1846,20 @@ def extract_codebase(x):
     result.append(codebase)
 
     final_string = "\n".join(result)
+
+    # Debug logging for codebase assembly (enable with ZIYA_DEBUG_PROMPTS=true)
+    try:
+        from app.utils.prompt_debugger import log_codebase_assembly, is_prompt_debug_enabled
+        if is_prompt_debug_enabled():
+            log_codebase_assembly(
+                overall_changes=overall_changes,
+                recent_changes=recent_changes,
+                codebase=codebase,
+                final_result=final_string
+            )
+    except ImportError:
+        pass  # Debugger not available
+
     file_markers = [line for line in final_string.split('\n') if line.startswith('File: ')]
     logger.debug(f"Final string assembly:")
     logger.debug(f"Total length: {len(final_string)} chars")
@@ -1916,7 +1930,7 @@ def create_agent_chain(chat_model: BaseChatModel):
                 mcp_tools = []
             else:
                 mcp_tools = create_secure_mcp_tools()
-                logger.info(f"Created {len(mcp_tools)} MCP tools for agent chain: {[tool.name for tool in mcp_tools]}")
+                logger.debug(f"Created {len(mcp_tools)} MCP tools for agent chain")
         
         except Exception as e:
             logger.warning(f"Failed to get MCP tools for agent: {str(e)}")
@@ -1942,7 +1956,7 @@ def create_agent_chain(chat_model: BaseChatModel):
     model_family = model_info["model_family"]
     endpoint = model_info["endpoint"]
     
-    logger.info(f"Creating agent chain for model: {model_name}, family: {model_family}, endpoint: {endpoint}")
+    logger.debug(f"Creating agent chain for model: {model_name}, family: {model_family}, endpoint: {endpoint}")
     
     # Define the input mapping with conditional AST context
     input_mapping = {
@@ -1957,18 +1971,18 @@ def create_agent_chain(chat_model: BaseChatModel):
     
     # Add AST context enhancement if enabled
     if ast_enabled:
-        logger.info("Adding AST context to agent chain input mapping")
+        logger.debug("Adding AST context to agent chain input mapping")
         def get_ast_context_for_prompt(x):
             from app.utils.context_enhancer import get_ast_context
             if get_ast_context:
                 ast_context = get_ast_context()
-                logger.info(f"Retrieved AST context: {len(ast_context) if ast_context else 0} chars")
+                logger.debug(f"Retrieved AST context: {len(ast_context) if ast_context else 0} chars")
                 return ast_context or ""
             return ""
         input_mapping["ast_context"] = get_ast_context_for_prompt
-        logger.info(f"AST context lambda added to input mapping: {input_mapping.get('ast_context')}")
+        logger.debug(f"AST context lambda added to input mapping: {input_mapping.get('ast_context')}")
     else:
-        logger.info("AST context not added to agent chain (disabled)")
+        logger.debug("AST context not added to agent chain (disabled)")
         # Add empty AST context to avoid template errors
         input_mapping["ast_context"] = lambda x: {}
 
@@ -2112,15 +2126,14 @@ def create_agent_chain(chat_model: BaseChatModel):
     # Create the XML agent directly with input preprocessing
     # Use custom output parser for MCP tool detection
     agent = create_xml_agent(llm_with_stop, mcp_tools, prompt_template)
-    # Log the tools that were actually passed to the agent
-    logger.info(f"XML agent created with {len(mcp_tools)} tools: {[tool.name for tool in mcp_tools]}")
+    logger.debug(f"XML agent created with {len(mcp_tools)} tools")
     
     # Check if agent has output_parser attribute before logging it
     if hasattr(agent, 'output_parser'):
-        logger.info(f"Created XML agent with output parser: {agent.output_parser.__class__.__name__}")
+        logger.debug(f"Created XML agent with output parser: {agent.output_parser.__class__.__name__}")
     else:
         # For RunnableSequence objects that don't have output_parser
-        logger.info(f"Created XML agent of type: {type(agent).__name__}")
+        logger.debug(f"Created XML agent of type: {type(agent).__name__}")
     
     # Create a preprocessing chain that applies input mapping
     def preprocess_input(input_data):
@@ -2139,14 +2152,13 @@ def create_agent_chain(chat_model: BaseChatModel):
     preprocessing_chain = RunnableLambda(preprocess_input)
     agent_chain = preprocessing_chain | agent
     
-    logger.info(f"Created XML agent with {len(mcp_tools)} tools and input mapping")
-    logger.info(f"Input mapping keys: {list(input_mapping.keys())}")
+    logger.debug(f"Created XML agent with {len(mcp_tools)} tools and input mapping")
     
     # Cache the agent chain
     if 'agent_chain_cache' not in ModelManager._state:
         ModelManager._state['agent_chain_cache'] = {}
     ModelManager._state['agent_chain_cache'][cache_key_hash] = agent_chain
-    logger.info(f"Cached agent chain for {cache_key_hash}")
+    logger.debug(f"Cached agent chain for {cache_key_hash}")
     
     return agent_chain
  
@@ -2227,11 +2239,9 @@ def create_agent_executor(agent_chain: Runnable):
             
             if mcp_manager.is_initialized:
                 mcp_tools = create_mcp_tools()
-                logger.info(f"Created agent executor with {len(mcp_tools)} MCP tools")
-                for tool in mcp_tools:
-                    logger.info(f"  - {tool.name}: {tool.description}")
+                logger.debug(f"Created agent executor with {len(mcp_tools)} MCP tools")
             else:
-                logger.info("MCP not initialized, no MCP tools available")
+                logger.debug("MCP not initialized, no MCP tools available")
         except Exception as e:
             logger.warning(f"Failed to initialize MCP tools: {str(e)}", exc_info=True)
             from app.mcp.manager import get_mcp_manager
@@ -2239,10 +2249,9 @@ def create_agent_executor(agent_chain: Runnable):
         logger.debug("MCP is disabled, no tools will be created for agent executor")
         mcp_manager = get_mcp_manager()
 
-    logger.info(f"AGENT_EXECUTOR: Tools being passed to AgentExecutor: {[tool.name for tool in mcp_tools] if mcp_tools else 'No tools'}")
-        
+    logger.debug(f"AGENT_EXECUTOR: Tools being passed to AgentExecutor: {[tool.name for tool in mcp_tools] if mcp_tools else 'No tools'}")
     # Create the original executor
-    logger.info(f"Creating AgentExecutor with agent type: {type(agent_chain)}")
+    logger.debug(f"Creating AgentExecutor with agent type: {type(agent_chain)}")
     
     # Check if agent is available before creating executor
     if agent_chain is None:
