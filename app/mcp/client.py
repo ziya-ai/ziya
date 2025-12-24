@@ -97,7 +97,7 @@ class MCPClient:
             # For registry-installed services without explicit command, generate from installation_path
             if not command and self.server_config.get("installation_path"):
                 installation_path = self.server_config["installation_path"]
-                logger.info(f"Attempting to generate command for registry service at: {installation_path}")
+                logger.debug(f"Attempting to generate command for registry service at: {installation_path}")
                 self.logs.append(f"INFO: Looking for executable in {installation_path}")
                 
                 if not os.path.exists(installation_path):
@@ -109,19 +109,19 @@ class MCPClient:
                     
                     # Check for Python scripts
                     python_files = glob.glob(os.path.join(installation_path, "*.py"))
-                    logger.info(f"Found Python files: {python_files}")
+                    logger.debug(f"Found Python files: {python_files}")
                     self.logs.append(f"INFO: Found Python files: {python_files}")
                     
                     if python_files:
                         # Use the first Python file found
                         command = ["python", python_files[0]]
-                        logger.info(f"Generated command for registry service: {command}")
+                        logger.debug(f"Generated command for registry service: {command}")
                         self.logs.append(f"INFO: Generated command: {command}")
                     else:
                         # Check for executable files
                         try:
                             files = os.listdir(installation_path)
-                            logger.info(f"Files in installation directory: {files}")
+                            logger.debug(f"Files in installation directory: {files}")
                             self.logs.append(f"INFO: Files in directory: {files}")
                             
                             if not files:
@@ -131,7 +131,7 @@ class MCPClient:
                                 file_path = os.path.join(installation_path, file)
                                 if os.path.isfile(file_path) and os.access(file_path, os.X_OK):
                                     command = [file_path]
-                                    logger.info(f"Found executable for registry service: {command}")
+                                    logger.debug(f"Found executable for registry service: {command}")
                                     self.logs.append(f"INFO: Found executable: {command}")
                                     break
                         except Exception as e:
@@ -161,8 +161,7 @@ class MCPClient:
                 os.path.dirname(app_dir)  # Package root (where mcp_servers would be alongside app/)
             ]
             
-            logger.info(f"Starting MCP server '{self.server_config.get('name', 'unknown')}' with working directory: {working_dir}")
-
+            logger.debug(f"Starting MCP server '{self.server_config.get('name', 'unknown')}' with working directory: {working_dir}")
             # Resolve command paths
             resolved_command = []
 
@@ -177,7 +176,7 @@ class MCPClient:
                         if os.path.exists(potential_path):
                             current_part_resolved_path = potential_path
                             found_this_part_in_roots = True
-                            logger.info(f"Found MCP server script '{part}' at: {current_part_resolved_path}")
+                            logger.debug(f"Found MCP server script '{part}' at: {current_part_resolved_path}")
                             break # Found the script for this part
                     
                     if not found_this_part_in_roots:
@@ -194,10 +193,7 @@ class MCPClient:
             server_specific_args = self.server_config.get("args", [])
             final_popen_command.extend(server_specific_args)
 
-            logger.info(f"Starting MCP server with command: {' '.join(final_popen_command)}")
-
-            logger.info(f"Using working directory: {working_dir}")
-
+            logger.debug(f"Starting MCP server with command: {' '.join(final_popen_command)} in {working_dir}")
             # Get environment variables for the process
             process_env = self.server_config.get("env", {})
             full_env = os.environ.copy()
@@ -244,7 +240,7 @@ class MCPClient:
                 # Load available resources, tools, and prompts
                 await self._load_server_capabilities()
                 
-                logger.info(f"Successfully connected to MCP server: {self.server_config.get('name', 'unknown')}")
+                logger.debug(f"Successfully connected to MCP server: {self.server_config.get('name', 'unknown')}")
                 return True
             else:
                 logger.error(f"Failed to initialize MCP server connection: {self.server_config.get('name', 'unknown')}")
@@ -689,10 +685,10 @@ class MCPClient:
                     logger.warning(f"No 'resources' key in response from {server_name_for_log}: {resources_result}")
             
             # Load tools
-            logger.info(f"Server {server_name_for_log} capabilities: {self.capabilities}")
-            logger.info(f"Checking tools capability: {self.capabilities.get('tools')}")
+            logger.debug(f"Server {server_name_for_log} capabilities: {self.capabilities}")
+            logger.debug(f"Checking tools capability: {self.capabilities.get('tools')}")
             if "tools" in self.capabilities:
-                logger.info(f"Calling tools/list for {server_name_for_log}")
+                logger.debug(f"Calling tools/list for {server_name_for_log}")
                 tools_result = await self._send_request("tools/list")
                 logger.debug(f"Tools list response from {server_name_for_log}: {tools_result}")
                 if tools_result and "tools" in tools_result:
@@ -707,14 +703,14 @@ class MCPClient:
                         except TypeError as e:
                             logger.error(f"Failed to create MCPTool for server {server_name_for_log}, FILTERED data {filtered_data} (original: {tool_data}): {e}")
                     self.tools = valid_tools
-                    logger.info(f"Successfully loaded {len(valid_tools)} tools for server {server_name_for_log}")
+                    logger.debug(f"Successfully loaded {len(valid_tools)} tools for server {server_name_for_log}")
                 elif tools_result is None:
                     logger.warning(f"Failed to get a valid response for tools/list from {server_name_for_log}")
                 else:
                     logger.warning(f"No 'tools' key in response from {server_name_for_log}: {tools_result}")
             
             # Load prompts
-            logger.info(f"Loading prompts for server: {server_name_for_log}")
+            logger.debug(f"Loading prompts for server: {server_name_for_log}")
             if "prompts" in self.capabilities:
                 prompts_result = await self._send_request("prompts/list")
                 if prompts_result and "prompts" in prompts_result:
@@ -734,7 +730,7 @@ class MCPClient:
                 else:
                     logger.warning(f"No 'prompts' key in response from {server_name_for_log}: {prompts_result}")
 
-            logger.info(f"Loaded MCP capabilities for {server_name_for_log}: {len(self.resources)} resources, {len(self.tools)} tools, {len(self.prompts)} prompts")
+            logger.debug(f"Loaded MCP capabilities for {server_name_for_log}: {len(self.resources)} resources, {len(self.tools)} tools, {len(self.prompts)} prompts")
             logger.debug(f"Tool names for {server_name_for_log}: {[tool.name for tool in self.tools]}")
 
         except Exception as e:
