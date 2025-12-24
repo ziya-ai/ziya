@@ -665,53 +665,16 @@ export const MUIFileExplorer = () => {
   const refreshFolders = async () => {
     setIsRefreshing(true);
     try {
+      // Just trigger the refresh - the FolderContext will handle the scanning progress
       const response = await fetch('/api/folders?refresh=true');
       if (!response.ok) {
         throw new Error(`Failed to refresh folders: ${response.status}`);
       }
-      const data: Folders = await response.json();
-
-      // If we get a scanning placeholder, poll until we get actual data
-      if (data._scanning) {
-        console.log('Received scanning placeholder, polling for actual data...');
-
-        // Poll for actual data with a short interval
-        const pollForData = async () => {
-          const maxAttempts = 30;  // Increase to 30 attempts
-          const pollInterval = 500;  // 500ms between attempts = 15s max wait
-          
-          for (let attempt = 0; attempt < maxAttempts; attempt++) {
-            await new Promise(resolve => setTimeout(resolve, pollInterval));
-
-            const pollResponse = await fetch('/api/folders-cached');
-            if (!pollResponse.ok) continue;
-
-            const pollData: Folders = await pollResponse.json();
-            
-            // Skip if we got an error response (no cached data yet)
-            if (pollData.error) continue;
-            
-            if (!pollData._scanning && Object.keys(pollData).length > 1) {
-              console.log('Polling successful, got actual data');
-              return pollData;
-            }
-          }
-          throw new Error('Polling timeout - scan taking too long');
-        };
-
-        const actualData = await pollForData();
-        const sortedData = sortTreeData(convertToTreeData(actualData));
-        setTreeData(sortedData);
-      } else {
-        // Got actual data immediately
-        const sortedData = sortTreeData(convertToTreeData(data));
-        setTreeData(sortedData);
-      }
-
-      // Token counts will be loaded on-demand when files are selected
-      // No need to fetch them during refresh without knowing which files to check
-
-      // Keep folders collapsed on refresh too
+      
+      // The response will trigger the scanning state in FolderContext
+      // The component will automatically show the progress bar (lines 1077-1107)
+      // When scanning completes, the context will update and we'll get the data
+      
       message.success('Folder structure refreshed');
     } catch (err) {
       console.error('Failed to refresh folders:', err);

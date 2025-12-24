@@ -516,7 +516,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode, to
                     const truncatedFirstLine = firstLine.length > 200 ? firstLine.substring(0, 200) + '...' : firstLine;
                     // Parse markdown for the preview line
                     const previewHtml = shouldRenderAsMarkdown ? marked.parseInline(truncatedFirstLine) : truncatedFirstLine;
-                    
+
                     return (
                         <div
                             style={{
@@ -1133,14 +1133,14 @@ const validateAndFixParsedFiles = (parsedFiles: any[]): any[] => {
 const isDeletionDiff = (content: string) => {
     const lines = content.split('\n');
     // Check that 'deleted file mode' appears as an actual line (not in diff content)
-    const hasDeletedFileMode = lines.some(line => 
+    const hasDeletedFileMode = lines.some(line =>
         line.trim().startsWith('deleted file mode') && !line.startsWith('+') && !line.startsWith('-')
     );
     // Check that '+++ /dev/null' appears as an actual header line
-    const hasDevNullTarget = lines.some(line => 
+    const hasDevNullTarget = lines.some(line =>
         line.trim() === '+++ /dev/null' || line.trim() === '+++ b/dev/null'
     );
-    
+
     return content.includes('diff --git') && hasDeletedFileMode && hasDevNullTarget;
 };
 
@@ -1149,7 +1149,7 @@ const normalizeGitDiff = (diff: string): string => {
     if (diff.startsWith('diff --git') || diff.match(/^---\s+\S+/m) || diff.includes('/dev/null') ||
         diff.match(/^@@\s+-\d+/m)) {
         const lines: string[] = diff.split('\n');
-        
+
         // CRITICAL: Handle XX placeholder patterns in hunk headers
         // Convert @@ -XX,X +XX,X @@ to @@ -1,1 +1,1 @@ for parseDiff compatibility
         for (let i = 0; i < lines.length; i++) {
@@ -1164,7 +1164,7 @@ const normalizeGitDiff = (diff: string): string => {
                 lines[i] = lines[i].replace(/@@\s+-XX\s+\+XX\s+@@/, '@@ -1 +1 @@');
             }
         }
-        
+
         const normalizedLines: string[] = [];
 
         // Check if this is a properly formatted diff
@@ -2972,7 +2972,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
     // Handle undo/unapply
     const handleUndoChanges = async () => {
         if (!appliedDiff || !isReversible) return;
-        
+
         setIsUndoing(true);
         try {
             const response = await fetch('/api/unapply-changes', {
@@ -2984,7 +2984,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                     requestId: `undo-${Date.now()}`
                 }),
             });
-            
+
             const data = await response.json();
             if (data.status === 'success') {
                 // Reset state to allow re-applying
@@ -2992,12 +2992,12 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                 setIsReversible(false);
                 setAppliedDiff('');
                 appliedRef.current = false;
-                
+
                 // Clear hunk statuses
                 if (setHunkStatuses) {
                     setHunkStatuses(() => new Map());
                 }
-                
+
                 console.log('Successfully undid changes');
             } else {
                 console.error('Failed to undo changes:', data.message);
@@ -3339,7 +3339,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
                 if (match) {
                     const oldPath = match[1];
                     const newPath = match[2];
-                    
+
                     // Check for deletion FIRST - before any path comparisons
                     // The 'deleted file mode' marker is definitive even if git header shows same path
                     if (isDeletedFile) {
@@ -3727,9 +3727,9 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
         } else {
             setIsLanguageLoaded(true);
         }
-    }, [normalizedLang]);
+    }, [token.lang, normalizedLang]);
 
-    //  Check if this should be a tool block instead
+    // Check if this should be a tool block instead - BEFORE normal code rendering
     if (token.lang?.startsWith('tool:')) {
         const toolName = token.lang.substring(5);
 
@@ -3740,6 +3740,18 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
 
         console.log('🔧 CodeBlock redirecting to ToolBlock:', toolName);
         return <ToolBlock toolName={toolName} content={token.text || ''} isDarkMode={isDarkMode} />;
+    }
+
+    // CRITICAL: Check for shell blocks that are tool execution displays
+    // These should be rendered as ToolBlock components for nice formatting
+    if (token.lang === 'shell' && token.text) {
+        const shellText = token.text;
+        // Check if this is a tool execution block (has $ command and status)
+        if (shellText.includes('$') && (shellText.includes('⏳') || shellText.includes('Running'))) {
+            // Mark this as a tool block - it will be handled by renderTokens
+            (token as TokenWithText).toolName = 'mcp_run_shell_command';
+            // The actual ToolBlock rendering happens in renderTokens case 'tool'
+        }
     }
 
     // Remove debug logging that was causing performance overhead
@@ -3853,20 +3865,26 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         }
     }
 
-    // 1.5: Filter out raw tool: fence blocks - these are internal markers only
-    // The backend sends tool_start/tool_display events to render tools properly
-    if (tokenType === 'code' && 'lang' in token && typeof token.lang === 'string') {
-        if (token.lang.startsWith('tool:')) {
-            // Skip rendering - this will be handled by tool_start event
-            return null;
-        }
-    }
-
     // 2. Handle Code Blocks with explicit lang tags
+    const tokenWithText = token as TokenWithText; // Helper cast - moved earlier for shell block check
+
     if (tokenType === 'code' && 'lang' in token && typeof token.lang === 'string' && token.lang) {
         const lang = token.lang.toLowerCase().trim();
 
         // Check for DrawIO blocks
+
+        // CRITICAL: Check for shell blocks that are tool execution displays
+        // These should be rendered as ToolBlock components, not plain code
+        if (lang === 'shell' && tokenWithText.text) {
+            const shellText = tokenWithText.text;
+            // Check if this is a tool execution block (has $ command and status)
+            if (shellText.includes('$') && (shellText.includes('⏳') || shellText.includes('Running'))) {
+                // Mark as tool and return tool type - actual rendering in renderTokens
+                (tokenWithText as TokenWithText).toolName = 'mcp_run_shell_command';
+                return 'tool';
+            }
+        }
+
         if (lang === 'drawio' || lang === 'draw.io') {
             return 'drawio';
         }
@@ -4128,7 +4146,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
         const previousToken = index > 0 ? tokens[index - 1] : null;
         // Determine the definitive type for rendering
         const determinedType = determineTokenType(token);
-        const tokenWithText = token as TokenWithText; // Helper cast
+        const tokenWithText = token as TokenWithText
 
         // Only log tool tokens when debug logging is enabled
         if (isDebugLoggingEnabled() &&
@@ -5064,7 +5082,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 // These are internal anchors used by chatApi.ts for replacement logic
                 // and should never be visible to users
                 processedMarkdown = processedMarkdown.replace(/<!-- TOOL_MARKER:[^>]+ -->\n?/g, '');
-                
+
                 const toolBlockRegex = /<!-- TOOL_BLOCK_START:(mcp_\w+)\|(.+?) -->\s*([\s\S]*?)\s*<!-- TOOL_BLOCK_END:\1 -->/g;
                 const toolBlocks: Array<{ match: string, toolName: string, displayHeader: string, content: string }> = [];
 
@@ -5318,6 +5336,8 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
     // Track attached handlers to prevent duplicates
     const attachedHandlersRef = useRef<Set<Element>>(new Set());
+    // Track if we've done initial scan
+    const hasScannedInitiallyRef = useRef(false);
 
     // Separate function to attach handler with proper closure
     const attachThrottleRetryHandler = useCallback((button: HTMLButtonElement) => {
@@ -5328,6 +5348,10 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
         console.log(`✅ Attaching throttle retry handler to button for conversation: ${conversationId}`);
 
+        // Mark as attached immediately to prevent duplicates
+        button.dataset.handlerAttached = 'true';
+        attachedHandlersRef.current.add(button);
+
         const handleClick = async () => {
             console.log('🔄 RETRY: User clicked retry button after throttling');
 
@@ -5337,19 +5361,26 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             button.textContent = '⏳ Retrying...';
 
             try {
+                // Get the throttling recovery data for this conversation
                 const recoveryData = throttlingRecoveryData.get(conversationId);
-                const lastUserMessage = currentMessages.filter(msg => msg.role === 'human').pop();
 
-                if (!lastUserMessage) {
-                    message.error('No message to retry');
-                    button.disabled = false;
-                    button.textContent = originalText;
-                    return;
-                }
-
+                // Build message history including partial response if available
                 const messagesForRetry = [...currentMessages.filter(msg => !msg.muted)];
 
+                // If we have recovery data with partial content, include it
+                if (recoveryData?.partialContent && recoveryData.partialContent.trim()) {
+                    messagesForRetry.push({
+                        role: 'assistant',
+                        content: recoveryData.partialContent,
+                        _timestamp: Date.now()
+                    });
+                    console.log('🔄 RETRY: Including partial response from recovery data:',
+                        recoveryData.partialContent.length, 'characters');
+                }
+
+                // If we have tool results, add them
                 if (recoveryData?.toolResults && recoveryData.toolResults.length > 0) {
+                    console.log('📦 RETRY: Including', recoveryData.toolResults.length, 'tool results');
                     recoveryData.toolResults.forEach((toolResult, index) => {
                         messagesForRetry.push({
                             role: 'assistant',
@@ -5360,16 +5391,19 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                     });
                 }
 
+                // Get the last user message as the question to continue with
+                const lastUserMessage = messagesForRetry.filter(msg => msg.role === 'human').pop();
+
+                if (!lastUserMessage) {
+                    message.error('No message to retry');
+                    button.disabled = false;
+                    button.textContent = originalText;
+                    return;
+                }
+
+                // Start the retry
                 addStreamingConversation(conversationId);
-                await sendPayload(
-                    messagesForRetry,
-                    lastUserMessage.content,
-                    checkedKeys as string[],
-                    conversationId,
-                    streamedContentMap,
-                    setStreamedContentMap,
-                    setIsStreaming,
-                    removeStreamingConversation,
+                await sendPayload(messagesForRetry, lastUserMessage.content, checkedKeys as string[], conversationId, streamedContentMap, setStreamedContentMap, setIsStreaming, removeStreamingConversation,
                     addMessageToConversation,
                     streamingConversations.has(conversationId),
                     (state) => updateProcessingState(conversationId, state)
@@ -5378,6 +5412,11 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 const next = new Map(throttlingRecoveryData);
                 next.delete(conversationId);
                 setThrottlingRecoveryData(next);
+
+                message.success({
+                    content: 'Retrying request...',
+                    duration: 2
+                });
             } catch (error) {
                 console.error('Retry failed:', error);
                 message.error('Failed to retry request');
@@ -5393,7 +5432,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         addStreamingConversation, setThrottlingRecoveryData]);
 
     // Helper to attach handlers to all buttons
-    const attachAllThrottleHandlers = useCallback(() => {
+    const scanAndAttachHandlers = useCallback(() => {
         const allButtons = document.querySelectorAll('.throttle-retry-button');
         console.log(`🔍 GLOBAL-ATTACH: Found ${allButtons.length} throttle buttons`);
         allButtons.forEach(button => {
@@ -5402,10 +5441,31 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 attachedHandlersRef.current.add(button);
             }
         });
+
+        // Mark that we've done at least one scan
+        hasScannedInitiallyRef.current = true;
     }, [attachThrottleRetryHandler]);
 
     // Setup MutationObserver to watch for dynamically added throttle buttons
     useLayoutEffect(() => {
+        // Listen for throttling error events to trigger immediate attachment
+        const handleThrottlingError = (event: CustomEvent) => {
+            console.log('🚨 THROTTLING_ERROR event received, scanning for buttons');
+            // Wait a tick for React to render the new content
+            setTimeout(() => {
+                scanAndAttachHandlers();
+            }, 50);
+            setTimeout(() => {
+                scanAndAttachHandlers();
+            }, 200);
+            setTimeout(() => {
+                scanAndAttachHandlers();
+            }, 500);
+        };
+
+        document.addEventListener('throttlingError', handleThrottlingError as EventListener);
+        document.addEventListener('throttleButtonRendered', handleThrottlingError as EventListener);
+
         if (!containerRef.current) return;
 
         // Listen for throttling recovery data
@@ -5465,16 +5525,19 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 }
             });
 
-            // CRITICAL FIX: Check globally for buttons that might be outside containerRef
-            setTimeout(attachAllThrottleHandlers, 100);
-            setTimeout(attachAllThrottleHandlers, 500);
+            // Initial global scan
+            setTimeout(scanAndAttachHandlers, 100);
+            setTimeout(scanAndAttachHandlers, 500);
+            setTimeout(scanAndAttachHandlers, 1000);
         }
 
         return () => {
             observer.disconnect();
+            document.removeEventListener('throttlingError', handleThrottlingError as EventListener);
+            document.removeEventListener('throttleButtonRendered', handleThrottlingError as EventListener);
             attachedHandlersRef.current.clear();
         };
-    }, [containerRef.current, currentConversationId, attachThrottleRetryHandler, attachAllThrottleHandlers]);
+    }, [containerRef.current, currentConversationId, attachThrottleRetryHandler, scanAndAttachHandlers]);
 
     const isMultiFileDiff = markdown?.includes('diff --git') && markdown.split('diff --git').length > 2;
     return isMultiFileDiff && !isSubRender && displayTokens.length === 1 && displayTokens[0].type === 'code' && (displayTokens[0] as TokenWithText).lang === 'diff' ?
