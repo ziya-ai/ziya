@@ -16,7 +16,7 @@ class RequestSizeMiddleware(BaseHTTPMiddleware):
     
     def __init__(self, app: ASGIApp, default_max_size_mb: int = 10):
         super().__init__(app)
-        self.default_max_size_mb = default_max_size_mb
+        logger.debug(f"RequestSizeLimiter initialized with default {default_max_size_mb}MB limit")
         self.max_size = default_max_size_mb * 1024 * 1024  # Convert to bytes
         logger.info(f"RequestSizeLimiter initialized with default {default_max_size_mb}MB limit")
     
