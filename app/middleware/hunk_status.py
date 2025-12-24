@@ -10,10 +10,9 @@ from app.utils.logging_utils import logger
 
 class HunkStatusMiddleware(BaseHTTPMiddleware):
     """Middleware for tracking and broadcasting hunk application status."""
-    
     def __init__(self, app: ASGIApp):
         super().__init__(app)
-        logger.info("HunkStatusMiddleware initialized")
+        logger.debug("HunkStatusMiddleware initialized")
         self.hunk_statuses = {}
     
     async def dispatch(
