@@ -578,7 +578,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     if max_depth <= 0:
         max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
     
-    logger.info(f"Getting folder structure for {directory} with max depth {max_depth}")
+    logger.debug(f"Getting folder structure for {directory} with max depth {max_depth}")
     
     # Track scanning progress
     scan_stats = {
@@ -599,7 +599,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
         logger.info("Scan cancelled before starting")
         return {"error": "Scan cancelled by user", "cancelled": True}
     
-    logger.info("Estimating directory count for progress tracking...")
+    logger.debug("Estimating directory count for progress tracking...")
     # Quick estimate of total work for better progress reporting
     try:
         # Skip estimation for home directories - it's too slow
@@ -607,7 +607,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
         is_home = os.path.abspath(directory).startswith(home_dir)
         
         if is_home:
-            logger.info("Skipping estimation for home directory (too large)")
+            logger.debug("Skipping estimation for home directory (too large)")
             estimated_total = 0
         else:
             estimated_total = estimate_directory_count(directory, ignored_patterns)
@@ -623,7 +623,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
         estimated_total = 0
     
     _scan_progress["estimated_total"] = estimated_total
-    logger.info(f"Estimated ~{estimated_total} directories to scan" if estimated_total > 0 else "Starting scan without estimate (will show raw counts)")
+    logger.debug(f"Estimated ~{estimated_total} directories to scan" if estimated_total > 0 else "Starting scan without estimate (will show raw counts)")
     # Set a maximum time limit for scanning (45 seconds default, configurable)
     max_scan_time = int(os.environ.get("ZIYA_SCAN_TIMEOUT", "45"))  # Increased default, configurable
     
@@ -739,7 +739,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
             elapsed = current_time - scan_stats['start_time']
             if current_time - last_progress_time > progress_interval:
                 progress_pct = f" ({scan_stats['directories_scanned']}/{estimated_total}, {(scan_stats['directories_scanned']/estimated_total*100):.0f}%)" if estimated_total > 0 else ""
-                logger.info(f"📊 Scan progress: {scan_stats['directories_scanned']} dirs{progress_pct}, {scan_stats['files_processed']} files in {elapsed:.1f}s")
+                logger.debug(f"📊 Scan progress: {scan_stats['directories_scanned']} dirs{progress_pct}, {scan_stats['files_processed']} files in {elapsed:.1f}s")
                 last_progress_time = current_time
                 
                 # Also print to stderr every 5 seconds for user visibility
@@ -872,27 +872,29 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     _visited_directories.clear()
     
     total_time = time.time() - scan_stats['start_time']
-    import sys
-    completion_msg = (f"✅ Folder scan completed: {scan_stats['directories_scanned']} dirs, "
-                     f"{scan_stats['files_processed']} files in {total_time:.2f}s")
-    logger.info(completion_msg)
     
-    # Clear the progress line and print completion
-    print("\r" + " "*100 + "\r" + completion_msg, file=sys.stderr)
-    print("", file=sys.stderr)  # Add newline
+    # Print completion message to stdout for visibility
+    print(f"✅ Folder scan completed: {scan_stats['directories_scanned']} dirs, {scan_stats['files_processed']} files in {total_time:.1f}s")
+    
+    # Notify server that folder scan is complete
+    try:
+        from app.server import _mark_folder_scan_complete
+        _mark_folder_scan_complete()
+    except Exception as e:
+        logger.debug(f"Could not notify server of scan completion: {e}")
     
     if total_time >= max_scan_time:
         logger.warning(f"Folder scan timed out after {max_scan_time}s")
-        logger.info(f"Partial results: {scan_stats['directories_scanned']} dirs, {scan_stats['files_processed']} files")
+        logger.debug(f"Partial results: {scan_stats['directories_scanned']} dirs, {scan_stats['files_processed']} files")
         # Ensure we return whatever we have so far
         if not root_result.get('children'):
             logger.error("No partial results available after timeout")
             return {"error": f"Scan timed out after {max_scan_time}s with no results", "timeout": True}
     
     if scan_stats['slow_directories']:
-        logger.warning(f"Found {len(scan_stats['slow_directories'])} slow operations:")
+        logger.debug(f"Found {len(scan_stats['slow_directories'])} slow operations:")
         for path, duration, reason in scan_stats['slow_directories'][:5]:  # Log top 5
-            logger.warning(f"  {path}: {duration:.2f}s ({reason})")
+            logger.debug(f"  {path}: {duration:.2f}s ({reason})")
             
     result = root_result.get('children', {})
     logger.debug(f"root_result keys: {list(root_result.keys())}")
@@ -916,7 +918,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
         }
     
     _visited_directories.clear()
-    logger.info(f"Returning folder structure with {len(result)} top-level entries")
+    logger.debug(f"Returning folder structure with {len(result)} top-level entries")
     return result
 
 # Add new fast estimation function
