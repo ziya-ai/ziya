@@ -84,6 +84,7 @@ def validate_tool_args_against_schema(tool_name: str, args: dict, schema: dict) 
 
 class StreamingToolExecutor:
     def __init__(self, profile_name: str = 'ziya', region: str = 'us-west-2', model_id: str = None):
+        
         # Only initialize Bedrock client for Bedrock endpoints
         from app.agents.models import ModelManager
         endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
@@ -124,6 +125,23 @@ class StreamingToolExecutor:
             # Non-Bedrock endpoints don't need a bedrock client
             self.bedrock = None
             logger.debug(f"🔍 Skipping Bedrock client initialization for endpoint: {endpoint}")
+
+    @staticmethod
+    def _normalize_tool_name(tool_name: str) -> str:
+        """
+        Normalize tool names to handle common malformations.
+        Examples:
+            'mcp_run_shell_command' -> 'run_shell_command'
+            'mcp_$mcp_run_shell_command' -> 'run_shell_command'
+            'run_shell_command' -> 'run_shell_command'
+        """
+        # Remove all 'mcp_' prefixes (handles repeated prefixes like mcp_$mcp_)
+        normalized = tool_name
+        while normalized.startswith('mcp_') or '_mcp_' in normalized:
+            normalized = normalized.replace('mcp_', '', 1)
+            # Also clean up any remaining $ or special chars after mcp_ removal
+            normalized = normalized.lstrip('$_')
+        return normalized
 
     def _decode_chunk_bytes(self, chunk_bytes):
         """
@@ -220,7 +238,7 @@ class StreamingToolExecutor:
 
     def _format_tool_result(self, tool_name: str, result_text: str, args: dict) -> str:
         """Format tool result based on tool type."""
-        actual_tool_name = tool_name[4:] if tool_name.startswith('mcp_') else tool_name
+        actual_tool_name = self._normalize_tool_name(tool_name)
         
         if actual_tool_name == 'run_shell_command':
             # For shell commands, return result as-is - frontend will add command to header
@@ -242,7 +260,7 @@ class StreamingToolExecutor:
     
     def _get_tool_header(self, tool_name: str, args: dict) -> str:
         """Get appropriate header for tool display."""
-        actual_tool_name = tool_name[4:] if tool_name.startswith('mcp_') else tool_name
+        actual_tool_name = self._normalize_tool_name(tool_name)
         
         if actual_tool_name == 'run_shell_command':
             return 'Shell Command'
@@ -281,7 +299,7 @@ class StreamingToolExecutor:
 
     async def _execute_fake_tool(self, tool_name, command, assistant_text, tool_results, mcp_manager):
         """Execute a fake tool call detected in the text stream"""
-        actual_tool_name = tool_name[4:] if tool_name.startswith('mcp_') else tool_name
+        actual_tool_name = self._normalize_tool_name(tool_name)
         if actual_tool_name == 'run_shell_command':
             try:
                 result = await mcp_manager.call_tool('run_shell_command', {'command': command.strip()})
@@ -358,8 +376,8 @@ class StreamingToolExecutor:
         # Separate builtin from external MCP tools for proper naming
         builtin_tool_names = {tool.name for tool in all_tools if isinstance(tool, DirectMCPTool)}
         
-        logger.info(f"🔍 TOOL_LOADING: Total tools={len(all_tools)}, builtin={len(builtin_tool_names)}, external={len(all_tools)-len(builtin_tool_names)}")
-        logger.info(f"🔍 BUILTIN_TOOLS: {sorted(builtin_tool_names)}")
+        logger.debug(f"🔍 TOOL_LOADING: Total tools={len(all_tools)}, builtin={len(builtin_tool_names)}, external={len(all_tools)-len(builtin_tool_names)}")
+        logger.debug(f"🔍 BUILTIN_TOOLS: {sorted(builtin_tool_names)}")
         
         # Convert ALL tools to JSON-serializable format and deduplicate by name
         converted_tools = [self._convert_tool_schema(tool) for tool in all_tools]
@@ -861,13 +879,48 @@ class StreamingToolExecutor:
                             
                             # Validate JSON is complete (starts with { and ends with })
                             if not (args_json.strip().startswith('{') and args_json.strip().endswith('}')):
-                                logger.warning(f"🔍 INCOMPLETE_JSON: Tool {tool_name} has incomplete JSON: {args_json}")
+                                logger.error(f"🔍 INCOMPLETE_JSON: Tool {tool_name} has incomplete JSON: {args_json}")
+                                empty_tool_calls_this_iteration += 1
+                                consecutive_empty_tool_calls += 1
+                                
+                                # Send self-correcting error to model
+                                error_result = f"""TOOL CALL FAILED - INCOMPLETE JSON
+
+You called: {tool_name}
+You provided incomplete JSON: {args_json}
+
+PROBLEM: The JSON arguments were truncated or malformed.
+
+This usually means:
+- The JSON string is incomplete (missing closing braces)
+- The tool call was cut off during generation
+
+Please retry the tool call with complete, valid JSON parameters."""
+                                
+                                tool_results.append({'tool_id': tool_id, 'tool_name': tool_name, 'result': error_result})
+                                yield {'type': 'tool_result_for_model', 'tool_use_id': tool_id, 'content': error_result}
                                 completed_tools.add(tool_id)
+                                tools_executed_this_iteration = True
                                 continue
                             logger.debug(f"🔍 TOOL_ARGS: Tool '{tool_name}' (id: {tool_id}) has args_json: '{args_json}'")
 
                             try:
                                 args = json.loads(args_json) if args_json.strip() else {}
+                                
+                                # CRITICAL: Unwrap tool_input wrapper if present
+                                # Models may send {"tool_input": {"command": "..."}} instead of {"command": "..."}
+                                # This normalization must happen BEFORE schema validation
+                                if isinstance(args, dict) and 'tool_input' in args:
+                                    tool_input = args['tool_input']
+                                    # Handle nested JSON string
+                                    if isinstance(tool_input, str):
+                                        try:
+                                            tool_input = json.loads(tool_input)
+                                        except json.JSONDecodeError:
+                                            pass  # Keep as string if not valid JSON
+                                    if isinstance(tool_input, dict):
+                                        logger.debug(f"🔍 UNWRAP_TOOL_INPUT: Unwrapping tool_input for {tool_name}")
+                                        args = tool_input
                                 
                                 # Fix parameter type conversion issues
                                 if 'raw' in args and isinstance(args['raw'], str):
@@ -880,7 +933,7 @@ class StreamingToolExecutor:
                                 
                                 # Detect empty tool calls for tools that require arguments
                                                 
-                                actual_tool_name = tool_name[4:] if tool_name.startswith('mcp_') else tool_name
+                                actual_tool_name = self._normalize_tool_name(tool_name)
                                 
                                 # Generic schema-based validation
                                 tool_schema = None
@@ -990,7 +1043,7 @@ Retry with the 'command' parameter included."""
                                         tool_call['args'] = args
                                         break
                                 
-                                actual_tool_name = tool_name[4:] if tool_name.startswith('mcp_') else tool_name
+                                actual_tool_name = self._normalize_tool_name(tool_name)
                                 
                                 # Handle both run_shell_command and mcp_run_shell_command
                                 if actual_tool_name in ['run_shell_command'] or tool_name in ['mcp_run_shell_command']:
@@ -1088,7 +1141,7 @@ Retry with the 'command' parameter included."""
                                 # Execute the tool immediately
                                 try:
                                    # Check if this is a builtin DirectMCPTool
-                                   logger.info(f"🔍 BUILTIN_CHECK: Looking for tool '{actual_tool_name}' in {len(tools) if tools else 0} tools")
+                                   logger.debug(f"🔍 BUILTIN_CHECK: Looking for tool '{actual_tool_name}' in {len(tools) if tools else 0} tools")
                                    builtin_tool = None
                                    if tools:
                                        for tool in tools:
@@ -1099,7 +1152,7 @@ Retry with the 'command' parameter included."""
                                                break
                                    
                                    if not builtin_tool:
-                                       logger.info(f"🔍 BUILTIN_NOT_FOUND: Tool '{actual_tool_name}' not found in builtin tools, routing to MCP manager")
+                                       logger.debug(f"🔍 BUILTIN_NOT_FOUND: Tool '{actual_tool_name}' not found in builtin tools, routing to MCP manager")
                                    
                                    if builtin_tool:
                                         # Call builtin tool directly
@@ -1187,8 +1240,29 @@ Retry with the 'command' parameter included."""
                                 completed_tools.add(tool_id)
                             
                             except json.JSONDecodeError as e:
-                                logger.error(f"🔍 JSON_PARSE_ERROR: Failed to parse tool arguments: {e}")
+                                logger.error(f"🔍 JSON_PARSE_ERROR: Failed to parse tool arguments for {tool_name}: {e}")
+                                empty_tool_calls_this_iteration += 1
+                                consecutive_empty_tool_calls += 1
+                                
+                                # Send self-correcting error to model
+                                error_result = f"""TOOL CALL FAILED - JSON PARSE ERROR
+
+You called: {tool_name}
+You provided malformed JSON: {args_json[:200]}
+
+Parse error: {str(e)}
+
+PROBLEM: The JSON is syntactically invalid and cannot be parsed.
+
+Please retry the tool call with valid JSON. Ensure:
+- All strings are properly quoted
+- No trailing commas
+- Braces and brackets are balanced"""
+                                
+                                tool_results.append({'tool_id': tool_id, 'tool_name': tool_name, 'result': error_result})
+                                yield {'type': 'tool_result_for_model', 'tool_use_id': tool_id, 'content': error_result}
                                 completed_tools.add(tool_id)
+                                tools_executed_this_iteration = True
 
                     elif chunk['type'] == 'message_stop':
                         # Flush any remaining content from buffers before stopping  
@@ -1396,8 +1470,8 @@ Retry with the 'command' parameter included."""
                 
                 # The conversation should now be in proper Bedrock format
                 # Remove the filter call since we're constructing messages correctly
-                logger.info(f"🤖 MODEL_RESPONSE: {assistant_text}")
-                logger.info(f"Conversation length: {len(conversation)} messages")
+                logger.debug(f"🤖 MODEL_RESPONSE: {assistant_text}")
+                logger.debug(f"Conversation length: {len(conversation)} messages")
 
                 # Skip duplicate execution - tools are already executed in content_block_stop
                 # This section was causing duplicate tool execution
