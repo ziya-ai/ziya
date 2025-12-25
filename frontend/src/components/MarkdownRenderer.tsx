@@ -169,9 +169,11 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode, to
     // Define cleanToolName early for use in header
     const cleanToolName = actualToolName.replace('mcp_', '').replace(/_/g, ' ');
 
-    // Extract query from content if this is internalsearch
-    const isInternalSearch = actualToolName === 'mcp_InternalSearch';
-    const queryMatch = isInternalSearch && content.match(/Query:\s*"([^"]+)"/);
+    // Extract query from content if this is a search tool
+    const isSearchTool = actualToolName === 'mcp_InternalSearch' || 
+                         actualToolName === 'mcp_WorkspaceSearch' ||
+                         actualToolName === 'WorkspaceSearch';
+    const queryMatch = isSearchTool && content.match(/Query:\s*\*?\*?"([^"]+)"\*?\*?/);
     const searchQuery = queryMatch ? queryMatch[1] : '';
 
     // Try to format the content intelligently
@@ -270,12 +272,17 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode, to
                 return `🔧 ${encodedCommand}`;
             }
             // Check if it's a search query
-            if (searchQuery) {
-                return `🔍 ${cleanToolName}: "${searchQuery}"`;
-            }
-            // Check if it's a search query from encoded command
-            if (encodedCommand.includes(': "')) {
-                return `🔍 ${encodedCommand}`;
+        if (searchQuery) {
+            return `🔍 ${cleanToolName}: "${searchQuery}"`;
+        }
+        // For workspace search, try to extract query from the encoded command
+        if (encodedCommand.toLowerCase().includes('workspacesearch:')) {
+            const queryFromCommand = encodedCommand.split(':').slice(1).join(':').trim();
+            return `🔍 ${cleanToolName}: "${queryFromCommand}"`;
+        }
+        // Check if it's a search query from encoded command
+        if (encodedCommand.includes(': "')) {
+            return `🔍 ${encodedCommand}`;
             }
             // Check if it's multiple parameters
             if (encodedCommand.endsWith(': multiple')) {
@@ -4590,6 +4597,14 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                 case 'html':
                     if (!hasText(tokenWithText)) return null;
+
+                // Check for malformed tool blocks and hide them instead of leaking
+                if (tokenWithText.text.includes('<!-- TOOL_BLOCK_START:') && 
+                    tokenWithText.text.includes('<!-- TOOL_BLOCK_END:')) {
+                    // This is a tool block but didn't match the regex - likely malformed
+                    console.warn('Malformed tool block detected, hiding from output:', tokenWithText.text.substring(0, 100));
+                    return null;
+                }
 
                     const HTMLtoolBlockMatch = tokenWithText.text.match(/<!-- TOOL_BLOCK_START:(mcp_\w+)\|(.+?) -->\s*([\s\S]*?)\s*<!-- TOOL_BLOCK_END:\1 -->/);
                     if (HTMLtoolBlockMatch) {

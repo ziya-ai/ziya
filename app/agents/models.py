@@ -1,6 +1,7 @@
 from typing import Optional, Dict, Any, Union, List
 import os
 import json
+import time
 import hashlib
 import botocore
 import boto3
@@ -588,10 +589,48 @@ class ModelManager:
             # Check AWS credentials using the same fresh session
             try:
                 sts = session.client('sts', region_name=region)
-                identity = sts.get_caller_identity()
-                logger.debug(f"Successfully authenticated as: {identity.get('Arn', 'Unknown')}")
+                
+                # Use retry with exponential backoff to handle credential loading race conditions
+                max_retries = 3
+                retry_delays = [0.1, 0.5, 1.0]  # 100ms, 500ms, 1 second
+                
+                for attempt in range(max_retries):
+                    try:
+                        identity = sts.get_caller_identity()
+                        logger.debug(f"Successfully authenticated as: {identity.get('Arn', 'Unknown')}")
+                        break  # Success - exit retry loop
+                    except Exception as cred_error:
+                        error_str = str(cred_error)
+                        
+                        # Check if this is a truly transient credential loading issue
+                        # Permanent failures (invalid/expired creds) should fail fast
+                        is_transient = any(indicator in error_str for indicator in [
+                            'Unable to locate credentials',
+                            'Credential provider not yet initialized',
+                            'Could not connect to the endpoint',
+                            'Temporary failure in name resolution'
+                        ])
+                        
+                        # Check if this is a permanent credential failure
+                        is_permanent = any(indicator in error_str for indicator in [
+                            'InvalidClientTokenId',
+                            'ExpiredToken',
+                            'InvalidToken'
+                        ])
+                        
+                        if is_transient and not is_permanent and attempt < max_retries - 1:
+                            delay = retry_delays[attempt]
+                            logger.info(f"Credential provider initializing, retrying in {delay}s (attempt {attempt + 1}/{max_retries})...")
+                            time.sleep(delay)
+                        elif is_permanent:
+                            logger.error(f"Permanent credential failure detected: {error_str}")
+                            raise  # Fail fast for invalid/expired credentials
+                        else:
+                            # Either not transient or we've exhausted retries
+                            raise
+                            
             except Exception as cred_error:
-                error_msg = f"AWS credentials check failed: {cred_error}"
+                error_msg = f"AWS credentials check failed after {max_retries} attempts: {cred_error}"
                 logger.error(error_msg)
                 cls._state['last_auth_error'] = error_msg
                 from app.utils.custom_exceptions import KnownCredentialException
