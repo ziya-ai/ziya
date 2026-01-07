@@ -69,16 +69,34 @@ from app.utils.custom_exceptions import KnownCredentialException, ThrottlingExce
 from app.mcp.manager import get_mcp_manager
 from app.config.models_config import TOOL_SENTINEL_CLOSE
 from app.mcp.tools import create_mcp_tools, parse_tool_call
-# Wrap model initialization in try/except to catch credential errors early
-try:
-    # Initialize the model
-    model = ModelManager()
-except KnownCredentialException as e:
-    # Print clean error message without traceback
-    print("\n" + "=" * 80)
-    print(str(e))
-    print("=" * 80 + "\n")
-    sys.exit(1)
+
+# Lazy initialization of ModelManager - don't initialize at module load time
+# This allows environment variables to be set before the model is initialized
+_model_instance = None
+
+def _get_model():
+    """Get or create the ModelManager instance lazily."""
+    global _model_instance
+    if _model_instance is None:
+        try:
+            _model_instance = ModelManager()
+        except KnownCredentialException as e:
+            # Print clean error message without traceback
+            print("\n" + "=" * 80)
+            print(str(e))
+            print("=" * 80 + "\n")
+            sys.exit(1)
+    return _model_instance
+
+# For backward compatibility, create a property-like access
+class _LazyModel:
+    """Wrapper that lazily initializes ModelManager on first access."""
+    def __getattr__(self, name):
+        return getattr(_get_model(), name)
+    def __call__(self, *args, **kwargs):
+        return _get_model()(*args, **kwargs)
+
+model = _LazyModel()
 
 prompt_cache = get_prompt_cache()
 

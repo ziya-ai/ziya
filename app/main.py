@@ -721,11 +721,6 @@ def main():
         print_version()
         return
     
-    # Initialize plugin system FIRST (before any auth checks)
-    from app.plugins import initialize as initialize_plugins
-    initialize_plugins()
-    logger.info("Plugin system initialized")
-    
     # Check for list-models flag to avoid unnecessary imports
     if "--list-models" in sys.argv:
         print_models()
@@ -748,13 +743,20 @@ def main():
         print_models()
         return
     
+    # Set up environment variables BEFORE plugin initialization
+    # This ensures ZIYA_MODEL is set before ModelManager is initialized
+    setup_environment(args)
+    
+    # Initialize plugin system AFTER environment is set up
+    # This allows plugins to read the correct model from environment
+    from app.plugins import initialize as initialize_plugins
+    initialize_plugins()
+    logger.info("Plugin system initialized")
+    
     # Handle info flag - print system info and exit immediately
     if args.info:
         print_info(args)
         return
-
-    # Set up environment variables for remaining commands
-    setup_environment(args)
     
     # Handle check_auth command
     if args.check_auth:
