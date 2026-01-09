@@ -5,6 +5,7 @@ import { convertToTreeData } from "../utils/folderUtil";
 import { useChatContext } from "./ChatContext";
 import { TreeDataNode } from "antd";
 import { debounce } from "../utils/debounce";
+import { useConfig } from "./ConfigContext";
 
 export interface FolderContextType {
   folders: Folders | undefined;
@@ -34,6 +35,8 @@ const FolderContext = createContext<FolderContextType | undefined>(undefined);
 export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const renderStart = useRef(performance.now());
   const renderCount = useRef(0);
+  const { isEphemeralMode } = useConfig();
+  const ephemeralInitialized = useRef(false);
   const [folders, setFolders] = useState<Folders>();
   const [treeData, setTreeData] = useState<TreeDataNode[]>([]);
   const [checkedKeys, setCheckedKeys] = useState<React.Key[]>(() => {
@@ -67,6 +70,28 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
   // Monitor FolderProvider render performance
   // Remove performance monitoring that's causing overhead
+
+  // CRITICAL: Clear persisted folder selections when ephemeral mode is detected
+  useEffect(() => {
+    if (isEphemeralMode && !ephemeralInitialized.current) {
+      console.log('🔒 EPHEMERAL: Clearing persisted folder selections');
+      ephemeralInitialized.current = true;
+
+      // Clear all folder-related localStorage
+      try {
+        localStorage.removeItem('ZIYA_CHECKED_FOLDERS');
+        localStorage.removeItem('ZIYA_EXPANDED_FOLDERS');
+        
+        // Also clear the state immediately
+        setCheckedKeys([]);
+        setExpandedKeys([]);
+        
+        console.log('✅ EPHEMERAL: Folder state cleared');
+      } catch (e) {
+        console.error('Failed to clear folder state in ephemeral mode:', e);
+      }
+    }
+  }, [isEphemeralMode]);
 
   // Cleanup function to remove non-existent files from checkedKeys
   const cleanupCheckedKeys = useCallback(async () => {

@@ -1,0 +1,4 @@
+{
+  "description": "Test case for backtick escaping in template literals - ensures pipeline correctly handles escaped backticks without creating syntax errors",
+  "target_file": "frontend/src/apis/chatApi.ts"
+}

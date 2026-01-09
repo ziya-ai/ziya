@@ -4724,6 +4724,9 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             // If there are unknown tags, render as literal text
                             return <span key={index}>{htmlContent}</span>;
                         }
+
+                        // All tags are known safe HTML tags - render as HTML
+                        return <div key={index} dangerouslySetInnerHTML={{ __html: htmlContent }} />;
                     }
 
                     // Render as text content to avoid HTML parsing issues with angle brackets

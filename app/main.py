@@ -716,6 +716,26 @@ def check_auth(args):
 
 
 def main():
+    # Check if running as CLI subcommand (ziya chat, ziya ask, etc.)
+    cli_commands = {'chat', 'ask', 'review', 'explain'}
+    
+    # Check if any argument is a CLI command (handles both "ziya chat" and "ziya --profile x chat")
+    if any(arg in cli_commands for arg in sys.argv[1:]):
+        # Hand off to CLI module
+        try:
+            from app.cli import main as cli_main
+            cli_main()
+        except ImportError as e:
+            print(f"Error loading CLI module: {e}", file=sys.stderr)
+            sys.exit(1)
+        return
+    
+    # Legacy --cli flag support
+    if "--cli" in sys.argv:
+        from app.cli import main as cli_main
+        cli_main()
+        return
+    
     # Check for version flag FIRST to avoid any initialization
     if "--version" in sys.argv:
         print_version()
