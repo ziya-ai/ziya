@@ -1,0 +1,13 @@
+diff --git a/frontend/src/apis/chatApi.ts b/frontend/src/apis/chatApi.ts
+index 1234567..89abcdef 100644
+--- a/frontend/src/apis/chatApi.ts
++++ b/frontend/src/apis/chatApi.ts
+@@ -8,7 +8,7 @@ export const sendPayload = async (
+             // Only use code fence for actual code content (not text/markdown)
+             const isCode = result.language && result.language !== 'text' && result.language !== 'markdown';
+             const resultContent = isCode
+-                ? `\`\`\`\`${result.language}\n${result.content}\n\`\`\`\``
++                ? `\`\`\`${result.language}\n${result.content}\n\`\`\``
+                 : result.content;
+
+             // Clean formatting with title and indented content

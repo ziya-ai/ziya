@@ -71,6 +71,7 @@ local = ["torch"]
 
 [tool.poetry.scripts]
 ziya = 'app.ziya_exec:ziya'
+ziya-cli = "app.cli:main"
 dev = 'app.ziya_exec:dev'
 finstall = "app.ziya_exec:frontend_install"
 fstart = "app.ziya_exec:frontend_start"

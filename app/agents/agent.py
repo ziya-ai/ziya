@@ -1584,7 +1584,32 @@ file_state_manager = FileStateManager()
 
 def escape_backticks_for_llm(text: str) -> str:
     """Escape backticks to prevent LLM confusion when generating diffs."""
-    return text.replace('`', '\\`')
+    return text.replace('`', '\`')
+
+def is_file_allowed_by_filters(file_path: str) -> bool:
+    """Check if a file is allowed by the include-only and exclude filters."""
+    import os
+    from pathlib import Path
+    
+    # Get filter settings from environment
+    include_only_str = os.environ.get("ZIYA_INCLUDE_ONLY_DIRS", "")
+    exclude_str = os.environ.get("ZIYA_ADDITIONAL_EXCLUDE_DIRS", "")
+    
+    # If include-only is set, file must match one of those patterns
+    if include_only_str:
+        include_patterns = [p.strip() for p in include_only_str.split(',') if p.strip()]
+        file_matches_include = any(
+            file_path.startswith(pattern) or Path(file_path).match(pattern)
+            for pattern in include_patterns
+        )
+        if not file_matches_include:
+            logger.debug(f"File {file_path} filtered out by include-only: {include_patterns}")
+            return False
+    
+    # Check exclude patterns
+    # (exclude logic would go here if needed)
+    
+    return True
 
 def get_combined_docs_from_files(files, conversation_id: str = "default") -> str:
     logger.info("=== get_combined_docs_from_files called ===")
@@ -1600,6 +1625,15 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
     logger.info(f"Files to process: {files}")
     
     logger.info(f"Processing files with conversation_id: {conversation_id}")
+    
+    # Filter files based on include-only and exclude settings BEFORE processing
+    if isinstance(files, list):
+        original_count = len(files)
+        files = [f for f in files if is_file_allowed_by_filters(f)]
+        if original_count != len(files):
+            logger.info(f"🔍 FILTER: Filtered files from {original_count} to {len(files)} (removed {original_count - len(files)} due to include-only/exclude)")
+            logger.info(f"🔍 FILTER: Include-only setting: {os.environ.get('ZIYA_INCLUDE_ONLY_DIRS', 'none')}")
+            logger.info(f"🔍 FILTER: Remaining files: {files[:10]}{'...' if len(files) > 10 else ''}")
 
     # Initialize AST capabilities if enabled
     ast_context = ""
