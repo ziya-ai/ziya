@@ -3473,6 +3473,7 @@ async def favicon():
 
 # Cache for folder structure with timestamp
 _folder_cache = {'timestamp': 0, 'data': None}
+_cache_lock = threading.Lock()
 _background_scan_thread = None
 _last_cache_invalidation = 0
 _cache_invalidation_debounce = 2.0  # seconds
