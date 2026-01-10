@@ -295,6 +295,62 @@ def detect_malformed_state(file_lines: List[str], hunk: Dict[str, Any]) -> bool:
     return False
 
 
+def _is_indentation_only_change(removed_lines: List[str], added_lines: List[str]) -> bool:
+    """
+    Check if the change is purely an indentation change (same content, different leading whitespace).
+    
+    Args:
+        removed_lines: Lines being removed
+        added_lines: Lines being added
+        
+    Returns:
+        True if this is an indentation-only change
+    """
+    if len(removed_lines) != len(added_lines):
+        return False
+    
+    for removed, added in zip(removed_lines, added_lines):
+        # Strip both lines and compare content
+        if removed.strip() != added.strip():
+            return False
+        # Check if they differ in leading whitespace
+        if removed.lstrip() == added.lstrip() and removed == added:
+            # Lines are identical - not an indentation change
+            continue
+        # Lines have same content but different whitespace - this is an indentation change
+        if removed.strip() == added.strip() and removed != added:
+            return True
+    
+    return False
+
+
+def _check_indentation_change_applied(file_lines: List[str], removed_lines: List[str], added_lines: List[str], pos: int) -> bool:
+    """
+    For indentation-only changes, check if the change has been applied using exact comparison.
+    
+    Args:
+        file_lines: Lines from the file
+        removed_lines: Lines being removed (old indentation)
+        added_lines: Lines being added (new indentation)
+        pos: Position to check
+        
+    Returns:
+        True if the indentation change is already applied (file has new indentation)
+    """
+    if pos + len(added_lines) > len(file_lines):
+        return False
+    
+    # Check if file has the NEW indentation (added_lines) - exact match
+    file_slice = file_lines[pos:pos + len(added_lines)]
+    for file_line, added_line in zip(file_slice, added_lines):
+        # Compare with trailing whitespace stripped but leading whitespace preserved
+        if file_line.rstrip() != added_line.rstrip():
+            return False
+    
+    logger.debug(f"Indentation change already applied at pos {pos} (file has new indentation)")
+    return True
+
+
 def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: int, ignore_whitespace: bool = True) -> bool:
     """
     Check if a hunk is already applied at the given position with improved handling
@@ -328,6 +384,25 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
     # Handle no-op hunks
     if not removed_lines and not added_lines:
         return True
+    
+    # CRITICAL: Check for indentation-only changes FIRST
+    # These require exact comparison since normalized comparison strips whitespace
+    if removed_lines and added_lines and _is_indentation_only_change(removed_lines, added_lines):
+        logger.debug(f"Detected indentation-only change - using exact comparison")
+        # For indentation changes, check if the file has the OLD indentation (not applied)
+        # or the NEW indentation (already applied)
+        if pos + len(removed_lines) <= len(file_lines):
+            file_slice = file_lines[pos:pos + len(removed_lines)]
+            # Check if file has OLD indentation (removal content matches exactly)
+            has_old_indentation = all(
+                file_line.rstrip() == removed_line.rstrip()
+                for file_line, removed_line in zip(file_slice, removed_lines)
+            )
+            if has_old_indentation:
+                logger.debug(f"File has OLD indentation at pos {pos} - hunk NOT already applied")
+                return False
+        # Check if file has NEW indentation
+        return _check_indentation_change_applied(file_lines, removed_lines, added_lines, pos)
     
     # For pure additions, check if content already exists at the expected position
     if len(removed_lines) == 0 and len(added_lines) > 0:
