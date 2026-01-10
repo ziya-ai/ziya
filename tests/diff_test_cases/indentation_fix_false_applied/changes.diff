@@ -1,0 +1,22 @@
+diff --git a/app/utils/token_calibrator.py b/app/utils/token_calibrator.py
+--- a/app/utils/token_calibrator.py
++++ b/app/utils/token_calibrator.py
+@@ -12,7 +12,7 @@ class TokenCalibrator:
+             if os.path.exists(self.cache_file):
+                 # Safe concurrent read
+                 with self.file_lock:
+                     with open(self.cache_file, 'r') as f:
+-                    data = json.load(f)
++                        data = json.load(f)
+                 
+                 # Load nested structure
+                 self.stats = data.get('stats', {})
+@@ -31,7 +31,7 @@ class TokenCalibrator:
+             # Safe concurrent write with atomic rename
+             with self.file_lock:
+                 with open(temp_file, 'w') as f:
+-                json.dump(data, f, indent=2)
++                    json.dump(data, f, indent=2)
+                     f.flush()
+                 
+                 os.replace(temp_file, self.cache_file)

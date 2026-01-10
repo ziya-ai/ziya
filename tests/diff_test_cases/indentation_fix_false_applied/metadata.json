@@ -1,0 +1,6 @@
+{
+    "target_file": "app/utils/token_calibrator.py",
+    "description": "Test case for indentation fix incorrectly reported as already applied - fixing improperly indented code inside with blocks",
+    "date_added": "2026-01-10",
+    "issue_reference": "indentation_fix_false_applied"
+}
