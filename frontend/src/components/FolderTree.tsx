@@ -102,6 +102,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
 
     // Update model info when it changes
     const updateModelInfo = useCallback(async () => {
+        console.debug('🔄 FolderTree: updateModelInfo called');
         try {
             const response = await fetch('/api/current-model');
             const data = await response.json();
@@ -134,11 +135,9 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
 
         // Listen for model changes
         const handleModelChange = () => {
-            console.log("Model change detected, updating model info");
-            // Use setTimeout to ensure the backend has updated
+            console.debug("FolderTree: Model change event received");
+            // Single call with delay to ensure backend is ready
             updateModelInfo();
-            // And check again after a delay to ensure we have the latest
-            setTimeout(updateModelInfo, 500);
         };
         window.addEventListener('modelSettingsChanged', handleModelChange);
         return () => {

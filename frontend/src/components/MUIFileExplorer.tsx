@@ -366,7 +366,7 @@ export const MUIFileExplorer = () => {
               if (!folderTokens) {
                 const totalTokens = getFolderTokenCount(dirPath, folders || {});
                 // If this folder is directly selected, include all tokens
-                const includedTokens = isChecked ? totalTokens : calculateChildrenIncluded(node);
+                const includedTokens = isChecked ? totalTokens : calculateChildrenIncluded(nodeForCheckCalculations);
 
                 folderTokens = { total: totalTokens, included: includedTokens };
                 tokenCalculationCache.current.set(cacheKey, folderTokens);
@@ -665,16 +665,14 @@ export const MUIFileExplorer = () => {
   const refreshFolders = async () => {
     setIsRefreshing(true);
     try {
-      // Just trigger the refresh - the FolderContext will handle the scanning progress
+      // Just trigger the refresh - let FolderContext handle the rest
       const response = await fetch('/api/folders?refresh=true');
       if (!response.ok) {
         throw new Error(`Failed to refresh folders: ${response.status}`);
       }
       
-      // The response will trigger the scanning state in FolderContext
-      // The component will automatically show the progress bar (lines 1077-1107)
-      // When scanning completes, the context will update and we'll get the data
-      
+      // Trigger FolderContext to refetch by dispatching an event
+      window.dispatchEvent(new CustomEvent('refreshFolders'));
       message.success('Folder structure refreshed');
     } catch (err) {
       console.error('Failed to refresh folders:', err);
