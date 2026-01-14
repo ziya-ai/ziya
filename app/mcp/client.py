@@ -11,7 +11,7 @@ import json
 import subprocess
 import sys
 from typing import Dict, List, Optional, Any, Union, AsyncGenerator
-from dataclasses import dataclass, asdict, fields # Import fields
+from dataclasses import dataclass, asdict, fields, field
 from pathlib import Path
 import uuid
 import time
@@ -41,7 +41,7 @@ class MCPPrompt:
     """Represents an MCP prompt template."""
     name: str
     description: str
-    arguments: List[Dict[str, Any]]
+    arguments: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class MCPClient:
@@ -125,7 +125,12 @@ class MCPClient:
                             self.logs.append(f"INFO: Files in directory: {files}")
                             
                             if not files:
-                                self.logs.append("ERROR: Installation directory is empty - service may not have been properly installed")
+                                logger.error(f"MCP server '{self.server_config.get('name', 'unknown')}': Installation directory is empty")
+                                logger.error(f"  Path: {installation_path}")
+                                logger.error(f"  This server cannot start - reinstall or disable it")
+                                self.logs.append("ERROR: Installation directory is empty")
+                                # Return early - no point trying to start with no executable
+                                return False
                             
                             for file in files:
                                 file_path = os.path.join(installation_path, file)
@@ -212,6 +217,24 @@ class MCPClient:
             # Start background task to capture logs
             asyncio.create_task(self._capture_logs())
             
+            # CRITICAL: Give servers time to start up before initializing
+            # External servers (npx, uvx, node) need more time than builtins
+            server_name = self.server_config.get('name', 'unknown')
+            command = self.server_config.get('command', [])
+            args = self.server_config.get('args', [])
+            command_str = ' '.join(command) if isinstance(command, list) else str(command)
+            full_command = f"{command_str} {' '.join(args)}"
+            
+            logger.debug(f"Server {server_name}: command='{command_str}', args={args}")
+            
+            is_external = any(indicator in full_command.lower() 
+                            for indicator in ['npx', 'uvx', 'node'])
+            
+            logger.info(f"Server {server_name}: is_external={is_external}, using {0.3 if is_external else 0.05}s delay")
+            startup_delay = 0.3 if is_external else 0.05
+            await asyncio.sleep(startup_delay)
+            logger.debug(f"Waited {startup_delay}s for {server_name} to start")
+            
             # Initialize the connection
             init_result = await self._send_request("initialize", {
                 "protocolVersion": "2024-11-05",
@@ -228,6 +251,56 @@ class MCPClient:
             })
             
             if init_result:
+                # CRITICAL: Verify process is still alive after initialization
+                if self.process.returncode is not None:
+                    logger.error(f"Server {self.server_config.get('name', 'unknown')} died during initialization (exit code: {self.process.returncode})")
+                    self.is_connected = False
+                    # Try to capture any error output
+                    if self.logs:
+                        logger.error(f"  Last logs: {self.logs[-5:]}")
+                        
+                        # Check for npm authentication failures in captured logs
+                        log_text = ' '.join(self.logs[-10:])  # Check last 10 log entries
+                        auth_indicators = ['FETCH_ERROR', 'authentication', 'login', 'unauthorized', '401', '403']
+                        
+                        if any(indicator in log_text for indicator in auth_indicators):
+                            import sys
+                            import subprocess
+                            
+                            # Detect current npm registry
+                            current_registry = "unknown"
+                            try:
+                                result = subprocess.run(
+                                    ['npm', 'config', 'get', 'registry'],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=2
+                                )
+                                if result.returncode == 0:
+                                    current_registry = result.stdout.strip()
+                            except Exception:
+                                pass
+                            
+                            print("\n" + "=" * 80, file=sys.stderr)
+                            print("⚠️  NPM AUTHENTICATION ERROR", file=sys.stderr)
+                            print("=" * 80, file=sys.stderr)
+                            print(f"\nMCP server '{self.server_config.get('name', 'unknown')}' failed to start.", file=sys.stderr)
+                            print(f"Your npm registry authentication has expired.\n", file=sys.stderr)
+                            print(f"Current registry: {current_registry}\n", file=sys.stderr)
+                            
+                            if current_registry != "unknown" and current_registry != "https://registry.npmjs.org/":
+                                print("To fix, re-authenticate to your npm registry:", file=sys.stderr)
+                                print(f"  npm login --registry={current_registry}\n", file=sys.stderr)
+                            else:
+                                print("To fix:", file=sys.stderr)
+                                print("  npm login\n", file=sys.stderr)
+                            
+                            print("Or switch to public npm registry:", file=sys.stderr)
+                            print("  npm config set registry https://registry.npmjs.org/", file=sys.stderr)
+                            print("=" * 80 + "\n", file=sys.stderr)
+                            raise ValueError(f"npm authentication required for MCP server")
+                    return False
+                
                 self.capabilities = init_result.get("capabilities", {})
                 self.is_connected = True
                 
@@ -266,6 +339,54 @@ class MCPClient:
                         if stderr_output:
                             logger.error(f"MCP server stderr: {stderr_output}")
                             self.logs.append(f"STDERR: {stderr_output}")
+                            
+                            # Check for npm/package manager authentication failures - fail fast
+                            auth_indicators = [
+                                'FETCH_ERROR',
+                                'authentication',
+                                'login',
+                                'unauthorized',
+                                '401',
+                                '403'
+                            ]
+                            
+                            if any(indicator in stderr_output.lower() for indicator in auth_indicators):
+                                import sys
+                                import subprocess
+                                
+                                # Try to detect current npm registry configuration
+                                current_registry = "unknown"
+                                try:
+                                    result = subprocess.run(
+                                        ['npm', 'config', 'get', 'registry'],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=2
+                                    )
+                                    if result.returncode == 0:
+                                        current_registry = result.stdout.strip()
+                                except Exception:
+                                    pass
+                                
+                                print("\n" + "=" * 80, file=sys.stderr)
+                                print("⚠️  NPM AUTHENTICATION ERROR", file=sys.stderr)
+                                print("=" * 80, file=sys.stderr)
+                                print(f"\nMCP server '{self.server_config.get('name', 'unknown')}' failed to start.", file=sys.stderr)
+                                print(f"Your npm registry authentication has expired.\n", file=sys.stderr)
+                                print(f"Current registry: {current_registry}\n", file=sys.stderr)
+                                
+                                if current_registry != "unknown" and current_registry != "https://registry.npmjs.org/":
+                                    print("To fix, re-authenticate to your npm registry:", file=sys.stderr)
+                                    print(f"  npm login --registry={current_registry}\n", file=sys.stderr)
+                                else:
+                                    print("To fix:", file=sys.stderr)
+                                    print("  npm login\n", file=sys.stderr)
+                                
+                                print("Or switch to public npm registry:", file=sys.stderr)
+                                print("  npm config set registry https://registry.npmjs.org/", file=sys.stderr)
+                                print("=" * 80 + "\n", file=sys.stderr)
+                                raise ValueError(f"npm authentication required for MCP server")
+                        
                         if not stdout_output and not stderr_output:
                             self.logs.append("ERROR: No output from server process")
                     except Exception as e:
@@ -496,6 +617,54 @@ class MCPClient:
                     
                     if not response_line_bytes:
                         # EOF, process likely terminated
+                        if self.process.returncode is not None:
+                            # Process died - try to read stderr for auth errors before logging generic EOF
+                            try:
+                                stderr_bytes = await self.process.stderr.read() if self.process.stderr else b""
+                                stderr_output = stderr_bytes.decode('utf-8', errors='ignore')
+                                
+                                # Check for npm authentication failures
+                                auth_indicators = ['FETCH_ERROR', 'authentication', 'login', 'unauthorized', '401', '403']
+                                
+                                if stderr_output and any(indicator in stderr_output.lower() for indicator in auth_indicators):
+                                    import sys
+                                    import subprocess
+                                    
+                                    # Detect current npm registry
+                                    current_registry = "unknown"
+                                    try:
+                                        result = subprocess.run(
+                                            ['npm', 'config', 'get', 'registry'],
+                                            capture_output=True,
+                                            text=True,
+                                            timeout=2
+                                        )
+                                        if result.returncode == 0:
+                                            current_registry = result.stdout.strip()
+                                    except Exception:
+                                        pass
+                                    
+                                    print("\n" + "=" * 80, file=sys.stderr)
+                                    print("⚠️  NPM AUTHENTICATION ERROR", file=sys.stderr)
+                                    print("=" * 80, file=sys.stderr)
+                                    print(f"\nMCP server '{self.server_config.get('name', 'unknown')}' failed to start.", file=sys.stderr)
+                                    print(f"Your npm registry authentication has expired.\n", file=sys.stderr)
+                                    print(f"Current registry: {current_registry}\n", file=sys.stderr)
+                                    
+                                    if current_registry != "unknown" and current_registry != "https://registry.npmjs.org/":
+                                        print("To fix, re-authenticate to your npm registry:", file=sys.stderr)
+                                        print(f"  npm login --registry={current_registry}\n", file=sys.stderr)
+                                    else:
+                                        print("To fix:", file=sys.stderr)
+                                        print("  npm login\n", file=sys.stderr)
+                                    
+                                    print("Or switch to public npm registry:", file=sys.stderr)
+                                    print("  npm config set registry https://registry.npmjs.org/", file=sys.stderr)
+                                    print("=" * 80 + "\n", file=sys.stderr)
+                                    raise ValueError(f"npm authentication required for MCP server")
+                            except Exception:
+                                pass  # If we can't read stderr, fall through to generic EOF error
+                        
                         logger.error("No response from MCP server (EOF)")
                         if self.process.returncode is not None:
                             logger.error(f"MCP server process has terminated with code: {self.process.returncode}")
