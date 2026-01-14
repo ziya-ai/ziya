@@ -1,0 +1,5 @@
+{
+    "target_file": "app/utils/directory_util.py",
+    "description": "Move scan progress reset from inside scan_task() to before thread starts to prevent stale timestamps in health checks - tests multi-hunk delete then add pattern",
+    "date_added": "2026-01-13"
+}

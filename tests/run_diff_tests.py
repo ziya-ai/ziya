@@ -1476,6 +1476,7 @@ if __name__ == '__main__':
     # Configure logging based on arguments
     if args.quiet:
         # Suppress all logging except critical errors
+        os.environ['ZIYA_LOG_LEVEL'] = 'CRITICAL'
         logging.basicConfig(level=logging.CRITICAL)
         # Also suppress logging from other modules
         for logger_name in logging.root.manager.loggerDict:
