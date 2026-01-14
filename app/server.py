@@ -228,6 +228,7 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
 
 # Dictionary to track active streaming tasks
 active_streams = {}
+active_streams_lock = threading.Lock()
 
 # Use configuration from config module
 # For model configurations, see app/config.py
@@ -446,7 +447,11 @@ def _check_and_print_completion_banner():
 async def broadcast_file_tree_update(event_type: str, rel_path: str, token_count: int = 0):
     """Broadcast file tree updates to all connected clients."""
     if not active_file_tree_connections:
+        # Log this so we know if the frontend isn't connected
+        logger.warning(f"📢 No active WebSocket connections for file tree updates - {event_type}: {rel_path}")
         return
+    
+    logger.info(f"📢 Broadcasting {event_type} for {rel_path} to {len(active_file_tree_connections)} client(s)")
     
     message = {
         'type': event_type,  # 'file_added', 'file_modified', 'file_deleted'
@@ -899,14 +904,14 @@ logger.debug("=== END /ziya ROUTES ===")
 # async def stream_log_endpoint(request: Request, body: dict):
 async def cleanup_stream(conversation_id: str):
     """Clean up resources when a stream ends or is aborted."""
-    if conversation_id in active_streams:
-        logger.info(f"Cleaning up stream for conversation: {conversation_id}")
-        # Remove only this specific stream from active streams
-        del active_streams[conversation_id]
-        # Any other cleanup needed
-        logger.info(f"Stream cleanup complete for conversation: {conversation_id}")
-    else:
-        logger.warning(f"Attempted to clean up non-existent stream: {conversation_id}")
+    with active_streams_lock:
+        if conversation_id in active_streams:
+            logger.info(f"Cleaning up stream for conversation: {conversation_id}")
+            # Remove only this specific stream from active streams
+            del active_streams[conversation_id]
+            logger.info(f"Stream cleanup complete for conversation: {conversation_id}")
+        else:
+            logger.debug(f"Stream {conversation_id} already cleaned up")
 
 async def execute_tools_and_update_conversation(
     current_response: str, 
@@ -1432,6 +1437,20 @@ async def stream_chunks(body):
     logger.error("🔍 EXECUTION_TRACE: stream_chunks() called - ENTRY POINT")
     logger.debug("🔍 STREAM_CHUNKS: Function called")
     
+    # Initialize diff validation hook
+    from app.utils.diff_validation_hook import DiffValidationHook
+    from app.config.app_config import ENABLE_DIFF_VALIDATION, AUTO_REGENERATE_INVALID_DIFFS, AUTO_ENHANCE_CONTEXT_ON_VALIDATION_FAILURE
+    
+    files = body.get("config", {}).get("files", [])
+    conversation_id = body.get("conversation_id")
+    
+    validation_hook = DiffValidationHook(
+        enabled=ENABLE_DIFF_VALIDATION,
+        auto_regenerate=AUTO_REGENERATE_INVALID_DIFFS,
+        current_context=files
+    )
+    accumulated_content = ""
+    
     # Temporarily reduce context to test tool execution
     if body.get("question") and "distribution by file type" in body.get("question", "").lower():
         logger.debug("🔍 TEMP: Reducing context for tool execution test")
@@ -1466,6 +1485,9 @@ async def stream_chunks(body):
                 state = ModelManager.get_state()
                 if state.get('last_auth_error') and 'i/o timeout' in str(state.get('last_auth_error')):
                     yield f"data: {json.dumps({'error': 'Network connectivity issue detected. Please check your internet connection and try again.', 'error_type': 'connectivity'})}\n\n"
+                    # Clean up stream before returning
+                    if conversation_id:
+                        await cleanup_stream(conversation_id)
                     return
             except Exception as conn_check_error:
                 logger.debug(f"Connectivity pre-check failed: {conn_check_error}")
@@ -1512,9 +1534,40 @@ async def stream_chunks(body):
                 async for chunk in executor.stream_with_tools(messages, tools=mcp_tools, conversation_id=conversation_id):
                     chunk_count += 1
                     
+                    # Accumulate text content for validation
+                    if chunk.get('type') == 'text':
+                        accumulated_content += chunk.get('content', '')
+                    
                     # Log all chunks for debugging
                     chunk_type = chunk.get('type', 'unknown')
                     logger.debug(f"🔍 CHUNK_RECEIVED: type={chunk_type}, chunk_count={chunk_count}")
+                    
+                    # Validate completed diffs (after accumulating content)
+                    if accumulated_content:
+                        def send_sse_event(event_type: str, data: dict):
+                            """Helper to format SSE events - returns string, doesn't yield."""
+                            event_json = json.dumps({"type": event_type, **data})
+                            return f"data: {event_json}\n\n"
+                        
+                        validation_feedback = validation_hook.validate_and_enhance(
+                            content=accumulated_content,
+                            model_messages=messages,
+                            send_event=lambda event_type, data: send_sse_event(event_type, data)
+                        )
+                        
+                        # If validation failed and hook enhanced context
+                        if validation_feedback:
+                            logger.error("🚨 INLINE VALIDATION REJECTED - Sending feedback to model for immediate regeneration")
+                            
+                            # Notify frontend about context enhancement (UI sync only)
+                            if validation_hook.added_files:
+                                context_sync_event = send_sse_event("context_sync", {
+                                    "added_files": validation_hook.added_files,
+                                    "reason": "diff_validation"
+                                })
+                                yield context_sync_event
+                                logger.info(f"📂 Context enhanced with: {validation_hook.added_files}")
+                                validation_hook.added_files = []  # Clear for next validation
                     
                     # Convert to expected format and yield all chunk types
                     if chunk.get('type') == 'text':
@@ -1549,8 +1602,55 @@ async def stream_chunks(body):
                     else:
                         logger.debug(f"Unknown chunk type: {chunk.get('type')}")
                 
+                # After streaming completes, validate any diffs
+                if accumulated_content and ENABLE_DIFF_VALIDATION:
+                    validation_feedback = validation_hook.validate_and_enhance(
+                        content=accumulated_content,
+                        model_messages=messages,
+                        send_event=lambda event_type, data: None  # Events handled below
+                    )
+                    
+                    # If validation failed
+                    if validation_feedback:
+                        # BIG FLASH: Validation rejected
+                        logger.error("=" * 80)
+                        logger.error("🚨 POST-STREAM DIFF VALIDATION REJECTED 🚨")
+                        logger.error("=" * 80)
+                        logger.error(f"File: {validation_hook.validated_diffs}")
+                        logger.error(f"Feedback being sent to model:")
+                        logger.error(validation_feedback)
+                        logger.error("=" * 80)
+                        
+                        # Notify frontend about context enhancement
+                        if validation_hook.added_files:
+                            yield f"data: {json.dumps({{'type': 'context_sync', 'added_files': validation_hook.added_files, 'reason': 'diff_validation'}})}\n\n"
+                            validation_hook.added_files = []
+                        
+                        # Add feedback to messages and restart generation
+                        from langchain_core.messages import HumanMessage
+                        messages.append(HumanMessage(content=validation_feedback))
+                        
+                        # Generate again with the feedback
+                        async for retry_chunk in executor.stream_with_tools(messages, tools=mcp_tools, conversation_id=conversation_id):
+                            if retry_chunk.get('type') == 'text':
+                                yield f"data: {json.dumps({{'content': retry_chunk.get('content', '')}})}\n\n"
+                            elif retry_chunk.get('type') == 'tool_display':
+                                yield f"data: {json.dumps({{'tool_result': retry_chunk}})}\n\n"
+                            elif retry_chunk.get('type') == 'stream_end':
+                                break
+                    else:
+                        # BIG FLASH: Validation passed
+                        logger.info("=" * 80)
+                        logger.info("✅ POST-STREAM DIFF VALIDATION PASSED ✅")
+                        logger.info("=" * 80)
+                        logger.info(f"All hunks validated successfully (this may be a regenerated diff)")
+                        logger.info("=" * 80)
+                
                 # Always send done message at the end
                 yield f"data: {json.dumps({'done': True})}\n\n"
+                
+                # Clean up stream before returning
+                await cleanup_stream(conversation_id)
                 
                 logger.debug(f"🚀 DIRECT_STREAMING: Completed streaming with {chunk_count} chunks")
                 return
@@ -1577,6 +1677,9 @@ async def stream_chunks(body):
                 if is_auth_error:
                     error_message = auth_provider.get_credential_help_message() if auth_provider else "AWS credentials have expired."
                     yield f"data: {json.dumps({'error': error_message, 'error_type': 'authentication_error', 'can_retry': True})}\n\n"
+                    # Clean up stream before returning
+                    if conversation_id:
+                        await cleanup_stream(conversation_id)
                     return
                 
                 # Check for connectivity errors
@@ -1586,6 +1689,9 @@ async def stream_chunks(body):
                 
                 # Generic error - always send to frontend
                 yield f"data: {json.dumps({'error': f'Error: {str(e)[:200]}', 'error_type': type(e).__name__})}\n\n"
+                # Clean up stream before returning
+                if conversation_id:
+                    await cleanup_stream(conversation_id)
                 return
         
         logger.info("🚀 DIRECT_STREAMING: No question found or error occurred, falling back to LangChain")
@@ -2129,12 +2235,8 @@ async def stream_chunks(body):
         # Extract conversation ID from the request body
         conversation_id = body.get("conversation_id")
         if not conversation_id:
-            # Also check if it's nested in config
+            # Check if it's nested in config
             logger.debug("🔍 STREAM: No conversation_id in body, checking config...")
-            config = body.get("config", {})
-            conversation_id = config.get("conversation_id")
-        if not conversation_id:
-            # Check if it's in the config
             config = body.get("config", {})
             conversation_id = config.get("conversation_id")
         
@@ -2147,10 +2249,11 @@ async def stream_chunks(body):
             logger.info(f"Using provided conversation_id: {conversation_id}")
             logger.debug(f"🔍 STREAM: Final conversation_id: {conversation_id}")
         # Register this stream as active
-        active_streams[conversation_id] = {
-            "start_time": time.time(),
-            "question": question[:100] + "..." if len(question) > 100 else question
-        }
+        with active_streams_lock:
+            active_streams[conversation_id] = {
+                "start_time": time.time(),
+                "question": question[:100] + "..." if len(question) > 100 else question
+            }
 
         chat_history = body.get("chat_history", [])
         
@@ -2298,7 +2401,9 @@ async def stream_chunks(body):
             logger.debug(f"🔍 AGENT ITERATION {iteration}: Starting iteration")
 
             # Check for stream interruption requests
-            if conversation_id not in active_streams:
+            with active_streams_lock:
+                stream_interrupted = conversation_id not in active_streams
+            if stream_interrupted:
                 logger.info(f"🔄 Stream for {conversation_id} was interrupted, stopping gracefully")
                 interruption_notice = {"op": "add", "path": "/processing_state", "value": "interrupted"}
                 yield f"data: {json.dumps({'ops': [interruption_notice]})}\n\n"
@@ -2330,9 +2435,14 @@ async def stream_chunks(body):
                 
                 # Stream from model for non-Bedrock endpoints (use simple streaming like 0.3.0)
                 async for chunk in model_instance.astream(messages):
-                    # Log the actual messages being sent to model on first iteration
-                    if iteration == 1 and not hasattr(stream_chunks, '_logged_model_input'):
-                        stream_chunks._logged_model_input = True
+                    # CRITICAL: Only use LangChain path for non-Bedrock endpoints
+                    endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+                    if endpoint == "bedrock":
+                        logger.error("🚨 ARCHITECTURE BUG: LangChain path reached for Bedrock model - this should never happen")
+                        return
+                    
+                    # Log the actual messages being sent to model on first chunk only
+                    if chunk_count == 0:
                         logger.debug("🔥" * 50)
                         logger.debug("FINAL MODEL INPUT - ACTUAL MESSAGES SENT TO MODEL")
                         logger.debug("🔥" * 50)
@@ -2963,12 +3073,29 @@ async def stream_chunks(body):
         await cleanup_stream(conversation_id)
         # Don't re-raise connection errors as they're expected when clients disconnect
         
+    except (ClientError, ThrottlingException, ExpiredTokenException) as e:
+        logger.error(f"AWS error in stream_chunks: {str(e)}", exc_info=True)
+        error_type = 'aws_error'
+        if isinstance(e, ThrottlingException):
+            error_type = 'throttling_error'
+        elif isinstance(e, ExpiredTokenException):
+            error_type = 'authentication_error'
+        
+        yield f"data: {json.dumps({'error': str(e), 'error_type': error_type, 'can_retry': True})}\n\n"
+        if conversation_id:
+            await cleanup_stream(conversation_id)
+    
     except (AttributeError, NameError) as e:
         logger.error(f"Code error in stream_chunks: {str(e)}", exc_info=True)
-        # This indicates missing code/methods - provide helpful error to user
         yield f"data: {json.dumps({'error': 'Service configuration issue. Please contact support.', 'error_type': 'configuration', 'technical_details': str(e)})}\n\n"
         if conversation_id:
             await cleanup_stream(conversation_id)
+    
+    except asyncio.CancelledError:
+        logger.info(f"Stream cancelled for conversation: {conversation_id}")
+        if conversation_id:
+            await cleanup_stream(conversation_id)
+        raise  # Re-raise to propagate cancellation
             
     except Exception as e:
         logger.error(f"Unhandled exception in stream_chunks: {str(e)}", exc_info=True)
@@ -3087,6 +3214,8 @@ async def root(request: Request):
 async def info_page(request: Request):
     """Render the info page as part of the React app."""
     try:
+        # Check if this is a request for the telemetry dashboard
+        
         # Get formatter scripts from plugins
         formatter_scripts = []
         from app.plugins import get_active_config_providers
@@ -3478,21 +3607,19 @@ _background_scan_thread = None
 _last_cache_invalidation = 0
 _cache_invalidation_debounce = 2.0  # seconds
 
+
 def invalidate_folder_cache():
     """Invalidate the folder structure cache with debouncing."""
-    global _folder_cache, _last_cache_invalidation
+    global _folder_cache, _last_cache_invalidation, _cache_lock
     current_time = time.time()
     
     # Debounce: only invalidate if enough time has passed
     if current_time - _last_cache_invalidation < _cache_invalidation_debounce:
         return
     
-    _folder_cache['data'] = None
-    _folder_cache['timestamp'] = 0
-    _last_cache_invalidation = current_time
-
-
-    _folder_cache['timestamp'] = 0
+    with _cache_lock:
+        _folder_cache['data'] = None
+        _folder_cache['timestamp'] = 0
     _last_cache_invalidation = current_time
 
 def add_file_to_folder_cache(rel_path: str) -> bool:
@@ -3538,7 +3665,9 @@ def add_file_to_folder_cache(rel_path: str) -> bool:
             logger.info(f"✅ Added file to cache: {rel_path} ({token_count} tokens)")
             
             # Notify all connected clients
-            asyncio.create_task(broadcast_file_tree_update('file_added', rel_path, token_count))
+            task = asyncio.create_task(broadcast_file_tree_update('file_added', rel_path, token_count))
+            # Add error handler to prevent silent failures
+            task.add_done_callback(lambda t: logger.error(f"File tree broadcast failed: {t.exception()}") if t.exception() else None)
             return True
             
     except Exception as e:
@@ -3576,7 +3705,8 @@ def update_file_in_folder_cache(rel_path: str) -> bool:
                 logger.debug(f"✅ Updated file in cache: {rel_path} ({token_count} tokens)")
                 
                 # Notify all connected clients
-                asyncio.create_task(broadcast_file_tree_update('file_modified', rel_path, token_count))
+                task = asyncio.create_task(broadcast_file_tree_update('file_modified', rel_path, token_count))
+                task.add_done_callback(lambda t: logger.error(f"File tree broadcast failed: {t.exception()}") if t.exception() else None)
                 return True
     except Exception as e:
         logger.error(f"Failed to update file in cache: {rel_path}, error: {e}")
@@ -3608,7 +3738,8 @@ def remove_file_from_folder_cache(rel_path: str) -> bool:
                 logger.info(f"✅ Removed file from cache: {rel_path}")
                 
                 # Notify all connected clients
-                asyncio.create_task(broadcast_file_tree_update('file_deleted', rel_path, 0))
+                task = asyncio.create_task(broadcast_file_tree_update('file_deleted', rel_path, 0))
+                task.add_done_callback(lambda t: logger.error(f"File tree broadcast failed: {t.exception()}") if t.exception() else None)
                 return True
     except Exception as e:
         logger.error(f"Failed to remove file from cache: {rel_path}, error: {e}")
@@ -3728,46 +3859,6 @@ async def cancel_folder_scan():
     if was_active:
         logger.info("Folder scan cancellation requested")
     return {"cancelled": was_active}
-
-@app.post("/api/dynamic-tools/update")
-async def update_dynamic_tools(request: Request):
-    """
-    Update dynamically loaded tools based on file selection.
-    Called by frontend when file selection changes.
-    """
-    try:
-        body = await request.json()
-        files = body.get('files', [])
-        
-        logger.info(f"Dynamic tools update requested for {len(files)} files")
-        
-        from app.mcp.dynamic_tools import get_dynamic_loader
-        from app.mcp.manager import get_mcp_manager
-        
-        # Get the dynamic loader
-        loader = get_dynamic_loader()
-        
-        # Load appropriate tools based on files
-        newly_loaded = loader.load_tools_for_files(files)
-        
-        # Invalidate MCP manager's tools cache so new tools appear
-        mcp_manager = get_mcp_manager()
-        if mcp_manager.is_initialized:
-            mcp_manager.invalidate_tools_cache()
-        
-        # Get currently active dynamic tools
-        active_tools = loader.get_active_tools()
-        
-        return JSONResponse({
-            "success": True,
-            "newly_loaded": list(newly_loaded.keys()),
-            "active_tools": list(active_tools.keys()),
-            "message": f"Loaded {len(newly_loaded)} new tools, {len(active_tools)} total active"
-        })
-        
-    except Exception as e:
-        logger.error(f"Error updating dynamic tools: {e}", exc_info=True)
-        return JSONResponse({"error": str(e)}, status_code=500)
 
 @app.post("/api/dynamic-tools/update")
 async def update_dynamic_tools(request: Request):
@@ -3915,113 +4006,6 @@ async def save_file(request: FileContentRequest):
         return {"success": True}
     except Exception as e:
         logger.error(f"Error in save_file: {e}")
-        return {"error": str(e)}
-
-@app.post("/apply_patch")
-async def apply_patch(request: PatchRequest):
-    """Apply a git diff to a file."""
-    try:
-        # If file_path is not provided, try to extract it from the diff
-        target_file = request.file_path
-        if not target_file:
-            logger.info("No file_path provided, attempting to extract from diff")
-            target_file = extract_target_file_from_diff(validated.diff)
-            
-        if not target_file:
-            return {"error": "Could not determine target file from diff"}
-            
-        # Apply the patch
-        try:
-            # Use the request ID if provided, otherise generate one
-            learned_id = getattr(request, 'requestId', None)
-            if learned_id:
-                request_id = getattr(request, 'requestId', None) or str(uuid.uuid4()) 
-                logger.info(f"Using request ID from frontend for patch application: {request_id}")
-            else:
-                request_id = str(uuid.uuid4()) 
-                logger.warning(f"Generated request ID for patch application: {request_id}")
-            result = request_id
-
-            # Check if result contains error information
-            if isinstance(result, dict) and result.get('status') == 'error':
-                return JSONResponse(
-                    status_code=422,
-                    content={
-                        "status": "error",
-                        "request_id": request_id,
-                        "type": result.get("type", "patch_error"), 
-                        "message": result.get("message", "Failed to apply patch"),
-                        "details": result.get("details", {})
-                    }
-                )
-
-            # Check for partial success with failed hunks
-            if isinstance(result, dict) and result.get('hunk_statuses'):
-                failed_hunks = [
-                    hunk_num for hunk_num, status in result['hunk_statuses'].items()
-                    if status.get('status') == 'failed'
-                ]
-                
-                # Get the list of successful hunks
-                successful_hunks = [
-                    hunk_num for hunk_num, status in result['hunk_statuses'].items()
-                    if status.get('status') == 'succeeded'
-                ]
-                
-                if failed_hunks:
-                    if successful_hunks:
-                        # Some hunks succeeded, some failed - partial success
-                        return JSONResponse(
-                            status_code=207,
-                            content={
-                                "status": "partial",
-                                "message": "Some hunks failed to apply",
-                                "request_id": request_id,
-                                "details": {
-                                    "failed": failed_hunks,
-                                    "succeeded": successful_hunks,
-                                    "hunk_statuses": result['hunk_statuses']
-                                }
-                            }
-                        )
-                    else:
-                        # All hunks failed - complete failure
-                        logger.info("All hunks failed, returning error status with 422 code")
-                        return JSONResponse(
-                            status_code=422,
-                            content={
-                                "status": "error",
-                                "message": "All hunks failed to apply",
-                                "request_id": request_id,
-                                "details": {
-                                    "failed": failed_hunks,
-                                    "succeeded": [],
-                                    "hunk_statuses": result['hunk_statuses']
-                                }
-                            }
-                        )
-
-            # All hunks succeeded
-            return JSONResponse(
-                content={
-                    "status": "success",
-                    "message": "Changes applied successfully",
-                    "request_id": request_id,
-                    "details": {
-                        "succeeded": list(result['hunk_statuses'].keys()) if isinstance(result, dict) and result.get('hunk_statuses') else [],
-                        "failed": [],
-                        "hunk_statuses": result['hunk_statuses'] if isinstance(result, dict) and result.get('hunk_statuses') else {}
-                    }
-                }
-            )
-        except Exception as e: 
-            logger.error("Error in apply_path: {e}")
-
-    except PatchApplicationError as e:
-        logger.error(f"Error applying patch: {e}")
-        return {"error": str(e), "type": "patch_error"}
-    except Exception as e:
-        logger.error(f"Error in apply_patch: {e}")
         return {"error": str(e)}
 
 @app.get('/api/available-models')
@@ -4395,7 +4379,7 @@ def get_model_id():
 def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int) -> Dict[str, Any]:
     """Get folder structure with caching and background scanning."""
     from app.utils.directory_util import get_folder_structure, get_scan_progress
-    from app.utils.directory_util import is_scan_healthy, get_basic_folder_structure
+    from app.utils.directory_util import get_basic_folder_structure
     
     current_time = time.time()
     cache_age = current_time - _folder_cache['timestamp']
@@ -4403,21 +4387,6 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
     # Check if scan is already in progress
     scan_status = get_scan_progress()
     is_scanning = scan_status.get("active", False)
-    scan_start_time = scan_status.get("start_time", 0)
-    
-    # Check for stuck or unhealthy scans
-    if is_scanning:
-        scan_duration = current_time - scan_start_time if scan_start_time > 0 else 0
-        if scan_duration > 300:  # 5 minutes timeout
-            logger.warning(f"Folder scan has been running for {scan_duration:.1f}s, considering it stuck")
-            from app.utils.directory_util import cancel_scan
-            cancel_scan()
-            is_scanning = False
-        elif not is_scan_healthy():
-            logger.warning("Folder scan appears unhealthy, cancelling")
-            from app.utils.directory_util import cancel_scan  
-            cancel_scan()
-            is_scanning = False
     
     # If scan is active and healthy, return scanning indicator immediately (non-blocking)
     if is_scanning:
@@ -4474,6 +4443,37 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
 @app.get('/api/folders')
 async def api_get_folders(refresh: bool = False):
     """Get folder structure for API compatibility with improved error handling."""
+    
+    # DIAGNOSTIC: Log what we're about to return
+    def log_folder_contents(data, path="", max_depth=3, current_depth=0):
+        if current_depth >= max_depth:
+            return
+        if not isinstance(data, dict):
+            return
+        for key, value in data.items():
+            if key.startswith('_'):
+                continue
+            current_path = f"{path}/{key}" if path else key
+            if isinstance(value, dict):
+                if 'children' in value:
+                    logger.info(f"📁 {current_path}/ ({len(value.get('children', {}))} children)")
+                    log_folder_contents(value.get('children', {}), current_path, max_depth, current_depth + 1)
+                else:
+                    token_count = value.get('token_count', 0)
+                    logger.info(f"📄 {current_path} ({token_count} tokens)")
+    
+    # Add cache headers to help frontend avoid unnecessary requests
+    if refresh:
+        # If refresh requested, invalidate caches BEFORE any processing
+        logger.info("🔄 Refresh requested - invalidating caches")
+        invalidate_folder_cache()
+        
+        # Also invalidate the gitignore patterns cache to pick up new files
+        import app.utils.directory_util as dir_util
+        dir_util._ignored_patterns_cache = None
+        dir_util._ignored_patterns_cache_dir = None
+        dir_util._ignored_patterns_cache_time = 0
+        logger.info("🔄 Invalidated gitignore patterns cache")
     
     # Add cache headers to help frontend avoid unnecessary requests
     if refresh:
@@ -4549,6 +4549,11 @@ async def api_get_folders(refresh: bool = False):
         
         # Use our enhanced cached folder structure function
         result = get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth)
+        
+        # Log the structure we're returning
+        logger.info("=== FOLDER STRUCTURE BEING RETURNED ===")
+        log_folder_contents(result, max_depth=2)
+        logger.info("=== END FOLDER STRUCTURE ===")
         
         # Background calculation is automatically ensured by get_cached_folder_structure_with_tokens
         # Check if we got an error result
@@ -5020,33 +5025,14 @@ def count_tokens_fallback(text: str) -> int:
 @app.post('/api/token-count')
 async def count_tokens(request: TokenCountRequest) -> Dict[str, int]:
     try:
-        token_count = 0
-        method_used = "unknown"
-
-        # Import tiktoken here for lazy loading
-        if tiktoken is None:
-            from app.utils.tiktoken_compat import tiktoken as tk
-        else:
-            tk = tiktoken
-
-        try:
-            # Try primary method first
-            if hasattr(model, 'get_num_tokens'):
-                token_count = model.get_num_tokens(request.text)
-            else:
-                # Use tiktoken directly
-                encoding = tk.get_encoding("cl100k_base")
-                token_count = len(encoding.encode(request.text))
-            method_used = "primary"
-        except AttributeError:
-            # If primary method fails, use fallback
-            logger.debug("Primary token counting method unavailable, using fallback")
-            token_count = count_tokens_fallback(request.text)
-            method_used = "fallback"
-        except Exception as e:
-            logger.error(f"Unexpected error in primary token counting: {str(e)}")
-            token_count = count_tokens_fallback(request.text)
-            method_used = "fallback"
+        # Use estimate_token_count which tries calibrator first, then tiktoken, then fallback
+        # This gives us calibrated estimates when available, with graceful degradation
+        from app.agents.agent import estimate_token_count
+        
+        token_count = estimate_token_count(text=request.text)
+        
+        # Log which method was actually used (calibrator logs this internally)
+        method_used = "estimate_token_count"
 
         logger.info(f"Counted {token_count} tokens using {method_used} method for text length {len(request.text)}")
         return {"token_count": token_count}
@@ -5622,6 +5608,150 @@ async def reset_mcp_state(request: Request):
         
     except Exception as e:
         logger.error(f"Error resetting MCP state: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.get('/api/telemetry/cache-health')
+async def get_cache_health_telemetry():
+    """Get real-time cache health and efficiency metrics."""
+    try:
+        from app.streaming_tool_executor import get_global_usage_tracker
+        
+        tracker = get_global_usage_tracker()
+        
+        # Get current conversation metrics
+        current_conversation = None
+        from app.agents.models import ModelManager
+        
+        # Get all tracked conversations
+        all_conversations = tracker.get_all_conversations()
+        
+        # Calculate global statistics
+        global_stats = {
+            'total_conversations': len(all_conversations),
+            'total_fresh_tokens': 0,
+            'total_cached_tokens': 0,
+            'total_output_tokens': 0,
+            'total_throttle_events': 0,
+            'conversations_with_cache_issues': 0
+        }
+        
+        conversation_details = []
+        
+        for conv_id, usages in all_conversations.items():
+            if not usages:
+                continue
+            
+            # Aggregate metrics for this conversation
+            conv_metrics = {
+                'conversation_id': conv_id,
+                'iteration_count': len(usages),
+                'fresh_tokens': sum(u.input_tokens for u in usages),
+                'cached_tokens': sum(u.cache_read_tokens for u in usages),
+                'output_tokens': sum(u.output_tokens for u in usages),
+                'cache_created': sum(u.cache_write_tokens for u in usages),
+                'throttle_count': sum(1 for u in usages if getattr(u, 'was_throttled', False)),
+                'timestamp': max(getattr(u, 'timestamp', 0) for u in usages) if usages else 0
+            }
+            
+            # Calculate efficiency
+            total_input = conv_metrics['fresh_tokens'] + conv_metrics['cached_tokens']
+            conv_metrics['cache_efficiency'] = (
+                (conv_metrics['cached_tokens'] / total_input * 100) if total_input > 0 else 0
+            )
+            
+            # Detect issues
+            cache_issue = (
+                len(usages) > 1 and  # Multi-iteration conversation
+                conv_metrics['cached_tokens'] == 0 and  # No cache reads
+                conv_metrics['fresh_tokens'] > 50000  # Significant token usage
+            )
+            
+            conv_metrics['has_cache_issue'] = cache_issue
+            
+            # Update global stats
+            global_stats['total_fresh_tokens'] += conv_metrics['fresh_tokens']
+            global_stats['total_cached_tokens'] += conv_metrics['cached_tokens']
+            global_stats['total_output_tokens'] += conv_metrics['output_tokens']
+            global_stats['total_throttle_events'] += conv_metrics['throttle_count']
+            if cache_issue:
+                global_stats['conversations_with_cache_issues'] += 1
+            
+            conversation_details.append(conv_metrics)
+        
+        # Calculate global cache efficiency
+        total_global_input = global_stats['total_fresh_tokens'] + global_stats['total_cached_tokens']
+        global_stats['overall_cache_efficiency'] = (
+            (global_stats['total_cached_tokens'] / total_global_input * 100) 
+            if total_global_input > 0 else 0
+        )
+        
+        # Calculate cost savings
+        global_stats['estimated_cost_savings_pct'] = global_stats['overall_cache_efficiency']
+        
+        # Sort conversations by most recent
+        conversation_details.sort(key=lambda x: x['timestamp'], reverse=True)
+        
+        return {
+            'status': 'success',
+            'timestamp': int(time.time() * 1000),
+            'global_stats': global_stats,
+            'conversations': conversation_details[:20],  # Most recent 20
+            'health_summary': {
+                'cache_working': global_stats['conversations_with_cache_issues'] == 0,
+                'issues_detected': global_stats['conversations_with_cache_issues'],
+                'throttle_pressure': 'high' if global_stats['total_throttle_events'] > 5 else 
+                                    'medium' if global_stats['total_throttle_events'] > 0 else 'low'
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting cache health telemetry: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.get('/api/telemetry/current-conversation')
+async def get_current_conversation_telemetry(conversation_id: str):
+    """Get detailed telemetry for a specific conversation."""
+    try:
+        from app.streaming_tool_executor import get_global_usage_tracker
+        
+        tracker = get_global_usage_tracker()
+        usages = tracker.get_conversation_usages(conversation_id)
+        
+        if not usages:
+            return {'status': 'no_data', 'conversation_id': conversation_id}
+        
+        # Build detailed iteration breakdown
+        iterations = []
+        for i, usage in enumerate(usages):
+            iterations.append({
+                'iteration': i,
+                'fresh_tokens': usage.input_tokens,
+                'cached_tokens': usage.cache_read_tokens,
+                'output_tokens': usage.output_tokens,
+                'cache_efficiency': f"{usage.cache_hit_rate * 100:.1f}%",
+                'was_throttled': getattr(usage, 'was_throttled', False),
+                'timestamp': getattr(usage, 'timestamp', 0)
+            })
+        
+        # Calculate trends
+        cache_trend = []
+        for usage in usages:
+            if usage.cache_read_tokens + usage.input_tokens > 0:
+                cache_trend.append(usage.cache_hit_rate)
+        
+        return {
+            'status': 'success',
+            'conversation_id': conversation_id,
+            'iterations': iterations,
+            'cache_trend': cache_trend,
+            'summary': {
+                'total_iterations': len(usages),
+                'average_cache_efficiency': sum(cache_trend) / len(cache_trend) if cache_trend else 0
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting conversation telemetry: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.post('/api/files/validate')
