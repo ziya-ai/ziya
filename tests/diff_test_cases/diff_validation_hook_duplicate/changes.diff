@@ -1,0 +1,47 @@
+diff --git a/app/utils/diff_validation_hook.py b/app/utils/diff_validation_hook.py
+--- a/app/utils/diff_validation_hook.py
++++ b/app/utils/diff_validation_hook.py
+@@ -136,20 +136,26 @@ class DiffValidationHook:
+             })
+         
+         try:
+             validation_result = validate_diff_with_full_pipeline(diff_content, file_path)
+             
++            # Check if ANY hunks failed
+             has_failures = len(validation_result["failed_hunks"]) > 0
+             
++            # CRITICAL: Also check if validation returned error status (e.g., file doesn't exist)
++            # This handles cases where validation fails BEFORE we even parse hunks
++            if validation_result["status"] == "error" and validation_result["total_hunks"] == 0:
++                has_failures = True
++                logger.warning(f"❌ Validation failed for {file_path}: {validation_result['model_feedback']}")
++            
+             if has_failures:
+-                logger.warning(
+-                    f"❌ Validation failed for {file_path}: "
+-                    f"{len(validation_result['failed_hunks'])}/{validation_result['total_hunks']} hunks failed"
+-                )
+                 
+                 # Check if file is in current context
+                 file_in_context = self.is_file_in_context(file_path)
+                 context_was_enhanced = False
+                 
+                 if not file_in_context:
+                     logger.info(f"📂 File {file_path} not in context, adding automatically")
+                     
+                     # Read file content
+                     file_content = self.read_file_for_context(file_path)
+                     
+                     if file_content:
+@@ -168,11 +174,11 @@ class DiffValidationHook:
+                         logger.info(f"✅ Added {file_path} to model context ({len(file_content)} chars)")
+                 
+                 # Send regeneration request to frontend (for UI sync)
+                 if send_event:
+                     send_event("diff_regeneration_requested", {
+                         "file_path": file_path,
+                         "status": validation_result["status"],
+                         "failed_hunks": validation_result["failed_hunks"],
+                         "succeeded_hunks": validation_result["succeeded_hunks"],
+                         "already_applied_hunks": validation_result["already_applied_hunks"],
+                         "hunk_details": validation_result["hunk_details"],

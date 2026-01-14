@@ -1,0 +1,5 @@
+{
+  "description": "Test that applying the same diff twice doesn't create duplicates",
+  "tags": ["duplicate", "already-applied", "idempotent"],
+  "target_file": "diff_validation_hook.py"
+}

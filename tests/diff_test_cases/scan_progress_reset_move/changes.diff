@@ -1,0 +1,40 @@
+diff --git a/app/utils/directory_util.py b/app/utils/directory_util.py
+index 1234567..89abcde 100644
+--- a/app/utils/directory_util.py
++++ b/app/utils/directory_util.py
+@@ -1235,16 +1235,6 @@ def get_basic_folder_structure(directory: str) -> Dict[str, Any]:
+     def start_background_scan(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int):
+         """Starts the folder scan in a background thread if not already running."""
+         global _scan_thread, _folder_cache
+     
+         def scan_task():
+-            # Reset scan progress at the START of the scan
+-            global _scan_progress
+-            _scan_progress["active"] = True
+-            _scan_progress["cancelled"] = False
+-            _scan_progress["start_time"] = time.time()
+-            _scan_progress["last_update"] = time.time()
+-            _scan_progress["progress"] = {"directories": 0, "files": 0, "elapsed": 0}
+-            _scan_progress["estimated_total"] = 0
+-            
+             logger.info(f"Background folder scan started for {directory}.")
+             # get_folder_structure updates _scan_progress globally
+             result = get_folder_structure(directory, ignored_patterns, max_depth)
+@@ -1262,6 +1252,17 @@ def get_basic_folder_structure(directory: str) -> Dict[str, Any]:
+             finally:
+                 _scan_progress["active"] = False
+     
++        # CRITICAL: Reset scan progress BEFORE starting the thread
++        # so health checks don't see stale timestamps
++        global _scan_progress
++        _scan_progress["active"] = True
++        _scan_progress["cancelled"] = False
++        _scan_progress["start_time"] = time.time()
++        _scan_progress["last_update"] = time.time()
++        _scan_progress["progress"] = {"directories": 0, "files": 0, "elapsed": 0}
++        _scan_progress["estimated_total"] = 0
++        logger.info(f"Reset scan progress state for new scan")
++        
+         with _scan_lock:
+             if _scan_thread and _scan_thread.is_alive():
+                 logger.info("Folder scan is already in progress.")
