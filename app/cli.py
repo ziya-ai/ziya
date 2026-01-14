@@ -22,7 +22,14 @@ import asyncio
 import re
 import hashlib
 import argparse
+from pathlib import Path
 from typing import Optional, List, Tuple 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.completion import PathCompleter, WordCompleter, Completer, Completion
+from prompt_toolkit.document import Document
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.formatted_text import FormattedText
 
 
 def setup_env(args):
@@ -110,6 +117,9 @@ class CLI:
         self.history = []
         self._model = None
         self._init_error = None
+        self._active_task = None  # Track active streaming task for cancellation
+        self._cancellation_requested = False
+        self._setup_prompt_session()
     
     @property
     def model(self):
@@ -143,6 +153,80 @@ class CLI:
             self._init_error = str(e)
             return None
     
+    def _setup_prompt_session(self):
+        """Set up prompt_toolkit session with history and completions."""
+        # Custom completer that only shows commands at line start
+        class SmartCompleter(Completer):
+            def __init__(self):
+                self.command_completer = WordCompleter([
+                    '/add', '/a',
+                    '/rm', '/remove',
+                    '/files', '/ls', '/f',
+                    '/clear', '/c',
+                    '/model', '/m',
+                    '/quit', '/q', '/exit',
+                    '/help', '/h'
+                ], ignore_case=True, sentence=True)
+                
+                self.path_completer = PathCompleter(
+                    only_directories=False,
+                    expanduser=True
+                )
+            
+            def get_completions(self, document: Document, complete_event):
+                text = document.text_before_cursor
+                
+                # Only show command completions at the start of the line
+                if text.lstrip().startswith('/'):
+                    # Check if we're still typing the command (no space after /)
+                    if ' ' not in text.lstrip():
+                        yield from self.command_completer.get_completions(document, complete_event)
+                        return
+                
+                # Otherwise, show path completions
+                yield from self.path_completer.get_completions(document, complete_event)
+        
+        """Set up prompt_toolkit session with history and completions."""
+        # History file in user's home directory
+        history_file = Path.home() / '.ziya' / 'history'
+        history_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Command completer for slash commands
+        command_completer = WordCompleter([
+            '/add', '/a',
+            '/rm', '/remove',
+            '/files', '/ls', '/f',
+            '/clear', '/c',
+            '/model', '/m',
+            '/quit', '/q', '/exit',
+            '/help', '/h'
+        ], ignore_case=True)
+        
+        # Key bindings for ^C handling
+        bindings = KeyBindings()
+        
+        @bindings.add('c-c')
+        def _(event):
+            """Handle Ctrl+C - cancel operation or clear input."""
+            if self._active_task:
+                # Cancel the active streaming task
+                self._cancellation_requested = True
+                print("\n\033[33m^C - Cancelling operation...\033[0m")
+                event.app.exit(result='')
+            elif event.app.current_buffer.text:
+                # Clear current input
+                event.app.current_buffer.reset()
+            else:
+                # Empty input - show exit hint
+                print("\033[90m(Press ^D or type /quit to exit)\033[0m")
+        
+        self.session = PromptSession(
+            history=FileHistory(str(history_file)),
+            completer=SmartCompleter(),
+            complete_while_typing=True,
+            key_bindings=bindings
+        )
+    
     def _build_messages(self, question: str):
         """Build messages for the model."""
         from app.server import build_messages_for_streaming
@@ -162,94 +246,180 @@ class CLI:
             self._print_auth_help()
             return ""
         
-        response = await self._run_with_tools(question, stream)
+        # Reset cancellation flag
+        self._cancellation_requested = False
+        
+        try:
+            response = await self._run_with_tools(question, stream)
+        except Exception as e:
+            error_str = str(e)
+            print(f"\n\033[31mError: {error_str}\033[0m", file=sys.stderr)
+            
+            # Check for specific error types
+            if 'ThrottlingException' in error_str or 'Too many tokens' in error_str:
+                print("\033[33mRate limit hit. Please wait a moment before trying again.\033[0m", file=sys.stderr)
+            elif 'ExpiredToken' in error_str:
+                print("\033[33mCredentials expired. Please refresh: aws sso login --profile <profile>\033[0m", file=sys.stderr)
+            elif isinstance(e, asyncio.CancelledError):
+                # Graceful cancellation
+                print("\n\033[33mOperation cancelled.\033[0m")
+                return ""
+            
+            return ""
         
         # Update history
         self.history.append({'type': 'human', 'content': question})
-        self.history.append({'type': 'ai', 'content': response})
+        if response:
+            self.history.append({'type': 'ai', 'content': response})
         
         return response
     
     async def _run_with_tools(self, question: str, stream: bool = True) -> str:
         """Run model with tool execution loop."""
-        from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+        from app.streaming_tool_executor import StreamingToolExecutor
+        from app.mcp.manager import get_mcp_manager
+        from app.agents.models import ModelManager
         
         messages = self._build_messages(question)
-        full_response = ""
-        max_iterations = 15  # Prevent infinite loops
-        iteration = 0
-        processed_tool_calls = set()
         
-        while iteration < max_iterations:
-            iteration += 1
-            current_response = ""
-            printed_len = 0
-            in_tool_block = False
-            
-            # Stream response
-            if stream:
-                async for chunk in self.model.astream(messages):
-                    content = getattr(chunk, 'content', '')
-                    if isinstance(content, str) and content:
-                        current_response += content
-                        
-                        # Track if we're in a tool block
-                        if TOOL_SENTINEL_OPEN in current_response:
-                            in_tool_block = TOOL_SENTINEL_CLOSE not in current_response.split(TOOL_SENTINEL_OPEN)[-1]
-                        
-                        # Print content that's not in a tool block
-                        if not in_tool_block:
-                            # Find safe content to print (before any tool block)
-                            safe_content = current_response
-                            if TOOL_SENTINEL_OPEN in safe_content:
-                                safe_content = safe_content.split(TOOL_SENTINEL_OPEN)[0]
-                            
-                            # Print new content only
-                            if len(safe_content) > printed_len:
-                                new_content = safe_content[printed_len:]
-                                print(new_content, end='', flush=True)
-                                printed_len = len(safe_content)
-            else:
-                result = self.model.invoke(messages)
-                current_response = getattr(result, 'content', str(result))
-            
-            # Check for and execute tool calls
-            tool_result = await self._execute_tool_calls(
-                current_response, processed_tool_calls, TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
-            )
-            
-            # Debug: show raw response if it contains tool sentinel
-            has_open = TOOL_SENTINEL_OPEN in current_response
-            has_close = TOOL_SENTINEL_CLOSE in current_response
-            if has_open:
-                print(f"\n\033[33mDEBUG: has_open={has_open}, has_close={has_close}\033[0m", file=sys.stderr)
-                print(f"\033[90mDEBUG: last 300 chars: {repr(current_response[-300:])}\033[0m", file=sys.stderr)
-            
-            if tool_result is None:
-                # No more tool calls - print any remaining content and finish
-                if stream:
-                    # Print anything after the last tool block
-                    clean = self._remove_tool_blocks(current_response, TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE)
-                    if len(clean) > printed_len:
-                        print(clean[printed_len:], end='', flush=True)
-                    print()  # Final newline
-                else:
-                    print(self._remove_tool_blocks(current_response, TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE))
+        # Get MCP manager and tools
+        mcp_manager = get_mcp_manager()
+        if not mcp_manager or not mcp_manager.is_initialized:
+            # No tools, just invoke normally
+            return await self._simple_invoke(messages, stream)
+        
+        # Get tools for StreamingToolExecutor
+        from app.mcp.enhanced_tools import create_secure_mcp_tools
+        tools = create_secure_mcp_tools()
+        
+        if not tools:
+            return await self._simple_invoke(messages, stream)
+        
+        # Get AWS config
+        state = ModelManager.get_state()
+        aws_profile = state.get('aws_profile')
+        aws_region = state.get('aws_region', 'us-west-2')
+        
+        # Create StreamingToolExecutor
+        executor = StreamingToolExecutor(profile_name=aws_profile, region=aws_region)
+        
+        # Convert LangChain messages to OpenAI format
+        openai_messages = self._convert_to_openai_format(messages)
+        
+        # Create streaming task
+        full_response = ""
+        
+        async def stream_task():
+            """Streaming task that can be cancelled."""
+            async for chunk in executor.stream_with_tools(openai_messages, tools):
+                # Check for cancellation
+                if self._cancellation_requested:
+                    raise asyncio.CancelledError("User cancelled operation")
                 
-                full_response += current_response
+                yield chunk
+        
+        # Store task for cancellation
+        task = asyncio.create_task(self._stream_handler(stream_task(), stream))
+        self._active_task = task
+        
+        try:
+            full_response = await task
+        finally:
+            self._active_task = None
+        
+        return full_response
+    
+    async def _stream_handler(self, stream_generator, stream: bool) -> str:
+        """Handle streaming with cancellation support."""
+        full_response = ""
+        
+        async for chunk in stream_generator:
+            chunk_type = chunk.get('type')
+            
+            if chunk_type == 'text':
+                content = chunk.get('content', '')
+                if stream:
+                    print(content, end='', flush=True)
+                full_response += content
+            
+            elif chunk_type == 'tool_execution':
+                tool_name = chunk.get('tool_name', 'unknown')
+                print(f"\n\033[90m⚡ {tool_name}\033[0m", flush=True)
+            
+            elif chunk_type == 'tool_start':
+                tool_name = chunk.get('tool_name', 'unknown')
+                print(f"\n\033[36m⚙ Executing {tool_name}...\033[0m", flush=True)
+            
+            elif chunk_type == 'tool_display':
+                # Show tool result with formatting
+                tool_name = chunk.get('tool_name', 'unknown')
+                result = chunk.get('result', '')
+                args = chunk.get('args', {})
+                
+                # Print tool header in cyan
+                print(f"\n\033[36m┌─ {tool_name}\033[0m", flush=True)
+                
+                # Print command/args if available
+                if 'command' in args:
+                    print(f"\033[90m│ $ {args['command']}\033[0m", flush=True)
+                
+                # Print result
+                if result:
+                    for line in result.split('\n'):
+                        print(f"\033[90m│\033[0m {line}", flush=True)
+                
+                print(f"\033[36m└─\033[0m", flush=True)
+            
+            elif chunk_type == 'stream_end':
                 break
             
-            tool_call_block, tool_name, tool_output = tool_result
+            elif chunk_type == 'throttling_error':
+                # Handle throttling gracefully
+                wait_time = chunk.get('suggested_wait', 60)
+                print(f"\n\033[33m⚠ Rate limit hit. Waiting {wait_time}s...\033[0m\n", file=sys.stderr)
+                # Don't break - let the executor handle the retry
             
-            # Show tool execution status
-            print(f"\n\033[90m⚡ {tool_name}\033[0m", flush=True)
-            
-            # Add to conversation for continuation
-            full_response += current_response
-            messages.append({"role": "assistant", "content": current_response})
-            messages.append({"role": "user", "content": f"<tool_result>\n{tool_output}\n</tool_result>\n\nContinue based on this result."})
+            elif chunk_type == 'error':
+                error_msg = chunk.get('content', 'Unknown error')
+                print(f"\n\033[31mError: {error_msg}\033[0m", file=sys.stderr)
+                break
         
-        return self._remove_tool_blocks(full_response, TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE)
+        if stream:
+            print()  # Final newline after streaming
+        
+        return full_response
+    
+    def _convert_to_openai_format(self, messages):
+        """Convert LangChain messages to OpenAI format."""
+        openai_msgs = []
+        for msg in messages:
+            if isinstance(msg, dict):
+                openai_msgs.append(msg)
+            elif hasattr(msg, 'type'):
+                if msg.type == 'system':
+                    openai_msgs.append({"role": "system", "content": msg.content})
+                elif msg.type == 'human':
+                    openai_msgs.append({"role": "user", "content": msg.content})
+                elif msg.type == 'ai':
+                    openai_msgs.append({"role": "assistant", "content": msg.content})
+        return openai_msgs
+    
+    async def _simple_invoke(self, messages, stream: bool) -> str:
+        """Simple invocation without tools."""
+        if stream:
+            response = ""
+            async for chunk in self.model.astream(messages):
+                content = getattr(chunk, 'content', '')
+                if isinstance(content, str):
+                    print(content, end='', flush=True)
+                    response += content
+            print()
+            return response
+        else:
+            result = await self.model.ainvoke(messages)
+            content = getattr(result, 'content', str(result))
+            print(content)
+            return content
     
     def _remove_tool_blocks(self, text: str, open_tag: str, close_tag: str) -> str:
         """Remove tool call blocks from text."""
@@ -326,7 +496,20 @@ class CLI:
         
         while True:
             try:
-                user_input = input("\033[1m>\033[0m ").strip()
+                # Use prompt_toolkit for rich input
+                try:
+                    user_input = await asyncio.to_thread(
+                        self.session.prompt,
+                        FormattedText([('bold cyan', '> ')]),
+                        # Add context-aware completion
+                        refresh_interval=0.5
+                    )
+                    user_input = user_input.strip()
+                except KeyboardInterrupt:
+                    # Ctrl+C on empty prompt - continue
+                    print()
+                    continue
+                
                 if not user_input:
                     continue
                 
@@ -338,11 +521,16 @@ class CLI:
                 
                 # Regular message
                 print()
-                await self.ask(user_input)
+                try:
+                    await self.ask(user_input)
+                except asyncio.CancelledError:
+                    # Operation was cancelled, continue the loop
+                    pass
                 print()
                 
             except KeyboardInterrupt:
-                print("\n")
+                # Ctrl+C during input - just continue
+                print()
                 continue
             except EOFError:
                 break
@@ -416,6 +604,7 @@ class CLI:
         return True
 
 
+
 async def _initialize_mcp():
     """Initialize MCP servers for CLI mode."""
     try:
@@ -432,22 +621,30 @@ async def _initialize_mcp():
         print(f"\033[90mMCP initialization skipped: {e}\033[0m", file=sys.stderr)
 
 
+async def _run_async_cli(cli):
+    """Run CLI in async context with MCP initialized."""
+    # Initialize MCP in this event loop
+    await _initialize_mcp()
+    
+    # Now run the chat in the same loop
+    await cli.chat()
+
+
 # ============================================================================
 # Command handlers
 # ============================================================================
 
 def cmd_chat(args):
     """Handle: ziya chat [FILES...]"""
-    # Debug: show what args we received
-    print(f"DEBUG args: profile={getattr(args, 'profile', 'NOT SET')}", file=sys.stderr)
-    
+    # CRITICAL FIX: Set up environment BEFORE auth check
+    # This ensures AWS_PROFILE is set before check_aws_credentials is called
     setup_env(args)
     
     # Initialize plugins BEFORE auth check - needed for Amazon auth provider
     from app.plugins import initialize as initialize_plugins
     initialize_plugins()
     
-    # Check model availability early with helpful error (after setup_env sets AWS_PROFILE)
+    # Now check auth with the profile from setup_env
     profile = getattr(args, 'profile', None)
     if not _check_auth_quick(profile):
         _print_auth_error()
@@ -456,22 +653,20 @@ def cmd_chat(args):
     root = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
     files = resolve_files(args.files, root) if args.files else []
     
-    # Initialize MCP servers
-    asyncio.run(_initialize_mcp())
-    
     cli = CLI(files=files)
-    asyncio.run(cli.chat())
+    asyncio.run(_run_async_cli(cli))
 
 
 def cmd_ask(args):
     """Handle: ziya ask "question" [FILES...]"""
+    # CRITICAL FIX: Set up environment BEFORE auth check
     setup_env(args)
     
     # Initialize plugins BEFORE auth check - needed for Amazon auth provider
     from app.plugins import initialize as initialize_plugins
     initialize_plugins()
     
-    # Quick auth check before doing work (after setup_env sets AWS_PROFILE)
+    # Now check auth with the profile from setup_env
     profile = getattr(args, 'profile', None)
     if not _check_auth_quick(profile):
         _print_auth_error()
@@ -501,13 +696,14 @@ def cmd_ask(args):
 
 def cmd_review(args):
     """Handle: ziya review [FILES...] [--staged]"""
+    # CRITICAL FIX: Set up environment BEFORE auth check
     setup_env(args)
     
     # Initialize plugins BEFORE auth check - needed for Amazon auth provider
     from app.plugins import initialize as initialize_plugins
     initialize_plugins()
     
-    # Quick auth check before doing work (after setup_env sets AWS_PROFILE)
+    # Now check auth with the profile from setup_env
     profile = getattr(args, 'profile', None)
     if not _check_auth_quick(profile):
         _print_auth_error()
@@ -551,13 +747,14 @@ def cmd_review(args):
 
 def cmd_explain(args):
     """Handle: ziya explain [FILES...]"""
+    # CRITICAL FIX: Set up environment BEFORE auth check
     setup_env(args)
     
     # Initialize plugins BEFORE auth check - needed for Amazon auth provider
     from app.plugins import initialize as initialize_plugins
     initialize_plugins()
     
-    # Quick auth check before doing work (after setup_env sets AWS_PROFILE)
+    # Now check auth with the profile from setup_env
     profile = getattr(args, 'profile', None)
     if not _check_auth_quick(profile):
         _print_auth_error()
