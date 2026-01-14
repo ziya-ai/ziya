@@ -11,6 +11,7 @@ import StopStreamButton from './StopStreamButton';
 import { useQuestion, useSetQuestion } from '../context/QuestionContext';
 import { ThrottlingErrorDisplay } from './ThrottlingErrorDisplay';
 import { useTheme } from '../context/ThemeContext';
+import { modelCapabilitiesService } from '../services/modelCapabilitiesService';
 
 const { TextArea } = Input;
 
@@ -168,20 +169,12 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
         return () => document.removeEventListener('feedbackAcknowledged', handleFeedbackAck as EventListener);
     }, [currentConversationId]);
 
-    // Check if current model supports vision
+    // Check if current model supports vision (cached globally)
     useEffect(() => {
-        const checkVisionSupport = async () => {
-            try {
-                const response = await fetch('/api/model-capabilities');
-                const capabilities = await response.json();
-                setSupportsVision(capabilities.supports_vision || false);
-            } catch (error) {
-                console.error('Failed to check vision support:', error);
-                setSupportsVision(false);
-            }
-        };
-        checkVisionSupport();
-    }, [currentConversationId]); // Re-check when conversation changes (model might change)
+        modelCapabilitiesService.getCapabilities()
+            .then(cap => setSupportsVision(cap.supports_vision || false))
+            .catch(() => setSupportsVision(false));
+    }, []); // Only check once on mount - capabilities don't change per conversation
 
     // Focus management
     useLayoutEffect(() => {
