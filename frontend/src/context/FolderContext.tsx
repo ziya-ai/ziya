@@ -453,6 +453,12 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const fetchFoldersRef = useRef<() => Promise<void>>();
 
   const fetchFolders = useCallback(async () => {
+    // Don't fetch if a scan is already in progress
+    if (isScanning) {
+      console.log('Scan already in progress, skipping fetch');
+      return;
+    }
+    
     // Don't block the main thread - use MessageChannel for true async
     const channel = new MessageChannel();
     channel.port1.onmessage = async () => {
@@ -545,6 +551,20 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     asyncInit();
   }, []); // Add empty dependency array
 
+  // Listen for manual refresh events
+  useEffect(() => {
+    const handleRefreshEvent = () => {
+      console.log('Received refresh event, triggering fetchFolders');
+      setIsScanning(true);
+      setScanProgress(null);
+      setScanError(null);
+      fetchFolders();
+    };
+    
+    window.addEventListener('refreshFolders', handleRefreshEvent);
+    return () => window.removeEventListener('refreshFolders', handleRefreshEvent);
+  }, [fetchFolders]);
+
   // Add timeout handling with user notification
   useEffect(() => {
     if (isScanning) {
@@ -587,6 +607,33 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       }
     };
   }, [isScanning, cancelScan]);
+
+  // Listen for context sync events from backend
+  useEffect(() => {
+    const handleContextSync = (event: CustomEvent) => {
+      const { addedFiles, reason } = event.detail;
+      
+      if (!addedFiles || addedFiles.length === 0) return;
+      
+      console.log('📂 CONTEXT_SYNC: Backend added files to context:', addedFiles);
+      
+      // Update checkedKeys to include the new files
+      setCheckedKeys(prev => {
+        const newKeys = [...prev];
+        addedFiles.forEach((file: string) => {
+          if (!newKeys.includes(file)) {
+            newKeys.push(file);
+          }
+        });
+        return newKeys;
+      });
+      
+      console.log(`✅ UI synced: ${addedFiles.length} file(s) added to context`);
+    };
+    
+    window.addEventListener('syncContextFromBackend', handleContextSync as EventListener);
+    return () => window.removeEventListener('syncContextFromBackend', handleContextSync as EventListener);
+  }, []);
 
   // Function to programmatically add files to context
   const addFilesToContext = useCallback(async (filePaths: string[]) => {
