@@ -556,7 +556,6 @@ def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_dif
             logger.debug(f"Corrected diff last 100 chars: {repr(git_diff[-100:])}")
     
     # CRITICAL: Check for ambiguous context before applying
-    print("DEBUG: Starting ambiguity check")  # DEBUG
     from ..parsing.diff_parser import parse_unified_diff_exact_plus
     from ..validation.validators import normalize_line_for_comparison
     

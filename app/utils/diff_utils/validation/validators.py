@@ -419,28 +419,21 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
         else:
             # Removal content doesn't match at pos
             # For modifications (has additions), check if the new content is already there
-            if added_lines and _check_expected_content_match(file_lines, new_lines, pos, ignore_whitespace):
-                # CRITICAL: Before marking as "already applied", verify the removal content
-                # is actually gone. For multi-line distinctive blocks, check if a significant
-                # portion still exists in the file - if so, we're likely matching against
-                # duplicate code, not a previously-applied hunk.
-                if len(removed_lines) >= 3:
-                    # Check if a distinctive portion of removal content exists in file
-                    # Use middle lines (skip first/last which are often generic like braces)
-                    mid_start = len(removed_lines) // 4
-                    mid_end = len(removed_lines) - mid_start
-                    distinctive_lines = removed_lines[mid_start:mid_end]
-                    
-                    if len(distinctive_lines) >= 2:
-                        # Check if these distinctive lines exist consecutively in the file
-                        file_content = "\n".join(file_lines)
-                        distinctive_content = "\n".join(distinctive_lines)
-                        if distinctive_content in file_content:
-                            logger.debug(f"Removal content still exists in file (checked {len(distinctive_lines)} distinctive lines) - NOT already applied")
-                            return False
+            # CRITICAL: Search for a distinctive consecutive subset of added lines
+            # (added lines might be interspersed with context, so we can't search for all of them as one block)
+            if added_lines and len(added_lines) >= 3:
+                # Use the last 3+ added lines as a distinctive block (more likely to be consecutive)
+                distinctive_added = added_lines[-min(len(added_lines), 5):]
+                distinctive_normalized = [normalize_line_for_comparison(line) for line in distinctive_added]
                 
-                logger.debug(f"Hunk appears already applied: removal content gone, new content present at {pos}")
-                return True
+                for search_pos in range(len(file_lines) - len(distinctive_added) + 1):
+                    file_block = [normalize_line_for_comparison(file_lines[search_pos + i]) 
+                                 for i in range(len(distinctive_added))]
+                    if file_block == distinctive_normalized:
+                        logger.debug(f"Hunk appears already applied: distinctive added content found at pos {search_pos}")
+                        return True
+                
+                logger.debug(f"Distinctive added content not found - hunk NOT already applied")
             # For pure deletions or when new content doesn't match - not applied
             return False
     
