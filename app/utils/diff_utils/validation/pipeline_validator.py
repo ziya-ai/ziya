@@ -1,0 +1,209 @@
+"""
+Pipeline-based diff validation using the EXACT same pipeline as actual application.
+
+This ensures validation results are 100% accurate to what would happen during
+actual application, with per-hunk detailed feedback.
+"""
+
+import os
+import tempfile
+import shutil
+from typing import Dict, Any, List, Optional
+from app.utils.logging_utils import logger
+from ..parsing.diff_parser import extract_target_file_from_diff
+from ..pipeline.pipeline_manager import apply_diff_pipeline
+
+
+def validate_diff_with_full_pipeline(
+    diff_content: str,
+    file_path: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Validate a diff using the EXACT same pipeline as actual application.
+    
+    This creates a temporary copy of the file and runs the complete pipeline
+    to get accurate per-hunk validation results.
+    
+    Args:
+        diff_content: The git diff to validate
+        file_path: Optional file path (will be extracted from diff if not provided)
+        
+    Returns:
+        Dictionary with detailed validation results:
+        {
+            "can_apply": bool,                    # True if all/some hunks succeeded
+            "status": str,                        # "success", "partial", or "error"
+            "file_path": str,                     # Target file path
+            "total_hunks": int,                   # Total number of hunks
+            "succeeded_hunks": list[int],         # Hunk IDs that succeeded
+            "failed_hunks": list[int],            # Hunk IDs that failed
+            "already_applied_hunks": list[int],   # Hunk IDs already applied
+            "hunk_details": dict,                 # Per-hunk status details
+            "recommendation": str,                # What to fix
+            "model_feedback": str                 # Formatted feedback for LLM
+        }
+    """
+    logger.info("Validating diff with full pipeline...")
+    
+    result = {
+        "can_apply": False,
+        "status": "error",
+        "file_path": "",
+        "total_hunks": 0,
+        "succeeded_hunks": [],
+        "failed_hunks": [],
+        "already_applied_hunks": [],
+        "hunk_details": {},
+        "recommendation": "",
+        "model_feedback": ""
+    }
+    
+    # Extract file path if not provided
+    if not file_path:
+        file_path = extract_target_file_from_diff(diff_content)
+        if not file_path:
+            result["recommendation"] = "Add proper diff headers (diff --git, ---, +++)"
+            result["model_feedback"] = f"❌ Could not extract file path from diff. Regenerate with complete headers:\ndiff --git a/file.ext b/file.ext\n--- a/file.ext\n+++ b/file.ext"
+            return result
+    
+    result["file_path"] = file_path
+    
+    # Get the user codebase directory
+    codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+    if not codebase_dir:
+        result["model_feedback"] = "❌ System error: codebase directory not configured"
+        return result
+    
+    full_path = os.path.join(codebase_dir, file_path)
+    
+    # Check if this is a new file creation
+    is_new_file = "new file mode" in diff_content or "--- /dev/null" in diff_content
+    
+    # If not a new file, check that target exists
+    if not is_new_file and not os.path.exists(full_path):
+        result["model_feedback"] = f"❌ Target file does not exist: {file_path}\nVerify the file path or mark as new file creation with:\nnew file mode 100644\n--- /dev/null"
+        return result
+    
+    # Create a temporary directory for validation
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_file_path = os.path.join(temp_dir, os.path.basename(file_path))
+        
+        # Copy original file to temp location (if it exists)
+        if os.path.exists(full_path):
+            shutil.copy2(full_path, temp_file_path)
+        
+        # Save original environment
+        original_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+        
+        # Point pipeline to temp directory
+        os.environ["ZIYA_USER_CODEBASE_DIR"] = temp_dir
+        
+        try:
+            # Run the EXACT same pipeline that would be used for real application
+            logger.info(f"🔍 VALIDATION: Running pipeline on temp file: {temp_file_path}")
+            logger.info(f"🔍 VALIDATION: Diff content preview: {diff_content[:200]}")
+            
+            pipeline_result = apply_diff_pipeline(
+                git_diff=diff_content,
+                file_path=temp_file_path,
+                request_id=f"validation-{os.getpid()}"
+            )
+            
+            logger.info(f"🔍 VALIDATION: Pipeline result: {pipeline_result}")
+            
+            # Extract results
+            result["status"] = pipeline_result.get("status", "error")
+            result["succeeded_hunks"] = pipeline_result.get("succeeded", [])
+            result["failed_hunks"] = pipeline_result.get("failed", [])
+            result["already_applied_hunks"] = pipeline_result.get("already_applied", [])
+            result["hunk_details"] = pipeline_result.get("hunk_statuses", {})
+            result["total_hunks"] = len(result["succeeded_hunks"]) + len(result["failed_hunks"]) + len(result["already_applied_hunks"])
+            
+            # ANY failure means regeneration required
+            has_any_failure = len(result["failed_hunks"]) > 0
+            result["can_apply"] = not has_any_failure
+            
+            # Generate model feedback ONLY on failure
+            if has_any_failure:
+                result["model_feedback"] = format_model_feedback(
+                    file_path=file_path,
+                    status=result["status"],
+                    succeeded=result["succeeded_hunks"],
+                    failed=result["failed_hunks"],
+                    already_applied=result["already_applied_hunks"],
+                    hunk_details=result["hunk_details"]
+                )
+                
+                # Generate recommendation
+                if result["status"] == "partial":
+                    result["recommendation"] = f"Regenerate hunks {result['failed_hunks']} with accurate context"
+                else:
+                    result["recommendation"] = "Regenerate entire diff with complete context from current file state"
+            
+            logger.info(f"Validation complete: {result['status']} - {len(result['succeeded_hunks'])}/{result['total_hunks']} hunks OK")
+            
+        finally:
+            # Restore environment
+            if original_codebase_dir:
+                os.environ["ZIYA_USER_CODEBASE_DIR"] = original_codebase_dir
+            else:
+                os.environ.pop("ZIYA_USER_CODEBASE_DIR", None)
+    
+    return result
+
+
+def format_model_feedback(
+    file_path: str,
+    status: str,
+    succeeded: List[int],
+    failed: List[int],
+    already_applied: List[int],
+    hunk_details: Dict[str, Any]
+) -> str:
+    """
+    Format detailed feedback for the model about validation failures.
+    Only called when there are failures.
+    """
+    feedback_parts = [
+        f"❌ DIFF VALIDATION FAILED for {file_path}:",
+        ""
+    ]
+    
+    # Report successful hunks (if any)
+    if succeeded:
+        feedback_parts.append(f"✅ Hunks {', '.join(map(str, succeeded))} - Applied successfully")
+    
+    # Report already applied hunks (if any)
+    if already_applied:
+        feedback_parts.append(f"ℹ️ Hunks {', '.join(map(str, already_applied))} - Already in file")
+    
+    # Report failed hunks with specific details
+    feedback_parts.append(f"\n❌ FAILED HUNKS (must regenerate):")
+    for hunk_id in failed:
+        hunk_status = hunk_details.get(str(hunk_id), {})
+        stage = hunk_status.get("stage", "unknown")
+        error_details = hunk_status.get("error_details", {})
+        
+        if isinstance(error_details, dict):
+            error_type = error_details.get("error", "unknown error")
+            error_msg = error_details.get("details", "")
+        else:
+            error_type = str(error_details)
+            error_msg = ""
+        
+        feedback_parts.append(f"  • Hunk #{hunk_id} (failed in {stage} stage):")
+        feedback_parts.append(f"    Error: {error_type}")
+        if error_msg:
+            feedback_parts.append(f"    Details: {error_msg}")
+    
+    feedback_parts.extend([
+        "",
+        "🔧 REQUIRED FIXES:",
+        f"Regenerate ONLY hunks {', '.join(map(str, failed))} with:",
+        "  1. At least 5 context lines before and after each change",
+        "  2. Accurate line numbers from the current file state",
+        "  3. Complete hunk headers: @@ -old_start,old_count +new_start,new_count @@",
+        "  4. All context lines must exactly match the current file"
+    ])
+    
+    return "\n".join(feedback_parts)
