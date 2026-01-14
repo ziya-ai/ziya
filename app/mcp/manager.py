@@ -455,11 +455,23 @@ class MCPManager:
     async def _connect_server(self, server_name: str, client: MCPClient) -> bool:
         """Connect to a single MCP server."""
         try:
+            logger.info(f"Attempting to connect to MCP server: {server_name}")
+            logger.debug(f"  Server config: {client.server_config}")
+            
             success = await client.connect()
             if success:
                 logger.debug(f"Connected to MCP server: {server_name}")
             else:
                 logger.error(f"Failed to connect to MCP server: {server_name}")
+                
+                # Log captured server logs for diagnostics
+                if client.logs:
+                    logger.error(f"  Server logs for {server_name}:")
+                    for log_entry in client.logs[-10:]:  # Last 10 log entries
+                        logger.error(f"    {log_entry}")
+                else:
+                    logger.error(f"  No server logs captured for {server_name}")
+                    
             return success
         except Exception as e:
             logger.error(f"Error connecting to MCP server {server_name}: {str(e)}")
