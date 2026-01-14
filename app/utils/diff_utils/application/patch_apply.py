@@ -158,7 +158,6 @@ def verify_line_delta(hunk_idx: int, hunk: Dict[str, Any], insert_pos: int, end_
     actual_removed = end_remove_pos - insert_pos
     actual_delta = new_lines_count - actual_removed
     
-    print(f"DEBUG verify_line_delta: Hunk #{hunk_idx}, expected={expected_delta}, actual={actual_delta}")
     
     if actual_delta != expected_delta:
         logger.warning(
@@ -1013,27 +1012,37 @@ def apply_diff_with_difflib_hybrid_forced(
             
             logger.debug(f"Hunk #{hunk_idx}: Pure addition with malformed line numbers - inserting at end of file")
         elif len(h['removed_lines']) == 0 and len(h['added_lines']) > 0:
-            print(f"DEBUG: Hunk #{hunk_idx} INSIDE pure addition if block")
-            # For pure additions, use new_lines with is_addition tracking to preserve position
+            # Pure addition: use new_lines with is_addition tracking to preserve position
             new_lines_is_addition = h.get('new_lines_is_addition', [])
+            old_block = h.get('old_block', [])
             
-            if new_lines_is_addition and len(new_lines_is_addition) == len(h['new_lines']):
-                # Use positional information: replace old_block with new_lines (which has additions in correct positions)
-                print(f"DEBUG: Hunk #{hunk_idx} using new_lines: {len(h['new_lines'])} lines, replacing {len(h['old_block'])} at pos {remove_pos}")
+            # Check if old_block matches the file EXACTLY at remove_pos
+            context_matches = False
+            if old_block and remove_pos + len(old_block) <= len(final_lines_with_endings):
+                context_matches = True
+                for i in range(len(old_block)):
+                    file_line = final_lines_with_endings[remove_pos + i].rstrip('\r\n')
+                    old_line = old_block[i]
+                    if normalize_line_for_comparison(old_line) != normalize_line_for_comparison(file_line):
+                        context_matches = False
+                        break
+            
+            if context_matches and new_lines_is_addition and len(new_lines_is_addition) == len(h['new_lines']):
+                # Context matches - use positional information: replace old_block with new_lines
                 new_lines_with_endings = [line + dominant_ending for line in h['new_lines']]
                 
                 # Replace the entire old_block region
-                actual_remove_count = len(h['old_block'])
+                actual_remove_count = len(old_block)
                 insert_pos = remove_pos
                 end_remove_pos = remove_pos + actual_remove_count
             else:
-                # Fallback: only insert the added lines (old behavior)
+                # Context doesn't match or no positional info - only insert the added lines
                 added_lines_only = h['added_lines']
                 new_lines_with_endings = [line + dominant_ending for line in added_lines_only]
                 
                 # Insert after the context (at the end of old_block)
-                actual_remove_count = 0  # Don't remove any lines
-                insert_pos = remove_pos + len(h['old_block'])
+                actual_remove_count = 0
+                insert_pos = remove_pos + len(old_block)
                 end_remove_pos = insert_pos
             
             # Check for duplicate content before skipping duplicate check
@@ -1259,7 +1268,6 @@ def apply_diff_with_difflib_hybrid_forced(
                     logger.info(f"Hunk #{hunk_idx}: Detected indentation mismatch - diff avg: {avg_new_indent:.1f}, target avg: {avg_orig_indent:.1f}")
         
         if needs_indentation_adaptation:
-            print(f"DEBUG: Indentation adaptation triggered, type={adaptation_type}")
             # Apply with indentation adaptation
             corrected_new_lines = []
             
@@ -1432,7 +1440,6 @@ def apply_diff_with_difflib_hybrid_forced(
                         else:
                             corrected_new_lines.append(new_line + dominant_ending)
             
-            print(f"DEBUG: About to apply {len(corrected_new_lines)} corrected lines at {insert_pos}:{end_remove_pos}")
             if corrected_new_lines:
                 for i, line in enumerate(corrected_new_lines[:3]):
                     print(f"  Corrected line {i}: {repr(line[:60] if len(line) > 60 else line)}")
@@ -1493,15 +1500,10 @@ def apply_diff_with_difflib_hybrid_forced(
                     # Use standard application for pure additions/deletions
                     # Don't reconstruct if we already set it in the pure addition block
                     is_pure_addition = len(h.get('removed_lines', [])) == 0 and len(h.get('added_lines', [])) > 0
-                    print(f"DEBUG: Hunk #{hunk_idx} is_pure_addition={is_pure_addition}, new_lines_with_endings len={len(new_lines_with_endings)}")
                     if not is_pure_addition or len(new_lines_with_endings) == 0:
-                        print(f"DEBUG: Hunk #{hunk_idx} RECONSTRUCTING new_lines_with_endings")
                         new_lines_with_endings = []
                         for line in new_lines_content:
                             new_lines_with_endings.append(line + dominant_ending)
-                    else:
-                        print(f"DEBUG: Hunk #{hunk_idx} KEEPING existing new_lines_with_endings")
-                    print(f"DEBUG: Hunk #{hunk_idx} about to apply {len(new_lines_with_endings)} lines at {insert_pos}:{end_remove_pos}")
                     final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
                     verify_line_delta(hunk_idx, h, insert_pos, end_remove_pos, len(new_lines_with_endings))
             else:
