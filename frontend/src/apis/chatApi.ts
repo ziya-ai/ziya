@@ -852,6 +852,69 @@ export const sendPayload = async (
                     }));
                 }
 
+                // Handle context sync notifications from backend
+                if (unwrappedData.type === 'context_sync') {
+                    console.log('📂 CONTEXT_SYNC:', unwrappedData);
+                    
+                    const addedFiles = unwrappedData.added_files || [];
+                    
+                    if (addedFiles.length > 0) {
+                        // Update frontend context to match backend
+                        // This is just UI state sync - backend already has the files
+                        try {
+                            // Dispatch event for FolderContext to handle
+                            window.dispatchEvent(new CustomEvent('syncContextFromBackend', {
+                                detail: {
+                                    addedFiles,
+                                    reason: unwrappedData.reason
+                                }
+                            }));
+                            
+                            console.log(`✅ Context UI synced: added ${addedFiles.join(', ')}`);
+                        } catch (error) {
+                            console.error('Error syncing context:', error);
+                        }
+                    }
+                }
+
+                // Handle diff validation status
+                if (unwrappedData.type === 'diff_validation_status') {
+                    console.log('📋 DIFF_VALIDATION:', unwrappedData);
+                    
+                    if (unwrappedData.status === 'validating') {
+                        // Show subtle validation indicator
+                        const validationMarker = `\n\n<!-- VALIDATION_MARKER:${unwrappedData.file_path} -->_🔍 Validating diff..._\n`;
+                        currentContent += validationMarker;
+                        setStreamedContentMap((prev: Map<string, string>) => {
+                            const next = new Map(prev);
+                            next.set(conversationId, currentContent);
+                            return next;
+                        });
+                    } else if (unwrappedData.status === 'success') {
+                        // Remove validation marker silently
+                        const markerPattern = new RegExp(
+                            `<!-- VALIDATION_MARKER:${unwrappedData.file_path} -->_🔍 Validating diff\\.\\.\\._\\n`,
+                            'g'
+                        );
+                        currentContent = currentContent.replace(markerPattern, '');
+                        setStreamedContentMap((prev: Map<string, string>) => {
+                            const next = new Map(prev);
+                            next.set(conversationId, currentContent);
+                            return next;
+                        });
+                        console.log('✅ DIFF_VALIDATION: All hunks validated');
+                    }
+                }
+                
+                // Diff regeneration notifications are now just informational
+                if (unwrappedData.type === 'diff_regeneration_requested') {
+                    console.log('🔄 DIFF_REGENERATION:', unwrappedData);
+                    // Context already enhanced by backend, just log it
+                    if (unwrappedData.context_enhanced) {
+                        console.log('📂 Backend enhanced context with:', unwrappedData.added_files);
+                    }
+                }
+
                 // Filter internal tools using flag from backend
                 if ((unwrappedData.type === 'tool_start' || unwrappedData.type === 'tool_display') &&
                     unwrappedData.is_internal === true) {
