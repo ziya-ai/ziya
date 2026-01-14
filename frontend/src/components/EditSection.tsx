@@ -5,6 +5,7 @@ import { Message, ImageAttachment } from "../utils/types";
 import { useFolderContext } from "../context/FolderContext";
 import { Button, Tooltip, Input, Space, message, Image as AntImage } from "antd";
 import { convertKeysToStrings } from '../utils/types';
+import { modelCapabilitiesService } from '../services/modelCapabilitiesService';
 import { EditOutlined, CheckOutlined, CloseOutlined, SaveOutlined, 
          PictureOutlined, PaperClipOutlined, DeleteOutlined } from "@ant-design/icons";
 
@@ -51,18 +52,11 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
     }, [isEditing]);
 
     // Check vision support on mount
+    // This is cached globally - only fetches once per app load
     useEffect(() => {
-        const checkVisionSupport = async () => {
-            try {
-                const response = await fetch('/api/model-capabilities');
-                const capabilities = await response.json();
-                setSupportsVision(capabilities.supports_vision || false);
-            } catch (error) {
-                console.error('Failed to check vision support:', error);
-                setSupportsVision(false);
-            }
-        };
-        checkVisionSupport();
+        modelCapabilitiesService.getCapabilities()
+            .then(cap => setSupportsVision(cap.supports_vision || false))
+            .catch(() => setSupportsVision(false));
     }, []);
 
     // Initialize attachedImages when editing starts

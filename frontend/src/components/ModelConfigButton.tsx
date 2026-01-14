@@ -3,6 +3,7 @@ import { Button, message, Form } from 'antd';
 import { SettingOutlined } from '@ant-design/icons';
 import { ModelConfigModal, ModelCapabilities, ModelSettings, ModelInfo } from './ModelConfigModal';
 import { isSafari } from '../utils/browserUtils';
+import { modelCapabilitiesService } from '../services/modelCapabilitiesService';
 
 // Extend the ModelInfo interface to include display_name property
 interface ExtendedModelInfo extends ModelInfo {
@@ -30,12 +31,13 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
   const [displayModelId, setDisplayModelId] = useState<string>('');
   const [capabilities, setCapabilities] = useState<ModelCapabilities | null>(null);
   const [availableModels, setAvailableModels] = useState<ExtendedModelInfo[]>([]);
-  const capabilitiesLoadedRef = useRef<boolean>(false);
-  const [form] = Form.useForm();
-  const [isPolling, setIsPolling] = useState(false); // Track if we're already polling
+    const capabilitiesLoadedRef = useRef<boolean>(false);
+    const [form] = Form.useForm();
+    const [isPolling, setIsPolling] = useState(false);
+    const lastFetchTimeRef = useRef<number>(0);
 
-  const verifyCurrentModel = useCallback(async () => {
-    // Prevent multiple simultaneous calls
+    const verifyCurrentModel = useCallback(async () => {
+        // Prevent multiple simultaneous calls
     if (isPolling) return;
 
     try {
@@ -101,51 +103,36 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
     } finally {
       setIsPolling(false);
     }
-  }, [currentModelId, capabilities, isPolling]);
+    }, [currentModelId, capabilities, isPolling]);
 
-  // Fetch once on component mount
-  const mountRef = useRef(false);
+    // CONSOLIDATED: Single effect for fetching model info
+    useEffect(() => {
+        // Debounce all fetches to prevent cascade
+        const now = Date.now();
+        const shouldFetch = (
+            modalVisible && 
+            !isPolling && 
+            (now - lastFetchTimeRef.current > 1000) &&
+            !capabilitiesLoadedRef.current
+        );
 
-  useEffect(() => {
-    // Only run on first mount
-    if (!mountRef.current && !isPolling) {
-      mountRef.current = true;
-      verifyCurrentModel();
-    }
-  }, [isPolling, verifyCurrentModel]);
-
-  // Separate effect for modal visibility - with a ref to prevent multiple calls
-  const modalOpenRef = useRef(false);
-
-  useEffect(() => {
-    // Only fetch once when modal is opened and reset when closed
-    if (modalVisible && !isPolling && !modalOpenRef.current) {
-      modalOpenRef.current = true;
-      verifyCurrentModel();
-    } else if (!modalVisible) {
-      // Reset the ref when modal closes
-      modalOpenRef.current = false;
-    }
-  }, [modalVisible, isPolling, verifyCurrentModel]);
-
-  // Always fetch capabilities on mount if they haven't been loaded yet
-  useEffect(() => {
-    const ensureCapabilitiesLoaded = async () => {
-      if (!capabilitiesLoadedRef.current && !isPolling) {
-        try {
-          setIsPolling(true);
-          await fetchModelCapabilities();
-          setIsPolling(false);
-        } catch (error) {
-          setIsPolling(false);
+        if (shouldFetch) {
+            lastFetchTimeRef.current = now;
+            const fetchData = async () => {
+                try {
+                    setIsPolling(true);
+                    await verifyCurrentModel();
+                    await fetchModelCapabilities();
+                } finally {
+                    setIsPolling(false);
+                }
+            };
+            fetchData();
         }
-      }
-    };
-    ensureCapabilitiesLoaded();
-  }, [modalVisible, isPolling, verifyCurrentModel]);
+    }, [modalVisible, isPolling]);
 
 
-  // Fetch initial capabilities and settings when modal opens
+    // Fetch initial capabilities and settings when modal opens
   useEffect(() => {
     if (modalVisible) {
       const fetchInitialState = async () => {
@@ -289,6 +276,9 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
       if (currentModel.model_alias === selectedModelId || currentModel.model_id === selectedModelId) {
         console.log('Model change verified successfully');
         setCurrentModelId(selectedModelId);
+        
+        // Invalidate capabilities cache when model changes
+        modelCapabilitiesService.invalidateCache();
         message.success(`Model updated to ${selectedModelId} successfully`);
 
         // Verify the model was actually changed
