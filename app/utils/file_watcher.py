@@ -225,11 +225,29 @@ class FileChangeHandler(FileSystemEventHandler):
         
         logger.info(f"File created: {rel_path}" + (" (in context)" if is_in_context else ""))
         
-        # Add to cache incrementally instead of invalidating
+        # Try to add to cache incrementally
         from app.server import add_file_to_folder_cache
-        if add_file_to_folder_cache(rel_path):
-            logger.debug(f"✅ Incrementally added new file to cache: {rel_path}")
-        else:
+        cache_updated = add_file_to_folder_cache(rel_path)
+        
+        if not cache_updated:
+            # Cache update failed (probably because cache is None after refresh)
+            # But we should STILL notify the frontend so it can update its UI
+            logger.info(f"Cache not ready, broadcasting file creation anyway: {rel_path}")
+            
+            # Calculate token count for the new file
+            full_path = os.path.join(self.base_dir, rel_path)
+            from app.utils.directory_util import estimate_tokens_fast
+            token_count = estimate_tokens_fast(full_path)
+            
+            # Broadcast directly even without cache update
+            import asyncio
+            from app.server import broadcast_file_tree_update
+            try:
+                asyncio.create_task(broadcast_file_tree_update('file_added', rel_path, token_count))
+                logger.info(f"📢 Broadcasted file_added for {rel_path} (cache bypass)")
+            except Exception as e:
+                logger.error(f"Failed to broadcast file creation: {e}")
+            
             # Fallback to invalidation if incremental add fails
             self._debounced_cache_invalidation()
     
