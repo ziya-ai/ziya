@@ -1,14 +1,91 @@
 #!/usr/bin/env python3
 import asyncio
 import json
-import re
 import boto3
 import logging
+import re
 import os
+import threading
 import time
+from dataclasses import dataclass
 from typing import Dict, Any, List, AsyncGenerator, Optional
 from app.utils.conversation_filter import filter_conversation_for_model
 logger = logging.getLogger(__name__)
+
+
+# Global usage tracker for telemetry
+_global_usage_tracker = None
+_usage_tracker_lock = threading.Lock()
+
+
+@dataclass
+class IterationUsage:
+    """Tracks token usage for a single iteration."""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    was_throttled: bool = False
+    timestamp: float = 0.0
+    
+    @property
+    def cache_hit_rate(self) -> float:
+        """Calculate cache hit rate."""
+        total_input = self.input_tokens + self.cache_read_tokens
+        if total_input == 0:
+            return 0.0
+        return self.cache_read_tokens / total_input
+    
+    @property
+    def cache_efficiency(self) -> str:
+        """Human-readable cache efficiency."""
+        return f"{self.cache_hit_rate * 100:.1f}% cached"
+
+
+class GlobalUsageTracker:
+    """Thread-safe global tracker for token usage across all conversations."""
+    
+    def __init__(self):
+        self.conversation_usages: Dict[str, List['IterationUsage']] = {}
+        self.lock = threading.Lock()
+    
+    def record_usage(self, conversation_id: str, usage: 'IterationUsage'):
+        """Record usage for a conversation."""
+        with self.lock:
+            if conversation_id not in self.conversation_usages:
+                self.conversation_usages[conversation_id] = []
+            
+            # Add timestamp
+            usage.timestamp = time.time()
+            self.conversation_usages[conversation_id].append(usage)
+            
+            # Cleanup old conversations (keep last 100)
+            if len(self.conversation_usages) > 100:
+                # Remove oldest conversation
+                oldest_conv = min(
+                    self.conversation_usages.items(),
+                    key=lambda x: x[1][0].timestamp if x[1] else 0
+                )
+                del self.conversation_usages[oldest_conv[0]]
+    
+    def get_conversation_usages(self, conversation_id: str) -> List['IterationUsage']:
+        """Get all usage records for a conversation."""
+        with self.lock:
+            return self.conversation_usages.get(conversation_id, []).copy()
+    
+    def get_all_conversations(self) -> Dict[str, List['IterationUsage']]:
+        """Get all conversation usage data."""
+        with self.lock:
+            return self.conversation_usages.copy()
+
+
+def get_global_usage_tracker() -> GlobalUsageTracker:
+    """Get or create the global usage tracker singleton."""
+    global _global_usage_tracker
+    with _usage_tracker_lock:
+        if _global_usage_tracker is None:
+            _global_usage_tracker = GlobalUsageTracker()
+        return _global_usage_tracker
 
 
 def validate_tool_args_against_schema(tool_name: str, args: dict, schema: dict) -> Optional[str]:
@@ -175,7 +252,7 @@ class StreamingToolExecutor:
                 # Some other object - try to convert
                 try:
                     result['input_schema'] = input_schema.model_json_schema()
-                except:
+                except Exception:
                     logger.warning(f"🔍 TOOL_SCHEMA: Could not convert input_schema, using fallback")
                     result['input_schema'] = {"type": "object", "properties": {}}
             return result
@@ -209,7 +286,7 @@ class StreamingToolExecutor:
                 try:
                     input_schema = input_schema.model_json_schema()
                     logger.debug(f"🔍 TOOL_SCHEMA: Converted object schema for '{name}'")
-                except:
+                except Exception:
                     logger.warning(f"🔍 TOOL_SCHEMA: Failed to convert schema for '{name}', using empty schema")
                     input_schema = {"type": "object", "properties": {}}
             else:
@@ -329,6 +406,218 @@ class StreamingToolExecutor:
                 logger.error(f"Error executing intercepted tool call: {e}")
                 return None
 
+    def _extract_file_contents_from_messages(self, messages: List[Dict[str, Any]], system_content=None) -> Dict[str, str]:
+        """
+        Extract file contents from messages for calibration.
+        
+        Returns:
+            Dict mapping file_path -> content
+        """
+        logger.info(f"📊 EXTRACT_DEBUG: system_content type: {type(system_content)}")
+        logger.info(f"📊 EXTRACT_DEBUG: system_content length: {len(system_content) if system_content else 0}")
+        if system_content:
+            logger.info(f"📊 EXTRACT_DEBUG: 'File: ' count in system_content: {system_content.count('File: ') if isinstance(system_content, str) else 'N/A'}")
+            
+            # Log how much is files vs other content
+            first_file = system_content.find('File: ') if isinstance(system_content, str) else -1
+            if first_file > 0:
+                logger.info(f"📊 EXTRACT_DEBUG: Content before files: {first_file:,} chars")
+                logger.info(f"📊 EXTRACT_DEBUG: Content from files onward: {len(system_content) - first_file:,} chars")
+        
+        file_contents = {}
+        
+        # Check system content first (this is where files are in StreamingToolExecutor)
+        content_to_parse = None
+        
+        if system_content:
+            # System content passed directly
+            content_to_parse = system_content
+        else:
+            # Look for system messages in message list
+            for message in messages:
+                if message.get('role') == 'system':
+                    content_to_parse = message.get('content', '')
+                    break
+        
+        if not content_to_parse:
+            return {}
+            
+        logger.info(f"📊 EXTRACT_DEBUG: content_to_parse type: {type(content_to_parse)}, has 'File: ': {'File: ' in content_to_parse if isinstance(content_to_parse, str) else 'N/A'}")
+            
+        if isinstance(content_to_parse, list):
+            # Handle multi-part content
+            content_to_parse = ' '.join(block.get('text', '') for block in content_to_parse if block.get('type') == 'text')
+        
+        # Parse file sections from system message
+        # Format: "File: path/to/file.py\n[content]\n\n"
+        if 'File: ' in content_to_parse:
+            logger.info(f"📊 EXTRACT: Found 'File: ' in content, starting parse...")
+            logger.info(f"📊 EXTRACT: Content preview (first 500 chars): {content_to_parse[:500]}")
+            
+            # Find where the first file content starts
+            first_file_pos = content_to_parse.find('File: ')
+            first_file_pos = max(0, first_file_pos)  # Ensure it's always defined
+            if first_file_pos > 0:
+                logger.info(f"📊 EXTRACT: First file starts at position {first_file_pos}")
+                logger.info(f"📊 EXTRACT: First file section preview: {content_to_parse[first_file_pos:first_file_pos+200]}")
+            
+            lines = content_to_parse.split('\n')
+            current_file = None
+            current_content = []
+            files_found = 0
+            lines_processed = 0
+            lines_skipped_as_line_numbers = 0
+            
+            for line in lines:
+                lines_processed += 1
+                
+                if line.startswith('File: '):
+                    files_found += 1
+                    logger.info(f"📊 EXTRACT: Found file marker #{files_found}: '{line}'")
+                    
+                    # Save previous file
+                    if current_file and current_content:
+                        file_contents[current_file] = '\n'.join(current_content)
+                        logger.debug(f"📊 EXTRACT: Saved file '{current_file}' with {len(current_content)} lines")
+                    elif current_file and not current_content:
+                        logger.warning(f"📊 EXTRACT: File '{current_file}' had NO content lines!")
+                    
+                    # Start new file
+                    current_file = line[6:].strip()
+                    current_content = []
+                    logger.debug(f"📊 EXTRACT: Starting new file '{current_file}'")
+                elif current_file:
+                        # Skip line number annotations like [001+]
+                        # Pattern: [DIGITS<marker>] where DIGITS is 3+ digits, marker is space/+/*
+                        # CRITICAL FIX: Don't skip the line, extract content AFTER the marker!
+                        actual_line_content = line  # Default: use whole line if no marker
+                        
+                        if line.startswith('[') and len(line) >= 6:
+                            # Find closing bracket
+                            bracket_pos = line.find(']', 1)
+                            if bracket_pos > 1 and bracket_pos <= 8:  # Support [001 ] to [999999*]
+                                inner = line[1:bracket_pos]
+                                # Check: at least 3 digits followed by space/+/*
+                                if len(inner) >= 4:
+                                    digits = inner[:-1]
+                                    marker = inner[-1]
+                                    if digits.isdigit() and marker in [' ', '+', '*']:
+                                        # This IS a line number - extract content after '] '
+                                        actual_line_content = line[bracket_pos + 2:] if bracket_pos + 2 < len(line) else ''
+                                        lines_skipped_as_line_numbers += 1
+                        
+                        # DEBUG: Log first few content decisions
+                        if lines_processed < first_file_pos + 10:
+                            logger.debug(f"📊 LINE_DEBUG: Line {lines_processed}: extracted='{actual_line_content[:80]}'")
+                        
+                        # Always append the extracted content (even if empty, to preserve line structure)
+                        if actual_line_content is not None:
+                            current_content.append(actual_line_content)
+                
+            # Save last file
+            if current_file and current_content:
+                file_contents[current_file] = '\n'.join(current_content)
+                logger.debug(f"📊 EXTRACT: Saved final file '{current_file}' with {len(current_content)} lines")
+                
+                logger.info(f"📊 EXTRACT: Processed {lines_processed:,} lines, found {files_found} files, extracted {len(file_contents)} files, skipped {lines_skipped_as_line_numbers:,} line number annotations")
+                
+                # Log total extracted content
+                total_extracted_chars = sum(len(content) for content in file_contents.values())
+                logger.info(f"📊 EXTRACT: Total extracted content: {total_extracted_chars:,} chars from {len(file_contents)} files")
+        
+        logger.debug(f"📊 CALIBRATION: Extracted {len(file_contents)} files from messages")
+        for path in list(file_contents.keys())[:3]:
+            logger.debug(f"   {path}: {len(file_contents[path]):,} chars")
+        
+        return file_contents
+
+    def _cleanup_iteration_resources(self):
+        """Clean up iteration-specific resources to prevent memory leaks."""
+        # Remove content optimizer - it's per-iteration state
+        if hasattr(self, '_content_optimizer'):
+            delattr(self, '_content_optimizer')
+        if hasattr(self, '_block_opening_buffer'):
+            delattr(self, '_block_opening_buffer')
+
+    def _prepare_messages_with_cache_control(self, conversation: List[Dict[str, Any]], iteration: int) -> List[Dict[str, Any]]:
+        """
+        Prepare messages with cache_control applied to optimize token reuse.
+        
+        TEMPORARILY DISABLED: Bedrock has a 4-block cache_control limit.
+        With system prompt + nested conversation blocks, we exceed this limit.
+        
+        Strategy:
+        - System prompt: Always cached (handled separately)
+        - Recent conversation: Cache the last N messages to reuse tool results
+        - Keep adding new messages without cache markers
+        
+        This ensures:
+        1. System prompt cached once (codebase files)
+        2. Conversation history cached incrementally
+        3. Only NEW tool calls/results are fresh tokens
+        """
+        if iteration == 0 or len(conversation) < 6:
+            # First iteration or very short conversation - no conversation caching needed
+            return conversation
+        
+        # CRITICAL: Bedrock allows max 4 cache_control blocks total
+        # System prompt uses 1, leaving us 3 for conversation
+        # We must consolidate to stay within limits
+        
+        # CRITICAL: Deep copy to avoid modifying original
+        import copy
+        messages = copy.deepcopy(conversation)
+        total_messages = len(messages)
+        
+        # STEP 1: Remove ALL existing cache_control markers from conversation
+        # This prevents accumulation across iterations
+        for msg in messages:
+            content = msg.get('content')
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and 'cache_control' in block:
+                        del block['cache_control']
+        
+        logger.debug(f"🔍 CONV_CACHE: Cleaned existing cache markers from {total_messages} messages")
+        
+        # Keep last 4 messages fresh for rapid tool iteration
+        # Last 4 = [assistant with tool_use, user with tool_result, assistant, user]
+        cache_boundary = total_messages - 4
+        
+        if cache_boundary <= 0:
+            return messages
+        
+        # STEP 2: Apply single NEW cache_control at boundary
+        # This replaces all old markers with one new marker
+        # Total blocks: 1 (system) + 1 (conversation boundary) = 2/4
+        msg_at_boundary = messages[cache_boundary]
+        content = msg_at_boundary.get('content')
+        
+        if isinstance(content, str):
+            # Simple string - wrap with cache_control
+            messages[cache_boundary]['content'] = [
+                {
+                    "type": "text",
+                    "text": content,
+                    "cache_control": {"type": "ephemeral"}
+                }
+            ]
+            logger.info(f"🔍 CONV_CACHE: Applied cache at message {cache_boundary} (string content)")
+            
+        elif isinstance(content, list) and len(content) > 0:
+            # Multi-block content - add cache_control to LAST block only
+            last_block = content[-1]
+            
+            if 'cache_control' not in last_block:
+                last_block['cache_control'] = {"type": "ephemeral"}
+                logger.info(f"🔍 CONV_CACHE: Applied cache at message {cache_boundary} (multi-block)")
+        
+        logger.info(f"🔍 CONV_CACHE: Cache point at message {cache_boundary}/{total_messages}")
+        logger.info(f"   Total blocks: 1 (system) + 1 (conversation boundary) = 2/4 ✓")
+        logger.info(f"   Messages cached: {cache_boundary}, Fresh: {total_messages - cache_boundary}")
+        
+        return messages
+
     async def stream_with_tools(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
         # Initialize streaming metrics
         stream_metrics = {
@@ -433,8 +722,144 @@ class StreamingToolExecutor:
         using_extended_context = False  # Track if we've enabled extended context
         consecutive_empty_tool_calls = 0  # Track empty tool calls to break loops
         
+        # Intelligent throttle backoff state
+        throttle_state = {
+            'retry_count': 0,
+            'max_retries': 5,
+            'base_delay': 2,
+            'last_cache_efficiency': 0.0,
+            'cache_working': None,  # None=unknown, True=working, False=broken
+            'output_tokens_reduction_factor': 1.0,
+        }
+        
+        # Track cumulative usage across all iterations
+        cumulative_usage = IterationUsage()
+        iteration_usages: List[IterationUsage] = []
+        
+        # Check if baseline needs to be established
+        # Only run baseline if:
+        # 1. We have calibration loaded
+        # 2. The baseline for this model family is NOT already established
+        # 3. This is the first iteration of the first request
+        should_establish_baseline = False
+        if conversation_id and system_content:
+            try:
+                from app.utils.token_calibrator import get_token_calibrator
+                calibrator = get_token_calibrator()
+                
+                from app.agents.models import ModelManager
+                endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+                model_name = os.environ.get("ZIYA_MODEL")
+                model_config = ModelManager.get_model_config(endpoint, model_name)
+                model_family = model_config.get('family', 'claude')
+                
+                # Only establish baseline if not already measured
+                should_establish_baseline = model_family not in calibrator.baselines_measured
+            except Exception as e:
+                logger.debug(f"Could not check baseline status: {e}")
+        
         for iteration in range(50):  # Increased from 20 to support more complex tasks
             logger.debug(f"🔍 ITERATION_START: Beginning iteration {iteration}")
+            
+            # BASELINE ESTABLISHMENT: Only once per model family
+            if should_establish_baseline:
+                should_establish_baseline = False  # Only run once
+                logger.info(f"📊 BASELINE: Establishing baseline for {model_family} (first time)")
+                
+                try:
+                    # Count MCP tools for baseline measurement
+                    mcp_tool_count = len(bedrock_tools) if bedrock_tools else 0
+                    
+                    # Use system_content as-is, just replace file section with placeholder
+                    # This ensures cache structure matches real requests perfectly
+                    baseline_system_text = system_content  # Default to full content
+                    if isinstance(system_content, str) and 'Below is the current codebase of the user:' in system_content:
+                        parts = system_content.split('Below is the current codebase of the user:')
+                        baseline_system_text = parts[0] + "\n\nBelow is the current codebase of the user:\n\n(No files selected)"
+                    
+                    logger.info(f"📊 BASELINE: {len(baseline_system_text):,} chars, {mcp_tool_count} tools")
+                    
+                    # Make baseline request
+                    baseline_body = {
+                        "anthropic_version": "bedrock-2023-05-31",
+                        "max_tokens": 100,
+                        "messages": [{"role": "user", "content": "Hello"}],
+                        "system": [
+                            {
+                                "type": "text",
+                                "text": baseline_system_text,
+                                "cache_control": {"type": "ephemeral"}
+                            }
+                        ]
+                    }
+                    
+                    # Add tools to match real request structure
+                    if bedrock_tools:
+                        baseline_body["tools"] = bedrock_tools
+                    
+                    # Use existing client's underlying boto3 client directly to avoid wrapper recursion
+                    # Access the raw client to bypass CustomBedrockClient wrapper
+                    # Unwrap all layers: ThrottleSafeBedrock -> CustomBedrockClient -> boto3 client
+                    raw_client = self.bedrock
+                    while hasattr(raw_client, 'client') and raw_client.client != raw_client:
+                        logger.debug(f"📊 BASELINE: Unwrapping layer: {type(raw_client).__name__}")
+                        raw_client = raw_client.client
+                    
+                    logger.info(f"📊 BASELINE: Using raw client type: {type(raw_client).__name__}")
+                    
+                    baseline_response = raw_client.invoke_model(
+                        modelId=self.model_id,
+                        body=json.dumps(baseline_body)
+                    )
+                    
+                    baseline_response_body = json.loads(baseline_response['body'].read())
+                    
+                    # DEBUG: Log the full response to see what we actually got
+                    logger.info(f"📊 BASELINE_RESPONSE: Keys in response: {list(baseline_response_body.keys())}")
+                    baseline_usage = baseline_response_body.get('usage', {})
+                    logger.info(f"📊 BASELINE_USAGE: {baseline_usage}")
+                    
+                    # CRITICAL: Use TOTAL input (fresh + cached + cache_creation) for baseline
+                    # On FIRST baseline call: cache is being CREATED, so use cache_creation_input_tokens
+                    # On SUBSEQUENT calls: cache exists, so use cache_read_input_tokens
+                    baseline_fresh = baseline_usage.get('input_tokens', 0)
+                    baseline_cached = baseline_usage.get('cache_read_input_tokens', 0)
+                    baseline_cache_created = baseline_usage.get('cache_creation_input_tokens', 0)
+                    
+                    # Total = fresh + (cached OR created)
+                    baseline_tokens = baseline_fresh + baseline_cached + baseline_cache_created
+                    
+                    logger.info(f"📊 BASELINE_TOTAL: {baseline_tokens:,} tokens (fresh: {baseline_fresh:,}, cached: {baseline_cached:,})")
+                    if baseline_cache_created > 0:
+                        logger.info(f"📊 BASELINE_CACHE_CREATED: {baseline_cache_created:,} tokens (first baseline call)")
+                    
+                    # Also check if stop_reason indicates an error
+                    stop_reason = baseline_response_body.get('stop_reason')
+                    if stop_reason:
+                        logger.info(f"📊 BASELINE_STOP: stop_reason={stop_reason}")
+                        
+                        # Check content to see if model actually responded
+                        content = baseline_response_body.get('content', [])
+                        logger.info(f"📊 BASELINE_CONTENT: {len(content)} content blocks")
+                        
+                        # Validate - use baseline_system_text length as proxy
+                        # Rough estimate: 1 token per 3-4 chars for text, ~500 tokens per tool
+                        expected_min = len(baseline_system_text) // 6 + mcp_tool_count * 300
+                        expected_max = len(baseline_system_text) // 2 + mcp_tool_count * 1500
+                        
+                        if baseline_tokens < expected_min or baseline_tokens > expected_max:
+                            logger.warning(f"📊 BASELINE: Invalid measurement {baseline_tokens:,} (expected {expected_min:,}-{expected_max:,})")
+                        else:
+                            # Store the baseline overhead (system prompt + tools)
+                            calibrator.baseline_overhead_tokens[model_family] = baseline_tokens
+                            calibrator.baselines_measured.add(model_family)
+                            calibrator._save_calibration_data()
+                            logger.info(f"✅ BASELINE: Established {baseline_tokens:,} tokens")
+                            logger.info(f"   System prompt: {len(baseline_system_text):,} chars")
+                            logger.info(f"   MCP tools: {mcp_tool_count}")
+                            logger.info(f"📊 BASELINE: Baseline established, will not run again for {model_family}")
+                except Exception as e:
+                    logger.warning(f"📊 BASELINE: Establishment failed (will retry next time): {e}")
             
             # Check for user feedback at the start of each iteration
             if conversation_id and iteration > 0:  # Skip check on first iteration
@@ -491,15 +916,30 @@ class StreamingToolExecutor:
             body = {
                 "anthropic_version": "bedrock-2023-05-31",
                 "max_tokens": self.model_config.get('max_output_tokens', 4000),
-                "messages": conversation
+                "messages": self._prepare_messages_with_cache_control(conversation, iteration)
             }
 
+            # DEBUG: Log what we're actually sending
+            logger.info(f"🔍 REQUEST_DEBUG: Iteration {iteration}")
+            logger.info(f"   Messages in request: {len(conversation)}")
+            logger.info(f"   Max tokens: {body['max_tokens']}")
+            for i, msg in enumerate(conversation[:2]):  # First 2 messages only
+                content = msg.get('content', '')
+                content_len = len(content) if isinstance(content, str) else sum(len(b.get('text', '')) for b in content if b.get('type') == 'text')
+                logger.info(f"   Message {i} ({msg['role']}): {content_len:,} chars")
+            
             if system_content:
                 # With precision prompts, system content is already clean - no regex needed
                 logger.debug(f"🔍 SYSTEM_DEBUG: Using clean system content length: {len(system_content)}")
                 logger.debug(f"🔍 SYSTEM_DEBUG: File count in system content: {system_content.count('File:')}")
                 
-                system_text = system_content + "\n\nCRITICAL: Use ONLY native tool calling. Never generate fake tool markdown like ```tool:mcp_run_shell_command. Use the provided tools directly.\n\nIMPORTANT: Only use tools when you must interact with the system to fulfill a request (execute commands, read files that aren't in context). For questions, analysis, explanations, or information you can provide from your knowledge or the provided context, respond directly WITHOUT using any tools. Avoid unnecessary tool calls."
+                # Log cache control setup for debugging
+                logger.info(f"🔍 CACHE_SETUP: Iteration {iteration}")
+                logger.info(f"   System content length: {len(system_content):,} chars")
+                logger.info(f"   Conversation messages: {len(conversation)}")
+                
+                # Use system_content as-is - prompt system handles all formatting
+                system_text = system_content
                 
                 # Use prompt caching for large system prompts to speed up iterations
                 if len(system_text) > 1024:
@@ -511,8 +951,11 @@ class StreamingToolExecutor:
                         }
                     ]
                     logger.debug(f"🔍 CACHE: Enabled prompt caching for {len(system_text)} char system prompt")
+                    logger.info(f"🔍 CACHE_CONTROL: Set cache_control ephemeral on system message")
+                    logger.info(f"   Expected cache creation: ~{len(system_text) // 4:,} tokens")
                 else:
                     body["system"] = system_text
+                    logger.warning(f"🔍 CACHE_CONTROL: NOT using cache_control (system too small: {len(system_text)} chars)")
                 
                 logger.debug(f"🔍 SYSTEM_DEBUG: Final system prompt length: {len(system_text)}")
                 logger.debug(f"🔍 SYSTEM_CONTENT_DEBUG: First 500 chars of system prompt: {system_text[:500]}")
@@ -543,9 +986,15 @@ class StreamingToolExecutor:
                 base_delay = 2  # Start with 2 seconds
                 iteration_start_time = time.time()
                 
+                # Store original max_tokens for potential reduction
+                original_max_tokens = body.get('max_tokens', 4000)
+                
                 # Initialize tool_results early so it's available in exception handlers
                 tool_results = []
                 tool_use_blocks = []
+                
+                # Track usage for this specific iteration
+                iteration_usage = IterationUsage()
                 
                 for retry_attempt in range(max_retries + 1):
                     try:
@@ -617,22 +1066,285 @@ class StreamingToolExecutor:
                     'accumulated_content': ''
                 }
                 
+                # Track event count for debugging
+                event_count = 0
+                
                 for event in response['body']:
-                    # Timeout protection - only timeout if NO activity for chunk_timeout seconds
-                    if time.time() - last_activity_time > chunk_timeout:
-                        logger.warning(f"🚨 STREAM TIMEOUT after {chunk_timeout}s of inactivity - ending this iteration")
-                        # Add timeout message to assistant text so model knows what happened
-                        if not assistant_text.strip():
-                            assistant_text = f"[Stream timeout after {chunk_timeout}s - no response received]"
-                        break  # Break from chunk loop, but continue to next iteration
+                    event_count += 1
                     
-                    # Reset activity timer on any event
-                    last_activity_time = time.time()
+                    # Decode chunk once for all processing
+                    if 'chunk' not in event:
+                        continue
+                    
+                    chunk_bytes = event['chunk']['bytes']
+                    chunk_str = self._decode_chunk_bytes(chunk_bytes)
+                    chunk = json.loads(chunk_str)
+                    
+                    
+                    # ZERO-COST TELEMETRY: Extract usage from decoded chunks
+                    # Metrics are INSIDE the chunk JSON, not at event level!
+                    if 'amazon-bedrock-invocationMetrics' in chunk:
+                        metrics = chunk['amazon-bedrock-invocationMetrics']
                         
-                    chunk_data = self._decode_chunk_bytes(event['chunk']['bytes'])
-                    chunk = json.loads(chunk_data)
-
+                        iteration_usage.input_tokens = metrics.get('inputTokenCount', 0)
+                        iteration_usage.output_tokens = metrics.get('outputTokenCount', 0)
+                        iteration_usage.cache_read_tokens = metrics.get('cacheReadInputTokenCount', 0)
+                        iteration_usage.cache_write_tokens = metrics.get('cacheWriteInputTokenCount', 0)
+                        
+                        # Compute derived values for logging
+                        total_input = iteration_usage.input_tokens + iteration_usage.cache_read_tokens
+                        fresh = iteration_usage.input_tokens
+                        cached = iteration_usage.cache_read_tokens
+                        
+                        # DEBUG: Log ALL fields in metrics to see what we're getting
+                        if iteration == 0:
+                            logger.info(f"🔍 METRICS_DEBUG: All fields in metrics:")
+                            for key, value in metrics.items():
+                                throttle_state['cache_working'] = False
+                        elif cached > 0:
+                            throttle_state['cache_working'] = True
+                            throttle_state['last_cache_efficiency'] = iteration_usage.cache_hit_rate
+                            logger.info(f"✅ CACHE WORKING: {cached:,} tokens reused")
+                        
+                            # CRITICAL WARNING: High token counts increase throttle risk
+                            if total_input > 400000:
+                                logger.warning("⚠️  HIGH THROTTLE RISK: Processing {total_input:,} total tokens")
+                                logger.warning(f"   Even though {cached:,} are cached (free),")
+                                logger.warning(f"   they STILL count toward 'Too many tokens' rate limits")
+                                logger.warning(f"   Consider reducing max_output_tokens on retries")
+                        
+                        # ACCURACY TRACKING: Compare our estimate to actual
+                        if iteration == 0 and conversation_id:  # Only on first iteration
+                            try:
+                                # CRITICAL: Check if we have calibration data available
+                                # If yes, use calibrated estimates; if no, use naive 4.0 baseline
+                                try:
+                                    from app.utils.token_calibrator import get_token_calibrator
+                                    calibrator = get_token_calibrator()
+                                    has_calibration = True
+                                    logger.info(f"📊 ESTIMATE: Loaded calibrator for accuracy check")
+                                except (ImportError, FileNotFoundError, PermissionError) as e:
+                                    logger.warning(f"📊 CALIBRATION_UNAVAILABLE: {type(e).__name__}: {e}")
+                                    calibrator = None
+                                    has_calibration = False
+                                except Exception as e:
+                                    # Log unexpected errors but don't break the flow
+                                    logger.error(f"📊 CALIBRATION_ERROR: Unexpected error loading calibrator: {e}")
+                                    calibrator = None
+                                    has_calibration = False
+                                except Exception as e:
+                                    # Log unexpected errors but don't break the flow
+                                    logger.error(f"📊 CALIBRATION_ERROR: Unexpected error loading calibrator: {e}")
+                                    calibrator = None
+                                    has_calibration = False
+                                
+                                # Calculate what we ESTIMATED this would cost
+                                estimated_tokens = 0
+                                estimation_method = "naive (4.0 chars/token)"
+                                
+                                # CRITICAL FIX: Get model_family ONCE before estimation loop
+                                # This ensures calibrated data is used during estimation
+                                estimation_model_family = None
+                                if has_calibration:
+                                    try:
+                                        from app.agents.models import ModelManager
+                                        
+                                        model_id = ModelManager.get_model_id()
+                                        if isinstance(model_id, dict):
+                                            model_id = list(model_id.values())[0]
+                                        
+                                        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+                                        model_name = os.environ.get("ZIYA_MODEL")
+                                        model_config = ModelManager.get_model_config(endpoint, model_name)
+                                        estimation_model_family = model_config.get('family', 'claude')
+                                        
+                                        logger.info(f"📊 ESTIMATE-FAMILY: Using model_family='{estimation_model_family}' for estimation")
+                                    except Exception as e:
+                                        logger.warning(f"📊 ESTIMATE-FAMILY: Failed to get model family: {e}, using 'claude' as fallback")
+                                        estimation_model_family = 'claude'  # Fallback to claude instead of default
+                                
+                                for msg in conversation:
+                                    content = msg.get('content', '')
+                                    if isinstance(content, str):
+                                        if has_calibration:
+                                            estimated_tokens += calibrator.estimate_tokens(content, model_family=estimation_model_family)
+                                            estimation_method = "calibrated"
+                                        else:
+                                            estimated_tokens += len(content) // 4
+                                    elif isinstance(content, list):
+                                        for block in content:
+                                            if block.get('type') == 'text':
+                                                text = block.get('text', '')
+                                                if has_calibration:
+                                                    estimated_tokens += calibrator.estimate_tokens(text, model_family=estimation_model_family)
+                                                else:
+                                                    estimated_tokens += len(text) // 4
+                                
+                                # ALSO include system content if present
+                                if system_content:
+                                    if isinstance(system_content, str):
+                                        if has_calibration:
+                                            estimated_tokens += calibrator.estimate_tokens(system_content, model_family=estimation_model_family)
+                                        else:
+                                            estimated_tokens += len(system_content) // 4
+                                    elif isinstance(system_content, list):
+                                        for block in system_content:
+                                            if (isinstance(block, dict) and block.get('type') == 'text'):
+                                                text = block.get('text', '')
+                                                if has_calibration:
+                                                    estimated_tokens += calibrator.estimate_tokens(text, model_family=estimation_model_family)
+                                                else:
+                                                    estimated_tokens += len(text) // 4
+                                
+                                # Add back overhead that was subtracted during recording
+                                if has_calibration and estimation_model_family:
+                                    try:
+                                        baseline_overhead = calibrator.get_baseline_overhead(
+                                            model_family=estimation_model_family
+                                        )
+                                        if baseline_overhead > 0:
+                                            estimated_tokens += baseline_overhead
+                                            logger.info(f"📊 ESTIMATE_OVERHEAD: Added {baseline_overhead:,} baseline tokens")
+                                        else:
+                                            # No baseline yet, use conservative estimate
+                                            logger.info(f"📊 ESTIMATE_OVERHEAD: No baseline measured yet")
+                                    except Exception as e:
+                                        logger.debug(f"Could not add MCP overhead to estimate: {e}")
+                                
+                                # Compare to actual
+                                # NOTE: actual_tokens here is fresh + cached, which is what matters for throttling
+                                # Otherwise use fresh + cache_read
+                                cache_written = iteration_usage.cache_write_tokens
+                                if cache_written > 0:
+                                    # First request - cache being created
+                                    actual_tokens = fresh + cache_written
+                                else:
+                                    # Subsequent request - using cached content
+                                    actual_tokens = total_input
+                                
+                                estimation_error = abs(estimated_tokens - actual_tokens)
+                                error_pct = (estimation_error / actual_tokens * 100) if actual_tokens > 0 else 0
+                                
+                                logger.info("=" * 80)
+                                logger.info("📊 ESTIMATION ACCURACY CHECK")
+                                logger.info("=" * 80)
+                                logger.info(f"   Our Estimate:   {estimated_tokens:>8,} tokens ({estimation_method})")
+                                logger.info(f"   Bedrock Total:  {actual_tokens:>8,} tokens (fresh + cached)")
+                                logger.info(f"     └─ Fresh:     {fresh:>8,} tokens (billable)")
+                                logger.info(f"     └─ Cached:    {cached:>8,} tokens (free but counts for throttle)")
+                                if cache_written > 0:
+                                    logger.info(f"     └─ Written:   {cache_written:>8,} tokens (cache creation)")
+                                    logger.info(f"   Note: Using fresh + written for comparison (first request)")
+                                
+                                logger.info(f"   Error:          {estimation_error:>8,} tokens (±{error_pct:.1f}%)")
+                                
+                                # Log comparison
+                                accuracy_status = "✅ Excellent" if error_pct < 5 else "⚠️ Fair" if error_pct < 15 else "❌ Poor"
+                                logger.info(f"   Accuracy:       {accuracy_status}")
+                                
+                                if error_pct > 15:
+                                    logger.warning("   ⚠️  Estimation is significantly off!")
+                                    logger.warning("   💡 Calibration will improve this over time")
+                                elif error_pct < 5:
+                                    logger.info("   ✅ Calibration is working well!")
+                                
+                                logger.info("=" * 80 + "\n")
+                                
+                            except Exception as e:
+                                logger.debug(f"Error in accuracy tracking: {e}")
+                    
+                        # CALIBRATION: Record actual usage for future estimate improvement
+                        # This happens automatically - no user action needed
+                        logger.info(f"📊 DEBUG: Checking calibration conditions:")
+                        logger.info(f"   iteration={iteration}, conversation_id={conversation_id}")
+                        logger.info(f"   total_input={total_input}, cache_write={iteration_usage.cache_write_tokens}")
+                        
+                        if iteration == 0:  # Only on first iteration to get clean baseline
+                            logger.info(f"📊 DEBUG: Entering calibration block (iteration 0)")
+                            try:
+                                logger.info(f"📊 DEBUG: Attempting to import token_calibrator...")
+                                try:
+                                    from app.utils.token_calibrator import get_token_calibrator
+                                except ImportError as import_err:
+                                    logger.error(f"📊 CALIBRATION IMPORT FAILED: {import_err}")
+                                    raise
+                                
+                                logger.info(f"📊 DEBUG: Successfully imported, getting calibrator instance...")
+                                
+                                calibrator = get_token_calibrator()
+                                logger.info(f"📊 DEBUG: Got calibrator instance, extracting file contents...")
+                                
+                                # Extract file contents from the conversation
+                                file_contents = self._extract_file_contents_from_messages(conversation, system_content)
+                                
+                                logger.info(f"📊 DEBUG: Extracted {len(file_contents)} files for calibration, total_input={total_input}")
+                                
+                                if file_contents and total_input > 0:
+                                    logger.info(f"📊 DEBUG: Conditions met, proceeding with calibration...")
+                                    # Get current model info
+                                    from app.agents.models import ModelManager
+                                    
+                                    model_id = ModelManager.get_model_id()
+                                    if isinstance(model_id, dict):
+                                        model_id = list(model_id.values())[0]
+                                    
+                                    endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+                                    model_name = os.environ.get("ZIYA_MODEL")
+                                    model_config = ModelManager.get_model_config(endpoint, model_name)
+                                    model_family = model_config.get('family', 'default')
+                                    
+                                    # CRITICAL: Use correct token count for calibration
+                                    # CRITICAL: Use TOTAL input (fresh + cached) for throttle-aware calibration
+                                    # Cached tokens are free for billing but STILL count for rate limits
+                                    calibration_tokens = fresh + cached
+                                    if iteration_usage.cache_write_tokens > 0:
+                                        # First iteration: also include cache creation
+                                        calibration_tokens += iteration_usage.cache_write_tokens
+                                    
+                                    logger.info(f"📊 CALIBRATION_DEBUG: Using calibration_tokens={calibration_tokens:,}")
+                                    logger.info(f"   fresh={fresh}, cache_write={iteration_usage.cache_write_tokens}")
+                                    logger.info(f"   file_contents keys: {list(file_contents.keys())[:5]}")
+                                    logger.info(f"   total file content chars: {sum(len(c) for c in file_contents.values()):,}")
+                                    
+                                    # Get baseline overhead (established on first request)
+                                    baseline_overhead = calibrator.get_baseline_overhead(model_family)
+                                    
+                                    # Estimate chat history tokens (small overhead from conversation)
+                                    chat_tokens = 0
+                                    for msg in conversation:
+                                        content = msg.get('content', '')
+                                        if isinstance(content, str):
+                                            chat_tokens += len(content) // 4
+                                        elif isinstance(content, list):
+                                            for block in content:
+                                                if block.get('type') == 'text':
+                                                    chat_tokens += len(block.get('text', '')) // 4
+                                    
+                                    # Subtract fixed costs (baseline + chat) to get file-only tokens
+                                    # This allows calibrator to learn pure file tokenization rate
+                                    file_only_tokens = max(1, calibration_tokens - baseline_overhead - chat_tokens)
+                                    
+                                    logger.info(f"📊 CALIBRATION: Total={calibration_tokens:,}, Baseline={baseline_overhead:,}, "
+                                               f"Chat={chat_tokens:,}, File-only={file_only_tokens:,}")
+                                    
+                                    # Record actual token usage for calibration
+                                    calibrator.record_actual_usage(
+                                        conversation_id=conversation_id,
+                                        file_contents=file_contents,
+                                        actual_tokens=file_only_tokens,  # File tokens only!
+                                        model_id=str(model_id),
+                                        model_family=model_family
+                                    )
+                                    
+                                    logger.debug(f"📊 CALIBRATION: Recorded {len(file_contents)} files for {model_family}")
+                                    
+                            except Exception as calib_error:
+                                logger.error(f"📊 CALIBRATION ERROR: {calib_error}")
+                                import traceback
+                                logger.error(f"📊 CALIBRATION TRACEBACK:\n{traceback.format_exc()}")
+                    
                     if chunk['type'] == 'content_block_start':
+                        # We already decoded the chunk above for metrics, reuse it
                         content_block = chunk.get('content_block', {})
                         logger.debug(f"🔍 CHUNK_DEBUG: content_block_start - type: {content_block.get('type')}, id: {content_block.get('id')}")
                         if content_block.get('type') == 'tool_use':
@@ -1141,10 +1853,10 @@ Retry with the 'command' parameter included."""
                                 # Execute the tool immediately
                                 try:
                                    # Check if this is a builtin DirectMCPTool
-                                   logger.debug(f"🔍 BUILTIN_CHECK: Looking for tool '{actual_tool_name}' in {len(tools) if tools else 0} tools")
+                                   logger.debug(f"🔍 BUILTIN_CHECK: Looking for tool '{actual_tool_name}' in {len(all_tools)} tools")
                                    builtin_tool = None
-                                   if tools:
-                                       for tool in tools:
+                                   if all_tools:
+                                       for tool in all_tools:
                                            logger.debug(f"🔍 BUILTIN_CHECK: Checking tool {tool.name}, type={type(tool).__name__}, isinstance DirectMCPTool={isinstance(tool, DirectMCPTool)}")
                                            if isinstance(tool, DirectMCPTool) and tool.name == actual_tool_name:
                                                builtin_tool = tool
@@ -1204,13 +1916,8 @@ Retry with the 'command' parameter included."""
                                         'args': args,  # Pass args so frontend can access command
                                         'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
                                     }
-
-                                    # Add clean tool result for model conversation
-                                   yield {
-                                        'type': 'tool_result_for_model',
-                                        'tool_use_id': tool_id,
-                                        'content': result_text.strip()
-                                    }
+                                    
+                                    # Note: Tool result is added to conversation below (line 1905-1924)
                                                     
                                     # Immediate flush to reduce delay
                                    await asyncio.sleep(0)
@@ -1382,7 +2089,70 @@ Please retry the tool call with valid JSON. Ensure:
                             logger.info(f"🔄 CONTINUATION_RESULT: After attempt {continuation_count}, in_block={code_block_tracker['in_block']}, had_content={continuation_had_content}")
                         
                         # Just break out of chunk processing, handle completion logic below
+                        
+                        # CRITICAL: Record iteration usage BEFORE any error handling
+                        # This ensures we capture usage even if subsequent logic fails
+                        if conversation_id and iteration_usage.input_tokens > 0:
+                            try:
+                                tracker = get_global_usage_tracker()
+                                tracker.record_usage(conversation_id, iteration_usage)
+                                
+                                logger.debug(f"📊 Recorded usage for iteration {iteration}: "
+                                           f"{iteration_usage.input_tokens:,} fresh, "
+                                           f"{iteration_usage.cache_read_tokens:,} cached")
+                            except Exception as tracking_error:
+                                # Don't let tracking errors break the flow
+                                logger.error(f"Error recording usage: {tracking_error}")
+                        elif conversation_id and iteration_usage.input_tokens == 0:
+                            logger.warning(f"⚠️ No usage metrics captured for iteration {iteration}")
+                        elif not conversation_id:
+                            logger.debug(f"No conversation_id, skipping usage tracking")
+                        
                         break
+
+                # MOVED: Log usage metrics AFTER processing all chunks
+                # This ensures we have all the data before logging
+                if iteration_usage.input_tokens > 0 or iteration_usage.output_tokens > 0:
+                    # Update cumulative
+                    cumulative_usage.input_tokens += iteration_usage.input_tokens
+                    cumulative_usage.output_tokens += iteration_usage.output_tokens
+                    cumulative_usage.cache_read_tokens += iteration_usage.cache_read_tokens
+                    cumulative_usage.cache_write_tokens += iteration_usage.cache_write_tokens
+                    
+                    total_input = iteration_usage.input_tokens + iteration_usage.cache_read_tokens
+                    fresh = iteration_usage.input_tokens
+                    cached = iteration_usage.cache_read_tokens
+                    
+                    # Log ALWAYS - critical operational data
+                    logger.info("=" * 80)
+                    logger.info(f"📊 BEDROCK USAGE - Iteration {iteration}")
+                    logger.info("=" * 80)
+                    logger.info(f"   Fresh Input:    {fresh:>8,} tokens")
+                    logger.info(f"   Cached Input:   {cached:>8,} tokens (FREE)")
+                    logger.info(f"   Output:         {iteration_usage.output_tokens:>8,} tokens")
+                    logger.info(f"   Cache Written:  {iteration_usage.cache_write_tokens:>8,} tokens")
+                    
+                    if total_input > 0:
+                        cache_pct = (cached / total_input) * 100
+                        logger.info(f"   Efficiency:     {cache_pct:>7.1f}%")
+                        logger.info(f"   💰 Cost Save:   ~{cache_pct:>6.1f}%")
+                    
+                    logger.info("=" * 80)
+                    
+                    # CRITICAL: Detect cache failures immediately
+                    if iteration > 0 and cached == 0 and fresh > 10000:
+                        logger.error("🚨 CACHE FAILURE DETECTED!")
+                        logger.error(f"   Iteration {iteration}: {fresh:,} fresh tokens")
+                        logger.error(f"   Expected cache reads but got ZERO")
+                        logger.error(f"   This WILL cause throttling!")
+                        
+                        throttle_state['cache_working'] = False
+                    elif cached > 0:
+                        throttle_state['cache_working'] = True
+                        throttle_state['last_cache_efficiency'] = iteration_usage.cache_hit_rate
+                        logger.info(f"✅ CACHE WORKING: {cached:,} tokens reused")
+                else:
+                    logger.warning(f"⚠️ No usage metrics captured for iteration {iteration}")
 
                 # CRITICAL: Validate tool_results match tool_use blocks before building conversation
                 # Remove any tool_use blocks that don't have corresponding results
@@ -1559,6 +2329,16 @@ Please retry the tool call with valid JSON. Ensure:
                     
                     # No tools executed - check if we should end the stream
                     if assistant_text.strip():
+                        # CRITICAL: Detect stable short responses to prevent infinite loops
+                        # If the response is very short (< 50 chars) and we're repeating iterations
+                        # with identical output, it's a stable completion - end the stream
+                        if iteration >= 1 and len(assistant_text.strip()) < 50:
+                            # Check if output hasn't grown in the last iteration
+                            # (indicates the model has nothing more to add)
+                            logger.debug(f"🔍 SHORT_STABLE_RESPONSE: Detected short response ({len(assistant_text)} chars) at iteration {iteration}, ending stream")
+                            yield {'type': 'stream_end'}
+                            break
+                        
                         # FIRST: Check if code block is still incomplete - if so, continue
                         if code_block_tracker.get('in_block'):
                             logger.debug(f"🔍 INCOMPLETE_BLOCK_REMAINING: Code block still open, continuing to next iteration")
@@ -1580,21 +2360,24 @@ Please retry the tool call with valid JSON. Ensure:
                         suggests_continuation = (
                             text_end.endswith((':')) or  # About to make tool call  
                             assistant_text.endswith('```') or  # Just finished code block - might add explanation
-                            (word_count_after_block < 20 and not text_after_last_block.rstrip().endswith(('.', '!', '?')))  # Not enough commentary AND doesn't end properly
+                            (word_count_after_block < 20 and not text_after_last_block.rstrip().endswith(('.', '!', '?')))
                         )
                         
-                        if suggests_continuation and iteration < 5:
+                        if suggests_continuation and iteration < 2:
                             logger.debug(f"🔍 CONTINUE_RESPONSE: Only {word_count_after_block} words after last block, continuing: '{text_after_last_block[-30:] if text_after_last_block else text_end}'")
                             continue
                         else:
                             logger.debug(f"🔍 STREAM_END: Model produced text without tools, ending stream")
                             # Log final metrics
-                            logger.info(f"📊 Final stream metrics: events={stream_metrics['events_sent']}, "
-                                       f"bytes={stream_metrics['bytes_sent']}, "
-                                       f"avg_size={stream_metrics['bytes_sent']/max(stream_metrics['events_sent'],1):.2f}, "
-                                       f"min={min(stream_metrics['chunk_sizes']) if stream_metrics['chunk_sizes'] else 0}, "
-                                       f"max={max(stream_metrics['chunk_sizes']) if stream_metrics['chunk_sizes'] else 0}, "
-                                       f"duration={time.time()-stream_metrics['start_time']:.2f}s")
+                            logger.info(
+                                f"\n📊 Final stream metrics: "
+                                f"events={stream_metrics['events_sent']}, "
+                                f"bytes={stream_metrics['bytes_sent']}, "
+                                f"avg_size={stream_metrics['bytes_sent']/max(stream_metrics['events_sent'],1):.2f}, "
+                                f"min={min(stream_metrics['chunk_sizes']) if stream_metrics['chunk_sizes'] else 0}, "
+                                f"max={max(stream_metrics['chunk_sizes']) if stream_metrics['chunk_sizes'] else 0}, "
+                                f"duration={time.time()-stream_metrics['start_time']:.2f}s\n"
+                            )
                             yield {'type': 'stream_end'}
                             break
                     elif iteration >= 5:  # Safety: end after 5 iterations total
@@ -1690,6 +2473,9 @@ Please retry the tool call with valid JSON. Ensure:
                                     logger.error(f"Error processing post-loop feedback: {feedback_error}")
                     except Exception as e:
                         logger.debug(f"Error checking post-loop feedback: {e}")
+                
+                # Clean up iteration resources to prevent memory leaks
+                self._cleanup_iteration_resources()
 
             except Exception as e:
                 error_str = str(e)
@@ -1714,6 +2500,53 @@ Please retry the tool call with valid JSON. Ensure:
                 )
                 
                 if is_throttling:
+                    # Update throttle state based on what we learned
+                    if len(iteration_usages) > 0:
+                        last_usage = iteration_usages[-1]
+                        
+                        # Check if cache is working
+                        total_input_processed = last_usage.input_tokens + last_usage.cache_read_tokens
+                        if iteration > 0 and total_input_processed > 10000 and last_usage.cache_read_tokens == 0:
+                            throttle_state['cache_working'] = False
+                            logger.error("🚨 THROTTLED + NO CACHE: Cache appears broken!")
+                        elif last_usage.cache_read_tokens > 0:
+                            throttle_state['cache_working'] = True
+                            throttle_state['last_cache_efficiency'] = last_usage.cache_hit_rate
+                    
+                    # Calculate intelligent backoff based on cache health and token usage
+                    throttle_state['retry_count'] += 1
+                    
+                    # Exponential time backoff
+                    time_delay = throttle_state['base_delay'] * (2 ** throttle_state['retry_count'])
+                    
+                    # CRITICAL: Reduce output tokens to decrease throttle pressure
+                    # Per @animeshx: "more throttled with a higher output token limit"
+                    current_max_tokens = body.get('max_tokens', 4000)
+                    
+                    # Aggressive reduction strategy
+                    if throttle_state['cache_working'] == False:
+                        # Cache is broken - reduce more aggressively
+                        reduction_factor = 0.5  # 50% of original
+                        logger.warning("🔥 CACHE BROKEN: Using aggressive output token reduction")
+                    elif throttle_state['retry_count'] > 2:
+                        # Multiple retries - get more aggressive
+                        reduction_factor = 0.6  # 60% of original
+                    else:
+                        # First retry - moderate reduction
+                        reduction_factor = 0.75  # 75% of original
+                    
+                    reduced_max_tokens = int(original_max_tokens * reduction_factor)
+                    reduced_max_tokens = max(reduced_max_tokens, 2048)  # Never go below 2048
+                    
+                    body['max_tokens'] = reduced_max_tokens
+                    
+                    logger.warning(f"🔄 INTELLIGENT THROTTLE BACKOFF:")
+                    logger.warning(f"   Retry #{throttle_state['retry_count']}")
+                    logger.warning(f"   Time delay: {min(time_delay, 60)}s")
+                    logger.warning(f"   Output tokens: {original_max_tokens:,} → {reduced_max_tokens:,} ({reduction_factor*100:.0f}%)")
+                    logger.warning(f"   Cache working: {throttle_state['cache_working']}")
+                    logger.warning(f"   Cache efficiency: {throttle_state['last_cache_efficiency']*100:.1f}%")
+                    
                     # Extract suggested wait time if available
                     suggested_wait = 60  # Default 60 seconds
                     if "please wait" in error_str.lower():
@@ -1767,6 +2600,40 @@ Please retry the tool call with valid JSON. Ensure:
                     logger.error(f"Non-throttling error in iteration {iteration}: {error_str}")
                     yield {'type': 'error', 'content': f'Error: {error_str}'}
                     return
+        
+        # FINAL REPORT: Log comprehensive usage summary
+        if iteration_usages and conversation_id:
+            logger.info("\n" + "=" * 80)
+            logger.info(f"📊 FINAL USAGE REPORT - Conversation {conversation_id}")
+            logger.info("=" * 80)
+            logger.info(f"Total Iterations:        {len(iteration_usages)}")
+            logger.info(f"Total Fresh Input:       {cumulative_usage.input_tokens:>12,} tokens")
+            logger.info(f"Total Cached Input:      {cumulative_usage.cache_read_tokens:>12,} tokens (FREE)")
+            logger.info(f"Total Cache Written:     {cumulative_usage.cache_write_tokens:>12,} tokens")
+            logger.info(f"Total Output:            {cumulative_usage.output_tokens:>12,} tokens")
+            
+            total_billable = cumulative_usage.input_tokens + cumulative_usage.output_tokens
+            total_potential = total_billable + cumulative_usage.cache_read_tokens
+            
+            if total_potential > 0:
+                overall_savings = (cumulative_usage.cache_read_tokens / total_potential) * 100
+                logger.info(f"Overall Cache Efficiency: {overall_savings:>11.1f}%")
+                logger.info(f"Total Billable Tokens:   {total_billable:>12,}")
+                logger.info(f"Tokens Saved by Cache:   {cumulative_usage.cache_read_tokens:>12,}")
+            
+            # Check if cache ever worked
+            cache_ever_worked = any(u.cache_read_tokens > 0 for u in iteration_usages)
+            if not cache_ever_worked and len(iteration_usages) > 1:
+                logger.error("🚨 CACHE NEVER ACTIVATED ACROSS ALL ITERATIONS!")
+                logger.error("   This conversation used ZERO cached tokens")
+                logger.error("   Caching may be disabled or broken")
+            
+            # Check for throttling events
+            throttle_events = [u for u in iteration_usages if getattr(u, 'was_throttled', False)]
+            if throttle_events:
+                logger.warning(f"⚠️  Throttled {len(throttle_events)} times during this conversation")
+            
+            logger.info("=" * 80 + "\n")
 
     def _update_code_block_tracker(self, text: str, tracker: Dict[str, Any]) -> None:
         """Update code block tracking state based on text content."""
