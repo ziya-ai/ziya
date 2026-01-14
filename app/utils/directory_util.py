@@ -549,25 +549,11 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     Returns:
         Dict with folder structure including token counts
     """
-    import traceback
-    with open('/tmp/scan_debug.txt', 'a') as f:
-        f.write(f"\n\n=== get_folder_structure CALLED at {time.time()} ===\n")
-        f.write(f"Directory: {directory}\n")
-        f.write(f"Call stack:\n")
-        for line in traceback.format_stack()[:-1]:
-            f.write(line)
-        f.write(f"=== END CALL STACK ===\n\n")
-    
     logger.debug(f"🔍 PERF: Starting ULTRA-FAST folder scan for directory: {directory}")
     
-    logger.debug(f"🔍 PERF: Starting ULTRA-FAST folder scan for directory: {directory}")
-    
-    # Check if we have cached results first
-    cached_result = get_cached_folder_structure_with_tokens(directory, ignored_patterns, max_depth)
-    if cached_result:
-        return cached_result
-    
-    # Warn users if this looks like it will be slow
+    # CRITICAL FIX: Don't call get_cached_folder_structure_with_tokens here
+    # That function can trigger background scans that call THIS function -> infinite recursion
+    # Warn users if this looks like it will be slow (before expensive operations)
     detect_large_directory_and_warn(directory)
 
     # Use compatibility layer for tiktoken with automatic fallbacks
@@ -792,13 +778,13 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
                     logger.warning(f"🔍 PERF: Slow token estimation for {entry}: {file_time*1000:.1f}ms")
                 
                 logger.debug(f"📄 File {entry}: tokens={tokens}")
-                if tokens > 0 or tokens == -1:  # Include tool-backed files (marked as -1)
+                if tokens >= 0 or tokens == -1:  # Include all files including empty ones (0 tokens) and tool-backed files (-1)
                     scan_stats['files_processed'] += 1
                     result['children'][entry] = {'token_count': tokens}
                     if tokens > 0:  # Only add positive tokens to total
                         total_tokens += tokens
                 else:
-                    logger.debug(f"⏭️  Skipping file {entry} - zero tokens")
+                    logger.debug(f"⏭️  File {entry} has {tokens} tokens")
         
         result['token_count'] = total_tokens
         
@@ -921,7 +907,31 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     logger.debug(f"Returning folder structure with {len(result)} top-level entries")
     return result
 
-# Add new fast estimation function
+
+def estimate_tokens_calibrated(file_path: str, content: Optional[str] = None) -> int:
+    """
+    Estimate tokens using model-aware calibrated data.
+    
+    Falls back gracefully if calibration not available.
+    """
+    try:
+        from app.utils.token_calibrator import get_token_calibrator
+        
+        calibrator = get_token_calibrator()
+        
+        # Read content if not provided
+        if content is None:
+            content = read_file_content(file_path)
+            if not content:
+                return 0
+        
+        return calibrator.estimate_tokens(content, file_path)
+        
+    except Exception as e:
+        # Fall back to fast estimation silently
+        logger.debug(f"Calibrated estimation unavailable, using fast: {e}")
+        return estimate_tokens_fast(file_path)
+
 def estimate_tokens_fast(file_path: str) -> int:
     """Fast token estimation based on file size and type."""
     try:
@@ -1178,6 +1188,11 @@ def is_scan_healthy() -> bool:
     start_time = _scan_progress.get("start_time", 0)
     last_update = _scan_progress.get("last_update", 0)
     
+    # Give new scans at least 10 seconds before considering them unhealthy
+    # This prevents premature cancellation of scans that just started
+    if start_time > 0 and (current_time - start_time) < 10:
+        return True  # Too early to judge health
+    
     # Consider scan unhealthy if:
     # 1. Running for more than 5 minutes (300 seconds)
     # 2. No progress update in the last 2 minutes (120 seconds)
@@ -1258,20 +1273,34 @@ def get_basic_folder_structure(directory: str) -> Dict[str, Any]:
             # Return fresh cache immediately
             if _folder_cache['data'] is not None and cache_age < 10 and not directory_changed:
                 logger.info(f"Returning fresh folder structure cache (age: {cache_age:.1f}s)")
-            return _folder_cache['data']
-        
+                return _folder_cache['data']
+            
     # If cache is stale or doesn't exist, manage background scan
     with _scan_lock:
         is_scanning = _scan_thread and _scan_thread.is_alive()
         
-        # Check if scan is healthy if it appears to be running
-        if is_scanning and not is_scan_healthy():
-            logger.warning("Scan appears stuck, cleaning up and restarting")
+        # Only check health if scan has been running for a while
+        if is_scanning:
+            scan_age = time.time() - _scan_progress.get("start_time", 0)
+            
+            # Don't check health for very new scans (< 10 seconds)
+            if scan_age > 10 and not is_scan_healthy():
+                logger.warning(f"Scan appears stuck after {scan_age:.1f}s, cleaning up and restarting")
+        # If a scan is already running and healthy, just return scanning status
+        if is_scanning and is_scan_healthy():
+            logger.info("Scan is already in progress and healthy, returning scanning indicator")
+            # Give scan a moment to start
+            time.sleep(0.1)
+            return {"_scanning": True, "children": {}}
+        
+            # Don't check health for very new scans (< 10 seconds)
             _scan_progress["active"] = False
             _scan_progress["error"] = "Scan timed out or stalled"  
             # Abandon stuck thread (don't join)
             _scan_thread = None
             is_scanning = False
+        elif scan_age <= 10:
+            logger.debug(f"Scan is young ({scan_age:.1f}s), not checking health yet")
         
         if not is_scanning:
             logger.info("Cache is stale or missing. Starting new background scan.")
