@@ -2103,7 +2103,11 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                     return True
                 else:
                     # Fall back to regular difflib mode
-                    logger.info(f"Falling back to regular difflib mode due to: {str(e)}")
+                    # Truncate error message to avoid log spam from partial_content
+                    error_str = str(e)
+                    if len(error_str) > 300:
+                        error_str = error_str[:300] + "... [truncated]"
+                    logger.info(f"Falling back to regular difflib mode due to: {error_str}")
                     try:
                         # Use the correct function signature for apply_diff_with_difflib
                         modified_content = apply_diff_with_difflib(file_path, git_diff, hunks_to_skip)
@@ -2324,7 +2328,11 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                     error_details={"error": str(e)}
                 )
                 hunks_marked_failed.append(current_hunk_id)
-        logger.info(f"Marked hunks {hunks_marked_failed} as FAILED due to exception: {str(e)}")
+        # Truncate error to avoid log spam
+        error_str = str(e)
+        if len(error_str) > 200:
+            error_str = error_str[:200] + "..."
+        logger.info(f"Marked hunks {hunks_marked_failed} as FAILED due to exception: {error_str}")
         return False
 
 def run_llm_resolver_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, original_lines: List[str]) -> bool:
