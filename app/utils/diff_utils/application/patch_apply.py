@@ -1747,5 +1747,6 @@ def apply_diff_with_difflib(file_path: str, diff_content: str, skip_hunks: List[
     try:
         return ''.join(apply_diff_with_difflib_hybrid_forced(file_path, diff_content, original_lines, skip_hunks))
     except Exception as e:
-        logger.error(f"Error applying diff with hybrid forced mode: {str(e)}")
-        raise PatchApplicationError(f"Failed to apply diff: {str(e)}", {"type": "application_failed"})
+        error_str = str(e)[:300] + "..." if len(str(e)) > 300 else str(e)
+        logger.error(f"Error applying diff with hybrid forced mode: {error_str}")
+        raise PatchApplicationError(f"Failed to apply diff: {error_str}", {"type": "application_failed"})
