@@ -4,6 +4,7 @@ version = "0.3.14.4"
 description = ""
 authors = ["Dan Cohn <chroma@gmail.com>",
            "Vishnu Krishnaprasad <vishnukool@gmail.com>"]
+license = "MIT"
 
 packages = [
     { include = "app", from = "." },
@@ -58,6 +59,7 @@ fonttools = "^4.60.2"
 mcp = "^1.23.0"
 uv = "^0.9.6"
 filelock = ">=3.20.1"
+prompt-toolkit = "^3.0.48"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.3"
