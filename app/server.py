@@ -4208,7 +4208,7 @@ async def api_add_explicit_paths(request: AddExplicitPathsRequest):
 
 def add_external_path_to_cache(full_path: str) -> bool:
     """
-    Add an external file (outside workspace) to the folder cache.
+    Add an external file or directory (outside workspace) to the folder cache.
     External files are stored under a special '[external]' root node.
     """
     global _folder_cache, _cache_lock
@@ -4218,7 +4218,46 @@ def add_external_path_to_cache(full_path: str) -> bool:
     
     try:
         from app.utils.directory_util import estimate_tokens_fast
-        token_count = estimate_tokens_fast(full_path) if os.path.isfile(full_path) else 0
+        
+        # For directories, scan the contents recursively
+        if os.path.isdir(full_path):
+            def scan_directory(dir_path: str, max_depth: int = 10, current_depth: int = 0) -> dict:
+                if current_depth >= max_depth:
+                    return {'children': {}, 'token_count': 0}
+                
+                result = {'children': {}, 'token_count': 0}
+                total_tokens = 0
+                
+                try:
+                    for entry_name in os.listdir(dir_path):
+                        if entry_name.startswith('.'):
+                            continue
+                        
+                        entry_path = os.path.join(dir_path, entry_name)
+                        
+                        try:
+                            if os.path.isfile(entry_path):
+                                token_count = estimate_tokens_fast(entry_path)
+                                result['children'][entry_name] = {'token_count': token_count}
+                                total_tokens += token_count
+                            elif os.path.isdir(entry_path):
+                                sub_dir = scan_directory(entry_path, max_depth, current_depth + 1)
+                                result['children'][entry_name] = sub_dir
+                                total_tokens += sub_dir.get('token_count', 0)
+                        except (PermissionError, OSError):
+                            continue
+                except (PermissionError, OSError):
+                    pass
+                
+                result['token_count'] = total_tokens
+                return result
+            
+            dir_structure = scan_directory(full_path)
+            token_count = dir_structure.get('token_count', 0)
+        else:
+            # For files, just get token count
+            token_count = estimate_tokens_fast(full_path)
+            dir_structure = None
         
         with _cache_lock:
             # Ensure [external] root exists
@@ -4240,10 +4279,12 @@ def add_external_path_to_cache(full_path: str) -> bool:
             
             # Add the file/directory
             filename = path_parts[-1]
-            if os.path.isfile(full_path):
-                current_level[filename] = {'token_count': token_count}
+            if dir_structure:
+                # Directory with scanned contents
+                current_level[filename] = dir_structure
             else:
-                current_level[filename] = {'children': {}, 'token_count': 0}
+                # File
+                current_level[filename] = {'token_count': token_count}
             
             logger.info(f"✅ Added external path to cache: {full_path} ({token_count} tokens)")
             
@@ -4320,6 +4361,9 @@ def add_directory_to_folder_cache(rel_path: str, full_path: str, is_inside_works
             
             # Add the directory with its scanned contents
             dirname = path_parts[-1] if path_parts else os.path.basename(full_path)
+            # Ensure the directory structure has 'children' key (even if empty) to mark it as a directory
+            if 'children' not in dir_structure:
+                dir_structure['children'] = {}
             current_level[dirname] = dir_structure
             
             logger.info(f"✅ Added directory to cache: {rel_path} ({dir_structure.get('token_count', 0)} tokens)")
