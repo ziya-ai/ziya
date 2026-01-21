@@ -240,13 +240,11 @@ class FileChangeHandler(FileSystemEventHandler):
             token_count = estimate_tokens_fast(full_path)
             
             # Broadcast directly even without cache update
-            import asyncio
-            from app.server import broadcast_file_tree_update
+            from app.server import _schedule_broadcast
             try:
-                asyncio.create_task(broadcast_file_tree_update('file_added', rel_path, token_count))
-                logger.info(f"📢 Broadcasted file_added for {rel_path} (cache bypass)")
+                _schedule_broadcast('file_added', rel_path, token_count)
             except Exception as e:
-                logger.error(f"Failed to broadcast file creation: {e}")
+                logger.debug(f"Failed to schedule broadcast for file creation: {e}")
             
             # Fallback to invalidation if incremental add fails
             self._debounced_cache_invalidation()
