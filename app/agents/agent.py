@@ -1698,9 +1698,7 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
     
     print(f"🔍 FILE_CONTENT_DEBUG: get_combined_docs_from_files returning {len(combined_contents)} chars")
 
-    # Log the first and last part of combined contents
-    logger.info(f"Combined contents starts with:\n{combined_contents[:500]}")
-    logger.info(f"Combined contents ends with:\n{combined_contents[-500:]}")
+    logger.debug(f"Combined {len([l for l in combined_contents.split('\n') if l.startswith('File: ')])} files, {len(combined_contents)} chars")
     
     return combined_contents
 
@@ -1919,24 +1917,14 @@ def extract_codebase(x):
     logger.debug(f"First 500 chars:\n{final_string[:500]}")
     logger.debug(f"Last 500 chars:\n{final_string[-500:]}")
 
-    # Debug the content at each stage
-    logger.info("Content flow tracking:")
-    logger.info(f"1. Number of files in file_contents: {len(file_contents)}")
-    logger.info(f"2. Number of files in conversation state: {len(file_state_manager.conversation_states.get(conversation_id, {}))}")
-
-    # Check content before joining
+    # Track content assembly (debug only)
     file_headers = [line for line in codebase.split('\n') if line.startswith('File: ')]
-    logger.info(f"3. Files in codebase string:\n{chr(10).join(file_headers)}")
-
-    logger.info(f"Final assembled context length: {len(result)} sections, {sum(len(s) for s in result)} total characters")
-    file_headers = [line for line in codebase.split('\n') if line.startswith('File: ')]
-    logger.info(f"Number of files in codebase: {len(file_headers)}")
-    if file_headers:
-        logger.info(f"First few files in codebase:\n{chr(10).join(file_headers[:5])}")
-
-    if result:
-        return final_string
+    logger.debug(f"Content flow: {len(file_contents)} files in state, {len(file_headers)} in codebase")
+    logger.debug(f"Final context: {len(result)} sections, {sum(len(s) for s in result):,} total chars")
+    logger.debug(f"Files: {', '.join(f.split('/')[-1] for f in file_headers[:5])}{'...' if len(file_headers) > 5 else ''}")
+    
     return codebase if codebase.strip() else "No files have been selected for context analysis."
+
 def log_output(x):
     """Log output in a consistent format."""
     try:

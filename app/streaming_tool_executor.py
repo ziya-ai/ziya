@@ -413,16 +413,9 @@ class StreamingToolExecutor:
         Returns:
             Dict mapping file_path -> content
         """
-        logger.info(f"📊 EXTRACT_DEBUG: system_content type: {type(system_content)}")
-        logger.info(f"📊 EXTRACT_DEBUG: system_content length: {len(system_content) if system_content else 0}")
         if system_content:
-            logger.info(f"📊 EXTRACT_DEBUG: 'File: ' count in system_content: {system_content.count('File: ') if isinstance(system_content, str) else 'N/A'}")
-            
-            # Log how much is files vs other content
             first_file = system_content.find('File: ') if isinstance(system_content, str) else -1
-            if first_file > 0:
-                logger.info(f"📊 EXTRACT_DEBUG: Content before files: {first_file:,} chars")
-                logger.info(f"📊 EXTRACT_DEBUG: Content from files onward: {len(system_content) - first_file:,} chars")
+            logger.debug(f"📊 EXTRACT: {system_content.count('File: ')} files, {first_file:,} chars overhead")
         
         file_contents = {}
         
@@ -442,7 +435,6 @@ class StreamingToolExecutor:
         if not content_to_parse:
             return {}
             
-        logger.info(f"📊 EXTRACT_DEBUG: content_to_parse type: {type(content_to_parse)}, has 'File: ': {'File: ' in content_to_parse if isinstance(content_to_parse, str) else 'N/A'}")
             
         if isinstance(content_to_parse, list):
             # Handle multi-part content
@@ -1240,7 +1232,9 @@ class StreamingToolExecutor:
                                 
                                 # Log comparison
                                 accuracy_status = "✅ Excellent" if error_pct < 5 else "⚠️ Fair" if error_pct < 15 else "❌ Poor"
-                                logger.info(f"   Accuracy:       {accuracy_status}")
+                                # Only log if accuracy is concerning
+                                if error_pct >= 15:
+                                    logger.warning(f"   Accuracy:       {accuracy_status}")
                                 
                                 if error_pct > 15:
                                     logger.warning("   ⚠️  Estimation is significantly off!")
@@ -1255,9 +1249,7 @@ class StreamingToolExecutor:
                     
                         # CALIBRATION: Record actual usage for future estimate improvement
                         # This happens automatically - no user action needed
-                        logger.info(f"📊 DEBUG: Checking calibration conditions:")
-                        logger.info(f"   iteration={iteration}, conversation_id={conversation_id}")
-                        logger.info(f"   total_input={total_input}, cache_write={iteration_usage.cache_write_tokens}")
+                        logger.debug(f"📊 Calibration: iter={iteration}, total_input={total_input:,}, cache_write={iteration_usage.cache_write_tokens:,}")
                         
                         if iteration == 0:  # Only on first iteration to get clean baseline
                             logger.info(f"📊 DEBUG: Entering calibration block (iteration 0)")
@@ -1301,10 +1293,7 @@ class StreamingToolExecutor:
                                         # First iteration: also include cache creation
                                         calibration_tokens += iteration_usage.cache_write_tokens
                                     
-                                    logger.info(f"📊 CALIBRATION_DEBUG: Using calibration_tokens={calibration_tokens:,}")
-                                    logger.info(f"   fresh={fresh}, cache_write={iteration_usage.cache_write_tokens}")
-                                    logger.info(f"   file_contents keys: {list(file_contents.keys())[:5]}")
-                                    logger.info(f"   total file content chars: {sum(len(c) for c in file_contents.values()):,}")
+                                    logger.debug(f"📊 CALIBRATION: {calibration_tokens:,} tokens from {len(file_contents)} files, {sum(len(c) for c in file_contents.values()):,} chars")
                                     
                                     # Get baseline overhead (established on first request)
                                     baseline_overhead = calibrator.get_baseline_overhead(model_family)
@@ -2240,7 +2229,7 @@ Please retry the tool call with valid JSON. Ensure:
                 
                 # The conversation should now be in proper Bedrock format
                 # Remove the filter call since we're constructing messages correctly
-                logger.debug(f"🤖 MODEL_RESPONSE: {assistant_text}")
+                logger.info(f"🤖 MODEL_RESPONSE: {assistant_text}")
                 logger.debug(f"Conversation length: {len(conversation)} messages")
 
                 # Skip duplicate execution - tools are already executed in content_block_stop

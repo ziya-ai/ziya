@@ -122,8 +122,7 @@ class PromptExtensionManager:
                     
                 modified_prompt = extension_fn(modified_prompt, extension_context)
                 logger.debug(f"Applied global extension '{name}' - new length: {len(modified_prompt)}")
-                logger.info(f"Applied global extension '{name}' - new length: {len(modified_prompt)}")
-                
+
                 if debug_enabled:
                     log_prompt_assembly(f"after_global_ext_{name}", modified_prompt,
                                        metadata={"extension": name, "type": "global"})

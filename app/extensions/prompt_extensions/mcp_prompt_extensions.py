@@ -30,9 +30,6 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
         
     Returns:
     """
-    logger.info("MCP_GUIDELINES: @prompt_extension decorator applied to mcp_usage_guidelines")
-    logger.info("MCP_GUIDELINES: mcp_usage_guidelines function called")
-    
     import os
     
     # Get model capabilities from central source
@@ -40,8 +37,6 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
     endpoint = context.get("endpoint", os.environ.get("ZIYA_ENDPOINT", "bedrock"))
     model_name = context.get("model_name", os.environ.get("ZIYA_MODEL"))
     capabilities = get_model_capabilities(endpoint, model_name)
-    
-    logger.info(f"MCP_GUIDELINES: Model capabilities: {capabilities}")
     
     native_function_calling = capabilities["native_function_calling"]
  
@@ -91,7 +86,6 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
         return prompt
 
     # Start building MCP guidelines
-    logger.info(f"MCP_GUIDELINES: Building guidelines. Native function calling: {native_function_calling}")
     mcp_guidelines = """
 
 🚨 CRITICAL FILE MODIFICATION PROHIBITION 🚨
@@ -102,8 +96,6 @@ NEVER use tools to:
 
 """
     
-    # Always include parameter examples - they're helpful regardless of calling mechanism
-    logger.info("MCP_GUIDELINES: Adding parameter call examples")
     mcp_guidelines += """
 CRITICAL: TOOL PARAMETER CALL EXAMPLES
 When calling tools, ensure you match the exact parameter structure from the schema.
@@ -162,12 +154,10 @@ PROHIBITED shell operations:
 - Text editing: sed, awk with -i, nano, vim, echo >
 - System changes: sudo, su, systemctl, service
 """
-
-    logger.info(f"MCP_GUIDELINES: Original prompt length: {len(prompt)}")
-    logger.info(f"MCP_GUIDELINES: Appending guidelines. Available tools: {available_tools}")
+    
+    logger.debug(f"MCP_GUIDELINES: Appending guidelines for {len(available_tools)} tools")
     modified_prompt = prompt + mcp_guidelines
-    logger.info(f"MCP_GUIDELINES: Modified prompt length: {len(modified_prompt)}")
-    logger.info(f"MCP_GUIDELINES: Last 500 chars of modified prompt: ...{modified_prompt[-500:]}")
+    logger.debug(f"MCP_GUIDELINES: Extended prompt by {len(mcp_guidelines)} chars")
     return modified_prompt
 
 # Removed _get_tool_description() function as it was hardcoding shell tool descriptions

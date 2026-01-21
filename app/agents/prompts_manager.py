@@ -52,7 +52,7 @@ def get_extended_prompt(model_name: Optional[str] = None,
         logger.info(f"Using cached extended prompt for {cache_key}")
         return _prompt_cache[cache_key]
     
-    logger.info(f"Creating new extended prompt for {cache_key}")
+    logger.debug(f"Creating new extended prompt for {cache_key}")
     
     # Get the original template
     template = original_template
@@ -91,7 +91,7 @@ def get_extended_prompt(model_name: Optional[str] = None,
     
     # Cache the result
     _prompt_cache[cache_key] = extended_prompt
-    logger.info(f"Cached extended prompt for {cache_key}")
+    logger.debug(f"Cached extended prompt for {cache_key}")
     
     return extended_prompt
 
