@@ -212,7 +212,10 @@ def fnmatch_pathname_to_regex(
         else:
             res.insert(0, f"(^|{seps_group})")
     if not directory_only:
-        res.append('$')
+        # Pattern should match the item itself OR anything under it if it's a directory
+        # This implements git's behavior where "node_modules" matches both the directory
+        # and all files within node_modules/
+        res.append('($|/)')
     elif directory_only and negation:
         res.append('/$')
     else:

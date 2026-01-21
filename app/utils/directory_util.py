@@ -94,11 +94,12 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
             # Normalize the path to handle both absolute and relative paths
             if os.path.isabs(include_path):
                 # For absolute paths, get the basename for pattern matching
-                basename = os.path.basename(include_path.rstrip(os.sep))
+                basename = os.path.basename(include_path.rstrip(os.sep + '/'))
                 include_patterns_override.add(basename)
             else:
                 # For relative paths, use as-is
-                include_patterns_override.add(include_path.rstrip(os.sep))
+                # Strip trailing slashes for consistent matching
+                include_patterns_override.add(include_path.rstrip(os.sep + '/'))
             
             logger.info(f"Will override default exclusions for pattern: {include_path}")
     
@@ -196,21 +197,8 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
         ("pkg", user_codebase_dir),     # Go packages
         ("vendor", user_codebase_dir),  # Vendor dependencies
         (".pytest_cache", user_codebase_dir),
+        ("temp_merge/", user_codebase_dir),  # Temporary merge directories at any level
     ]
-    
-    # Filter out patterns that are overridden by --include
-    if include_patterns_override:
-        original_count = len(ignored_patterns)
-        ignored_patterns = [
-            (pattern, base) for pattern, base in ignored_patterns
-            if pattern not in include_patterns_override and 
-               not any(pattern.startswith(override + os.sep) or pattern == override 
-                      for override in include_patterns_override)
-        ]
-        removed_count = original_count - len(ignored_patterns)
-        if removed_count > 0:
-            logger.info(f"Removed {removed_count} default exclusion patterns due to --include overrides")
-            logger.info(f"Overridden patterns: {[p for p, _ in ignored_patterns if p in include_patterns_override]}")
     
     # Add additional exclude directories from environment variable if it exists
     additional_excludes = os.environ.get("ZIYA_ADDITIONAL_EXCLUDE_DIRS", "")
@@ -346,29 +334,30 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
         ignored_patterns.extend(get_patterns_recursive(directory))
         logger.debug(f"Found {len(ignored_patterns)} total patterns after recursive scan")
     
-    # CRITICAL: Add negation patterns for --include paths to override ALL gitignore patterns
-    # This must happen AFTER all gitignore patterns are collected
+    # Filter out root-level patterns that are overridden by --include
+    # This happens AFTER all gitignore files are read so we can filter patterns from root .gitignore
+    # This allows traversing into included directories while respecting nested .gitignore files
     if include_patterns_override:
-        logger.info(f"Adding negation patterns to force inclusion of: {include_patterns_override}")
-        for include_path in include_patterns_override:
-            # Add negation pattern for the path itself
-            ignored_patterns.append((f"!{include_path}", user_codebase_dir))
-            # Add negation pattern for all contents within the path
-            ignored_patterns.append((f"!{include_path}/**", user_codebase_dir))
-            
-            # Also add negation patterns for parent directories to ensure traversal
-            # This is necessary because gitignore won't traverse into ignored parent dirs
-            if '/' in include_path:
-                path_parts = include_path.split('/')
-                accumulated_path = ""
-                for i, part in enumerate(path_parts[:-1]):  # Exclude the last part (already handled above)
-                    if i == 0:
-                        accumulated_path = part
-                    else:
-                        accumulated_path = accumulated_path + "/" + part
-                    ignored_patterns.append((f"!{accumulated_path}", user_codebase_dir))
-            
-            logger.info(f"Added negation patterns for --include path: {include_path}")
+        original_count = len(ignored_patterns)
+        ignored_patterns = [
+            (pattern, base) for pattern, base in ignored_patterns
+            if not (
+                # Only remove patterns from the root level that match the include path
+                # Compare both with and without trailing slashes since gitignore patterns
+                # can have trailing slashes but command line args might not
+                base == user_codebase_dir and
+                any(
+                    pattern.rstrip('/') == override or 
+                    pattern == override or
+                    pattern.rstrip('/') == override.rstrip('/')
+                    for override in include_patterns_override
+                )
+            )
+        ]
+        removed_count = original_count - len(ignored_patterns)
+        if removed_count > 0:
+            logger.info(f"Removed {removed_count} default exclusion patterns due to --include overrides")
+            logger.info(f"Overridden patterns: {[p for p, _ in ignored_patterns if p in include_patterns_override]}")
     
     # Cache the results for future calls
     _ignored_patterns_cache = ignored_patterns
