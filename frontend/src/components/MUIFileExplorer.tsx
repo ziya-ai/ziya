@@ -16,12 +16,27 @@ import IconButton from '@mui/material/IconButton';
 import InputAdornment from '@mui/material/InputAdornment';
 import LinearProgress from '@mui/material/LinearProgress';
 import Box from '@mui/material/Box';
+import Dialog from '@mui/material/Dialog';
+import DialogTitle from '@mui/material/DialogTitle';
+import DialogContent from '@mui/material/DialogContent';
+import DialogActions from '@mui/material/DialogActions';
+import List from '@mui/material/List';
+import ListItemButton from '@mui/material/ListItemButton';
+import ListItemIcon from '@mui/material/ListItemIcon';
+import ListItemText from '@mui/material/ListItemText';
+import Radio from '@mui/material/Radio';
+import RadioGroup from '@mui/material/RadioGroup';
+import FormControlLabel from '@mui/material/FormControlLabel';
 import Collapse from '@mui/material/Collapse';
 
 // MUI icons
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import ArrowRightIcon from '@mui/icons-material/ArrowRight';
 import RefreshIcon from '@mui/icons-material/Refresh';
+import AddIcon from '@mui/icons-material/Add';
+import FolderIcon from '@mui/icons-material/Folder';
+import InsertDriveFileIcon from '@mui/icons-material/InsertDriveFile';
+import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import SearchIcon from '@mui/icons-material/Search';
 import ClearIcon from '@mui/icons-material/Clear';
 
@@ -31,6 +46,13 @@ interface TreeNodeData {
   title: string;
   children?: TreeNodeData[];
   loggedAccurate?: boolean;
+}
+
+interface BrowseEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  size?: number;
 }
 
 interface TreeNodeProps {
@@ -81,6 +103,15 @@ export const MUIFileExplorer = () => {
   const lastCheckedKeysRef = useRef<string>('');
   const lastDBFetchRef = useRef<number>(0);
   const lastClickRef = useRef<number>(0);
+
+  // State for add path dialog
+  const [addPathDialogOpen, setAddPathDialogOpen] = useState(false);
+  const [browsePath, setBrowsePath] = useState('');
+  const [pathInput, setPathInput] = useState('');
+  const [browseEntries, setBrowseEntries] = useState<BrowseEntry[]>([]);
+  const [browseLoading, setBrowseLoading] = useState(false);
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
+  const [addMode, setAddMode] = useState<'browser' | 'context'>('context');
 
   // Lightweight caches - only computed when needed
   const tokenCalculationCache = useRef(new Map());
@@ -681,6 +712,149 @@ export const MUIFileExplorer = () => {
       setIsRefreshing(false);
     }
   };
+
+  // Browse directory on server
+  const browseDirectory = useCallback(async (dirPath: string) => {
+    setBrowseLoading(true);
+    try {
+      const response = await fetch(`/api/browse-directory?path=${encodeURIComponent(dirPath)}`);
+      if (response.ok) {
+        const data = await response.json();
+        setBrowsePath(data.current_path || dirPath);
+        setPathInput(data.current_path || dirPath);
+        setBrowseEntries(data.entries || []);
+      } else {
+        const error = await response.json();
+        message.error(error.detail || 'Failed to browse directory');
+      }
+    } catch (error) {
+      console.error('Error browsing directory:', error);
+      message.error('Failed to browse directory');
+    } finally {
+      setBrowseLoading(false);
+    }
+  }, []);
+
+  // Open add path dialog
+  const handleOpenAddPathDialog = useCallback(() => {
+    setAddPathDialogOpen(true);
+    setSelectedPaths(new Set());
+    setAddMode('browser'); // Default to browser (safer, allows review before adding to context) // Default to context for files
+    browseDirectory('~');
+  }, [browseDirectory]);
+
+  // Close dialog
+  const handleCloseAddPathDialog = useCallback(() => {
+    setAddPathDialogOpen(false);
+    setSelectedPaths(new Set());
+    setBrowseEntries([]);
+  }, []);
+
+  // Handle path input submit
+  const handlePathInputSubmit = useCallback(() => {
+    if (pathInput.trim()) {
+      browseDirectory(pathInput.trim());
+    }
+  }, [pathInput, browseDirectory]);
+
+  // Handle path input keydown
+  const handlePathInputKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      handlePathInputSubmit();
+    }
+  }, [handlePathInputSubmit]);
+
+  // Toggle path selection
+  const togglePathSelection = useCallback((path: string) => {
+    setSelectedPaths(prev => {
+      const next = new Set(prev);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
+  }, []);
+  // Quick add single item
+  const handleQuickAdd = useCallback(async (path: string) => {
+    try {
+      const isDir = browseEntries.find(e => e.path === path)?.is_dir;
+      
+      const response = await fetch('/api/add-explicit-paths', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          paths: [path],
+          // Files always go directly to context
+          // Directories use the current addMode setting
+          add_to_context: isDir ? (addMode === 'context') : true
+        })
+      });
+
+
+      if (response.ok) {
+        message.success(`Added: ${path.split('/').pop()}`);
+        if (addMode === 'browser') {
+          window.dispatchEvent(new CustomEvent('refreshFolders'));
+        } else {
+          // For context mode, trigger context refresh
+          window.dispatchEvent(new CustomEvent('contextUpdated'));
+        }
+      } else {
+        const error = await response.json();
+        message.error(error.detail || 'Failed to add path');
+      }
+    } catch (error) {
+      console.error('Error adding path:', error);
+      message.error('Failed to add path');
+    }
+  }, [addMode, browseEntries]);
+
+  // Navigate up one directory
+  const handleNavigateUp = useCallback(() => {
+    const parentPath = browsePath.replace(/\/[^/]+\/?$/, '') || '/';
+    browseDirectory(parentPath);
+  }, [browsePath, browseDirectory]);
+
+  // Add selected paths
+  const handleAddSelectedPaths = useCallback(async () => {
+    if (selectedPaths.size === 0) {
+      message.warning('No items selected');
+      return;
+    }
+
+    // Check if any selected paths are directories
+    const selectedEntries = browseEntries.filter(e => selectedPaths.has(e.path));
+    const hasDirectories = selectedEntries.some(e => e.is_dir);
+    const onlyFiles = selectedEntries.every(e => !e.is_dir);
+
+    try {
+      const response = await fetch('/api/add-explicit-paths', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          paths: Array.from(selectedPaths),
+          // Files always go to context, directories respect addMode
+          add_to_context: onlyFiles ? true : (addMode === 'context')
+        })
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        message.success(`Added ${result.added_count || selectedPaths.size} path(s)`);
+        handleCloseAddPathDialog();
+        window.dispatchEvent(new CustomEvent('refreshFolders'));
+      } else {
+        const error = await response.json();
+        message.error(error.detail || 'Failed to add paths');
+      }
+    } catch (error) {
+      console.error('Error adding paths:', error);
+      message.error('Failed to add paths');
+    }
+  }, [selectedPaths, addMode, browseEntries, handleCloseAddPathDialog]);
+
   // Handle checkbox click
   // This function is crucial for selecting/deselecting folders and files
   const handleCheckboxClick = (nodeId, checked) => {
@@ -1132,16 +1306,25 @@ export const MUIFileExplorer = () => {
       </Box>
 
       <Box sx={{ mb: 1, flexShrink: 0 }}>
-        <Button
-          variant="outlined"
-          startIcon={<RefreshIcon />}
-          onClick={refreshFolders}
-          disabled={isRefreshing}
-          sx={{ mb: 1 }}
-          size="small"
-        >
-          {isRefreshing ? 'Refreshing...' : 'Refresh Files'}
-        </Button>
+        <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+          <Button
+            variant="outlined"
+            startIcon={<RefreshIcon />}
+            onClick={refreshFolders}
+            disabled={isRefreshing}
+            size="small"
+          >
+            {isRefreshing ? 'Refreshing...' : 'Refresh Files'}
+          </Button>
+          <Button
+            variant="outlined"
+            startIcon={<AddIcon />}
+            onClick={handleOpenAddPathDialog}
+            size="small"
+          >
+            Add Path
+          </Button>
+        </Box>
       </Box>
 
       <Box sx={{ flexGrow: 1, overflow: 'auto', minHeight: 0 }}>
@@ -1190,6 +1373,167 @@ export const MUIFileExplorer = () => {
           </Box>
         )}
       </Box>
+
+      {/* Add Path Dialog */}
+      <Dialog
+        open={addPathDialogOpen}
+        onClose={handleCloseAddPathDialog}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{ sx: { height: '70vh', maxHeight: 600 } }}
+      >
+        <DialogTitle sx={{ pb: 1 }}>Add Files</DialogTitle>
+        <DialogContent sx={{ p: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          {/* Path input bar */}
+          <Box sx={{ px: 2, py: 1.5, borderBottom: 1, borderColor: 'divider', display: 'flex', gap: 1, alignItems: 'center' }}>
+            <Typography variant="body2" sx={{ fontWeight: 500, flexShrink: 0 }}>Path:</Typography>
+            <TextField
+              size="small"
+              fullWidth
+              value={pathInput}
+              onChange={(e) => setPathInput(e.target.value)}
+              onKeyDown={handlePathInputKeyDown}
+              placeholder="/path/to/directory"
+              sx={{ 
+                '& .MuiOutlinedInput-root': { 
+                  fontFamily: 'monospace',
+                  fontSize: '0.875rem'
+                }
+              }}
+            />
+            <Button 
+              variant="contained" 
+              size="small" 
+              onClick={handlePathInputSubmit}
+              disabled={browseLoading}
+              sx={{ flexShrink: 0 }}
+            >
+              Go
+            </Button>
+          </Box>
+
+          {/* Directory listing */}
+          <Box sx={{ flex: 1, overflow: 'auto' }}>
+            {browseLoading ? (
+              <LinearProgress />
+            ) : (
+              <List dense disablePadding>
+                {/* Parent directory entry */}
+                {browsePath && browsePath !== '/' && (
+                  <ListItemButton onClick={handleNavigateUp} sx={{ borderBottom: 1, borderColor: 'divider' }}>
+                    <ListItemIcon sx={{ minWidth: 36 }}>
+                      <ArrowUpwardIcon fontSize="small" />
+                    </ListItemIcon>
+                    <ListItemText primary=".." secondary="Parent directory" />
+                  </ListItemButton>
+                )}
+                
+                {browseEntries.map((entry) => (
+                  <ListItemButton
+                    key={entry.path}
+                    selected={selectedPaths.has(entry.path)}
+                    onClick={() => {
+                      // Click to navigate into directory, or toggle selection for files
+                      entry.is_dir ? browseDirectory(entry.path) : togglePathSelection(entry.path);
+                    }}
+                    sx={{ pr: 1 }}
+                  >
+                    <ListItemIcon sx={{ minWidth: 36 }}>
+                      {entry.is_dir ? (
+                        <FolderIcon fontSize="small" sx={{ color: 'primary.main' }} />
+                      ) : (
+                        <InsertDriveFileIcon fontSize="small" sx={{ color: 'text.secondary' }} />
+                      )}
+                    </ListItemIcon>
+                    <ListItemText 
+                      primary={entry.name}
+                      primaryTypographyProps={{
+                        fontWeight: selectedPaths.has(entry.path) ? 600 : 400,
+                        color: selectedPaths.has(entry.path) ? 'primary.main' : 'text.primary'
+                      }}
+                      secondary={entry.is_dir ? (
+                        <Typography variant="caption" component="span" sx={{ fontSize: '0.7rem', opacity: 0.7 }}>
+                          Click to open • Click [+] to add directory
+                        </Typography>
+                      ) : undefined}
+                      secondaryTypographyProps={{
+                        component: 'div'
+                      }}
+                    />
+                    <IconButton
+                      size="small"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (entry.is_dir) {
+                          // For directories, toggle selection instead of quick add
+                          togglePathSelection(entry.path);
+                        } else {
+                          handleQuickAdd(entry.path);
+                        }
+                      }}
+                      title={`Add ${entry.name}`}
+                      sx={{ 
+                        opacity: 0.6, 
+                        '&:hover': { opacity: 1, color: 'primary.main' }
+                      }}
+                    >
+                      <AddIcon fontSize="small" />
+                    </IconButton>
+                  </ListItemButton>
+                ))}
+                
+                {browseEntries.length === 0 && !browseLoading && (
+                  <Typography variant="body2" color="text.secondary" sx={{ p: 3, textAlign: 'center' }}>
+                    Empty directory
+                  </Typography>
+                )}
+              </List>
+            )}
+          </Box>
+
+          {/* Add mode selection - only show if directories are selected */}
+          {(() => {
+            const selectedEntries = browseEntries.filter(e => selectedPaths.has(e.path));
+            const hasDirectories = selectedEntries.some(e => e.is_dir);
+            
+            if (!hasDirectories) return null;
+            
+            return (
+              <Box sx={{ px: 2, py: 1.5, borderTop: 1, borderColor: 'divider', bgcolor: 'action.hover' }}>
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                  What to do with selected directories?
+                </Typography>
+            <RadioGroup
+              row
+              value={addMode}
+              onChange={(e) => setAddMode(e.target.value as 'browser' | 'context')}
+            >
+              <FormControlLabel 
+                value="browser" 
+                control={<Radio size="small" />} 
+                label={<Typography variant="body2">Add directory to file browser</Typography>}
+              />
+              <FormControlLabel 
+                value="context" 
+                control={<Radio size="small" />} 
+                label={<Typography variant="body2">Add all child files directly to context</Typography>}
+              />
+            </RadioGroup>
+              </Box>
+            );
+          })()}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseAddPathDialog}>Cancel</Button>
+          <Button
+            onClick={handleAddSelectedPaths}
+            variant="contained"
+            disabled={selectedPaths.size === 0}
+          >
+            Add{selectedPaths.size > 0 ? ` (${selectedPaths.size})` : ''}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };
