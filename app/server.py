@@ -1628,11 +1628,22 @@ async def stream_chunks(body):
                 
                 # After streaming completes, validate any diffs
                 if accumulated_content and ENABLE_DIFF_VALIDATION:
+                    # Track events to yield after validation
+                    validation_events = []
+                    
+                    def send_sse_event(event_type: str, data: dict):
+                        """Collect SSE events during validation to yield later."""
+                        validation_events.append({"type": event_type, **data})
+                    
                     validation_feedback = validation_hook.validate_and_enhance(
                         content=accumulated_content,
                         model_messages=messages,
-                        send_event=None  # Don't send events, just get feedback
+                        send_event=send_sse_event
                     )
+                    
+                    # Yield any events that were collected during validation
+                    for event in validation_events:
+                        yield f"data: {json.dumps(event)}\n\n"
                     
                     # If validation failed
                     if validation_feedback:
