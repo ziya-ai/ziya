@@ -1,0 +1,23 @@
+--- a/frontend/src/components/MarkdownRenderer.tsx
++++ b/frontend/src/components/MarkdownRenderer.tsx
+@@ -5120,8 +5120,17 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
+
+                 // Replace tool blocks with markdown code blocks using a special lang tag
+                 toolBlocks.forEach(({ match, toolName, displayHeader, content }) => {
++                    // Check if content is wrapped in code fences and extract
++                    const codeFenceMatch = content.trim().match(/^```(\w+)?\n([\s\S]*?)\n```$/);
++                    if (codeFenceMatch) {
++                        const [, lang, innerContent] = codeFenceMatch;
++                        // Pass the language as metadata in the tool fence
++                        const langSuffix = lang ? `|lang:${lang}` : '';
++                        processedMarkdown = processedMarkdown.replace(
++                            match,
++                            `\`\`\`tool:${toolName}|${displayHeader}${langSuffix}\n${innerContent.trim()}\n\`\`\``
++                        );
++                    } else {
+                     processedMarkdown = processedMarkdown.replace(
+                         match,
+                         `\`\`\`tool:${toolName}|${displayHeader}\n${content}\n\`\`\``
+                     );
++                    }
+                 });
