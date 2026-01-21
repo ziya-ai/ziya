@@ -165,20 +165,11 @@ def format_model_feedback(
     Only called when there are failures.
     """
     feedback_parts = [
-        f"❌ DIFF VALIDATION FAILED for {file_path}:",
-        ""
+        f"The diff for {file_path} cannot be applied. Please provide a corrected diff."
     ]
     
-    # Report successful hunks (if any)
-    if succeeded:
-        feedback_parts.append(f"✅ Hunks {', '.join(map(str, succeeded))} - Applied successfully")
-    
-    # Report already applied hunks (if any)
-    if already_applied:
-        feedback_parts.append(f"ℹ️ Hunks {', '.join(map(str, already_applied))} - Already in file")
-    
-    # Report failed hunks with specific details
-    feedback_parts.append(f"\n❌ FAILED HUNKS (must regenerate):")
+    # Only report failed hunks
+    feedback_parts.append(f"\nFailed hunks:")
     for hunk_id in failed:
         hunk_status = hunk_details.get(str(hunk_id), {})
         stage = hunk_status.get("stage", "unknown")
@@ -191,19 +182,13 @@ def format_model_feedback(
             error_type = str(error_details)
             error_msg = ""
         
-        feedback_parts.append(f"  • Hunk #{hunk_id} (failed in {stage} stage):")
-        feedback_parts.append(f"    Error: {error_type}")
+        feedback_parts.append(f"- Hunk #{hunk_id}: {error_type}")
         if error_msg:
-            feedback_parts.append(f"    Details: {error_msg}")
+            feedback_parts.append(f"  ({error_msg})")
     
-    feedback_parts.extend([
-        "",
-        "🔧 REQUIRED FIXES:",
-        f"Regenerate ONLY hunks {', '.join(map(str, failed))} with:",
-        "  1. At least 5 context lines before and after each change",
-        "  2. Accurate line numbers from the current file state",
-        "  3. Complete hunk headers: @@ -old_start,old_count +new_start,new_count @@",
-        "  4. All context lines must exactly match the current file"
-    ])
+    feedback_parts.append(
+        f"\nRegenerate hunks {', '.join(map(str, failed))} with accurate line numbers "
+        f"and at least 5 context lines. Use the current file content above."
+    )
     
     return "\n".join(feedback_parts)
