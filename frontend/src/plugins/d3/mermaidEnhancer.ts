@@ -297,6 +297,11 @@ export function preprocessDefinition(definition: string, diagramType?: string, m
         const result = processor.process(processedDef, normalizedType);
         if (result) {
           const after = result.substring(0, 100);
+          if (before !== after && (before.includes('Root["') || after.includes('Root["'))) {
+            console.log(`🔍 PROCESSOR ${processor.name} (priority ${processor.priority}) changed Root node:`);
+            console.log('  Before:', before.match(/Root\[[^\]]*\]/)?.[0] || 'not found');
+            console.log('  After:', after.match(/Root\[[^\]]*\]/)?.[0] || 'not found');
+          }
           if (before !== after && (after.includes('graph -->') || after.includes('TB -->'))) {
             console.error(`🔥 CORRUPTION DETECTED by ${processor.name}!`);
             console.error('Before:', before);
@@ -354,12 +359,12 @@ export function initMermaidEnhancer(): void {
       }
 
       console.log('🔍 CLASS-DOT-FIX: Removing dots from class names');
-      
+
       let result = definition;
-      
+
       // Find all class definitions with dots and convert dots to underscores
       result = result.replace(
-        /class\s+([\w.]+)(\s*\{)/g, 
+        /class\s+([\w.]+)(\s*\{)/g,
         (match, className, bracket) => {
           if (className.includes('.')) {
             const safeName = className.replace(/\./g, '_');
@@ -369,7 +374,7 @@ export function initMermaidEnhancer(): void {
           return match;
         }
       );
-      
+
       // Also fix any references to dotted class names in relationships
       result = result.replace(
         /(^|\s)([\w.]+)(\s+(?:--|\.\.>|<\.\.|-->|<--|==|<==|\|>|<\||<\|--|-->\||\*--|o--|\.\.|--|<>|>|<))/gm,
@@ -382,7 +387,7 @@ export function initMermaidEnhancer(): void {
           return match;
         }
       );
-      
+
       console.log('🔍 CLASS-DOT-FIX: Processing complete');
       return result;
     }, {
@@ -437,69 +442,6 @@ export function initMermaidEnhancer(): void {
     }, {
     name: 'square-bracket-label-fix',
     priority: 650, // Very high priority to run before other label fixes
-    diagramTypes: ['flowchart', 'graph']
-  });
-
-  // Add a preprocessor to fix quotes and parentheses in node labels - HIGHEST PRIORITY
-  registerPreprocessor(
-    (definition: string, diagramType: string): string => {
-      if (diagramType !== 'flowchart' && diagramType !== 'graph' &&
-        !definition.trim().startsWith('flowchart') && !definition.trim().startsWith('graph')) {
-        return definition;
-      }
-
-      console.log('🔍 NODE-QUOTE-FIX: Processing node labels with quotes and parentheses');
-
-      let result = definition;
-      
-      // CRITICAL: Don't process Mermaid special shape syntax
-      // These have multi-character delimiters that must be preserved:
-      // [[...]]  = subroutine
-      // ((...))  = double circle
-      // (((...))) = triple circle  
-      // ([...])  = stadium
-      // [(...)   = cylindrical
-      // {{...}}  = diamond/decision
-      
-      // Pre-scan: find all nodes with special syntax and skip them
-      const specialShapePattern = /(\w+)(\[\[|\(\(|\(\(\(|\(\[|\[\(|\{\{)/g;
-      const specialNodes = new Set<string>();
-      let match;
-      while ((match = specialShapePattern.exec(definition)) !== null) {
-        specialNodes.add(match[1]); // Add the node ID
-      }
-      
-      // Process only simple single-delimiter nodes: A[text], B(text), C{text}
-      result = definition.replace(/(\w+)([\{\[\(])([^\}\]\)]*?)([\}\]\)])/g, (match, nodeId, openBracket, content, closeBracket) => {
-        // Skip nodes that use special multi-character delimiters
-        if (specialNodes.has(nodeId)) {
-          console.log(`🔍 NODE-QUOTE-FIX: Skipping special shape node: ${nodeId}`);
-          return match;
-        }
-        
-        let processedContent = content;
-
-        // Remove quotes and replace with safe alternatives
-        processedContent = processedContent.replace(/"/g, '');
-
-        // Replace parentheses with dashes for better readability
-        processedContent = processedContent.replace(/\(/g, '- ').replace(/\)/g, '');
-
-        // Clean up extra spaces
-        processedContent = processedContent.replace(/\s+/g, ' ').trim();
-
-        console.log(`🔍 NODE-QUOTE-FIX: Fixed node ${nodeId}: "${content}" -> "${processedContent}"`);
-        return `${nodeId}${openBracket}${processedContent}${closeBracket}`;
-      });
-
-      // Also remove semicolons at the end of lines that cause parsing issues
-      result = result.replace(/;(\s*$)/gm, '$1');
-
-      console.log('🔍 NODE-QUOTE-FIX: Processing complete');
-      return result;
-    }, {
-    name: 'node-quote-parentheses-fix',
-    priority: 600, // Very high priority to run before other fixes
     diagramTypes: ['flowchart', 'graph']
   });
 
@@ -994,7 +936,7 @@ export function initMermaidEnhancer(): void {
       return result;
     }, {
     name: 'naming-conflict-fix',
-    priority: 480, // Very high priority to run before other fixes
+    priority: 700, // Very high priority to run before other fixes
     diagramTypes: ['flowchart', 'graph']
   });
 
@@ -1484,11 +1426,21 @@ export function initMermaidEnhancer(): void {
     diagramTypes: ['classdiagram']
   });
 
-  // Add a quote cleanup preprocessor that runs first to fix quote multiplication
+  // CONSOLIDATED: Fix all quote-related issues in one pass - HIGHEST PRIORITY FOR FLOWCHARTS
   registerPreprocessor(
     (definition: string, diagramType: string): string => {
       if (diagramType !== 'flowchart' && diagramType !== 'graph' && !definition.trim().startsWith('flowchart') && !definition.trim().startsWith('graph')) {
         return definition;
+      }
+
+      console.log('🔍 QUOTE-CONSOLIDATOR: Processing all quote and bracket issues');
+
+      // CRITICAL: Pre-scan for special shape syntax that must be preserved
+      const specialShapePattern = /(\w+)(\[\[|\(\(|\(\(\(|\(\[|\[\(|\{\{)/g;
+      const specialNodes = new Set<string>();
+      let match;
+      while ((match = specialShapePattern.exec(definition)) !== null) {
+        specialNodes.add(match[1]);
       }
 
       const lines = definition.split('\n');
@@ -1496,65 +1448,73 @@ export function initMermaidEnhancer(): void {
 
       for (let i = 0; i < lines.length; i++) {
         let currentLine = lines[i];
-        // Regex to capture:
-        // 1: leading whitespace, 2: nodeId, 3: openBracket (paren or square),
-        // 4: opening quote (optional), 5: content, 6: closing quote (matches opening),
-        // 7: closeBracket (matches openBracket), 8: any trailing characters on the line
+        const trimmed = currentLine.trim();
 
-        // Skip subgraph lines - they don't need node termination fixes
-        if (currentLine.trim().startsWith('subgraph') || currentLine.trim() === 'end') {
+        // CRITICAL: Skip subgraph lines entirely - they have different syntax rules
+        if (trimmed.startsWith('subgraph ') || trimmed === 'end') {
           fixedLines.push(currentLine);
           continue;
         }
 
-        const nodeDefRegex = /^(\s*)(\w+)\s*(\[|\()(["']?)([\s\S]*?)(\4)(\]|\))(\s*.*)$/;
-        const nodeDefMatch = currentLine.match(nodeDefRegex);
+        // Process all node definitions in this line
+        let processedLine = currentLine;
 
-        if (nodeDefMatch) {
-          const [,
-            leadingSpace,
-            nodeId,
-            openBracketOrParen,
-            openingQuote,
-            nodeContent,
-            closingQuote, // This should match openingQuote due to \4 in regex
-            closeBracketOrParen,
-            trailingCharacters // All characters after the closing bracket/paren
-          ] = nodeDefMatch;
-
-          let mainPart = `${leadingSpace}${nodeId}${openBracketOrParen}`;
-          let contentPart = nodeContent;
-
-          if (openingQuote && closingQuote) { // If it was quoted
-            if (contentPart.trim() === "") {
-              contentPart = " "; // Replace "" or '' with " "
-            }
-            mainPart += `${openingQuote}${contentPart}${closingQuote}`;
-          } else { // Unquoted content
-            mainPart += contentPart;
-          }
-          mainPart += `${closeBracketOrParen}`;
-
-          let finalLine = mainPart;
-          const originalTrailingSyntax = trailingCharacters.trim();
-
-          if (originalTrailingSyntax) {
-            finalLine += trailingCharacters;
+        processedLine = processedLine.replace(/(\w+)([\{\[\(])([^\}\]\)]*?)([\}\]\)])/g, (match, nodeId, openBracket, content, closeBracket) => {
+          // Skip special shape nodes
+          if (specialNodes.has(nodeId)) {
+            return match;
           }
 
-          const needsTerminationFix = !originalTrailingSyntax ||
-            (!originalTrailingSyntax.startsWith(':::') &&
-              !originalTrailingSyntax.match(/^(-->|---|~~~|\.-|\.\.-|o--|--o|x--)/));
+          // Validate bracket matching
+          const validPairs = { '[': ']', '(': ')', '{': '}' };
+          if (validPairs[openBracket] !== closeBracket) {
+            return match;
+          }
 
-          fixedLines.push(finalLine);
-        } else {
-          fixedLines.push(currentLine);
-        }
+          let processedContent = content;
+
+          // STEP 1: Clean up quote multiplication (""text"" → text)
+          if (processedContent.match(/^"{2,}.*"{2,}$/)) {
+            processedContent = processedContent.replace(/^"+|"+$/g, '');
+            console.log(`🔍 QUOTE-CONSOLIDATOR: Cleaned doubled quotes from ${nodeId}`);
+          }
+
+          // STEP 2: Remove problematic internal quotes only (parentheses are valid in Mermaid)
+          processedContent = processedContent.replace(/"/g, '');
+          processedContent = processedContent.replace(/\s{2,}/g, ' ').trim();
+
+          // STEP 3: Handle empty content
+          if (!processedContent || processedContent.trim() === '') {
+            processedContent = ' ';
+          }
+
+          // STEP 4: Determine if we need quotes
+          const needsQuotes = /[:<>\/\n&]|<br/.test(processedContent);
+
+          // STEP 5: Build final syntax with exactly ONE layer of quotes if needed
+          if (needsQuotes) {
+            return `${nodeId}${openBracket}"${processedContent}"${closeBracket}`;
+          } else {
+            return `${nodeId}${openBracket}${processedContent}${closeBracket}`;
+          }
+        });
+
+        fixedLines.push(processedLine);
       }
-      return fixedLines.join('\n');
+
+      let result = fixedLines.join('\n');
+
+      // Remove semicolons at end of lines
+      result = result.replace(/;(\s*$)/gm, '$1');
+
+      // DEBUG: Log what quote-consolidator is actually outputting
+      console.log('🔍 QUOTE-CONSOLIDATOR OUTPUT:', result.substring(0, 150));
+
+      console.log('🔍 QUOTE-CONSOLIDATOR: Processing complete');
+      return result;
     }, {
-    name: 'flowchart-node-termination-fix',
-    priority: 185,
+    name: 'flowchart-quote-consolidator',
+    priority: 650, // Very high priority - run BEFORE special-char-in-node-label-fix (135)
     diagramTypes: ['flowchart', 'graph']
   });
 
@@ -1631,7 +1591,7 @@ export function initMermaidEnhancer(): void {
     priority: 195, // Slightly different priority to avoid conflicts
     diagramTypes: ['flowchart', 'graph']
   });
-  // Add a quote cleanup preprocessor that runs first to fix quote multiplication
+  // Fix malformed edge labels with embedded arrows  
   registerPreprocessor((def: string, type: string) => {
     if (type !== 'flowchart' && !def.startsWith('flowchart ') && !def.startsWith('graph ')) {
       return def;
@@ -1644,77 +1604,6 @@ export function initMermaidEnhancer(): void {
     finalDef = finalDef.replace(/(\w+)\s*-->\s*(\w+)\{([^}]*?)-->\|([^|]+)\|\s*(\w+)\[/g,
       '$1 --> $2{$3}\n    $2 -->|$4| $5[');
 
-    // Fix diamond nodes with embedded arrows: "E{Attempts -->|Yes|" 
-    finalDef = finalDef.replace(/(\w+)\{([^}]*?)-->\|([^|]+)\|/g, '$1{$2}\n    $1 -->|$3|');
-
-    // Fix incomplete diamond syntax
-    finalDef = finalDef.replace(/(\w+)\{([^}]*?)\s+\|([^|]+)\|\s*(\w+)\[/g, '$1{$2}\n    $1 -->|$3| $4[');
-
-    return finalDef;
-  }, {
-    name: 'flowchart-edge-label-fix',
-    priority: 210,
-    diagramTypes: ['flowchart', 'graph']
-  });
-
-  // Add a quote cleanup preprocessor that runs first to fix quote multiplication
-  registerPreprocessor((def: string, type: string) => {
-    if (type !== 'flowchart' && !def.startsWith('flowchart ') && !def.startsWith('graph ')) {
-      return def;
-    }
-
-    // CRITICAL: Fix subgraph names with parentheses - they must be quoted
-    let finalDef = def.replace(/subgraph\s+([^"\n{]+\([^)]*\)[^"\n{]*)/g, 'subgraph "$1"');
-
-    console.log('Quote cleanup - before:', finalDef.substring(0, 200));
-
-    // Fix quote multiplication by cleaning up malformed quotes
-    finalDef = finalDef.replace(/(\w+)(\s*)\[([\s\S]*?)\]/g, (match, nodeId, spacing, content) => {
-      // Skip subgraph display names - they should be handled by style-subgraph-fix
-      // Pattern: subgraph Identifier ["Display Name"]
-      const beforeMatch = finalDef.substring(Math.max(0, finalDef.indexOf(match) - 50), finalDef.indexOf(match));
-      if (beforeMatch.includes('subgraph') && spacing.length === 1) {
-        console.log(`Skipping subgraph display name: ${nodeId}${spacing}[${content}]`);
-        return match; // Don't process subgraph display names
-      }
-
-      // Only process actual node definitions, not subgraph display names
-      const actualNodeId = nodeId + spacing;
-
-      // Skip if this is already properly quoted
-      if (content.match(/^"[^"]*"$/)) {
-        return match;
-      }
-
-      // If content has multiple quotes, excessive quotes, or malformed quotes, clean it up
-      if (content.includes('""') || content.match(/"{2,}/) || content.includes('\\"') || content.match(/^".*".*"/)) {
-        // Extract the actual text content by removing all quote variations and trailing backslashes
-        const cleanContent = content.replace(/^"+|"+$/g, '').replace(/\\"/g, '"').replace(/"{2,}/g, '"').replace(/\\+$/g, '');
-        console.log(`Cleaning quotes for ${actualNodeId}: "${content}" -> "${cleanContent}"`);
-        return `${actualNodeId}["${cleanContent}"]`;
-      }
-      return match;
-    });
-
-    console.log('Quote cleanup - after:', finalDef.substring(0, 200));
-    return finalDef;
-  }, {
-    name: 'quote-cleanup-flowchart',
-    priority: 200, // High priority to run first
-    diagramTypes: ['flowchart', 'graph']
-  });
-
-  // Add a preprocessor specifically for subgraph syntax
-  registerPreprocessor((def: string, type: string) => {
-    if (type !== 'flowchart' && !def.startsWith('flowchart') && !def.startsWith('graph')) {
-      return def;
-    }
-
-    let finalDef = def;
-
-    // Fix class assignments that use subgraph-* syntax
-    // Change from: class ServerStartup subgraph-blue
-    // To: class ServerStartup subgraph_blue
     finalDef = finalDef.replace(/class\s+(\w+)\s+subgraph-(\w+)/g, 'class $1 subgraph_$2');
 
     // Also fix classDef with subgraph prefix
@@ -1748,87 +1637,70 @@ export function initMermaidEnhancer(): void {
 
     return finalDef;
   }, {
-    name: 'subgraph-syntax-fix',
+    name: 'flowchart-edge-label-fix',
     priority: 130,
     diagramTypes: ['flowchart', 'graph']
   });
 
-  registerPreprocessor((def: string, type: string): string => {
-    if (type !== 'flowchart' && !def.startsWith('flowchart') && !def.startsWith('graph')) {
+  // REDUCED: Only add quotes when truly necessary, don't re-quote already quoted content
+  registerPreprocessor((def: string, type: string) => {
+    if (type !== 'flowchart' && !def.startsWith('flowchart ') && !def.startsWith('graph')) {
       return def;
     }
 
+    console.log('🔍 SPECIAL-CHAR-GUARD: Checking for unquoted special characters');
+
     let finalDef = def;
 
-    console.log('Mixed node shapes - processing:', finalDef.substring(0, 200));
-
-    // Handle stadium shapes ([...]) separately before processing other shapes
-    // Stadium shapes have TWO opening chars and TWO closing chars
-    finalDef = finalDef.replace(/(\w+)\(\[([\s\S]*?)\]\)/g, (match, nodeId, content) => {
-      // Skip if already properly quoted
-      if (content.match(/^"[\s\S]*"$/)) {
-        return match;
-      }
-
-      // Quote if content has special characters
-      if (/[()\/\n<>&:\.,']/.test(content) || content.includes('<br>')) {
-        const escapedContent = content.replace(/"/g, '#quot;').replace(/\n/g, '<br/>');
-        console.log(`Adding quotes for stadium shape: ${match} -> ${nodeId}(["${escapedContent}"])`);
-        return `${nodeId}(["${escapedContent}"])`;
-      }
-      return match;
-    });
-
-    // Now handle regular shapes (single bracket/paren)
     // CRITICAL: Skip double circles ((...)) and triple circles (((...))) with negative lookaheads
-    finalDef = finalDef.replace(/(\w+)(\[|\()(?!\[)(?!\()([\s\S]*?)(\]|\))(?!\])(?!\))/g, (match, nodeId, open, content, close) => {
-      // Skip subgraph display names - they should not be modified
+    finalDef = finalDef.replace(/(\w+)([\[\(])(?!\[|\()([^\]\)]+)([\]\)])(?!\]|\))/g, (match, nodeId, open, content, close) => {
+      // Skip subgraph display names
       const beforeMatch = finalDef.substring(Math.max(0, finalDef.indexOf(match) - 50), finalDef.indexOf(match));
       if (beforeMatch.includes('subgraph')) {
-        console.log(`Skipping subgraph display name in special-char fix: ${nodeId}${open}${content}${close}`);
         return match;
       }
 
-      // Fix malformed bracket/parenthesis combinations
-      if ((open === '(' && close === ']') || (open === '[' && close === ')')) {
-        console.log(`Fixing malformed brackets: ${match}`);
-        if (open === '(' && close === ']') {
-          return `${nodeId}(${content})`;
+      // CRITICAL: Skip content that's already properly quoted
+      if (content.match(/^"[^"]*"$/)) {
+        console.log(`🔍 SPECIAL-CHAR-GUARD: Already quoted, skipping: ${nodeId}${open}${content}${close}`);
+        return match;
+      }
+
+      // Check for double-quoted content (from earlier bug)
+      if (content.match(/^"{2,}.*"{2,}$/)) {
+        // CRITICAL: Check if this is on a subgraph line
+        const lineStart = finalDef.lastIndexOf('\n', finalDef.indexOf(match)) + 1;
+        const currentLine = finalDef.substring(lineStart, finalDef.indexOf(match) + match.length);
+
+        if (beforeMatch.includes('subgraph')) {
+          console.log(`Skipping subgraph display name in special-char fix: ${nodeId}${open}${content}${close}`);
+          return match;
         }
+        console.log(`🔍 SPECIAL-CHAR-GUARD: ERROR - doubled quotes found after consolidator! ${match}`);
+        return match; // This should never happen if consolidator ran first
+      }
+
+      // Fix bracket mismatches
+      if ((open === '(' && close === ']') || (open === '[' && close === ')')) {
         return `${nodeId}[${content}]`;
       }
 
-      // Ensure open and close brackets match
-      if ((open === '[' && close !== ']') || (open === '(' && close !== ')')) {
-        console.log(`Malformed brackets in special-char fix: ${match}`);
-        return match;
-      }
-
-      // Skip if already properly quoted - check for quotes at start AND end
-      // Also handle case where quotes might have been added by earlier processors
-      const hasQuotes = (content.startsWith('"') && content.endsWith('"')) ||
-        (content.startsWith('""') && content.endsWith('""'));
-
-      if (hasQuotes) {
-        console.log(`Skipping already quoted content: ${nodeId}${open}${content}${close}`);
-        return match;
-      }
-
-      // Quote if content has special characters, newlines, or <br>
-      if (/[()\/\n<>&:\.,']/.test(content) || content.includes('<br>')) {
+      // Only add quotes if content has special chars AND isn't already quoted
+      const needsQuotes = /[:<>\/\n&]|<br/.test(content);
+      if (needsQuotes && !content.startsWith('"')) {
         const escapedContent = content.replace(/"/g, '#quot;').replace(/\n/g, '<br/>');
-        console.log(`Adding quotes for special chars: ${nodeId}${open}${content}${close} -> ${nodeId}${open}"${escapedContent}"${close}`);
+        console.log(`🔍 SPECIAL-CHAR-GUARD: Adding quotes: ${nodeId}${open}${content}${close}`);
         return `${nodeId}${open}"${escapedContent}"${close}`;
       }
+
       return match;
     });
 
-    console.log('Mixed node shapes - result:', finalDef.substring(0, 200));
-    console.log('Final processed definition length:', finalDef.length);
+    console.log('🔍 SPECIAL-CHAR-GUARD: Processing complete');
     return finalDef;
   }, {
-    name: 'special-char-in-node-label-fix',
-    priority: 135,
+    name: 'special-char-guard',
+    priority: 135, // MUST run AFTER quote-consolidator (650)
     diagramTypes: ['flowchart', 'graph']
   });
 
@@ -2676,26 +2548,26 @@ export function initMermaidEnhancer(): void {
       for (const line of lines) {
         let fixedLine = line;
         const trimmedLine = line.trim();
-        
+
         // Track if we're in the participant declaration section
         if (trimmedLine.startsWith('sequenceDiagram')) {
           inParticipantSection = true;
         } else if (inParticipantSection && trimmedLine && !trimmedLine.startsWith('participant')) {
           inParticipantSection = false;
         }
-        
+
         // Skip excessive blank lines after participant declarations
         if (inParticipantSection && trimmedLine === '' && previousLineWasBlank) {
           continue; // Skip consecutive blank lines in participant section
         }
-        
+
         previousLineWasBlank = (trimmedLine === '');
 
         // Skip excessive blank lines after participant declarations
         if (!inParticipantSection && trimmedLine === '' && previousLineWasBlank) {
           continue; // Skip consecutive blank lines anywhere in sequence diagrams
         }
-        
+
         previousLineWasBlank = (trimmedLine === '');
 
         // Fix participant declarations with special characters
@@ -2727,14 +2599,14 @@ export function initMermaidEnhancer(): void {
       if (!definition.trim().startsWith('packet-beta')) {
         return definition;
       }
-      
+
       console.log('🔍 PACKET-BETA-CHECK: Detected packet-beta diagram');
       console.log('🔍 PACKET-BETA-CHECK: Converting to flowchart alternative');
-      
+
       // Convert packet-beta to a flowchart showing the data structure
       const lines = definition.split('\n').filter(line => line.trim());
       const title = lines.find(line => line.trim().startsWith('title'))?.replace(/^title\s+"?(.+?)"?\s*$/, '$1') || 'Data Structure';
-      
+
       const fields = lines
         .filter(line => line.trim().match(/^\d+-\d+:/))
         .map(line => {
@@ -2745,11 +2617,11 @@ export function initMermaidEnhancer(): void {
           return null;
         })
         .filter(f => f !== null);
-      
+
       // Build flowchart alternative
       let flowchart = `graph TD\n`;
       flowchart += `    Title["${title}"]\n`;
-      
+
       fields.forEach((field, idx) => {
         const nodeId = `F${idx}`;
         flowchart += `    ${nodeId}["Bits ${field.range}: ${field.label}"]\n`;
@@ -2759,14 +2631,14 @@ export function initMermaidEnhancer(): void {
           flowchart += `    F${idx - 1} --> ${nodeId}\n`;
         }
       });
-      
+
       flowchart += `\n    style Title fill:#ffd700,stroke:#ff8c00,stroke-width:3px\n`;
       fields.forEach((_, idx) => {
         const colors = ['#e1bee7', '#bbdefb', '#c8e6c9', '#ffccbc', '#f8bbd0', '#ffe0b2', '#b2dfdb', '#d1c4e9'];
         const color = colors[idx % colors.length];
         flowchart += `    style F${idx} fill:${color},stroke:#333,stroke-width:2px\n`;
       });
-      
+
       console.log('🔍 PACKET-BETA-CHECK: Converted to flowchart');
       return flowchart;
     },
@@ -2795,31 +2667,31 @@ export function initMermaidEnhancer(): void {
     const processedLines = lines.map((line, index) => {
       // Never modify the first line (diagram type declaration)
       if (index === 0) return line;
-      
+
       // Split by whitespace and check if we have exactly 4 words
       const trimmed = line.trim();
       const words = trimmed.split(/\s+/).filter(w => w.length > 0);
-      
+
       if (words.length !== 4) return line;
-      
+
       const [w1, w2, w3, w4] = words;
       const indent = line.match(/^(\s*)/)?.[1] || '';
-      
+
       // Don't transform subgraph declarations or Mermaid keywords
       const keywords = ['subgraph', 'end', 'direction', 'style', 'class', 'click', 'linkStyle'];
       if (keywords.includes(w1)) {
         return line;
       }
-      
+
       // Transform incomplete node connections (4 bare words with no arrows/brackets)
       // Only if none of the words contain special Mermaid syntax
       if (words.some(w => /[[\]{}()<>|:;,."'`~!@#$%^&*=+\\/-]/.test(w))) {
         return line;
       }
-      
+
       return `${indent}${w1} --> ${w2}\n    ${w2} --> ${w3}\n    ${w3} --> ${w4}`;
     });
-    
+
     return processedLines.join('\n');
   }, {
     name: 'incomplete-connection-fix',
@@ -2879,21 +2751,6 @@ export function initMermaidEnhancer(): void {
   }, {
     name: 'classdef-quotes-fix',
     priority: 110,
-    diagramTypes: ['*']
-  });
-
-  // Register a preprocessor to handle slashes in node labels
-  registerPreprocessor((def: string, type: string) => {
-    // Handle slashes in node labels by adding quotes
-    let finalDef = def;
-
-    // Fix nodes with slashes by adding quotes
-    finalDef = finalDef.replace(/\[([^\]]*\/[^\]]*)\]/g, '["$1"]');
-
-    return finalDef;
-  }, {
-    name: 'node-slash-fix',
-    priority: 95,
     diagramTypes: ['*']
   });
 
@@ -2964,12 +2821,6 @@ export function initMermaidEnhancer(): void {
 
     // Specifically handle [DONE] text which causes parsing issues
     processed = processed.replace(/\[DONE\]/g, '"DONE"');
-
-    // Fix issues with square brackets in node text
-    processed = processed.replace(/(\w+)\[([^\]]+)\]/g, (match, nodeName, nodeText) => {
-      // Only add quotes if not already quoted
-      return nodeText.includes('"') ? `${nodeName}[${nodeText}]` : `${nodeName}["${nodeText}"]`;
-    });
 
     return processed;
   }, {
@@ -3120,19 +2971,19 @@ export function initMermaidEnhancer(): void {
  * @param isDarkMode - Whether dark mode is active (applies appropriate colors for each mode)
  */
 export function enhancePacketDarkMode(svgElement: SVGElement, isDarkMode: boolean): void {
-  
+
   console.log('🎨 PACKET-DARK-MODE: SVG element check:', {
     tagName: svgElement.tagName,
     id: svgElement.id,
     hasParent: !!svgElement.parentElement
   });
   console.log(`🎨 PACKET-MODE: Enhancing packet diagram visibility for ${isDarkMode ? 'DARK' : 'LIGHT'} mode`);
-  
+
   // Enhance all rectangles (packet fields) - make them lighter and more visible
   const rects = svgElement.querySelectorAll('rect');
   console.log(`🎨 PACKET-DARK-MODE: Found ${rects.length} rectangles`);
   console.log(`🎨 PACKET-DARK-MODE: First rect fill before: ${rects[0]?.getAttribute('fill')}`);
-  
+
   rects.forEach((rect) => {
     // Use inline styles with !important to override CSS rules - different colors per mode
     if (isDarkMode) {
@@ -3144,14 +2995,14 @@ export function enhancePacketDarkMode(svgElement: SVGElement, isDarkMode: boolea
     }
     (rect as SVGElement).style.setProperty('stroke-width', '2', 'important');
   });
-  
+
   console.log(`🎨 PACKET-DARK-MODE: First rect fill after: ${rects[0]?.getAttribute('fill')}`);
-  
+
   // CRITICAL: Packet diagrams use regular SVG text elements (not foreignObject)
   // CSS rules like .packetLabel override attributes, so we need inline styles with !important
   const textElements = svgElement.querySelectorAll('text');
   console.log(`🎨 PACKET-DARK-MODE: Found ${textElements.length} SVG text elements`);
-  
+
   textElements.forEach(textEl => {
     // Use inline style with !important to override .packetLabel CSS - different colors per mode
     if (isDarkMode) {
@@ -3161,7 +3012,7 @@ export function enhancePacketDarkMode(svgElement: SVGElement, isDarkMode: boolea
     }
     (textEl as SVGElement).style.setProperty('stroke', 'none', 'important');
   });
-  
+
   console.log('🎨 PACKET-DARK-MODE: Enhancement complete');
 }
 
@@ -3535,7 +3386,6 @@ export default function initMermaidSupport(mermaidInstance?: any): void {
     diagramTypes: ['classdiagram']
   });
   */
-
   registerPreprocessor(
     (definition: string, diagramType: string) => {
       if (diagramType.toLowerCase() !== 'classdiagram' && !definition.trim().startsWith('classDiagram')) {
