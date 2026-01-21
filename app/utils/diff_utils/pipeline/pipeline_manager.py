@@ -44,9 +44,7 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
     Returns:
         A dictionary with the result of the pipeline
     """
-    logger.info("Starting diff application pipeline...")
-    logger.debug("Original diff content:")
-    logger.debug(git_diff)
+    logger.debug(f"Starting diff pipeline for {file_path}")
     
     # Initialize the pipeline
     pipeline = DiffPipeline(file_path, git_diff)
@@ -56,7 +54,6 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
         request_id = str(uuid.uuid4())
 
     pipeline.result.request_id = request_id
-    logger.info(f"Pipeline initialized with request ID: {request_id}")
     pipeline.update_stage(PipelineStage.INIT)
     
     # Split combined diffs if present
@@ -377,21 +374,24 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
         pipeline.complete()
     
     # Add detailed debug logging about hunk statuses
-    logger.info("=== PIPELINE COMPLETION SUMMARY ===")
-    logger.info(f"File: {file_path}")
-    logger.info(f"Total hunks: {len(pipeline.result.hunks)}")
-    logger.info(f"Succeeded hunks: {pipeline.result.succeeded_hunks}")
-    logger.info(f"Failed hunks: {pipeline.result.failed_hunks}")
-    logger.info(f"Already applied hunks: {pipeline.result.already_applied_hunks}")
-    logger.info(f"Pending hunks: {pipeline.result.pending_hunks}")
-    logger.info(f"Changes written: {pipeline.result.changes_written}")
-    
-    # Log detailed status for each hunk
-    logger.info("=== DETAILED HUNK STATUS ===")
-    for hunk_id, tracker in pipeline.result.hunks.items():
-        logger.info(f"Hunk #{hunk_id}: Status={tracker.status.value}, Stage={tracker.current_stage.value}")
-        if tracker.error_details:
-            logger.info(f"  Error details: {tracker.error_details}")
+    # Only log detailed summary if there were failures
+    if pipeline.result.failed_hunks:
+        logger.info("=== PIPELINE COMPLETION SUMMARY ===")
+        logger.info(f"File: {file_path}")
+        logger.info(f"Total hunks: {len(pipeline.result.hunks)}")
+        logger.info(f"Succeeded hunks: {pipeline.result.succeeded_hunks}")
+        logger.info(f"Failed hunks: {pipeline.result.failed_hunks}")
+        logger.info(f"Already applied hunks: {pipeline.result.already_applied_hunks}")
+        
+        # Log detailed status for failed hunks only
+        logger.info("=== FAILED HUNK DETAILS ===")
+        for hunk_id, tracker in pipeline.result.hunks.items():
+            if tracker.status == HunkStatus.FAILED:
+                logger.info(f"Hunk #{hunk_id}: Stage={tracker.current_stage.value}")
+                if tracker.error_details:
+                    logger.info(f"  Error: {tracker.error_details}")
+    else:
+        logger.debug(f"Pipeline complete: {len(pipeline.result.succeeded_hunks)} succeeded, {len(pipeline.result.already_applied_hunks)} already applied")
     
     # Get the final result dictionary directly from the PipelineResult object
     # This dictionary now includes the correctly determined status and message
