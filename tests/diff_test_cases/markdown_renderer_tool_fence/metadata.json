@@ -1,0 +1,5 @@
+{
+  "description": "Test handling of malformed diff with incomplete template literal line. The diff has a line with 'matchName}|...' instead of the full template literal. Currently the diff application handles this gracefully by applying correctly, but in production this malformed diff causes incorrect insertion after the closing brace.",
+  "tags": ["malformed-diff", "template-literal", "control-flow"],
+  "target_file": "MarkdownRenderer.tsx"
+}
