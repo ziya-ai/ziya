@@ -1,6 +1,6 @@
 {
   "name": "frontend",
-  "version": "0.3.14",
+  "version": "0.4.0",
   "private": true,
   "engines": {
     "node": ">=20.0.0",
@@ -68,6 +68,7 @@
     "@craco/craco": "^7.1.0",
     "@eslint/js": "^9.38.0",
     "@types/prismjs": "^1.26.5",
+    "baseline-browser-mapping": "^2.9.16",
     "eslint": "^8.57.1",
     "eslint-plugin-react": "^7.37.5",
     "globals": "^16.4.0",
