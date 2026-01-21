@@ -28,6 +28,7 @@ class DiffValidationHook:
         self.auto_regenerate = auto_regenerate
         self.current_context: Set[str] = set(current_context or [])
         self.added_files: List[str] = []
+        self.last_validated_file: Optional[str] = None
         
     def detect_completed_diff(self, content: str) -> Optional[Dict[str, Any]]:
         """
@@ -124,6 +125,9 @@ class DiffValidationHook:
         
         self.validated_diffs[diff_key] = True
         
+        # Track the file for error messages
+        self.last_validated_file = file_path
+        
         logger.info(f"🔍 Validating completed diff for {file_path}")
         
         logger.info(f"🔍 VALIDATION_HOOK: Diff content length: {len(diff_content)}")
@@ -135,6 +139,9 @@ class DiffValidationHook:
         
         try:
             validation_result = validate_diff_with_full_pipeline(diff_content, file_path)
+            
+            # Initialize variables at function scope
+            context_was_enhanced = False
             
             # Check if ANY hunks failed
             has_failures = len(validation_result["failed_hunks"]) > 0
@@ -149,7 +156,6 @@ class DiffValidationHook:
                 
                 # Check if file is in current context
                 file_in_context = self.is_file_in_context(file_path)
-                context_was_enhanced = False
                 
                 if not file_in_context:
                     logger.info(f"📂 File {file_path} not in context, adding automatically")
@@ -173,48 +179,32 @@ class DiffValidationHook:
                         self.added_files.append(file_path)
                         self.current_context.add(file_path)
                         context_was_enhanced = True
-                        
                         logger.info(f"✅ Added {file_path} to model context ({len(file_content)} chars)")
                 
             # Notify frontend to sync UI
             if send_event:
-                    send_event("diff_regeneration_requested", {
-                        "file_path": file_path,
-                        "status": validation_result["status"],
-                        "failed_hunks": validation_result["failed_hunks"],
-                        "succeeded_hunks": validation_result["succeeded_hunks"],
-                        "already_applied_hunks": validation_result["already_applied_hunks"],
-                        "hunk_details": validation_result["hunk_details"],
-                        "total_hunks": validation_result["total_hunks"],
-                        "context_enhanced": context_was_enhanced,
-                        "added_files": self.added_files if context_was_enhanced else []
-                    })
+                send_event("diff_validation_failed", {
+                    "file_path": file_path,
+                    "status": validation_result["status"],
+                    "failed_hunks": validation_result["failed_hunks"],
+                    "total_hunks": validation_result["total_hunks"],
+                    "context_enhanced": context_was_enhanced,
+                    "added_files": self.added_files if context_was_enhanced else [],
+                    "user_message": f"Regenerating diff for {file_path} - {len(validation_result['failed_hunks'])} hunk(s) failed"
+                })
                 
             if self.auto_regenerate:
-                    feedback = validation_result["model_feedback"]
-                    
-                    if context_was_enhanced:
-                        feedback += (
-                            f"\n\n📂 CONTEXT UPDATE: "
-                            f"The file `{file_path}` has been added to your context above. "
-                            f"You now have the complete current file content. "
-                            f"Use it to generate accurate line numbers and context for the failed hunks."
-                        )
-                    
-                    return feedback
-            else:
-                # Success - silent
-                logger.info(f"✅ Validation passed for {file_path}: all hunks OK")
+                feedback = validation_result["model_feedback"]
                 
-                if send_event:
-                    send_event("diff_validation_status", {
-                        "status": "success",
-                        "file_path": file_path,
-                        "total_hunks": validation_result["total_hunks"]
-                    })
-            
-            return None
-            
+                if context_was_enhanced:
+                    feedback += (
+                        f"\n\n📂 CONTEXT ENHANCED: "
+                        f"Added {len(self.added_files)} file(s) to context. "
+                        f"Regenerate the diff using the current file content shown above."
+                    )
+                
+                return feedback
+
         except Exception as e:
             logger.error(f"Error during diff validation: {e}")
             if send_event:
