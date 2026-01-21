@@ -272,6 +272,11 @@ class PcapAnalyzeRequest(BaseModel):
     packet_index: Optional[int] = None
     limit: Optional[int] = None
 
+class AddExplicitPathsRequest(BaseModel):
+    model_config = {"extra": "allow"}
+    paths: List[str]
+    add_to_context: bool = False
+
 # Define lifespan context manager before app creation
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -1496,6 +1501,10 @@ async def stream_chunks(body):
                 from app.streaming_tool_executor import StreamingToolExecutor
                 from app.agents.models import ModelManager
                 
+                chunk_count = 0
+                last_diff_start_line = -1
+                diff_counter = 0
+                
                 # Get current model state
                 state = ModelManager.get_state()
                 current_region = state.get('aws_region', 'us-east-1')
@@ -1526,14 +1535,56 @@ async def stream_chunks(body):
                 yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\n\n"
                 
                 # Get MCP tools to pass to executor
-                from app.mcp.enhanced_tools import create_secure_mcp_tools
-                mcp_tools = create_secure_mcp_tools()
-                logger.debug(f"🚀 DIRECT_STREAMING: Passing {len(mcp_tools)} tools to executor")
+                mcp_tools = []
+                try:
+                    from app.mcp.enhanced_tools import create_secure_mcp_tools
+                    mcp_tools = create_secure_mcp_tools()
+                except Exception as e:
+                    logger.warning(f"Failed to get MCP tools: {e}")
                 
-                chunk_count = 0
                 async for chunk in executor.stream_with_tools(messages, tools=mcp_tools, conversation_id=conversation_id):
                     chunk_count += 1
                     
+                    if chunk.get('type') == 'text':
+                        content = chunk.get('content', '')
+
+                        # Track if we handled this chunk specially (to skip normal processing)
+                        chunk_was_handled = False
+                        
+                        # If it does, we need to split the content and insert the marker
+                        if '```diff' in content or '````diff' in content:
+                            # Calculate current line count for rewind marker
+                            current_lines = accumulated_content.count('\n')
+                            
+                            # Only insert marker if this is a NEW diff position
+                            if last_diff_start_line != current_lines:
+                                last_diff_start_line = current_lines
+                                
+                                # Split the content at the diff fence
+                                fence_pos = content.find('```diff') if '```diff' in content else content.find('````diff')
+                                before_fence = content[:fence_pos]
+                                fence_and_after = content[fence_pos:]
+                                
+                                # Yield content before the fence first
+                                if before_fence:
+                                    yield f"data: {json.dumps({'content': before_fence})}\n\n"
+                                    accumulated_content += before_fence
+                                last_diff_start_line = current_lines
+                            
+                                # Insert rewind marker BEFORE yielding the diff chunk
+                                rewind_marker = f"<span class=\"diff-rewind-marker\" data-marker=\"DIFF_START_MARKER: {diff_counter}\" style=\"display:none;\"></span>\n\n"
+                                yield f"data: {json.dumps({'content': rewind_marker})}\n\n"
+                                accumulated_content += rewind_marker
+                                logger.info(f"📍 REWIND_MARKER: Placed at line {current_lines} before diff #{diff_counter}")
+                                diff_counter += 1
+
+                                # Yield the fence and remaining content
+                                yield f"data: {json.dumps({'content': fence_and_after})}\n\n"
+                                accumulated_content += fence_and_after
+                                
+                                # Skip the normal content yielding below since we handled it
+                                continue
+                        
                     # Accumulate text content for validation
                     if chunk.get('type') == 'text':
                         accumulated_content += chunk.get('content', '')
@@ -1541,33 +1592,6 @@ async def stream_chunks(body):
                     # Log all chunks for debugging
                     chunk_type = chunk.get('type', 'unknown')
                     logger.debug(f"🔍 CHUNK_RECEIVED: type={chunk_type}, chunk_count={chunk_count}")
-                    
-                    # Validate completed diffs (after accumulating content)
-                    if accumulated_content:
-                        def send_sse_event(event_type: str, data: dict):
-                            """Helper to format SSE events - returns string, doesn't yield."""
-                            event_json = json.dumps({"type": event_type, **data})
-                            return f"data: {event_json}\n\n"
-                        
-                        validation_feedback = validation_hook.validate_and_enhance(
-                            content=accumulated_content,
-                            model_messages=messages,
-                            send_event=lambda event_type, data: send_sse_event(event_type, data)
-                        )
-                        
-                        # If validation failed and hook enhanced context
-                        if validation_feedback:
-                            logger.error("🚨 INLINE VALIDATION REJECTED - Sending feedback to model for immediate regeneration")
-                            
-                            # Notify frontend about context enhancement (UI sync only)
-                            if validation_hook.added_files:
-                                context_sync_event = send_sse_event("context_sync", {
-                                    "added_files": validation_hook.added_files,
-                                    "reason": "diff_validation"
-                                })
-                                yield context_sync_event
-                                logger.info(f"📂 Context enhanced with: {validation_hook.added_files}")
-                                validation_hook.added_files = []  # Clear for next validation
                     
                     # Convert to expected format and yield all chunk types
                     if chunk.get('type') == 'text':
@@ -1607,7 +1631,7 @@ async def stream_chunks(body):
                     validation_feedback = validation_hook.validate_and_enhance(
                         content=accumulated_content,
                         model_messages=messages,
-                        send_event=lambda event_type, data: None  # Events handled below
+                        send_event=None  # Don't send events, just get feedback
                     )
                     
                     # If validation failed
@@ -1623,19 +1647,36 @@ async def stream_chunks(body):
                         
                         # Notify frontend about context enhancement
                         if validation_hook.added_files:
-                            yield f"data: {json.dumps({{'type': 'context_sync', 'added_files': validation_hook.added_files, 'reason': 'diff_validation'}})}\n\n"
+                            yield f"data: {json.dumps({'type': 'context_sync', 'added_files': validation_hook.added_files, 'reason': 'diff_validation'})}\n\n"
+                            logger.info(f"📂 Context enhanced with: {validation_hook.added_files}")
                             validation_hook.added_files = []
+                        
+                        # Send rewind command - frontend will find the marker
+                        yield f"data: {json.dumps({'type': 'rewind', 'to_marker': f'DIFF_START_MARKER: {diff_counter}', 'diff_counter': diff_counter})}\n\n"
+                        logger.info(f"⏪ REWIND: Rewinding to diff #{diff_counter} marker")
+                        
+                        # Now increment counter for next diff
+                        diff_counter += 1
                         
                         # Add feedback to messages and restart generation
                         from langchain_core.messages import HumanMessage
-                        messages.append(HumanMessage(content=validation_feedback))
+                        
+                        # CRITICAL: Add context hint to help model continue numbering
+                        enhanced_feedback = f"""You previously generated {diff_counter - 1} diffs successfully.
+The diff #{diff_counter} for {validation_hook.validated_diffs} failed validation.
+
+{validation_feedback}
+
+Continue with diff #{diff_counter} (regenerated) - maintain sequential numbering."""
+                        messages.append(HumanMessage(content=enhanced_feedback))
                         
                         # Generate again with the feedback
+                        logger.info("🔄 Restarting stream with validation feedback")
                         async for retry_chunk in executor.stream_with_tools(messages, tools=mcp_tools, conversation_id=conversation_id):
                             if retry_chunk.get('type') == 'text':
-                                yield f"data: {json.dumps({{'content': retry_chunk.get('content', '')}})}\n\n"
+                                yield f"data: {json.dumps({'content': retry_chunk.get('content', '')})}\n\n"
                             elif retry_chunk.get('type') == 'tool_display':
-                                yield f"data: {json.dumps({{'tool_result': retry_chunk}})}\n\n"
+                                yield f"data: {json.dumps({'tool_result': retry_chunk})}\n\n"
                             elif retry_chunk.get('type') == 'stream_end':
                                 break
                     else:
@@ -1820,72 +1861,6 @@ async def stream_chunks(body):
         if messages:
             logger.debug(f"First message type: {messages[0].get('type', 'unknown')}")
             logger.debug(f"System message length: {len(messages[0].get('content', '')) if messages[0].get('type') == 'system' else 'N/A'}")
-        # Create DirectStreamingAgent and stream
-        # try:
-        #     agent = DirectStreamingAgent()
-        #     
-        #     chunk_count = 0
-        #     tool_results_attempted = 0
-        #     total_data_sent = 0
-        #     
-        #     # Get available tools to pass to the agent
-        #     from app.mcp.enhanced_tools import create_secure_mcp_tools
-        #     mcp_tools = create_secure_mcp_tools()
-        #     logger.debug(f"🚀 DIRECT_STREAMING: Passing {len(mcp_tools)} tools to DirectStreamingAgent")
-        #     
-        #     async for chunk in agent.stream_with_tools(messages, tools=mcp_tools, conversation_id=body.get('conversation_id')):
-        #         chunk_count += 1
-        #         
-        #         if chunk.get('type') == 'tool_execution':
-        #             tool_results_attempted += 1
-        #             logger.debug(f"🔍 ATTEMPTING_TOOL_TRANSMISSION: #{tool_results_attempted} - {chunk.get('tool_name')}")
-        #             
-        #             # DEBUGGING: Test JSON serialization before transmission
-        #             try:
-        #                 test_json = json.dumps(chunk)
-        #                 json_size = len(test_json)
-        #                 logger.debug(f"🔍 JSON_SERIALIZATION: {chunk.get('tool_name')} serialized to {json_size} chars")
-        #                 
-        #                 if json_size > 100000:  # 100KB
-        #                     logger.warning(f"🔍 LARGE_JSON_PAYLOAD: {chunk.get('tool_name')} JSON is {json_size} chars")
-        #                     if json_size > 1000000:  # 1MB
-        #                         logger.error(f"🔍 JSON_TOO_LARGE: {chunk.get('tool_name')} JSON is {json_size} chars - may break transmission")
-        #                         
-        #             except Exception as json_error:
-        #                 logger.error(f"🔍 JSON_SERIALIZATION_FAILED: {chunk.get('tool_name')} failed to serialize: {json_error}")
-        #                 continue  # Skip this chunk
-        #         
-        #         sse_data = f"data: {json.dumps(chunk)}\n\n"
-        #         chunk_size = len(sse_data)
-        #         total_data_sent += chunk_size
-        #         
-        #         # Log large chunks or tool results
-        #         if chunk.get('type') == 'tool_execution' or chunk_size > 1000:
-        #             logger.debug(f"🔍 CHUNK_TRANSMISSION: chunk #{chunk_count}, type={chunk.get('type')}, size={chunk_size}, total_sent={total_data_sent}")
-        #             if chunk.get('type') == 'tool_execution':
-        #                 logger.debug(f"🔍 TOOL_CHUNK: tool_name={chunk.get('tool_name')}, result_size={len(chunk.get('result', ''))}")
-        #         
-        #         yield sse_data
-        #         
-        #         # Force immediate delivery for tool results
-        #         if chunk.get('type') == 'tool_execution':
-        #             import sys
-        #             sys.stdout.flush()
-        #     
-        #     yield "data: [DONE]\n\n"
-        #     return
-        # except CredentialRetrievalError as e:
-        #     # Handle credential errors with proper SSE error response
-        #     from app.utils.error_handlers import handle_streaming_error
-        #     async for error_chunk in handle_streaming_error(None, e):
-        #         yield error_chunk
-        #     return
-        # except ValueError as e:
-        #     if "OpenAI models should use LangChain path" in str(e):
-        #         logger.info("🚀 DIRECT_STREAMING: OpenAI model detected, falling back to LangChain path")
-        #         # Fall through to LangChain path below
-        #     else:
-        #         raise
         pass  # DirectStreamingAgent disabled
         
         # Check if model should use LangChain path instead of StreamingToolExecutor
@@ -3664,15 +3639,33 @@ def add_file_to_folder_cache(rel_path: str) -> bool:
             
             logger.info(f"✅ Added file to cache: {rel_path} ({token_count} tokens)")
             
-            # Notify all connected clients
-            task = asyncio.create_task(broadcast_file_tree_update('file_added', rel_path, token_count))
-            # Add error handler to prevent silent failures
-            task.add_done_callback(lambda t: logger.error(f"File tree broadcast failed: {t.exception()}") if t.exception() else None)
+            # Notify all connected clients - handle case where no event loop is running
+            _schedule_broadcast('file_added', rel_path, token_count)
             return True
             
     except Exception as e:
         logger.error(f"Failed to add file to cache: {rel_path}, error: {e}")
         return False
+
+def _schedule_broadcast(event_type: str, rel_path: str, token_count: int = 0):
+    """Schedule a broadcast, handling the case where no event loop is running."""
+    try:
+        loop = asyncio.get_running_loop()
+        task = loop.create_task(broadcast_file_tree_update(event_type, rel_path, token_count))
+        task.add_done_callback(lambda t: logger.error(f"File tree broadcast failed: {t.exception()}") if t.exception() else None)
+    except RuntimeError:
+        # No running event loop - try to get or create one
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.call_soon_threadsafe(
+                    lambda: asyncio.ensure_future(broadcast_file_tree_update(event_type, rel_path, token_count))
+                )
+            else:
+                # No running loop, just log and skip the broadcast
+                logger.debug(f"Skipping broadcast for {event_type}: {rel_path} (no event loop)")
+        except Exception as e:
+            logger.debug(f"Skipping broadcast for {event_type}: {rel_path} ({e})")
 
 def update_file_in_folder_cache(rel_path: str) -> bool:
     """Update token count for modified file in cache."""
@@ -3704,9 +3697,7 @@ def update_file_in_folder_cache(rel_path: str) -> bool:
                 current_level[filename]['token_count'] = token_count
                 logger.debug(f"✅ Updated file in cache: {rel_path} ({token_count} tokens)")
                 
-                # Notify all connected clients
-                task = asyncio.create_task(broadcast_file_tree_update('file_modified', rel_path, token_count))
-                task.add_done_callback(lambda t: logger.error(f"File tree broadcast failed: {t.exception()}") if t.exception() else None)
+                _schedule_broadcast('file_modified', rel_path, token_count)
                 return True
     except Exception as e:
         logger.error(f"Failed to update file in cache: {rel_path}, error: {e}")
@@ -3737,9 +3728,7 @@ def remove_file_from_folder_cache(rel_path: str) -> bool:
                 del current_level[filename]
                 logger.info(f"✅ Removed file from cache: {rel_path}")
                 
-                # Notify all connected clients
-                task = asyncio.create_task(broadcast_file_tree_update('file_deleted', rel_path, 0))
-                task.add_done_callback(lambda t: logger.error(f"File tree broadcast failed: {t.exception()}") if t.exception() else None)
+                _schedule_broadcast('file_deleted', rel_path, 0)
                 return True
     except Exception as e:
         logger.error(f"Failed to remove file from cache: {rel_path}, error: {e}")
@@ -4084,6 +4073,264 @@ if __name__ == "__main__":
 async def get_default_included_folders():
     """Get the default included folders."""
     return []
+
+@app.get('/api/browse-directory')
+async def api_browse_directory(path: str = '~'):
+    """
+    Browse a directory on the server filesystem.
+    Returns list of files and directories for the file browser dialog.
+    """
+    try:
+        # Expand ~ to home directory
+        if path.startswith('~'):
+            path = os.path.expanduser(path)
+        
+        # Resolve to absolute path
+        path = os.path.abspath(path)
+        
+        # Security: Validate the path exists and is a directory
+        if not os.path.exists(path):
+            return JSONResponse(
+                status_code=404,
+                content={"detail": f"Path does not exist: {path}"}
+            )
+        
+        if not os.path.isdir(path):
+            # If it's a file, return the parent directory
+            path = os.path.dirname(path)
+        
+        # List directory contents
+        entries = []
+        try:
+            for entry_name in sorted(os.listdir(path)):
+                # Skip hidden files (starting with .)
+                if entry_name.startswith('.'):
+                    continue
+                    
+                entry_path = os.path.join(path, entry_name)
+                try:
+                    is_dir = os.path.isdir(entry_path)
+                    size = None
+                    if not is_dir:
+                        try:
+                            size = os.path.getsize(entry_path)
+                        except OSError:
+                            size = None
+                    
+                    entries.append({
+                        "name": entry_name,
+                        "path": entry_path,
+                        "is_dir": is_dir,
+                        "size": size
+                    })
+                except (PermissionError, OSError):
+                    # Skip entries we can't access
+                    continue
+                    
+        except PermissionError:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": f"Permission denied: {path}"}
+            )
+        
+        # Sort: directories first, then files, both alphabetically
+        entries.sort(key=lambda e: (not e['is_dir'], e['name'].lower()))
+        
+        return {
+            "current_path": path,
+            "entries": entries
+        }
+        
+    except Exception as e:
+        logger.error(f"Error browsing directory {path}: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Error browsing directory: {str(e)}"}
+        )
+
+@app.post('/api/add-explicit-paths')
+async def api_add_explicit_paths(request: AddExplicitPathsRequest):
+    """
+    Add explicit file/directory paths to the folder browser tree.
+    Paths outside the workspace root will be shown with their full path prefix.
+    
+    If add_to_context is True, the paths are also added to the current context selection.
+    """
+    global _folder_cache, _cache_lock
+    
+    user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+    added_paths = []
+    errors = []
+    
+    for path in request.paths:
+        try:
+            # Expand ~ and resolve to absolute path
+            if path.startswith('~'):
+                path = os.path.expanduser(path)
+            path = os.path.abspath(path)
+            
+            # Validate path exists
+            if not os.path.exists(path):
+                errors.append(f"Path does not exist: {path}")
+                continue
+            
+            # Determine if this is inside or outside the workspace
+            is_inside_workspace = path.startswith(user_codebase_dir + os.sep) or path == user_codebase_dir
+            
+            if is_inside_workspace:
+                # For paths inside workspace, use relative path
+                rel_path = os.path.relpath(path, user_codebase_dir)
+            else:
+                # For paths outside workspace, use full path as the key
+                rel_path = path
+            
+            # Add to folder cache
+            if os.path.isfile(path):
+                success = add_file_to_folder_cache(rel_path) if is_inside_workspace else add_external_path_to_cache(path)
+                if success:
+                    added_paths.append(path)
+            elif os.path.isdir(path):
+                success = add_directory_to_folder_cache(rel_path, path, is_inside_workspace)
+                if success:
+                    added_paths.append(path)
+                    
+        except Exception as e:
+            logger.error(f"Error adding path {path}: {e}")
+            errors.append(f"Error adding {path}: {str(e)}")
+    
+    return {
+        "added_count": len(added_paths),
+        "added_paths": added_paths,
+        "errors": errors if errors else None,
+        "add_to_context": request.add_to_context
+    }
+
+
+def add_external_path_to_cache(full_path: str) -> bool:
+    """
+    Add an external file (outside workspace) to the folder cache.
+    External files are stored under a special '[external]' root node.
+    """
+    global _folder_cache, _cache_lock
+    
+    if _folder_cache['data'] is None:
+        return False
+    
+    try:
+        from app.utils.directory_util import estimate_tokens_fast
+        token_count = estimate_tokens_fast(full_path) if os.path.isfile(full_path) else 0
+        
+        with _cache_lock:
+            # Ensure [external] root exists
+            if '[external]' not in _folder_cache['data']:
+                _folder_cache['data']['[external]'] = {'children': {}, 'token_count': 0}
+            
+            # Parse the path and create nested structure
+            # e.g., /home/user/file.txt -> [external] / home / user / file.txt
+            path_parts = full_path.strip('/').split('/')
+            current_level = _folder_cache['data']['[external]']['children']
+            
+            # Navigate/create parent directories
+            for part in path_parts[:-1]:
+                if part not in current_level:
+                    current_level[part] = {'children': {}, 'token_count': 0}
+                if 'children' not in current_level[part]:
+                    current_level[part]['children'] = {}
+                current_level = current_level[part]['children']
+            
+            # Add the file/directory
+            filename = path_parts[-1]
+            if os.path.isfile(full_path):
+                current_level[filename] = {'token_count': token_count}
+            else:
+                current_level[filename] = {'children': {}, 'token_count': 0}
+            
+            logger.info(f"✅ Added external path to cache: {full_path} ({token_count} tokens)")
+            
+            # Notify connected clients about the new external path
+            _schedule_broadcast('file_added', f"[external]{full_path}", token_count)
+            return True
+            
+    except Exception as e:
+        logger.error(f"Failed to add external path to cache: {full_path}, error: {e}")
+        return False
+
+
+def add_directory_to_folder_cache(rel_path: str, full_path: str, is_inside_workspace: bool) -> bool:
+    """
+    Add a directory and its contents to the folder cache.
+    """
+    global _folder_cache, _cache_lock
+    
+    if _folder_cache['data'] is None:
+        return False
+    
+    try:
+        from app.utils.directory_util import estimate_tokens_fast
+        
+        # For external paths, delegate to external handler
+        if not is_inside_workspace:
+            return add_external_path_to_cache(full_path)
+        
+        # Build the directory structure recursively
+        def scan_directory(dir_path: str, max_depth: int = 10, current_depth: int = 0) -> dict:
+            if current_depth >= max_depth:
+                return {'children': {}, 'token_count': 0}
+            
+            result = {'children': {}, 'token_count': 0}
+            total_tokens = 0
+            
+            try:
+                for entry_name in os.listdir(dir_path):
+                    if entry_name.startswith('.'):
+                        continue
+                    
+                    entry_path = os.path.join(dir_path, entry_name)
+                    
+                    try:
+                        if os.path.isfile(entry_path):
+                            token_count = estimate_tokens_fast(entry_path)
+                            result['children'][entry_name] = {'token_count': token_count}
+                            total_tokens += token_count
+                        elif os.path.isdir(entry_path):
+                            sub_dir = scan_directory(entry_path, max_depth, current_depth + 1)
+                            result['children'][entry_name] = sub_dir
+                            total_tokens += sub_dir.get('token_count', 0)
+                    except (PermissionError, OSError):
+                        continue
+            except (PermissionError, OSError):
+                pass
+            
+            result['token_count'] = total_tokens
+            return result
+        
+        dir_structure = scan_directory(full_path)
+        
+        with _cache_lock:
+            path_parts = rel_path.split(os.sep)
+            current_level = _folder_cache['data']
+            
+            # Navigate/create parent directories
+            for part in path_parts[:-1]:
+                if part not in current_level:
+                    current_level[part] = {'children': {}, 'token_count': 0}
+                if 'children' not in current_level[part]:
+                    current_level[part]['children'] = {}
+                current_level = current_level[part]['children']
+            
+            # Add the directory with its scanned contents
+            dirname = path_parts[-1] if path_parts else os.path.basename(full_path)
+            current_level[dirname] = dir_structure
+            
+            logger.info(f"✅ Added directory to cache: {rel_path} ({dir_structure.get('token_count', 0)} tokens)")
+            
+            # Notify connected clients
+            _schedule_broadcast('file_added', rel_path, dir_structure.get('token_count', 0))
+            return True
+            
+    except Exception as e:
+        logger.error(f"Failed to add directory to cache: {rel_path}, error: {e}")
+        return False
 
 # Cache for ignored patterns - build once at startup, reuse for all scans
 _ignored_patterns_cache = None
