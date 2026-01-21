@@ -284,6 +284,18 @@ export function formatMCPOutput(
     }
   }
 
+  // Handle pre-structured tool results with hierarchicalResults
+  // These come from chatApi.ts when it needs to pass structured data through the tool block
+  if (result && typeof result === 'object' && result._isStructuredToolResult) {
+    return {
+      content: result.summary || '',
+      type: result.type || 'search_results',
+      collapsed: true,
+      summary: result.summary,
+      hierarchicalResults: result.hierarchicalResults
+    };
+  }
+
   // Handle error responses
   if (result && typeof result === 'object' && result.error) {
     return {
