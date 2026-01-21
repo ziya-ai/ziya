@@ -102,7 +102,6 @@ export const TokenCountDisplay = memo(() => {
         try {
             const response = await fetch('/api/ast/resolutions');
             if (response.ok) {
-                const data = await response.json();
                 console.log('Fetched AST resolutions:', data.resolutions);
                 setAstResolutions(data.resolutions || {});
                 setCurrentAstResolution(data.current_resolution || 'medium');
@@ -386,71 +385,54 @@ export const TokenCountDisplay = memo(() => {
 
     // Listen for model settings changes
     useEffect(() => {
-        const handleModelSettingsChange = async (event: CustomEvent<ModelSettingsEventDetail>) => {
+    const handleModelSettingsChange = async (event: CustomEvent) => {
             // CRITICAL FIX: Prevent redundant fetches when switching conversations
             const now = Date.now();
             if (now - modelCapabilitiesFetchRef.current < 2000) {
-                console.debug('🔒 DEDUP: Skipping redundant model capabilities fetch (within 2s cooldown)');
                 return;
             }
             modelCapabilitiesFetchRef.current = now;
             // Debounce to prevent duplicate calls
             if (Date.now() - lastTokenCalcRunRef.current < 1000) return;
             lastTokenCalcRunRef.current = Date.now();
-            
-            console.log('TokenCountDisplay received modelSettingsChanged event:', {
-                eventDetail: event.detail,
-                hasSettings: !!event.detail?.settings,
-                hasCapabilities: !!event.detail?.capabilities,
-                currentLimits: modelLimits
-            });
 
             try {
-
-                if (!event.detail) {
-                    // If no detail provided, fetch fresh data
+                const detail = event.detail;
+                
+                // Check if we have direct settings/capabilities structure
+                if (detail?.settings && detail?.capabilities) {
+                    const { settings, capabilities } = detail;
+                    const tokenLimit = capabilities.token_limit || settings.max_input_tokens || 4096;
+                    setModelLimits({
+                        token_limit: tokenLimit,
+                        max_input_tokens: settings.max_input_tokens || tokenLimit,
+                        max_output_tokens: settings.max_output_tokens || capabilities.max_output_tokens
+                    });
+                    return;
+                }
+                
+                // Check if we have capabilities directly on the detail (from model change)
+                if (detail?.capabilities || detail?.token_limit || detail?.max_input_tokens) {
+                    const tokenLimit = detail.capabilities?.token_limit || detail.token_limit || detail.max_input_tokens || 4096;
+                    setModelLimits({
+                        token_limit: tokenLimit,
+                        max_input_tokens: detail.max_input_tokens || tokenLimit,
+                        max_output_tokens: detail.max_output_tokens || detail.capabilities?.max_output_tokens
+                    });
+                    return;
+                }
+                
+                // Fallback: fetch fresh data from API
                     const response = await fetch('/api/current-model');
                     if (!response.ok) throw new Error(`Failed to fetch model settings: ${response.status}`);
                     const data = await response.json();
 
-                    // Use token_limit from capabilities if available, otherwise use max_input_tokens
                     const tokenLimit = data.capabilities?.token_limit || data.settings?.max_input_tokens || 4096;
-
                     setModelLimits({
                         token_limit: tokenLimit,
                         max_input_tokens: data.settings.max_input_tokens || tokenLimit,
                         max_output_tokens: data.settings.max_output_tokens
                     });
-                    console.log('TokenCountDisplay updated limits from API call:', {
-                        token_limit: data.capabilities.token_limit,
-                        max_input_tokens: data.settings.max_input_tokens || data.capabilities.token_limit,
-                        max_output_tokens: data.settings.max_output_tokens
-                    });
-                } else {
-                    // Use provided data
-                    if (event.detail.settings && event.detail.capabilities) {
-                        const { settings, capabilities } = event.detail;
-
-                        // Use token_limit from capabilities if available, otherwise use max_input_tokens
-                        const tokenLimit = capabilities.token_limit || settings.max_input_tokens || 4096;
-
-                        const newLimits = {
-                            token_limit: tokenLimit,
-                            max_input_tokens: settings.max_input_tokens || tokenLimit,
-                            max_output_tokens: settings.max_output_tokens || capabilities.max_output_tokens
-                        };
-                        console.log('TokenCountDisplay updating limits from event:', newLimits);
-                        setModelLimits(newLimits);
-
-                        // Force a re-render by updating state
-                        setTotalTokenCount(prev => {
-                            console.log('Forcing token count re-render');
-                            return prev;
-                        });
-                    } else {
-                        throw new Error('Missing settings or capabilities in event data');
-                    }
-                }
             } catch (error) {
                 console.error('Error updating token limits:', error);
             }
@@ -579,6 +561,7 @@ export const TokenCountDisplay = memo(() => {
                 console.log(`Using accurate token counts for ${accurateFileCount} files`);
             }
         } else {
+            // No folders or no checked keys - reset to zero
             tokenDetailsRef.current = {};
             setTotalTokenCount(0);
         }
