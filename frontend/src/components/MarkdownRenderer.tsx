@@ -170,14 +170,33 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode, to
     const cleanToolName = actualToolName.replace('mcp_', '').replace(/_/g, ' ');
 
     // Extract query from content if this is a search tool
-    const isSearchTool = actualToolName === 'mcp_InternalSearch' || 
-                         actualToolName === 'mcp_WorkspaceSearch' ||
-                         actualToolName === 'WorkspaceSearch';
+    const isSearchTool = actualToolName === 'mcp_InternalSearch' ||
+        actualToolName === 'mcp_WorkspaceSearch' ||
+        actualToolName === 'WorkspaceSearch';
     const queryMatch = isSearchTool && content.match(/Query:\s*\*?\*?"([^"]+)"\*?\*?/);
     const searchQuery = queryMatch ? queryMatch[1] : '';
 
     // Try to format the content intelligently
     const formattedOutput = useMemo(() => {
+        try {
+            // Check if this is already a structured tool result from the formatter
+            if (content.trim().startsWith('{')) {
+                const parsed = JSON.parse(content);
+                if (parsed._isStructuredToolResult && parsed.hierarchicalResults) {
+                    // This is already formatted with hierarchical results - use it directly
+                    return {
+                        content: parsed.summary || content,
+                        type: parsed.type || 'search_results',
+                        collapsed: true,
+                        summary: parsed.summary,
+                        hierarchicalResults: parsed.hierarchicalResults
+                    };
+                }
+            }
+        } catch (e) {
+            // Not structured JSON, continue with regular processing
+        }
+        
         try {
             // Parse if it looks like JSON
             if (content.trim().startsWith('{') || content.trim().startsWith('[')) {
@@ -272,17 +291,17 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode, to
                 return `🔧 ${encodedCommand}`;
             }
             // Check if it's a search query
-        if (searchQuery) {
-            return `🔍 ${cleanToolName}: "${searchQuery}"`;
-        }
-        // For workspace search, try to extract query from the encoded command
-        if (encodedCommand.toLowerCase().includes('workspacesearch:')) {
-            const queryFromCommand = encodedCommand.split(':').slice(1).join(':').trim();
-            return `🔍 ${cleanToolName}: "${queryFromCommand}"`;
-        }
-        // Check if it's a search query from encoded command
-        if (encodedCommand.includes(': "')) {
-            return `🔍 ${encodedCommand}`;
+            if (searchQuery) {
+                return `🔍 ${cleanToolName}: "${searchQuery}"`;
+            }
+            // For workspace search, try to extract query from the encoded command
+            if (encodedCommand.toLowerCase().includes('workspacesearch:')) {
+                const queryFromCommand = encodedCommand.split(':').slice(1).join(':').trim();
+                return `🔍 ${cleanToolName}: "${queryFromCommand}"`;
+            }
+            // Check if it's a search query from encoded command
+            if (encodedCommand.includes(': "')) {
+                return `🔍 ${encodedCommand}`;
             }
             // Check if it's multiple parameters
             if (encodedCommand.endsWith(': multiple')) {
@@ -1836,7 +1855,10 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
         const rowStyle: React.CSSProperties = {};
         if (!hunk.changes || !Array.isArray(hunk.changes)) return [];
 
-        return hunk.changes && hunk.changes.map((change: any, i: number) => {
+        if (!hunk || !hunk.changes || !Array.isArray(hunk.changes)) {
+            return [];
+        }
+        return hunk.changes.map((change: any, i: number) => {
             // Apply the status-based styling to each row
             const style = { ...rowStyle };
 
@@ -4598,15 +4620,15 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'html':
                     if (!hasText(tokenWithText)) return null;
 
-                // Check for malformed tool blocks and hide them instead of leaking
-                if (tokenWithText.text.includes('<!-- TOOL_BLOCK_START:') && 
-                    tokenWithText.text.includes('<!-- TOOL_BLOCK_END:')) {
-                    // This is a tool block but didn't match the regex - likely malformed
-                    console.warn('Malformed tool block detected, hiding from output:', tokenWithText.text.substring(0, 100));
-                    return null;
-                }
+                    // Check for malformed tool blocks and hide them instead of leaking
+                    if (tokenWithText.text.includes('<!-- TOOL_BLOCK_START:') &&
+                        tokenWithText.text.includes('<!-- TOOL_BLOCK_END:')) {
+                        // This is a tool block but didn't match the regex - likely malformed
+                        console.warn('Malformed tool block detected, hiding from output:', tokenWithText.text.substring(0, 100));
+                        return null;
+                    }
 
-                    const HTMLtoolBlockMatch = tokenWithText.text.match(/<!-- TOOL_BLOCK_START:(mcp_\w+)\|(.+?) -->\s*([\s\S]*?)\s*<!-- TOOL_BLOCK_END:\1 -->/);
+                    const HTMLtoolBlockMatch = tokenWithText.text.match(/<!-- TOOL_BLOCK_START:(mcp_\w+)\|(.+?) -->\s*([\s\S]*?)\s*<!-- TOOL_BLOCK_END:\1(?:\|[^>]+)? -->/);
                     if (HTMLtoolBlockMatch) {
                         const [, toolName, displayHeader, toolContent] = HTMLtoolBlockMatch;
 
@@ -5101,7 +5123,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 // and should never be visible to users
                 processedMarkdown = processedMarkdown.replace(/<!-- TOOL_MARKER:[^>]+ -->\n?/g, '');
 
-                const toolBlockRegex = /<!-- TOOL_BLOCK_START:(mcp_\w+)\|(.+?) -->\s*([\s\S]*?)\s*<!-- TOOL_BLOCK_END:\1 -->/g;
+                const toolBlockRegex = /<!-- TOOL_BLOCK_START:(mcp_\w+)\|(.+?) -->\s*([\s\S]*?)\s*<!-- TOOL_BLOCK_END:\1(?:\|[^>]+)? -->/g;
                 const toolBlocks: Array<{ match: string, toolName: string, displayHeader: string, content: string }> = [];
 
                 let match;
@@ -5116,11 +5138,29 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
                 // Replace tool blocks with markdown code blocks using a special lang tag
                 toolBlocks.forEach(({ match, toolName, displayHeader, content }) => {
-                    processedMarkdown = processedMarkdown.replace(
-                        match,
-                        `\`\`\`tool:${toolName}|${displayHeader}\n${content}\n\`\`\``
-                    );
+                    // Check if content is wrapped in code fences and extract
+                    const codeFenceMatch = content.trim().match(/^```(\w+)?\n([\s\S]*?)\n```$/);
+                    if (codeFenceMatch) {
+                        const [, lang, innerContent] = codeFenceMatch;
+                        // Pass the language as metadata in the tool fence
+                        const langSuffix = lang ? `|lang:${lang}` : '';
+                        processedMarkdown = processedMarkdown.replace(
+                            match,
+                            `\`\`\`tool:${toolName}|${displayHeader}${langSuffix}\n${innerContent.trim()}\n\`\`\``
+                        );
+                    } else {
+                        processedMarkdown = processedMarkdown.replace(
+                            match,
+                            `\`\`\`tool:${toolName}|${displayHeader}\n${content}\n\`\`\``
+                        );
+                    }
                 });
+
+                // AFTER tool block processing, strip any remaining TOOL_BLOCK markers
+                // Now that displayHeaders are sanitized to single lines, any remaining markers
+                // are from malformed blocks that the regex couldn't match
+                processedMarkdown = processedMarkdown.replace(/<!-- TOOL_BLOCK_START:[^>]+ -->\n?/g, '');
+                processedMarkdown = processedMarkdown.replace(/<!-- TOOL_BLOCK_END:[^>]+ -->\n?/g, '');
             } catch (toolBlockError) {
                 console.debug('Tool block preprocessing error (handled):', toolBlockError);
             }
