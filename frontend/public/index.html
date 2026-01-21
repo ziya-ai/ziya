@@ -48,9 +48,9 @@
 
 <!-- Inject formatter plugin scripts before React app loads -->
 {% if formatter_scripts %}
-    {% for script in formatter_scripts %}
+    {% for formatter_script in formatter_scripts %}
     <script type="text/javascript">
-        {{ script|safe }}
+        {{ formatter_script|safe }}
     </script>
     {% endfor %}
 {% endif %}
