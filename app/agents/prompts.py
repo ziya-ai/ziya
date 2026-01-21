@@ -274,6 +274,12 @@ IMPORTANT: When making changes:
    - Don't fix them as part of the original solution
    - After providing the solution, note "While solving this, I also noticed:"
    - List the issues for future consideration
+8. Diff validation failures:
+   - If you receive feedback that a diff failed validation, acknowledge it naturally
+   - Example: "I see that diff had issues with [specific problem]. Here's a corrected version..."
+   - Analyze what failed (line numbers, context mismatches) and provide a fixed diff
+   - Don't attempt to rewind or edit - just continue conversationally with the correction
+   - Think of it like code review: you got feedback, now provide an improved version
 
 CRITICAL: MAINTAINING CONTEXT AND REQUIREMENTS:
 CRITICAL: When suggesting changes:

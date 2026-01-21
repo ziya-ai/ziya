@@ -1662,23 +1662,14 @@ async def stream_chunks(body):
                             logger.info(f"📂 Context enhanced with: {validation_hook.added_files}")
                             validation_hook.added_files = []
                         
-                        # Send rewind command - frontend will find the marker
-                        yield f"data: {json.dumps({'type': 'rewind', 'to_marker': f'DIFF_START_MARKER: {diff_counter}', 'diff_counter': diff_counter})}\n\n"
-                        logger.info(f"⏪ REWIND: Rewinding to diff #{diff_counter} marker")
-                        
-                        # Now increment counter for next diff
-                        diff_counter += 1
+                        # No rewind - model will naturally acknowledge and continue
+                        logger.info("📝 Validation failed - model will provide corrected diff")
                         
                         # Add feedback to messages and restart generation
                         from langchain_core.messages import HumanMessage
                         
-                        # CRITICAL: Add context hint to help model continue numbering
-                        enhanced_feedback = f"""You previously generated {diff_counter - 1} diffs successfully.
-The diff #{diff_counter} for {validation_hook.validated_diffs} failed validation.
-
-{validation_feedback}
-
-Continue with diff #{diff_counter} (regenerated) - maintain sequential numbering."""
+                        # Simple feedback - model will acknowledge naturally
+                        enhanced_feedback = validation_feedback
                         messages.append(HumanMessage(content=enhanced_feedback))
                         
                         # Generate again with the feedback

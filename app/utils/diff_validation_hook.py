@@ -192,14 +192,15 @@ class DiffValidationHook:
                 
             # Notify frontend to sync UI
             if send_event:
-                send_event("diff_validation_failed", {
+                # Just send informational status - no rewind needed
+                send_event("diff_validation_status", {
                     "file_path": file_path,
-                    "status": validation_result["status"],
+                    "status": "failed",
                     "failed_hunks": validation_result["failed_hunks"],
                     "total_hunks": validation_result["total_hunks"],
                     "context_enhanced": context_was_enhanced,
                     "added_files": self.added_files if context_was_enhanced else [],
-                    "user_message": f"Regenerating diff for {file_path} - {len(validation_result['failed_hunks'])} hunk(s) failed"
+                    "message": f"Diff validation failed for {file_path} - model will provide corrected version"
                 })
                 
             if self.auto_regenerate:
