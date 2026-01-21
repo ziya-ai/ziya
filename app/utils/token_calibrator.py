@@ -506,10 +506,10 @@ class TokenCalibrator:
             model_family = self._get_current_model_family()
             logger.info(f"📊 ESTIMATE: No model_family provided, inferred: '{model_family}'")
         
-        # CRITICAL DEBUG: Log what we have available
-        logger.info(f"📊 ESTIMATE-STATE: model_family='{model_family}', "
-                   f"global_by_model keys={list(self.global_by_model.keys())}, "
-                   f"stats keys={list(self.stats_by_model_and_type.keys())}")
+        # DEBUG: Log what we have available
+        logger.debug(f"📊 ESTIMATE-STATE: model_family='{model_family}', "
+                    f"global_by_model keys={list(self.global_by_model.keys())}, "
+                    f"stats keys={list(self.stats_by_model_and_type.keys())}")
         
         logger.debug(f"📊 ESTIMATE: Estimating {len(content):,} chars for model_family={model_family}, file_path={file_path}")
         
@@ -550,11 +550,10 @@ class TokenCalibrator:
             chars_per_token = self.global_by_model[model_family]
             estimated = int(content_length / chars_per_token)
             
-            logger.info(f"📊 [{model_family}] Using model global: {estimated:,} tokens (ratio: {chars_per_token:.2f})")
-        else:
-            logger.warning(f"📊 [{model_family}] NOT FOUND in global_by_model! Keys available: {list(self.global_by_model.keys())}")
-            logger.debug(f"📊 [{model_family}] Model global: {estimated:,} tokens")
+            logger.debug(f"📊 [{model_family}] Using model global: {estimated:,} tokens (ratio: {chars_per_token:.2f})")
             return estimated
+        
+        logger.debug(f"📊 [{model_family}] NOT FOUND in global_by_model! Keys available: {list(self.global_by_model.keys())}")
         
         # Tier 4: Release default for model
         if model_family in self.release_defaults:
