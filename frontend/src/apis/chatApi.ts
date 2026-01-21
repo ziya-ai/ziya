@@ -746,15 +746,6 @@ export const sendPayload = async (
                 if (sseMessage.startsWith('data:')) {
                     let dataContent = sseMessage.slice(5).trim();
 
-                    // DEBUG: Log every data message we're about to process
-                    console.log('🔍 SSE_MESSAGE_DEBUG:', {
-                        preview: dataContent.substring(0, 100),
-                        hasError: dataContent.includes('"error"'),
-                        hasErrorType: dataContent.includes('"error_type"'),
-                        isDone: dataContent.includes('"done"'),
-                        isHeartbeat: dataContent.includes('"heartbeat"')
-                    });
-
                     // Handle multiple data: messages concatenated in the extracted content
                     // This happens when heartbeat messages get bundled with content messages
                     if (dataContent.includes('\n\ndata:') || dataContent.includes('\ndata:')) {
@@ -798,19 +789,8 @@ export const sendPayload = async (
             let unwrappedData: any;
 
             try {
-                // DEBUG: Log entry into processSingleDataMessage
-                console.log('🔍 PROCESS_MESSAGE_START:', {
-                    dataLength: data.length,
-                    dataPreview: data.substring(0, 100),
-                    hasError: data.includes('"error"'),
-                    hasErrorType: data.includes('"error_type"'),
-                    isDone: data.includes('"done"'),
-                    isHeartbeat: data.includes('"heartbeat"')
-                });
-
                 // Skip heartbeat messages entirely
                 if (data.includes('"heartbeat": true') || data.includes('"type": "heartbeat"')) {
-                    console.log('📊 SSE: Skipping heartbeat message');
                     return;
                 }
 
@@ -829,13 +809,6 @@ export const sendPayload = async (
                 // CRITICAL FIX: Check for errors BEFORE any other processing
                 // This ensures errors are never skipped due to other conditions
                 if (jsonData.error || jsonData.error_type === 'authentication_error') {
-                    console.log('🚨 EARLY_ERROR_DETECTION: Error detected in chunk:', {
-                        error: jsonData.error?.substring(0, 100),
-                        error_type: jsonData.error_type,
-                        has_status_code: !!jsonData.status_code,
-                        has_detail: !!jsonData.detail
-                    });
-
                     // Don't skip error processing - continue to the error handling code below
                     // But mark that we detected an error early
                     (window as any)._errorDetectedInChunk = true;
@@ -855,9 +828,9 @@ export const sendPayload = async (
                 // Handle context sync notifications from backend
                 if (unwrappedData.type === 'context_sync') {
                     console.log('📂 CONTEXT_SYNC:', unwrappedData);
-                    
+
                     const addedFiles = unwrappedData.added_files || [];
-                    
+
                     if (addedFiles.length > 0) {
                         // Update frontend context to match backend
                         // This is just UI state sync - backend already has the files
@@ -869,7 +842,7 @@ export const sendPayload = async (
                                     reason: unwrappedData.reason
                                 }
                             }));
-                            
+
                             console.log(`✅ Context UI synced: added ${addedFiles.join(', ')}`);
                         } catch (error) {
                             console.error('Error syncing context:', error);
@@ -877,35 +850,38 @@ export const sendPayload = async (
                     }
                 }
 
-                // Handle diff validation status
-                if (unwrappedData.type === 'diff_validation_status') {
-                    console.log('📋 DIFF_VALIDATION:', unwrappedData);
-                    
-                    if (unwrappedData.status === 'validating') {
-                        // Show subtle validation indicator
-                        const validationMarker = `\n\n<!-- VALIDATION_MARKER:${unwrappedData.file_path} -->_🔍 Validating diff..._\n`;
-                        currentContent += validationMarker;
-                        setStreamedContentMap((prev: Map<string, string>) => {
-                            const next = new Map(prev);
-                            next.set(conversationId, currentContent);
-                            return next;
-                        });
-                    } else if (unwrappedData.status === 'success') {
-                        // Remove validation marker silently
-                        const markerPattern = new RegExp(
-                            `<!-- VALIDATION_MARKER:${unwrappedData.file_path} -->_🔍 Validating diff\\.\\.\\._\\n`,
-                            'g'
-                        );
-                        currentContent = currentContent.replace(markerPattern, '');
-                        setStreamedContentMap((prev: Map<string, string>) => {
-                            const next = new Map(prev);
-                            next.set(conversationId, currentContent);
-                            return next;
-                        });
-                        console.log('✅ DIFF_VALIDATION: All hunks validated');
-                    }
+                // Handle diff validation failure with clear UI feedback
+                if (unwrappedData.type === 'diff_validation_failed') {
+                    console.log('❌ DIFF_VALIDATION_FAILED:', unwrappedData);
+
+                    // Calculate rewind line (before the failed diff)
+                    const lines = currentContent.split('\n');
+                    const rewindLine = lines.length;
+
+                    // Insert rewind marker
+                    const rewindMarker = `<!-- REWIND_MARKER: ${rewindLine} -->`;
+                    currentContent += `\n\n${rewindMarker}\n\n`;
+
+                    // Add user-friendly notification
+                    const notification = unwrappedData.context_enhanced
+                        ? `🔄 **Validation Failed - Regenerating with Enhanced Context**\n\n` +
+                        `Added files: ${unwrappedData.added_files.join(', ')}\n\n` +
+                        `Regenerating ${unwrappedData.failed_hunks.length}/${unwrappedData.total_hunks} failed hunk(s)...`
+                        : `🔄 **Validation Failed - Regenerating Diff**\n\n` +
+                        `Fixing ${unwrappedData.failed_hunks.length}/${unwrappedData.total_hunks} failed hunk(s)...`;
+
+                    currentContent += notification + '\n\n';
+
+                    setStreamedContentMap((prev: Map<string, string>) => {
+                        const next = new Map(prev);
+                        next.set(conversationId, currentContent);
+                        return next;
+                    });
+
+                    // The model will continue streaming the regenerated diff
+                    return;  // Exit after handling validation failure
                 }
-                
+
                 // Diff regeneration notifications are now just informational
                 if (unwrappedData.type === 'diff_regeneration_requested') {
                     console.log('🔄 DIFF_REGENERATION:', unwrappedData);
@@ -966,15 +942,6 @@ export const sendPayload = async (
             const containsCodeBlock = data.includes('```');
             const containsToolExecution = data.includes('tool_execution') || data.includes('⟩') || data.includes('⟨');
 
-            // DEBUG: Log error detection attempt for all potential errors
-            console.log('🔍 ERROR_DETECTION_ATTEMPT:', {
-                willCheckForError: !(containsCodeBlock || containsDiff || containsToolExecution),
-                containsCodeBlock,
-                containsDiff,
-                containsToolExecution,
-                dataPreview: data.substring(0, 200)
-            });
-
             // CRITICAL FIX: Check parsed JSON directly for error patterns
             // extractErrorFromSSE expects "data: " prefix which was already stripped
             let errorResponse = null;
@@ -1027,16 +994,6 @@ export const sendPayload = async (
                         };
                     }
                 }
-            }
-
-            // DEBUG: Log error extraction result
-            if (data.includes('"error"') || data.includes('"error_type"')) {
-                console.log('🔍 ERROR_EXTRACTION_RESULT:', {
-                    errorResponseFound: !!errorResponse,
-                    errorType: errorResponse?.error,
-                    errorDetail: errorResponse?.detail?.substring(0, 100),
-                    statusCode: errorResponse?.status_code
-                });
             }
 
             // NEW LOGIC: Distinguish between fatal and recoverable errors
@@ -1288,7 +1245,7 @@ export const sendPayload = async (
 
                 // Check for rewind markers in accumulated content first
                 if (currentContent.includes('<!-- REWIND_MARKER:')) {
-                    const rewindMatch = currentContent.match(/<!-- REWIND_MARKER: (\d+)(?:\|FENCE:([`~])(\w*))? -->/);
+                    const rewindMatch = currentContent.match(/<!-- REWIND_MARKER: (\d+)(?:\|FENCE:([`~])(\w*))? -->(?:<\/span>)?/);
                     if (rewindMatch) {
                         const rewindLineNumber = parseInt(rewindMatch[1], 10);
                         const fenceType = rewindMatch[2]; // '`' or '~' or undefined
@@ -1343,7 +1300,7 @@ export const sendPayload = async (
 
                         // Remove everything from the rewind marker onwards
                         const lines = currentContent.split('\n');
-                        const markerIndex = lines.findIndex(line => line.includes('<!-- REWIND_MARKER:'));
+                        const markerIndex = lines.findIndex(line => line.includes('<!-- REWIND_MARKER:') || line.includes('<span class="rewind-marker"'));
                         if (markerIndex >= 0) {
                             const beforeRewind = lines.slice(0, markerIndex).join('\n');
 
@@ -1385,7 +1342,7 @@ export const sendPayload = async (
 
                 // Check for rewind markers that indicate continuation splicing
                 if (jsonData.content && jsonData.content.includes('<!-- REWIND_MARKER:')) {
-                    const rewindMatch = jsonData.content.match(/<!-- REWIND_MARKER: (\d+)(?:\|FENCE:([`~])(\w*))? -->/);
+                    const rewindMatch = jsonData.content.match(/<!-- REWIND_MARKER: (\d+)(?:\|FENCE:([`~])(\w*))? -->(?:<\/span>)?/);
                     if (rewindMatch) {
                         const rewindLine = parseInt(rewindMatch[1], 10);
                         const fenceType = rewindMatch[2];
@@ -1406,8 +1363,9 @@ export const sendPayload = async (
                         // Strip the marker and "Block continues" text from this chunk's content
                         // but keep any actual content that comes after
                         jsonData.content = jsonData.content
-                            .replace(/<!-- REWIND_MARKER: \d+ -->\n?/, '')
-                            .replace(/<!-- REWIND_MARKER: \d+\|FENCE:[`~]\w* -->\n?/, '')
+                            .replace(/<span class="rewind-marker"[^>]*><!-- REWIND_MARKER: \d+ --><\/span>\n?/g, '')
+                            .replace(/<span class="rewind-marker"[^>]*><!-- REWIND_MARKER: \d+\|FENCE:[`~]\w* --><\/span>\n?/g, '')
+                            .replace(/<!-- REWIND_MARKER: \d+ -->(?:<\/span>)?\n?/g, '')
                             .replace(/\*\*🔄 Block continues\.\.\.\*\*\n?/, '');
 
                         // If backend told us we're continuing a code block, 
@@ -1437,6 +1395,27 @@ export const sendPayload = async (
 
                 // Handle continuation rewind markers
                 if (jsonData.type === 'continuation_rewind') {
+                    // Handle marker-based rewind (for diff validation)
+                    if (jsonData.type === 'rewind' && jsonData.to_marker) {
+                        const marker = `<span class="diff-rewind-marker" data-marker="${jsonData.to_marker}"`;
+                        console.log(`🔄 MARKER_REWIND: Searching for marker: ${marker}`);
+
+                        const markerIndex = currentContent.indexOf(marker);
+                        if (markerIndex >= 0) {
+                            currentContent = currentContent.substring(0, markerIndex);
+                            console.log(`✂️ MARKER_REWIND: Cut at marker position ${markerIndex}, preserved ${currentContent.length} chars`);
+
+                            setStreamedContentMap((prev: Map<string, string>) => {
+                                const next = new Map(prev);
+                                next.set(conversationId, currentContent);
+                                return next;
+                            });
+                        } else {
+                            console.warn(`⚠️ MARKER_REWIND: Marker not found: ${marker}`);
+                        }
+                        return;
+                    }
+
                     console.log('🔄 REWIND: Received continuation rewind marker:', jsonData);
                     // Remove the last incomplete line based on rewind_line
                     const lines = currentContent.split('\n');
@@ -1552,11 +1531,33 @@ export const sendPayload = async (
                     // Build display header with proper fallback chain
                     let displayHeader = storedHeader;
                     if (!displayHeader) {
-                        // If stored header not found, use the one from the event
                         displayHeader = unwrappedData.display_header;
                     }
                     if (!displayHeader) {
                         displayHeader = toolName.replace('mcp_', '').replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase());
+                    }
+
+                    // Enhance shell command headers with the actual command
+                    if (isShellCommandTool && storedInput?.command) {
+                        // Truncate long commands for the header
+                        const cmdPreview = storedInput.command.length > 50
+                            ? storedInput.command.substring(0, 47) + '...'
+                            : storedInput.command;
+                        console.log('🔍 HEADER_DEBUG (tool_display): cmdPreview before sanitization:', JSON.stringify(cmdPreview));
+                        displayHeader = `Shell Command: ${cmdPreview}`;
+                        console.log('🔍 HEADER_DEBUG (tool_display): displayHeader before sanitization:', JSON.stringify(displayHeader));
+                    }
+
+                    // CRITICAL: Always sanitize displayHeader for shell commands AFTER all header logic
+                    // This ensures newlines are removed regardless of header source (stored, enhanced, etc.)
+                    // Newlines in displayHeader break HTML comments and regex matching
+                    if (isShellCommandTool && displayHeader) {
+                        displayHeader = displayHeader
+                            .replace(/\n/g, ' ') // Replace newlines with spaces
+                            .replace(/\s+/g, ' ') // Collapse multiple spaces
+                            .trim();
+                        console.log('🔍 HEADER_DEBUG (tool_display): displayHeader AFTER sanitization:', JSON.stringify(displayHeader));
+                        console.log('🔍 HEADER_DEBUG (tool_display): Has newlines?', displayHeader.includes('\n'));
                     }
 
                     // Prepare content for display
@@ -1605,40 +1606,53 @@ export const sendPayload = async (
 
                     // Create tool display with header - handle hierarchical results
                     let toolResultContent: string;
+                    let toolResultDisplay: string;
 
-                    if (formatted.hierarchicalResults && formatted.hierarchicalResults.length > 0) {
-                        // Render hierarchical results as nested collapsible sections
-                        const hierarchicalDisplay = formatted.hierarchicalResults.map((result, index) => {
-                            // Only use code fence for actual code content (not text/markdown)
-                            const isCode = result.language && result.language !== 'text' && result.language !== 'markdown';
-                            const resultContent = isCode
-                                ? `\`\`\`${result.language}\n${result.content}\n\`\`\``
-                                : result.content;
-
-                            // Clean formatting with title and indented content
-                            return `### ${result.title}\n\n${resultContent}`;
-                        }).join('\n\n---\n\n');
-
-                        // Include summary at top, then hierarchical results
-                        toolResultContent = `${formatted.summary || formatted.content}\n\n${hierarchicalDisplay}`;
+                    if (actualToolName === 'run_shell_command') {
+                        // Shell commands: wrap in TOOL_BLOCK with shell code fence inside
+                        toolResultContent = displayContent;
+                        const needsExtraNewline = !currentContent.endsWith('\n\n');
+                        toolResultDisplay = `${needsExtraNewline ? '\n\n' : '\n'}<!-- TOOL_BLOCK_START:${toolName}|${displayHeader}|${unwrappedData.tool_id} -->\n\`\`\`shell\n${toolResultContent}\n\`\`\`\n<!-- TOOL_BLOCK_END:${toolName}|${unwrappedData.tool_id} -->\n\n`;
+                    } else if (formatted.hierarchicalResults && formatted.hierarchicalResults.length > 0) {
+                        // CRITICAL: Pass hierarchicalResults as JSON structure, NOT as serialized markdown.
+                        toolResultContent = JSON.stringify({
+                            _isStructuredToolResult: true,
+                            summary: formatted.summary || formatted.content,
+                            type: formatted.type,
+                            hierarchicalResults: formatted.hierarchicalResults
+                        });
+                        const needsExtraNewline = !currentContent.endsWith('\n\n');
+                        toolResultDisplay = `${needsExtraNewline ? '\n\n' : '\n'}<!-- TOOL_BLOCK_START:${toolName}|${displayHeader}|${unwrappedData.tool_id} -->\n${toolResultContent}\n<!-- TOOL_BLOCK_END:${toolName}|${unwrappedData.tool_id} -->\n\n`;
                     } else if (formatted.type === 'search_results' && formatted.content) {
                         // For search results without hierarchical structure, show the formatted content
                         toolResultContent = formatted.content;
+                        const needsExtraNewline = !currentContent.endsWith('\n\n');
+                        toolResultDisplay = `${needsExtraNewline ? '\n\n' : '\n'}<!-- TOOL_BLOCK_START:${toolName}|${displayHeader}|${unwrappedData.tool_id} -->\n${toolResultContent}\n<!-- TOOL_BLOCK_END:${toolName}|${unwrappedData.tool_id} -->\n\n`;
                     } else {
                         // Default: use formatted content as-is
                         toolResultContent = formatted.content;
+                        const needsExtraNewline = !currentContent.endsWith('\n\n');
+                        toolResultDisplay = `${needsExtraNewline ? '\n\n' : '\n'}<!-- TOOL_BLOCK_START:${toolName}|${displayHeader}|${unwrappedData.tool_id} -->\n${toolResultContent}\n<!-- TOOL_BLOCK_END:${toolName}|${unwrappedData.tool_id} -->\n\n`;
                     }
-
-                    // Create tool display with header
-                    // Ensure blank line before tool result for proper markdown parsing
-                    const needsExtraNewline = !currentContent.endsWith('\n\n');
-                    const toolResultDisplay = `${needsExtraNewline ? '\n\n' : '\n'}<!-- TOOL_BLOCK_START:${toolName}|${displayHeader} -->\n${toolResultContent}\n<!-- TOOL_BLOCK_END:${toolName} -->\n\n`;
 
                     // STRATEGY 1: Use tool_id marker (most reliable)
                     const toolMarker = `<!-- TOOL_MARKER:${unwrappedData.tool_id} -->`;
                     let markerIndex = currentContent.indexOf(toolMarker);
 
                     console.log('🔧 TOOL_RESULT: Strategy 1 (tool_id marker):', markerIndex);
+
+
+                    // DEBUG: Log marker search
+                    console.log('🔧 TOOL_RESULT: Searching for marker:', toolMarker);
+                    console.log('🔧 TOOL_RESULT: Current content includes marker?', currentContent.includes(toolMarker));
+                    console.log('🔧 TOOL_RESULT: Current content length:', currentContent.length);
+                    if (markerIndex === -1) {
+                        console.error('MARKER NOT FOUND', {
+                            toolId: unwrappedData.tool_id,
+                            toolName: unwrappedData.tool_name,
+                            contentIncludes: currentContent.includes('TOOL_MARKER')
+                        });
+                    }
 
                     if (markerIndex !== -1) {
                         // Found the marker! Now find the end of the tool block
@@ -1653,8 +1667,8 @@ export const sendPayload = async (
                             // The marker is placed right before the shell block
                             // Pattern: \n```shell\n$ command\n⏳ Running...\n```
                             const afterMarkerContent = currentContent.substring(markerIndex);
-                            const shellBlockMatch = afterMarkerContent.match(/^<!-- TOOL_MARKER:[^>]+ -->\n```shell\n/);
-
+                            // Pattern now includes the TOOL_BLOCK_START comment between TOOL_MARKER and shell fence
+                            const shellBlockMatch = afterMarkerContent.match(/^<!-- TOOL_MARKER:[^>]+ -->\n<!-- TOOL_BLOCK_START:[^>]+ -->\n```shell\n/);
                             if (shellBlockMatch) {
                                 // Find where the code block starts (right after the marker)
                                 const shellBlockStart = markerIndex + shellBlockMatch[0].length;
@@ -1688,7 +1702,7 @@ export const sendPayload = async (
                             // The TOOL_MARKER is placed right before TOOL_BLOCK_START, so the block starts at the marker position
                             const toolBlockStart = markerIndex;
 
-                            blockEndMarker = `<!-- TOOL_BLOCK_END:${toolName} -->`;
+                            blockEndMarker = `<!-- TOOL_BLOCK_END:${toolName}|${unwrappedData.tool_id} -->`;
                             const blockEndIndex = currentContent.indexOf(blockEndMarker, searchStart);
 
                             if (blockEndIndex !== -1) {
@@ -1781,7 +1795,8 @@ export const sendPayload = async (
                                     console.log('🔧 TOOL_RESULT: No block end found, appending');
                                 }
                             } else {
-                                blockEndMarker = `<!-- TOOL_BLOCK_END:${toolName} -->`;
+                                // Block end marker includes tool_id, so we need to search for it with tool_id
+                                blockEndMarker = `<!-- TOOL_BLOCK_END:${toolName}|${unwrappedData.tool_id} -->`;
                                 const blockEndIndex = currentContent.indexOf(blockEndMarker, lastStartIndex);
                                 if (blockEndIndex !== -1) {
                                     endOffset = blockEndMarker.length + 2;
@@ -1819,6 +1834,13 @@ export const sendPayload = async (
                     if (handleToolStart(unwrappedData.tool_name, unwrappedData, context)) {
                         currentContent = contentRef.value;
 
+                        // CRITICAL: Update the streamed content map so UI reflects the change
+                        setStreamedContentMap((prev: Map<string, string>) => {
+                            const next = new Map(prev);
+                            next.set(conversationId, currentContent);
+                            return next;
+                        });
+
                         // Store tool input for later use in tool_display
                         if (unwrappedData.args && unwrappedData.tool_id) {
                             toolInputsMap.set(unwrappedData.tool_id, unwrappedData.args);
@@ -1853,7 +1875,16 @@ export const sendPayload = async (
                     // Enhance display header with search parameters using generic utility
                     const baseHeader = unwrappedData.display_header || toolName.replace('mcp_', '').replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase());
                     const inputArgs = unwrappedData.args || unwrappedData.input || {};
-                    const displayHeader = enhanceToolDisplayHeader(toolName, baseHeader, inputArgs);
+                    let displayHeader = enhanceToolDisplayHeader(toolName, baseHeader, inputArgs);
+                    
+                    // Sanitize displayHeader to ensure it never contains newlines (breaks HTML comments)
+                    // This is critical for commands with \n in their arguments
+                    displayHeader = displayHeader
+                        .replace(/\n/g, ' ') // Replace newlines with spaces
+                        .replace(/\s+/g, ' ') // Collapse multiple spaces
+                        .trim();
+                    console.log('🔍 HEADER_DEBUG (tool_start): displayHeader AFTER sanitization:', JSON.stringify(displayHeader));
+                    console.log('🔍 HEADER_DEBUG (tool_start): Has newlines?', displayHeader.includes('\n'));
 
                     // Store the enhanced header for later matching in tool_display
                     if (unwrappedData.tool_id) {
@@ -1864,23 +1895,19 @@ export const sendPayload = async (
                     let toolStartDisplay;
 
                     if (actualToolName === 'run_shell_command' && inputArgs.command) {
-                        // For shell: use consistent TOOL_MARKER format like other tools
-                        // This ensures the tool_display handler can find and replace it
-                        toolStartDisplay = `<!-- TOOL_MARKER:${unwrappedData.tool_id} -->\n\`\`\`shell\n$ ${inputArgs.command}\n⏳ Running...\n\`\`\`\n\n`;
+                        // For shell: add TOOL_MARKER before the shell block so tool_display can find and replace it
+                        // Use TOOL_BLOCK format with shell code fence inside, matching tool_display format
+                        toolStartDisplay = `\n<!-- TOOL_MARKER:${unwrappedData.tool_id} -->\n<!-- TOOL_BLOCK_START:${toolName}|${displayHeader}|${unwrappedData.tool_id} -->\n\`\`\`shell\n$ ${inputArgs.command}\n⏳ Running...\n\`\`\`\n<!-- TOOL_BLOCK_END:${toolName}|${unwrappedData.tool_id} -->\n\n`;
                     } else if (actualToolName === 'get_current_time') {
-                        toolStartDisplay = `\n<!-- TOOL_BLOCK_START:${toolName}|${displayHeader} -->\n⏳ Getting current time...\n<!-- TOOL_BLOCK_END:${toolName} -->\n\n`;
+                        // Add TOOL_MARKER for reliable replacement
+                        toolStartDisplay = `\n<!-- TOOL_MARKER:${unwrappedData.tool_id} -->\n<!-- TOOL_BLOCK_START:${toolName}|${displayHeader}|${unwrappedData.tool_id} -->\n⏳ Getting current time...\n<!-- TOOL_BLOCK_END:${toolName}|${unwrappedData.tool_id} -->\n\n`;
                     } else {
-                        // Use TOOL_BLOCK format consistently for all tools
-                        toolStartDisplay = `<!-- TOOL_MARKER:${unwrappedData.tool_id} -->\n<!-- TOOL_BLOCK_START:${toolName}|${displayHeader} -->\n⏳ Running...\n<!-- TOOL_BLOCK_END:${toolName} -->\n\n`;
+                        // Add TOOL_MARKER for all tools so tool_display can find and replace reliably
+                        toolStartDisplay = `\n<!-- TOOL_MARKER:${unwrappedData.tool_id} -->\n<!-- TOOL_BLOCK_START:${toolName}|${displayHeader}|${unwrappedData.tool_id} -->\n⏳ Running...\n<!-- TOOL_BLOCK_END:${toolName}|${unwrappedData.tool_id} -->\n\n`;
                     }
 
                     console.log('🔧 TOOL_START formatted:', toolStartDisplay);
                     currentContent += toolStartDisplay;
-                    setStreamedContentMap((prev: Map<string, string>) => {
-                        const next = new Map(prev);
-                        next.set(conversationId, currentContent);
-                        return next;
-                    });
                     setStreamedContentMap((prev: Map<string, string>) => {
                         const next = new Map(prev);
                         next.set(conversationId, currentContent);
