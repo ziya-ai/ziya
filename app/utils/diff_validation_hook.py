@@ -180,6 +180,15 @@ class DiffValidationHook:
                         self.current_context.add(file_path)
                         context_was_enhanced = True
                         logger.info(f"✅ Added {file_path} to model context ({len(file_content)} chars)")
+                        
+                        # Immediately notify frontend about context enhancement
+                        if send_event:
+                            send_event("context_sync", {
+                                "added_files": [file_path],
+                                "reason": "diff_validation"
+                            })
+                        context_was_enhanced = True
+                        logger.info(f"✅ Added {file_path} to model context ({len(file_content)} chars)")
                 
             # Notify frontend to sync UI
             if send_event:
