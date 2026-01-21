@@ -531,12 +531,6 @@ async function handleStreamError(response: Response): Promise<Error> {
      * Show error message inline if it's long, otherwise as popup
      */
 function showError(errorDetail: string, conversationId: string, addMessageToConversation: (message: Message, conversationId: string, isNonCurrentConversation?: boolean) => void, messageType: 'error' | 'warning' = 'error') {
-    console.log('🔍 SHOW_ERROR_CALLED:', {
-        errorLength: errorDetail.length,
-        messageType,
-        conversationId,
-        errorPreview: errorDetail.substring(0, 100)
-    });
 
     if (errorDetail.length > 100) {
         // Show inline as a collapsible message
@@ -555,15 +549,12 @@ ${errorDetail}
             _timestamp: Date.now()
         };
         addMessageToConversation(errorMessage, conversationId);
-        console.log('✅ SHOW_ERROR: Added long error message to conversation');
     } else {
         // Show as popup for short messages
         if (messageType === 'error') {
             message.error(errorDetail);
-            console.log('✅ SHOW_ERROR: Displayed short error as popup');
         } else {
             message.warning(errorDetail);
-            console.log('✅ SHOW_ERROR: Displayed short warning as popup');
         }
     }
 }
@@ -733,10 +724,6 @@ export const sendPayload = async (
             // Keep the last potentially incomplete message in buffer
             buffer = messages.pop() || '';
 
-            // DEBUG: Log how many complete messages we're processing
-            if (messages.length > 0) {
-                console.log(`🔍 CHUNK_DEBUG: Processing ${messages.length} complete SSE messages from buffer`);
-            }
 
             // Process complete messages
             for (const sseMessage of messages) {
@@ -850,36 +837,13 @@ export const sendPayload = async (
                     }
                 }
 
-                // Handle diff validation failure with clear UI feedback
+                // Handle diff validation status (informational only - no rewind)
                 if (unwrappedData.type === 'diff_validation_failed') {
-                    console.log('❌ DIFF_VALIDATION_FAILED:', unwrappedData);
-
-                    // Calculate rewind line (before the failed diff)
-                    const lines = currentContent.split('\n');
-                    const rewindLine = lines.length;
-
-                    // Insert rewind marker
-                    const rewindMarker = `<!-- REWIND_MARKER: ${rewindLine} -->`;
-                    currentContent += `\n\n${rewindMarker}\n\n`;
-
-                    // Add user-friendly notification
-                    const notification = unwrappedData.context_enhanced
-                        ? `🔄 **Validation Failed - Regenerating with Enhanced Context**\n\n` +
-                        `Added files: ${unwrappedData.added_files.join(', ')}\n\n` +
-                        `Regenerating ${unwrappedData.failed_hunks.length}/${unwrappedData.total_hunks} failed hunk(s)...`
-                        : `🔄 **Validation Failed - Regenerating Diff**\n\n` +
-                        `Fixing ${unwrappedData.failed_hunks.length}/${unwrappedData.total_hunks} failed hunk(s)...`;
-
-                    currentContent += notification + '\n\n';
-
-                    setStreamedContentMap((prev: Map<string, string>) => {
-                        const next = new Map(prev);
-                        next.set(conversationId, currentContent);
-                        return next;
-                    });
-
-                    // The model will continue streaming the regenerated diff
-                    return;  // Exit after handling validation failure
+                    // Just log it - the model will naturally acknowledge and fix
+                    console.log('📝 DIFF_VALIDATION: Failed, model will provide correction:', unwrappedData);
+                    // No special handling needed - model continues naturally
+                    // The broken diff stays visible, correction follows
+                    return;
                 }
 
                 // Diff regeneration notifications are now just informational
@@ -1007,7 +971,6 @@ export const sendPayload = async (
             );
 
             if (errorResponse) {
-                console.log('🔍 ERROR_HANDLING_START: About to process error and call showError');
                 errorAlreadyDisplayed = true;  // Prevent duplicate error displays
 
                 console.log('❌ ERROR DETECTED:', {
@@ -1105,14 +1068,8 @@ export const sendPayload = async (
                     ? `${errorResponse.detail} (Partial response preserved - ${currentContent.length} characters)`
                     : errorResponse.detail || 'An error occurred';
 
-                console.log('🔍 CALLING_SHOW_ERROR:', {
-                    errorMessage: errorMessage.substring(0, 100),
-                    messageType: currentContent.length > 0 ? 'warning' : 'error',
-                    targetConversationId
-                });
 
                 showError(errorMessage, targetConversationId, addMessageToConversation, currentContent.length > 0 ? 'warning' : 'error');
-                console.log('✅ SHOW_ERROR_COMPLETED');
                 errorOccurred = true;
                 // Don't return here - let the stream finish naturally but prevent further content processing
 
@@ -1154,7 +1111,6 @@ export const sendPayload = async (
 
                     // If error was already displayed, just end cleanly
                     if (errorAlreadyDisplayed) {
-                        console.log('🔍 DONE_MARKER: Error already displayed, ending stream');
                         return;
                     }
 
@@ -1543,9 +1499,7 @@ export const sendPayload = async (
                         const cmdPreview = storedInput.command.length > 50
                             ? storedInput.command.substring(0, 47) + '...'
                             : storedInput.command;
-                        console.log('🔍 HEADER_DEBUG (tool_display): cmdPreview before sanitization:', JSON.stringify(cmdPreview));
                         displayHeader = `Shell Command: ${cmdPreview}`;
-                        console.log('🔍 HEADER_DEBUG (tool_display): displayHeader before sanitization:', JSON.stringify(displayHeader));
                     }
 
                     // CRITICAL: Always sanitize displayHeader for shell commands AFTER all header logic
@@ -1556,8 +1510,6 @@ export const sendPayload = async (
                             .replace(/\n/g, ' ') // Replace newlines with spaces
                             .replace(/\s+/g, ' ') // Collapse multiple spaces
                             .trim();
-                        console.log('🔍 HEADER_DEBUG (tool_display): displayHeader AFTER sanitization:', JSON.stringify(displayHeader));
-                        console.log('🔍 HEADER_DEBUG (tool_display): Has newlines?', displayHeader.includes('\n'));
                     }
 
                     // Prepare content for display
@@ -1580,24 +1532,11 @@ export const sendPayload = async (
                     // Format the content
                     const inputForFormatter = unwrappedData.args || storedInput;
 
-                    console.log('🔍 FORMATTING DEBUG:', {
-                        toolName,
-                        hasInput: !!inputForFormatter,
-                        inputKeys: inputForFormatter ? Object.keys(inputForFormatter) : [],
-                        hasRegistry: !!(window as any).FormatterRegistry,
-                        registryFormatters: (window as any).FormatterRegistry ? (window as any).FormatterRegistry.getAllFormatters().length : 0
-                    });
 
                     const formatted = formatMCPOutput(toolName, displayContent, inputForFormatter, {
                         showInput: false,
                         maxLength: 10000,
                         defaultCollapsed: true
-                    });
-
-                    console.log('🔍 FORMATTING RESULT:', {
-                        type: formatted.type,
-                        hasHierarchical: !!formatted.hierarchicalResults,
-                        hierarchicalCount: formatted.hierarchicalResults?.length || 0
                     });
 
                     console.log('🔧 FORMATTED CONTENT:', formatted.content.substring(0, 200));
@@ -1883,8 +1822,6 @@ export const sendPayload = async (
                         .replace(/\n/g, ' ') // Replace newlines with spaces
                         .replace(/\s+/g, ' ') // Collapse multiple spaces
                         .trim();
-                    console.log('🔍 HEADER_DEBUG (tool_start): displayHeader AFTER sanitization:', JSON.stringify(displayHeader));
-                    console.log('🔍 HEADER_DEBUG (tool_start): Has newlines?', displayHeader.includes('\n'));
 
                     // Store the enhanced header for later matching in tool_display
                     if (unwrappedData.tool_id) {
@@ -2211,13 +2148,11 @@ export const sendPayload = async (
                 try {
                     const finalChunk = decoder.decode();
                     if (finalChunk) {
-                        console.log('🔍 FINAL_CHUNK_DEBUG: Processing final chunk from decoder:', finalChunk.substring(0, 100));
                         processChunk(finalChunk);
                     }
 
                     // Process any remaining buffered message
                     if (buffer.trim()) {
-                        console.log('🔍 BUFFER_FLUSH_DEBUG: Processing remaining buffer:', buffer.substring(0, 100));
                         processChunk('');  // This will process the final buffer content
                     }
 
