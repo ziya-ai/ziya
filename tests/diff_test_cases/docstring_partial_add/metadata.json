@@ -1,0 +1,5 @@
+{
+    "target_file": "app/utils/cli_diff_applicator.py",
+    "description": "Test adding docstring Args and Returns sections where some context lines already exist",
+    "date_added": "2025-01-24"
+}
