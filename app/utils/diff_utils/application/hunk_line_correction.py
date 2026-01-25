@@ -217,7 +217,9 @@ def correct_hunk_line_numbers(hunks: List[Dict[str, Any]], file_lines: List[str]
             # Only enforce when fuzzy match confidence is not perfect
             # High confidence (>= 0.95) means context is distinctive enough, skip function name check
             # Lower confidence means we need function context to prevent corruption
-            if function_context and confidence < 0.95:
+            # Exception: Skip validation for small files (< 30 lines) which are likely test snippets
+            is_small_file = len(file_lines) < 30
+            if function_context and confidence < 0.95 and not is_small_file:
                 if not validate_function_context_at_position(function_context, file_lines, pos):
                     logger.warning(f"Hunk {i}: function context '{function_context}' not found, confidence {confidence:.2f} - skipping to prevent corruption")
                     skipped += 1
@@ -225,6 +227,8 @@ def correct_hunk_line_numbers(hunks: List[Dict[str, Any]], file_lines: List[str]
                     continue
             elif function_context and confidence >= 0.95:
                 logger.debug(f"Hunk {i}: skipping function context validation due to high confidence match ({confidence:.2f})")
+            elif is_small_file and function_context:
+                logger.debug(f"Hunk {i}: skipping function context validation for small file ({len(file_lines)} lines)")
             
             # For large deletions, require higher confidence to avoid removing wrong content
             old_count = hunk.get('old_count', 0)

@@ -958,7 +958,62 @@ def apply_diff_with_difflib_hybrid_forced(
             new_lines_content = []  # No lines to add
             logger.debug(f"Hunk #{hunk_idx}: Pure deletion detected - will surgically remove {len(h['removed_lines'])} lines")
         else:
-            new_lines_content = h['new_lines']
+            # Check if context lines have CONSISTENT indentation difference from the file
+            # Only apply preservation if ALL indented context lines are off by the same amount
+            new_lines_is_addition = h.get('new_lines_is_addition', [])
+            old_block = h.get('old_block', [])
+            
+            indent_diffs = []
+            if new_lines_is_addition and len(new_lines_is_addition) == len(h['new_lines']) and old_block:
+                old_block_idx = 0
+                for i, (line, is_add) in enumerate(zip(h['new_lines'], new_lines_is_addition)):
+                    if not is_add and old_block_idx < len(old_block):
+                        file_idx = remove_pos + old_block_idx
+                        if file_idx < len(final_lines_with_endings):
+                            file_line = final_lines_with_endings[file_idx].rstrip('\r\n')
+                            # Only consider non-empty lines for indentation comparison
+                            if line.strip() and file_line.strip():
+                                if normalize_line_for_comparison(line) == normalize_line_for_comparison(file_line):
+                                    diff_indent = len(line) - len(line.lstrip())
+                                    file_indent = len(file_line) - len(file_line.lstrip())
+                                    # Only track indentation differences for indented lines
+                                    if diff_indent > 0 or file_indent > 0:
+                                        indent_diffs.append(file_indent - diff_indent)
+                        old_block_idx += 1
+            
+            # Only apply preservation if we have consistent non-zero indentation differences
+            needs_indent_preservation = False
+            if indent_diffs and len(set(indent_diffs)) == 1 and indent_diffs[0] != 0:
+                needs_indent_preservation = True
+            
+            if needs_indent_preservation:
+                # Build indentation-preserved new_lines
+                new_lines_content = []
+                old_block_idx = 0
+                indent_adjustment = indent_diffs[0]
+                
+                for i, (line, is_add) in enumerate(zip(h['new_lines'], new_lines_is_addition)):
+                    if is_add:
+                        # Added line - strip trailing whitespace only from non-empty lines
+                        if line.strip():
+                            new_lines_content.append(line.rstrip())
+                        else:
+                            new_lines_content.append(line)
+                    else:
+                        # Context line - use original file's line if content matches
+                        file_idx = remove_pos + old_block_idx
+                        if file_idx < len(final_lines_with_endings):
+                            file_line = final_lines_with_endings[file_idx].rstrip('\r\n')
+                            if normalize_line_for_comparison(line) == normalize_line_for_comparison(file_line):
+                                new_lines_content.append(file_line)
+                            else:
+                                new_lines_content.append(line)
+                        else:
+                            new_lines_content.append(line)
+                        old_block_idx += 1
+                logger.debug(f"Hunk #{hunk_idx}: Applied indentation preservation (adjustment={indent_adjustment})")
+            else:
+                new_lines_content = h['new_lines']
         
         # Preserve original line endings from the file
         new_lines_with_endings = []
@@ -972,45 +1027,99 @@ def apply_diff_with_difflib_hybrid_forced(
             h['old_start'] > len(final_lines_with_endings) + 1 and  # Allow for off-by-one for empty files
             len(h['added_lines']) > 0):
             
-            # This is the specific case of function_collision - pure addition with completely wrong line numbers
-            # For pure additions, we only insert the added lines, not the entire new_lines
-            # The new_lines contains context + additions, but context already exists in the file
-            added_lines_only = h['added_lines']
-            
-            # Remove trailing empty line if it exists (to match expected output format)
-            if added_lines_only and added_lines_only[-1] == '':
-                added_lines_only = added_lines_only[:-1]
-            
-            # Check if we need to add an empty line separator first
-            # If the original file doesn't end with an empty line, add one
-            needs_separator = True
-            if len(final_lines_with_endings) > 0:
-                last_line = final_lines_with_endings[-1].strip()
-                if not last_line:  # Last line is already empty
-                    needs_separator = False
-            
-            new_lines_with_endings = []
-            
-            # Add separator if needed
-            if needs_separator:
-                new_lines_with_endings.append(dominant_ending)  # Empty line
-            
-            # Add the new function lines
-            for line in added_lines_only:
-                new_lines_with_endings.append(line + dominant_ending)
-            
-            # For pure additions with malformed line numbers, insert at the end of the file
-            actual_remove_count = 0
-            insert_pos = len(final_lines_with_endings)
-            end_remove_pos = insert_pos
-            
-            # Override new_lines_content to prevent standard application from using the full context
-            new_lines_content = []
-            if needs_separator:
-                new_lines_content.append('')  # Empty line
-            new_lines_content.extend(added_lines_only)
-            
-            logger.debug(f"Hunk #{hunk_idx}: Pure addition with malformed line numbers - inserting at end of file")
+            # Check for partial overlap first - some added lines may already exist
+            from ..validation.validators import detect_partial_overlap
+            if detect_partial_overlap(final_lines_with_endings, h):
+                logger.info(f"Hunk #{hunk_idx}: Partial overlap detected in malformed line number case - only adding truly new lines")
+                
+                added_lines_only = h['added_lines']
+                
+                # Find which added lines already exist
+                added_norm = [normalize_line_for_comparison(line) for line in added_lines_only]
+                file_norm = [normalize_line_for_comparison(line) for line in final_lines_with_endings]
+                
+                # Find the first and last added lines that DON'T exist in the file
+                first_new_idx = None
+                last_new_idx = None
+                for i, norm in enumerate(added_norm):
+                    if not norm.strip():
+                        continue
+                    if norm not in file_norm:
+                        if first_new_idx is None:
+                            first_new_idx = i
+                        last_new_idx = i
+                
+                if first_new_idx is None:
+                    logger.info(f"Hunk #{hunk_idx}: All non-trivial added lines already exist - skipping")
+                    continue
+                
+                # Include the truly new lines plus any empty lines between them
+                end_idx = last_new_idx + 1
+                if end_idx < len(added_lines_only) and not added_lines_only[end_idx].strip():
+                    end_idx += 1
+                
+                truly_new_lines = added_lines_only[first_new_idx:end_idx]
+                
+                logger.info(f"Hunk #{hunk_idx}: {len(truly_new_lines)} truly new lines to add (indices {first_new_idx}-{end_idx-1})")
+                
+                # Find insertion point - BEFORE the first existing line that comes AFTER the truly new lines
+                insert_pos = len(final_lines_with_endings)  # Default to end
+                
+                if end_idx < len(added_lines_only):
+                    next_line_norm = normalize_line_for_comparison(added_lines_only[end_idx])
+                    if next_line_norm.strip():
+                        for i, line in enumerate(final_lines_with_endings):
+                            if normalize_line_for_comparison(line) == next_line_norm:
+                                insert_pos = i
+                                logger.debug(f"Hunk #{hunk_idx}: Found insertion point at {insert_pos}")
+                                break
+                
+                new_lines_with_endings = [line + dominant_ending for line in truly_new_lines]
+                actual_remove_count = 0
+                end_remove_pos = insert_pos
+                new_lines_content = truly_new_lines
+                
+                logger.debug(f"Hunk #{hunk_idx}: Partial overlap - inserting {len(truly_new_lines)} lines at pos={insert_pos}")
+            else:
+                # This is the specific case of function_collision - pure addition with completely wrong line numbers
+                # For pure additions, we only insert the added lines, not the entire new_lines
+                # The new_lines contains context + additions, but context already exists in the file
+                added_lines_only = h['added_lines']
+                
+                # Remove trailing empty line if it exists (to match expected output format)
+                if added_lines_only and added_lines_only[-1] == '':
+                    added_lines_only = added_lines_only[:-1]
+                
+                # Check if we need to add an empty line separator first
+                # If the original file doesn't end with an empty line, add one
+                needs_separator = True
+                if len(final_lines_with_endings) > 0:
+                    last_line = final_lines_with_endings[-1].strip()
+                    if not last_line:  # Last line is already empty
+                        needs_separator = False
+                
+                new_lines_with_endings = []
+                
+                # Add separator if needed
+                if needs_separator:
+                    new_lines_with_endings.append(dominant_ending)  # Empty line
+                
+                # Add the new function lines
+                for line in added_lines_only:
+                    new_lines_with_endings.append(line + dominant_ending)
+                
+                # For pure additions with malformed line numbers, insert at the end of the file
+                actual_remove_count = 0
+                insert_pos = len(final_lines_with_endings)
+                end_remove_pos = insert_pos
+                
+                # Override new_lines_content to prevent standard application from using the full context
+                new_lines_content = []
+                if needs_separator:
+                    new_lines_content.append('')  # Empty line
+                new_lines_content.extend(added_lines_only)
+                
+                logger.debug(f"Hunk #{hunk_idx}: Pure addition with malformed line numbers - inserting at end of file")
         elif len(h['removed_lines']) == 0 and len(h['added_lines']) > 0:
             # Pure addition: use new_lines with is_addition tracking to preserve position
             new_lines_is_addition = h.get('new_lines_is_addition', [])
@@ -1036,14 +1145,48 @@ def apply_diff_with_difflib_hybrid_forced(
                 insert_pos = remove_pos
                 end_remove_pos = remove_pos + actual_remove_count
             else:
-                # Context doesn't match or no positional info - only insert the added lines
+                # Context doesn't match or no positional info - find insertion point based on surrounding context
                 added_lines_only = h['added_lines']
                 new_lines_with_endings = [line + dominant_ending for line in added_lines_only]
                 
-                # Insert after the context (at the end of old_block)
+                # Find the context line BEFORE the addition in new_lines
+                context_before = None
+                context_after = None
+                for i, (line, is_add) in enumerate(zip(h['new_lines'], new_lines_is_addition)):
+                    if is_add:
+                        # Found first added line - context_before is the previous non-added line
+                        if i > 0:
+                            context_before = h['new_lines'][i - 1]
+                        # Find context_after (first non-added line after additions)
+                        for j in range(i + 1, len(h['new_lines'])):
+                            if not new_lines_is_addition[j]:
+                                context_after = h['new_lines'][j]
+                                break
+                        break
+                
+                # Find insertion point by locating context_before in the file
+                insert_pos = remove_pos + len(old_block)  # Default to end of context
                 actual_remove_count = 0
-                insert_pos = remove_pos + len(old_block)
-                end_remove_pos = insert_pos
+                if context_before:
+                    context_before_norm = normalize_line_for_comparison(context_before)
+                    for i in range(len(final_lines_with_endings)):
+                        if normalize_line_for_comparison(final_lines_with_endings[i]) == context_before_norm:
+                            # Found context_before - insert after it
+                            insert_pos = i + 1
+                            # Count empty lines between context_before and context_after that should be removed
+                            if context_after:
+                                context_after_norm = normalize_line_for_comparison(context_after)
+                                check_pos = insert_pos
+                                while check_pos < len(final_lines_with_endings):
+                                    check_line = final_lines_with_endings[check_pos].rstrip('\r\n')
+                                    if normalize_line_for_comparison(check_line) == context_after_norm:
+                                        actual_remove_count = check_pos - insert_pos
+                                        break
+                                    check_pos += 1
+                            logger.debug(f"Hunk #{hunk_idx}: Found context_before at {i}, inserting at {insert_pos}, removing {actual_remove_count} lines")
+                            break
+                
+                end_remove_pos = insert_pos + actual_remove_count
             
             # Check for duplicate content before skipping duplicate check
             added_lines_only = h.get('added_lines', [])
