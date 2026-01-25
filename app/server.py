@@ -95,10 +95,38 @@ from app.utils.conversation_exporter import export_conversation_for_paste
 from fastapi.websockets import WebSocket, WebSocketDisconnect
  
 # Track active WebSocket connections for feedback
+
+# Global security stats tracker
+_security_stats = {
+    'total_verifications': 0,
+    'successful_verifications': 0,
+    'failed_verifications': 0,
+    'hallucination_attempts': [],
+    'last_reset': time.time()
+}
+_security_stats_lock = threading.Lock()
+
+# Track active WebSocket connections for feedback
 active_feedback_connections = {}
 
 # Track active WebSocket connections for file tree updates
 active_file_tree_connections = set()
+
+def record_verification_result(tool_name: str, is_valid: bool, error_message: str = None):
+    """Record a verification result for monitoring."""
+    with _security_stats_lock:
+        _security_stats['total_verifications'] += 1
+        if is_valid:
+            _security_stats['successful_verifications'] += 1
+        else:
+            _security_stats['failed_verifications'] += 1
+            _security_stats['hallucination_attempts'].append({
+                'tool_name': tool_name,
+                'error': error_message,
+                'timestamp': time.time()
+            })
+            # Keep only last 100 attempts
+            _security_stats['hallucination_attempts'] = _security_stats['hallucination_attempts'][-100:]
 
 def build_messages_for_streaming(question: str, chat_history: List, files: List, conversation_id: str, use_langchain_format: bool = False) -> List:
     """
@@ -340,6 +368,11 @@ async def _initialize_mcp_background():
     
     try:
         logger.info("🔧 Starting background MCP initialization...")
+        
+        # Initialize signing secret for security
+        from app.mcp.signing import get_session_secret
+        get_session_secret()  # Generate secret at startup
+        
         from app.mcp.manager import get_mcp_manager
         mcp_manager = get_mcp_manager()
         await mcp_manager.initialize()
@@ -1044,6 +1077,10 @@ async def detect_and_execute_mcp_tools(full_response: str, processed_calls: Opti
         try:
             # Get MCP manager and execute the tool
             mcp_manager = get_mcp_manager()
+            
+            # Import verification function
+            from app.mcp.signing import verify_tool_result
+            
             if not mcp_manager.is_initialized:
                 logger.error("🔍 MCP: Manager not initialized")
                 continue
@@ -1058,6 +1095,19 @@ async def detect_and_execute_mcp_tools(full_response: str, processed_calls: Opti
             if result is None:
                 logger.error(f"🔍 MCP: Tool {internal_tool_name} returned None")
                 continue
+            
+            # SECURITY: Verify the result signature
+            is_valid, error_message = verify_tool_result(result, internal_tool_name, arguments)
+            if not is_valid:
+                logger.error(f"🔐 SECURITY: Tool result verification failed for {internal_tool_name}: {error_message}")
+                # CRITICAL: Replace with corrective error that tells model it was rejected
+                corrective_error = f"\n\n🚨 **TOOL CALL REJECTED**: Result verification failed.\n\n{error_message}\n\nDO NOT proceed as if this tool executed. Please try again or use a different approach.\n\n"
+                modified_response = modified_response.replace(tool_call_block, corrective_error)
+                continue
+            
+            # Signature valid - strip metadata before using
+            from app.mcp.signing import strip_signature_metadata
+            result = strip_signature_metadata(result)
             
             # Format the result
             if isinstance(result, dict) and "content" in result:
@@ -1647,13 +1697,30 @@ async def stream_chunks(body):
                     
                     # If validation failed
                     if validation_feedback:
-                        # BIG FLASH: Validation rejected
+                        # Get validation summary to log specifics
+                        summary = validation_hook.get_validation_summary()
+                        
+                        # Log with clear breakdown
                         logger.error("=" * 80)
-                        logger.error("🚨 POST-STREAM DIFF VALIDATION REJECTED 🚨")
+                        logger.error("🚨 DIFF VALIDATION FAILED 🚨")
                         logger.error("=" * 80)
-                        logger.error(f"File: {validation_hook.validated_diffs}")
-                        logger.error(f"Feedback being sent to model:")
-                        logger.error(validation_feedback)
+                        logger.error(f"Total diffs: {summary['total_validated']}")
+                        logger.error(f"  ✅ Passed: {summary['successful']} diffs")
+                        
+                        if summary['successful_files']:
+                            for file in summary['successful_files']:
+                                logger.error(f"     • {file}")
+                        
+                        logger.error(f"  ❌ Failed: {summary['failed']} diff(s)")
+                        
+                        if summary['failed_details']:
+                            for detail in summary['failed_details']:
+                                logger.error(f"     • Diff #{detail['diff_number']}: {detail['file_path']}")
+                                logger.error(f"       Reason: {detail['reason'][:100]}...")
+                        
+                        logger.error("")
+                        logger.error("Model feedback (targeted to failed diff only):")
+                        logger.error(validation_feedback[:500] + "..." if len(validation_feedback) > 500 else validation_feedback)
                         logger.error("=" * 80)
                         
                         # Notify frontend about context enhancement
@@ -1663,7 +1730,7 @@ async def stream_chunks(body):
                             validation_hook.added_files = []
                         
                         # No rewind - model will naturally acknowledge and continue
-                        logger.info("📝 Validation failed - model will provide corrected diff")
+                        logger.info(f"📝 Requesting corrected diff for {summary['failed']} file(s)")
                         
                         # Add feedback to messages and restart generation
                         from langchain_core.messages import HumanMessage
@@ -4042,6 +4109,15 @@ def get_available_models():
 
 if __name__ == "__main__":
     import argparse
+    
+    # Try to import setproctitle for persistent process naming
+    try:
+        from setproctitle import setproctitle
+        has_setproctitle = True
+    except ImportError:
+        has_setproctitle = False
+        logger.debug("setproctitle not available - process title will use default")
+    
     parser = argparse.ArgumentParser(description="Run the Ziya server")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port to run the server on")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Host to run the server on")
@@ -4049,6 +4125,26 @@ if __name__ == "__main__":
     parser.add_argument("--profile", type=str, default=None, help="AWS profile to use")
     parser.add_argument("--region", type=str, default=None, help="AWS region to use")
     
+    # Set terminal window title for iTerm/xterm
+    def set_terminal_title(title):
+        """Set the terminal window title for iTerm2 and xterm-compatible terminals."""
+    # Set the AWS profile if provided
+    if args.profile:
+        os.environ["AWS_PROFILE"] = args.profile
+        logger.info(f"Using AWS profile: {args.profile}")
+        
+    # Set the AWS region if provided
+    if args.region:
+        os.environ["AWS_REGION"] = args.region
+        logger.info(f"Using AWS region: {args.region}")
+        
+    # Initialize the model if provided
+    if args.model:
+        try:
+            ModelManager.initialize_model(args.model)
+        except Exception as e:
+            logger.error(f"Error initializing model: {e}")
+            
     args = parser.parse_args()
     
     # Set the AWS profile if provided
@@ -4067,8 +4163,14 @@ if __name__ == "__main__":
             ModelManager.initialize_model(args.model)
         except Exception as e:
             logger.error(f"Error initializing model: {e}")
-            
+    
     # Run the server
+    # Set process title using setproctitle if available - this persists through library calls
+    port = args.port
+    if has_setproctitle:
+        setproctitle(f"Ziya : {port}")
+        logger.info(f"Set process title to: Ziya : {port}")
+    
     uvicorn.run(app, host=args.host, port=args.port)
 
 @app.get('/api/default-included-folders')
