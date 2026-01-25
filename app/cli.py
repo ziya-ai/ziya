@@ -1,5 +1,20 @@
+# CRITICAL: Set chat mode before any imports
+import os
+os.environ["ZIYA_MODE"] = "chat"
+os.environ.setdefault("ZIYA_LOG_LEVEL", "WARNING")
+
 """
 Ziya CLI - Clean command-line interface.
+# CRITICAL: Force reconfigure all existing loggers to respect chat mode
+# This handles case where modules were imported before ZIYA_MODE was set
+import logging
+for logger_name in logging.Logger.manager.loggerDict:
+    if logger_name.startswith('app.') or logger_name == 'app':
+        existing_logger = logging.getLogger(logger_name)
+        existing_logger.setLevel(logging.WARNING)
+        for handler in existing_logger.handlers:
+            handler.setLevel(logging.WARNING)
+
 
 Usage:
     ziya chat [FILES...]           Interactive chat with optional file context
@@ -23,33 +38,94 @@ import re
 import hashlib
 import argparse
 from pathlib import Path
+import sys
+from app.utils.logging_utils import logger
 from typing import Optional, List, Tuple 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.completion import PathCompleter, WordCompleter, Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.application import Application
+from prompt_toolkit.layout import Layout, HSplit, VSplit, Window
+from prompt_toolkit.layout.containers import WindowAlign
+from prompt_toolkit.widgets import RadioList
+from prompt_toolkit.widgets import Label, Button, TextArea
+from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.formatted_text import FormattedText
+
+
+def print_chat_startup_info(args):
+    """Pretty print essential startup information for chat mode."""
+    root = getattr(args, 'root', None) or os.getcwd()
+    profile = getattr(args, 'profile', None) or os.environ.get('AWS_PROFILE', 'default')
+    model = getattr(args, 'model', None) or os.environ.get('ZIYA_MODEL', 'sonnet4.5')
+    
+    # Only show essential info
+    print(f"Ziya CLI • profile: {profile} • model: {model}")
+    print(f"Root: {root}")
+    
+    # Show MCP server count if available
+    try:
+        from app.mcp.manager import get_mcp_manager
+        mcp_mgr = get_mcp_manager()
+        if mcp_mgr and mcp_mgr.is_initialized:
+            tool_count = len(mcp_mgr._tool_cache) if hasattr(mcp_mgr, '_tool_cache') else 0
+            server_count = len(mcp_mgr.clients) if hasattr(mcp_mgr, 'clients') else 0
+            print(f"MCP: {server_count} servers, {tool_count} tools")
+    except Exception:
+        pass  # Silently skip if MCP not available
+    
+    print()  # Blank line before prompt
 
 
 def setup_env(args):
     """Minimal environment setup for CLI mode."""
+    import sys
+    
+    # Helper to extract flag value from sys.argv
+    def get_flag_from_argv(flag_name):
+        """Extract flag value from sys.argv (handles --flag value format)."""
+        try:
+            if f'--{flag_name}' in sys.argv:
+                idx = sys.argv.index(f'--{flag_name}')
+                if idx + 1 < len(sys.argv):
+                    return sys.argv[idx + 1]
+        except (ValueError, IndexError):
+            pass
+        return None
+    
+    # Handle debug flag first, before any other setup
+    if getattr(args, 'debug', False):
+        os.environ["ZIYA_LOG_LEVEL"] = "DEBUG"
+        print("🐛 Debug logging enabled", file=sys.stderr)
+    
+    # CRITICAL: Force reconfigure all existing loggers to respect chat mode
+    # This handles case where modules were imported before ZIYA_MODE was set
+    import logging
+    # Get the target log level from environment (respects --debug flag)
+    target_level = getattr(logging, os.environ.get('ZIYA_LOG_LEVEL', 'WARNING').upper())
+    for logger_name in logging.Logger.manager.loggerDict:
+        if logger_name.startswith('app.') or logger_name == 'app':
+            existing_logger = logging.getLogger(logger_name)
+            existing_logger.setLevel(target_level)
+            for handler in existing_logger.handlers:
+                handler.setLevel(target_level)
+    
     # Set root directory
     root = getattr(args, 'root', None) or os.getcwd()
     os.environ.setdefault("ZIYA_USER_CODEBASE_DIR", root)
     
     # Model settings
-    if getattr(args, 'model', None):
-        os.environ["ZIYA_MODEL"] = args.model
     
     # AWS settings - set BOTH env vars for compatibility
-    if getattr(args, 'profile', None):
-        os.environ["ZIYA_AWS_PROFILE"] = args.profile
-        os.environ["AWS_PROFILE"] = args.profile
+    profile = getattr(args, 'profile', None) or get_flag_from_argv('profile')
+    if profile:
+        os.environ["ZIYA_AWS_PROFILE"] = profile
+        os.environ["AWS_PROFILE"] = profile
+    # AWS region setting
     if getattr(args, 'region', None):
         os.environ["AWS_REGION"] = args.region
-
-
 def resolve_files(paths: List[str], root: str) -> List[str]:
     """Resolve file/directory paths to list of files."""
     import glob
@@ -119,6 +195,8 @@ class CLI:
         self._init_error = None
         self._active_task = None  # Track active streaming task for cancellation
         self._cancellation_requested = False
+        self._diff_applicator = None  # Lazy-load diff applicator
+        self._last_ctrl_c_time = 0  # Track last Ctrl+C press for double-tap exit
         self._setup_prompt_session()
     
     @property
@@ -127,6 +205,14 @@ class CLI:
         if self._model is None:
             self._model = self._initialize_model()
         return self._model
+    
+    @property
+    def diff_applicator(self):
+        """Lazy-load diff applicator on first use."""
+        if self._diff_applicator is None:
+            from app.utils.cli_diff_applicator import CLIDiffApplicator
+            self._diff_applicator = CLIDiffApplicator()
+        return self._diff_applicator
     
     def _initialize_model(self):
         """Initialize the model with proper error handling."""
@@ -207,7 +293,16 @@ class CLI:
         
         @bindings.add('c-c')
         def _(event):
-            """Handle Ctrl+C - cancel operation or clear input."""
+            """Handle Ctrl+C - double tap to exit, or cancel/clear."""
+            import time
+            current_time = time.time()
+            time_since_last = current_time - self._last_ctrl_c_time
+            
+            # Double tap within 1 second = exit
+            if time_since_last < 1.0:
+                event.app.exit(result='__exit__')
+                return
+            
             if self._active_task:
                 # Cancel the active streaming task
                 self._cancellation_requested = True
@@ -219,6 +314,9 @@ class CLI:
             else:
                 # Empty input - show exit hint
                 print("\033[90m(Press ^D or type /quit to exit)\033[0m")
+            
+            # Update last Ctrl+C time
+            self._last_ctrl_c_time = current_time
         
         self.session = PromptSession(
             history=FileHistory(str(history_file)),
@@ -270,6 +368,14 @@ class CLI:
         # Update history
         self.history.append({'type': 'human', 'content': question})
         if response:
+            # Process diffs if present
+            try:
+                self.diff_applicator.process_response(response)
+            except Exception as e:
+                # Use print instead of logger in CLI mode to avoid logging noise
+                if os.environ.get('ZIYA_LOG_LEVEL') == 'DEBUG':
+                    print(f"\n\033[33mNote: Could not process diffs: {e}\033[0m", file=sys.stderr)
+            
             self.history.append({'type': 'ai', 'content': response})
         
         return response
@@ -361,11 +467,13 @@ class CLI:
                 
                 # Print command/args if available
                 if 'command' in args:
-                    print(f"\033[90m│ $ {args['command']}\033[0m", flush=True)
+                    # Only show command if result doesn't already include it
+                    if not result.startswith('$ '):
+                        print(f"\033[90m│ $ {args['command']}\033[0m", flush=True)
                 
                 # Print result
                 if result:
-                    for line in result.split('\n'):
+                    for line in result.rstrip('\n').split('\n'):
                         print(f"\033[90m│\033[0m {line}", flush=True)
                 
                 print(f"\033[36m└─\033[0m", flush=True)
@@ -486,13 +594,10 @@ class CLI:
     
     async def chat(self):
         """Interactive chat loop."""
-        # Check model availability before starting
         if self.model is None:
             print(f"\n\033[31mError: {self._init_error or 'Model not available'}\033[0m", file=sys.stderr)
             self._print_auth_help()
             return
-        
-        print(f"\033[90mZiya CLI • {len(self.files)} files in context • /help for commands\033[0m\n")
         
         while True:
             try:
@@ -510,12 +615,37 @@ class CLI:
                     print()
                     continue
                 
+                # Check for double Ctrl+C exit signal
+                if user_input == '__exit__':
+                    print("\033[90mGoodbye\033[0m")
+                    break
+                
                 if not user_input:
                     continue
                 
                 # Commands
                 if user_input.startswith('/'):
-                    if not self._handle_command(user_input):
+                    if not await self._handle_command(user_input):
+                        break
+                    continue
+                
+                # Regular message
+                print()
+                try:
+                    await self.ask(user_input)
+                except asyncio.CancelledError:
+                    # Operation was cancelled, continue the loop
+                    pass
+                print()
+                
+            except KeyboardInterrupt:
+                # Ctrl+C during input - just continue
+                if not user_input:
+                    continue
+                
+                # Commands
+                if user_input.startswith('/'):
+                    if not await self._handle_command(user_input):
                         break
                     continue
                 
@@ -537,12 +667,11 @@ class CLI:
         
         print("\033[90mGoodbye\033[0m")
     
-    def _handle_command(self, cmd: str) -> bool:
+    async def _handle_command(self, cmd: str) -> bool:
         """Handle slash commands. Returns False to exit."""
         parts = cmd.split(maxsplit=1)
         command = parts[0].lower()
         arg = parts[1] if len(parts) > 1 else ""
-        
         if command in ['/q', '/quit', '/exit']:
             return False
         
@@ -555,6 +684,13 @@ class CLI:
   /clear         Clear conversation history
   /model <name>  Switch model
   /quit          Exit
+
+\033[1mDiff Application:\033[0m
+  When the AI provides code diffs, you'll be prompted to:
+  [a]pply - Apply the diff to your files
+  [s]kip - Skip this diff and continue
+  [v]iew - View the full diff content
+  [q]uit - Stop processing remaining diffs
 """)
         
         elif command in ['/add', '/a']:
@@ -567,42 +703,503 @@ class CLI:
             else:
                 print("Usage: /add <path>")
         
+        elif command in ['/files', '/ls', '/f']:
+            if self.files:
+                print(f"\033[1mContext files ({len(self.files)}):\033[0m")
+                for f in self.files:
+                    print(f"  {f}")
+            else:
+                print("\033[90mNo files in context\033[0m")
+                print("\033[90mUse /add <path> to add files\033[0m")
+        
         elif command in ['/rm', '/remove']:
             if arg:
                 before = len(self.files)
                 self.files = [f for f in self.files if arg not in f]
                 print(f"\033[90mRemoved {before - len(self.files)} files\033[0m")
-            else:
-                print("Usage: /rm <path>")
-        
-        elif command in ['/files', '/ls', '/f']:
-            if self.files:
-                print(f"\033[90m{len(self.files)} files:\033[0m")
-                for f in self.files[:20]:
-                    print(f"  {f}")
-                if len(self.files) > 20:
-                    print(f"  ... and {len(self.files) - 20} more")
-            else:
-                print("\033[90mNo files in context\033[0m")
-        
-        elif command in ['/clear', '/c']:
-            self.history = []
-            print("\033[90mHistory cleared\033[0m")
-        
         elif command in ['/model', '/m']:
-            if arg:
-                os.environ["ZIYA_MODEL"] = arg
-                self._model = None  # Force reload
-                print(f"\033[90mSwitched to {arg}\033[0m")
-            else:
-                from app.agents.models import ModelManager
-                print(f"\033[90mCurrent: {ModelManager.get_model_alias()}\033[0m")
+            await self._handle_model_selection_async(arg)
         
         else:
             print(f"\033[90mUnknown command: {command}\033[0m")
         
         return True
 
+    async def _show_model_settings_dialog(self, model_name: str, model_config: dict) -> Optional[dict]:
+        """
+        Show an interactive dialog for configuring model settings.
+        
+        Args:
+            model_name: The selected model name
+            model_config: The model's configuration
+            
+        Returns:
+            Dictionary of settings or None if cancelled
+        """
+        from app.agents.models import ModelManager
+        
+        # Get current effective settings
+        current_settings = ModelManager.get_model_settings()
+        
+        # Build form fields based on model capabilities
+        settings = {}
+        
+        # Temperature
+        temp_range = model_config.get('parameter_ranges', {}).get('temperature', {})
+        temp_min = temp_range.get('min', 0.0)
+        temp_max = temp_range.get('max', 1.0)
+        temp_default = current_settings.get('temperature', temp_range.get('default', 0.3))
+        
+        # Max output tokens
+        max_out_range = model_config.get('max_output_tokens_range', {})
+        if not max_out_range:
+            max_out_tokens = model_config.get('max_output_tokens', 4096)
+            max_out_range = {'min': 1, 'max': max_out_tokens, 'default': max_out_tokens}
+        max_out_default = current_settings.get('max_output_tokens', max_out_range.get('default', 4096))
+        
+        # Top-k (if supported)
+        top_k_range = model_config.get('top_k_range')
+        top_k_default = current_settings.get('top_k', 15) if top_k_range else None
+        
+        # Build the form
+        form_text = f"""
+\033[1mConfigure {model_name}\033[0m
+
+Current Settings:
+  Temperature: {temp_default} (range: {temp_min}-{temp_max})
+  Max Output Tokens: {max_out_default} (range: {max_out_range.get('min', 1)}-{max_out_range.get('max', 4096)})
+"""
+        if top_k_range:
+            form_text += f"  Top-K: {top_k_default} (range: {top_k_range.get('min', 0)}-{top_k_range.get('max', 500)})\n"
+        
+        if model_config.get('supports_thinking'):
+            form_text += f"  Thinking Mode: {current_settings.get('thinking_mode', False)}\n"
+        
+        form_text += """
+\033[90mEnter new values (or press Enter to keep current):\033[0m
+"""
+        
+        # Simple text input for now - we can enhance this later
+        print(form_text)
+        
+        # Temperature input
+        temp_input = input(f"Temperature [{temp_default}]: ").strip()
+        if temp_input:
+            try:
+                settings['temperature'] = float(temp_input)
+                if not (temp_min <= settings['temperature'] <= temp_max):
+                    print(f"\033[33mOut of range, using {temp_default}\033[0m")
+                    settings['temperature'] = temp_default
+            except ValueError:
+                print(f"\033[33mInvalid, using {temp_default}\033[0m")
+                settings['temperature'] = temp_default
+        else:
+            settings['temperature'] = temp_default
+        
+        # Max output tokens
+        from app.agents.models import ModelManager
+        
+        current_settings = ModelManager.get_model_settings()
+        print(f"\n\033[1;36m{'─' * 60}\033[0m")
+        print(f"\033[1;36mConfigure {model_name}\033[0m")
+        print(f"\033[1;36m{'─' * 60}\033[0m")
+        print("\033[90mPress Enter to keep current value, or type new value\033[0m\n")
+        
+        # Temperature
+        temp_range = model_config.get('parameter_ranges', {}).get('temperature', {'min': 0, 'max': 1, 'default': 0.3})
+        current_temp = current_settings.get('temperature', temp_range.get('default', 0.3))
+        temp_input = input(f"Temperature [{temp_range['min']}-{temp_range['max']}] (current: {current_temp}): ").strip()
+        if temp_input:
+            try:
+                val = float(temp_input)
+                if temp_range['min'] <= val <= temp_range['max']:
+                    settings['temperature'] = val
+                else:
+                    print(f"\033[33mOut of range, using {current_temp}\033[0m")
+                    settings['temperature'] = current_temp
+            except ValueError:
+                print(f"\033[33mInvalid, using {current_temp}\033[0m")
+                settings['temperature'] = current_temp
+        else:
+            settings['temperature'] = current_temp
+        
+        # Max output tokens
+        max_output = model_config.get('max_output_tokens', 4096)
+        current_max = current_settings.get('max_output_tokens', max_output)
+        max_input = input(f"Max Output Tokens [1-{max_output}] (current: {current_max}): ").strip()
+        if max_input:
+            try:
+                val = int(max_input)
+                if 1 <= val <= max_output:
+                    settings['max_output_tokens'] = val
+                else:
+                    print(f"\033[33mOut of range, using {current_max}\033[0m")
+                    settings['max_output_tokens'] = current_max
+            except ValueError:
+                print(f"\033[33mInvalid, using {current_max}\033[0m")
+                settings['max_output_tokens'] = current_max
+        else:
+            settings['max_output_tokens'] = current_max
+        
+        # Top-k if supported
+        family = model_config.get('family')
+        if family and 'claude' in family:
+            current_top_k = current_settings.get('top_k', 15)
+            top_k_input = input(f"Top-K [0-500] (current: {current_top_k}): ").strip()
+            if top_k_input:
+                try:
+                    val = int(top_k_input)
+                    if 0 <= val <= 500:
+                        settings['top_k'] = val
+                    else:
+                        print(f"\033[33mOut of range, using {current_top_k}\033[0m")
+                        settings['top_k'] = current_top_k
+                except ValueError:
+                    print(f"\033[33mInvalid, using {current_top_k}\033[0m")
+                    settings['top_k'] = current_top_k
+            else:
+                settings['top_k'] = current_top_k
+        
+        # Sort models: group by family (claude, nova, etc.) then by version descending
+        def sort_key(model_name):
+            # Extract family prefix
+            for prefix in ['sonnet', 'opus', 'haiku', 'nova', 'gemini', 'deepseek', 'openai', 'qwen']:
+                if model_name.lower().startswith(prefix):
+                    rest = model_name[len(prefix):].lstrip('-')
+                    try:
+                        version = float(rest.split('-')[0]) if rest and rest[0].isdigit() else 0
+                    except ValueError:
+                        version = 0
+                    return (prefix, -version, model_name)
+            return ('zzz', 0, model_name)
+        
+        sorted_models = sorted(available_models.keys(), key=sort_key)
+        
+        # Build radio list values with formatted labels
+        radio_values = []
+        for i, model_name in enumerate(sorted_models, 1):
+            config = available_models[model_name]
+            indicators = []
+            if model_name == current_model:
+                indicators.append("✓ current")
+            if model_name == DEFAULT_MODELS.get(endpoint):
+                indicators.append("default")
+            
+            # Show context window with auto-scale info
+            token_limit = config.get('token_limit')
+            extended_limit = config.get('extended_context_limit')
+            supports_extended = config.get('supports_extended_context', False)
+            
+            if supports_extended and extended_limit:
+                # Show base→extended format
+                base_display = f"{token_limit // 1000000}M" if token_limit >= 1000000 else f"{token_limit // 1000}K"
+                extended_display = f"{extended_limit // 1000000}M" if extended_limit >= 1000000 else f"{extended_limit // 1000}K"
+                indicators.append(f"{base_display}→{extended_display} ctx")
+            elif token_limit:
+                # Show just the token limit
+                if token_limit >= 1000000:
+                    indicators.append(f"{token_limit // 1000000}M ctx")
+                else:
+                    indicators.append(f"{token_limit // 1000}K ctx")
+            
+            label_text = model_name
+            if indicators:
+                label_text += f"  ({', '.join(indicators)})"
+            
+            radio_values.append((model_name, label_text))
+        
+        # Create radio list
+        radio_list = RadioList(values=radio_values, default=current_model if current_model in available_models else sorted_models[0])
+        
+        # Create key bindings
+        kb = KeyBindings()
+        
+        configure_requested = {'value': False}
+        
+        @kb.add('enter')
+        def _(event):
+            event.app.exit(result=radio_list.current_value)
+        
+        @kb.add('right')
+        def _(event):
+            # Mark that user wants to configure settings
+            configure_requested['value'] = True
+            event.app.exit(result=radio_list.current_value)
+        
+        @kb.add('escape')
+        @kb.add('c-c')
+        def _(event):
+            event.app.exit(result=None)
+        
+        layout = Layout(HSplit([
+            Window(
+                content=FormattedTextControl(text=f'Select Model ({endpoint}) - ↑/↓ to navigate, Enter to select, → to configure, Esc to cancel\n'),
+                height=2
+            ),
+            radio_list,
+        ]))
+        
+        # Create and run application
+        app = Application(
+            layout=layout,
+            key_bindings=kb,
+            full_screen=False,
+            mouse_support=True
+        )
+        
+        try:
+            result = await app.run_async()
+            
+            if result:
+                selected_model = result
+                selected_config = available_models[selected_model]
+                
+                # If user pressed right arrow, show settings dialog
+                if configure_requested['value']:
+                    settings = await self._show_model_settings_dialog(selected_model, selected_config)
+                    if settings is None:
+                        # User cancelled settings, go back to model selection
+                        print(f"\n\033[90mSettings cancelled, keeping model: {current_model}\033[0m")
+                        return
+                    
+                    # Apply settings
+                    for key, value in settings.items():
+                        env_key = f"ZIYA_{key.upper()}"
+                        os.environ[env_key] = str(value)
+                    
+                    print(f"\n\033[32m✓ Switched to {selected_model} with custom settings\033[0m")
+                    for key, value in settings.items():
+                        print(f"  {key}: {value}")
+                else:
+                    print(f"\n\033[32m✓ Switched to {selected_model}\033[0m")
+                
+                os.environ["ZIYA_MODEL"] = result
+                os.environ["ZIYA_MODEL"] = selected_model
+                self._model = None  # Force reload
+            else:
+                print(f"\n\033[90mCancelled\033[0m")
+        except Exception as e:
+            print(f"\n\033[33mInteractive selection failed: {e}\033[0m")
+            print(f"\033[90mCurrent: {current_model}\033[0m")
+            print(f"\033[90mUse: /model <name>\033[0m")
+        
+        return settings
+        
+    async def _show_model_settings_dialog(self, model_name: str, model_config: dict) -> Optional[dict]:
+        """Show simple text-based settings configuration."""
+        from app.agents.models import ModelManager
+        
+        current_settings = ModelManager.get_model_settings()
+        settings = {}
+        
+        print(f"\n\033[1;36m{'─' * 60}\033[0m")
+        print(f"\033[1;36mConfigure {model_name}\033[0m")
+        print(f"\033[1;36m{'─' * 60}\033[0m")
+        print("\033[90mPress Enter to keep current value, or type new value\033[0m\n")
+        
+        # Temperature
+        temp_range = model_config.get('parameter_ranges', {}).get('temperature', {'min': 0, 'max': 1, 'default': 0.3})
+        current_temp = current_settings.get('temperature', temp_range.get('default', 0.3))
+        temp_input = input(f"Temperature [{temp_range['min']}-{temp_range['max']}] (current: {current_temp}): ").strip()
+        if temp_input:
+            try:
+                val = float(temp_input)
+                if temp_range['min'] <= val <= temp_range['max']:
+                    settings['temperature'] = val
+                else:
+                    print(f"\033[33mOut of range, using {current_temp}\033[0m")
+                    settings['temperature'] = current_temp
+            except ValueError:
+                print(f"\033[33mInvalid, using {current_temp}\033[0m")
+                settings['temperature'] = current_temp
+        else:
+            settings['temperature'] = current_temp
+        
+        # Max output tokens
+        max_output = model_config.get('max_output_tokens', 4096)
+        current_max = current_settings.get('max_output_tokens', max_output)
+        max_input = input(f"Max Output Tokens [1-{max_output}] (current: {current_max}): ").strip()
+        if max_input:
+            try:
+                val = int(max_input)
+                if 1 <= val <= max_output:
+                    settings['max_output_tokens'] = val
+                else:
+                    print(f"\033[33mOut of range, using {current_max}\033[0m")
+                    settings['max_output_tokens'] = current_max
+            except ValueError:
+                print(f"\033[33mInvalid, using {current_max}\033[0m")
+                settings['max_output_tokens'] = current_max
+        else:
+            settings['max_output_tokens'] = current_max
+        
+        # Top-k if supported
+        family = model_config.get('family')
+        if family and 'claude' in family:
+            current_top_k = current_settings.get('top_k', 15)
+            top_k_input = input(f"Top-K [0-500] (current: {current_top_k}): ").strip()
+            if top_k_input:
+                try:
+                    val = int(top_k_input)
+                    if 0 <= val <= 500:
+                        settings['top_k'] = val
+                    else:
+                        print(f"\033[33mOut of range, using {current_top_k}\033[0m")
+                        settings['top_k'] = current_top_k
+                except ValueError:
+                    print(f"\033[33mInvalid, using {current_top_k}\033[0m")
+                    settings['top_k'] = current_top_k
+            else:
+                settings['top_k'] = current_top_k
+        
+        return settings
+    
+    async def _handle_model_selection_async(self, arg: str):
+        """Handle /model command with async interactive selection."""
+        from app.config.models_config import MODEL_CONFIGS, DEFAULT_MODELS
+        
+        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        available_models = MODEL_CONFIGS.get(endpoint, {})
+        current_model = os.environ.get("ZIYA_MODEL", DEFAULT_MODELS.get(endpoint, ""))
+        
+        # If a model name is provided directly, use it
+        if arg:
+            if arg in available_models:
+                os.environ["ZIYA_MODEL"] = arg
+                self._model = None  # Force reload
+                print(f"\033[32m✓ Switched to {arg}\033[0m")
+            else:
+                print(f"\033[31mUnknown model: {arg}\033[0m")
+                print(f"\033[90mAvailable: {', '.join(sorted(available_models.keys()))}\033[0m")
+            return
+        
+        # No argument - show interactive selection
+        if not available_models:
+            print(f"\033[31mNo models available for endpoint: {endpoint}\033[0m")
+            return
+        
+        # Sort models: group by family (claude, nova, etc.) then by version descending
+        def sort_key(model_name):
+            # Extract family prefix
+            for prefix in ['sonnet', 'opus', 'haiku', 'nova', 'gemini', 'deepseek', 'openai', 'qwen']:
+                if model_name.lower().startswith(prefix):
+                    rest = model_name[len(prefix):].lstrip('-')
+                    try:
+                        version = float(rest.split('-')[0]) if rest and rest[0].isdigit() else 0
+                    except ValueError:
+                        version = 0
+                    return (prefix, -version, model_name)
+            return ('zzz', 0, model_name)
+        
+        sorted_models = sorted(available_models.keys(), key=sort_key)
+        
+        # Build radio list values with formatted labels
+        radio_values = []
+        for model_name in sorted_models:
+            config = available_models[model_name]
+            indicators = []
+            if model_name == current_model:
+                indicators.append("✓ current")
+            if model_name == DEFAULT_MODELS.get(endpoint):
+                indicators.append("default")
+            
+            # Show context window with auto-scale info
+            token_limit = config.get('token_limit')
+            extended_limit = config.get('extended_context_limit')
+            supports_extended = config.get('supports_extended_context', False)
+            
+            if supports_extended and extended_limit:
+                # Show base→extended format
+                base_display = f"{token_limit // 1000000}M" if token_limit >= 1000000 else f"{token_limit // 1000}K"
+                extended_display = f"{extended_limit // 1000000}M" if extended_limit >= 1000000 else f"{extended_limit // 1000}K"
+                indicators.append(f"{base_display}→{extended_display} ctx")
+            elif token_limit:
+                # Show just the token limit
+                if token_limit >= 1000000:
+                    indicators.append(f"{token_limit // 1000000}M ctx")
+                else:
+                    indicators.append(f"{token_limit // 1000}K ctx")
+            
+            label_text = model_name
+            if indicators:
+                label_text += f"  ({', '.join(indicators)})"
+            
+            radio_values.append((model_name, label_text))
+        
+        # Create radio list
+        radio_list = RadioList(values=radio_values, default=current_model if current_model in available_models else sorted_models[0])
+        
+        # Create key bindings
+        kb = KeyBindings()
+        
+        configure_requested = {'value': False}
+        
+        @kb.add('enter')
+        def _(event):
+            event.app.exit(result=radio_list.current_value)
+        
+        @kb.add('right')
+        def _(event):
+            # Mark that user wants to configure settings
+            configure_requested['value'] = True
+            event.app.exit(result=radio_list.current_value)
+        
+        @kb.add('escape')
+        @kb.add('c-c')
+        def _(event):
+            event.app.exit(result=None)
+        
+        # Create application layout
+        layout = Layout(HSplit([
+            Window(
+                content=FormattedTextControl(text=f'Select Model ({endpoint}) - ↑/↓ to navigate, Enter to select, → to configure, Esc to cancel\n'),
+                height=2
+            ),
+            radio_list,
+        ]))
+        
+        # Create and run application
+        app = Application(
+            layout=layout,
+            key_bindings=kb,
+            full_screen=False,
+            mouse_support=True
+        )
+        
+        try:
+            result = await app.run_async()
+            
+            if result:
+                selected_model = result
+                selected_config = available_models[selected_model]
+                
+                # If user pressed right arrow, show settings dialog
+                if configure_requested['value']:
+                    settings = await self._show_model_settings_dialog(selected_model, selected_config)
+                    if settings is None:
+                        # User cancelled settings, go back to model selection
+                        print(f"\n\033[90mSettings cancelled, keeping model: {current_model}\033[0m")
+                        return
+                    
+                    # Apply settings
+                    for key, value in settings.items():
+                        env_key = f"ZIYA_{key.upper()}"
+                        os.environ[env_key] = str(value)
+                    
+                    print(f"\n\033[32m✓ Switched to {selected_model} with custom settings\033[0m")
+                    for key, value in settings.items():
+                        print(f"  {key}: {value}")
+                else:
+                    print(f"\n\033[32m✓ Switched to {selected_model}\033[0m")
+                
+                os.environ["ZIYA_MODEL"] = selected_model
+                self._model = None  # Force reload
+            else:
+                print(f"\n\033[90mCancelled\033[0m")
+        except Exception as e:
+            print(f"\n\033[33mInteractive selection failed: {e}\033[0m")
+            print(f"\033[90mCurrent: {current_model}\033[0m")
+            print(f"\033[90mUse: /model <name>\033[0m")
 
 
 async def _initialize_mcp():
@@ -702,6 +1299,9 @@ def cmd_review(args):
     # Initialize plugins BEFORE auth check - needed for Amazon auth provider
     from app.plugins import initialize as initialize_plugins
     initialize_plugins()
+    # Show clean startup info
+    print_chat_startup_info(args)
+    
     
     # Now check auth with the profile from setup_env
     profile = getattr(args, 'profile', None)
@@ -841,65 +1441,62 @@ Examples:
   ziya review --staged             Review staged git changes
   git diff | ziya review           Review piped diff
   cat error.log | ziya ask "what's wrong?"
-"""
+        """
     )
     
-    # Global options
+    # Global options - handle flags BEFORE subcommand (e.g., ziya --profile x chat)
     parser.add_argument('--model', '-m', help='Model to use')
     parser.add_argument('--profile', help='AWS profile')
     parser.add_argument('--region', help='AWS region')
     parser.add_argument('--root', help='Root directory (default: cwd)')
     parser.add_argument('--no-stream', action='store_true', help='Disable streaming output')
+    parser.add_argument('--debug', action='store_true', help='Enable debug logging')
+    
+    # Create a parent parser with common arguments (add_help=False prevents conflict)
+    common_parent = argparse.ArgumentParser(add_help=False)
+    common_parent.add_argument('--model', '-m', help='Model to use')
+    common_parent.add_argument('--profile', help='AWS profile')
+    common_parent.add_argument('--region', help='AWS region')
+    common_parent.add_argument('--root', help='Root directory (default: cwd)')
+    common_parent.add_argument('--no-stream', action='store_true', help='Disable streaming output')
+    common_parent.add_argument('--debug', action='store_true', help='Enable debug logging')
     
     subparsers = parser.add_subparsers(dest='command', help='Commands')
     
-    # chat - needs to accept global args too
-    chat_parser = subparsers.add_parser('chat', help='Interactive chat')
+    # chat
+    chat_parser = subparsers.add_parser('chat', parents=[common_parent], help='Interactive chat')
     chat_parser.add_argument('files', nargs='*', help='Files/directories for context')
     chat_parser.set_defaults(func=cmd_chat)
     
     # ask
-    ask_parser = subparsers.add_parser('ask', help='Ask a question')
+    ask_parser = subparsers.add_parser('ask', parents=[common_parent], help='Ask a question')
     ask_parser.add_argument('question', nargs='?', help='Question to ask')
     ask_parser.add_argument('files', nargs='*', help='Files for context')
     ask_parser.set_defaults(func=cmd_ask)
     
     # review
-    review_parser = subparsers.add_parser('review', help='Review code')
+    review_parser = subparsers.add_parser('review', parents=[common_parent], help='Review code')
     review_parser.add_argument('files', nargs='*', help='Files to review')
     review_parser.add_argument('--staged', '-s', action='store_true', help='Review staged git changes')
     review_parser.add_argument('--diff', '-d', action='store_true', help='Review unstaged git changes')
     review_parser.add_argument('--prompt', '-p', help='Custom review prompt')
     review_parser.set_defaults(func=cmd_review)
     
-    # explain  
-    explain_parser = subparsers.add_parser('explain', help='Explain code')
+    # explain
+    explain_parser = subparsers.add_parser('explain', parents=[common_parent], help='Explain code')
     explain_parser.add_argument('files', nargs='*', help='Files to explain')
     explain_parser.add_argument('--prompt', '-p', help='Custom prompt')
     explain_parser.set_defaults(func=cmd_explain)
     
     return parser
-
-
-# Keep for backwards compat but don't use - causes argparse conflicts
-# def _add_common_args(parser):
-#     """Add common arguments to a subparser."""
-#     parser.add_argument('--model', '-m', help='Model to use')
-#     parser.add_argument('--profile', help='AWS profile')
-#     parser.add_argument('--region', help='AWS region')
-#     parser.add_argument('--root', help='Root directory (default: cwd)')
-#     parser.add_argument('--no-stream', action='store_true', help='Disable streaming output')
+    
+    
 
 
 def main():
     """CLI entry point."""
     parser = create_parser()
     args = parser.parse_args()
-    
-    # Debug what we got
-    import sys
-    print(f"DEBUG: args.profile = {getattr(args, 'profile', None)}", file=sys.stderr)
-    print(f"DEBUG: args.command = {getattr(args, 'command', None)}", file=sys.stderr)
     
     if args.command is None:
         # No command - show help
