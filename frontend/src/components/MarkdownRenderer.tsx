@@ -154,9 +154,15 @@ interface ToolBlockProps {
     isDarkMode: boolean;
     toolInput?: any;
     onOpenShellConfig?: () => void;
+    verified?: boolean;  // Security verification status
+    verificationError?: string;  // Verification error message if failed
 }
 
-const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode, toolInput, onOpenShellConfig }) => {
+const ToolBlock: React.FC<ToolBlockProps> = ({
+    toolName, content, isDarkMode, toolInput, onOpenShellConfig,
+    verified: verifiedProp,
+    verificationError: verificationErrorProp
+}) => {
     const [isExpanded, setIsExpanded] = useState(false);
     const [renderedHtml, setRenderedHtml] = useState('');
     const [renderedHeaderHtml, setRenderedHeaderHtml] = useState('');
@@ -184,19 +190,22 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode, to
                 const parsed = JSON.parse(content);
                 if (parsed._isStructuredToolResult && parsed.hierarchicalResults) {
                     // This is already formatted with hierarchical results - use it directly
+                    // Also extract verification status if present
                     return {
                         content: parsed.summary || content,
                         type: parsed.type || 'search_results',
                         collapsed: true,
                         summary: parsed.summary,
-                        hierarchicalResults: parsed.hierarchicalResults
+                        hierarchicalResults: parsed.hierarchicalResults,
+                        verified: parsed._verified,
+                        verificationError: parsed._verificationError
                     };
                 }
             }
         } catch (e) {
             // Not structured JSON, continue with regular processing
         }
-        
+
         try {
             // Parse if it looks like JSON
             if (content.trim().startsWith('{') || content.trim().startsWith('[')) {
@@ -219,6 +228,10 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode, to
             summary: shouldCollapse ? `Output (${content.length} chars, ${content.split('\n').length} lines)` : undefined
         };
     }, [toolName, content]);
+
+    // Extract verification status from formatted output or use props (AFTER formattedOutput is defined)
+    const verified = verifiedProp !== undefined ? verifiedProp : formattedOutput.verified;
+    const verificationError = verificationErrorProp || formattedOutput.verificationError;
 
     // Check if content should be rendered as markdown (contains markdown formatting)
     const shouldRenderAsMarkdown = useMemo(() => {
@@ -425,15 +438,38 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode, to
                 }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                         <span>{getToolSummary()}</span>
-                        {(renderedHeaderHtml || summary) && (
-                            renderedHeaderHtml ? (
-                                <span style={{ fontSize: '11px', opacity: 0.7, fontWeight: 'normal' }}
-                                    dangerouslySetInnerHTML={{ __html: renderedHeaderHtml }}
-                                />
-                            ) : (
-                                <span style={{ fontSize: '11px', opacity: 0.7, fontWeight: 'normal' }}>{summary}</span>
-                            )
-                        )}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            {/* Security verification badge */}
+                            {verified !== undefined && (
+                                <Tooltip title={verified ? "Cryptographically verified" : `Verification failed: ${verificationError || 'Unknown'}`}>
+                                    <span
+                                        style={{
+                                            fontSize: '11px',
+                                            padding: '2px 8px',
+                                            borderRadius: '4px',
+                                            backgroundColor: verified ? 'rgba(46, 160, 67, 0.15)' : 'rgba(248, 81, 73, 0.15)',
+                                            color: verified ? '#3fb950' : '#f85149',
+                                            border: `1px solid ${verified ? '#3fb950' : '#f85149'}`,
+                                            fontWeight: 'bold',
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: '4px'
+                                        }}
+                                    >
+                                        {verified ? '🔒 Verified' : '⚠️ Unverified'}
+                                    </span>
+                                </Tooltip>
+                            )}
+                            {(renderedHeaderHtml || summary) && (
+                                renderedHeaderHtml ? (
+                                    <span style={{ fontSize: '11px', opacity: 0.7, fontWeight: 'normal' }}
+                                        dangerouslySetInnerHTML={{ __html: renderedHeaderHtml }}
+                                    />
+                                ) : (
+                                    <span style={{ fontSize: '11px', opacity: 0.7, fontWeight: 'normal' }}>{summary}</span>
+                                )
+                            )}
+                        </div>
                     </div>
                 </div>
 
@@ -519,20 +555,40 @@ const ToolBlock: React.FC<ToolBlockProps> = ({ toolName, content, isDarkMode, to
             }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <span>{getToolSummary()}</span>
-                    {shouldShowCollapsed && (
-                        <div style={{
-                            marginLeft: 'auto',
-                            fontSize: '11px',
-                            opacity: 0.7,
-                            cursor: 'pointer',
-                            fontWeight: 'normal'
-                        }} onClick={(e) => {
-                            e.stopPropagation();
-                            setIsExpanded(!isExpanded);
-                        }}>
-                            {isExpanded ? '▼ Collapse' : '▶ Expand'} {summary && `(${summary})`}
-                        </div>
-                    )}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        {/* Security verification badge */}
+                        {verified !== undefined && (
+                            <span
+                                style={{
+                                    fontSize: '10px',
+                                    padding: '2px 6px',
+                                    borderRadius: '3px',
+                                    backgroundColor: verified
+                                        ? (isDarkMode ? 'rgba(46, 160, 67, 0.2)' : 'rgba(46, 160, 67, 0.15)')
+                                        : (isDarkMode ? 'rgba(248, 81, 73, 0.2)' : 'rgba(248, 81, 73, 0.15)'),
+                                    color: verified ? '#3fb950' : '#f85149',
+                                    border: `1px solid ${verified ? '#3fb950' : '#f85149'}`
+                                }}
+                                title={verified ? "Cryptographically verified" : `Unverified: ${verificationError || 'Unknown'}`}
+                            >
+                                {verified ? '🔒 Verified' : '⚠️ Unverified'}
+                            </span>
+                        )}
+                        {shouldShowCollapsed && (
+                            <div style={{
+                                marginLeft: 'auto',
+                                fontSize: '11px',
+                                opacity: 0.7,
+                                cursor: 'pointer',
+                                fontWeight: 'normal'
+                            }} onClick={(e) => {
+                                e.stopPropagation();
+                                setIsExpanded(!isExpanded);
+                            }}>
+                                {isExpanded ? '▼ Collapse' : '▶ Expand'} {summary && `(${summary})`}
+                            </div>
+                        )}
+                    </div>
                 </div>
             </div>
 
@@ -4633,6 +4689,13 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         const [, toolName, displayHeader, toolContent] = HTMLtoolBlockMatch;
 
                         // Special handling for thinking tools
+
+                        // Extract verification status from HTML comment attributes
+                        const verifiedMatch = tokenWithText.text.match(/data-verified="(true|false)"/);
+                        const errorMatch = tokenWithText.text.match(/data-error="([^"]*)"/);
+
+                        const verified = verifiedMatch ? verifiedMatch[1] === 'true' : undefined;
+                        const verificationError = errorMatch ? errorMatch[1] : undefined;
                         if (toolName === 'mcp_sequentialthinking' || toolName.includes('thinking')) {
                             return (
                                 <ThinkingBlock key={index} isDarkMode={isDarkMode} isStreaming={isStreaming}>
@@ -4643,7 +4706,15 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                         // Regular tool blocks
                         return (
-                            <ToolBlock key={index} toolName={`${toolName}|${displayHeader}`} content={toolContent} isDarkMode={isDarkMode} onOpenShellConfig={onOpenShellConfig} />
+                            <ToolBlock
+                                key={index}
+                                toolName={`${toolName}|${displayHeader}`}
+                                content={toolContent}
+                                isDarkMode={isDarkMode}
+                                onOpenShellConfig={onOpenShellConfig}
+                                verified={verified}
+                                verificationError={verificationError}
+                            />
                         );
                     }
 
