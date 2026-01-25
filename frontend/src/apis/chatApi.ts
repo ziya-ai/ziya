@@ -530,9 +530,12 @@ async function handleStreamError(response: Response): Promise<Error> {
 /**
      * Show error message inline if it's long, otherwise as popup
      */
-function showError(errorDetail: string, conversationId: string, addMessageToConversation: (message: Message, conversationId: string, isNonCurrentConversation?: boolean) => void, messageType: 'error' | 'warning' = 'error') {
+function showError(errorDetail: string, conversationId: string, addMessageToConversation: (message: Message, conversationId: string, isNonCurrentConversation?: boolean) => void, messageType: 'error' | 'warning' = 'error', errorType?: string) {
 
     if (errorDetail.length > 100) {
+        // Check if this is an authentication error that should have a retry button
+        const isAuthError = errorType === 'authentication_error' || errorDetail.includes('credential') || errorDetail.includes('mwinit') || errorDetail.includes('AWS credentials');
+        
         // Show inline as a collapsible message
         const errorMessage: Message = {
             role: 'assistant',  // CRITICAL: Use 'assistant' role so message renders (system messages are filtered in Conversation.tsx:206)
@@ -544,7 +547,15 @@ function showError(errorDetail: string, conversationId: string, addMessageToConv
 </summary>
 <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid ${messageType === 'error' ? '#ffd6cc' : '#fff1b8'}; white-space: pre-wrap; font-family: monospace; font-size: 13px; color: ${messageType === 'error' ? '#8c1f1f' : '#8c5f00'};">
 ${errorDetail}
-</div>
+</div>${isAuthError ? `
+<div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid ${messageType === 'error' ? '#ffd6cc' : '#fff1b8'}; text-align: center;">
+<button 
+    class="auth-error-retry-button" 
+    data-conversation-id="${conversationId}"
+    style="padding: 10px 20px; background-color: #1890ff; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: background-color 0.2s;"
+    onmouseover="this.style.backgroundColor='#40a9ff'" 
+    onmouseout="this.style.backgroundColor='#1890ff'">🔄 Retry Request</button>
+</div>` : ''}
 </details>`,
             _timestamp: Date.now()
         };
@@ -1069,7 +1080,7 @@ export const sendPayload = async (
                     : errorResponse.detail || 'An error occurred';
 
 
-                showError(errorMessage, targetConversationId, addMessageToConversation, currentContent.length > 0 ? 'warning' : 'error');
+                showError(errorMessage, targetConversationId, addMessageToConversation, currentContent.length > 0 ? 'warning' : 'error', errorResponse.error);
                 errorOccurred = true;
                 // Don't return here - let the stream finish naturally but prevent further content processing
 
@@ -1148,7 +1159,7 @@ export const sendPayload = async (
 
                 // Handle throttling status messages
                 if (unwrappedData.type === 'throttling_status') {
-                    console.log('Throttling status:', unwrappedData.message);
+                    showError(unwrappedData.message, conversationId, addMessageToConversation, 'warning', unwrappedData.type);
                     showError(unwrappedData.message, conversationId, addMessageToConversation, 'warning');
                     return;
                 }
@@ -1156,7 +1167,7 @@ export const sendPayload = async (
                 // Handle throttling failure
                 if (unwrappedData.type === 'throttling_failed') {
                     console.log('Throttling failed:', unwrappedData.message);
-                    showError(unwrappedData.message + ' Please retry your request.', conversationId, addMessageToConversation, 'error');
+                    showError(unwrappedData.message + ' Please retry your request.', conversationId, addMessageToConversation, 'error', unwrappedData.type);
                     errorOccurred = true;
                     return;
                 }
@@ -1395,7 +1406,7 @@ export const sendPayload = async (
                         ? '⚠️ Response continuation was interrupted due to rate limiting. Click "Retry" to continue.'
                         : '❌ Response continuation failed. The response may be incomplete.';
 
-                    showError(failureMessage, conversationId, addMessageToConversation, 'warning');
+                    showError(failureMessage, conversationId, addMessageToConversation, 'warning', jsonData.type);
 
                     // Add retry button or indicator if applicable
                     if (jsonData.can_retry) {
@@ -1444,6 +1455,10 @@ export const sendPayload = async (
                 // Handle MCP tool display events
                 if (unwrappedData.type === 'tool_display') {
                     console.log('🔧 TOOL_DISPLAY received:', unwrappedData);
+
+                    // Extract verification status if present
+                    const isVerified = unwrappedData.verified === true;
+                    const verificationError = unwrappedData.verification_error;
 
                     // Check for MCP tool errors in the result
                     if (unwrappedData.result && typeof unwrappedData.result === 'string') {
@@ -1528,10 +1543,17 @@ export const sendPayload = async (
                     if (actualToolName === 'run_shell_command' && storedInput?.command && !displayContent.startsWith('$ ')) {
                         displayContent = `$ ${storedInput.command}\n${displayContent}`;
                     }
+                    
+                    // Add lock icon if cryptographically verified
+                    if (isVerified) {
+                        displayHeader = `🔐 ${displayHeader}`;
+                    }
+
+                    // Prepare content for display
+                    // (displayContent already set above)
 
                     // Format the content
                     const inputForFormatter = unwrappedData.args || storedInput;
-
 
                     const formatted = formatMCPOutput(toolName, displayContent, inputForFormatter, {
                         showInput: false,
@@ -1549,13 +1571,33 @@ export const sendPayload = async (
 
                     if (actualToolName === 'run_shell_command') {
                         // Shell commands: wrap in TOOL_BLOCK with shell code fence inside
+                        // CRITICAL: Include TOOL_BLOCK_START/END to preserve header during rewind
                         toolResultContent = displayContent;
+                        
+                        // Add verification metadata as HTML comment
+                        let verificationComment = '';
+                        if (isVerified) {
+                            verificationComment = '<!-- VERIFIED:true -->';
+                        } else if (verificationError) {
+                            const safeError = verificationError.replace(/--/g, '—').replace(/>/g, '&gt;');
+                            verificationComment = `<!-- VERIFIED:false ERROR:${safeError} -->`;
+                        }
+                        
                         const needsExtraNewline = !currentContent.endsWith('\n\n');
-                        toolResultDisplay = `${needsExtraNewline ? '\n\n' : '\n'}<!-- TOOL_BLOCK_START:${toolName}|${displayHeader}|${unwrappedData.tool_id} -->\n\`\`\`shell\n${toolResultContent}\n\`\`\`\n<!-- TOOL_BLOCK_END:${toolName}|${unwrappedData.tool_id} -->\n\n`;
+                        // Include full TOOL_BLOCK structure so header is preserved during replacement
+                        toolResultDisplay = `${needsExtraNewline ? '\n\n' : '\n'}` +
+                            `${verificationComment}\n` +
+                            `\n` +
+                            `\`\`\`shell\n${toolResultContent}\n\`\`\`\n` +
+                            `\n\n`;
                     } else if (formatted.hierarchicalResults && formatted.hierarchicalResults.length > 0) {
+                        // Add verification status to metadata
+                        // Store for MarkdownRenderer to display lock icon
                         // CRITICAL: Pass hierarchicalResults as JSON structure, NOT as serialized markdown.
                         toolResultContent = JSON.stringify({
                             _isStructuredToolResult: true,
+                            _verified: isVerified,
+                            _verificationError: verificationError,
                             summary: formatted.summary || formatted.content,
                             type: formatted.type,
                             hierarchicalResults: formatted.hierarchicalResults
@@ -1619,11 +1661,23 @@ export const sendPayload = async (
                                 if (closingFenceMatch) {
                                     const closingFenceIndex = shellBlockStart + afterShellBlock.indexOf(closingFenceMatch[0]);
 
-                                    // Replace everything from the marker through the closing fence
-                                    // This removes the entire "Running..." block and replaces it with the result
+                                    // Find the TOOL_BLOCK_END marker after the closing fence
+                                    const afterFence = currentContent.substring(closingFenceIndex + closingFenceMatch[0].length);
+                                    const blockEndMatch = afterFence.match(/<!-- TOOL_BLOCK_END:[^>]+ -->/);
+                                    
+                                    let endIndex;
+                                    if (blockEndMatch) {
+                                        endIndex = closingFenceIndex + closingFenceMatch[0].length + afterFence.indexOf(blockEndMatch[0]) + blockEndMatch[0].length;
+                                    } else {
+                                        endIndex = closingFenceIndex + closingFenceMatch[0].length;
+                                    }
+                                    
+                                    // Replace from marker through TOOL_BLOCK_END
+                                    // toolResultDisplay already includes the complete TOOL_BLOCK structure with header
                                     currentContent = currentContent.substring(0, markerIndex) +
+                                        `\n` +
                                         toolResultDisplay +
-                                        currentContent.substring(closingFenceIndex + closingFenceMatch[0].length);
+                                        currentContent.substring(endIndex);
 
                                     console.log('🔧 TOOL_RESULT: Replaced using tool_id marker (shell command)');
                                 } else {
@@ -1983,7 +2037,7 @@ export const sendPayload = async (
                                             ? `${errorResponse.detail || 'An error occurred'} (Partial response preserved - ${currentContent.length} characters)`
                                             : errorResponse.detail || 'An error occurred';
 
-                                        showError(errorMessage, conversationId, addMessageToConversation, isPartialResponse ? 'warning' : 'error');
+                                        showError(errorMessage, conversationId, addMessageToConversation, isPartialResponse ? 'warning' : 'error', errorResponse.error);
                                         errorOccurred = true;
 
                                         // Preserve partial content before removing stream
@@ -2253,8 +2307,8 @@ export const sendPayload = async (
                         }
 
                         const errorMessage = isPartialResponse
-                            ? `${errorResponse.detail} (Partial response preserved - ${currentContent.length} characters)`
-                            : errorResponse.detail || 'An error occurred';
+                        ? 'Partial response preserved. ' + (errorResponse.detail || 'An error occurred')
+                        : errorResponse.detail || 'An error occurred';
                         showError(errorMessage, conversationId, addMessageToConversation, isPartialResponse ? 'warning' : 'error');
                         errorOccurred = true;
                         removeStreamingConversation(conversationId);
