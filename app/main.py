@@ -1,3 +1,11 @@
+# CRITICAL: Set execution mode FIRST before any other imports
+# This must be the very first thing to ensure logging is configured correctly
+import sys
+if any(cmd in sys.argv for cmd in ['chat', 'ask', 'review', 'explain']):
+    import os
+    os.environ["ZIYA_MODE"] = "chat"
+    os.environ.setdefault("ZIYA_LOG_LEVEL", "WARNING")
+
 # Suppress transformers warning about PyTorch/TensorFlow not being installed
 # We only use transformers for tokenization, not ML models
 import os
@@ -722,6 +730,14 @@ def main():
     # Check if any argument is a CLI command (handles both "ziya chat" and "ziya --profile x chat")
     if any(arg in cli_commands for arg in sys.argv[1:]):
         # Hand off to CLI module
+        # CRITICAL: Set chat mode BEFORE importing CLI module
+        # This ensures all loggers created during import respect chat mode
+        os.environ["ZIYA_MODE"] = "chat"
+        os.environ.setdefault("ZIYA_LOG_LEVEL", "WARNING")
+        
+        # DON'T initialize plugins here - let CLI module do it after parsing args
+        # This ensures --profile and other flags are set in environment first
+        
         try:
             from app.cli import main as cli_main
             cli_main()
