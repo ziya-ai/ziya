@@ -24,6 +24,7 @@ export function useScrollManager({
     contentLength
 }: ScrollManagerOptions): ScrollManagerState {
     const [isAtActiveEnd, setIsAtActiveEnd] = useState(true);
+    const [followMode, setFollowMode] = useState(true);
     const [hasNewContentWhileAway, setHasNewContentWhileAway] = useState(false);
     const [streamCompletedWhileAway, setStreamCompletedWhileAway] = useState(false);
     const wasAwayDuringStreamRef = useRef(false);
@@ -48,6 +49,7 @@ export function useScrollManager({
         // Clear indicators after scrolling
         setHasNewContentWhileAway(false);
         setStreamCompletedWhileAway(false);
+        setFollowMode(true);
     }, [containerRef, isTopToBottom]);
 
     // Clear all indicators
@@ -74,6 +76,7 @@ export function useScrollManager({
                     
                     // If user scrolled to active end, clear indicators
                     if (atEnd) {
+                        setFollowMode(true);
                         setHasNewContentWhileAway(false);
                         setStreamCompletedWhileAway(false);
                     }
@@ -82,7 +85,7 @@ export function useScrollManager({
             {
                 root: containerRef.current,
                 threshold: 0.5, // Consider "at end" when 50% of sentinel is visible
-                rootMargin: '0px'
+                rootMargin: '50px'
             }
         );
 
@@ -95,15 +98,38 @@ export function useScrollManager({
         };
     }, [containerRef, sentinelRef, isTopToBottom]);
 
-    // Auto-scroll ONLY if at active end during streaming
+    // Detect manual scroll away from end (disables follow mode)
+    useEffect(() => {
+        if (!containerRef.current) return;
+
+        const container = containerRef.current;
+        let lastScrollTop = container.scrollTop;
+
+        const handleScroll = () => {
+            const currentScrollTop = container.scrollTop;
+            const isScrollingAway = isTopToBottom 
+                ? currentScrollTop < lastScrollTop - 10
+                : currentScrollTop > lastScrollTop + 10;
+            
+            if (isStreaming && isScrollingAway) {
+                setFollowMode(false);
+            }
+            
+            lastScrollTop = currentScrollTop;
+        };
+
+        container.addEventListener('scroll', handleScroll, { passive: true });
+        return () => container.removeEventListener('scroll', handleScroll);
+    }, [containerRef, isStreaming, isTopToBottom]);
+
+    // Auto-scroll when follow mode is active during streaming
     useEffect(() => {
         if (!isStreaming || !containerRef.current) return;
         
-        // Only scroll if we're currently at the active end
-        if (isAtActiveEnd) {
+        if (followMode) {
             scrollToActiveEnd();
         }
-    }, [contentLength, isAtActiveEnd, isStreaming, scrollToActiveEnd, containerRef]);
+    }, [contentLength, followMode, isStreaming, scrollToActiveEnd, containerRef]);
 
     // Track new content arrival while user is away
     useEffect(() => {
@@ -113,10 +139,10 @@ export function useScrollManager({
         const contentGrew = contentLength > lastContentLengthRef.current;
         lastContentLengthRef.current = contentLength;
         
-        if (contentGrew && !isAtActiveEnd) {
+        if (contentGrew && !followMode) {
             setHasNewContentWhileAway(true);
         }
-    }, [contentLength, isAtActiveEnd, isStreaming]);
+    }, [contentLength, followMode, isStreaming]);
 
     // Track if user was away at any point during streaming
     useEffect(() => {

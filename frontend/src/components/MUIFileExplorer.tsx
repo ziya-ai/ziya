@@ -795,10 +795,13 @@ export const MUIFileExplorer = () => {
 
       if (response.ok) {
         message.success(`Added: ${path.split('/').pop()}`);
-        if (addMode === 'browser') {
+        // Files always go to context, so only trigger context update
+        // Directories respect addMode setting
+        if (isDir && addMode === 'browser') {
+          // Only refresh folders if we added a directory to the browser
           window.dispatchEvent(new CustomEvent('refreshFolders'));
         } else {
-          // For context mode, trigger context refresh
+          // Files and context-mode directories trigger context update
           window.dispatchEvent(new CustomEvent('contextUpdated'));
         }
       } else {
