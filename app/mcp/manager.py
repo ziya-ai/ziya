@@ -912,20 +912,32 @@ class MCPManager:
                     # Check if this server has the tool (try both original and internal names)
                     tool_names_to_try = [tool_name, internal_tool_name]
                     for name_to_try in tool_names_to_try:
-                        if any(tool.name == name_to_try for tool in client.tools):
-                            # Ensure client is healthy before making the call
-                            if hasattr(client, '_is_process_healthy') and not await self._ensure_client_healthy(client):
-                                logger.warning(f"Client unhealthy, skipping tool execution")
-                                continue
-                                
-                            logger.debug(f"🔍 MCP_MANAGER: Found tool '{name_to_try}' in server, executing...")
+                        if not name_to_try:
+                            continue
+                        
+                        # Only call tool if this server actually has it
+                        if not any(tool.name == name_to_try for tool in client.tools):
+                            continue
+                        
+                        # Ensure client is healthy before making the call
+                        if hasattr(client, '_is_process_healthy') and not await self._ensure_client_healthy(client):
+                            logger.warning(f"Client unhealthy, skipping tool execution")
+                            continue
+                        
+                        try:
                             logger.debug(f"🔍 MCP_MANAGER: About to call client.call_tool with name='{name_to_try}', arguments={arguments}")
-                            print(f"🔍 MCP_MANAGER: About to call client.call_tool with name='{name_to_try}', arguments={arguments}")
+                            
                             result = await client.call_tool(name_to_try, arguments)
-                            logger.debug(f"🔍 MCP_MANAGER: Tool execution result: {result}")
-                            return result
+                            
+                            logger.debug(f"🔍 MCP_MANAGER: Tool call succeeded: {name_to_try}")
+                            
+                            # Return the result if successful
+                            if result is not None:
+                                return result
+                        except Exception as e:
+                            logger.error(f"Error calling tool {name_to_try}: {e}")
+                            continue
             
-            # Tool not found - provide helpful error message
             logger.warning(f"🔍 MCP_MANAGER: Tool '{internal_tool_name}' not found in any connected server")
             
             # Check if tool exists in a disconnected server

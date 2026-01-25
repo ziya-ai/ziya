@@ -1003,6 +1003,12 @@ class MCPClient:
     
     async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Call a tool on the MCP server."""
+        # Import signing module
+        from app.mcp.signing import sign_tool_result
+        
+        # Get conversation_id from arguments if present (for signing context)
+        conversation_id = arguments.get('conversation_id', 'default')
+        
         try:
             # CRITICAL: Unwrap tool_input if present
             # Some models wrap parameters in {'tool_input': {...}}
@@ -1070,6 +1076,13 @@ class MCPClient:
             
             # Validate and clean the response
             result = self._validate_and_clean_response(result)
+            
+            # SECURITY: Sign the result before returning
+            # This prevents model hallucination by cryptographically verifying
+            # that results actually came from our MCP server
+            if result and not result.get("error"):
+                result = sign_tool_result(name, arguments, result, conversation_id)
+                logger.debug(f"🔐 Signed result for {name}")
             
             # Record success/failure for health monitoring
             if result and not result.get("error"):
