@@ -291,7 +291,122 @@ def detect_malformed_state(file_lines: List[str], hunk: Dict[str, Any]) -> bool:
         logger.debug("Pure removal detected - not flagging as malformed")
         return False
     
+    # 3. Pure additions: Check if some added lines already exist (partial overlap)
+    # This is NOT malformed - it's a special case that needs smart handling
+    # We return False here and let the caller check for partial overlap separately
+    elif added_lines and not removed_lines:
+        logger.debug("Pure addition detected - not flagging as malformed (partial overlap handled separately)")
+        return False
+    
     logger.debug("Returning False - no malformed patterns detected")
+    return False
+
+
+def detect_partial_overlap(file_lines: List[str], hunk: Dict[str, Any]) -> bool:
+    """
+    Detect if a pure addition hunk has partial overlap with existing file content.
+    
+    This is a VERY specific case for when:
+    - The diff was generated against an older version of the file
+    - The context lines in the diff DON'T match the file (indicating version mismatch)
+    - The BEGINNING of the added lines already exists in the file as a contiguous block
+    - The REST of the added lines are truly new
+    
+    Args:
+        file_lines: The current file content as a list of lines
+        hunk: The hunk to check
+        
+    Returns:
+        True if partial overlap is detected, False otherwise
+    """
+    removed_lines, added_lines = extract_diff_changes(hunk)
+    
+    # Only applies to pure additions
+    if removed_lines or not added_lines:
+        return False
+    
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    # Get context lines from the hunk
+    old_block = hunk.get('old_block', [])
+    if not old_block:
+        return False
+    
+    # First check: do the context lines match the file?
+    # If context matches, this is NOT a partial overlap case - it's a normal addition
+    old_block_norm = [normalize_line_for_comparison(line) for line in old_block]
+    file_norm = [normalize_line_for_comparison(line) for line in file_lines]
+    
+    # Search for context match in file
+    context_matches = False
+    for start_pos in range(len(file_norm) - len(old_block_norm) + 1):
+        if file_norm[start_pos:start_pos + len(old_block_norm)] == old_block_norm:
+            context_matches = True
+            break
+    
+    if context_matches:
+        # Context matches - this is a normal case, not partial overlap
+        return False
+    
+    # Context doesn't match - check if the beginning of added lines exists as a contiguous block
+    added_norm = [normalize_line_for_comparison(line) for line in added_lines]
+    
+    # Find the first non-trivial added line
+    first_non_trivial_idx = None
+    for i, norm in enumerate(added_norm):
+        if norm.strip():
+            first_non_trivial_idx = i
+            break
+    
+    if first_non_trivial_idx is None:
+        return False
+    
+    # Check if the first few non-trivial lines exist as a contiguous block
+    # We need at least 3 consecutive lines to match to consider it partial overlap
+    min_consecutive_match = 3
+    
+    first_norm = added_norm[first_non_trivial_idx]
+    if first_norm not in file_norm:
+        return False
+    
+    # Find where the first line appears in the file
+    for file_start in range(len(file_norm)):
+        if file_norm[file_start] != first_norm:
+            continue
+        
+        # Check how many consecutive lines match
+        consecutive_matches = 0
+        added_idx = first_non_trivial_idx
+        file_idx = file_start
+        
+        while added_idx < len(added_norm) and file_idx < len(file_norm):
+            added_n = added_norm[added_idx]
+            file_n = file_norm[file_idx]
+            
+            # Skip trivial lines in added
+            if not added_n.strip():
+                added_idx += 1
+                continue
+            # Skip trivial lines in file
+            if not file_n.strip():
+                file_idx += 1
+                continue
+            
+            if added_n == file_n:
+                consecutive_matches += 1
+                added_idx += 1
+                file_idx += 1
+            else:
+                break
+        
+        # Check if we have enough consecutive matches AND there are still lines to add
+        remaining_non_trivial = sum(1 for n in added_norm[added_idx:] if n.strip())
+        
+        if consecutive_matches >= min_consecutive_match and remaining_non_trivial > 0:
+            logger.debug(f"Partial overlap detected: {consecutive_matches} consecutive lines match, {remaining_non_trivial} remaining to add")
+            return True
+    
     return False
 
 
@@ -388,7 +503,7 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
     # CRITICAL: Check for indentation-only changes FIRST
     # These require exact comparison since normalized comparison strips whitespace
     if removed_lines and added_lines and _is_indentation_only_change(removed_lines, added_lines):
-        logger.debug(f"Detected indentation-only change - using exact comparison")
+        logger.debug(f"Detected indentation-only change at pos {pos} - using exact comparison")
         # For indentation changes, check if the file has the OLD indentation (not applied)
         # or the NEW indentation (already applied)
         if pos + len(removed_lines) <= len(file_lines):
@@ -400,9 +515,22 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
             )
             if has_old_indentation:
                 logger.debug(f"File has OLD indentation at pos {pos} - hunk NOT already applied")
+                logger.debug(f"  File line: {repr(file_slice[0] if file_slice else 'N/A')}")
+                logger.debug(f"  Removed:   {repr(removed_lines[0] if removed_lines else 'N/A')}")
                 return False
-        # Check if file has NEW indentation
-        return _check_indentation_change_applied(file_lines, removed_lines, added_lines, pos)
+            # Check if file has NEW indentation
+            has_new_indentation = all(
+                file_line.rstrip() == added_line.rstrip()
+                for file_line, added_line in zip(file_slice, added_lines)
+            )
+            if has_new_indentation:
+                logger.debug(f"File has NEW indentation at pos {pos} - hunk ALREADY applied")
+                logger.debug(f"  File line: {repr(file_slice[0] if file_slice else 'N/A')}")
+                logger.debug(f"  Added:     {repr(added_lines[0] if added_lines else 'N/A')}")
+                return True
+        # If neither old nor new indentation matches, hunk is not applied
+        logger.debug(f"Neither old nor new indentation matches at pos {pos} - hunk NOT already applied")
+        return False
     
     # For pure additions, check if content already exists at the expected position
     if len(removed_lines) == 0 and len(added_lines) > 0:

@@ -29,6 +29,8 @@ class DiffValidationHook:
         self.current_context: Set[str] = set(current_context or [])
         self.added_files: List[str] = []
         self.last_validated_file: Optional[str] = None
+        self.successful_diffs: List[str] = []  # Track which diffs passed validation
+        self.failed_diff_details: List[Dict[str, Any]] = []  # Track failures with context
         
     def detect_completed_diff(self, content: str) -> Optional[Dict[str, Any]]:
         """
@@ -128,7 +130,8 @@ class DiffValidationHook:
         # Track the file for error messages
         self.last_validated_file = file_path
         
-        logger.info(f"🔍 Validating completed diff for {file_path}")
+        diff_number = len(self.validated_diffs)
+        logger.info(f"🔍 Validating diff #{diff_number} for {file_path}")
         
         logger.info(f"🔍 VALIDATION_HOOK: Diff content length: {len(diff_content)}")
         logger.info(f"🔍 VALIDATION_HOOK: First 200 chars: {diff_content[:200]}")
@@ -153,6 +156,14 @@ class DiffValidationHook:
                 logger.warning(f"❌ Validation failed for {file_path}: {validation_result['model_feedback']}")
             
             if has_failures:
+                
+                # Record this failure
+                self.failed_diff_details.append({
+                    "diff_number": diff_number,
+                    "file_path": file_path,
+                    "reason": validation_result["model_feedback"],
+                    "failed_hunks": len(validation_result["failed_hunks"])
+                })
                 
                 # Check if file is in current context
                 file_in_context = self.is_file_in_context(file_path)
@@ -191,29 +202,39 @@ class DiffValidationHook:
                         logger.info(f"✅ Added {file_path} to model context ({len(file_content)} chars)")
                 
             # Notify frontend to sync UI
+            else:
+                # SUCCESS - record this diff as valid
+                self.successful_diffs.append(file_path)
+                logger.info(f"✅ Diff #{diff_number} validated successfully: {file_path}")
+            
             if send_event:
                 # Just send informational status - no rewind needed
                 send_event("diff_validation_status", {
                     "file_path": file_path,
-                    "status": "failed",
+                    "diff_number": diff_number,
+                    "status": "failed" if has_failures else "success",
                     "failed_hunks": validation_result["failed_hunks"],
                     "total_hunks": validation_result["total_hunks"],
                     "context_enhanced": context_was_enhanced,
                     "added_files": self.added_files if context_was_enhanced else [],
-                    "message": f"Diff validation failed for {file_path} - model will provide corrected version"
+                    "message": (
+                        f"Diff #{diff_number} validation failed" if has_failures
+                        else f"Diff #{diff_number} validated"
+                    )
                 })
                 
             if self.auto_regenerate:
-                feedback = validation_result["model_feedback"]
-                
-                if context_was_enhanced:
-                    feedback += (
-                        f"\n\n📂 CONTEXT ENHANCED: "
-                        f"Added {len(self.added_files)} file(s) to context. "
-                        f"Regenerate the diff using the current file content shown above."
+                # Only return feedback if THIS diff failed
+                if has_failures:
+                    return self._build_targeted_feedback(
+                        diff_number=diff_number,
+                        file_path=file_path,
+                        validation_result=validation_result,
+                        context_was_enhanced=context_was_enhanced
                     )
-                
-                return feedback
+            
+            # No failures - don't interrupt model
+            return None
 
         except Exception as e:
             logger.error(f"Error during diff validation: {e}")
@@ -224,6 +245,82 @@ class DiffValidationHook:
                     "error": str(e)
                 })
             return None
+    
+    def _build_targeted_feedback(
+        self,
+        diff_number: int,
+        file_path: str,
+        validation_result: Dict[str, Any],
+        context_was_enhanced: bool
+    ) -> str:
+        """
+        Build feedback that clearly identifies which specific diff failed.
+        
+        Key principles:
+        1. State which diff number failed
+        2. Confirm which diffs succeeded (don't regenerate those)
+        3. Provide specific error details
+        4. Give clear, actionable instructions
+        """
+        parts = []
+        
+        # Header: Make it crystal clear which diff is the problem
+        parts.append("=" * 80)
+        parts.append(f"DIFF VALIDATION ISSUE - DIFF #{diff_number} ONLY")
+        parts.append("=" * 80)
+        parts.append("")
+        
+        # Status summary: Show what's good vs bad
+        total_validated = len(self.validated_diffs)
+        successful_count = len(self.successful_diffs)
+        
+        if successful_count > 0:
+            parts.append(f"✅ Diffs 1-{successful_count}: Successfully validated")
+            parts.append(f"   Files: {', '.join(self.successful_diffs)}")
+            parts.append("")
+        
+        parts.append(f"❌ Diff #{diff_number}: Validation failed")
+        parts.append(f"   File: {file_path}")
+        parts.append("")
+        
+        # Specific error details
+        parts.append("**Problem:**")
+        parts.append(validation_result["model_feedback"])
+        parts.append("")
+        
+        # Context enhancement notification
+        if context_was_enhanced:
+            parts.append("**Context Updated:**")
+            parts.append(f"I've added {file_path} to your context above (see the file content).")
+            parts.append("")
+        
+        # Clear, actionable instructions
+        parts.append("**What to do:**")
+        parts.append(f"1. Provide ONLY a corrected diff for {file_path}")
+        parts.append(f"2. DO NOT regenerate diffs 1-{successful_count} (they already passed)")
+        parts.append(f"3. Use the {'current file content shown above' if context_was_enhanced else 'error details above'} to fix the issue")
+        parts.append("")
+        
+        parts.append("=" * 80)
+        
+        return "\n".join(parts)
+    
+    def get_validation_summary(self) -> Dict[str, Any]:
+        """Get summary of all validation results."""
+        return {
+            "total_validated": len(self.validated_diffs),
+            "successful": len(self.successful_diffs),
+            "failed": len(self.failed_diff_details),
+            "successful_files": self.successful_diffs,
+            "failed_details": self.failed_diff_details
+        }
+    
+    def reset_validation_state(self):
+        """Reset state between conversation turns."""
+        self.validated_diffs.clear()
+        self.successful_diffs.clear()
+        self.failed_diff_details.clear()
+        self.added_files.clear()
     
     def _detect_language(self, file_path: str) -> str:
         """Detect language from file extension for code fence."""

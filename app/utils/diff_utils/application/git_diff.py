@@ -21,6 +21,40 @@ from ..file_ops.file_handlers import create_new_file, cleanup_patch_artifacts, r
 # Remove circular import
 # from .patch_apply import apply_diff_with_difflib
 
+
+def _diff_has_indentation_changes(git_diff: str) -> bool:
+    """
+    Check if a diff contains indentation-only changes.
+    
+    Args:
+        git_diff: The git diff content
+        
+    Returns:
+        True if the diff contains indentation-only changes
+    """
+    lines = git_diff.splitlines()
+    removed_lines = []
+    added_lines = []
+    
+    for line in lines:
+        if line.startswith('-') and not line.startswith('---'):
+            removed_lines.append(line[1:])
+        elif line.startswith('+') and not line.startswith('+++'):
+            added_lines.append(line[1:])
+    
+    # Check if any pair of removed/added lines differ only in leading whitespace
+    if len(removed_lines) > 0 and len(added_lines) > 0:
+        for removed in removed_lines:
+            for added in added_lines:
+                # Same content when stripped, but different leading whitespace
+                if removed.strip() == added.strip() and removed != added:
+                    # Check if they differ in leading whitespace
+                    if len(removed) - len(removed.lstrip()) != len(added) - len(added.lstrip()):
+                        return True
+    
+    return False
+
+
 def debug_patch_issues(patch_content: str) -> None:
     """
     Debug common issues in patch files that might cause git apply to fail.
@@ -1036,14 +1070,27 @@ def use_git_to_apply_code_diff(git_diff: str, file_path: str) -> None:
                 "type": "missing_file",
                 "file": file_path
             })
+        
+        # Check if diff contains indentation-only changes
+        has_indentation_changes = _diff_has_indentation_changes(git_diff)
+        if has_indentation_changes:
+            logger.info("Detected indentation changes in diff - will apply WITHOUT --ignore-whitespace")
+        
         logger.info("Starting patch application pipeline...")
         logger.debug("About to run patch command with:")
         logger.debug(f"CWD: {user_codebase_dir}")
         logger.debug(f"Input length: {len(git_diff)} bytes")
         changes_written = False
+        
+        # Build dry-run patch command - exclude --ignore-whitespace for indentation changes
+        dry_run_cmd = ['patch', '-p1', '--forward', '--no-backup-if-mismatch', '--reject-file=-', '--batch']
+        if not has_indentation_changes:
+            dry_run_cmd.append('--ignore-whitespace')
+        dry_run_cmd.extend(['--verbose', '--dry-run', '-i', '-'])
+        
         # Do a dry run to see what we're up against on first pass
         patch_result = subprocess.run(
-            ['patch', '-p1', '--forward', '--no-backup-if-mismatch', '--reject-file=-', '--batch', '--ignore-whitespace', '--verbose', '--dry-run', '-i', '-'],
+            dry_run_cmd,
             input=git_diff,
             encoding='utf-8',
             cwd=user_codebase_dir,
@@ -1085,8 +1132,15 @@ def use_git_to_apply_code_diff(git_diff: str, file_path: str) -> None:
         # fixme: we should probably be iterating success only, but this will also hit already applied cases
         if any(success for success in dry_run_status.values()):
             logger.info(f"Applying successful hunks ({sum(1 for v in dry_run_status.values() if v)}/{len(dry_run_status)}) with system patch...")
+            
+            # Build patch command - exclude --ignore-whitespace for indentation changes
+            patch_cmd = ['patch', '-p1', '--forward', '--no-backup-if-mismatch', '--reject-file=-', '--batch']
+            if not has_indentation_changes:
+                patch_cmd.append('--ignore-whitespace')
+            patch_cmd.extend(['--verbose', '-i', '-'])
+            
             patch_result = subprocess.run(
-                ['patch', '-p1', '--forward', '--no-backup-if-mismatch', '--reject-file=-', '--batch', '--ignore-whitespace', '--verbose', '-i', '-'],
+                patch_cmd,
                 input=git_diff,
                 encoding='utf-8',
                 cwd=user_codebase_dir,

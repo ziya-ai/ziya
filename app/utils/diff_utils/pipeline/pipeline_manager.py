@@ -23,6 +23,40 @@ from ..application.git_diff import parse_patch_output
 
 from .diff_pipeline import DiffPipeline, PipelineStage, HunkStatus, PipelineResult
 
+
+def _diff_has_indentation_changes(git_diff: str) -> bool:
+    """
+    Check if a diff contains indentation-only changes.
+    
+    Args:
+        git_diff: The git diff content
+        
+    Returns:
+        True if the diff contains indentation-only changes
+    """
+    lines = git_diff.splitlines()
+    removed_lines = []
+    added_lines = []
+    
+    for line in lines:
+        if line.startswith('-') and not line.startswith('---'):
+            removed_lines.append(line[1:])
+        elif line.startswith('+') and not line.startswith('+++'):
+            added_lines.append(line[1:])
+    
+    # Check if any pair of removed/added lines differ only in leading whitespace
+    if len(removed_lines) > 0 and len(added_lines) > 0:
+        for removed in removed_lines:
+            for added in added_lines:
+                # Same content when stripped, but different leading whitespace
+                if removed.strip() == added.strip() and removed != added:
+                    # Check if they differ in leading whitespace
+                    if len(removed) - len(removed.lstrip()) != len(added) - len(added.lstrip()):
+                        return True
+    
+    return False
+
+
 def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str] = None, skip_already_applied_check: bool = False) -> Dict[str, Any]:
     """
     Apply a git diff using a structured pipeline approach.
@@ -424,7 +458,7 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
         
     return final_result_dict
 
-def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_diff: str) -> bool:
+def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_diff: str, has_indentation_changes: bool = False) -> bool:
     """
     Apply patch directly without dry-run for small diffs (optimization).
     
@@ -432,6 +466,7 @@ def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_dif
         pipeline: The diff pipeline
         user_codebase_dir: The base directory of the user's codebase
         git_diff: The git diff to apply
+        has_indentation_changes: Whether the diff contains indentation-only changes
         
     Returns:
         True if any changes were written, False otherwise
@@ -641,7 +676,10 @@ def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_dif
     diff_lines = len(git_diff.splitlines())
     timeout = min(10, max(2, diff_lines / 100))  # 2-10 seconds
     
-    patch_command = ['patch', '-p1', '--forward', '--no-backup-if-mismatch', '--reject-file=-', '--batch', '--ignore-whitespace', '--verbose', '-i', '-']
+    patch_command = ['patch', '-p1', '--forward', '--no-backup-if-mismatch', '--reject-file=-', '--batch']
+    if not has_indentation_changes:
+        patch_command.append('--ignore-whitespace')
+    patch_command.extend(['--verbose', '-i', '-'])
     
     try:
         patch_result = subprocess.run(
@@ -785,6 +823,39 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
         True if any changes were written, False otherwise
     """
     logger.info("Starting system patch stage...")
+    
+    # Check for partial overlap before running system patch
+    # This handles cases where diff was generated against older version of file
+    # and some added lines already exist
+    from ..validation.validators import detect_partial_overlap
+    from ..parsing.diff_parser import parse_unified_diff_exact_plus
+    
+    try:
+        # Read the current file content
+        with open(pipeline.file_path, 'r', encoding='utf-8') as f:
+            file_lines = f.read().splitlines()
+        
+        # Parse hunks and check for partial overlap
+        hunks = list(parse_unified_diff_exact_plus(git_diff, pipeline.file_path))
+        for hunk in hunks:
+            if detect_partial_overlap(file_lines, hunk):
+                logger.info("Partial overlap detected - skipping system patch stage, deferring to difflib")
+                # Mark all hunks as pending so they get processed by difflib
+                for hunk_id in pipeline.result.hunks:
+                    pipeline.update_hunk_status(
+                        hunk_id=hunk_id,
+                        stage=PipelineStage.SYSTEM_PATCH,
+                        status=HunkStatus.PENDING
+                    )
+                return False
+    except Exception as e:
+        logger.debug(f"Error checking for partial overlap: {e}")
+        # Continue with normal system patch if check fails
+    
+    # Check if diff contains indentation-only changes
+    has_indentation_changes = _diff_has_indentation_changes(git_diff)
+    if has_indentation_changes:
+        logger.info("Detected indentation changes - will apply WITHOUT --ignore-whitespace")
 
     # OPTIMIZATION: Skip dry-run for small diffs to improve performance
     total_changes = len([l for l in git_diff.splitlines() if l.startswith(('+', '-')) and not l.startswith(('+++', '---'))])
@@ -796,10 +867,15 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
     
     if skip_dry_run:
         logger.info(f"Skipping dry-run for small diff ({total_changes} changes, {len(pipeline.result.hunks)} hunks)")
-        return apply_patch_directly(pipeline, user_codebase_dir, git_diff)
+        return apply_patch_directly(pipeline, user_codebase_dir, git_diff, has_indentation_changes)
 
      # Log the exact input being passed to patch
-    logger.debug(f"Running patch command (dry-run): {' '.join(['patch', '-p1', '--forward', '--no-backup-if-mismatch', '--reject-file=-', '--batch', '--ignore-whitespace', '--verbose', '--dry-run', '-i', '-'])}")
+    patch_cmd_dry = ['patch', '-p1', '--forward', '--no-backup-if-mismatch', '--reject-file=-', '--batch']
+    if not has_indentation_changes:
+        patch_cmd_dry.append('--ignore-whitespace')
+    patch_cmd_dry.extend(['--verbose', '--dry-run', '-i', '-'])
+    
+    logger.debug(f"Running patch command (dry-run): {' '.join(patch_cmd_dry)}")
     logger.debug(f"Patch input string (repr):\n{repr(git_diff)}") # Log with repr to see hidden chars/newlines
     logger.debug("--- End Patch Input ---")
     
@@ -809,14 +885,12 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
         diff_lines = len(git_diff.splitlines())
         timeout = min(10, max(2, diff_lines / 100))  # 2-10 seconds
         
-        patch_command_dry = ['patch', '-p1', '--forward', '--no-backup-if-mismatch', '--reject-file=-', '--batch', '--ignore-whitespace', '--verbose', '--dry-run', '-i', '-']
-        logger.debug(f"Running patch command (dry-run): {' '.join(patch_command_dry)}")
+        logger.debug(f"Running patch command (dry-run): {' '.join(patch_cmd_dry)}")
         logger.debug(f"Patch input string (repr):\n{repr(git_diff)}") # Log with repr to see hidden chars/newlines
         logger.debug("--- End Patch Input ---")
 
-        command_to_run_dry = patch_command_dry
         patch_result = subprocess.run(
-            command_to_run_dry,
+            patch_cmd_dry,
             input=git_diff,
             encoding='utf-8',
             cwd=user_codebase_dir,
