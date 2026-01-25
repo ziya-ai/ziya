@@ -37,12 +37,13 @@ def register_config_provider(provider):
 def register_registry_provider(provider):
     """Register an MCP registry provider plugin."""
     _registry_providers.append(provider)
-    logger.info(f"Registered registry provider: {getattr(provider, 'identifier', 'unknown')}")
+    # Suppress in chat mode - only show in server mode
+    logger.debug(f"Registered registry provider: {getattr(provider, 'identifier', 'unknown')}")
 
 def register_formatter_provider(provider):
     """Register a formatter provider plugin."""
     _formatter_providers.append(provider)
-    logger.info(f"Registered formatter provider: {getattr(provider, 'formatter_id', 'unknown')}")
+    logger.debug(f"Registered formatter provider: {getattr(provider, 'formatter_id', 'unknown')}")
 
 def register_tool_validator_provider(provider):
     """
@@ -52,7 +53,7 @@ def register_tool_validator_provider(provider):
     self-correcting error messages for internal/enterprise tools.
     """
     _tool_validator_providers.append(provider)
-    logger.info(f"Registered tool validator provider: {getattr(provider, 'validator_id', 'unknown')}")
+    logger.debug(f"Registered tool validator provider: {getattr(provider, 'validator_id', 'unknown')}")
 
 
 def get_all_config_providers() -> List:
@@ -122,7 +123,8 @@ def initialize():
                 import importlib
                 internal_plugins = importlib.import_module(module_name)
                 internal_plugins.register()
-                logger.info(f"✓ Enterprise plugins loaded from {module_name}")
+                # Suppress in chat mode - only show in server mode
+                logger.debug(f"✓ Enterprise plugins loaded from {module_name}")
                 loaded = True
                 break
             except ImportError:

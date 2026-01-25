@@ -10,7 +10,8 @@ import time
 from dataclasses import dataclass
 from typing import Dict, Any, List, AsyncGenerator, Optional
 from app.utils.conversation_filter import filter_conversation_for_model
-logger = logging.getLogger(__name__)
+from app.utils.logging_utils import get_mode_aware_logger
+logger = get_mode_aware_logger(__name__)
 
 
 # Global usage tracker for telemetry
@@ -595,18 +596,18 @@ class StreamingToolExecutor:
                 }
             ]
             logger.info(f"🔍 CONV_CACHE: Applied cache at message {cache_boundary} (string content)")
-            
+            logger.debug(f"🔍 CONV_CACHE: Applied cache at message {cache_boundary} (string content)")            
         elif isinstance(content, list) and len(content) > 0:
             # Multi-block content - add cache_control to LAST block only
             last_block = content[-1]
             
             if 'cache_control' not in last_block:
                 last_block['cache_control'] = {"type": "ephemeral"}
-                logger.info(f"🔍 CONV_CACHE: Applied cache at message {cache_boundary} (multi-block)")
+                logger.debug(f"🔍 CONV_CACHE: Applied cache at message {cache_boundary} (multi-block)")
         
-        logger.info(f"🔍 CONV_CACHE: Cache point at message {cache_boundary}/{total_messages}")
-        logger.info(f"   Total blocks: 1 (system) + 1 (conversation boundary) = 2/4 ✓")
-        logger.info(f"   Messages cached: {cache_boundary}, Fresh: {total_messages - cache_boundary}")
+        logger.debug(f"🔍 CONV_CACHE: Cache point at message {cache_boundary}/{total_messages}")
+        logger.debug(f"   Total blocks: 1 (system) + 1 (conversation boundary) = 2/4 ✓")
+        logger.debug(f"   Messages cached: {cache_boundary}, Fresh: {total_messages - cache_boundary}")
         
         return messages
 
@@ -750,8 +751,14 @@ class StreamingToolExecutor:
             except Exception as e:
                 logger.debug(f"Could not check baseline status: {e}")
         
-        for iteration in range(50):  # Increased from 20 to support more complex tasks
+        for iteration in range(100):  # Increased limit to support complex multi-step tasks
             logger.debug(f"🔍 ITERATION_START: Beginning iteration {iteration}")
+            
+            # Suppress verbose iteration logs in chat mode
+            chat_mode = os.environ.get('ZIYA_MODE', 'server') == 'chat'
+            if chat_mode and iteration > 0:
+                # Only log errors in chat mode after first iteration
+                pass
             
             # BASELINE ESTABLISHMENT: Only once per model family
             if should_establish_baseline:
@@ -846,12 +853,44 @@ class StreamingToolExecutor:
                             calibrator.baseline_overhead_tokens[model_family] = baseline_tokens
                             calibrator.baselines_measured.add(model_family)
                             calibrator._save_calibration_data()
-                            logger.info(f"✅ BASELINE: Established {baseline_tokens:,} tokens")
-                            logger.info(f"   System prompt: {len(baseline_system_text):,} chars")
-                            logger.info(f"   MCP tools: {mcp_tool_count}")
-                            logger.info(f"📊 BASELINE: Baseline established, will not run again for {model_family}")
+                            if not chat_mode:
+                                logger.info(f"✅ BASELINE: Established {baseline_tokens:,} tokens")
+                                logger.info(f"   System prompt: {len(baseline_system_text):,} chars")
+                                logger.info(f"   MCP tools: {mcp_tool_count}")
+                            logger.debug(f"📊 BASELINE: Baseline established, will not run again for {model_family}")
                 except Exception as e:
+                    logger.debug(f"📊 BASELINE: Establishment failed (will retry next time): {e}")
                     logger.warning(f"📊 BASELINE: Establishment failed (will retry next time): {e}")
+            
+            # WARNING: Approaching iteration limit - notify model to wrap up
+            iterations_remaining = 100 - iteration
+            warning_message = None
+            
+            if iterations_remaining == 5:
+                warning_message = (
+                    "\n\n⚠️ **Iteration Limit Notice:** You have 5 iterations remaining in this cycle. "
+                    "Please begin wrapping up your current discovery and prepare to summarize your findings.\n\n"
+                )
+                logger.warning(f"🔔 ITERATION_WARNING: 5 iterations remaining, notifying model")
+            elif iterations_remaining == 2:
+                warning_message = (
+                    "\n\n⚠️ **Iteration Limit Warning:** You have only 2 iterations remaining in this cycle. "
+                    "Please conclude your current work and provide a summary of what you've discovered. "
+                    "Focus on completing your current task rather than starting new explorations.\n\n"
+                )
+                logger.warning(f"🔔 ITERATION_WARNING: 2 iterations remaining, notifying model")
+            elif iterations_remaining == 1:
+                warning_message = (
+                    "\n\n🚨 **FINAL ITERATION:** This is your last iteration in this cycle. "
+                    "You must provide your final response now. Summarize what you've accomplished and "
+                    "any remaining recommendations. Do not attempt to use tools in this iteration.\n\n"
+                )
+                logger.warning(f"🔔 ITERATION_WARNING: Final iteration, notifying model")
+            
+            # Inject warning message into conversation if needed
+            if warning_message:
+                yield track_yield({'type': 'text', 'content': warning_message})
+                await asyncio.sleep(0.1)  # Ensure message is sent
             
             # Check for user feedback at the start of each iteration
             if conversation_id and iteration > 0:  # Skip check on first iteration
@@ -912,9 +951,9 @@ class StreamingToolExecutor:
             }
 
             # DEBUG: Log what we're actually sending
-            logger.info(f"🔍 REQUEST_DEBUG: Iteration {iteration}")
-            logger.info(f"   Messages in request: {len(conversation)}")
-            logger.info(f"   Max tokens: {body['max_tokens']}")
+            logger.debug(f"🔍 REQUEST_DEBUG: Iteration {iteration}")
+            logger.debug(f"   Messages in request: {len(conversation)}")
+            logger.debug(f"   Max tokens: {body['max_tokens']}")
             for i, msg in enumerate(conversation[:2]):  # First 2 messages only
                 content = msg.get('content', '')
                 content_len = len(content) if isinstance(content, str) else sum(len(b.get('text', '')) for b in content if b.get('type') == 'text')
@@ -926,9 +965,9 @@ class StreamingToolExecutor:
                 logger.debug(f"🔍 SYSTEM_DEBUG: File count in system content: {system_content.count('File:')}")
                 
                 # Log cache control setup for debugging
-                logger.info(f"🔍 CACHE_SETUP: Iteration {iteration}")
-                logger.info(f"   System content length: {len(system_content):,} chars")
-                logger.info(f"   Conversation messages: {len(conversation)}")
+                logger.debug(f"🔍 CACHE_SETUP: Iteration {iteration}")
+                logger.debug(f"   System content length: {len(system_content):,} chars")
+                logger.debug(f"   Conversation messages: {len(conversation)}")
                 
                 # Use system_content as-is - prompt system handles all formatting
                 system_text = system_content
@@ -943,8 +982,8 @@ class StreamingToolExecutor:
                         }
                     ]
                     logger.debug(f"🔍 CACHE: Enabled prompt caching for {len(system_text)} char system prompt")
-                    logger.info(f"🔍 CACHE_CONTROL: Set cache_control ephemeral on system message")
-                    logger.info(f"   Expected cache creation: ~{len(system_text) // 4:,} tokens")
+                    logger.debug(f"🔍 CACHE_CONTROL: Set cache_control ephemeral on system message")
+                    logger.debug(f"   Expected cache creation: ~{len(system_text) // 4:,} tokens")
                 else:
                     body["system"] = system_text
                     logger.warning(f"🔍 CACHE_CONTROL: NOT using cache_control (system too small: {len(system_text)} chars)")
@@ -1096,7 +1135,7 @@ class StreamingToolExecutor:
                         elif cached > 0:
                             throttle_state['cache_working'] = True
                             throttle_state['last_cache_efficiency'] = iteration_usage.cache_hit_rate
-                            logger.info(f"✅ CACHE WORKING: {cached:,} tokens reused")
+                            logger.debug(f"✅ CACHE WORKING: {cached:,} tokens reused")
                         
                             # CRITICAL WARNING: High token counts increase throttle risk
                             if total_input > 400000:
@@ -1572,11 +1611,12 @@ class StreamingToolExecutor:
                             tool_name = tool_data['name']
                             args_json = tool_data['partial_json']
                             
-                            # CRITICAL: Validate we have complete JSON before proceeding
+                            # Handle empty args_json - treat as empty object for tools with no required params
                             if not args_json or not args_json.strip():
-                                logger.warning(f"🔍 EMPTY_JSON: Tool {tool_name} has no argument JSON, skipping execution")
-                                completed_tools.add(tool_id)
-                                continue
+                                # Tools with no required parameters can have empty args
+                                # Set to empty object and let execution proceed
+                                args_json = '{}'
+                                logger.debug(f"🔍 EMPTY_JSON: Tool {tool_name} has no argument JSON, using empty object")
                             
                             # Validate JSON is complete (starts with { and ends with })
                             if not (args_json.strip().startswith('{') and args_json.strip().endswith('}')):
@@ -1841,6 +1881,9 @@ Retry with the 'command' parameter included."""
                                
                                 # Execute the tool immediately
                                 try:
+                                   # Import signing and verification functions
+                                   from app.mcp.signing import verify_tool_result, strip_signature_metadata
+                                   
                                    # Check if this is a builtin DirectMCPTool
                                    logger.debug(f"🔍 BUILTIN_CHECK: Looking for tool '{actual_tool_name}' in {len(all_tools)} tools")
                                    builtin_tool = None
@@ -1859,9 +1902,68 @@ Retry with the 'command' parameter included."""
                                         # Call builtin tool directly
                                         logger.info(f"🔧 Calling builtin tool directly: {actual_tool_name}")
                                         result = builtin_tool._run(**args)
+                                        
+                                        # SECURITY: Sign builtin tool results too
+                                        # Builtin tools don't go through MCPClient so we sign here
+                                        if result and not isinstance(result, dict):
+                                            # Convert string results to dict format
+                                            result = {"content": [{"type": "text", "text": str(result)}]}
+                                        if result and isinstance(result, dict) and not result.get("error"):
+                                            conversation_id = args.get('conversation_id', 'default')
+                                            result = sign_tool_result(actual_tool_name, args, result, conversation_id)
+                                            logger.debug(f"🔐 Signed builtin tool result for {actual_tool_name}")
                                    else:
-                                        # Call through MCP manager for external tools
-                                        result = await mcp_manager.call_tool(actual_tool_name, args)
+                                       # Call through MCP manager for external tools
+                                        # External tools get signed in MCPClient.call_tool automatically
+                                       result = await mcp_manager.call_tool(actual_tool_name, args)
+                                    
+                                   # Initialize verification tracking variables
+                                   is_verified = False
+                                   verification_error = None
+                                    
+                                   # SECURITY: Verify the result signature before using it
+                                   if result and isinstance(result, dict) and not result.get("error"):
+                                        is_valid, error_message = verify_tool_result(result, actual_tool_name, args)
+                                        # Replace result with corrective error
+                                        is_verified = False
+                                        verification_error = None
+                                    
+                                        if not is_valid:
+                                            logger.error(f"🔐 SECURITY: Tool result verification failed for {actual_tool_name}: {error_message}")
+                                            
+                                            # Record security violation for monitoring
+                                            from app.server import record_verification_result
+                                            record_verification_result(actual_tool_name, False, error_message)
+                                            
+                                            # Create corrective error message for model
+                                            corrective_message = f"""🚨 TOOL CALL REJECTED - SECURITY VERIFICATION FAILED
+
+Tool: {actual_tool_name}
+Reason: {error_message}
+
+This tool call did not execute successfully. The result could not be cryptographically verified.
+
+DO NOT proceed as if this tool executed.
+DO NOT use or reference results from this tool call.
+
+Please try again or proceed without this tool."""
+                                            
+                                            result = {
+                                                "error": True,
+                                                "message": corrective_message
+                                            }
+                                        else:
+                                            is_verified = True
+                                            
+                                            # Record successful verification
+                                            from app.server import record_verification_result
+                                            record_verification_result(actual_tool_name, True)
+                                            
+                                            logger.debug(f"🔐 Verified tool result for {actual_tool_name}")
+                                            
+                                            # Strip signature metadata before processing
+                                            # (keep verification status separate)
+                                            result = strip_signature_metadata(result)
                                     
                                     # Add successfully executed command to recent commands for deduplication
                                    if actual_tool_name == 'run_shell_command' and args.get('command'):
@@ -1872,7 +1974,12 @@ Retry with the 'command' parameter included."""
                                     # Process result
                                    if isinstance(result, dict) and result.get('error') and result.get('error') != False:
                                         error_msg = result.get('message', 'Unknown error')
-                                        if 'repetitive execution' in error_msg:
+                                        
+                                        # Check if this is a security verification failure
+                                        if 'SECURITY VERIFICATION FAILED' in error_msg:
+                                            # Use the full corrective message for model
+                                            result_text = error_msg
+                                        elif 'repetitive execution' in error_msg:
                                             result_text = f"BLOCKED: {error_msg} Previous attempts may have succeeded - check the results above before retrying."
                                         elif 'non-zero exit status' in error_msg:
                                             result_text = f"COMMAND FAILED: {error_msg}. The external tool encountered an error."
@@ -1897,18 +2004,34 @@ Retry with the 'command' parameter included."""
                                         'result': result_text
                                     })
 
+                                   # SECURITY: Only display to user if verification passed OR if it's a legitimate error
+                                   # Hallucinated results (security failures) are NOT shown to user
+                                   should_display_to_user = is_verified or (not verification_error)
+                                   
+                                   if should_display_to_user:
+                                       yield {
+                                           'type': 'tool_display',
+                                           'tool_id': tool_id,
+                                           'tool_name': tool_name,
+                                           'result': self._format_tool_result(tool_name, result_text, args),
+                                           'args': args,
+                                           'verified': is_verified,
+                                           'verification_error': verification_error,
+                                           'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                                       }
+                                   else:
+                                       # Security failure - suppress from user display but log
+                                       logger.warning(f"🔐 SECURITY: Suppressed unverified tool result from user display: {actual_tool_name}")
+                                   
+                                   # ALWAYS send result to model (either verified result or corrective error)
                                    yield {
-                                        'type': 'tool_display',
-                                        'tool_id': tool_id,
-                                        'tool_name': tool_name,
-                                        'result': self._format_tool_result(tool_name, result_text, args),
-                                        'args': args,  # Pass args so frontend can access command
-                                        'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                                    }
-                                    
-                                    # Note: Tool result is added to conversation below (line 1905-1924)
+                                       'type': 'tool_result_for_model',
+                                       'tool_use_id': tool_id,
+                                       'content': result_text
+                                   }
+                                   # Note: Tool result is added to conversation below (line 1905-1924)
                                                     
-                                    # Immediate flush to reduce delay
+                                   # Immediate flush to reduce delay
                                    await asyncio.sleep(0)
                                     
                                    tools_executed_this_iteration = True
@@ -2113,20 +2236,20 @@ Please retry the tool call with valid JSON. Ensure:
                     cached = iteration_usage.cache_read_tokens
                     
                     # Log ALWAYS - critical operational data
-                    logger.info("=" * 80)
-                    logger.info(f"📊 BEDROCK USAGE - Iteration {iteration}")
-                    logger.info("=" * 80)
-                    logger.info(f"   Fresh Input:    {fresh:>8,} tokens")
-                    logger.info(f"   Cached Input:   {cached:>8,} tokens (FREE)")
-                    logger.info(f"   Output:         {iteration_usage.output_tokens:>8,} tokens")
-                    logger.info(f"   Cache Written:  {iteration_usage.cache_write_tokens:>8,} tokens")
+                    logger.debug("=" * 80)
+                    logger.debug(f"📊 BEDROCK USAGE - Iteration {iteration}")
+                    logger.debug("=" * 80)
+                    logger.debug(f"   Fresh Input:    {fresh:>8,} tokens")
+                    logger.debug(f"   Cached Input:   {cached:>8,} tokens (FREE)")
+                    logger.debug(f"   Output:         {iteration_usage.output_tokens:>8,} tokens")
+                    logger.debug(f"   Cache Written:  {iteration_usage.cache_write_tokens:>8,} tokens")
                     
                     if total_input > 0:
                         cache_pct = (cached / total_input) * 100
-                        logger.info(f"   Efficiency:     {cache_pct:>7.1f}%")
-                        logger.info(f"   💰 Cost Save:   ~{cache_pct:>6.1f}%")
+                        logger.debug(f"   Efficiency:     {cache_pct:>7.1f}%")
+                        logger.debug(f"   💰 Cost Save:   ~{cache_pct:>6.1f}%")
                     
-                    logger.info("=" * 80)
+                    logger.debug("=" * 80)
                     
                     # CRITICAL: Detect cache failures immediately
                     if iteration > 0 and cached == 0 and fresh > 10000:
@@ -2139,7 +2262,7 @@ Please retry the tool call with valid JSON. Ensure:
                     elif cached > 0:
                         throttle_state['cache_working'] = True
                         throttle_state['last_cache_efficiency'] = iteration_usage.cache_hit_rate
-                        logger.info(f"✅ CACHE WORKING: {cached:,} tokens reused")
+                        logger.debug(f"✅ CACHE WORKING: {cached:,} tokens reused")
                 else:
                     logger.warning(f"⚠️ No usage metrics captured for iteration {iteration}")
 
@@ -2229,7 +2352,7 @@ Please retry the tool call with valid JSON. Ensure:
                 
                 # The conversation should now be in proper Bedrock format
                 # Remove the filter call since we're constructing messages correctly
-                logger.info(f"🤖 MODEL_RESPONSE: {assistant_text}")
+                logger.debug(f"🤖 MODEL_RESPONSE: {assistant_text}")
                 logger.debug(f"Conversation length: {len(conversation)} messages")
 
                 # Skip duplicate execution - tools are already executed in content_block_stop
@@ -2369,7 +2492,7 @@ Please retry the tool call with valid JSON. Ensure:
                             )
                             yield {'type': 'stream_end'}
                             break
-                    elif iteration >= 5:  # Safety: end after 5 iterations total
+                    elif iteration >= 100:  # Safety: end after reaching max iterations
                         logger.debug(f"🔍 MAX_ITERATIONS: Reached maximum iterations ({iteration}), ending stream")
                         yield {'type': 'stream_end'}
                         break
