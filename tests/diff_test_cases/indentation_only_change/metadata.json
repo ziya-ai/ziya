@@ -1,0 +1,4 @@
+{
+  "description": "Test indentation-only change incorrectly reported as already applied",
+  "target_file": "app/streaming_tool_executor.py"
+}
