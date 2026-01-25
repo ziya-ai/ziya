@@ -25,7 +25,7 @@ from app.agents.callbacks import EmptyMessageFilter
 dotenv_path = find_dotenv()
 if dotenv_path:
     load_dotenv(dotenv_path, override=True)
-    logger.info(f"MODELS.PY: Loaded environment variables from {dotenv_path}")
+    logger.debug(f"MODELS.PY: Loaded environment variables from {dotenv_path}")
 
 from langchain_classic.agents import AgentExecutor
 from langchain_classic.agents.format_scratchpad import format_xml
@@ -719,8 +719,7 @@ class ModelManager:
         # Get endpoint and model from environment variables
         endpoint = os.environ.get("ZIYA_ENDPOINT", cls.DEFAULT_ENDPOINT)
         model_name = os.environ.get("ZIYA_MODEL", cls.DEFAULT_MODELS.get(endpoint))
-        
-        logger.info(f"Initializing for endpoint: {endpoint}, model: {model_name}")
+        logger.debug(f"Initializing for endpoint: {endpoint}, model: {model_name}")
         
         # Get model configuration
         model_config = cls.get_model_config(endpoint, model_name)
