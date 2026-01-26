@@ -37,6 +37,7 @@ import asyncio
 import re
 import hashlib
 import argparse
+import time
 from pathlib import Path
 import sys
 from app.utils.logging_utils import logger
@@ -46,6 +47,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.completion import PathCompleter, WordCompleter, Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.filters import has_selection
 from prompt_toolkit.application import Application
 from prompt_toolkit.layout import Layout, HSplit, VSplit, Window
 from prompt_toolkit.layout.containers import WindowAlign
@@ -197,6 +199,7 @@ class CLI:
         self._cancellation_requested = False
         self._diff_applicator = None  # Lazy-load diff applicator
         self._last_ctrl_c_time = 0  # Track last Ctrl+C press for double-tap exit
+        self._last_input_time = 0  # Track last input time for paste detection
         self._setup_prompt_session()
     
     @property
@@ -241,7 +244,7 @@ class CLI:
     
     def _setup_prompt_session(self):
         """Set up prompt_toolkit session with history and completions."""
-        # Custom completer that only shows commands at line start
+        # Custom completer for commands and file paths
         class SmartCompleter(Completer):
             def __init__(self):
                 self.command_completer = WordCompleter([
@@ -252,7 +255,7 @@ class CLI:
                     '/model', '/m',
                     '/quit', '/q', '/exit',
                     '/help', '/h'
-                ], ignore_case=True, sentence=True)
+                ], ignore_case=True, sentence=True, match_middle=True)
                 
                 self.path_completer = PathCompleter(
                     only_directories=False,
@@ -261,40 +264,51 @@ class CLI:
             
             def get_completions(self, document: Document, complete_event):
                 text = document.text_before_cursor
+                stripped = text.lstrip()
                 
-                # Only show command completions at the start of the line
-                if text.lstrip().startswith('/'):
-                    # Check if we're still typing the command (no space after /)
-                    if ' ' not in text.lstrip():
-                        yield from self.command_completer.get_completions(document, complete_event)
+                # Show command completions when typing a command
+                if stripped.startswith('/'):
+                    if ' ' in stripped:
+                        # We're past the command, show path completions for the argument part
+                        # Find where the command ends and the path argument begins
+                        space_idx = stripped.index(' ')
+                        path_part = stripped[space_idx + 1:]
+                        
+                        # Create a new document with just the path part for completion
+                        path_doc = Document(
+                            text=path_part,
+                            cursor_position=len(path_part)
+                        )
+                        yield from self.path_completer.get_completions(path_doc, complete_event)
+                        return
+                    else:
+                        # Still typing the command - show command completions
+                        command_part = stripped
+                        cmd_doc = Document(text=command_part, cursor_position=len(command_part))
+                        yield from self.command_completer.get_completions(cmd_doc, complete_event)
                         return
                 
-                # Otherwise, show path completions
+                # Otherwise show path completions
                 yield from self.path_completer.get_completions(document, complete_event)
         
-        """Set up prompt_toolkit session with history and completions."""
         # History file in user's home directory
         history_file = Path.home() / '.ziya' / 'history'
         history_file.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Command completer for slash commands
-        command_completer = WordCompleter([
-            '/add', '/a',
-            '/rm', '/remove',
-            '/files', '/ls', '/f',
-            '/clear', '/c',
-            '/model', '/m',
-            '/quit', '/q', '/exit',
-            '/help', '/h'
-        ], ignore_case=True)
-        
-        # Key bindings for ^C handling
+
+        # Key bindings for ^C handling  
         bindings = KeyBindings()
+        
+        # Track timing of all key inputs for paste detection
+        @bindings.add('<any>', eager=True)
+        def _(event):
+            """Track timing of any key input."""
+            self._last_input_time = time.time()
+            # Let the key be processed normally
+            event.key_processor.feed(event.key_sequence[0], first=True)
         
         @bindings.add('c-c')
         def _(event):
             """Handle Ctrl+C - double tap to exit, or cancel/clear."""
-            import time
             current_time = time.time()
             time_since_last = current_time - self._last_ctrl_c_time
             
@@ -318,11 +332,31 @@ class CLI:
             # Update last Ctrl+C time
             self._last_ctrl_c_time = current_time
         
+        @bindings.add('enter', filter=~has_selection)
+        def _(event):
+            """Handle Enter - timing-based paste detection."""
+            current_time = time.time()
+            time_since_input = current_time - self._last_input_time
+            
+            # If less than 150ms since last input, likely a paste - add newline
+            # Typical paste speed is <10ms between characters
+            # Typical human typing is >100ms between keys
+            if time_since_input < 0.15:
+                event.current_buffer.insert_text('\n')
+            else:
+                # Human-scale delay - submit the input
+                event.current_buffer.validate_and_handle()
+            
+            # Update time for this Enter key
+            self._last_input_time = current_time
+        
         self.session = PromptSession(
             history=FileHistory(str(history_file)),
             completer=SmartCompleter(),
             complete_while_typing=True,
-            key_bindings=bindings
+            key_bindings=bindings,
+            multiline=True,
+            prompt_continuation=lambda width, line_number, is_soft_wrap: '  '
         )
     
     def _build_messages(self, question: str):
@@ -462,19 +496,56 @@ class CLI:
                 result = chunk.get('result', '')
                 args = chunk.get('args', {})
                 
-                # Print tool header in cyan
-                print(f"\n\033[36m┌─ {tool_name}\033[0m", flush=True)
+                # Build header with any available metadata
+                header_parts = [tool_name]
+                metadata = []
                 
-                # Print command/args if available
-                if 'command' in args:
-                    # Only show command if result doesn't already include it
-                    if not result.startswith('$ '):
-                        print(f"\033[90m│ $ {args['command']}\033[0m", flush=True)
+                # Extract common metadata patterns from args
+                if 'thoughtNumber' in args and 'totalThoughts' in args:
+                    # Progress indicator (e.g., thought 3/5)
+                    metadata.append(f"{args['thoughtNumber']}/{args['totalThoughts']}")
                 
-                # Print result
+                if args.get('isRevision') and 'revisesThought' in args:
+                    # Revision indicator
+                    metadata.append(f"revises #{args['revisesThought']}")
+                elif 'branchId' in args:
+                    # Branch indicator
+                    metadata.append(f"branch: {args['branchId']}")
+                
+                if 'branchFromThought' in args:
+                    # Branch origin
+                    metadata.append(f"from #{args['branchFromThought']}")
+                
+                # Add command if available (for shell tools)
+                if 'command' in args and not result.startswith('$ '):
+                    metadata.append(f"$ {args['command']}")
+                
+                # Build final header
+                if metadata:
+                    header = f"{header_parts[0]} ({', '.join(metadata)})"
+                else:
+                    header = header_parts[0]
+                
+                # Print header
+                print(f"\n\033[36m┌─ {header}\033[0m", flush=True)
+                
+                # Print the thought content if it's in args (for sequential thinking)
+                if 'thought' in args:
+                    thought_text = args['thought']
+                    if thought_text:
+                        for line in thought_text.split('\n'):
+                            print(f"\033[90m│\033[0m {line}", flush=True)
+                
+                # Print result (tool output/response)
+                # For sequential thinking, skip the JSON result if we showed the thought
                 if result:
-                    for line in result.rstrip('\n').split('\n'):
-                        print(f"\033[90m│\033[0m {line}", flush=True)
+                    # Check if result is just JSON metadata (starts with '{' and contains thoughtNumber)
+                    is_json_metadata = result.strip().startswith('{') and 'thoughtNumber' in result
+                    
+                    # Only show result if it's not metadata and not a duplicate of the thought
+                    if not is_json_metadata and result != args.get('thought', ''):
+                        for line in result.rstrip('\n').split('\n'):
+                            print(f"\033[90m│\033[0m {line}", flush=True)
                 
                 print(f"\033[36m└─\033[0m", flush=True)
             
@@ -1444,14 +1515,6 @@ Examples:
         """
     )
     
-    # Global options - handle flags BEFORE subcommand (e.g., ziya --profile x chat)
-    parser.add_argument('--model', '-m', help='Model to use')
-    parser.add_argument('--profile', help='AWS profile')
-    parser.add_argument('--region', help='AWS region')
-    parser.add_argument('--root', help='Root directory (default: cwd)')
-    parser.add_argument('--no-stream', action='store_true', help='Disable streaming output')
-    parser.add_argument('--debug', action='store_true', help='Enable debug logging')
-    
     # Create a parent parser with common arguments (add_help=False prevents conflict)
     common_parent = argparse.ArgumentParser(add_help=False)
     common_parent.add_argument('--model', '-m', help='Model to use')
@@ -1496,7 +1559,43 @@ Examples:
 def main():
     """CLI entry point."""
     parser = create_parser()
-    args = parser.parse_args()
+    
+    # Pre-process argv to support flags both before and after subcommand
+    # e.g., "ziya --profile x chat" -> "ziya chat --profile x"
+    argv = sys.argv[1:]
+    commands = {'chat', 'ask', 'review', 'explain'}
+    global_flags = {'--model', '-m', '--profile', '--region', '--root', '--no-stream', '--debug'}
+    
+    # Find command position
+    cmd_idx = None
+    for i, arg in enumerate(argv):
+        if arg in commands:
+            cmd_idx = i
+            break
+    
+    # If command found and there are flags before it, move them after
+    if cmd_idx is not None and cmd_idx > 0:
+        pre_cmd = argv[:cmd_idx]
+        cmd = argv[cmd_idx]
+        post_cmd = argv[cmd_idx + 1:]
+        
+        # Separate flags from non-flags in pre_cmd section
+        flags_to_move = []
+        i = 0
+        while i < len(pre_cmd):
+            arg = pre_cmd[i]
+            if arg in global_flags or arg.startswith('--'):
+                flags_to_move.append(arg)
+                # Check if next arg is a value (not a flag)
+                if i + 1 < len(pre_cmd) and not pre_cmd[i + 1].startswith('-'):
+                    flags_to_move.append(pre_cmd[i + 1])
+                    i += 1
+            i += 1
+        
+        # Reconstruct argv with flags after command
+        argv = [cmd] + post_cmd + flags_to_move
+    
+    args = parser.parse_args(argv)
     
     if args.command is None:
         # No command - show help
