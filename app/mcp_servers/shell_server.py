@@ -115,6 +115,15 @@ class ShellServer:
             char = command[i]
             next_char = command[i + 1] if i + 1 < len(command) else ''
             
+            # Handle backslash escaping first
+            if char == '\\' and i + 1 < len(command):
+                next_next_char = command[i + 1]
+                # If we're escaping a backtick, treat it as literal
+                if next_next_char == '`':
+                    current_segment += char + next_next_char
+                    i += 2
+                    continue
+            
             # Handle quotes
             if char == "'" and not in_double_quote and not in_backtick:
                 in_single_quote = not in_single_quote
