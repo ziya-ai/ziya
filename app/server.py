@@ -1757,6 +1757,13 @@ async def stream_chunks(body):
                         logger.info("=" * 80)
                 
                 # Always send done message at the end
+                # Log complete response at INFO level before sending done marker
+                if accumulated_content and accumulated_content.strip():
+                    logger.info("=" * 80)
+                    logger.info(f"🤖 COMPLETE MODEL RESPONSE ({len(accumulated_content)} characters):")
+                    logger.info(accumulated_content)
+                    logger.info("=" * 80)
+                
                 yield f"data: {json.dumps({'done': True})}\n\n"
                 
                 # Clean up stream before returning
@@ -3090,7 +3097,10 @@ async def stream_chunks(body):
         
         # Log the final server response at INFO level
         if full_response.strip():
-            logger.info(f"🤖 FINAL SERVER RESPONSE: {full_response[:500]}{'...' if len(full_response) > 500 else ''}")
+            logger.info("=" * 80)
+            logger.info(f"🤖 COMPLETE MODEL RESPONSE ({len(full_response)} characters):")
+            logger.info(full_response)
+            logger.info("=" * 80)
         
         logger.info("=" * 50)
         
@@ -4668,6 +4678,7 @@ def get_config():
         'mcpEnabled': os.environ.get('ZIYA_ENABLE_MCP', 'true').lower() in ('true', '1', 'yes'),
         'version': os.environ.get('ZIYA_VERSION', 'development'),
         'ephemeralMode': os.environ.get('ZIYA_EPHEMERAL_MODE', 'false').lower() in ('true', '1', 'yes'),
+        'projectRoot': os.environ.get('ZIYA_USER_CODEBASE_DIR', os.getcwd()),
     }
     
     # Merge frontend config from active config providers
