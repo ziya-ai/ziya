@@ -554,6 +554,14 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
                 distinctive_added = added_lines[-min(len(added_lines), 5):]
                 distinctive_normalized = [normalize_line_for_comparison(line) for line in distinctive_added]
                 
+                # CRITICAL: Check if the distinctive block is actually distinctive
+                # Single closing braces, empty lines, etc. are NOT distinctive
+                non_trivial_lines = [line for line in distinctive_normalized if line.strip() and line.strip() not in ['}', '{', '});', '};', '];', '],', ');', ')']]
+                if len(non_trivial_lines) < 2:
+                    # Not distinctive enough - don't use this check
+                    logger.debug(f"Distinctive block not distinctive enough ({len(non_trivial_lines)} non-trivial lines) - skipping already-applied check")
+                    return False
+                
                 for search_pos in range(len(file_lines) - len(distinctive_added) + 1):
                     file_block = [normalize_line_for_comparison(file_lines[search_pos + i]) 
                                  for i in range(len(distinctive_added))]
