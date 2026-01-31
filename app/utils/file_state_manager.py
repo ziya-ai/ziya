@@ -199,10 +199,12 @@ class FileStateManager:
         
         # Read current content from disk
         full_path = os.path.join(base_dir, file_path)
-        try:
-            with open(full_path, 'r', encoding='utf-8') as f:
-                disk_content = f.read()
-        except Exception as e:
+        
+        # Use read_file_content which handles documents, images, etc.
+        disk_content = read_file_content(full_path)
+        
+        if disk_content is None:
+            # read_file_content returns None on error or unsupported files
             logger.warning(f"Could not read {full_path} from disk: {e}")
             return False
         
@@ -284,10 +286,12 @@ class FileStateManager:
             return False
         
         full_path = os.path.join(base_dir, file_path)
-        try:
-            with open(full_path, 'r', encoding='utf-8') as f:
-                disk_content = f.read()
-        except Exception as e:
+        
+        # Use read_file_content which handles documents, images, etc.
+        disk_content = read_file_content(full_path)
+        
+        if disk_content is None:
+            # read_file_content returns None on error or unsupported files
             logger.warning(f"Could not read {full_path} from disk: {e}")
             return False
         
@@ -451,10 +455,12 @@ class FileStateManager:
             return False
         
         full_path = os.path.join(base_dir, file_path)
-        try:
-            with open(full_path, 'r', encoding='utf-8') as f:
-                disk_content = f.read()
-        except Exception as e:
+        
+        # Use read_file_content which handles documents, images, etc.
+        disk_content = read_file_content(full_path)
+        
+        if disk_content is None:
+            # read_file_content returns None on error or unsupported files
             logger.warning(f"Could not read {full_path} from disk: {e}")
             return False
         
