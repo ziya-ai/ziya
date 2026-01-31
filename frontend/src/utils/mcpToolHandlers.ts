@@ -59,11 +59,15 @@ const sequentialThinkingHandler: ToolHandler = {
     });
     
     if (thinkingContent) {
-      // Escape any code fences in the thinking content to prevent breaking the outer fence
-      const escapedContent = thinkingContent.replace(/```/g, '\\`\\`\\`');
+      // Escape triple backticks to prevent fence breakout
+      // Strategy: Replace ``` with &#96;&#96;&#96; AND ensure it's preserved through markdown parsing
+      // We need to use a fence length that's longer than any fences in the content
+      let escapedContent = thinkingContent.replace(/```/g, '&#96;&#96;&#96;');
       
-      // Create a thinking block display instead of generic tool start
-      const thinkingDisplay = `\n\`\`\`thinking:step-${thoughtNumber}\n🤔 **Thought ${thoughtNumber}/${totalThoughts}**\n\n${escapedContent}\n\`\`\`\n\n`;
+      // Use 4 backticks for the thinking fence to avoid conflicts with 3-backtick fences in content
+      const thinkingDisplay = `\n\`\`\`\`thinking:step-${thoughtNumber}\n🤔 **Thought ${thoughtNumber}/${totalThoughts}**\n\n${escapedContent}\n\`\`\`\`\n\n`;
+      
+      console.log('🤔 THINKING_START: Created thinking display with 4-backtick fence');
       
       context.currentContent.value += thinkingDisplay;
       
@@ -104,13 +108,13 @@ const sequentialThinkingHandler: ToolHandler = {
       const nextThoughtNeeded = result.nextThoughtNeeded;
       
       // Update the thinking block to show completion status
-      const stepPattern = new RegExp(`\`\`\`thinking:step-${thoughtNumber}\\n🤔 \\*\\*Thought ${thoughtNumber}/${totalThoughts}\\*\\*\\n\\n([\\s\\S]*?)\\n\`\`\``, 'g');
+      const stepPattern = new RegExp(`\`\`\`\`thinking:step-${thoughtNumber}\\n🤔 \\*\\*Thought ${thoughtNumber}/${totalThoughts}\\*\\*\\n\\n([\\s\\S]*?)\\n\`\`\`\``, 'g');
       const match = context.currentContent.value.match(stepPattern);
       
       if (match) {
         const statusSuffix = nextThoughtNeeded ? '\n\n_Continuing..._' : '\n\n_✅ Complete._';
         context.currentContent.value = context.currentContent.value.replace(stepPattern, 
-          `\`\`\`thinking:step-${thoughtNumber}\n🤔 **Thought ${thoughtNumber}/${totalThoughts}**\n\n$1${statusSuffix}\n\`\`\``
+          `\`\`\`\`thinking:step-${thoughtNumber}\n🤔 **Thought ${thoughtNumber}/${totalThoughts}**\n\n$1${statusSuffix}\n\`\`\`\``
         );
         
         context.setStreamedContentMap((prev: Map<string, string>) => {
