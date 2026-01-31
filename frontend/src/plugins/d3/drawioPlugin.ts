@@ -939,56 +939,34 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                                 }
                             }
 
-                            // Swimlane label positioning fixes
-                            if (vertex && !styleObj['fontColor']) {
-                                // Set appropriate font color based on fill color
-                                const fillColor = styleObj['fillColor'];
-                                if (fillColor && fillColor !== 'none') {
-                                    styleObj['fontColor'] = getOptimalTextColor(fillColor);
-                                } else {
-                                    // No fill color - use theme-based default
-                                    styleObj['fontColor'] = isDarkMode ? '#e0e0e0' : '#000000';
-                                }
-                            } else if (vertex && styleObj['fontColor'] === '#000000' && isDarkMode) {
-                                // Check background color before overriding
-                                const fillColor = styleObj['fillColor'];
-                                if (fillColor && fillColor !== 'none') {
-                                    // Only override if the background is dark
-                                    if (!isLightBackground(fillColor)) {
-                                        styleObj['fontColor'] = getOptimalTextColor(fillColor);
-                                    }
-                                } else {
-                                    // No fill color - use light text in dark mode
-                                    styleObj['fontColor'] = '#e0e0e0';
-                                }
-                            } else if (vertex && styleObj['fontColor']) {
-                                // Check if existing font color has good contrast with fill
+                            // CRITICAL: ALWAYS validate text contrast for ANY cell with fill colors
+                            // This includes vertices, text cells, and list items in swimlanes
+                            if (styleObj['fillColor'] && styleObj['fillColor'] !== 'none') {
                                 const fillColor = styleObj['fillColor'];
                                 const fontColor = styleObj['fontColor'];
-
-                                if (fillColor && fillColor !== 'none' && fontColor) {
-                                    // Check if we need to adjust for better contrast
-                                    const fillRgb = hexToRgb(fillColor);
-                                    const fontRgb = hexToRgb(fontColor);
-
-                                    if (fillRgb && fontRgb) {
-                                        // If both colors are light or both are dark, fix it
-                                        const fillIsLight = isLightBackground(fillColor);
-                                        const fontIsLight = isLightBackground(fontColor);
-
-                                        if (fillIsLight === fontIsLight) {
-                                            styleObj['fontColor'] = getOptimalTextColor(fillColor);
-                                        }
-                                    }
+                                
+                                // Calculate optimal text color for this background
+                                const optimalColor = getOptimalTextColor(fillColor);
+                                
+                                // If current font color doesn't exist OR has poor contrast, use optimal
+                                if (!fontColor || fontColor === fillColor || fontColor === styleObj['strokeColor']) {
+                                    styleObj['fontColor'] = optimalColor;
+                                    console.log(`📐 CONTRAST-FIX: Cell ${cellId} - ${fillColor} background needs ${optimalColor} text (was ${fontColor || 'unset'})`);
                                 }
-                            } else if (vertex && styleObj['fillColor']) {
+                            } else if (!styleObj['fontColor']) {
+                                // No fill color - use theme-based default
+                                styleObj['fontColor'] = isDarkMode ? '#e0e0e0' : '#000000';
+                            }
+                            
+                            // Special handling for swimlanes (only for actual vertex cells)
+                            if (vertex && styleObj['fillColor']) {
                                 if (isSwimlane) {
                                     // Swimlane labels should be at the top, not centered
                                     styleObj['verticalAlign'] = 'top';
                                     styleObj['align'] = 'center';
                                     styleObj['spacingTop'] = 8;
                                     styleObj['fontSize'] = styleObj['fontSize'] || 12;
-                                    styleObj['fontStyle'] = styleObj['fontStyle'] || 1; // Bold
+                                    styleObj['fontStyle'] = styleObj['fontStyle'] || 1;
 
                                     // Ensure label area is visible
                                     if (!styleObj['startSize']) {
@@ -1013,7 +991,6 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                         } else {
                             cell.setStyle({});
                         }
-
                         // Get geometry if it exists
                         const geometryElement = cellElement.querySelector('mxGeometry');
                         if (geometryElement) {
