@@ -32,6 +32,7 @@ class CustomBedrockClient:
     # Constants for Claude models
     CLAUDE_CONTEXT_LIMIT = 204698  # Based on observed error messages
     CLAUDE_SAFETY_MARGIN = 1000    # Safety margin to avoid edge cases
+    _extended_context_failures = set()  # Track conversations that failed with extended context
     
     def __init__(self, client, max_tokens=None, model_config=None):
         """Initialize the custom client."""
@@ -247,8 +248,16 @@ class CustomBedrockClient:
             conversation_id = self._extract_conversation_id_from_request(kwargs)
             logger.debug(f"🔍 EXTENDED_CONTEXT: Extracted conversation_id = {conversation_id}")
             
-            # Add extended context headers if needed
-            kwargs = self._add_extended_context_headers(kwargs, conversation_id)
+            # CRITICAL: Check if we're already using extended context for this conversation
+            # If yes, start with extended headers to avoid "Input is too long" error
+            already_using_extended = conversation_id and self._should_use_extended_context(conversation_id)
+            
+            if already_using_extended:
+                logger.info(f"🔍 EXTENDED_CONTEXT: Conversation {conversation_id} already extended, starting with headers")
+                kwargs = self._add_extended_context_headers(kwargs, conversation_id)
+            else:
+                # First time - headers will be None, we'll activate on error if needed
+                kwargs = self._add_extended_context_headers(kwargs, conversation_id)
             
             # PROACTIVE EXTENDED CONTEXT: Check if we should use extended context before attempting
             if 'body' in kwargs and isinstance(kwargs['body'], str) and conversation_id:
@@ -326,14 +335,20 @@ class CustomBedrockClient:
                                         raise retry_error
                         
                         # Check if it's a context limit error
-                        elif ("input length and `max_tokens` exceed context limit" in error_message or
-                            "Input is too long" in error_message):
-                            logger.warning(f"Context limit error detected: {error_message}")
+                        elif (("input length and `max_tokens` exceed context limit" in error_message or
+                            "Input is too long" in error_message) and conversation_id):
+                            
+                            # Check if we've already failed with extended context for this conversation
+                            if conversation_id in self._extended_context_failures:
+                                logger.info(f"Already tried extended context for {conversation_id}, failing fast")
+                                raise
                             
                             # Try extended context if supported and not already using it
                             if (self._supports_extended_context() and 
-                                conversation_id and 
                                 not self._should_use_extended_context(conversation_id)):
+                                
+                                logger.info(f"First context limit error for {conversation_id}, trying extended context")
+                                self._extended_context_failures.add(conversation_id)
                                 
                                 return self._retry_with_extended_context(kwargs, error_message, conversation_id)
                         
