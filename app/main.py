@@ -41,84 +41,24 @@ def get_available_models(endpoint=None):
 
 
 def parse_arguments():
+    from app.config.common_args import add_common_arguments
+    
     parser = argparse.ArgumentParser(
         description="Run with custom options",
         formatter_class=argparse.RawTextHelpFormatter
     )
     
-    # File inclusion/exclusion options
-    parser.add_argument("--root", type=str, default=None,
-                        help="Set the root directory for the codebase (default: current working directory)")
-    parser.add_argument("--include", default=[], type=lambda x: x.split(','),
-                        help="Include paths outside of the current working directory. Supports comma-separated lists. (e.g., --include '/path/to/external/lib,/another/external/path')")
-    parser.add_argument("--exclude", default=[], type=lambda x: x.split(','),
-                        help="Exclude specified files, directories, or file patterns from the codebase. Supports comma-separated lists. (e.g., --exclude 'node_modules,dist,*.pyc')")
-    parser.add_argument("--include-only", default=[], type=lambda x: x.split(','),
-                        help="Only include specified directories, files, or file patterns, excluding everything else. Supports comma-separated lists and wildcard patterns. (e.g., --include-only 'src,lib' or --include-only '*.py,*.tsx')")
+    # Add all common arguments (shared with CLI subcommands)
+    add_common_arguments(parser)
     
-    parser.add_argument("--profile", type=str, default=None,
-                        help="AWS profile to use (e.g., --profile ziya)")
-    parser.add_argument("--region", type=str, default=None,
-                        help="AWS region to use (e.g., --region us-east-1)")
-    
-    # Get default model alias from config
-    default_model = config.DEFAULT_MODELS[config.DEFAULT_ENDPOINT]
-    
-    # Build model list for all endpoints
-    model_help_lines = []
-    for endpoint in ["bedrock", "google"]:
-        models = get_available_models(endpoint)
-        
-        # Sort models: extract family and version, sort by family then version descending
-        def sort_key(m):
-            # Extract family (e.g., "sonnet", "opus", "haiku", "gemini")
-            parts = m.split('-') if '-' in m else [m]
-            family = parts[0].rstrip('0123456789.')
-            
-            # Extract version (e.g., "4.5", "3.5", "1.5")
-            version_str = m.replace(family, '').lstrip('-')
-            try:
-                # Parse version as float for proper sorting (4.5 > 4.0 > 3.5)
-                version = float(version_str) if version_str and version_str[0].isdigit() else 0
-            except:
-                version = 0
-            
-            return (family, -version)  # Negative version for descending order
-        
-        sorted_models = sorted(models, key=sort_key)
-        
-        # Get default for this endpoint and mark with star
-        endpoint_default = config.DEFAULT_MODELS.get(endpoint)
-        formatted_models = [f"*{m}" if m == endpoint_default else m for m in sorted_models]
-        model_list = ", ".join(f"`{m}`" for m in formatted_models)
-        model_help_lines.append(f"{endpoint}: {model_list}")
-    
-    parser.add_argument("--endpoint", type=str, choices=["bedrock", "google"], default=config.DEFAULT_ENDPOINT,
-                        help=f"Model endpoint to use (default: {config.DEFAULT_ENDPOINT})")
-    parser.add_argument("--model", type=str, default=None,
-                        help=f"Model to use from selected endpoint (default: {default_model})\n" + "\n".join(model_help_lines))
-    parser.add_argument("--model-id", type=str, default=None,
-                        help="Override the model ID directly (advanced usage, bypasses model name lookup)")
+    # Server-specific arguments (not used by CLI subcommands)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT,
                         help=(f"Port number to run Ziya frontend on "
                               f"(default: {DEFAULT_PORT}, e.g., --port 8080)"))
-
-    # Add model parameter arguments without specific ranges
-    parser.add_argument("--temperature", type=float, default=None,
-                        help="Temperature for model generation")
-    parser.add_argument("--top-p", type=float, default=None,
-                        help="Top-p sampling parameter for supported models")
-    parser.add_argument("--top-k", type=int, default=None,
-                        help="Top-k sampling parameter for supported models")
-    parser.add_argument("--max-output-tokens", type=int, default=None,
-                        help="Maximum number of tokens to generate in the response")
-    parser.add_argument("--thinking-level", type=str, choices=['low', 'medium', 'high'], default=None,
-                        help="Thinking level for models that support it (e.g., Gemini 3)")
-
-    parser.add_argument("--version", action="store_true",
-                        help="Prints the version of Ziya")
     parser.add_argument("--max-depth", type=int, default=15,
                         help="Maximum depth for folder structure traversal (e.g., --max-depth 20)")
+    parser.add_argument("--version", action="store_true",
+                        help="Prints the version of Ziya")
     parser.add_argument("--check-auth", action="store_true",
                         help="Check authentication setup without starting the server")
     parser.add_argument("--info", action="store_true",
@@ -298,6 +238,11 @@ def setup_environment(args):
         logger.info("MCP (Model Context Protocol) integration enabled")
     
 def check_version_and_upgrade():
+    # Skip auto-update if disabled (e.g., for internal edition)
+    if os.environ.get('ZIYA_DISABLE_AUTO_UPDATE') == '1':
+        logger.debug("Auto-update disabled via ZIYA_DISABLE_AUTO_UPDATE")
+        return
+    
     current_version = get_current_version()
     latest_version = get_latest_version()
 

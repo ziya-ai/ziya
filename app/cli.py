@@ -261,6 +261,15 @@ class CLI:
                     only_directories=False,
                     expanduser=True
                 )
+                
+                # Model name completer
+                try:
+                    from app.config.models_config import MODEL_CONFIGS
+                    endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+                    model_names = list(MODEL_CONFIGS.get(endpoint, {}).keys())
+                    self.model_completer = WordCompleter(model_names, ignore_case=True)
+                except Exception:
+                    self.model_completer = None
             
             def get_completions(self, document: Document, complete_event):
                 text = document.text_before_cursor
@@ -270,6 +279,20 @@ class CLI:
                 if stripped.startswith('/'):
                     if ' ' in stripped:
                         # We're past the command, show path completions for the argument part
+                        # Check if this is a /model command
+                        command = stripped.split()[0].lower()
+                        if command in ['/model', '/m'] and self.model_completer:
+                            # Show model name completions
+                            space_idx = stripped.index(' ')
+                            model_part = stripped[space_idx + 1:]
+                            
+                            model_doc = Document(
+                                text=model_part,
+                                cursor_position=len(model_part)
+                            )
+                            yield from self.model_completer.get_completions(model_doc, complete_event)
+                            return
+                        
                         # Find where the command ends and the path argument begins
                         space_idx = stripped.index(' ')
                         path_part = stripped[space_idx + 1:]
@@ -297,14 +320,6 @@ class CLI:
 
         # Key bindings for ^C handling  
         bindings = KeyBindings()
-        
-        # Track timing of all key inputs for paste detection
-        @bindings.add('<any>', eager=True)
-        def _(event):
-            """Track timing of any key input."""
-            self._last_input_time = time.time()
-            # Let the key be processed normally
-            event.key_processor.feed(event.key_sequence[0], first=True)
         
         @bindings.add('c-c')
         def _(event):
@@ -334,21 +349,9 @@ class CLI:
         
         @bindings.add('enter', filter=~has_selection)
         def _(event):
-            """Handle Enter - timing-based paste detection."""
-            current_time = time.time()
-            time_since_input = current_time - self._last_input_time
-            
-            # If less than 150ms since last input, likely a paste - add newline
-            # Typical paste speed is <10ms between characters
-            # Typical human typing is >100ms between keys
-            if time_since_input < 0.15:
-                event.current_buffer.insert_text('\n')
-            else:
-                # Human-scale delay - submit the input
-                event.current_buffer.validate_and_handle()
-            
-            # Update time for this Enter key
-            self._last_input_time = current_time
+            """Handle Enter - submit input."""
+            buffer = event.current_buffer
+            buffer.validate_and_handle()
         
         self.session = PromptSession(
             history=FileHistory(str(history_file)),
@@ -382,7 +385,7 @@ class CLI:
         self._cancellation_requested = False
         
         try:
-            response = await self._run_with_tools(question, stream)
+            response = await self._run_with_tools_and_validate(question, stream)
         except Exception as e:
             error_str = str(e)
             print(f"\n\033[31mError: {error_str}\033[0m", file=sys.stderr)
@@ -402,15 +405,77 @@ class CLI:
         # Update history
         self.history.append({'type': 'human', 'content': question})
         if response:
-            # Process diffs if present
-            try:
-                self.diff_applicator.process_response(response)
-            except Exception as e:
-                # Use print instead of logger in CLI mode to avoid logging noise
-                if os.environ.get('ZIYA_LOG_LEVEL') == 'DEBUG':
-                    print(f"\n\033[33mNote: Could not process diffs: {e}\033[0m", file=sys.stderr)
+            # Diff processing now happens in _run_with_tools_and_validate
+            pass
             
             self.history.append({'type': 'ai', 'content': response})
+        
+        return response
+    
+    async def _run_with_tools_and_validate(self, question: str, stream: bool = True) -> str:
+        """Run model with tools and validation-feedback loop for diffs."""
+        from app.utils.diff_validation_hook import DiffValidationHook
+        from langchain_core.messages import HumanMessage
+        
+        # Initialize validation hook - runs FULL apply pipeline in dry-run
+        validation_hook = DiffValidationHook(
+            current_context=self.files,
+            auto_regenerate=True
+        )
+        
+        # Build initial messages
+        messages = self._build_messages(question)
+        
+        # Validation loop - give model chance to fix bad diffs
+        max_attempts = 2
+        for attempt in range(max_attempts):
+            # Reset cancellation flag for each attempt
+            self._cancellation_requested = False
+            
+            # Run the model
+            response = await self._run_with_tools_from_messages(messages, stream and attempt == 0)
+            
+            # If no diffs, we're done
+            if '```diff' not in response:
+                # Clean up validation hook
+                validation_hook = None
+                return response
+            
+            # Validate diffs using FULL apply pipeline (dry-run)
+            validation_feedback = validation_hook.validate_and_enhance(
+                content=response,
+                model_messages=messages,
+                send_event=lambda event_type, data: None
+            )
+            
+            # If validation passed, process diffs interactively
+            if not validation_feedback:
+                if attempt > 0:
+                    print("\n\033[32m✓ Diff validation passed\033[0m")
+                
+                # Now show diffs to user for interactive application
+                try:
+                    self.diff_applicator.process_response(response)
+                except Exception as e:
+                    if os.environ.get('ZIYA_LOG_LEVEL') == 'DEBUG':
+                        print(f"\n\033[33mNote: Could not process diffs: {e}\033[0m", file=sys.stderr)
+                
+                # Clean up validation hook
+                validation_hook = None
+                return response
+            
+            # Validation failed - regenerate if we have attempts left
+            if attempt < max_attempts - 1:
+                print(f"\n\033[33m⚠ Diff validation failed, regenerating corrected version...\033[0m")
+                
+                # Append feedback and rebuild messages for retry
+                # DON'T rebuild from scratch - just append feedback to existing messages
+                messages.append(HumanMessage(content=validation_feedback))
+            else:
+                print(f"\n\033[33m⚠ Diff validation still has issues, showing anyway...\033[0m")
+        
+        # Clean up validation hook after all attempts
+        validation_hook = None
         
         return response
     
@@ -469,6 +534,105 @@ class CLI:
         
         return full_response
     
+    async def _run_with_tools_from_messages(self, messages, stream: bool = True) -> str:
+        """Run model with tools from existing message list (for retries)."""
+        from app.streaming_tool_executor import StreamingToolExecutor
+        from app.mcp.manager import get_mcp_manager
+        from app.agents.models import ModelManager
+        from app.mcp.enhanced_tools import create_secure_mcp_tools
+        
+        mcp_manager = get_mcp_manager()
+        if not mcp_manager or not mcp_manager.is_initialized:
+            return await self._simple_invoke(messages, stream)
+        
+        tools = create_secure_mcp_tools()
+        if not tools:
+            return await self._simple_invoke(messages, stream)
+        
+        state = ModelManager.get_state()
+        executor = StreamingToolExecutor(
+            profile_name=state.get('aws_profile'),
+            region=state.get('aws_region', 'us-west-2')
+        )
+        
+        openai_messages = self._convert_to_openai_format(messages)
+        
+        async def stream_task():
+            async for chunk in executor.stream_with_tools(openai_messages, tools):
+                if self._cancellation_requested:
+                    raise asyncio.CancelledError("User cancelled operation")
+                yield chunk
+        
+        task = asyncio.create_task(self._stream_handler(stream_task(), stream))
+        self._active_task = task
+        return await task
+    
+    def _parse_markdown_state(self, content: str) -> dict:
+        """Parse markdown to detect unclosed code blocks."""
+        lines = content.split('\n')
+        code_block_stack = []
+        
+        for line in lines:
+            trimmed = line.lstrip()
+            fence_match = re.match(r'^(`{3,}|~{3,})(\w*)', trimmed)
+            
+            if fence_match:
+                fence_chars = fence_match.group(1)
+                language = fence_match.group(2) or ''
+                fence_type = fence_chars[0]
+                
+                # Check if closing
+                if (code_block_stack and 
+                    code_block_stack[-1]['type'] == fence_type and
+                    len(fence_chars) >= 3):
+                    code_block_stack.pop()
+                elif len(fence_chars) >= 3:
+                    code_block_stack.append({'type': fence_type, 'language': language})
+        
+        return {
+            'in_code_block': len(code_block_stack) > 0,
+            'fence_type': code_block_stack[-1]['type'] if code_block_stack else None,
+            'fence_language': code_block_stack[-1]['language'] if code_block_stack else None
+        }
+    
+    def _handle_rewind_marker(self, content: str) -> tuple[str, str]:
+        """
+        Handle rewind markers in streamed content.
+        Returns (rewound_content, marker_stripped_chunk).
+        """
+        if '<!-- REWIND_MARKER:' not in content:
+            return content, content
+        
+        # Parse marker
+        rewind_match = re.search(r'<!-- REWIND_MARKER: (\d+)(?:\|FENCE:([`~])(\w*))? -->(?:</span>)?', content)
+        if not rewind_match:
+            return content, content
+        
+        rewind_line = int(rewind_match.group(1))
+        fence_type = rewind_match.group(2)
+        fence_language = rewind_match.group(3)
+        
+        # Rewind to specified line
+        lines = content.split('\n')
+        marker_line_idx = next((i for i, line in enumerate(lines) if '<!-- REWIND_MARKER:' in line), None)
+        
+        if marker_line_idx is not None:
+            before_rewind = '\n'.join(lines[:marker_line_idx])
+            
+            # Check if we're in a code block
+            markdown_state = self._parse_markdown_state(before_rewind)
+            in_code_block = fence_type is not None or markdown_state['in_code_block']
+            
+            if in_code_block:
+                fence_to_use = fence_type or markdown_state['fence_type'] or '`'
+                rewound = before_rewind + '\n' + fence_to_use * 3 + '\n'
+            else:
+                rewound = before_rewind
+            
+            return rewound, rewound
+        
+        return content, content
+    
     async def _stream_handler(self, stream_generator, stream: bool) -> str:
         """Handle streaming with cancellation support."""
         full_response = ""
@@ -478,9 +642,27 @@ class CLI:
             
             if chunk_type == 'text':
                 content = chunk.get('content', '')
+                
+                # Filter out rewind markers and continuation messages for clean CLI output
+                # These are for GUI DOM manipulation and should be invisible in terminal
+                content = re.sub(r'<!-- REWIND_MARKER: \d+(?:\|FENCE:[`~]\w*)? -->', '', content)
+                content = content.replace('**🔄 Block continues...**', '')
+                
+                # Skip if content is now empty after filtering
+                if not content.strip():
+                    full_response += chunk.get('content', '')  # Keep original for history
+                    continue
+                
+                # Add to response
                 if stream:
                     print(content, end='', flush=True)
                 full_response += content
+                
+                # Handle rewind markers
+                rewound, _ = self._handle_rewind_marker(full_response)
+                if rewound != full_response:
+                    full_response = rewound
+                    # Note: In CLI we can't "rewind" printed output, but we fix internal state
             
             elif chunk_type == 'tool_execution':
                 tool_name = chunk.get('tool_name', 'unknown')
@@ -519,6 +701,19 @@ class CLI:
                 # Add command if available (for shell tools)
                 if 'command' in args and not result.startswith('$ '):
                     metadata.append(f"$ {args['command']}")
+                
+                # For search tools, show the search query
+                if 'WorkspaceSearch' in tool_name or 'CodeSearch' in tool_name:
+                    # Extract query from args (handle nested tool_input)
+                    search_args = args.get('tool_input', args)
+                    if isinstance(search_args, str):
+                        import json
+                        try:
+                            search_args = json.loads(search_args)
+                        except: pass
+                    query = search_args.get('searchQuery') or search_args.get('query', '')
+                    if query:
+                        metadata.append(f'query: "{query}"')
                 
                 # Build final header
                 if metadata:
@@ -1054,8 +1249,6 @@ Current Settings:
             print(f"\033[90mCurrent: {current_model}\033[0m")
             print(f"\033[90mUse: /model <name>\033[0m")
         
-        return settings
-        
     async def _show_model_settings_dialog(self, model_name: str, model_config: dict) -> Optional[dict]:
         """Show simple text-based settings configuration."""
         from app.agents.models import ModelManager
@@ -1499,6 +1692,8 @@ def _print_auth_error():
 
 def create_parser():
     """Create the CLI argument parser."""
+    from app.config.common_args import add_common_arguments
+    
     parser = argparse.ArgumentParser(
         prog='ziya',
         description='Ziya AI coding assistant',
@@ -1517,12 +1712,7 @@ Examples:
     
     # Create a parent parser with common arguments (add_help=False prevents conflict)
     common_parent = argparse.ArgumentParser(add_help=False)
-    common_parent.add_argument('--model', '-m', help='Model to use')
-    common_parent.add_argument('--profile', help='AWS profile')
-    common_parent.add_argument('--region', help='AWS region')
-    common_parent.add_argument('--root', help='Root directory (default: cwd)')
-    common_parent.add_argument('--no-stream', action='store_true', help='Disable streaming output')
-    common_parent.add_argument('--debug', action='store_true', help='Enable debug logging')
+    add_common_arguments(common_parent)
     
     subparsers = parser.add_subparsers(dest='command', help='Commands')
     
