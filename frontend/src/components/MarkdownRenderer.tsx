@@ -5047,6 +5047,7 @@ const markedOptions = {
 const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, displayMode }) => {
     const [katex, setKatex] = useState<any>(null);
     const [isLoading, setIsLoading] = useState(true);
+    const mathRef = useRef<HTMLDivElement | HTMLSpanElement>(null);
 
     useEffect(() => {
         const loadKatex = async () => {
@@ -5061,6 +5062,29 @@ const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, 
         };
         loadKatex();
     }, []);
+
+    // Add copy handler to preserve raw LaTeX syntax
+    useEffect(() => {
+        const handleCopy = (e: ClipboardEvent) => {
+            const selection = window.getSelection();
+            if (!selection || !mathRef.current) return;
+            
+            // Check if the selection is within this math element
+            if (mathRef.current.contains(selection.anchorNode)) {
+                e.preventDefault();
+                
+                // Preserve raw LaTeX with appropriate delimiters
+                const delimiter = displayMode ? '$$' : '$';
+                const latexWithDelimiters = `${delimiter}${math}${delimiter}`;
+                
+                e.clipboardData?.setData('text/plain', latexWithDelimiters);
+                message.success('LaTeX copied to clipboard');
+            }
+        };
+
+        document.addEventListener('copy', handleCopy);
+        return () => document.removeEventListener('copy', handleCopy);
+    }, [math, displayMode]);
 
     if (isLoading || !katex) {
         // Fallback while KaTeX is loading or if it fails
@@ -5080,9 +5104,29 @@ const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, 
             }
         });
 
+        // Create accessible label for screen readers
+        const ariaLabel = `Math equation: ${math}`;
+        
+        const Element = displayMode ? 'div' : 'span';
         return displayMode ?
-            <div className="math-display" dangerouslySetInnerHTML={{ __html: html }} /> :
-            <span className="math-inline" dangerouslySetInnerHTML={{ __html: html }} />;
+            <Element
+                ref={mathRef}
+                className={displayMode ? "math-display" : "math-inline"}
+                role="img"
+                aria-label={ariaLabel}
+                data-math-original={math}
+                title="Select and copy to get LaTeX source"
+                dangerouslySetInnerHTML={{ __html: html }}
+            /> :
+            <Element
+                ref={mathRef as React.RefObject<HTMLSpanElement>}
+                className="math-inline"
+                role="img"
+                aria-label={ariaLabel}
+                data-math-original={math}
+                title="Select and copy to get LaTeX source"
+                dangerouslySetInnerHTML={{ __html: html }}
+            />;
     } catch (error) {
         // Silently handle math errors and render as plain text instead of showing error
         console.debug('KaTeX rendering error (handled):', error);
@@ -5306,30 +5350,103 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 processedMarkdown = removeThinkingTags(processedMarkdown);
             }
 
-            // Pre-process tool blocks to clean up ONLY duplicate tool markers
-            processedMarkdown = processedMarkdown.replace(/```tool:(mcp_\w+)\n```tool:\1/g, '```tool:$1');
-
             // CRITICAL FIX: Escape backticks inside diff code blocks before markdown parsing
             // This prevents backticks in diff content from being interpreted as fence delimiters
-            processedMarkdown = processedMarkdown.replace(
-                /```diff\n([\s\S]*?)```/g,
-                (match, diffContent) => {
-                    // Only escape fence sequences (3+ consecutive backticks) to prevent breaking out of diff block
-                    // Single/double backticks are safe and should remain unescaped for proper rendering
-                    const escapedContent = diffContent.replace(/```+/g, (fence) => '&#96;'.repeat(fence.length));
-                    return `\`\`\`diff\n${escapedContent}\`\`\``;
-                }
-            );
+            
+            // IMPORTANT: Extract and protect math blocks BEFORE fence escaping
+            // Store them temporarily and restore after fence processing
+            const mathBlocks: { placeholder: string; content: string }[] = [];
+            let mathCounter = 0;
 
-            // Also handle multi-fence diff blocks (````)
-            processedMarkdown = processedMarkdown.replace(
-                /````diff\n([\s\S]*?)````/g,
-                (match, diffContent) => {
-                    // Only escape fence sequences (3+ consecutive backticks)
-                    const escapedContent = diffContent.replace(/```+/g, (fence) => '&#96;'.repeat(fence.length));
-                    return `\`\`\`\`diff\n${escapedContent}\`\`\`\``;
+
+            //
+            // Why iterative approach: The old regex /<span class="diff-rewind-marker" data-marker="DIFF_START_MARKER: 34" style="display:none;"></span>
+
+            // contains backticks because non-greedy *? matches the FIRST ``` even if inside content.
+            // Per CommonMark spec, a closing fence must be at line start with >= opening fence length.
+            
+            // Extract display math ($$...$$) before fence processing
+            processedMarkdown = processedMarkdown.replace(/\$\$([\s\S]*?)\$\$/g, (match, content) => {
+                const placeholder = `__MATH_DISPLAY_${mathCounter}__`;
+                mathBlocks.push({ placeholder, content: match });
+                mathCounter++;
+                return placeholder;
+            });
+            
+            // Extract inline math ($...$) before fence processing
+            // Use negative lookbehind/lookahead to avoid matching $$ delimiters
+            processedMarkdown = processedMarkdown.replace(/(?<!\$)\$(?!\$)((?:(?!\$).)+?)\$(?!\$)/g, (match, content) => {
+                const placeholder = `__MATH_INLINE_${mathCounter}__`;
+                mathBlocks.push({ placeholder, content: match });
+                mathCounter++;
+                return placeholder;
+            });
+            
+            // Now run fence escaping (won't affect math since it's been extracted)
+            const escapeNestedFencesInCodeBlocks = (markdown: string): string => {
+                const lines = markdown.split('\n');
+                const result: string[] = [];
+                let inCodeBlock = false;
+                let openingFenceLength = 0;
+                let openingLine = '';
+                let blockLines: string[] = [];
+                
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i];
+                    // Match fence: 3+ backticks at line start, then any info string (language, tool:name, etc.)
+                    // Per CommonMark spec, info string can contain any text after the backticks
+                    // Examplesrun_shell_command, ````shell, ```python, etc.
+                    const fenceMatch = line.match(/^(`{3,})(.*)$/);
+                    
+                    if (!inCodeBlock && fenceMatch) {
+                        // Start of code block
+                        inCodeBlock = true;
+                        openingFenceLength = fenceMatch[1].length;
+                        // Store the full opening line including info string
+                        openingLine = line;
+                        blockLines = [];
+                    } else if (inCodeBlock) {
+                        // Check if this is a valid closing fence
+                        // Must have >= backticks as opening and nothing else on line
+                        const closingMatch = line.match(/^(`{3,})\s*$/);
+                        if (closingMatch && closingMatch[1].length >= openingFenceLength) {
+                            // Valid closing fence - process the block
+                            // Escape any fence-like patterns at line start within the content
+                            const escapedLines = blockLines.map(contentLine => {
+                                // Escape backtick sequences at line start that could be mistaken for fences
+                                return contentLine.replace(/^(`{3,})/g, (m) => '&#96;'.repeat(m.length));
+                            });
+                            result.push(openingLine);
+                            result.push(...escapedLines);
+                            result.push(line);
+                            inCodeBlock = false;
+                        } else {
+                            // Not a closing fence, add to block content
+                            blockLines.push(line);
+                        }
+                    } else {
+                        // Outside code block, pass through
+                        result.push(line);
+                    }
                 }
-            );
+                
+                // Handle unclosed code block (streaming case) - output without escaping
+                if (inCodeBlock) {
+                    result.push(openingLine);
+                    result.push(...blockLines);
+                }
+                
+                return result.join('\n');
+            };
+
+            processedMarkdown = escapeNestedFencesInCodeBlocks(processedMarkdown);
+            
+            // Restore math blocks after fence escaping
+            for (const { placeholder, content } of mathBlocks) {
+                processedMarkdown = processedMarkdown.replace(placeholder, content);
+            }
+            
+            // Now math processing will work normally on the restored $$...$$ and $...$ delimiters
 
             // First check if this is a diff or code block that shouldn't have math processing
             const isDiff = processedMarkdown.includes('diff --git') ||
