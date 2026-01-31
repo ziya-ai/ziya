@@ -9,6 +9,7 @@ import os
 import io
 from typing import Optional, Dict, Any, List
 import logging
+from functools import lru_cache
 
 from app.utils.logging_utils import logger
 
@@ -23,6 +24,11 @@ _AVAILABLE_LIBRARIES = {
     'pandas': False,
     'python_pptx': False
 }
+
+# Cache for extracted document content
+# Key: (file_path, mtime), Value: extracted text
+_DOCUMENT_CACHE: Dict[tuple, str] = {}
+_CACHE_MAX_SIZE = 100  # Maximum number of documents to cache
 
 def _check_libraries():
     """Check which document processing libraries are available."""
@@ -294,6 +300,54 @@ def extract_pptx_text(file_path: str) -> Optional[str]:
 def extract_document_text(file_path: str) -> Optional[str]:
     """
     Extract text from a document file based on its extension.
+    Uses caching to avoid re-extracting unchanged documents.
+    
+    Args:
+        file_path: Path to the document file
+        
+    Returns:
+        Extracted text or None if extraction failed
+    """
+    global _DOCUMENT_CACHE
+    
+    # Check cache first
+    if not os.path.exists(file_path):
+        logger.error(f"Document file not found: {file_path}")
+        return None
+    
+    try:
+        mtime = os.path.getmtime(file_path)
+        cache_key = (file_path, mtime)
+        
+        # Check if we have cached content
+        if cache_key in _DOCUMENT_CACHE:
+            logger.debug(f"Returning cached content for: {file_path}")
+            return _DOCUMENT_CACHE[cache_key]
+    except OSError as e:
+        logger.warning(f"Could not get mtime for {file_path}: {e}")
+        # Continue without caching
+    
+    # Extract the document
+    extracted_text = _extract_document_text_impl(file_path)
+    
+    # Cache the result if extraction was successful
+    if extracted_text is not None and 'cache_key' in locals():
+        # Implement simple LRU by clearing oldest entries if cache is full
+        if len(_DOCUMENT_CACHE) >= _CACHE_MAX_SIZE:
+            # Remove oldest entry (first item in dict)
+            oldest_key = next(iter(_DOCUMENT_CACHE))
+            del _DOCUMENT_CACHE[oldest_key]
+            logger.debug(f"Cache full, removed oldest entry: {oldest_key[0]}")
+        
+        _DOCUMENT_CACHE[cache_key] = extracted_text
+        logger.debug(f"Cached extracted content for: {file_path} (cache size: {len(_DOCUMENT_CACHE)})")
+    
+    return extracted_text
+
+def _extract_document_text_impl(file_path: str) -> Optional[str]:
+    """
+    Internal implementation of document text extraction.
+    This is called by extract_document_text after cache check.
     
     Args:
         file_path: Path to the document file
@@ -307,10 +361,6 @@ def extract_document_text(file_path: str) -> Optional[str]:
         return None
     
     logger.debug(f"Attempting to extract text from document: {file_path}")
-    
-    if not os.path.exists(file_path):
-        logger.error(f"Document file not found: {file_path}")
-        return None
     
     ext = os.path.splitext(file_path)[1].lower()
     
