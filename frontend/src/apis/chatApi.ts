@@ -535,7 +535,7 @@ function showError(errorDetail: string, conversationId: string, addMessageToConv
     if (errorDetail.length > 100) {
         // Check if this is an authentication error that should have a retry button
         const isAuthError = errorType === 'authentication_error' || errorDetail.includes('credential') || errorDetail.includes('mwinit') || errorDetail.includes('AWS credentials');
-        
+
         // Show inline as a collapsible message
         const errorMessage: Message = {
             role: 'assistant',  // CRITICAL: Use 'assistant' role so message renders (system messages are filtered in Conversation.tsx:206)
@@ -1543,7 +1543,7 @@ export const sendPayload = async (
                     if (actualToolName === 'run_shell_command' && storedInput?.command && !displayContent.startsWith('$ ')) {
                         displayContent = `$ ${storedInput.command}\n${displayContent}`;
                     }
-                    
+
                     // Add lock icon if cryptographically verified
                     if (isVerified) {
                         displayHeader = `🔐 ${displayHeader}`;
@@ -1568,27 +1568,20 @@ export const sendPayload = async (
                     // Create tool display with header - handle hierarchical results
                     let toolResultContent: string;
                     let toolResultDisplay: string;
-
                     if (actualToolName === 'run_shell_command') {
                         // Shell commands: wrap in TOOL_BLOCK with shell code fence inside
                         // CRITICAL: Include TOOL_BLOCK_START/END to preserve header during rewind
+                        // Note: MarkdownRenderer extracts header from TOOL_BLOCK_START comment and renders it
                         toolResultContent = displayContent;
-                        
-                        // Add verification metadata as HTML comment
-                        let verificationComment = '';
-                        if (isVerified) {
-                            verificationComment = '<!-- VERIFIED:true -->';
-                        } else if (verificationError) {
-                            const safeError = verificationError.replace(/--/g, '—').replace(/>/g, '&gt;');
-                            verificationComment = `<!-- VERIFIED:false ERROR:${safeError} -->`;
-                        }
-                        
+                        // Build verification badge separately
                         const needsExtraNewline = !currentContent.endsWith('\n\n');
-                        // Include full TOOL_BLOCK structure so header is preserved during replacement
+                        // Structure: TOOL_MARKER + TOOL_BLOCK_START + shell block + TOOL_BLOCK_END  
+                        // MarkdownRenderer extracts header from TOOL_BLOCK_START, NOT from content
                         toolResultDisplay = `${needsExtraNewline ? '\n\n' : '\n'}` +
-                            `${verificationComment}\n` +
                             `\n` +
-                            `\`\`\`shell\n${toolResultContent}\n\`\`\`\n` +
+                            `\n` +
+                            `\`\`\`\`shell\n${toolResultContent}\n\`\`\`\`\n` +
+                            `\n` +
                             `\n\n`;
                     } else if (formatted.hierarchicalResults && formatted.hierarchicalResults.length > 0) {
                         // Add verification status to metadata
@@ -1649,14 +1642,16 @@ export const sendPayload = async (
                             // Pattern: \n```shell\n$ command\n⏳ Running...\n```
                             const afterMarkerContent = currentContent.substring(markerIndex);
                             // Pattern now includes the TOOL_BLOCK_START comment between TOOL_MARKER and shell fence
-                            const shellBlockMatch = afterMarkerContent.match(/^<!-- TOOL_MARKER:[^>]+ -->\n<!-- TOOL_BLOCK_START:[^>]+ -->\n```shell\n/);
+                            const shellBlockMatch = afterMarkerContent.match(
+                                /^<!-- TOOL_MARKER:[^>]+ -->\n<!-- TOOL_BLOCK_START:[^>]+ -->\n````shell\n/
+                            );
                             if (shellBlockMatch) {
                                 // Find where the code block starts (right after the marker)
                                 const shellBlockStart = markerIndex + shellBlockMatch[0].length;
 
                                 // Find the closing fence after the marker
                                 const afterShellBlock = currentContent.substring(shellBlockStart);
-                                const closingFenceMatch = afterShellBlock.match(/\n```\n/);
+                                const closingFenceMatch = afterShellBlock.match(/\n````\n/);
 
                                 if (closingFenceMatch) {
                                     const closingFenceIndex = shellBlockStart + afterShellBlock.indexOf(closingFenceMatch[0]);
@@ -1664,14 +1659,12 @@ export const sendPayload = async (
                                     // Find the TOOL_BLOCK_END marker after the closing fence
                                     const afterFence = currentContent.substring(closingFenceIndex + closingFenceMatch[0].length);
                                     const blockEndMatch = afterFence.match(/<!-- TOOL_BLOCK_END:[^>]+ -->/);
-                                    
                                     let endIndex;
                                     if (blockEndMatch) {
                                         endIndex = closingFenceIndex + closingFenceMatch[0].length + afterFence.indexOf(blockEndMatch[0]) + blockEndMatch[0].length;
                                     } else {
                                         endIndex = closingFenceIndex + closingFenceMatch[0].length;
                                     }
-                                    
                                     // Replace from marker through TOOL_BLOCK_END
                                     // toolResultDisplay already includes the complete TOOL_BLOCK structure with header
                                     currentContent = currentContent.substring(0, markerIndex) +
@@ -1869,7 +1862,7 @@ export const sendPayload = async (
                     const baseHeader = unwrappedData.display_header || toolName.replace('mcp_', '').replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase());
                     const inputArgs = unwrappedData.args || unwrappedData.input || {};
                     let displayHeader = enhanceToolDisplayHeader(toolName, baseHeader, inputArgs);
-                    
+
                     // Sanitize displayHeader to ensure it never contains newlines (breaks HTML comments)
                     // This is critical for commands with \n in their arguments
                     displayHeader = displayHeader
@@ -1883,14 +1876,13 @@ export const sendPayload = async (
                     }
 
                     // Generate tool start display
-                    let toolStartDisplay;
+                    let toolStartDisplay: string;
 
                     if (actualToolName === 'run_shell_command' && inputArgs.command) {
-                        // For shell: add TOOL_MARKER before the shell block so tool_display can find and replace it
-                        // Use TOOL_BLOCK format with shell code fence inside, matching tool_display format
-                        toolStartDisplay = `\n<!-- TOOL_MARKER:${unwrappedData.tool_id} -->\n<!-- TOOL_BLOCK_START:${toolName}|${displayHeader}|${unwrappedData.tool_id} -->\n\`\`\`shell\n$ ${inputArgs.command}\n⏳ Running...\n\`\`\`\n<!-- TOOL_BLOCK_END:${toolName}|${unwrappedData.tool_id} -->\n\n`;
+                        toolStartDisplay = `\n\n<!-- TOOL_MARKER:${unwrappedData.tool_id} -->\n<!-- TOOL_BLOCK_START:${toolName}|${displayHeader}|${unwrappedData.tool_id} -->\n\`\`\`\`shell\n$ ${inputArgs.command}\n⏳ Running...\n\`\`\`\`\n<!-- TOOL_BLOCK_END:${toolName}|${unwrappedData.tool_id} -->\n\n\n`;
                     } else if (actualToolName === 'get_current_time') {
                         // Add TOOL_MARKER for reliable replacement
+                        toolStartDisplay = `\n\n\n⏳ Getting current time...\n\n\n`;
                         toolStartDisplay = `\n<!-- TOOL_MARKER:${unwrappedData.tool_id} -->\n<!-- TOOL_BLOCK_START:${toolName}|${displayHeader}|${unwrappedData.tool_id} -->\n⏳ Getting current time...\n<!-- TOOL_BLOCK_END:${toolName}|${unwrappedData.tool_id} -->\n\n`;
                     } else {
                         // Add TOOL_MARKER for all tools so tool_display can find and replace reliably
@@ -2307,8 +2299,8 @@ export const sendPayload = async (
                         }
 
                         const errorMessage = isPartialResponse
-                        ? 'Partial response preserved. ' + (errorResponse.detail || 'An error occurred')
-                        : errorResponse.detail || 'An error occurred';
+                            ? 'Partial response preserved. ' + (errorResponse.detail || 'An error occurred')
+                            : errorResponse.detail || 'An error occurred';
                         showError(errorMessage, conversationId, addMessageToConversation, isPartialResponse ? 'warning' : 'error');
                         errorOccurred = true;
                         removeStreamingConversation(conversationId);
