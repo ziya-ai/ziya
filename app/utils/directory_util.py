@@ -924,6 +924,7 @@ def estimate_tokens_calibrated(file_path: str, content: Optional[str] = None) ->
 def estimate_tokens_fast(file_path: str) -> int:
     """Fast token estimation based on file size and type."""
     try:
+        from app.utils.token_calibrator import get_token_calibrator
         # Check for tool-backed files first (before any file I/O)
         from app.utils.document_extractor import is_tool_backed_file
         if is_tool_backed_file(file_path):
@@ -931,6 +932,24 @@ def estimate_tokens_fast(file_path: str) -> int:
         
         # Get file size
         file_size = os.path.getsize(file_path)
+        
+        # Handle document files specially (PDF, DOCX, XLSX, PPTX)
+        # These are compressed binary formats where file_size != text content size
+        _, ext = os.path.splitext(file_path.lower())
+        if ext in {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'}:
+            calibrator = get_token_calibrator()
+            
+            # Check cache first
+            cached = calibrator.get_cached_document_tokens(file_path)
+            if cached and cached.get('is_accurate'):
+                # Return accurate count if available
+                return cached.get('actual_tokens', 0)
+            elif cached:
+                # Return cached estimate if available
+                return cached.get('estimated_tokens', 0)
+            
+            # Use calibrator's heuristic which has correct compression ratios
+            return calibrator.get_document_estimate_heuristic(file_path, file_size)
         
         # For very large files (>10MB), estimate tokens without reading
         # This prevents hanging on huge files while keeping them visible
@@ -1124,6 +1143,7 @@ def get_accurate_token_count(file_path: str) -> int:
     Get accurate token count for a specific file using tiktoken.
     This is the slow but precise method - use sparingly.
     """
+    from app.utils.token_calibrator import get_token_calibrator
     # Use compatibility layer for tiktoken with automatic fallbacks
     from app.utils.tiktoken_compat import tiktoken
     
@@ -1131,6 +1151,41 @@ def get_accurate_token_count(file_path: str) -> int:
         # Tool-backed files should return special marker
         if is_tool_backed_file(file_path):
             return -1  # Special marker
+        
+        # Handle document files (PDF, DOCX, XLSX, PPTX) by extracting text
+        _, ext = os.path.splitext(file_path.lower())
+        if ext in {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'}:
+            from app.utils.document_extractor import extract_document_text, is_document_file
+            
+            if not is_document_file(file_path):
+                return 0
+            
+            # Extract text content
+            text = extract_document_text(file_path)
+            if not text:
+                logger.warning(f"Failed to extract text from document: {file_path}")
+                return 0
+            
+            # Count tokens in extracted text
+            encoding = tiktoken.get_encoding("cl100k_base")
+            token_count = len(encoding.encode(text))
+            
+            # Update cache with accurate count
+            calibrator = get_token_calibrator()
+            cached = calibrator.get_cached_document_tokens(file_path)
+            if cached:
+                calibrator.cache_document_estimate(
+                    file_path,
+                    file_size=cached.get('file_size', os.path.getsize(file_path)),
+                    estimated_tokens=cached.get('estimated_tokens', 0),
+                    is_accurate=True,
+                    actual_tokens=token_count,
+                    text_length=len(text)
+                )
+                logger.info(f"📄 Document {os.path.basename(file_path)}: "
+                          f"{cached.get('estimated_tokens', 0):,} (est) → {token_count:,} (actual) tokens")
+            
+            return token_count
         
         encoding = tiktoken.get_encoding("cl100k_base")
         

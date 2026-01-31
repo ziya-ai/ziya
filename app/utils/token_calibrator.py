@@ -89,6 +89,9 @@ class TokenCalibrator:
         # Computed statistics: model_family -> file_type -> stats
         self.stats_by_model_and_type: Dict[str, Dict[str, Dict[str, float]]] = defaultdict(dict)
         
+        # Document file cache: file_path -> {mtime, estimated_tokens, is_accurate, ...}
+        self.document_cache: Dict[str, Dict[str, Any]] = {}
+        
         # Global ratio per model family
         self.global_by_model: Dict[str, float] = {}
         
@@ -121,6 +124,7 @@ class TokenCalibrator:
                     # Load nested structure
                     self.stats_by_model_and_type = defaultdict(dict, data.get('stats_by_model_and_type', {}))
                     self.global_by_model = data.get('global_by_model', {})
+                    self.document_cache = data.get('document_cache', {})
                     self.global_fallback = data.get('global_fallback', 4.1)
                     
                     # Load baselines
@@ -160,6 +164,7 @@ class TokenCalibrator:
             data = {
                 'stats_by_model_and_type': dict(self.stats_by_model_and_type),
                 'global_by_model': self.global_by_model,
+                'document_cache': self.document_cache,
                 'global_fallback': self.global_fallback,
                 'baseline_overhead_tokens': self.baseline_overhead_tokens,
                 'baselines_measured': list(self.baselines_measured),
@@ -677,6 +682,139 @@ class TokenCalibrator:
         
         return "\n".join(lines)
 
+    def get_cached_document_tokens(self, file_path: str) -> Optional[Dict[str, Any]]:
+        """Get cached token estimate for a document file."""
+        import os
+        if file_path not in self.document_cache:
+            return None
+        
+        try:
+            cached = self.document_cache[file_path]
+            current_mtime = os.path.getmtime(file_path)
+            
+            # Invalidate if file has been modified
+            if cached.get('mtime') != current_mtime:
+                del self.document_cache[file_path]
+                self.has_unsaved_data = True
+                return None
+            
+            return cached
+        except (OSError, IOError):
+            # File no longer exists or inaccessible
+            if file_path in self.document_cache:
+                del self.document_cache[file_path]
+                self.has_unsaved_data = True
+            return None
+    
+    def cache_document_estimate(
+        self, 
+        file_path: str, 
+        file_size: int,
+        estimated_tokens: int,
+        is_accurate: bool = False,
+        actual_tokens: Optional[int] = None,
+        text_length: Optional[int] = None
+    ):
+        """Cache token estimate for a document file with compression ratio tracking."""
+        import os
+        import time
+        
+        try:
+            compression_ratio = file_size / text_length if text_length else None
+            self.document_cache[file_path] = {
+                'mtime': os.path.getmtime(file_path),
+                'file_size': file_size,
+                'estimated_tokens': estimated_tokens,
+                'is_accurate': is_accurate,
+                'actual_tokens': actual_tokens,
+                'text_length': text_length,
+                'compression_ratio': compression_ratio,
+                'last_updated': time.time()
+            }
+            self.has_unsaved_data = True
+            # Will be saved automatically via auto-save timer
+        except (OSError, IOError) as e:
+            logger.warning(f"Failed to cache document estimate for {file_path}: {e}")
+
+    def get_learned_compression_ratio(self, extension: str) -> Optional[float]:
+        """Get median compression ratio for a file extension from cached extractions."""
+        import statistics
+        
+        ratios = []
+        for path, cache in self.document_cache.items():
+            if path.lower().endswith(extension.lower()):
+                if cache.get('is_accurate') and cache.get('compression_ratio'):
+                    ratios.append(cache['compression_ratio'])
+        
+        if len(ratios) >= 3:  # Need at least 3 samples
+            median_ratio = statistics.median(ratios)
+            logger.debug(f"📊 Learned compression ratio for {extension}: {median_ratio:.1f}x ({len(ratios)} samples)")
+            return median_ratio
+        
+        return None
+    
+    def get_document_estimate_heuristic(self, file_path: str, file_size: int) -> int:
+        """Get token estimate for document using learned compression + chars_per_token."""
+        _, ext = os.path.splitext(file_path.lower())
+        
+        # Structured document formats (not plain text) need special handling
+        # These have heavy metadata/formatting overhead beyond just text content
+        structured_doc_formats = {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'}
+        is_structured_doc = ext in structured_doc_formats
+        
+        # Get model family from state
+        from app.agents.models import ModelManager
+        try:
+            state = ModelManager.get_state()
+            model_id = state.get('model_id', '')
+            model_family = self._extract_model_family(model_id)
+        except Exception:
+            model_family = 'claude'  # Fallback
+        
+        # Determine file type
+        # File type is just the extension with dot (e.g., '.py', '.js')
+        file_type = ext if ext else None
+        if not file_type:
+            file_type = Path(file_path).suffix.lower() or None
+        
+        # Try to use learned compression ratio
+        # Skip learned ratios for structured docs - they were likely learned from extracted text, not raw file size
+        compression_ratio = None if is_structured_doc else self.get_learned_compression_ratio(ext)
+        
+        # Get chars_per_token from learned data or defaults
+        chars_per_token = self._get_chars_per_token(model_family, file_type)
+        
+        if compression_ratio:
+            return max(1, int(file_size / compression_ratio / chars_per_token))
+        
+        # Fallback for structured documents: less aggressive compression assumption
+        if is_structured_doc:
+            # Structured docs have metadata/formatting overhead: assume 40x compression
+            return max(1, int(file_size / 40))
+        
+        # Fallback for text: conservative default (100x compression, 4.0 chars/token)
+        return max(1, int(file_size / 400))
+    
+    def _get_chars_per_token(self, model_family: str, file_type: Optional[str]) -> float:
+        """Get chars_per_token ratio from learned data or defaults."""
+        # Try learned data for specific file type
+        if file_type and model_family in self.stats_by_model_and_type:
+            if file_type in self.stats_by_model_and_type[model_family]:
+                stats = self.stats_by_model_and_type[model_family][file_type]
+                if stats.get('sample_count', 0) > 0:
+                    return stats['p95']
+        
+        # Try release defaults for file type
+        if file_type and model_family in self.release_defaults:
+            if file_type in self.release_defaults[model_family]:
+                return self.release_defaults[model_family][file_type]
+        
+        # Try global model average
+        if model_family in self.global_by_model:
+            return self.global_by_model[model_family]
+        
+        # Final fallback
+        return 4.0
 
 # Global singleton
 _calibrator_instance = None
