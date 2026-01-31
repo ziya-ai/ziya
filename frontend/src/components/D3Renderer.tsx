@@ -123,6 +123,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     const [renderingStarted, setRenderingStarted] = useState<boolean>(false);
     const hasSuccessfulRenderRef = useRef<boolean>(false);
     const lastThemeRef = useRef<boolean>(isDarkMode);
+    const [hasSuccessfulRender, setHasSuccessfulRender] = useState<boolean>(false);
     const isDarkModeRef = useRef<boolean>(isDarkMode);
 
     // Generate a stable cache key for this spec
@@ -202,7 +203,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             console.log('🔍 RENDERER: Setting showRawContent=false');
             setShowRawContent(false);
         }
-    }, [isStreaming, isMarkdownBlockClosed, hasSuccessfulRenderRef.current, plugin, d3, isLoading]);
+    }, [isStreaming, isMarkdownBlockClosed, hasSuccessfulRender, plugin, d3, isLoading]);
     // Comprehensive cleanup on unmount
     useEffect(() => {
         return () => {
@@ -256,6 +257,37 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 console.warn('Error cleaning up D3:', e);
             }
         };
+    }, []);
+
+    // NEW: Listen for Vega-Lite plugin completion events
+    useEffect(() => {
+        const container = vegaContainerRef.current || d3ContainerRef.current;
+        if (!container) return;
+
+        const handleVegaRenderComplete = (event: Event) => {
+            const customEvent = event as CustomEvent;
+            console.log('🎉 VEGA-COMPLETE: Received vega-render-complete event', customEvent.detail);
+            
+            // Update component state to reflect successful render
+            if (mounted.current && customEvent.detail?.success) {
+                console.log('🎉 VEGA-COMPLETE: Setting component state for successful render');
+                setIsLoading(false);
+                setRenderError(null);
+                hasSuccessfulRenderRef.current = true;
+                setHasSuccessfulRender(true); // NEW: Trigger state update for effects
+                setShowRawContent(false);
+                onLoad?.();
+
+                // Update global cache
+                globalRenderCache.set(cacheKey, {
+                    rendered: true,
+                    timestamp: Date.now()
+                });
+            }
+        };
+
+        container.addEventListener('vega-render-complete', handleVegaRenderComplete);
+        return () => container.removeEventListener('vega-render-complete', handleVegaRenderComplete);
     }, []);
 
     // Initialize visualization with useCallback for better performance and dependency tracking
@@ -645,7 +677,8 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             }
         } finally {
             console.log('🔧 D3RENDERER: Setting isRendering=false');
-        };
+            isRenderingRef.current = false;
+        }
     }, []);
 
     // Separate effect to trigger re-render when plugin/d3 loads
