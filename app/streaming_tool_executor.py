@@ -1690,7 +1690,11 @@ Please retry the tool call with complete, valid JSON parameters."""
                                         tool_name, args, tool_schema
                                     )
                                     if validation_error:
-                                        logger.error(f"🔍 SCHEMA_VALIDATION_FAILED: {tool_name} - {validation_error[:100]}")
+                                        # Log full validation error for debugging, but with line breaks for readability
+                                        logger.error(f"🔍 SCHEMA_VALIDATION_FAILED: {tool_name}")
+                                        for line in validation_error.split('\n')[:15]:  # Log first 15 lines
+                                            if line.strip():
+                                                logger.error(f"   {line}")
                                         empty_tool_calls_this_iteration += 1
                                         consecutive_empty_tool_calls += 1
                                         
@@ -2130,6 +2134,7 @@ Please retry the tool call with valid JSON. Ensure:
                         
                         continuation_count = 0
                         max_continuations = 10
+                        continuation_happened = False
                         
                         while code_block_tracker.get('in_block') and continuation_count < max_continuations:
                             continuation_count += 1
@@ -2167,6 +2172,7 @@ Please retry the tool call with valid JSON. Ensure:
                             await asyncio.sleep(0.1)  # Ensure heartbeat is sent
                             
                             continuation_had_content = False
+                            continuation_happened = True
                             try:
                                 async for continuation_chunk in self._continue_incomplete_code_block(
                                     conversation, code_block_tracker, mcp_manager, iteration_start_time, assistant_text
@@ -2456,6 +2462,12 @@ Please retry the tool call with valid JSON. Ensure:
                             logger.debug(f"🔍 INCOMPLETE_BLOCK_REMAINING: Code block still open, continuing to next iteration")
                             continue
                         
+                        # If continuation just happened, always do another iteration
+                        # to let the model respond/continue naturally
+                        if continuation_happened:
+                            logger.debug(f"🔍 CONTINUATION_COMPLETE: Continuation finished, continuing to next iteration")
+                            continue
+                        
                         # Check if there's already substantial commentary after the last tool/diff/code block
                         text_after_last_block = self._get_text_after_last_structured_content(assistant_text)
                         word_count_after_block = len(text_after_last_block.split()) if text_after_last_block else 0
@@ -2497,10 +2509,13 @@ Please retry the tool call with valid JSON. Ensure:
                         yield {'type': 'stream_end'}
                         break
                     else:
-                        continue
+                        # No tools, no text - we're done
+                        logger.debug(f"🔍 NO_ACTIVITY: No tools or text in iteration {iteration}, ending stream")
+                        yield {'type': 'stream_end'}
+                        break
                 
                 # CRITICAL: Check for pending feedback after the iteration loop completes
-                # This ensures feedback that arrived during the last iteration or after completion
+                # This ensures feedback that arrived during the last iteration or after completion<!-- REWIND_MARKER: 20 -->
                 # is not lost and gives the model a chance to respond
                 if conversation_id:
                     try:
