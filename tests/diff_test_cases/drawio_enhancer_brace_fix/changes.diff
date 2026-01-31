@@ -1,0 +1,18 @@
+diff --git a/frontend/src/plugins/d3/drawioEnhancer.ts b/frontend/src/plugins/d3/drawioEnhancer.ts
+index 1234567..89abcdef 100644
+--- a/frontend/src/plugins/d3/drawioEnhancer.ts
++++ b/frontend/src/plugins/d3/drawioEnhancer.ts
+@@ -113,11 +113,10 @@
+                 
+                 console.log(`  ✅ FO ${idx}: Fixed positioning - new x=${currentSvgX + marginLeft}, y=${currentSvgY + paddingTop}`);
+-                
++            }
+             
+             // Mark as enhanced (after all fixes)
+             foreignObj.setAttribute('data-enhanced', 'true');
+-            }
+-        
++        });
++        
+         // If we have a graph instance, update cell geometries in the model
+         if (graph && cellGeometryUpdates.length > 0) {
