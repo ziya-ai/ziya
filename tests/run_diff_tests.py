@@ -1059,6 +1059,11 @@ class DiffRegressionTest(unittest.TestCase):
             # Use standard test logic for other configurations
             self.run_diff_test('drawio_elk_removal_false_applied')
 
+    def test_drawio_enhancer_brace_fix(self):
+        """Test fixing misplaced closing brace in drawioEnhancer.ts"""
+        self.run_diff_test('drawio_enhancer_brace_fix')
+
+
 
 # Dynamically generate test methods for all test case directories
 # This allows -k filtering to work without hardcoding every test
