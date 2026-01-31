@@ -1546,7 +1546,7 @@ class LazyLoadedModel:
             else:
                  self._model = ModelManager._state['model']
         elif self._model is None: # Only initialize if both state and self._model are None
-            logger.warning("ModelManager state is empty, initializing model on first use")
+            logger.debug("ModelManager state is empty, initializing model on first use")
             model_instance = ModelManager.initialize_model(force_reinit=True) # Initialize without override here
             if model_instance is None:
                 logger.error("Model initialization failed - returning None")
@@ -1698,7 +1698,8 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
     
     print(f"🔍 FILE_CONTENT_DEBUG: get_combined_docs_from_files returning {len(combined_contents)} chars")
 
-    logger.debug(f"Combined {len([l for l in combined_contents.split('\n') if l.startswith('File: ')])} files, {len(combined_contents)} chars")
+    file_count = len([l for l in combined_contents.split('\n') if l.startswith('File: ')])
+    logger.debug(f"Combined {file_count} files, {len(combined_contents)} chars")
     
     return combined_contents
 
