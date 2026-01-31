@@ -166,11 +166,15 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
     const [isExpanded, setIsExpanded] = useState(false);
     const [renderedHtml, setRenderedHtml] = useState('');
     const [renderedHeaderHtml, setRenderedHeaderHtml] = useState('');
+    const [highlightedShellOutput, setHighlightedShellOutput] = useState('');
+    const [isShellHighlightLoaded, setIsShellHighlightLoaded] = useState(false);
 
-    // Extract command/query from toolName if it contains encoded information
-    const [actualToolName, encodedCommand] = toolName.includes('|')
-        ? toolName.split('|', 2)
-        : [toolName, ''];
+    // Extract command/query and language from toolName if it contains encoded information
+    // Format: mcp_run_shell_command|displayHeader|sh
+    const toolParts = toolName.split('|');
+    const actualToolName = toolParts[0];
+    const encodedCommand = toolParts[1] || '';
+    const contentLanguage = toolParts[2] || ''; // Extract language (e.g., 'sh')
 
     // Define cleanToolName early for use in header
     const cleanToolName = actualToolName.replace('mcp_', '').replace(/_/g, ' ');
@@ -179,6 +183,32 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
     const isSearchTool = actualToolName === 'mcp_InternalSearch' ||
         actualToolName === 'mcp_WorkspaceSearch' ||
         actualToolName === 'WorkspaceSearch';
+    const isShellCommand = actualToolName === 'mcp_run_shell_command';
+
+    // Load Prism highlighting for shell output if needed
+    useEffect(() => {
+        if (isShellCommand && contentLanguage === 'sh') {
+            const loadShellHighlighting = async () => {
+                try {
+                    await loadPrismLanguage('bash'); // 'bash' covers shell/sh syntax
+                    const prism = window.Prism;
+                    if (prism && prism.languages.bash) {
+                        const highlighted = prism.highlight(
+                            content,
+                            prism.languages.bash,
+                            'bash'
+                        );
+                        setHighlightedShellOutput(highlighted);
+                        setIsShellHighlightLoaded(true);
+                    }
+                } catch (error) {
+                    console.warn('Failed to load shell highlighting:', error);
+                    setIsShellHighlightLoaded(true); // Mark as loaded anyway to show plain text
+                }
+            };
+            loadShellHighlighting();
+        }
+    }, [isShellCommand, contentLanguage, content]);
     const queryMatch = isSearchTool && content.match(/Query:\s*\*?\*?"([^"]+)"\*?\*?/);
     const searchQuery = queryMatch ? queryMatch[1] : '';
 
@@ -378,7 +408,6 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
         );
     }
 
-    const isShellCommand = actualToolName === 'mcp_run_shell_command';
 
     const { content: formattedContent, collapsed, summary } = formattedOutput;
     const hierarchicalResults = formattedOutput.hierarchicalResults;
@@ -659,17 +688,31 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
                         dangerouslySetInnerHTML={{ __html: renderedHtml }}
                     />
                 ) : (
-                    <pre style={{
-                        margin: 0,
-                        padding: '16px',
-                        color: colors.contentText,
-                        whiteSpace: 'pre-wrap',
-                        wordBreak: 'break-word',
-                        maxHeight: isExpanded ? 'none' : '400px',
-                        overflow: isExpanded ? 'visible' : 'auto'
-                    }}>
-                        {cleanContent}
-                    </pre>
+                    isShellCommand && contentLanguage === 'sh' && isShellHighlightLoaded ? (
+                        <pre style={{
+                            margin: 0,
+                            padding: '16px',
+                            color: colors.contentText,
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-word',
+                            maxHeight: isExpanded ? 'none' : '400px',
+                            overflow: isExpanded ? 'visible' : 'auto'
+                        }}>
+                            <code className="language-bash" dangerouslySetInnerHTML={{ __html: highlightedShellOutput }} />
+                        </pre>
+                    ) : (
+                        <pre style={{
+                            margin: 0,
+                            padding: '16px',
+                            color: colors.contentText,
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-word',
+                            maxHeight: isExpanded ? 'none' : '400px',
+                            overflow: isExpanded ? 'visible' : 'auto'
+                        }}>
+                            {cleanContent}
+                        </pre>
+                    )
                 )
             )}
         </div>
@@ -4684,7 +4727,9 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         return null;
                     }
 
-                    const HTMLtoolBlockMatch = tokenWithText.text.match(/<!-- TOOL_BLOCK_START:(mcp_\w+)\|(.+?) -->\s*([\s\S]*?)\s*<!-- TOOL_BLOCK_END:\1(?:\|[^>]+)? -->/);
+                    // Match format: <!-- TOOL_BLOCK_START:toolName|displayHeader|toolId -->
+                    // The displayHeader may contain | characters, so we capture until |toolu_ (tool_id prefix)
+                    const HTMLtoolBlockMatch = tokenWithText.text.match(/<!-- TOOL_BLOCK_START:(mcp_\w+)\|(.+?)\|toolu_[^>]+ -->\s*([\s\S]*?)\s*<!-- TOOL_BLOCK_END:\1\|toolu_[^>]+ -->/);
                     if (HTMLtoolBlockMatch) {
                         const [, toolName, displayHeader, toolContent] = HTMLtoolBlockMatch;
 
@@ -5068,15 +5113,15 @@ const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, 
         const handleCopy = (e: ClipboardEvent) => {
             const selection = window.getSelection();
             if (!selection || !mathRef.current) return;
-            
+
             // Check if the selection is within this math element
             if (mathRef.current.contains(selection.anchorNode)) {
                 e.preventDefault();
-                
+
                 // Preserve raw LaTeX with appropriate delimiters
                 const delimiter = displayMode ? '$$' : '$';
                 const latexWithDelimiters = `${delimiter}${math}${delimiter}`;
-                
+
                 e.clipboardData?.setData('text/plain', latexWithDelimiters);
                 message.success('LaTeX copied to clipboard');
             }
@@ -5106,7 +5151,7 @@ const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, 
 
         // Create accessible label for screen readers
         const ariaLabel = `Math equation: ${math}`;
-        
+
         const Element = displayMode ? 'div' : 'span';
         return displayMode ?
             <Element
@@ -5238,8 +5283,11 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 // and should never be visible to users
                 processedMarkdown = processedMarkdown.replace(/<!-- TOOL_MARKER:[^>]+ -->\n?/g, '');
 
-                const toolBlockRegex = /<!-- TOOL_BLOCK_START:(mcp_\w+)\|(.+?) -->\s*([\s\S]*?)\s*<!-- TOOL_BLOCK_END:\1(?:\|[^>]+)? -->/g;
+                // Format: <!-- TOOL_BLOCK_START:toolName|displayHeader|toolId -->
+                // The displayHeader may contain | characters, so we capture until |toolu_ (tool_id prefix)
+                const toolBlockRegex = /<!-- TOOL_BLOCK_START:(mcp_\w+)\|(.+?)\|toolu_[^>]+ -->\s*([\s\S]*?)\s*<!-- TOOL_BLOCK_END:\1\|toolu_[^>]+ -->/g;
                 const toolBlocks: Array<{ match: string, toolName: string, displayHeader: string, content: string }> = [];
+                const convertedBlocks = new Set<string>(); // Track which blocks were converted
 
                 let match;
                 while ((match = toolBlockRegex.exec(processedMarkdown)) !== null) {
@@ -5253,6 +5301,16 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
                 // Replace tool blocks with markdown code blocks using a special lang tag
                 toolBlocks.forEach(({ match, toolName, displayHeader, content }) => {
+                    // CRITICAL: Shell commands should be left as HTML
+                    // because they already have the proper ````shell fence structure inside
+                    // Converting them creates double-wrapping and escaped backticks
+                    if (toolName === 'mcp_run_shell_command') {
+                        // Don't convert - leave the HTML comment as-is for the 'html' token handler
+                        // Just return early to skip this tool block
+                        // DON'T add to convertedBlocks - we're leaving it as HTML
+                        return;
+                    }
+
                     // Check if content is wrapped in code fences and extract
                     const codeFenceMatch = content.trim().match(/^```(\w+)?\n([\s\S]*?)\n```$/);
                     if (codeFenceMatch) {
@@ -5261,21 +5319,26 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                         const langSuffix = lang ? `|lang:${lang}` : '';
                         processedMarkdown = processedMarkdown.replace(
                             match,
-                            `\`\`\`tool:${toolName}|${displayHeader}${langSuffix}\n${innerContent.trim()}\n\`\`\``
+                            `\toolName}|${displayHeader}${langSuffix}\n${innerContent.trim()}\n\`\`\``
                         );
+                        convertedBlocks.add(match);
                     } else {
                         processedMarkdown = processedMarkdown.replace(
                             match,
                             `\`\`\`tool:${toolName}|${displayHeader}\n${content}\n\`\`\``
                         );
+                        convertedBlocks.add(match);
                     }
                 });
 
-                // AFTER tool block processing, strip any remaining TOOL_BLOCK markers
-                // Now that displayHeaders are sanitized to single lines, any remaining markers
-                // are from malformed blocks that the regex couldn't match
-                processedMarkdown = processedMarkdown.replace(/<!-- TOOL_BLOCK_START:[^>]+ -->\n?/g, '');
-                processedMarkdown = processedMarkdown.replace(/<!-- TOOL_BLOCK_END:[^>]+ -->\n?/g, '');
+                // AFTER tool block processing, strip only TOOL_BLOCK markers that we actually converted
+                // Leave shell command blocks as HTML comments so the 'html' token handler can process them
+                // CRITICAL: We can't strip shell blocks here because we skipped conversion above
+
+                // Instead of blanket removal, only remove markers for blocks we converted
+                // Shell blocks were skipped and should remain as HTML for the 'html' case handler
+                // Don't strip anything - let the 'html' token handler process shell blocks
+                // and the 'tool' token handler process converted blocks
             } catch (toolBlockError) {
                 console.debug('Tool block preprocessing error (handled):', toolBlockError);
             }
@@ -5352,7 +5415,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
             // CRITICAL FIX: Escape backticks inside diff code blocks before markdown parsing
             // This prevents backticks in diff content from being interpreted as fence delimiters
-            
+
             // IMPORTANT: Extract and protect math blocks BEFORE fence escaping
             // Store them temporarily and restore after fence processing
             const mathBlocks: { placeholder: string; content: string }[] = [];
@@ -5364,7 +5427,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
             // contains backticks because non-greedy *? matches the FIRST ``` even if inside content.
             // Per CommonMark spec, a closing fence must be at line start with >= opening fence length.
-            
+
             // Extract display math ($$...$$) before fence processing
             processedMarkdown = processedMarkdown.replace(/\$\$([\s\S]*?)\$\$/g, (match, content) => {
                 const placeholder = `__MATH_DISPLAY_${mathCounter}__`;
@@ -5372,7 +5435,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 mathCounter++;
                 return placeholder;
             });
-            
+
             // Extract inline math ($...$) before fence processing
             // Use negative lookbehind/lookahead to avoid matching $$ delimiters
             processedMarkdown = processedMarkdown.replace(/(?<!\$)\$(?!\$)((?:(?!\$).)+?)\$(?!\$)/g, (match, content) => {
@@ -5381,7 +5444,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 mathCounter++;
                 return placeholder;
             });
-            
+
             // Now run fence escaping (won't affect math since it's been extracted)
             const escapeNestedFencesInCodeBlocks = (markdown: string): string => {
                 const lines = markdown.split('\n');
@@ -5390,14 +5453,14 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 let openingFenceLength = 0;
                 let openingLine = '';
                 let blockLines: string[] = [];
-                
+
                 for (let i = 0; i < lines.length; i++) {
                     const line = lines[i];
                     // Match fence: 3+ backticks at line start, then any info string (language, tool:name, etc.)
                     // Per CommonMark spec, info string can contain any text after the backticks
                     // Examplesrun_shell_command, ````shell, ```python, etc.
                     const fenceMatch = line.match(/^(`{3,})(.*)$/);
-                    
+
                     if (!inCodeBlock && fenceMatch) {
                         // Start of code block
                         inCodeBlock = true;
@@ -5429,23 +5492,23 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                         result.push(line);
                     }
                 }
-                
+
                 // Handle unclosed code block (streaming case) - output without escaping
                 if (inCodeBlock) {
                     result.push(openingLine);
                     result.push(...blockLines);
                 }
-                
+
                 return result.join('\n');
             };
 
             processedMarkdown = escapeNestedFencesInCodeBlocks(processedMarkdown);
-            
+
             // Restore math blocks after fence escaping
             for (const { placeholder, content } of mathBlocks) {
                 processedMarkdown = processedMarkdown.replace(placeholder, content);
             }
-            
+
             // Now math processing will work normally on the restored $$...$$ and $...$ delimiters
 
             // First check if this is a diff or code block that shouldn't have math processing

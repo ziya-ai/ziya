@@ -1514,7 +1514,8 @@ export const sendPayload = async (
                         const cmdPreview = storedInput.command.length > 50
                             ? storedInput.command.substring(0, 47) + '...'
                             : storedInput.command;
-                        displayHeader = `Shell Command: ${cmdPreview}`;
+                        // Add "Shell: " prefix to make the tool type clear in the header
+                        displayHeader = `Shell: ${cmdPreview}`;
                     }
 
                     // CRITICAL: Always sanitize displayHeader for shell commands AFTER all header logic
@@ -1544,7 +1545,8 @@ export const sendPayload = async (
                         displayContent = `$ ${storedInput.command}\n${displayContent}`;
                     }
 
-                    // Add lock icon if cryptographically verified
+                    // Add lock icon if cryptographically verified (verified flag from backend)
+                    // This ensures the lock symbol only appears when the tool response has been cryptographically verified
                     if (isVerified) {
                         displayHeader = `🔐 ${displayHeader}`;
                     }
@@ -1570,19 +1572,18 @@ export const sendPayload = async (
                     let toolResultDisplay: string;
                     if (actualToolName === 'run_shell_command') {
                         // Shell commands: wrap in TOOL_BLOCK with shell code fence inside
-                        // CRITICAL: Include TOOL_BLOCK_START/END to preserve header during rewind
-                        // Note: MarkdownRenderer extracts header from TOOL_BLOCK_START comment and renders it
+                        // CRITICAL: Use lang attribute in fence to store header, not HTML comments
+                        // HTML comments inside/around code fences get rendered literally by marked.js
+                        // Use 'sh' lang for Prism syntax highlighting of shell output
                         toolResultContent = displayContent;
-                        // Build verification badge separately
+                        const fence = '`'.repeat(4);
                         const needsExtraNewline = !currentContent.endsWith('\n\n');
-                        // Structure: TOOL_MARKER + TOOL_BLOCK_START + shell block + TOOL_BLOCK_END  
-                        // MarkdownRenderer extracts header from TOOL_BLOCK_START, NOT from content
+                        // Use the lang attribute to encode tool info: tool:toolName|displayHeader
+                        // This works because marked.js preserves the lang attribute in code tokens
                         toolResultDisplay = `${needsExtraNewline ? '\n\n' : '\n'}` +
-                            `\n` +
-                            `\n` +
-                            `\`\`\`\`shell\n${toolResultContent}\n\`\`\`\`\n` +
-                            `\n` +
-                            `\n\n`;
+                            `${fence}tool:${toolName}|${displayHeader}|sh\n${toolResultContent}\n${fence}\n\n`;
+
+
                     } else if (formatted.hierarchicalResults && formatted.hierarchicalResults.length > 0) {
                         // Add verification status to metadata
                         // Store for MarkdownRenderer to display lock icon
@@ -1630,74 +1631,53 @@ export const sendPayload = async (
 
                     if (markerIndex !== -1) {
                         // Found the marker! Now find the end of the tool block
-                        const searchStart = markerIndex;
-
-                        // Determine block end marker based on tool type
-                        let blockEndMarker: string;
-                        let blockEndOffset: number;
 
                         if (isShellCommandTool) {
-                            // For shell commands, find the start of the ```shell block
-                            // The marker is placed right before the shell block
-                            // Pattern: \n```shell\n$ command\n⏳ Running...\n```
-                            const afterMarkerContent = currentContent.substring(markerIndex);
-                            // Pattern now includes the TOOL_BLOCK_START comment between TOOL_MARKER and shell fence
-                            const shellBlockMatch = afterMarkerContent.match(
-                                /^<!-- TOOL_MARKER:[^>]+ -->\n<!-- TOOL_BLOCK_START:[^>]+ -->\n````shell\n/
-                            );
-                            if (shellBlockMatch) {
-                                // Find where the code block starts (right after the marker)
-                                const shellBlockStart = markerIndex + shellBlockMatch[0].length;
+                            // For shell commands using tool: lang format, find the closing fence
+                            // Pattern: TOOL_MARKER\nMarker = currentContent.substring(markerIndex);
+                            const afterMarker = currentContent.substring(markerIndex);
 
-                                // Find the closing fence after the marker
-                                const afterShellBlock = currentContent.substring(shellBlockStart);
-                                const closingFenceMatch = afterShellBlock.match(/\n````\n/);
+                            // Find the closing fence (4 backticks followed by newline or end)
+                            const closingFenceMatch = afterMarker.match(/\n````\n/);
 
-                                if (closingFenceMatch) {
-                                    const closingFenceIndex = shellBlockStart + afterShellBlock.indexOf(closingFenceMatch[0]);
+                            if (closingFenceMatch && closingFenceMatch.index !== undefined) {
+                                const blockEndIndex = markerIndex + closingFenceMatch.index + closingFenceMatch[0].length;
 
-                                    // Find the TOOL_BLOCK_END marker after the closing fence
-                                    const afterFence = currentContent.substring(closingFenceIndex + closingFenceMatch[0].length);
-                                    const blockEndMatch = afterFence.match(/<!-- TOOL_BLOCK_END:[^>]+ -->/);
-                                    let endIndex;
-                                    if (blockEndMatch) {
-                                        endIndex = closingFenceIndex + closingFenceMatch[0].length + afterFence.indexOf(blockEndMatch[0]) + blockEndMatch[0].length;
-                                    } else {
-                                        endIndex = closingFenceIndex + closingFenceMatch[0].length;
-                                    }
-                                    // Replace from marker through TOOL_BLOCK_END
-                                    // toolResultDisplay already includes the complete TOOL_BLOCK structure with header
-                                    currentContent = currentContent.substring(0, markerIndex) +
-                                        `\n` +
-                                        toolResultDisplay +
-                                        currentContent.substring(endIndex);
-
-                                    console.log('🔧 TOOL_RESULT: Replaced using tool_id marker (shell command)');
-                                } else {
-                                    // Couldn't find closing fence, append instead
-                                    currentContent += toolResultDisplay;
-                                    console.log('🔧 TOOL_RESULT: Could not find closing fence, appending');
+                                // Calculate end position (after the end marker and any trailing newlines)
+                                let endIndex = blockEndIndex;
+                                // Skip trailing newlines
+                                while (endIndex < currentContent.length && currentContent[endIndex] === '\n') {
+                                    endIndex++;
                                 }
+
+                                // Replace from marker through closing fence (inclusive)
+                                currentContent = currentContent.substring(0, markerIndex) +
+                                    toolResultDisplay +
+                                    currentContent.substring(endIndex);
+
+                                console.log('🔧 TOOL_RESULT: Replaced using tool_id marker (shell command)');
                             } else {
-                                // Pattern didn't match, append instead
+                                // Couldn't find closing fence, append instead
                                 currentContent += toolResultDisplay;
-                                console.log('🔧 TOOL_RESULT: Shell block pattern not found, appending');
+                                console.log('🔧 TOOL_RESULT: Could not find closing fence, appending');
                             }
                         } else {
                             // For other tools, look for TOOL_BLOCK_END
-                            // The TOOL_MARKER is placed right before TOOL_BLOCK_START, so the block starts at the marker position
-                            const toolBlockStart = markerIndex;
-
-                            blockEndMarker = `<!-- TOOL_BLOCK_END:${toolName}|${unwrappedData.tool_id} -->`;
-                            const blockEndIndex = currentContent.indexOf(blockEndMarker, searchStart);
+                            const blockEndMarker = `<!-- TOOL_BLOCK_END:${toolName}|${unwrappedData.tool_id} -->`;
+                            const blockEndIndex = currentContent.indexOf(blockEndMarker, markerIndex);
 
                             if (blockEndIndex !== -1) {
-                                blockEndOffset = blockEndMarker.length + 2; // +2 for trailing \n\n
+                                // Calculate end position
+                                let endIndex = blockEndIndex + blockEndMarker.length;
+                                // Skip trailing newlines
+                                while (endIndex < currentContent.length && currentContent[endIndex] === '\n') {
+                                    endIndex++;
+                                }
 
                                 // Replace from marker through end marker
-                                currentContent = currentContent.substring(0, toolBlockStart) +
+                                currentContent = currentContent.substring(0, markerIndex) +
                                     toolResultDisplay +
-                                    currentContent.substring(blockEndIndex + blockEndOffset);
+                                    currentContent.substring(endIndex);
 
                                 console.log('🔧 TOOL_RESULT: Replaced using tool_id marker (standard tool)');
                             } else {
@@ -1878,12 +1858,13 @@ export const sendPayload = async (
                     // Generate tool start display
                     let toolStartDisplay: string;
 
+                    const fence = '`'.repeat(4);
                     if (actualToolName === 'run_shell_command' && inputArgs.command) {
-                        toolStartDisplay = `\n\n<!-- TOOL_MARKER:${unwrappedData.tool_id} -->\n<!-- TOOL_BLOCK_START:${toolName}|${displayHeader}|${unwrappedData.tool_id} -->\n\`\`\`\`shell\n$ ${inputArgs.command}\n⏳ Running...\n\`\`\`\`\n<!-- TOOL_BLOCK_END:${toolName}|${unwrappedData.tool_id} -->\n\n\n`;
+                        // Use tool: lang attribute instead of HTML comments for shell commands
+                        toolStartDisplay = `\n\n<!-- TOOL_MARKER:${unwrappedData.tool_id} -->\n${fence}tool:${toolName}|${displayHeader}\n$ ${inputArgs.command}\n⏳ Running...\n${fence}\n\n`;
                     } else if (actualToolName === 'get_current_time') {
                         // Add TOOL_MARKER for reliable replacement
                         toolStartDisplay = `\n\n\n⏳ Getting current time...\n\n\n`;
-                        toolStartDisplay = `\n<!-- TOOL_MARKER:${unwrappedData.tool_id} -->\n<!-- TOOL_BLOCK_START:${toolName}|${displayHeader}|${unwrappedData.tool_id} -->\n⏳ Getting current time...\n<!-- TOOL_BLOCK_END:${toolName}|${unwrappedData.tool_id} -->\n\n`;
                     } else {
                         // Add TOOL_MARKER for all tools so tool_display can find and replace reliably
                         toolStartDisplay = `\n<!-- TOOL_MARKER:${unwrappedData.tool_id} -->\n<!-- TOOL_BLOCK_START:${toolName}|${displayHeader}|${unwrappedData.tool_id} -->\n⏳ Running...\n<!-- TOOL_BLOCK_END:${toolName}|${unwrappedData.tool_id} -->\n\n`;
