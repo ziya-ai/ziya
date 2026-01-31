@@ -1,7 +1,7 @@
 """
 CLI diff applicator - Interactive diff application for terminal.
 """
-
+import logging
 import os
 import re
 from typing import List, Tuple, Optional
@@ -141,6 +141,15 @@ class CLIDiffApplicator:
         if not diff.file_path:
             return False, "Could not determine file path"
         
+        # Temporarily suppress logging from diff application to avoid ugly output
+        # Save original log levels
+        diff_logger = logging.getLogger('app.utils.diff_utils')
+        original_level = diff_logger.level
+        
+        # Suppress all diff_utils logs in CLI mode
+        if os.environ.get("ZIYA_MODE") == "chat":
+            diff_logger.setLevel(logging.CRITICAL + 1)  # Suppress everything
+        
         try:
             # Get the full file path
             codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
@@ -160,12 +169,30 @@ class CLIDiffApplicator:
                 else:
                     return True, f"Successfully applied to {diff.file_path}"
             else:
-                error = result.get("details", {}).get("error", "Unknown error")
-                return False, f"Failed to apply: {error}"
+                # Clean, user-friendly error message
+                error_details = result.get("details", {})
+                failures = result.get("failures", [])
+                
+                # Check for common failure patterns
+                if failures:
+                    has_fuzzy_fail = any(f.get("details", {}).get("type") == "fuzzy_verification_failed" for f in failures)
+                    has_low_confidence = any(f.get("details", {}).get("type") == "low_confidence" for f in failures)
+                    
+                    if has_fuzzy_fail or has_low_confidence:
+                        return False, "Content doesn't match current file (file may have been modified)"
+                
+                # Generic error message
+                error = error_details.get("error", "Unknown error")
+                if "hunks failed" in str(error).lower():
+                    return False, "Some changes couldn't be applied (file content mismatch)"
+                
+                return False, f"Failed: {error}"
                 
         except Exception as e:
-            logger.error(f"Error applying diff: {e}")
-            return False, f"Error: {str(e)}"
+            return False, f"Error: {str(e).split(':')[0]}"
+        finally:
+            # Restore original log level
+            diff_logger.setLevel(original_level)
     
     def process_response(self, response: str) -> bool:
         """
