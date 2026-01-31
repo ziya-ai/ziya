@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
 import { useFolderContext } from '../context/FolderContext';
 import { useTheme } from '../context/ThemeContext';
+import { fetchConfig } from '../apis/chatApi';
 import { Folders } from '../utils/types';
 import { debounce } from 'lodash';
 import { message } from 'antd';
@@ -112,6 +113,7 @@ export const MUIFileExplorer = () => {
   const [browseLoading, setBrowseLoading] = useState(false);
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
   const [addMode, setAddMode] = useState<'browser' | 'context'>('context');
+  const [projectRoot, setProjectRoot] = useState<string>('~');
 
   // Lightweight caches - only computed when needed
   const tokenCalculationCache = useRef(new Map());
@@ -120,6 +122,20 @@ export const MUIFileExplorer = () => {
 
   // Track if we have any data loaded (either cached or fresh)
   const [hasLoadedData, setHasLoadedData] = useState(false);
+
+  // Load project root from backend config
+  useEffect(() => {
+    const loadProjectRoot = async () => {
+      try {
+        const response = await fetch('/api/config');
+        const config = await response.json();
+        setProjectRoot(config.projectRoot || '~');
+      } catch (error) {
+        console.warn('Failed to load project root, using home directory:', error);
+      }
+    };
+    loadProjectRoot();
+  }, []);
 
   // Ensure component initializes immediately when folder data is available
   // This prevents the issue where users starting on chat history have no file context
@@ -160,11 +176,11 @@ export const MUIFileExplorer = () => {
     // Use originalNode for checkbox calculations if provided (during search)
     // This ensures we check against ALL children, not just filtered ones
     const nodeForCheckCalculations = originalNode || node;
-    
+
     // But use node for rendering decisions
     const hasChildren = nodeHasChildren(node);
     const isExpanded = expandedKeys.includes(String(node.key));
-    
+
     // Debug log when checkedKeys changes for this node
     if (process.env.NODE_ENV === 'development' && String(node.key).includes('test')) {
       console.log(`TreeNode ${node.key}: isChecked=${isChecked}, checkedKeys.length=${checkedKeys.length}`);
@@ -395,7 +411,7 @@ export const MUIFileExplorer = () => {
               let folderTokens = tokenCalculationCache.current.get(cacheKey);
 
               if (!folderTokens) {
-                const totalTokens = getFolderTokenCount(dirPath, folders || {});
+                const totalTokens = calculateChildrenTotal(nodeForCheckCalculations);
                 // If this folder is directly selected, include all tokens
                 const includedTokens = isChecked ? totalTokens : calculateChildrenIncluded(nodeForCheckCalculations);
 
@@ -541,10 +557,13 @@ export const MUIFileExplorer = () => {
 
     // Skip if no tree data or checked keys
     if (!treeData || treeData.length === 0 || checkedKeys.length === 0) {
-      // If nothing is selected, collapse everything
-      if (checkedKeys.length === 0 && expandedKeys.length > 0) {
-        setExpandedKeys([]);
-      }
+      // Don't collapse manually expanded folders when there are no selections
+      // Users should be able to browse the tree without selections
+      // Only collapse if we're certain the user wants to reset (e.g., explicit deselect all action)
+      // For now, preserve manual expansions by doing nothing here
+      // if (checkedKeys.length === 0 && expandedKeys.length > 0) {
+      //   setExpandedKeys([]);
+      // }
       return;
     }
 
@@ -605,12 +624,13 @@ export const MUIFileExplorer = () => {
     }
 
     // When search is active, preserve search-driven expansions
+    // When not searching, MERGE with existing manual expansions instead of replacing
     if (searchValue) {
-      // Merge with existing expanded keys to preserve search results
       const mergedKeys = Array.from(new Set([...expandedKeys, ...newExpandedKeys]));
       setExpandedKeys(mergedKeys);
     } else {
-      setExpandedKeys(newExpandedKeys);
+      const mergedKeys = Array.from(new Set([...expandedKeys, ...newExpandedKeys]));
+      setExpandedKeys(mergedKeys);
     }
   }, [treeData, checkedKeys]); // Run when tree data or selections change
 
@@ -701,7 +721,7 @@ export const MUIFileExplorer = () => {
       if (!response.ok) {
         throw new Error(`Failed to refresh folders: ${response.status}`);
       }
-      
+
       // Trigger FolderContext to refetch by dispatching an event
       window.dispatchEvent(new CustomEvent('refreshFolders'));
       message.success('Folder structure refreshed');
@@ -740,8 +760,8 @@ export const MUIFileExplorer = () => {
     setAddPathDialogOpen(true);
     setSelectedPaths(new Set());
     setAddMode('browser'); // Default to browser (safer, allows review before adding to context) // Default to context for files
-    browseDirectory('~');
-  }, [browseDirectory]);
+    browseDirectory(projectRoot);
+  }, [browseDirectory, projectRoot]);
 
   // Close dialog
   const handleCloseAddPathDialog = useCallback(() => {
@@ -780,11 +800,11 @@ export const MUIFileExplorer = () => {
   const handleQuickAdd = useCallback(async (path: string) => {
     try {
       const isDir = browseEntries.find(e => e.path === path)?.is_dir;
-      
+
       const response = await fetch('/api/add-explicit-paths', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           paths: [path],
           // Files always go directly to context
           // Directories use the current addMode setting
@@ -836,7 +856,7 @@ export const MUIFileExplorer = () => {
       const response = await fetch('/api/add-explicit-paths', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           paths: Array.from(selectedPaths),
           // Files always go to context, directories respect addMode
           add_to_context: onlyFiles ? true : (addMode === 'context')
@@ -1069,14 +1089,14 @@ export const MUIFileExplorer = () => {
         const isFile = !nodeHasChildren(child);
         let childTotal = 0;
 
-      if (isFile) {
-        // For files, use accurate count first, then fall back to estimated
-        const childAccurate = accurateTokenCounts[childKey];
-        // Only use accurate data if it exists AND has a positive count
-        childTotal = (childAccurate && childAccurate.count > 0) ? childAccurate.count : getFolderTokenCount(childKey, folders || {});
-      } else {
-        // For directories, recursively calculate
-        childTotal = calculateChildrenTotal(child);
+        if (isFile) {
+          // For files, use accurate count first, then fall back to estimated
+          const childAccurate = accurateTokenCounts[childKey];
+          // Only use accurate data if it exists AND has a positive count
+          childTotal = (childAccurate && childAccurate.count > 0) ? childAccurate.count : getFolderTokenCount(childKey, folders || {});
+        } else {
+          // For directories, recursively calculate
+          childTotal = calculateChildrenTotal(child);
         }
 
         // Skip tool-backed files (indicated by -1)
@@ -1121,11 +1141,15 @@ export const MUIFileExplorer = () => {
       } else {
         // For files, use accurate count if available
         const childAccurate = accurateTokenCounts[childKey];
-        total += (childAccurate ? childAccurate.count : getFolderTokenCount(childKey, folders || {})) || 0;
+        if (childAccurate && childAccurate.count !== undefined) {
+          // Use accurate count (even if 0 or -1)
+          total += Math.max(0, childAccurate.count); // Treat -1 (tool-backed) as 0 for totals
+        } else {
+          total += getFolderTokenCount(childKey, folders || {}) || 0;
+        }
       }
     }
 
-    // Cache the result
     tokenCalculationCache.current.set(cacheKey, total);
     return total;
   }, [folders, accurateTokenCounts, getFolderTokenCount, nodeHasChildren]);
@@ -1397,16 +1421,16 @@ export const MUIFileExplorer = () => {
               onChange={(e) => setPathInput(e.target.value)}
               onKeyDown={handlePathInputKeyDown}
               placeholder="/path/to/directory"
-              sx={{ 
-                '& .MuiOutlinedInput-root': { 
+              sx={{
+                '& .MuiOutlinedInput-root': {
                   fontFamily: 'monospace',
                   fontSize: '0.875rem'
                 }
               }}
             />
-            <Button 
-              variant="contained" 
-              size="small" 
+            <Button
+              variant="contained"
+              size="small"
               onClick={handlePathInputSubmit}
               disabled={browseLoading}
               sx={{ flexShrink: 0 }}
@@ -1430,7 +1454,7 @@ export const MUIFileExplorer = () => {
                     <ListItemText primary=".." secondary="Parent directory" />
                   </ListItemButton>
                 )}
-                
+
                 {browseEntries.map((entry) => (
                   <ListItemButton
                     key={entry.path}
@@ -1448,7 +1472,7 @@ export const MUIFileExplorer = () => {
                         <InsertDriveFileIcon fontSize="small" sx={{ color: 'text.secondary' }} />
                       )}
                     </ListItemIcon>
-                    <ListItemText 
+                    <ListItemText
                       primary={entry.name}
                       primaryTypographyProps={{
                         fontWeight: selectedPaths.has(entry.path) ? 600 : 400,
@@ -1475,8 +1499,8 @@ export const MUIFileExplorer = () => {
                         }
                       }}
                       title={`Add ${entry.name}`}
-                      sx={{ 
-                        opacity: 0.6, 
+                      sx={{
+                        opacity: 0.6,
                         '&:hover': { opacity: 1, color: 'primary.main' }
                       }}
                     >
@@ -1484,7 +1508,7 @@ export const MUIFileExplorer = () => {
                     </IconButton>
                   </ListItemButton>
                 ))}
-                
+
                 {browseEntries.length === 0 && !browseLoading && (
                   <Typography variant="body2" color="text.secondary" sx={{ p: 3, textAlign: 'center' }}>
                     Empty directory
@@ -1498,30 +1522,30 @@ export const MUIFileExplorer = () => {
           {(() => {
             const selectedEntries = browseEntries.filter(e => selectedPaths.has(e.path));
             const hasDirectories = selectedEntries.some(e => e.is_dir);
-            
+
             if (!hasDirectories) return null;
-            
+
             return (
               <Box sx={{ px: 2, py: 1.5, borderTop: 1, borderColor: 'divider', bgcolor: 'action.hover' }}>
                 <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
                   What to do with selected directories?
                 </Typography>
-            <RadioGroup
-              row
-              value={addMode}
-              onChange={(e) => setAddMode(e.target.value as 'browser' | 'context')}
-            >
-              <FormControlLabel 
-                value="browser" 
-                control={<Radio size="small" />} 
-                label={<Typography variant="body2">Add directory to file browser</Typography>}
-              />
-              <FormControlLabel 
-                value="context" 
-                control={<Radio size="small" />} 
-                label={<Typography variant="body2">Add all child files directly to context</Typography>}
-              />
-            </RadioGroup>
+                <RadioGroup
+                  row
+                  value={addMode}
+                  onChange={(e) => setAddMode(e.target.value as 'browser' | 'context')}
+                >
+                  <FormControlLabel
+                    value="browser"
+                    control={<Radio size="small" />}
+                    label={<Typography variant="body2">Add directory to file browser</Typography>}
+                  />
+                  <FormControlLabel
+                    value="context"
+                    control={<Radio size="small" />}
+                    label={<Typography variant="body2">Add all child files directly to context</Typography>}
+                  />
+                </RadioGroup>
               </Box>
             );
           })()}
