@@ -1,0 +1,4 @@
+{
+    "description": "Test that context lines with incorrect indentation are fuzzy matched but NEVER modify the target file - only + and - lines should modify content",
+    "target_file": "app/mcp/manager.py"
+}
