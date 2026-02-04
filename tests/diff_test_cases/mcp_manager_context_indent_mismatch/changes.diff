@@ -1,0 +1,13 @@
+--- a/test.py
++++ b/test.py
+@@ -6,6 +6,10 @@ class MCPManager:
+         # Update cache
+         self._tools_cache = tools
+         self._tools_cache_timestamp = current_time
+            logger.debug(f"MCP_MANAGER.get_all_tools: Cached {len(tools)} tools for {self._tools_cache_ttl}s")
++        
++        # Add tools from workspace-scoped instances
++        for server_name in self.workspace_scoped_clients:
++            pass
+         
+         return tools

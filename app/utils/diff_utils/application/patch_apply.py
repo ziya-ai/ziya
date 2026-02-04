@@ -1138,7 +1138,27 @@ def apply_diff_with_difflib_hybrid_forced(
             
             if context_matches and new_lines_is_addition and len(new_lines_is_addition) == len(h['new_lines']):
                 # Context matches - use positional information: replace old_block with new_lines
-                new_lines_with_endings = [line + dominant_ending for line in h['new_lines']]
+                # BUT preserve original file content for context lines to avoid indentation corruption
+                preserved_new_lines = []
+                old_block_idx = 0
+                for i, (line, is_add) in enumerate(zip(h['new_lines'], new_lines_is_addition)):
+                    if is_add:
+                        # Added line - use from diff (strip trailing whitespace from non-empty lines)
+                        if line.strip():
+                            preserved_new_lines.append(line.rstrip())
+                        else:
+                            preserved_new_lines.append(line)
+                    else:
+                        # Context line - use original file's line to preserve exact content
+                        file_idx = remove_pos + old_block_idx
+                        if file_idx < len(final_lines_with_endings):
+                            file_line = final_lines_with_endings[file_idx].rstrip('\r\n')
+                            preserved_new_lines.append(file_line)
+                        else:
+                            preserved_new_lines.append(line)
+                        old_block_idx += 1
+                
+                new_lines_with_endings = [line + dominant_ending for line in preserved_new_lines]
                 
                 # Replace the entire old_block region
                 actual_remove_count = len(old_block)
@@ -1205,6 +1225,11 @@ def apply_diff_with_difflib_hybrid_forced(
             skip_duplicate_check = True
             
             logger.debug(f"Hunk #{hunk_idx}: Pure addition - inserting {len(added_lines_only)} lines after context at pos={insert_pos}")
+            
+            # Apply the pure addition and skip the rest of the hunk processing
+            final_lines_with_endings[insert_pos:end_remove_pos] = new_lines_with_endings
+            verify_line_delta(hunk_idx, h, insert_pos, end_remove_pos, len(new_lines_with_endings))
+            continue
         else:
             # For all other hunks (with removals), use the standard logic
             # Special handling for pure deletions to preserve context
