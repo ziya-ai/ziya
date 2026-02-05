@@ -13,15 +13,15 @@ class DataProcessor:
         """Load data from the specified source"""
         try:
             if source.type == "file":
-                self._load_from_file(source.path)
+            self._load_from_file(source.path)
             elif source.type == "api":
-                self._load_from_api(source.url, source.params)
-            elif source.type == "database":
-                self._load_from_database(source.connection, source.query)
+            self._load_from_api(source.url, source.params)
+        elif source.type == "database":
+            self._load_from_database(source.connection, source.query)
         elif source.type == "memory":
-                self.data = source.data
-            else:
-                raise ValueError(f"Unsupported source type: {source.type}")
+            self.data = source.data
+        else:
+            raise ValueError(f"Unsupported source type: {source.type}")
         except Exception as e:
             self.errors.append(str(e))
             raise
