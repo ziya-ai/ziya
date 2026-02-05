@@ -958,60 +958,75 @@ def apply_diff_with_difflib_hybrid_forced(
             new_lines_content = []  # No lines to add
             logger.debug(f"Hunk #{hunk_idx}: Pure deletion detected - will surgically remove {len(h['removed_lines'])} lines")
         else:
-            # Check if context lines have CONSISTENT indentation difference from the file
-            # Only apply preservation if ALL indented context lines are off by the same amount
+            # CRITICAL: Context lines should NEVER modify the target file.
+            # Preserve original file content for context lines when there's an indentation mismatch.
             new_lines_is_addition = h.get('new_lines_is_addition', [])
             old_block = h.get('old_block', [])
+            removed_lines = h.get('removed_lines', [])
             
-            indent_diffs = []
             if new_lines_is_addition and len(new_lines_is_addition) == len(h['new_lines']) and old_block:
-                old_block_idx = 0
+                # Build file indices for context lines in old_block
+                # Context lines are those not in removed_lines (matched by position)
+                removed_indices = set()
+                removed_idx = 0
+                for i, old_line in enumerate(old_block):
+                    if removed_idx < len(removed_lines) and old_line == removed_lines[removed_idx]:
+                        removed_indices.add(i)
+                        removed_idx += 1
+                
+                # Build list of file indices for context lines
+                context_file_indices = []
+                for i in range(len(old_block)):
+                    if i not in removed_indices:
+                        context_file_indices.append(remove_pos + i)
+                
+                new_lines_content = []
+                context_idx = 0
+                has_indent_mismatch = False
+                
+                # First pass: check if any context line has an indentation mismatch
+                temp_context_idx = 0
                 for i, (line, is_add) in enumerate(zip(h['new_lines'], new_lines_is_addition)):
-                    if not is_add and old_block_idx < len(old_block):
-                        file_idx = remove_pos + old_block_idx
+                    if not is_add and temp_context_idx < len(context_file_indices):
+                        file_idx = context_file_indices[temp_context_idx]
                         if file_idx < len(final_lines_with_endings):
                             file_line = final_lines_with_endings[file_idx].rstrip('\r\n')
-                            # Only consider non-empty lines for indentation comparison
-                            if line.strip() and file_line.strip():
-                                if normalize_line_for_comparison(line) == normalize_line_for_comparison(file_line):
-                                    diff_indent = len(line) - len(line.lstrip())
-                                    file_indent = len(file_line) - len(file_line.lstrip())
-                                    # Only track indentation differences for indented lines
-                                    if diff_indent > 0 or file_indent > 0:
-                                        indent_diffs.append(file_indent - diff_indent)
-                        old_block_idx += 1
-            
-            # Only apply preservation if we have consistent non-zero indentation differences
-            needs_indent_preservation = False
-            if indent_diffs and len(set(indent_diffs)) == 1 and indent_diffs[0] != 0:
-                needs_indent_preservation = True
-            
-            if needs_indent_preservation:
-                # Build indentation-preserved new_lines
-                new_lines_content = []
-                old_block_idx = 0
-                indent_adjustment = indent_diffs[0]
+                            if normalize_line_for_comparison(line) == normalize_line_for_comparison(file_line):
+                                diff_indent = len(line) - len(line.lstrip())
+                                file_indent = len(file_line) - len(file_line.lstrip())
+                                if diff_indent != file_indent:
+                                    has_indent_mismatch = True
+                                    break
+                        temp_context_idx += 1
                 
                 for i, (line, is_add) in enumerate(zip(h['new_lines'], new_lines_is_addition)):
                     if is_add:
-                        # Added line - strip trailing whitespace only from non-empty lines
-                        if line.strip():
+                        # Added line - strip trailing whitespace only if we're fixing indentation
+                        if has_indent_mismatch and line.strip():
                             new_lines_content.append(line.rstrip())
                         else:
                             new_lines_content.append(line)
                     else:
-                        # Context line - use original file's line if content matches
-                        file_idx = remove_pos + old_block_idx
-                        if file_idx < len(final_lines_with_endings):
-                            file_line = final_lines_with_endings[file_idx].rstrip('\r\n')
-                            if normalize_line_for_comparison(line) == normalize_line_for_comparison(file_line):
-                                new_lines_content.append(file_line)
+                        # Context line - preserve from original file if indentation differs
+                        if context_idx < len(context_file_indices):
+                            file_idx = context_file_indices[context_idx]
+                            if file_idx < len(final_lines_with_endings):
+                                file_line = final_lines_with_endings[file_idx].rstrip('\r\n')
+                                # Only preserve if content matches but indentation differs
+                                if normalize_line_for_comparison(line) == normalize_line_for_comparison(file_line):
+                                    diff_indent = len(line) - len(line.lstrip())
+                                    file_indent = len(file_line) - len(file_line.lstrip())
+                                    if diff_indent != file_indent:
+                                        new_lines_content.append(file_line)
+                                    else:
+                                        new_lines_content.append(line)
+                                else:
+                                    new_lines_content.append(line)
                             else:
                                 new_lines_content.append(line)
+                            context_idx += 1
                         else:
                             new_lines_content.append(line)
-                        old_block_idx += 1
-                logger.debug(f"Hunk #{hunk_idx}: Applied indentation preservation (adjustment={indent_adjustment})")
             else:
                 new_lines_content = h['new_lines']
         
