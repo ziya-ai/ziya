@@ -586,13 +586,16 @@ class ModelManager:
         try:
             session = create_fresh_boto3_session(profile_name=aws_profile)
             
+            # CRITICAL: Define retry configuration BEFORE any try block that uses it
+            max_retries = 3
+            retry_delays = [0.1, 0.5, 1.0]
+            
             # Check AWS credentials using the same fresh session
             try:
                 sts = session.client('sts', region_name=region)
                 
-                # Use retry with exponential backoff to handle credential loading race conditions
-                max_retries = 3
-                retry_delays = [0.1, 0.5, 1.0]  # 100ms, 500ms, 1 second
+                # Use retry with exponential backoff to handle credential loading race conditions  
+                # (max_retries and retry_delays now defined above)
                 
                 for attempt in range(max_retries):
                     try:

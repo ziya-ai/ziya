@@ -1,3 +1,14 @@
+/* Rich text editor placeholder */
+[contenteditable][data-placeholder]:empty::before {
+  content: attr(data-placeholder);
+  color: #999;
+  pointer-events: none;
+  position: absolute;
+}
+
+[contenteditable][data-placeholder] {
+  position: relative;
+}
 /* Base styles with improved streaming visibility */
 body {
   font-family: Arial, sans-serif;
@@ -651,6 +662,49 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   top: 0;
 }
 
+/* Ensure tabs never overflow/hide - always show at least icons */
+.folder-tree-panel .ant-tabs-nav-list {
+  flex-wrap: nowrap !important;
+}
+
+.folder-tree-panel .ant-tabs-tab {
+  flex-shrink: 1;
+  min-width: 32px !important;
+  padding: 8px 8px !important;
+  border-radius: 6px 6px 0 0 !important;
+  margin: 0 2px !important;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+/* Active tab indicator - light mode */
+.folder-tree-panel .ant-tabs-tab.ant-tabs-tab-active {
+  background-color: rgba(24, 144, 255, 0.1) !important;
+  border-bottom: 2px solid #1890ff !important;
+}
+
+.folder-tree-panel .ant-tabs-tab:hover:not(.ant-tabs-tab-active) {
+  background-color: rgba(0, 0, 0, 0.04);
+}
+
+/* Active tab indicator - dark mode */
+.dark .folder-tree-panel .ant-tabs-tab.ant-tabs-tab-active {
+  background-color: rgba(24, 144, 255, 0.2) !important;
+  border-bottom: 2px solid #1890ff !important;
+}
+
+.dark .folder-tree-panel .ant-tabs-tab:hover:not(.ant-tabs-tab-active) {
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+/* Hide the default ink bar since we're using border-bottom */
+.folder-tree-panel .ant-tabs-ink-bar {
+  display: none !important;
+}
+
+.folder-tree-panel .ant-tabs-nav-operations {
+  display: none !important;
+}
+
 /* Fast tooltips for action buttons */
 [data-tooltip-delay="50"]:hover::after {
     animation-delay: 50ms !important;
@@ -658,6 +712,49 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
  
 button[data-tooltip-delay="50"] {
     --tooltip-delay: 50ms;
+}
+
+/* Ensure tabs never overflow/hide - always show at least icons */
+.folder-tree-panel .ant-tabs-nav-list {
+  flex-wrap: nowrap !important;
+}
+
+.folder-tree-panel .ant-tabs-tab {
+  flex-shrink: 1;
+  min-width: 32px !important;
+  padding: 8px 8px !important;
+  border-radius: 6px 6px 0 0 !important;
+  margin: 0 2px !important;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+/* Active tab indicator - light mode */
+.folder-tree-panel .ant-tabs-tab.ant-tabs-tab-active {
+  background-color: rgba(24, 144, 255, 0.1) !important;
+  border-bottom: 2px solid #1890ff !important;
+}
+
+.folder-tree-panel .ant-tabs-tab:hover:not(.ant-tabs-tab-active) {
+  background-color: rgba(0, 0, 0, 0.04);
+}
+
+/* Active tab indicator - dark mode */
+.dark .folder-tree-panel .ant-tabs-tab.ant-tabs-tab-active {
+  background-color: rgba(24, 144, 255, 0.2) !important;
+  border-bottom: 2px solid #1890ff !important;
+}
+
+.dark .folder-tree-panel .ant-tabs-tab:hover:not(.ant-tabs-tab-active) {
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+/* Hide the default ink bar since we're using border-bottom */
+.folder-tree-panel .ant-tabs-ink-bar {
+  display: none !important;
+}
+
+.folder-tree-panel .ant-tabs-nav-operations {
+  display: none !important;
 }
 
 .dark .ant-tabs {

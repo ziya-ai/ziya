@@ -1,0 +1,4 @@
+{
+    "description": "MCP tool routing - added lines should match original file indentation, not diff indentation",
+    "target_file": "streaming_tool_executor.py"
+}

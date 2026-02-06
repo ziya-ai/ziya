@@ -6,7 +6,7 @@ import sys
 import importlib
 import boto3
 from botocore.client import BaseClient
-from botocore.exceptions import ClientError, NoCredentialsError
+from botocore.exceptions import ClientError, NoCredentialsError, ProfileNotFound
 from app.utils.logging_utils import logger
 
 def create_fresh_boto3_session(profile_name=None):
@@ -18,6 +18,17 @@ def create_fresh_boto3_session(profile_name=None):
     Returns:
         boto3.Session: A fresh boto3 session
     """
+    # Debug: Check what we're trying to create
+    logger.info(f"create_fresh_boto3_session called with profile_name={profile_name}")
+    
+    # Check if profile exists
+    if profile_name:
+        import botocore.session
+        bs = botocore.session.Session()
+        available = bs.available_profiles
+        logger.info(f"Available profiles: {available}")
+        logger.info(f"Profile '{profile_name}' exists: {profile_name in available}")
+    
     # First, try to clean up existing modules
     modules_to_remove = []
     for module_name in list(sys.modules.keys()):
@@ -39,24 +50,81 @@ def create_fresh_boto3_session(profile_name=None):
     except Exception as e:
         logger.warning(f"Error reloading boto3/botocore modules: {e}")
     
-    # Create a fresh session
     try:
-        # Get the current region from environment variables
-        region = os.environ.get("AWS_REGION")
-        
         if profile_name:
+            logger.info(f"Attempting to create session with profile: {profile_name}")
             return boto3.Session(profile_name=profile_name)
         else:
+            logger.info("Attempting to create default boto3 session")
             return boto3.Session()
+    except ProfileNotFound as e:
+        logger.error(f"ProfileNotFound error: {e}")
+        requested_profile = profile_name or os.environ.get('AWS_PROFILE') or os.environ.get('AWS_DEFAULT_PROFILE')
+        logger.error(f"Requested profile: {requested_profile}")
+        _handle_profile_not_found_error(requested_profile)
+        # Don't return None here - _handle_profile_not_found_error will exit
+        raise  # Re-raise to ensure we don't continue
     except Exception as e:
         logger.error(f"Error creating fresh boto3 session: {e}")
-        # Fall back to default session
+        logger.error(f"Exception type: {type(e)}")
+        logger.error(f"Exception details: {e}", exc_info=True)
+        
+        # Attempt fallback with environment cleared of problematic profile settings
+        return _create_fallback_session()
+
+def _handle_profile_not_found_error(profile_name: str):
+    """Handle ProfileNotFound with a user-friendly error message and clean exit."""
+    available_profiles = _get_available_profiles()
+    profiles_hint = f"Available profiles: {', '.join(available_profiles)}" if available_profiles else "Run 'aws configure list-profiles' to see available profiles."
+    
+    error_msg = f"""
+❌ AWS Profile Error: The profile '{profile_name}' could not be found.
+
+Please either:
+  1. Create the '{profile_name}' profile in ~/.aws/config and ~/.aws/credentials
+  2. Use an existing profile: ziya --profile <profile-name>
+  3. Set AWS_PROFILE environment variable: export AWS_PROFILE=<existing-profile>
+
+{profiles_hint}
+"""
+    print(error_msg, file=sys.stderr)
+    raise SystemExit(1)
+
+
+def _get_available_profiles():
+    """Get list of available AWS profiles."""
+    try:
+        import botocore.session
+        session = botocore.session.Session()
+        return list(session.available_profiles)
+    except Exception:
+        return []
+
+
+def _create_fallback_session():
+    """Attempt to create a session without any profile configuration."""
+    try:
+        # Temporarily clear profile environment variables that might cause issues
+        saved_env = {}
+        for key in ['AWS_PROFILE', 'AWS_DEFAULT_PROFILE']:
+            if key in os.environ:
+                saved_env[key] = os.environ.pop(key)
+        
         boto3.setup_default_session()
-        return boto3._get_default_session()
+        session = boto3._get_default_session()
+        
+        # Restore environment
+        os.environ.update(saved_env)
+        return session
+    except ProfileNotFound as e:
+        # Even the fallback hit a profile issue - give user clear guidance
+        _handle_profile_not_found_error(str(e).split("'")[1] if "'" in str(e) else "unknown")
+    except Exception as e:
+        logger.error(f"Fallback session creation failed: {e}")
+        raise
 
 def get_current_region():
     """Get the current AWS region from environment variables or boto3 session."""
-    # First check environment variables
     region = os.environ.get("AWS_REGION")
     if region:
         return region
@@ -111,11 +179,17 @@ def check_aws_credentials(is_server_startup=True, profile_name=None, region_name
         # Use the same fresh session creation method as the working Bedrock clients
         session = create_fresh_boto3_session(profile_name=profile_name)
         
+        if not session:
+            return False, "⚠️ AWS CREDENTIALS ERROR: Failed to create AWS session. Please check your credentials."
+        
         # Use the same region as the working clients
         if not region_name:
             region_name = os.environ.get("AWS_REGION", "us-west-2")
         
-        sts = session.client('sts', region_name=region_name)
+        try:
+            sts = session.client('sts', region_name=region_name)
+        except Exception as e:
+            return False, f"⚠️ AWS CREDENTIALS ERROR: Failed to create STS client: {str(e)}"
             
         # Try to get caller identity
         identity = sts.get_caller_identity()
@@ -168,22 +242,6 @@ Please set up your AWS credentials using one of these methods:
         if auth_provider and auth_provider.is_auth_error(error_msg):
             return False, auth_provider.get_credential_help_message()
             
-        # Standard error detection for non-Amazon environments
-        if "authenticate by running" in error_msg.lower():
-            # Format the error message nicely but preserve the original content
-            return False, f"⚠️ AWS CREDENTIALS ERROR: {error_msg}"
-        elif "ExpiredToken" in error_msg:
-            return False, "⚠️ AWS CREDENTIALS ERROR: Your AWS credentials have expired. Please refresh your credentials."
-        elif "InvalidClientTokenId" in error_msg:
-            return False, "⚠️ AWS CREDENTIALS ERROR: Invalid AWS credentials. Please check your AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY."
-        elif "AccessDenied" in error_msg:
-            return False, "⚠️ AWS CREDENTIALS ERROR: Access denied. Your AWS credentials don't have sufficient permissions."
-        elif "NoCredentialProviders" in error_msg:
-            return False, "⚠️ AWS CREDENTIALS ERROR: No AWS credentials found. Please set up your AWS credentials."
-        else:
-            # Generic error message for other cases
-            return False, f"⚠️ AWS CREDENTIALS ERROR: {e}. Please check your AWS credentials and try again."
-        
         # Standard error detection for non-Amazon environments
         if "ExpiredToken" in error_msg:
             return False, "⚠️ AWS CREDENTIALS ERROR: Your AWS credentials have expired. Please refresh your credentials."

@@ -1,0 +1,29 @@
+diff --git a/app/streaming_tool_executor.py b/app/streaming_tool_executor.py
+--- a/app/streaming_tool_executor.py
++++ b/app/streaming_tool_executor.py
+@@ -1917,9 +1917,25 @@ class StreamingToolExecutor:
+                                             logger.debug(f"🔐 Signed builtin tool result for {actual_tool_name}")
+                                    else:
+                                        # Call through MCP manager for external tools
++                                        # Determine which server has this tool
++                                        target_server_name = None
++                                        for tool in all_tools:
++                                            tool_name_check = getattr(tool, 'name', '')
++                                            # Check both with and without mcp_ prefix
++                                            if tool_name_check == actual_tool_name or tool_name_check == f"mcp_{actual_tool_name}":
++                                                # Found the tool, get its server name
++                                                if hasattr(tool, 'metadata') and tool.metadata:
++                                                    target_server_name = tool.metadata.get('server_name')
++                                                    if target_server_name:
++                                                        logger.debug(f"🔍 ROUTING: Found tool {actual_tool_name} belongs to server '{target_server_name}'")
++                                                        break
++
++                                        if not target_server_name:
++                                            logger.warning(f"🔍 ROUTING: Could not determine server for tool {actual_tool_name}, manager will try all servers")
++
+                                         # External tools get signed in MCPClient.call_tool automatically
+-                                       result = await mcp_manager.call_tool(actual_tool_name, args)
++                                       result = await mcp_manager.call_tool(actual_tool_name, args, server_name=target_server_name)
+
+                                    # Initialize verification tracking variables
+                                    is_verified = False

@@ -240,14 +240,16 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
                 editedMessage,
                 convertKeysToStrings(checkedKeys),
                 currentConversationId,
+                undefined,
                 streamedContentMap,
-                setStreamedContentMap,
-                setIsStreaming,
                 removeStreamingConversation,
                 addMessageToConversation,
-                streamingConversations.has(currentConversationId)
+                streamingConversations.has(currentConversationId),
+                (state) => updateProcessingState(currentConversationId, state),
+                undefined, // setReasoningContentMap
+                undefined, // throttlingRecoveryDataRef
+                currentProject
             );
-
             // sendPayload already adds the message to conversation, so we just need to clear the flag
             if (result) {
                 // Clear the edit in progress flag after the response is complete

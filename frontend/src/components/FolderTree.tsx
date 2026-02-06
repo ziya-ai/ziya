@@ -2,12 +2,16 @@ import React, { useEffect, useState, useCallback, useRef, lazy, Suspense } from 
 import { Tabs, message } from 'antd';
 import { useFolderContext, FolderProvider } from '../context/FolderContext';
 import { useChatContext } from '../context/ChatContext';
+import { useProject } from '../context/ProjectContext';
 import { TokenCountDisplay } from "./TokenCountDisplay";
 import { FolderOutlined } from '@ant-design/icons'; // Import icons
 import { ModelConfigButton } from './ModelConfigButton';
 import { MessageOutlined } from '@ant-design/icons';
 import MUIChatHistory from './MUIChatHistory';
 import { MUIFileExplorer } from './MUIFileExplorer';
+import { ProjectSwitcher } from './ProjectSwitcher';
+import { ActiveContextBar } from './ActiveContextBar';
+import { ContextsTab } from './ContextsTab';
 import { useTheme } from '../context/ThemeContext';
 import { FolderScanProgress } from './FolderScanProgress';
 
@@ -24,10 +28,12 @@ const ACTIVE_TAB_KEY = 'ZIYA_ACTIVE_TAB';
 
 export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => {
     // We only need minimal context now since MUIFileExplorer handles its own state
+    const { contexts, activeContextIds } = useProject();
     // Extract only the specific values needed from ChatContext
     // to prevent unnecessary re-renders
     const [modelId, setModelId] = useState<string>('');
     const { isDarkMode } = useTheme();
+    const projectContext = useProject();
 
     // Use a more selective approach to extract only what we need from ChatContext
     const chatContext = useChatContext();
@@ -43,6 +49,30 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
     const [showActionButtons, setShowActionButtons] = useState(true);
     const panelRef = useRef<HTMLDivElement>(null);
     const [activeTab, setActiveTab] = useState(() => localStorage.getItem(ACTIVE_TAB_KEY) || '1');
+
+    // Progressive collapse logic for tabs
+    // Priority: Chats (3) > Files (1) > Contexts (2)
+    const getTabDisplayMode = useCallback((tabKey: string): 'full' | 'icon' => {
+        const isActive = activeTab === tabKey;
+        
+        // Very narrow: all icons
+        if (panelWidth < 140) return 'icon';
+        
+        // Narrow: only active tab shows text
+        if (panelWidth < 200) return isActive ? 'full' : 'icon';
+        
+        // Medium: active + highest priority tabs show text
+        if (panelWidth < 260) {
+            if (isActive) return 'full';
+            // Priority order: Chats > Files > Contexts
+            if (tabKey === '3') return 'full'; // Chats always if space
+            if (tabKey === '1' && panelWidth >= 230) return 'full'; // Files next
+            return 'icon';
+        }
+        
+        // Wide enough: show all
+        return 'full';
+    }, [activeTab, panelWidth]);
 
     // Add effect to track panel width
     useEffect(() => {
@@ -147,6 +177,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
 
     return (
         <div ref={panelRef} className={`folder-tree-panel ${isPanelCollapsed ? 'collapsed' : ''}`}>
+            <ProjectSwitcher />
             <TokenCountDisplay />
             <FolderScanProgress onCancel={handleCancelScan} />
             <Tabs
@@ -162,30 +193,22 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                     margin: '0 -2px'  // Reduced from -4px to -2px
                 }}
                 onChange={setActiveTab}
+                tabBarStyle={{
+                    flexWrap: 'nowrap',
+                    minWidth: 0,
+                }}
                 items={[
                     {
                         key: '1',
                         label: (
-                            <div style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'space-between',
-                                width: '100%',
-                                minWidth: 0
-                            }}>
-                                <span style={{
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    minWidth: 0,
-                                    overflow: 'hidden'
-                                }}>
-                                    <FolderOutlined style={{ marginRight: 8 }} />
-                                    File Explorer
-                                </span>
-                            </div>
+                            <span style={{ display: 'flex', alignItems: 'center', whiteSpace: 'nowrap', gap: getTabDisplayMode('1') === 'full' ? 6 : 0 }}>
+                                <FolderOutlined style={{ fontSize: 16 }} />
+                                {getTabDisplayMode('1') === 'full' && <span>Files</span>}
+                            </span>
                         ),
                         children: (
-                            <div style={{ position: 'relative' }}>
+                            <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', height: '100%' }}>
+                                <ActiveContextBar />
                                 <MUIFileExplorer />
                                 {(isScanning || scanError) && <div style={{ opacity: 0.6, pointerEvents: 'none', position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1 }} />}
                             </div>
@@ -194,41 +217,32 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                     {
                         key: '2',
                         label: (
-                            <div style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'space-between',
-                                width: '100%',
-                                minWidth: 0
-                            }}>
-                                <span style={{
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    minWidth: 0,
-                                    overflow: 'hidden'
-                                }}>
-                                    <MessageOutlined style={{ marginRight: 8 }} />
-                                    Chat History
-                                </span>
-                                {showActionButtons && activeTab === '2' && (
-                                    <div style={{ display: 'flex', gap: 4, marginLeft: 8, flexShrink: 0 }}>
-                                        <Tooltip title="Create new folder">
-                                            <IconButton size="small" onClick={handleCreateFolderAtCurrentLevel}
-                                                sx={{ color: '#1890ff', border: '1px solid #1890ff', width: 24, height: 24 }}>
-                                                <CreateNewFolderIcon sx={{ fontSize: 14 }} />
-                                            </IconButton>
-                                        </Tooltip>
-                                        <Tooltip title="Create new chat">
-                                            <IconButton size="small" onClick={handleCreateChatAtCurrentLevel}
-                                                sx={{ color: '#1890ff', border: '1px solid #1890ff', width: 24, height: 24 }}>
-                                                <AddCommentIcon sx={{ fontSize: 14 }} />
-                                            </IconButton>
-                                        </Tooltip>
-                                    </div>
-                                )}
-                            </div>
+                            <span style={{ display: 'flex', alignItems: 'center', whiteSpace: 'nowrap', gap: getTabDisplayMode('2') === 'full' ? 6 : 0 }}>
+                                <span style={{ fontSize: 16 }}>📦</span>
+                                {getTabDisplayMode('2') === 'full' && <span>Contexts</span>}
+                            </span>
                         ),
-                        children: <MUIChatHistory />
+                        children: (
+                            <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                                <ActiveContextBar />
+                                <ContextsTab />
+                            </div>
+                        )
+                    },
+                    {
+                        key: '3',
+                        label: (
+                            <span style={{ display: 'flex', alignItems: 'center', whiteSpace: 'nowrap', gap: getTabDisplayMode('3') === 'full' ? 6 : 0 }}>
+                                <MessageOutlined style={{ fontSize: 16 }} />
+                                {getTabDisplayMode('3') === 'full' && <span>Chats</span>}
+                            </span>
+                        ),
+                        children: (
+                            <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                                <ActiveContextBar />
+                                <MUIChatHistory />
+                            </div>
+                        )
                     },
                 ]}
             />

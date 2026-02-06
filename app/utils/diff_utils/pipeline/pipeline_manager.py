@@ -1984,10 +1984,6 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                     )
                 modified_content = ''.join(modified_lines)
                 logger.info(f"Modified content has {len(modified_lines)} lines")
-                if len(modified_lines) > 55:
-                    logger.info(f"Line 54: {repr(modified_lines[53].rstrip())}")
-                    logger.info(f"Line 55: {repr(modified_lines[54].rstrip())}")
-                    logger.info(f"Line 56: {repr(modified_lines[55].rstrip())}")
                 
                 # CRITICAL VERIFICATION: Check if the content actually changed
                 if modified_content == original_content:
