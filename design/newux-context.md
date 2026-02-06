@@ -1,34 +1,437 @@
 # Ziya Session & Context Management - Implementation Spec
 
+**Status: IN PROGRESS - Phase 0-2 Implementation, Critical Sync Issue Identified**
+
+## Current Status (Updated: Current Session)
+
+### ✅ Completed
+
+**Phase 0: Backend Storage & API (95% complete)**
+- ✅ Created directory structure utilities (`app/utils/paths.py`)
+- ✅ Created Pydantic models for all entities (project, context, skill, chat, group)
+- ✅ Implemented base storage class with file locking (`app/storage/base.py`)
+- ✅ Implemented ProjectStorage, ContextStorage, SkillStorage, ChatStorage, ChatGroupStorage
+- ✅ Created TokenService and color generation service
+- ✅ Created built-in skills data file
+- ✅ Implemented all API endpoints (projects, contexts, skills, chats, tokens)
+- ⚠️ API routes defined but not yet fully wired into server.py
+
+**Phase 1: Frontend API Clients (100% complete)**
+- ✅ Created base API client (`frontend/src/api/index.ts`)
+- ✅ Created projectApi, contextApi, skillApi, tokenApi clients
+- ✅ Created TypeScript type definitions (project, context, skill, token)
+
+**Phase 2: Frontend State Management (90% complete)**
+- ✅ Created ProjectContext provider with full state management
+- ✅ Created ActiveContextBar component
+- ✅ Created ContextsTab component with inline creation
+- ✅ Created ProjectSwitcher component
+- ⚠️ ProjectProvider added to App.tsx but needs verification
+- ⚠️ Components integrated but activeSkillPrompts parameter fixes in progress
+
+### 🚧 In Progress
+
+**Critical Bugs Being Fixed:**
+1. ❌ `activeSkillPrompts` parameter missing in multiple sendPayload calls
+   - Fixed in: SendChatContainer.tsx (needs re-application)
+   - Fixed in: Conversation.tsx (applied)
+   - Fixed in: RetrySection.tsx (applied)
+   - Fixed in: EditSection.tsx (applied)
+   - Fixed in: StreamedContent.tsx (applied)
+   - Fixed in: ThrottlingErrorDisplay.tsx (applied)
+   - Fixed in: MarkdownRenderer.tsx (applied)
+   - ⚠️ Stub removed from chatApi.ts getApiResponse function
+
+2. ❌ "Save files as context" button always disabled
+   - Root cause: ContextsTab checking `additionalFiles` instead of `checkedKeys`
+   - Fix created but not applied
+
+3. ❌ ProjectSwitcher showing pulsing grey (API not loading)
+   - Root cause: API routes not registered in server.py
+   - Fix created: Add imports and route registration
+   - Not yet applied
+
+4. ❌ Server startup may fail due to missing dependencies
+   - API route imports reference modules that may have import errors
+   - Need to test server startup after applying fixes
+
+### ⚠️ Critical Design Issue Discovered
+
+**State Sync Problem: File Tree vs Active Contexts**
+
+**Issue:** Two sources of truth can get out of sync:
+- `ProjectContext.activeContextIds` = which contexts are active
+- `FolderContext.checkedKeys` = which files are checked in tree
+
+**Scenario that breaks:**
+1. User activates "UI Components" context (3 files)
+2. Files get checked in tree
+3. User unchecks one file in tree
+4. What happens to the context? Is it still "active"?
+
+**Proposed Solution: Bidirectional Sync**
+
+Make `checkedKeys` the single source of truth:
+- When context activated → add its files to `checkedKeys`
+- When `checkedKeys` changes → auto-update context state
+- If NO files from context remain → auto-deactivate context
+- If SOME files removed → mark context as "modified" with indicator
+
+Implementation needed in `ProjectContext.tsx`:
+```typescript
+useEffect(() => {
+  // Watch checkedKeys and sync activeContextIds
+  activeContextIds.forEach(ctxId => {
+    const ctx = contexts.find(c => c.id === ctxId);
+    const filesStillChecked = ctx.files.filter(f => checkedKeys.has(f));
+    if (filesStillChecked.length === 0) {
+      removeContextFromLens(ctxId); // Auto-deactivate
+    }
+  });
+}, [checkedKeys, activeContextIds, contexts]);
+```
+
+**Enhanced UX Proposal:** Collapsible file trees in ContextsTab
+- Expand context → see all its files
+- Checkbox each file → include/exclude from saved context
+- Allows curating contexts as a library
+- Users can browse and edit without activating
+- See implementation section below for details
+
+**Status:** Design documented, implementation deferred until Phase 2 bugs fixed
+
+### 📋 Not Started (Phases 3-5)
+
+**Phase 3: Chat-Context Association (0% complete)**
+- Extend Chat type with contextIds/skillIds
+- Update chat creation to snapshot contexts
+- Update chat loading to restore contexts
+- Display context indicators on chat items
+
+**Phase 4: Chat Groups (0% complete)**
+- Implement group UI in ChatsTab
+- Add drag-and-drop for chat organization
+- Implement group default contexts/skills
+- Show override indicators
+
+**Phase 5: Migration & Polish (0% complete)**
+- IndexedDB to server migration
+- Offline handling
+- Edge cases
+- Performance optimization
+
+--
+
+## Next Steps for Resume
+
+1. **Immediate (get system working):**
+   - Apply the SendChatContainer.tsx fix properly (import useProject, extract activeSkillPrompts)
+   - Apply the server.py imports and route registration
+   - Apply the ContextsTab checkedKeys fix
+   - Test: Can create contexts? Does project switcher load?
+
+2. **Verify backend:**
+   - Start server and check for import errors
+   - Test GET `/api/v1/projects/current` endpoint
+   - Test POST `/api/v1/projects/{id}/contexts` endpoint
+   - Check `~/.ziya/` directory structure is created
+
+3. **Then continue Phase 2:**
+   - Finish integrating ContextsTab into FolderTree tabs
+   - Test context creation flow end-to-end
+   - Test context activation/deactivation
+   - Test multi-context composition with token math
+
+4. **Then Phase 3:**
+   - Wire up chat-context association
+   - Make chat switching restore contexts
+   - Show context pills on chat list items
+
+--
+
+## Critical State Management: File Tree ↔ Context Sync
+
+### The Problem
+
+**Two sources of truth that must stay synchronized:**
+1. `ProjectContext.activeContextIds` - which contexts are active (high-level)
+2. `FolderContext.checkedKeys` - which files are selected (low-level)
+
+**Conflict scenario:**
+- User activates "UI Components" context (contains App.tsx, Button.tsx, Modal.tsx)
+- Files get checked in tree ✅
+- User unchecks Button.tsx in file tree
+- **What happens to the context?** (This is what we need to define)
+
+### The Solution: Bidirectional Sync
+
+**Principle:** `checkedKeys` is the source of truth (what user sees in tree)  
+**Rule:** Contexts are smart helpers that manipulate checkedKeys but don't override it
+
+#### Implementation Requirements (Phase 2 - Critical)
+
+**1. Context Activation → Update File Tree**
+```typescript
+// In ProjectContext.addContextToLens():
+addContextToLens(contextId) {
+  const ctx = contexts.find(c => c.id === contextId);
+  setActiveContextIds(prev => [...prev, contextId]);
+  
+  // CRITICAL: Dispatch event to add files to checkedKeys
+  window.dispatchEvent(new CustomEvent('addFilesToSelection', {
+    detail: { files: ctx.files }
+  }));
+}
+```
+
+**2. File Tree Changes → Update Active Contexts**
+```typescript
+// In ProjectContext, watch checkedKeys:
+useEffect(() => {
+  activeContextIds.forEach(ctxId => {
+    const ctx = contexts.find(c => c.id === ctxId);
+    if (!ctx) return;
+    
+    const filesStillChecked = ctx.files.filter(f => checkedKeys.has(f));
+    
+    if (filesStillChecked.length === 0) {
+      // NO files remain → auto-deactivate context
+      setActiveContextIds(prev => prev.filter(id => id !== ctxId));
+    }
+    // If SOME files remain, context stays active (marked as modified)
+  });
+  
+  // Recalculate additionalFiles
+  const contextFiles = new Set();
+  activeContextIds.forEach(id => {
+    contexts.find(c => c.id === id)?.files.forEach(f => contextFiles.add(f));
+  });
+  setAdditionalFiles(Array.from(checkedKeys).filter(f => !contextFiles.has(f)));
+}, [checkedKeys, activeContextIds, contexts]);
+```
+
+**3. FolderContext listens for context activation**
+```typescript
+// In FolderContext:
+useEffect(() => {
+  const handleAddFiles = (e: CustomEvent) => {
+    setCheckedKeys(prev => new Set([...prev, ...e.detail.files]));
+  };
+  window.addEventListener('addFilesToSelection', handleAddFiles);
+  return () => window.removeEventListener('addFilesToSelection', handleAddFiles);
+}, []);
+```
+
+#### User Experience Flow
+
+**Scenario 1: Uncheck file from active context**
+- Context active with 3 files
+- User unchecks 1 file in tree
+- Context stays active, pill shows: `UI Components*` (modified indicator)
+- Tooltip: "2 of 3 files active (Button.tsx excluded)"
+
+**Scenario 2: Uncheck ALL files from context**
+- User unchecks last file
+- Context auto-deactivates (pill disappears)
+- Checkbox in ContextsTab becomes unchecked
+
+**Scenario 3: Update modified context**
+- User right-clicks modified context pill
+- Menu: "Update context to match current selection"
+- Context saves with new file list
+
+---
+
+## Enhanced Feature: Collapsible Context File Trees (Phase 2+)
+
+**Status: 🎯 PLANNED ENHANCEMENT (implement after core system working)**
+
+### Concept
+
+Add collapsible file trees inside each context item in ContextsTab, allowing users to:
+- **Browse** context contents without activating
+- **Edit** file membership inline (check/uncheck files)
+- **Curate** contexts as a reusable library
+- **See** per-file token counts
+
+### Visual Design
+
+```
+☑ ▼ Backend Services       5 files    4.8k  ← Expanded, active
+ ┃
+ ┃  ☑ server.py                       1.2k
+ ┃  ☑ api.py                          0.8k
+ ┃  ☐ database.py (excluded)          1.5k  ← Unchecked = exclude from context
+ ┃  ☑ models.py                       0.9k
+ ┃  ☑ utils.py                        0.4k
+ ┃  ─────────────────────────────────
+ ┃  Active: 4 of 5 files         3.3k
+ ┃
+ ┃  [+ Add files to context...]
+```
+
+### Interaction Model
+
+**Three-level interaction:**
+1. **Context checkbox** → Activate/deactivate entire context (adds all included files to selection)
+2. **Expand arrow (▶/▼)** → Show/hide file list (browse without activating)
+3. **File checkbox** → Include/exclude file from saved context (persists to backend)
+
+**Key behaviors:**
+- Unchecking a file saves the change to the context immediately
+- If context is active, also removes file from main tree selection
+- Contexts must have at least 1 file (prevent empty contexts)
+- Show summary: "Active: 4 of 5 files" when some excluded
+- Per-file token counts displayed
+
+### Implementation Components
+
+**New components needed:**
+- `ContextItem.tsx` - Single context with collapsible tree
+- `ContextFileItem.tsx` - Individual file row with checkbox
+- `AddFilesToContextModal.tsx` - File picker for explicit addition
+
+**API enhancement needed:**
+- Context model should include `fileTokens: Record<string, number>`
+- Token calculation includes per-file breakdown
+- Update endpoint recalculates tokens when files change
+
+**Benefits:**
+- ✅ No separate "edit context" modal needed
+- ✅ Browse context contents without activating
+- ✅ Curate contexts independently of current work
+- ✅ Two workflows: implicit (modify-then-update) and explicit (direct editing)
+- ✅ Contexts feel like "smart folders" you can manage
+
+**Priority:** Implement AFTER Phase 2 core functionality is working and bugs are fixed.
+
+---
+
+## Design Evolution Notes
+
+### What Changed During Implementation
+
+**Original design had:**
+- Separate management views
+- Icon selection for contexts
+- Complex project hierarchy
+
+**Refined to:**
+- Inline creation (no modals)
+- Auto-generated colors from name hash
+- Flat project structure (directory = project)
+- Contexts and Skills in same tab (unified browsing)
+- Progressive disclosure (no upfront organization required)
+
+**Key UX principle decided:**
+> "Context shouldn't be something you manage—it should be something that flows with your work."
+
+### Critical Implementation Decisions
+
+1. **Storage: File-based JSON, not database**
+   - Simpler, more debuggable
+   - User can inspect/edit `~/.ziya/` manually if needed
+   - Atomic writes with temp files + rename
+
+2. **Contexts are composable via checkboxes**
+   - Check multiple → they stack
+   - Token math shows overlap deduplication
+   - Visual: colored pills + segmented token bar
+
+3. **Skills are first-class, same pattern as contexts**
+   - Built-in skills (read-only) + custom skills
+   - Same checkbox pattern for activation
+   - Prompts concatenated when multiple active
+
+4. **Projects scope everything**
+   - One project = one working directory
+   - All contexts/skills/chats scoped to project
+   - Switching projects = switching entire workspace
+
+--
+
+## Context Update Workflows
+
+### Problem: How do users update an existing context to include new files?
+
+**Scenario:** User has "UI Components" context with 3 files. Later realizes needs 2 more files. How to add them?
+
+### Solution: Two Complementary Approaches
+
+#### Approach 1: Implicit Update (Modify-Then-Save)
+
+**User flow:**
+1. Activate existing context "UI Components"
+2. Check 2 additional files in main file tree
+3. Context pill shows modified: `UI Components* +2`
+4. Right-click pill → "Update context to include new files"
+5. Context saves, asterisk disappears
+
+**Visual feedback:**
+```
+Active Context Bar:
+┌────────────────────────────────────┐
+│ [UI Components* +2] [×]            │ ← Asterisk = modified
+│   └── Tooltip: "+Input.tsx, +Form.tsx added"
+└────────────────────────────────────┘
+
+Right-click menu:
+┌─────────────────────────────────────┐
+│ ✏️  Update context (add 2 files)    │
+│ ↩️  Revert to saved                 │
+│ 💾  Save as new context...          │
+│ ❌  Deactivate                      │
+└─────────────────────────────────────┘
+```
+
+**Implementation:**
+```typescript
+const updateContextToMatchSelection = async (contextId: string) => {
+  const currentFiles = Array.from(checkedKeys);
+  await contextApi.updateContext(projectId, contextId, { files: currentFiles });
+  setContexts(updated);
+  message.success('Context updated');
+};
+```
+
+#### Approach 2: Explicit Editing (Collapsible File Tree)
+
+**User flow:**
+1. In ContextsTab, expand context (click arrow)
+2. See full file list with checkboxes
+3. Uncheck files to exclude (saves immediately)
+4. Click "+ Add files..." to include more
+5. Changes persist to backend, affect all uses of this context
+
+**Benefits over Approach 1:**
+- Can edit WITHOUT activating context
+- See what's in context before using it
+- Curate context library for future use
+- More discoverable (no right-click required)
+
+**See "Enhanced Feature: Collapsible Context File Trees" section above for full visual design and implementation.**
+
+### Workflow Comparison
+
+| Workflow | Use Case | Discovery | Speed |
+|----------|----------|-----------|-------|
+| **Implicit** | Quick edits while working | Requires knowing right-click | 2 clicks |
+| **Explicit** | Building context library | Highly visible (expand arrow) | 3 clicks |
+
+**Recommendation:** Implement both
+- Implicit for power users (faster iteration)
+- Explicit for discoverability (clear affordances)
+- Both lead to same backend operation (update context files)
+
+**Status:** Design documented. Implement AFTER Phase 2 bugs fixed.
+
+---
+
 ## Overview
 
 This document describes the implementation of a project-based session and context management system for Ziya. The goal is to replace the current client-side IndexedDB storage with server-side persistence, add support for multiple projects, and enable reusable context groups.
 
 ### Key Concepts
-
-- **Project**: A workspace tied to a directory. All contexts and chats are scoped to a project.
-- **Context**: A saved, named selection of files that can be reused across conversations.
-- **Skill**: A saved prompt/instruction set that modifies AI behavior (e.g., "Code Review", "Debug Mode").
-- **Chat**: An individual conversation with the AI.
-- **Chat Group**: A folder/collection of related chats that share default contexts.
-- **Lens**: The currently active combination of contexts (what files the AI can see).
-
-### Design Principles
-
-1. **Zero friction for existing users** - Current behavior works unchanged until user opts into new features
-2. **Progressive disclosure** - Simple by default, power features discoverable
-3. **Context flows with work** - Switching chats switches context automatically
-4. **No mandatory organization** - Ungrouped chats and ad-hoc file selections always work
-
----
-
-## Data Model
-
-### Directory Structure
-~/.ziya/
-├── config.json                      # Global settings (theme, preferences)
-└── projects/
-    └── {project-id}/
         ├── project.json             # Project metadata
         ├── contexts/
         │   └── {context-id}.json    # Saved file selections
@@ -642,6 +1045,14 @@ Add built-in skills initialization
 
 Built-in skills appear automatically for new projects
 
+Add built-in skills initialization
+│   ├── skills.py         # Skill storage
+│   ├── skills.py         # Skill endpoints
+└── data/
+    └── built_in_skills.py  # Default skill definitions
+
+Built-in skills appear automatically for new projects
+
 Files to create:
 
 server/
@@ -676,6 +1087,22 @@ Files to modify:
 frontend/src/
 ├── context/
 │   └── ProjectContext.tsx    # NEW
+**Status: 🚧 IN PROGRESS**
+
+Core infrastructure complete, integration in progress:
+- ✅ ProjectContext provider implemented
+- ✅ ProjectSwitcher component created
+- ✅ API clients created
+- 🚧 Integration with existing components incomplete
+- ❌ activeSkillPrompts parameter causing crashes
+
+- [x] Create ProjectContext provider ✅
+- [x] Implement project API client functions ✅
+- [x] Build ProjectSwitcher component ✅
+- [x] Auto-create project for current working directory on first load ✅
+- [ ] Update App.tsx to wrap with ProjectProvider ⚠️ IN PROGRESS
+- [ ] Store/restore last active project ⚠️ TODO
+- [x] Handle project switching (clear and reload state) ✅
 ├── components/
 │   ├── App.tsx               # Add ProjectProvider, ProjectSwitcher
 │   └── ProjectSwitcher.tsx   # NEW
@@ -696,6 +1123,14 @@ Add "Save current selection" flow
 Implement token overlap calculation display
 Add context CRUD operations (create, rename, delete)
 Update FolderContext to track which files are from contexts vs ad-hoc
+Implement skill API client functions
+Add skills state to ProjectContext
+Build skill list UI within ContextsTab
+Add "New skill" creation flow
+Add skill CRUD operations (create, rename, delete)
+│   ├── SkillItem.tsx         # NEW - single skill in list
+│   ├── SkillCreateModal.tsx  # NEW - skill creation UI
+│   └── skillApi.ts           # NEW
 Implement skill API client functions
 Add skills state to ProjectContext
 Build skill list UI within ContextsTab
@@ -802,6 +1237,8 @@ One-click migration flow
 Map old conversations to default project
 Clean up IndexedDB after successful migration
 Add loading states for all async operations
+**Status: ⏸️ NOT STARTED**
+
 Implement optimistic updates where appropriate
 Add error handling and retry logic
 Handle offline state gracefully

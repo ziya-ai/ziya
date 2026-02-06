@@ -29,7 +29,7 @@ try:
 except ImportError:
     tiktoken = None  # Will be handled at usage time
 
-from fastapi import FastAPI, Request, HTTPException, APIRouter, routing
+from fastapi import FastAPI, Request, HTTPException, APIRouter, routing, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -90,6 +90,11 @@ from app.middleware.continuation import ContinuationMiddleware
 # PCAP analysis utilities
 from app.utils.pcap_analyzer import analyze_pcap_file, is_pcap_supported
 from app.utils.conversation_exporter import export_conversation_for_paste
+
+# Session management API routers
+from app.api import projects, contexts, skills, chats, tokens
+from app.utils.paths import get_ziya_home
+from app.utils.logging_utils import logger as app_logger
 
 # WebSocket support for real-time feedback
 from fastapi.websockets import WebSocket, WebSocketDisconnect
@@ -313,6 +318,10 @@ async def lifespan(app: FastAPI):
     CRITICAL: This must return quickly to allow the server to start accepting requests.
     All heavy initialization is deferred to background tasks.
     """
+    # Initialize Ziya home directory
+    ziya_home = get_ziya_home()
+    app_logger.info(f"Ziya home directory initialized at {ziya_home}")
+    
     # Startup - spawn background tasks for heavy initialization
     
     # MCP initialization - run in background to not block server startup
@@ -607,6 +616,8 @@ async def chat_endpoint(request: Request):
         question = body.get('question', '') or body.get('message', '')  # Check both question and message
         files = body.get('files', [])
         conversation_id = body.get('conversation_id')
+        system_prompt_addition = body.get('systemPromptAddition', '')
+        project_root = body.get('project_root')
         
         # Log if we received any messages with images
         messages_with_images = sum(1 for msg in messages if isinstance(msg, (list, tuple)) and len(msg) >= 3)
@@ -696,7 +707,9 @@ async def chat_endpoint(request: Request):
                 'files': files,  # LangChain expects files at top level
                 'config': {
                     'conversation_id': conversation_id,
-                    'files': files  # Also include in config for compatibility
+                    'files': files,
+                    'systemPromptAddition': system_prompt_addition,
+                    'project_root': project_root  # Pass project root for MCP tools
                 }
             }
             
@@ -852,6 +865,14 @@ app.include_router(mcp_registry_router)
 from app.routes.export_routes import router as export_router
 app.include_router(export_router)
 
+# Include session management API routes
+app.include_router(projects.router)
+app.include_router(contexts.router)
+app.include_router(skills.router)
+app.include_router(chats.router)
+app.include_router(tokens.router)
+app_logger.info("Session management API routes loaded")
+
 # Import and include model routes
 # Disabled duplicate routers - server.py already defines all these routes
 # The route modules were attempting to forward to @app decorated functions which doesn't work
@@ -869,6 +890,20 @@ app.include_router(export_router)
 
 # from app.routes.static_routes import router as static_router
 # app.include_router(static_router)
+
+# Include session management API routes
+app.include_router(projects.router)
+app.include_router(contexts.router)
+app.include_router(skills.router)
+app.include_router(chats.router)
+app.include_router(tokens.router)
+app_logger.info("Session management API routes loaded")
+
+# Initialize Ziya home directory
+@app.on_event("startup")
+async def init_ziya_home():
+    ziya_home = get_ziya_home()
+    app_logger.info(f"Ziya home directory initialized at {ziya_home}")
 
 # Import and include AST routes
 # AST routes already imported and included above
@@ -1087,6 +1122,15 @@ async def detect_and_execute_mcp_tools(full_response: str, processed_calls: Opti
             
             # Execute the tool (remove mcp_ prefix if present for internal lookup)
             internal_tool_name = tool_name[4:] if tool_name.startswith("mcp_") else tool_name
+            
+            # Inject workspace path from environment if available
+            # This allows workspace-scoped MCP servers to route to correct instance
+            workspace_path = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+            if workspace_path and os.path.isdir(workspace_path):
+                # Add as internal parameter for workspace routing
+                arguments["_workspace_path"] = workspace_path
+                logger.debug(f"Injected workspace path for {internal_tool_name}: {workspace_path}")
+            
             result = await mcp_manager.call_tool(internal_tool_name, arguments)
             
             logger.debug(f"🔍 MCP TOOL RESULT: tool_name='{internal_tool_name}', result_type={type(result)}, result={result}")
@@ -1498,6 +1542,7 @@ async def stream_chunks(body):
     
     files = body.get("config", {}).get("files", [])
     conversation_id = body.get("conversation_id")
+    project_root = body.get("config", {}).get("project_root")
     
     validation_hook = DiffValidationHook(
         enabled=ENABLE_DIFF_VALIDATION,
@@ -1512,6 +1557,11 @@ async def stream_chunks(body):
         if "config" in body and "files" in body["config"]:
             body["config"]["files"] = []  # Skip file context to avoid throttling
     
+        # Update environment for this request if project root is provided
+        if project_root and os.path.isdir(project_root):
+            os.environ["ZIYA_USER_CODEBASE_DIR"] = project_root
+            logger.info(f"🔄 PROJECT: Updated working directory to {project_root}")
+        
     # Restore 0.3.0 direct streaming behavior
     use_direct_streaming = True
     
@@ -1529,6 +1579,12 @@ async def stream_chunks(body):
         chat_history = body.get("chat_history", [])
         files = body.get("config", {}).get("files", [])
         conversation_id = body.get("conversation_id")
+        project_root = body.get("config", {}).get("project_root")
+        
+        # Update environment for this request if project root is provided
+        if project_root and os.path.isdir(project_root):
+            os.environ["ZIYA_USER_CODEBASE_DIR"] = project_root
+            logger.info(f"🔄 PROJECT: Updated working directory to {project_root}")
         
         logger.debug(f"🔍 DIRECT_STREAMING_DEBUG: question='{question}', chat_history={len(chat_history)}, files={len(files)}")
         
@@ -1621,13 +1677,6 @@ async def stream_chunks(body):
                                     accumulated_content += before_fence
                                 last_diff_start_line = current_lines
                             
-                                # Insert rewind marker BEFORE yielding the diff chunk
-                                rewind_marker = f"<span class=\"diff-rewind-marker\" data-marker=\"DIFF_START_MARKER: {diff_counter}\" style=\"display:none;\"></span>\n\n"
-                                yield f"data: {json.dumps({'content': rewind_marker})}\n\n"
-                                accumulated_content += rewind_marker
-                                logger.info(f"📍 REWIND_MARKER: Placed at line {current_lines} before diff #{diff_counter}")
-                                diff_counter += 1
-
                                 # Yield the fence and remaining content
                                 yield f"data: {json.dumps({'content': fence_and_after})}\n\n"
                                 accumulated_content += fence_and_after
@@ -4787,8 +4836,16 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
     from app.utils.directory_util import get_folder_structure, get_scan_progress
     from app.utils.directory_util import get_basic_folder_structure
     
+    # Normalize directory path for consistent cache keys
+    directory = os.path.abspath(directory)
+    
+    # Get or create cache entry for this directory
+    if directory not in _folder_cache:
+        _folder_cache[directory] = {'timestamp': 0, 'data': None}
+    
+    cache_entry = _folder_cache[directory]
     current_time = time.time()
-    cache_age = current_time - _folder_cache['timestamp']
+    cache_age = current_time - cache_entry['timestamp']
 
     # Check if scan is already in progress
     scan_status = get_scan_progress()
@@ -4800,13 +4857,13 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
         return {"_scanning": True, "children": {}}
     
     # Return cached results immediately if available
-    if _folder_cache['data'] is not None:
+    if cache_entry['data'] is not None:
         # Add staleness indicator if cache is very old (> 1 hour)
         if cache_age > 3600:
             logger.debug(f"Returning stale cached folder structure (age: {cache_age:.1f}s)")
-            return {**_folder_cache['data'], "_stale": True}
+            return {**cache_entry['data'], "_stale": True}
         logger.debug(f"Returning cached folder structure (age: {cache_age:.1f}s)")
-        return _folder_cache['data']
+        return cache_entry['data']
     
     # No cache available - start background scan and return immediately
     global _background_scan_thread
@@ -4825,8 +4882,8 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
             try:
                 result = get_folder_structure(directory, ignored_patterns, max_depth)
                 _scan_progress["last_update"] = time.time()  # Mark progress update
-                _folder_cache['data'] = result
-                _folder_cache['timestamp'] = time.time()
+                cache_entry['data'] = result
+                cache_entry['timestamp'] = time.time()
                 scan_duration = time.time() - scan_start
                 logger.info(f"📂 Background folder scan completed in {scan_duration:.1f}s")
             except Exception as e:
@@ -4847,7 +4904,7 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
     return {"_scanning": True, "children": {}}
 
 @app.get('/api/folders')
-async def api_get_folders(refresh: bool = False):
+async def api_get_folders(refresh: bool = False, project_path: str = Query(None)):
     """Get folder structure for API compatibility with improved error handling."""
     
     # DIAGNOSTIC: Log what we're about to return
@@ -4900,7 +4957,11 @@ async def api_get_folders(refresh: bool = False):
     
     try:
         # Get the user's codebase directory
-        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        if project_path:
+            user_codebase_dir = os.path.abspath(project_path)
+            logger.info(f"Using provided project_path: {user_codebase_dir}")
+        else:
+            user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
         if not user_codebase_dir:
             logger.warning("ZIYA_USER_CODEBASE_DIR environment variable not set")
             user_codebase_dir = os.getcwd()
@@ -5383,6 +5444,7 @@ class ApplyChangesRequest(BaseModel):
     diff: str
     filePath: str = Field(..., description="Path to the file being modified")
     requestId: Optional[str] = Field(None, description="Unique ID to track this specific diff application")
+    projectRoot: Optional[str] = Field(None, description="Root directory for the project (client-specific)")
     elementId: Optional[str] = None
     buttonInstanceId: Optional[str] = None
 
@@ -6384,12 +6446,19 @@ async def apply_changes(request: Request):
         logger.info(validated.diff[:100])
         logger.info(f"Full diff content: \n{validated.diff}")
 
-        # --- SUGGESTION: Add secure path validation ---
-        user_codebase_dir = os.path.abspath(os.environ.get("ZIYA_USER_CODEBASE_DIR"))
-        if not user_codebase_dir:
-            raise ValueError("ZIYA_USER_CODEBASE_DIR environment variable is not set")
+        # Use client-provided projectRoot if available, otherwise fall back to environment variable
+        if validated.projectRoot:
+            user_codebase_dir = os.path.abspath(validated.projectRoot)
+            logger.info(f"Using client-provided project root: {user_codebase_dir}")
+        else:
+            env_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+            if not env_codebase_dir:
+                raise ValueError("ZIYA_USER_CODEBASE_DIR environment variable is not set and no projectRoot provided")
+            user_codebase_dir = os.path.abspath(env_codebase_dir)
+            logger.info(f"Using environment variable project root: {user_codebase_dir}")
         
-        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+        if not os.path.isdir(user_codebase_dir):
+            raise ValueError(f"Project root directory does not exist: {user_codebase_dir}")
         
         # Prioritize extracting the file path from the diff content itself
         extracted_path = extract_target_file_from_diff(validated.diff)
@@ -6527,13 +6596,21 @@ async def unapply_changes(request: Request):
         body = await request.json()
         diff = body.get('diff', '')
         file_path_from_request = body.get('filePath', '')
+        project_root_from_request = body.get('projectRoot', '')
         request_id = body.get('requestId', str(uuid.uuid4()))
         
         logger.info(f"Received unapply-changes request with ID: {request_id}")
         
-        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
-        if not user_codebase_dir:
-            raise ValueError("ZIYA_USER_CODEBASE_DIR environment variable is not set")
+        # Use client-provided projectRoot if available, otherwise fall back to environment variable
+        if project_root_from_request:
+            user_codebase_dir = os.path.abspath(project_root_from_request)
+            logger.info(f"Using client-provided project root for unapply: {user_codebase_dir}")
+        else:
+            user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+            if not user_codebase_dir:
+                raise ValueError("ZIYA_USER_CODEBASE_DIR environment variable is not set and no projectRoot provided")
+            user_codebase_dir = os.path.abspath(user_codebase_dir)
+            logger.info(f"Using environment variable project root for unapply: {user_codebase_dir}")
         
         # Extract file path from diff or use provided path
         extracted_path = extract_target_file_from_diff(diff)

@@ -19,6 +19,7 @@ import { FolderProvider } from "./context/FolderContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { ConfigProvider } from './context/ConfigContext';
 import { QuestionProvider } from "./context/QuestionContext";
+import { ProjectProvider } from './context/ProjectContext';
 
 // hide unhandled promise rejections from making console spam
 window.addEventListener('unhandledrejection', (event) => {
@@ -45,9 +46,10 @@ root.render(
     // <React.StrictMode>
     <ConfigProvider>
         <ThemeProvider>
-            <ChatProvider>
-                <FolderProvider>
-                    <QuestionProvider>
+            <ProjectProvider>
+                <ChatProvider>
+                    <FolderProvider>
+                        <QuestionProvider>
                         <BrowserRouter>
                             <Routes>
                                 <Route path="/" element={<App />} />
@@ -61,9 +63,10 @@ root.render(
                                 />
                             </Routes>
                         </BrowserRouter>
-                    </QuestionProvider>
-                </FolderProvider>
-            </ChatProvider>
+                        </QuestionProvider>
+                    </FolderProvider>
+                </ChatProvider>
+            </ProjectProvider>
         </ThemeProvider>
     </ConfigProvider>
     // </React.StrictMode>

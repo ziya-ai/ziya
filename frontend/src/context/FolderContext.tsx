@@ -463,7 +463,15 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     const channel = new MessageChannel();
     channel.port1.onmessage = async () => {
       try {
-        const response = await fetch('/api/folders');
+        // Build URL with project_path parameter if we have a current project
+        let url = '/api/folders';
+        const projectPath = (window as any).__ZIYA_CURRENT_PROJECT_PATH__;
+        if (projectPath) {
+          const params = new URLSearchParams({ project_path: projectPath });
+          url = `/api/folders?${params.toString()}`;
+        }
+        
+        const response = await fetch(url);
         if (!response.ok) {
           throw new Error(`Failed to fetch folders: ${response.status}`);
         }
@@ -608,6 +616,28 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     };
   }, [isScanning, cancelScan]);
 
+  // Listen for project switch - clear selection and refresh
+  useEffect(() => {
+    const handleProjectSwitch = (event: CustomEvent) => {
+      const { projectPath } = event.detail;
+      console.log('📂 PROJECT_SWITCH: Clearing selection and refreshing for:', projectPath);
+      
+      // Clear all selections
+      setCheckedKeys([]);
+      setExpandedKeys([]);
+      
+      // Clear localStorage to prevent stale selections
+      localStorage.removeItem('ZIYA_CHECKED_FOLDERS');
+      localStorage.removeItem('ZIYA_EXPANDED_FOLDERS');
+      
+      // Trigger refresh with new project path
+      fetchFolders();
+    };
+    
+    window.addEventListener('projectSwitched', handleProjectSwitch as EventListener);
+    return () => window.removeEventListener('projectSwitched', handleProjectSwitch as EventListener);
+  }, [fetchFolders]);
+
   // Listen for context sync events from backend
   useEffect(() => {
     const handleContextSync = (event: CustomEvent) => {
@@ -633,6 +663,42 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     
     window.addEventListener('syncContextFromBackend', handleContextSync as EventListener);
     return () => window.removeEventListener('syncContextFromBackend', handleContextSync as EventListener);
+  }, []);
+
+  // Listen for context activation/deactivation from ProjectContext
+  useEffect(() => {
+    const handleAddFiles = (event: CustomEvent) => {
+      const { files } = event.detail;
+      if (!files || files.length === 0) return;
+      
+      console.log('📂 CONTEXT_ACTIVATION: Adding files to selection:', files.length);
+      
+      setCheckedKeys(prev => {
+        const newKeys = new Set(prev);
+        files.forEach((file: string) => newKeys.add(file));
+        return Array.from(newKeys);
+      });
+    };
+    
+    const handleRemoveFiles = (event: CustomEvent) => {
+      const { files } = event.detail;
+      if (!files || files.length === 0) return;
+      
+      console.log('📂 CONTEXT_DEACTIVATION: Removing files from selection:', files.length);
+      
+      setCheckedKeys(prev => {
+        const filesSet = new Set(files);
+        return prev.filter(key => !filesSet.has(String(key)));
+      });
+    };
+    
+    window.addEventListener('addFilesToSelection', handleAddFiles as EventListener);
+    window.addEventListener('removeFilesFromSelection', handleRemoveFiles as EventListener);
+    
+    return () => {
+      window.removeEventListener('addFilesToSelection', handleAddFiles as EventListener);
+      window.removeEventListener('removeFilesFromSelection', handleRemoveFiles as EventListener);
+    };
   }, []);
 
   // Function to programmatically add files to context

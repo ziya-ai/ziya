@@ -100,6 +100,8 @@ def setup_env(args):
     # Handle debug flag first, before any other setup
     if getattr(args, 'debug', False):
         os.environ["ZIYA_LOG_LEVEL"] = "DEBUG"
+        # CRITICAL: Also disable chat mode suppression for debug
+        os.environ["ZIYA_MODE"] = "debug"
         print("🐛 Debug logging enabled", file=sys.stderr)
     
     # CRITICAL: Force reconfigure all existing loggers to respect chat mode
@@ -834,7 +836,7 @@ class CLI:
             try:
                 manager = get_mcp_manager()
                 if manager:
-                    result = await manager.execute_tool(tool_name, arguments)
+                    result = await manager.call_tool(tool_name, arguments)
                     return (tool_block, tool_name, str(result))
                 else:
                     return (tool_block, tool_name, "Error: MCP manager not available")
@@ -1175,22 +1177,21 @@ Current Settings:
             radio_values.append((model_name, label_text))
         
         # Create radio list
-        radio_list = RadioList(values=radio_values, default=current_model if current_model in available_models else sorted_models[0])
+        default_model = current_model if current_model in available_models else sorted_models[0]
+        radio_list = RadioList(values=radio_values, default=default_model)
         
-        # Create key bindings
+        # Create application-level key bindings
         kb = KeyBindings()
         
         configure_requested = {'value': False}
-        
-        @kb.add('enter')
-        def _(event):
-            event.app.exit(result=radio_list.current_value)
         
         @kb.add('right')
         def _(event):
             # Mark that user wants to configure settings
             configure_requested['value'] = True
-            event.app.exit(result=radio_list.current_value)
+            # Get the currently highlighted value (not the space-marked one)
+            highlighted_value = radio_list.values[radio_list._selected_index][0]
+            event.app.exit(result=highlighted_value)
         
         @kb.add('escape')
         @kb.add('c-c')
@@ -1409,9 +1410,38 @@ Current Settings:
             event.app.exit(result=radio_list.current_value)
         
         @kb.add('escape')
-        @kb.add('c-c')
         def _(event):
             event.app.exit(result=None)
+        
+        # Override Enter to make it directly select the highlighted item
+        # RadioList normally requires: space to mark, then enter to confirm
+        # We want: enter to immediately select highlighted item
+        custom_kb = KeyBindings()
+        
+        # Override navigation keys to auto-select as we move
+        @custom_kb.add('up')
+        def _(event):
+            # Move up and auto-select
+            radio_list._selected_index = max(0, radio_list._selected_index - 1)
+            radio_list.current_value = radio_list.values[radio_list._selected_index][0]
+        
+        @custom_kb.add('down')
+        def _(event):
+            # Move down and auto-select
+            radio_list._selected_index = min(len(radio_list.values) - 1, radio_list._selected_index + 1)
+            radio_list.current_value = radio_list.values[radio_list._selected_index][0]
+        
+        @custom_kb.add('enter')
+        def _(event):
+            # Get the currently highlighted value (not the space-marked one)
+            # RadioList stores this in _selected_index
+            highlighted_value = radio_list.values[radio_list._selected_index][0]
+            radio_list.current_value = highlighted_value
+            event.app.exit(result=highlighted_value)
+        
+        from prompt_toolkit.key_binding import merge_key_bindings
+        # Put custom_kb LAST so our Enter handler overrides RadioList's default
+        radio_list.control.key_bindings = merge_key_bindings([radio_list.control.key_bindings, custom_kb])
         
         # Create application layout
         layout = Layout(HSplit([

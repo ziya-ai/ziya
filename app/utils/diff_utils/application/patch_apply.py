@@ -983,9 +983,13 @@ def apply_diff_with_difflib_hybrid_forced(
                 new_lines_content = []
                 context_idx = 0
                 has_indent_mismatch = False
+                indent_adjustment = 0  # Adjustment for added lines when they differ from context
                 
                 # First pass: check if any context line has an indentation mismatch
+                # Also track the last context line's indentation for added line adjustment
                 temp_context_idx = 0
+                last_context_diff_indent = None
+                first_added_indent = None
                 for i, (line, is_add) in enumerate(zip(h['new_lines'], new_lines_is_addition)):
                     if not is_add and temp_context_idx < len(context_file_indices):
                         file_idx = context_file_indices[temp_context_idx]
@@ -994,15 +998,40 @@ def apply_diff_with_difflib_hybrid_forced(
                             if normalize_line_for_comparison(line) == normalize_line_for_comparison(file_line):
                                 diff_indent = len(line) - len(line.lstrip())
                                 file_indent = len(file_line) - len(file_line.lstrip())
-                                if diff_indent != file_indent:
-                                    has_indent_mismatch = True
-                                    break
+                                if line.strip():
+                                    last_context_diff_indent = diff_indent
+                                    # Only check for mismatch on non-empty lines
+                                    if diff_indent != file_indent:
+                                        has_indent_mismatch = True
+                                        break
                         temp_context_idx += 1
+                    elif is_add and first_added_indent is None and line.strip():
+                        first_added_indent = len(line) - len(line.lstrip())
+                        # Stop after finding first added line - we have what we need
+                        break
+                
+                # If no context mismatch but added lines differ from context, calculate adjustment
+                if not has_indent_mismatch and last_context_diff_indent is not None and first_added_indent is not None:
+                    if first_added_indent != last_context_diff_indent:
+                        # Only adjust if difference is exactly 1 space - likely a typo
+                        diff = last_context_diff_indent - first_added_indent
+                        if abs(diff) == 1:
+                            indent_adjustment = diff
                 
                 for i, (line, is_add) in enumerate(zip(h['new_lines'], new_lines_is_addition)):
                     if is_add:
-                        # Added line - strip trailing whitespace only if we're fixing indentation
-                        if has_indent_mismatch and line.strip():
+                        # Added line - adjust indentation if needed
+                        if indent_adjustment != 0 and line.strip():
+                            current_indent = len(line) - len(line.lstrip())
+                            # Only adjust if the line's indent matches the "wrong" pattern
+                            # (i.e., it's at or relative to first_added_indent)
+                            if first_added_indent is not None and current_indent >= first_added_indent:
+                                new_indent = max(0, current_indent + indent_adjustment)
+                                new_lines_content.append(' ' * new_indent + line.strip())
+                            else:
+                                # Line already has correct indentation, don't adjust
+                                new_lines_content.append(line)
+                        elif has_indent_mismatch and line.strip():
                             new_lines_content.append(line.rstrip())
                         else:
                             new_lines_content.append(line)

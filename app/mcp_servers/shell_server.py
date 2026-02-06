@@ -396,13 +396,21 @@ class ShellServer:
                     }
                 
                 try:
+                    # Use environment variable which is updated per-request in server.py
+                    # This allows respecting project switches without server restart
+                    cwd = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+                    
                     print(f"Executing command: {command}", file=sys.stderr)
+                    if cwd and os.path.isdir(cwd):
+                        print(f"Working directory: {cwd}", file=sys.stderr)
+                    
                     result = subprocess.run(
                         command,
                         shell=True,
                         capture_output=True,
                         text=True,
-                        timeout=timeout
+                        timeout=timeout,
+                        cwd=cwd if cwd and os.path.isdir(cwd) else None
                     )
                     
                     # Format output to be more shell-like

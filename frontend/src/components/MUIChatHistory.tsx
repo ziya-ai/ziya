@@ -38,6 +38,7 @@ import ArrowRightIcon from '@mui/icons-material/ArrowRight';
 import SyncIcon from '@mui/icons-material/Sync';
 import SearchIcon from '@mui/icons-material/Search';
 import CloseIcon from '@mui/icons-material/Close';
+import AddCommentIcon from '@mui/icons-material/AddComment';
 
 // Ant Design Icons for the menu items
 import {
@@ -2262,9 +2263,9 @@ const MUIChatHistory = () => {
     <>
       <Box ref={chatHistoryRef} sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
         {/* Tree View with integrated action buttons */}
-        
+
         {/* Search Input */}
-        <Box sx={{ p: 2, borderBottom: isDarkMode ? '1px solid #303030' : '1px solid #e8e8e8' }}>
+        <Box sx={{ p: 2, borderBottom: isDarkMode ? '1px solid #303030' : '1px solid #e8e8e8', display: 'flex', gap: 1, alignItems: 'center' }}>
           <TextField
             fullWidth
             size="small"
@@ -2287,7 +2288,41 @@ const MUIChatHistory = () => {
                 </IconButton>
               )
             }}
+            sx={{ flex: 1, minWidth: 0 }}
           />
+          <Tooltip title="New folder">
+            <IconButton
+              size="small"
+              onClick={async () => {
+                await createFolder('New Folder', currentFolderId);
+                message.success('Folder created');
+              }}
+              sx={{
+                color: '#1890ff',
+                border: '1px solid #1890ff',
+                width: 32,
+                height: 32,
+                flexShrink: 0
+              }}
+            >
+              <CreateNewFolderIcon sx={{ fontSize: 18 }} />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="New chat">
+            <IconButton
+              size="small"
+              onClick={() => startNewChat(currentFolderId)}
+              sx={{
+                color: '#1890ff',
+                border: '1px solid #1890ff',
+                width: 32,
+                height: 32,
+                flexShrink: 0
+              }}
+            >
+              <AddCommentIcon sx={{ fontSize: 18 }} />
+            </IconButton>
+          </Tooltip>
         </Box>
 
         {/* Search Results or Tree View */}
@@ -2378,46 +2413,46 @@ const MUIChatHistory = () => {
             </Typography>
           </Box>
         ) : (
-        <Box sx={{ flexGrow: 1, overflow: 'auto', pt: 1 }}>
-          {(() => {
-            const treeViewStyles = {
-              height: '100%',
-              overflowY: 'auto' as const,
-              '& .MuiTreeItem-root': {
-                '&.Mui-selected > .MuiTreeItem-content': {
-                  bgcolor: isDarkMode ? '#177ddc' : '#e6f7ff',
-                  color: isDarkMode ? '#ffffff' : 'inherit',
+          <Box sx={{ flexGrow: 1, overflow: 'auto', pt: 1 }}>
+            {(() => {
+              const treeViewStyles = {
+                height: '100%',
+                overflowY: 'auto' as const,
+                '& .MuiTreeItem-root': {
+                  '&.Mui-selected > .MuiTreeItem-content': {
+                    bgcolor: isDarkMode ? '#177ddc' : '#e6f7ff',
+                    color: isDarkMode ? '#ffffff' : 'inherit',
+                  },
+                  '&.drag-over > .MuiTreeItem-content': {
+                    backgroundColor: isDarkMode ? 'rgba(24, 144, 255, 0.2)' : 'rgba(24, 144, 255, 0.1)',
+                    border: isDarkMode ? '1px dashed #177ddc' : '1px dashed #1890ff'
+                  }
                 },
-                '&.drag-over > .MuiTreeItem-content': {
-                  backgroundColor: isDarkMode ? 'rgba(24, 144, 255, 0.2)' : 'rgba(24, 144, 255, 0.1)',
-                  border: isDarkMode ? '1px dashed #177ddc' : '1px dashed #1890ff'
+                '& .MuiTreeItem-content': {
+                  padding: '0px 8px',
+                  minHeight: '20px'
                 }
-              },
-              '& .MuiTreeItem-content': {
-                padding: '0px 8px',
-                minHeight: '20px'
-              }
-            };
+              };
 
-            return (
-              <TreeView
-                aria-label="chat history"
-                sx={treeViewStyles}
-                defaultCollapseIcon={<ArrowDropDownIcon />}
-                defaultExpandIcon={<ArrowRightIcon />}
-                defaultEndIcon={<div style={{ width: 24 }} />}
-                expanded={expandedNodes.map(String)}
-                selected={currentConversationId ? 'conv-' + currentConversationId : currentFolderId || ''}
-                onNodeToggle={handleNodeToggle}
-                onNodeSelect={handleTreeNodeSelect}
-                disableSelection={false}
-                className="chat-history-tree"
-              >
-                {renderTree(treeData)}
-              </TreeView>
-            );
-          })()}
-        </Box>
+              return (
+                <TreeView
+                  aria-label="chat history"
+                  sx={treeViewStyles}
+                  defaultCollapseIcon={<ArrowDropDownIcon />}
+                  defaultExpandIcon={<ArrowRightIcon />}
+                  defaultEndIcon={<div style={{ width: 24 }} />}
+                  expanded={expandedNodes.map(String)}
+                  selected={currentConversationId ? 'conv-' + currentConversationId : currentFolderId || ''}
+                  onNodeToggle={handleNodeToggle}
+                  onNodeSelect={handleTreeNodeSelect}
+                  disableSelection={false}
+                  className="chat-history-tree"
+                >
+                  {renderTree(treeData)}
+                </TreeView>
+              );
+            })()}
+          </Box>
         )}
 
         {/* Export/Import buttons */}
@@ -2464,9 +2499,9 @@ const MUIChatHistory = () => {
       {exportConversationId && (
         <ExportConversationModal visible={showExportModal} onClose={() => { setShowExportModal(false); setExportConversationId(null); }} />
       )}
-      
+
       {/* Health Debug Modal */}
-      <ConversationHealthDebugModal 
+      <ConversationHealthDebugModal
         visible={showHealthDebug}
         onClose={() => setShowHealthDebug(false)}
       />

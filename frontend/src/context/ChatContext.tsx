@@ -6,6 +6,7 @@ import { detectIncompleteResponse } from '../utils/responseUtils';
 import { message } from 'antd';
 import { useTheme } from './ThemeContext';
 import { useConfig } from './ConfigContext';
+import { useProject } from './ProjectContext';
 
 export type ProcessingState = 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'awaiting_tool_response' | 'tool_throttling' | 'tool_limit_reached' | 'error';
 
@@ -66,6 +67,8 @@ interface ChatContext {
     setEditingMessageIndex: (index: number | null) => void;
     throttlingRecoveryData: Map<string, { toolResults?: any[]; partialContent?: string }>;
     setThrottlingRecoveryData: (data: Map<string, any>) => void;
+    moveChatToGroup: (chatId: string, groupId: string | null) => Promise<void>;
+    setChatContexts: (chatId: string, contextIds: string[], skillIds: string[], additionalFiles: string[], additionalPrompt: string | null) => Promise<void>;
 }
 
 const chatContext = createContext<ChatContext | undefined>(undefined);
@@ -78,6 +81,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const renderStart = useRef(performance.now());
     const { isDarkMode } = useTheme();
     const { isEphemeralMode } = useConfig();
+    const { currentProject } = useProject();
     const renderCount = useRef(0);
     const [isStreaming, setIsStreaming] = useState(false);
     const [streamedContentMap, setStreamedContentMap] = useState(() => new Map<string, string>());
@@ -96,23 +100,75 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const currentConversationRef = useRef<string>(currentConversationId);
     const [currentMessages, setCurrentMessages] = useState<Message[]>([]);
 
-    // Restore conversation ID from localStorage ONLY if not in ephemeral mode
-    // This must run AFTER config is loaded to check ephemeral mode
+    // Listen for project switch - reload project-specific conversations
     useEffect(() => {
-        if (!isEphemeralMode) {
+        const handleProjectSwitch = async (event: CustomEvent) => {
+            const { projectId, projectPath, projectName } = event.detail;
+            console.log('💬 PROJECT_SWITCH: Loading conversations for project:', projectName, projectId);
+            
             try {
-                const savedCurrentId = localStorage.getItem('ZIYA_CURRENT_CONVERSATION_ID');
-                if (savedCurrentId && savedCurrentId !== currentConversationId) {
-                    console.log('🔄 RESTORED: Last active conversation ID:', savedCurrentId);
-                    setCurrentConversationId(savedCurrentId);
+                // First, check if we need to migrate conversations without projectId
+                let allConversations = await db.getConversations();
+                const needsMigration = allConversations.some(c => !c.projectId);
+                
+                if (needsMigration) {
+                    console.log('🔄 MIGRATION: Assigning conversations without projectId to current project');
+                    allConversations = allConversations.map(c => {
+                        if (!c.projectId) {
+                            return { ...c, projectId: currentProject?.id, _version: Date.now() };
+                        }
+                        return c;
+                    });
+                    await db.saveConversations(allConversations);
+                    console.log('✅ MIGRATION: All conversations now have projectId');
                 }
-            } catch (e) {
-                console.warn('Failed to restore current conversation ID:', e);
+                
+                // Load ALL conversations and folders from database
+                const allFolders = await db.getFolders();
+                
+                // Filter by projectId - STRICT match only (no backward compat)
+                const projectConversations = allConversations.filter(c => c.projectId === projectId);
+                const projectFolders = allFolders.filter(f => f.projectId === projectId);
+                
+                console.log(`📊 PROJECT_SWITCH: Found ${projectConversations.length} conversations, ${projectFolders.length} folders for project ${projectName}`);
+                
+                // Update state with filtered data
+                setConversations(projectConversations);
+                setFolders(projectFolders);
+                
+                // Set current conversation
+                if (projectConversations.length > 0) {
+                    // Load most recent conversation for this project
+                    const mostRecent = projectConversations.reduce((a, b) => 
+                        (b.lastAccessedAt || 0) > (a.lastAccessedAt || 0) ? b : a
+                    );
+                    setCurrentConversationId(mostRecent.id);
+                    setCurrentMessages(mostRecent.messages);
+                    console.log(`✅ PROJECT_SWITCH: Loaded conversation "${mostRecent.title}"`);
+                } else {
+                    // No conversations for this project - create new one
+                    const newConversationId = uuidv4();
+                    setCurrentConversationId(newConversationId);
+                    setCurrentMessages([]);
+                    console.log('✅ PROJECT_SWITCH: No conversations found, created new one');
+                }
+            } catch (error) {
+                console.error('❌ PROJECT_SWITCH: Failed to load project data:', error);
+                // Fallback: create fresh conversation
+                const newConversationId = uuidv4();
+                setCurrentConversationId(newConversationId);
+                setCurrentMessages([]);
             }
-        }
-        // Only run once after config loads
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isEphemeralMode]);
+            
+            // Clear streaming state
+            setStreamedContentMap(new Map());
+            setReasoningContentMap(new Map());
+            setProcessingStates(new Map());
+        };
+        
+        window.addEventListener('projectSwitched', handleProjectSwitch as EventListener);
+        return () => window.removeEventListener('projectSwitched', handleProjectSwitch as EventListener);
+    }, [currentProject?.id]);
 
     // CRITICAL: Persist currentConversationId to localStorage whenever it changes
     useEffect(() => {
@@ -158,6 +214,32 @@ export function ChatProvider({ children }: ChatProviderProps) {
     });
     const [isInitialized, setIsInitialized] = useState(false);
     const [userHasScrolled, setUserHasScrolled] = useState(false);
+    const conversationIdRestored = useRef(false);
+
+    // Restore conversation ID from localStorage ONLY if not in ephemeral mode
+    // This must run AFTER config is loaded AND after conversations are initialized
+    // CRITICAL: Only run ONCE to prevent overwriting user's current conversation
+    useEffect(() => {
+        if (!isEphemeralMode && isInitialized && conversations.length > 0 && !conversationIdRestored.current) {
+            conversationIdRestored.current = true; // Mark as restored to prevent re-running
+            try {
+                const savedCurrentId = localStorage.getItem('ZIYA_CURRENT_CONVERSATION_ID');
+                if (savedCurrentId && savedCurrentId !== currentConversationId) {
+                    // CRITICAL: Only restore if the conversation actually exists
+                    const conversationExists = conversations.some(c => c.id === savedCurrentId);
+                    if (conversationExists) {
+                        console.log('🔄 RESTORED: Last active conversation ID:', savedCurrentId);
+                        setCurrentConversationId(savedCurrentId);
+                    } else {
+                        console.warn('⚠️ Saved conversation ID not found in loaded conversations:', savedCurrentId);
+                    }
+                }
+            } catch (e) {
+                console.warn('Failed to restore current conversation ID:', e);
+            }
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isEphemeralMode, isInitialized, conversations.length]);
 
     // Persist top-down mode preference
     useEffect(() => {
@@ -445,7 +527,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         });
 
         // VALIDATION: Ensure all conversations have explicit isActive values
-        const validatedConversations = validConversations.map(conv => ({
+        let validatedConversations = validConversations.map(conv => ({
             ...conv,
             isActive: conv.isActive !== false ? true : false, // Normalize to explicit boolean
             _version: conv._version || Date.now() // Ensure version is set
@@ -459,6 +541,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // Pre-save validation
             const activeCount = validatedConversations.filter(c => c.isActive).length;
             console.debug(`Saving ${validatedConversations.length} conversations (${activeCount} active)`);
+
+            // SAFETY CHECK: Never save filtered conversations list
+            // If we're in a project-filtered view, we must merge with other projects' conversations
+            if (currentProject?.id) {
+                const allDbConversations = await db.getConversations();
+                const otherProjectConversations = allDbConversations.filter(c => c.projectId !== currentProject.id);
+                validatedConversations = [...validatedConversations, ...otherProjectConversations];
+                console.log(`💾 SAVE: Merged ${otherProjectConversations.length} conversations from other projects`);
+            }
 
             // Save all conversations - but don't throw if it fails
             try {
@@ -623,8 +714,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
     }, []);
 
     const addMessageToConversation = useCallback((message: Message, targetConversationId: string, isNonCurrentConversation?: boolean) => {
-        const conversationId = targetConversationId || currentConversationId;
-        if (!conversationId) return;
+        // CRITICAL: Always use targetConversationId - never fall back to currentConversationId
+        // This prevents responses from being routed to the wrong conversation when user switches mid-stream
+        const conversationId = targetConversationId;
+        if (!conversationId) {
+            console.error('❌ addMessageToConversation called without targetConversationId');
+            return;
+        }
 
         // If adding message to non-current conversation, don't trigger any scroll
         if (conversationId !== currentConversationId) {
@@ -646,13 +742,19 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setConversations(prevConversations => {
             const existingConversation = prevConversations.find(c => c.id === conversationId);
             const isFirstMessage = existingConversation?.messages.length === 0;
+            
+            // CRITICAL FIX: Determine if this is a non-current conversation dynamically
+            // Don't trust the caller's isNonCurrentConversation - compute it from current state
+            // This handles concurrent conversations and user switching mid-stream
+            const actuallyNonCurrent = conversationId !== currentConversationId;
+            
             console.log('Message processing:', {
                 messageRole: message.role,
                 targetConversationId: conversationId,
                 currentConversationId,
-                isNonCurrentConversation
+                isNonCurrentConversation: actuallyNonCurrent
             });
-            const shouldMarkUnread = message.role === 'assistant' && isNonCurrentConversation;
+            const shouldMarkUnread = message.role === 'assistant' && actuallyNonCurrent;
             console.log('Message add check:', {
                 willMarkUnread: shouldMarkUnread,
                 reason: shouldMarkUnread ? 'AI message to non-current conversation' : 'Not marking unread'
@@ -819,6 +921,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 const newConversation: Conversation = {
                     id: newId,
                     title: 'New Conversation',
+                    projectId: currentProject?.id,
                     messages: [],
                     folderId: targetFolderId,
                     lastAccessedAt: Date.now(),
@@ -916,12 +1019,19 @@ export function ChatProvider({ children }: ChatProviderProps) {
         try {
             console.log('🔄 RECOVERY: Attempting database recovery');
 
-            // Get current state from both memory and database
-            const memoryConversations = conversations;
+            // CRITICAL FIX: Get ALL conversations from database, not just current project's filtered state
+            // The 'conversations' state is filtered by project, but the database has ALL projects
             const dbConversations = await db.getConversations();
+            
+            // For recovery purposes, we should compare the FULL database with itself
+            // Memory state is project-filtered and should NOT be used for recovery
+            // If we used the filtered state, we'd delete other projects' conversations!
+            console.log('🔄 RECOVERY: Using database as source of truth, not filtered memory state');
+            console.log(`📊 RECOVERY: Current project has ${conversations.length} conversations (filtered view)`);
+            console.log(`📊 RECOVERY: Database has ${dbConversations.length} total conversations (all projects)`);
 
-            // If counts differ significantly, attempt to sync
-            const memoryActive = memoryConversations.filter(c => c.isActive !== false).length;
+            // Recovery should not use filtered memory state - skip recovery during project view
+            const memoryActive = conversations.filter(c => c.isActive !== false).length;
             const dbActive = dbConversations.filter(c => c.isActive !== false).length;
 
             // Only recover if there's a significant difference AND we can identify the cause
@@ -988,10 +1098,16 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
                     console.log('✅ RECOVERY: Memory synced from database');
                 } else {
-                    // Small difference - trust memory and sync to DB
-                    console.log(`🔄 RECOVERY: Memory has more conversations (${memoryActive} vs ${dbActive}), syncing DB to memory`);
-                    await db.saveConversations(memoryConversations);
-                    console.log('✅ RECOVERY: Database updated from memory');
+                    // CRITICAL FIX: Never trust filtered memory state for saving
+                    // Memory state is filtered by current project, saving it would delete other projects!
+                    console.warn(`⚠️ RECOVERY BLOCKED: Memory state is project-filtered (${memoryActive} conversations)`);
+                    console.warn(`⚠️ RECOVERY BLOCKED: Saving would delete ${dbActive - memoryActive} conversations from other projects`);
+                    console.log('🔄 RECOVERY: Reloading memory from database instead');
+                    
+                    // Reload current project's conversations from database
+                    const projectConversations = dbConversations.filter(c => c.projectId === currentProject?.id);
+                    setConversations(projectConversations);
+                    console.log('✅ RECOVERY: Memory reloaded from database (project-filtered)');
                 }
                 return;
             }
@@ -999,8 +1115,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // If DB has MORE conversations, merge carefully
             if (dbActive > memoryActive && difference > 2) {
                 console.log(`🔄 RECOVERY: Syncing conversation states (memory: ${memoryActive}, db: ${dbActive})`);
-                const merged = mergeConversationsForHealing(memoryConversations, dbConversations);
-                await db.saveConversations(merged);
+                
+                // CRITICAL: Only merge conversations for the CURRENT project
+                // Never use filtered memory state to overwrite the entire database
+                console.log('🔄 RECOVERY: Trusting database, reloading filtered view');
+                const projectConversations = dbConversations.filter(c => c.projectId === currentProject?.id);
+                setConversations(projectConversations);
                 console.log('✅ RECOVERY: Database sync completed');
                 consecutiveRecoveries.current = 0; // Reset on successful recovery
             } else {
@@ -1166,6 +1286,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         const newFolder: ConversationFolder = {
             id: uuidv4(),
             name,
+            projectId: currentProject?.id,
             parentId: parentId || null,
             useGlobalContext: true,
             useGlobalModel: true,
@@ -1975,16 +2096,37 @@ export function ChatProvider({ children }: ChatProviderProps) {
     // This ensures folder loading doesn't block conversation loading
     useEffect(() => {
         if (!isInitialized) return;
-        // Load folders independently of initialization state
-        // This ensures folder loading doesn't block conversation loading
+        
+        const projectId = currentProject?.id;
+        
         const loadFoldersIndependently = async () => {
             try {
                 console.log("Loading folders from database...");
                 // Add a small delay to ensure conversations are loaded first
                 await new Promise(resolve => setTimeout(resolve, 100));
-                const folders = await db.getFolders();
-                setFolders(folders);
-                console.log("✅ Folders loaded:", folders.length);
+                let folders = await db.getFolders();
+                
+                // Migrate folders without projectId
+                const folderNeedsMigration = folders.some(f => !f.projectId);
+                if (folderNeedsMigration && projectId) {
+                    console.log('🔄 MIGRATION: Assigning folders without projectId to current project');
+                    folders = folders.map(f => {
+                        if (!f.projectId) {
+                            return { ...f, projectId, updatedAt: Date.now() };
+                        }
+                        return f;
+                    });
+                    await Promise.all(folders.map(f => db.saveFolder(f)));
+                    console.log('✅ MIGRATION: All folders now have projectId');
+                }
+                
+                // Filter to current project only
+                const projectFolders = projectId 
+                    ? folders.filter(f => f.projectId === projectId)
+                    : folders;  // Show all only if no project loaded
+                
+                setFolders(projectFolders);
+                console.log(`✅ Folders loaded for project ${projectId}: ${projectFolders.length} of ${folders.length} total`);
             } catch (error) {
                 console.error('Error loading folders:', error);
                 // Don't let folder errors block the app
@@ -1992,8 +2134,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             }
         };
         loadFoldersIndependently();
-    }, [isInitialized]); // Only run after initialization
-
+    }, [isInitialized, currentProject?.id]); // Reload when project changes
     // Listen for model change events
     useEffect(() => {
         window.addEventListener('modelChanged', handleModelChange as EventListener);
@@ -2126,6 +2267,37 @@ export function ChatProvider({ children }: ChatProviderProps) {
         // The conversation state update will propagate through React's normal rendering
     }, [queueSave]);
 
+    // New functions for session management integration
+    const moveChatToGroup = useCallback(async (chatId: string, groupId: string | null) => {
+        // TODO: Get project context here when needed
+        // For now, just update local state
+        
+        // Update locally first
+        setConversations(prev => prev.map(conv =>
+            conv.id === chatId ? { ...conv, folderId: groupId, _version: Date.now() } : conv
+        ));
+        
+        // TODO: When Phase 4 is implemented, sync to server
+        // For now, just update local state
+    }, []);
+    
+    const setChatContexts = useCallback(async (
+        chatId: string,
+        contextIds: string[],
+        skillIds: string[],
+        additionalFiles: string[],
+        additionalPrompt: string | null
+    ) => {
+        // TODO: Get project context here when needed
+        // For now, just log
+        
+        // Update chat with new context configuration
+        // This will be used when we persist to server in Phase 3
+        console.log('Setting chat contexts:', { chatId, contextIds, skillIds, additionalFiles });
+        
+        // TODO: When Phase 3 is implemented, persist to server
+    }, []);
+
     const value = useMemo(() => ({
         streamedContentMap,
         reasoningContentMap,
@@ -2189,6 +2361,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setEditingMessageIndex,
         throttlingRecoveryData,
         setThrottlingRecoveryData,
+        moveChatToGroup,
+        setChatContexts,
     }), [
         streamedContentMap,
         currentMessages,
@@ -2237,6 +2411,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setEditingMessageIndex,
         throttlingRecoveryData,
         setThrottlingRecoveryData,
+        moveChatToGroup,
+        setChatContexts,
     ]);
 
     // Temporary debug command

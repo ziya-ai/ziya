@@ -36,14 +36,16 @@ export const RetrySection: React.FC<RetrySectionProps> = ({index}) => {
                 lastHumanMessage.content,
                 convertKeysToStrings(checkedKeys),
                 currentConversationId,
+                undefined,
                 streamedContentMap,
-                setStreamedContentMap,
-                setIsStreaming,
                 removeStreamingConversation,
                 addMessageToConversation,
-                streamingConversations.has(currentConversationId)
+                streamingConversations.has(currentConversationId),
+                (state) => updateProcessingState(currentConversationId, state),
+                undefined, // setReasoningContentMap
+                undefined, // throttlingRecoveryDataRef
+                currentProject
             );
-
             if (result) {
                 const newAIMessage: Message = {
                     content: result,

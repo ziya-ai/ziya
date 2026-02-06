@@ -1,10 +1,12 @@
 import { SetStateAction, Dispatch } from 'react';
 import { message } from 'antd';
-import { Message } from '../utils/types';
+import { Message, ImageAttachment } from '../utils/types';
 import { AppConfig, DEFAULT_CONFIG } from '../types/config';
 import { formatMCPOutput, enhanceToolDisplayHeader } from '../utils/mcpFormatter';
 import { handleToolStart, handleToolDisplay, ToolEventContext } from '../utils/mcpToolHandlers';
+import { Project } from '../context/ProjectContext';
 
+import { extractSingleFileDiff } from '../utils/diffUtils';
 // WebSocket for real-time feedback
 class FeedbackWebSocket {
     private ws: WebSocket | null = null;
@@ -560,6 +562,37 @@ ${errorDetail}
             _timestamp: Date.now()
         };
         addMessageToConversation(errorMessage, conversationId);
+        
+        // Attach click handler to the retry button after React renders it
+        if (isAuthError) {
+            setTimeout(() => {
+                const retryButton = document.querySelector('.auth-error-retry-button') as HTMLButtonElement;
+                if (retryButton && !retryButton.dataset.handlerAttached) {
+                    retryButton.dataset.handlerAttached = 'true';
+                    retryButton.addEventListener('click', async () => {
+                        console.log('Auth error retry button clicked for conversation:', conversationId);
+                        
+                        // Trigger a new request with the same conversation
+                        // This will pick up fresh credentials if mwinit was run
+                        try {
+                            // Dispatch an event to trigger retry from the main UI
+                            window.dispatchEvent(new CustomEvent('retryAuthError', {
+                                detail: { conversationId }
+                            }));
+                            
+                            // Show feedback that retry is happening
+                            retryButton.textContent = '🔄 Retrying...';
+                            retryButton.disabled = true;
+                            retryButton.style.opacity = '0.6';
+                            retryButton.style.cursor = 'not-allowed';
+                        } catch (error) {
+                            console.error('Failed to trigger retry:', error);
+                            retryButton.textContent = '❌ Retry Failed';
+                        }
+                    });
+                }
+            }, 100);
+        }
     } else {
         // Show as popup for short messages
         if (messageType === 'error') {
@@ -575,6 +608,8 @@ export const sendPayload = async (
     question: string,
     checkedItems: string[],
     conversationId: string,
+    activeSkillPrompts?: string,
+    images?: ImageAttachment[],
     streamedContentMap: Map<string, string>,
     setStreamedContentMap: Dispatch<SetStateAction<Map<string, string>>>,
     setIsStreaming: Dispatch<SetStateAction<boolean>>,
@@ -583,7 +618,8 @@ export const sendPayload = async (
     isStreamingToCurrentConversation: boolean = true,
     setProcessingState?: (state: ProcessingState) => void,
     setReasoningContentMap?: Dispatch<SetStateAction<Map<string, string>>>,
-    throttlingRecoveryDataRef?: { toolResults?: any[]; partialContent?: string }
+    throttlingRecoveryDataRef?: { toolResults?: any[]; partialContent?: string },
+    currentProject?: { id: string; name: string; path: string } | null
 ): Promise<string> => {
     let eventSource: any = null;
     let currentContent = '';
@@ -656,13 +692,9 @@ export const sendPayload = async (
             removeStreamingConversation(conversationId);
             setIsStreaming(false);
 
-            // Disconnect feedback WebSocket only if we connected it in this call
-            // AND if there are no other active streaming conversations
-            if (feedbackConnected && streamingConversations.size <= 1) {
-                console.log('🔄 FEEDBACK: Last streaming conversation ending, disconnecting WebSocket');
-                (window as any).feedbackWebSocketReady = false;
-                feedbackWebSocket.disconnect();
-            }
+            // Clean up feedback WebSocket on abort
+            (window as any).feedbackWebSocketReady = false;
+            feedbackWebSocket.disconnect();
         }
     };
     document.addEventListener('abortStream', abortListener as EventListener);
@@ -689,7 +721,7 @@ export const sendPayload = async (
         }
 
         setIsStreaming(true);
-        let response = await getApiResponse(messagesToSend, question, checkedItems, conversationId, signal);
+        let response = await getApiResponse(messagesToSend, question, checkedItems, conversationId, signal, currentProject);
         console.log("Initial API response:", response.status, response.statusText);
 
         if (!response.ok) {
@@ -699,7 +731,7 @@ export const sendPayload = async (
                 // Add a small delay before retrying
                 await new Promise(resolve => setTimeout(resolve, 2000));
                 // Retry the request once
-                let retryResponse = await getApiResponse(messagesToSend, question, checkedItems, conversationId, signal);
+                let retryResponse = await getApiResponse(messagesToSend, question, checkedItems, conversationId, signal, currentProject);
                 if (!retryResponse.ok) {
                     throw await handleStreamError(retryResponse);
                 }
@@ -2369,6 +2401,220 @@ export const sendPayload = async (
     return !errorOccurred && currentContent ? currentContent : '';
 };
 
+/**
+ * Extract and clean diff content for application
+ * Handles markdown code blocks, multi-file diffs, etc.
+ */
+function extractAndCleanDiff(diff: string, filePath: string): string {
+    console.log('Pre-fetch diff content for file:', filePath);
+    console.debug('Raw diff content:', {
+        length: diff.length,
+        firstLine: diff.split('\n')[0],
+        totalLines: diff.split('\n').length
+    });
+
+    // If it's already a raw diff, extract only the relevant file's diff if multipart
+    if (diff.startsWith('diff --git')) {
+        const singleFileDiff = extractSingleFileDiff(diff, filePath);
+        console.debug('Extracted single file diff:', {
+            filePath,
+            diffLength: singleFileDiff.length
+        });
+        return singleFileDiff.trim();
+    }
+
+    // Otherwise extract diff from markdown code block
+    const diffMatch = diff.match(/```diff\n([\s\S]*?)```(?:\s|$)/);
+    console.log('Diff match result:', {
+        found: Boolean(diffMatch),
+        groups: diffMatch ? diffMatch.length : 0
+    });
+    
+    if (diffMatch) {
+        const diffContent = diffMatch[1] as string;
+        // If we extracted a diff from markdown and it's a multi-file diff,
+        // extract only the relevant file's diff
+        if (diffContent.includes('diff --git') && 
+            diffContent.indexOf('diff --git') !== diffContent.lastIndexOf('diff --git')) {
+            return extractSingleFileDiff(diffContent.trim(), filePath);
+        }
+        return diffContent.trim();
+    }
+
+    // Fallback to original content
+    return diff.trim();
+}
+
+export interface ApplyDiffResult {
+    success: boolean;
+    status: 'success' | 'partial' | 'error';
+    data?: any;
+    error?: string;
+    requestId?: string;
+    reversible?: boolean;
+}
+
+/**
+ * Apply a diff to a file
+ * 
+ * @param diff - Raw diff content (may be in markdown code block)
+ * @param filePath - Target file path
+ * @param requestId - Unique request identifier
+ * @param elementId - UI element identifier for tracking
+ * @param buttonInstanceId - Button instance identifier
+ * @param currentProject - Current project with path information
+ * @returns Result object with status and data
+ */
+export async function applyDiff(
+    diff: string,
+    filePath: string,
+    requestId: string,
+    elementId: string,
+    buttonInstanceId: string,
+    currentProject: Project | null
+): Promise<ApplyDiffResult> {
+    try {
+        // Extract and clean the diff content
+        const cleanDiff = extractAndCleanDiff(diff, filePath);
+        
+        console.log(`Processed diff content for ${elementId}:`, {
+            length: cleanDiff.length,
+            lines: cleanDiff.split('\n').length,
+            firstLine: cleanDiff.split('\n')[0],
+            lastLine: cleanDiff.split('\n').slice(-1)[0]
+        });
+
+        const response = await fetch('/api/apply-changes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                diff: cleanDiff,
+                filePath: filePath.trim(),
+                requestId,
+                elementId,
+                buttonInstanceId,
+                projectRoot: currentProject?.path
+            }),
+        });
+
+        console.log('Apply changes response:', {
+            status: response.status,
+            statusText: response.statusText,
+            ok: response.ok
+        });
+
+        if (response.ok || response.status === 207) {
+            const data = await response.json();
+            console.log('Apply changes response data:', data);
+            
+            return {
+                success: response.ok,
+                status: data.status,
+                data,
+                requestId: data.request_id,
+                reversible: data.reversible
+            };
+        } else {
+            const errorData = await response.json().catch(() => ({}));
+            console.log('Apply changes error response:', errorData);
+            
+            return {
+                success: false,
+                status: 'error',
+                error: errorData.detail?.message || errorData.message || errorData.detail || 'Failed to apply changes',
+                data: errorData
+            };
+        }
+    } catch (error) {
+        console.error('Error applying changes:', error);
+        return {
+            success: false,
+            status: 'error',
+            error: error instanceof Error ? error.message : String(error)
+        };
+    }
+}
+
+export interface UndoDiffResult {
+    success: boolean;
+    message?: string;
+    error?: string;
+}
+
+/**
+ * Unapply/undo a previously applied diff
+ * 
+ * @param diff - The diff to reverse
+ * @param filePath - Target file path
+ * @param currentProject - Current project with path information
+ * @returns Result object with success status
+ */
+export async function undoDiff(
+    diff: string,
+    filePath: string,
+    currentProject: Project | null
+): Promise<UndoDiffResult> {
+    try {
+        const response = await fetch('/api/unapply-changes', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                diff,
+                filePath: filePath.trim(),
+                requestId: `undo-${Date.now()}`,
+                projectRoot: currentProject?.path
+            }),
+        });
+
+        const data = await response.json();
+        
+        if (data.status === 'success') {
+            return { 
+                success: true, 
+                message: data.message || 'Changes successfully reversed' 
+            };
+        } else {
+            return { 
+                success: false, 
+                error: data.message || 'Failed to undo changes' 
+            };
+        }
+    } catch (error) {
+        console.error('Error undoing changes:', error);
+        return {
+            success: false,
+            error: error instanceof Error ? error.message : String(error)
+        };
+    }
+}
+
+/**
+ * Parse and format hunk statuses from API response
+ * Converts API format to UI format
+ */
+export function parseHunkStatuses(
+    hunkStatuses: Record<string, any>,
+    fileIndex: number = 0
+): Map<string, { applied: boolean; alreadyApplied?: boolean; reason: string }> {
+    const statusMap = new Map();
+    
+    Object.entries(hunkStatuses).forEach(([hunkId, status]) => {
+        const hunkIndex = parseInt(hunkId, 10) - 1; // Convert 1-based to 0-based
+        const hunkKey = `${fileIndex}-${hunkIndex}`;
+        
+        statusMap.set(hunkKey, {
+            applied: (status as any).status === 'succeeded' || (status as any).status === 'already_applied',
+            alreadyApplied: (status as any).status === 'already_applied',
+            reason: (status as any).status === 'failed' 
+                ? 'Failed in ' + ((status as any).stage || 'unknown') + ' stage'
+                : (status as any).status === 'already_applied'
+                    ? 'Already applied'
+                    : 'Successfully applied'
+        });
+    });
+    
+    return statusMap;
+}
 
 export async function fetchConfig(): Promise<AppConfig> {
     try {
@@ -2480,7 +2726,7 @@ function handleSequentialThinkingDisplay(
 }
 */
 
-async function getApiResponse(messages: any[], question: string, checkedItems: string[], conversationId: string, signal?: AbortSignal) {
+async function getApiResponse(messages: any[], question: string, checkedItems: string[], conversationId: string, signal?: AbortSignal, currentProject?: { id: string; name: string; path: string } | null) {
     const messageTuples: string[][] = [];
 
     // Messages are already filtered in SendChatContainer, no need to filter again
@@ -2500,12 +2746,18 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
     // Debug log the conversation ID being sent
     console.log('🔍 API: Sending conversation_id to server:', conversationId);
     console.log('🖼️ API: Messages with images:', messages.filter(m => m.images?.length > 0).length);
+    
+    // Include active skill prompts if provided
+    const activeSkillPrompts = ''; // TODO: Wire up skill prompts
+    const systemPromptAddition = activeSkillPrompts ? `\n\n${activeSkillPrompts}` : '';
 
     const payload = {
         messages: messageTuples,
         question,
+        systemPromptAddition,
         conversation_id: conversationId,
-        files: checkedItems
+        files: checkedItems,
+        project_root: currentProject?.path
     };
 
     return fetch('/api/chat', {

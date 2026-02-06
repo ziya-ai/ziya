@@ -4,6 +4,7 @@ import { ReloadOutlined, ClockCircleOutlined } from '@ant-design/icons';
 import { useTheme } from '../context/ThemeContext';
 import { sendPayload } from '../apis/chatApi';
 import { useChatContext } from '../context/ChatContext';
+import { useProject } from '../context/ProjectContext';
 
 const { Text, Paragraph } = Typography;
 
@@ -49,6 +50,7 @@ export const ThrottlingErrorDisplay: React.FC<ThrottlingErrorDisplayProps> = ({
     updateProcessingState,
     setReasoningContentMap
   } = useChatContext();
+  const { currentProject } = useProject();
 
   const suggestedWaitTime = parseInt(error.retry_after || '60');
   const throttleInfo = error.throttle_info;
@@ -81,21 +83,24 @@ export const ThrottlingErrorDisplay: React.FC<ThrottlingErrorDisplayProps> = ({
         question,
         checkedItems,
         conversationId,
+        undefined,
         streamedContentMap,
         setStreamedContentMap,
         setIsStreaming,
         removeStreamingConversation,
         addMessageToConversation,
-        true,
+        true, // isStreamingToCurrentConversation
         (state) => updateProcessingState(conversationId, state),
-        setReasoningContentMap
+        setReasoningContentMap,
+        undefined, // throttlingRecoveryDataRef
+        currentProject
       );
     } catch (retryError) {
       console.error('Retry failed:', retryError);
     } finally {
       setIsRetrying(false);
     }
-  }, [error.originalRequestData, isRetrying, onDismiss, setStreamedContentMap, setIsStreaming, removeStreamingConversation, addMessageToConversation, updateProcessingState, setReasoningContentMap]);
+  }, [error.originalRequestData, isRetrying, onDismiss, streamedContentMap, setStreamedContentMap, setIsStreaming, removeStreamingConversation, addMessageToConversation, updateProcessingState, setReasoningContentMap, currentProject]);
 
   const handleWaitAndRetry = useCallback(() => {
     setIsWaitingForRetry(true);
