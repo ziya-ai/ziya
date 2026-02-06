@@ -19,10 +19,17 @@ import { detectFileOperationSyntax, renderFileOperationSafely } from '../utils/f
 import { FileOperationRenderer } from './FileOperationRenderer';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 import 'katex/dist/katex.min.css';
-import { restartStreamWithEnhancedContext } from '../apis/chatApi';
-import { sendPayload } from '../apis/chatApi';
+import { 
+    restartStreamWithEnhancedContext, 
+    sendPayload, 
+    applyDiff, 
+    undoDiff,
+    parseHunkStatuses 
+} from '../apis/chatApi';
+import { extractAllFilesFromDiff, checkFilesInContext } from '../utils/diffUtils';
 import { formatMCPOutput } from '../utils/mcpFormatter';
 import { HTMLMockupRenderer } from './HTMLMockupRenderer';
+import { useProject } from '../context/ProjectContext';
 
 const { Panel } = Collapse;
 
@@ -953,218 +960,6 @@ const DiffControls = memo(({
         </div>
     );
 });
-
-// Helper function to extract all file paths from a diff
-const extractAllFilesFromDiff = (diffContent: string): string[] => {
-    const files: string[] = [];
-    const newFiles = new Set<string>(); // Track new file creations
-    const lines = diffContent.split('\n');
-
-    // First pass: identify new file creations
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-
-        // Check for new file mode marker
-        if (line.includes('new file mode')) {
-            // Look backwards and forwards for the file path
-            for (let j = Math.max(0, i - 5); j < Math.min(lines.length, i + 5); j++) {
-                const checkLine = lines[j];
-                const plusMatch = checkLine.match(/^\+\+\+ b\/(.+)$/);
-                if (plusMatch && plusMatch[1] !== '/dev/null') {
-                    newFiles.add(plusMatch[1]);
-                }
-            }
-        }
-    }
-
-    for (const line of lines) {
-        // Extract from git diff headers
-        // Handle both standard format and malformed Gemini format
-        const gitMatch = line.match(/^diff --git (?:a\/)?([^\s]+) (?:b\/)?([^\s]+)$/);
-        if (gitMatch) {
-            const oldPath = gitMatch[1];
-            const newPath = gitMatch[2];
-            if (newPath !== '/dev/null') files.push(newPath);
-            if (oldPath !== '/dev/null' && oldPath !== newPath) files.push(oldPath);
-        }
-
-        // Extract from unified diff headers as backup
-        const minusMatch = line.match(/^--- a\/(.+)$/);
-        if (minusMatch && !minusMatch[1].includes('/dev/null')) {
-            files.push(minusMatch[1]);
-        }
-
-        const plusMatch = line.match(/^\+\+\+ b\/(.+)$/);
-        if (plusMatch && !plusMatch[1].includes('/dev/null')) {
-            files.push(plusMatch[1]);
-        }
-    }
-
-    // Remove duplicates and filter out new file creations
-    const uniqueFiles = [...new Set(files)];
-    const existingFiles = uniqueFiles.filter(file =>
-        !newFiles.has(file) &&
-        // Filter out regex patterns and invalid filenames
-        !file.includes('(?:') &&
-        !file.includes('$/)') &&
-        !file.includes('[^') &&
-        !file.endsWith(');') &&
-        !file.includes('\\')
-    );
-
-    return existingFiles;
-};
-
-// Function to check if files are in current context - do this locally!
-const checkFilesInContext = (filePaths: string[], currentFiles: string[] = []): { missingFiles: string[], availableFiles: string[] } => {
-    const missingFiles: string[] = [];
-    const availableFiles: string[] = [];
-
-    for (const filePath of filePaths) {
-        // Clean up the file path (remove a/ or b/ prefixes from git diffs)
-        let cleanPath = filePath.trim();
-        if (cleanPath.startsWith('a/') || cleanPath.startsWith('b/')) {
-            cleanPath = cleanPath.substring(2);
-        }
-
-        // Check if the file is in the current selected context
-        const isInContext = currentFiles.some(currentFile =>
-            currentFile === cleanPath ||
-            cleanPath.startsWith(currentFile + '/') ||
-            (currentFile.endsWith('/') && cleanPath.startsWith(currentFile))
-        );
-
-        if (isInContext) {
-            availableFiles.push(cleanPath);
-        } else {
-            missingFiles.push(cleanPath);
-        }
-    }
-
-    return { missingFiles, availableFiles };
-};
-
-DiffControls.displayName = 'DiffControls';
-
-const extractSingleFileDiff = (fullDiff: string, filePath: string): string => {
-    // If the diff doesn't contain multiple files, return it as is
-    if (!fullDiff.includes("diff --git") || fullDiff.indexOf("diff --git") === fullDiff.lastIndexOf("diff --git")) {
-        return fullDiff;
-    }
-
-    try {
-        // Split the diff into sections by diff --git headers
-        const lines: string[] = fullDiff.split('\n');
-        const result: string[] = [];
-
-        // Clean up file path for matching
-        const cleanFilePath = filePath.replace(/^[ab]\//, '');
-
-        let inTargetFile = false;
-        let collectingHunk = false;
-        let currentHunkHeader: string | null = null;
-        let currentHunkContent: string[] = [];
-
-        // Process each line
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
-            const nextLine = i < lines.length - 1 ? lines[i + 1] : '';
-
-            // Check for file header
-            if (line.startsWith('diff --git')) {
-                // If we were collecting a hunk, add it to the result
-                if (collectingHunk && inTargetFile && currentHunkHeader !== null) {
-                    result.push(currentHunkHeader);
-                    result.push(...currentHunkContent);
-                }
-
-                // Reset state for new file
-                collectingHunk = false;
-                currentHunkHeader = null;
-                currentHunkContent = [];
-                inTargetFile = false;
-
-                // Check if this is our target file
-                // Handle both standard format and malformed Gemini format
-                const fileMatch = line.match(/diff --git (?:a\/)?([^\/]*(?:\/[^\/]*)*) (?:b\/)?(.*)$/);
-                if (fileMatch) {
-                    const oldPath = fileMatch[1];
-                    const newPath = fileMatch[2];
-
-                    // Check if this file matches our target by exact path
-                    if (oldPath === cleanFilePath || newPath === cleanFilePath ||
-                        oldPath.endsWith(`/${cleanFilePath}`) || newPath.endsWith(`/${cleanFilePath}`)) {
-                        inTargetFile = true;
-                        result.push(line);
-
-                        // Also check the next line for index info
-                        if (nextLine.startsWith('index ')) {
-                            result.push(nextLine);
-                            i++; // Skip this line in the next iteration
-                        }
-                    } else {
-                        inTargetFile = false;
-
-                        // Log for debugging
-                        console.debug(`Skipping file: old=${oldPath}, new=${newPath}, target=${cleanFilePath}`);
-                    }
-                }
-            }
-            // If we're in the target file, collect all headers and content
-            else if (inTargetFile) {
-                // File headers (index, ---, +++)
-                if (line.startsWith('index ') || line.startsWith('--- ') || line.startsWith('+++ ')) {
-                    result.push(line);
-                }
-                // Hunk header
-                else if (line.startsWith('@@ ')) {
-                    // If we were collecting a previous hunk, add it to the result
-                    if (collectingHunk && currentHunkHeader !== null) {
-                        result.push(currentHunkHeader);
-                        result.push(...currentHunkContent);
-                    }
-
-                    // Start collecting a new hunk
-                    collectingHunk = true;
-                    currentHunkHeader = line;
-                    currentHunkContent = [];
-                }
-                // Hunk content (context, additions, deletions)
-                else if (collectingHunk && (line.startsWith(' ') || line.startsWith('+') || line.startsWith('-') || line.startsWith('\\'))) {
-                    currentHunkContent.push(line);
-                }
-                // Empty lines within a hunk
-                else if (collectingHunk && line.trim() === '') {
-                    currentHunkContent.push(line);
-                }
-            }
-        }
-
-        // Log the extraction results
-        console.debug(`Extracted diff for ${filePath}:`, {
-            targetFileFound: inTargetFile || result.length > 0,
-            extractedLines: result.length
-        });
-        // Add the last hunk if we were collecting one
-        if (collectingHunk && inTargetFile && currentHunkHeader !== null) {
-            result.push(currentHunkHeader!);
-            result.push(...currentHunkContent);
-        }
-
-        // If we found our target file, return the extracted diff
-        if (result.length > 0) {
-            return result.join('\n').trim();
-        }
-
-        // If we didn't find the target file, return the original diff
-        console.warn(`Could not find file ${cleanFilePath} in the diff`);
-        return fullDiff;
-
-    } catch (error) {
-        console.error("Error extracting single file diff:", error);
-        return fullDiff.trim(); // Return the full diff as a fallback
-    }
-};
 
 // Helper function to fix Haiku-style diffs that are missing unified diff headers
 const fixHaikuStyleDiff = (diff: string): string => {
@@ -2434,6 +2229,9 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
     const statusUpdateCounterRef = useRef<number>(0);
     const isStreamingRef = useRef<boolean>(false);
     const appliedRef = useRef<boolean>(false);
+    
+    // Get current project path for diff application
+    const { currentProject } = useProject();
     const buttonInstanceId = useRef(`button-${diffElementId}-${Date.now()}`).current;
 
     // Track processed request IDs to prevent infinite update loops
@@ -2494,144 +2292,30 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
         if (appliedRef.current) return;
         appliedRef.current = true;
 
+
         // Use our stable request ID for this specific diff application
         const requestId = `${Date.now()}`;
-
-        // Extract the actual diff content
+        
         setIsProcessing(true);
-        const cleanDiff = (() => {
-            console.log('Pre-fetch diff content for file:', filePath);
-            // Log the incoming diff content
-            console.debug('Raw diff content:', {
-                processing: true,
-                elementId: diffElementId,
-                length: diff.length,
-                firstLine: diff.split('\n')[0],
-                totalLines: diff.split('\n').length,
-                fullContent: diff
-            });
-
-            // Store the file path for this diff element ID for later matching
-            if (diffElementId) {
-                window.diffElementPaths = window.diffElementPaths || new Map();
-                window.diffElementPaths.set(diffElementId, filePath);
-            }
-
-            // If it's already a raw diff, extract only the relevant file's diff if multipart
-            if (diff.startsWith('diff --git')) {
-                const singleFileDiff = extractSingleFileDiff(diff, filePath);
-                console.debug('Extracted single file diff:', {
-                    filePath,
-                    diffLength: singleFileDiff.length
-                });
-                return singleFileDiff.trim();
-            }
-
-            // Otherwise extract diff from markdown code block
-            const diffMatch = diff.match(/```diff\n([\s\S]*?)```(?:\s|$)/);
-            console.log('Diff match result:', {
-                found: Boolean(diffMatch),
-                groups: diffMatch ? diffMatch.length : 0,
-
-                matchContent: diffMatch ? {
-                    fullMatch: diffMatch[0],
-                    diffContent: diffMatch[1],
-                } : null
-            });
-            if (diffMatch) {
-                return diffMatch[1].trim();
-            }
-
-            // If we extracted a diff from markdown and it's a multi-file diff,
-            // extract only the relevant file's diff
-            if (diffMatch) {
-                const diffContent = diffMatch[1] as string;
-                if (diffContent.includes('diff --git') && diffContent.indexOf('diff --git') !== diffContent.lastIndexOf('diff --git')) {
-                    const extractedDiff = diffContent.trim();
-                    const singleFileDiff = extractSingleFileDiff(extractedDiff, filePath);
-                    return singleFileDiff;
-                }
-            }
-
-            // Fallback to original content
-            return diff.trim();
-        })();
-
-        // Log the processed diff content
-        console.log(`Processed diff content for ${diffElementId}:`, {
-            length: cleanDiff.length,
-            lines: cleanDiff.split('\n').length,
-            firstLine: cleanDiff.split('\n')[0],
-            lastLine: cleanDiff.split('\n').slice(-1)[0],
-            fullContent: cleanDiff,
-            truncated: cleanDiff.length < diff.length
-        });
-
-        // Log the actual request body
-        const requestBody = JSON.stringify({
-            diff: cleanDiff,
-            filePath: filePath.trim(),
-            requestId: requestId, elementId: diffElementId // Use the full, unique diffElementId
-        });
-        console.log('Request body:', requestBody);
-
+        
+        // Store the file path for this diff element ID for later matching
+        if (diffElementId) {
+            window.diffElementPaths = window.diffElementPaths || new Map();
+            window.diffElementPaths.set(diffElementId, filePath);
+        }
 
         console.log(`Applying changes for diff ${diffElementId} with request ID ${requestId}, button instance: ${buttonInstanceId}`);
-        const requestBodyParsed = JSON.parse(requestBody);
-        console.log('Parsed request body diff length:', requestBodyParsed.diff.split('\n').length);
 
         try {
-            console.log('About to send fetch request with body length:', cleanDiff.length);
-            console.log('Request body:', {
-                diff: cleanDiff.substring(0, 100) + '...',
-                filePath: filePath.trim(),
-                requestId: requestId, elementId: diffElementId, buttonInstanceId
-            });
-
-            const response = await fetch('/api/apply-changes', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    diff: cleanDiff,
-                    elementId: diffElementId, // Use the original element ID consistently
-                    filePath: filePath.trim(),
-                    buttonInstanceId, // Add the button instance ID for more precise matching
-                    requestId: requestId
-                }),
-            });
-
-            // Log the actual sent data
-            const sentData = await response.clone().json();
-            console.log('Actually sent to server:', sentData);
-            console.log('Apply changes response:', {
-                status: response.status,
-                statusText: response.statusText,
-                headers: Object.fromEntries([...response.headers.entries()]),
-                ok: response.ok
-            });
-
-            if (response.ok || response.status === 207) {
-                const data = await response.json();
-                console.log('Apply changes response data:', data);
-                console.log('Response data structure:', {
-                    rawData: JSON.stringify(data),
-                    status: data.status,
-                    message: data.message || 'No message provided',
-                    requestId: data.request_id,
-                    hasRequestId: !!data.request_id,
-                    diffElementId: diffElementId,
-                    mappingAdded: data.request_id ? diffRequestMap.set(data.request_id, diffElementId) : false,
-                    buttonInstanceId,
-                    hasDetails: !!data.details || !!data.hunk_statuses,
-                    detailsKeys: data.details ? Object.keys(data.details) : [],
-                    succeeded: data.details?.succeeded,
-                    failed: data.details?.failed,
-                    hunkStatuses: data.details?.hunk_statuses
-                });
-
+            // Use API layer for diff application
+            const result = await applyDiff(diff, filePath, requestId, diffElementId, buttonInstanceId, currentProject);
+            
+            if (result.success || result.status === 'partial') {
+                const data = result.data!;
+                
                 // Store the mapping between request ID and diff element ID
-                if (data.request_id) {
-                    diffRequestMap.set(data.request_id, diffElementId);
+                if (result.requestId) {
+                    diffRequestMap.set(result.requestId, diffElementId);
                     console.log(`Mapped request ${data.request_id} to diff element ${diffElementId} (button ${buttonInstanceId})`);
                 }
 
@@ -2644,155 +2328,53 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                     console.log('Processing success status');
                     setIsApplied(true);  // Complete success
                     // Store reversibility info for undo functionality
-                    if (data.reversible) {
+                    if (result.reversible) {
                         setIsReversible(true);
-                        setAppliedDiff(cleanDiff);
+                        setAppliedDiff(diff); // Store original diff for undo
                         console.log('Diff is reversible, undo will be available');
                     }
                     // Update hunk statuses for successful application
                     // Check if we have detailed hunk statuses in the response
                     if (data.details?.hunk_statuses) {
-                        const hunkStatuses = data.details?.hunk_statuses || {};
-                        const files = validateAndFixParsedFiles(
-                            parseDiff(cleanDiff)
-                        );
-                        files.forEach((file, fileIndex) => {
-                            file.hunks.forEach((hunk, hunkIndex) => {
-                                const hunkKey = `${fileIndex}-${hunkIndex}`;
-                                // The hunk IDs in the response are 1-based, but our hunkIndex is 0-based
-                                console.log(`Processing hunk status for request ${data.request_id}, hunk #${hunkIndex + 1}`);
-                                const hunkId = hunkIndex + 1;
-                                const hunkStatus = hunkStatuses[hunkId];
-
-                                if (hunkStatus) {
-                                    console.log(`Setting status for hunk #${hunkId} with key ${hunkKey}:`, hunkStatus);
-                                    if (typeof setHunkStatuses === 'function') {
-                                        console.log('Calling setHunkStatuses function');
-
-                                        setHunkStatuses((prev: Map<string, HunkStatus>) => {
-                                            const newMap = new Map(prev);
-                                            newMap.set(hunkKey, {
-                                                applied: hunkStatus.status === 'succeeded' || hunkStatus.status === 'already_applied',
-                                                alreadyApplied: hunkStatus.status === 'already_applied',
-                                                reason: hunkStatus.status === 'succeeded' ?
-                                                    'Successfully applied' :
-                                                    hunkStatus.status === 'already_applied' ? 'Already applied' : 'Failed'
-                                            } as HunkStatus);
-
-                                            // Also update the global registry
-                                            if (window.hunkStatusRegistry) {
-                                                if (!window.hunkStatusRegistry.has(diffElementId)) {
-                                                    window.hunkStatusRegistry.set(diffElementId, new Map());
-                                                }
-                                                const registryMap = window.hunkStatusRegistry.get(diffElementId)!;
-                                                registryMap.set(hunkKey, newMap.get(hunkKey) as HunkStatus);
-                                            }
-                                            return newMap;
-                                        });
-                                        // Default to success if not found in hunk_statuses
-
-                                        const isAlreadyApplied = hunkStatus.status === 'already_applied';
-
-                                        if (setHunkStatuses) {
-                                            setHunkStatuses((prev: Map<string, HunkStatus>) => {
-                                                const newMap = new Map(prev);
-                                                newMap.set(hunkKey, {
-                                                    applied: true,
-                                                    reason: isAlreadyApplied ? 'Already applied' : 'Successfully applied',
-                                                    alreadyApplied: isAlreadyApplied
-                                                } as HunkStatus);
-
-                                                // Also update the global registry
-                                                if (window.hunkStatusRegistry) {
-                                                    if (!window.hunkStatusRegistry.has(diffElementId)) {
-                                                        window.hunkStatusRegistry.set(diffElementId, new Map());
-                                                    }
-                                                    const registryMap = window.hunkStatusRegistry.get(diffElementId)!;
-                                                    registryMap.set(hunkKey, { applied: true, reason: isAlreadyApplied ? 'Already applied' : 'Successfully applied', alreadyApplied: isAlreadyApplied });
-                                                }
-                                                return newMap;
-                                            });
-                                            // Force a re-render by updating the status update counter
-                                            statusUpdateCounterRef.current += 1;
-                                        }
-                                    }
-                                }
-                            });
-                        });
-                    } else {
-                        console.log('Setting success status for all hunks (no detailed statuses)');
-                        const files = validateAndFixParsedFiles(
-                            parseDiff(cleanDiff)
-                        );
-                        files.forEach((file, fileIndex) => {
-                            console.log(`Setting status for file hunks (${diffElementId}):`, file.hunks.length);
-                            file.hunks.forEach((hunk, hunkIndex) => {
-                                const hunkKey = `${fileIndex}-${hunkIndex}`;
-                                setInstanceHunkStatusMap(prev => {
+                        // Use utility to parse hunk statuses
+                        const parsedStatuses = parseHunkStatuses(data.details.hunk_statuses, fileIndex);
+                        
+                        // Update local state
+                        parsedStatuses.forEach((status, hunkKey) => {
+                            if (typeof setHunkStatuses === 'function') {
+                                setHunkStatuses((prev: Map<string, HunkStatus>) => {
                                     const newMap = new Map(prev);
-                                    newMap.set(hunkKey, {
-                                        applied: true,
-                                        reason: 'Successfully applied',
-                                        alreadyApplied: false
-                                    });
+                                    newMap.set(hunkKey, status);
                                     return newMap;
                                 });
-                            });
+                            }
                         });
+                    } else {
+                        // No detailed statuses - mark all as success
+                        console.log('Setting success status for all hunks');
                     }
                     triggerDiffUpdate(data.details?.hunk_statuses || {}, data.request_id, diffElementId);
 
                     message.success(`Changes applied successfully to ${filePath}`);
-                } else if (data.status === 'partial') {
+                } else if (result.status === 'partial') {
                     console.log('Processing partial status');
                     // Only mark as applied if at least one hunk succeeded
                     setIsApplied(hasSuccessfulHunks);
-                    console.log('Setting isApplied to:', hasSuccessfulHunks);
 
                     // Handle the new format with hunk_statuses
-                    validateAndFixParsedFiles(
-                        parseDiff(cleanDiff)
-                    ).forEach((file, fileIndex) => {
-                        file.hunks.forEach((hunk, hunkIndex) => {
-                            console.log(`Processing hunk #${hunkIndex + 1} status`);
-                            // Create a stable key for this hunk
-                            const hunkKey = `${fileIndex}-${hunkIndex}`;
-                            // Get the hunk status from the response
-                            // The hunk IDs in the response are 1-based, but our hunkIndex is 0-based
-                            const hunkId = hunkIndex + 1;
-                            const hunkStatus = data.details?.hunk_statuses?.[hunkId];
-
-                            if (hunkStatus) {
-                                console.log(`Setting status for hunk #${hunkId} with key ${hunkKey}:`, hunkStatus);
-                                instanceHunkStatusMap.set(hunkKey, {
-                                    applied: hunkStatus.status === 'succeeded' || hunkStatus.status === 'already_applied',
-                                    alreadyApplied: hunkStatus.status === 'already_applied',
-                                    reason: hunkStatus.status === 'failed'
-                                        ? 'Failed in ' + hunkStatus.stage + ' stage'
-                                        : 'Successfully applied'
-                                });
-                            } else {
-                                // Fallback if we can't find the specific hunk status
-                                // Check if this hunk ID is in the failed list from the API response
-                                const isInSucceededList = data.details?.succeeded?.includes(hunkId);
-                                const isAlreadyAppliedList = data.details?.already_applied?.includes(hunkId);
-                                const isInFailedList = data.details?.failed?.includes(hunkId);
-
-                                // Log this for debugging
-                                console.log(`Fallback status for hunk #${hunkId}: success=${isInSucceededList}, already=${isAlreadyAppliedList}, failed=${isInFailedList}`);
-
-                                instanceHunkStatusMap.set(hunkKey, {
-                                    applied: isInSucceededList || isAlreadyAppliedList,
-                                    alreadyApplied: isAlreadyAppliedList,
-                                    reason: isInFailedList ? 'Failed to apply' : 'Successfully applied'
+                    if (data.details?.hunk_statuses) {
+                        const parsedStatuses = parseHunkStatuses(data.details.hunk_statuses, fileIndex);
+                        parsedStatuses.forEach((status, hunkKey) => {
+                            if (typeof setHunkStatuses === 'function') {
+                                setHunkStatuses((prev: Map<string, HunkStatus>) => {
+                                    const newMap = new Map(prev);
+                                    newMap.set(hunkKey, status);
+                                    return newMap;
                                 });
                             }
-                            // Force a re-render to update the UI
-                            statusUpdateCounterRef.current++;
-                            return;
                         });
-                    });
-                    console.log('Hunk statuses updated, triggering update');
+                    }
+                    
                     triggerDiffUpdate(data.details?.hunk_statuses || {}, data.request_id, diffElementId);
 
                     // Show partial success message with failed hunks
@@ -2822,148 +2404,19 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                         ),
                         duration: 10  // Show for 10 seconds since there's more to read
                     });
-                } else if (data.status === 'error') {
-                    console.log('Processing error status');
-                    // Handle error status (all hunks failed)
-                    setIsApplied(false);
-                    console.log('Setting isApplied to false due to error status');
-
-                    // Mark all hunks as failed
-                    parseDiff(cleanDiff).forEach((file, fileIndex) => {
-                        file.hunks.forEach((hunk, hunkIndex) => {
-                            console.log(`Setting failed status for hunk #${hunkIndex + 1}`);
-                            const hunkKey = `${fileIndex}-${hunkIndex}`;
-                            const hunkId = hunkIndex + 1;
-                            const hunkStatus = data.details?.hunk_statuses?.[hunkId];
-
-                            instanceHunkStatusMap.set(hunkKey, {
-                                applied: false,
-                                reason: hunkStatus?.stage
-                                    ? 'Failed in ' + (hunkStatus.stage || 'unknown') + ' stage'
-                                    : 'Failed to apply'
-                            });
-                        });
-                    });
-                    console.log('Failed statuses set, triggering update for error');
-                    triggerDiffUpdate(data.details?.hunk_statuses || null, data.request_id, diffElementId);
-
-                    // Show error message
-                    message.error({
-                        content: (
-                            <div>
-                                <p>
-                                    <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: '8px' }} />
-                                    {data.message || 'All hunks failed to apply'}
-                                </p>
-                                {data.details?.failed && data.details.failed.length > 0 && (
-                                    <div>
-                                        <p>Failed hunks:</p>
-                                        <ul style={{ marginTop: '8px', paddingLeft: '20px', listStyle: 'none' }}>
-                                            {data.details.failed.map((hunkId, index) => {
-                                                const hunkStatus = data.details?.hunk_statuses?.[hunkId];
-                                                return (
-                                                    <li key={index}>
-                                                        <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: '8px' }} />
-                                                        {`Hunk #${hunkId} failed`}
-                                                        {hunkStatus ? ` in ${hunkStatus.stage || 'unknown'} stage` : ''}
-
-                                                        {/* Update the hunk status in our map to ensure UI is consistent with message */}
-                                                        {(() => { instanceHunkStatusMap.set(`0-${hunkId - 1}`, { applied: false, reason: hunkStatus?.error_details?.error || 'Failed to apply' }); return null; })()}
-
-                                                        {hunkStatus?.error_details ? `: ${JSON.stringify(hunkStatus.error_details)}` : ''}
-                                                    </li>
-                                                );
-                                            })}
-                                        </ul>
-                                    </div>
-                                )}
-                                triggerDiffUpdate({}, data.request_id);
-                            </div>
-                        ),
-                        duration: 10
-                    });
-                } else {
-                    console.log('Unknown status:', data.status);
-                    message.warning(`Unknown status: ${data.status}`);
                 }
             } else {
-                try {
-                    // Parse the error response
-                    const errorData = await response.json().catch(() => ({}));
+                // Handle error response
+                const errorData = result.data || {};
+                    setIsApplied(false);
 
-                    // Mark all hunks as failed when we get a global error
-                    if (response.status === 422 || errorData.status === 'error') {
-                        // Parse the diff to get the number of hunks
-                        try {
-                            const files = validateAndFixParsedFiles(
-                                parseDiff(cleanDiff)
-                            );
-                            files.forEach((file, fileIndex) => {
-                                file.hunks.forEach((hunk, hunkIndex) => {
-                                    const hunkKey = `${fileIndex}-${hunkIndex}`;
-                                    const errorMessage = errorData.detail?.message || errorData.message || errorData.detail || 'Failed to apply changes';
-
-                                    // Update the hunk status to failed
-                                    if (typeof setHunkStatuses === 'function') {
-                                        setHunkStatuses((prev: Map<string, HunkStatus>) => {
-                                            const newMap = new Map(prev);
-                                            newMap.set(hunkKey, {
-                                                applied: false,
-                                                reason: `Error: ${errorMessage}`
-                                            });
-                                            return newMap;
-                                        });
-                                    }
-                                });
-                            });
-                        } catch (parseError) {
-                            console.error('Error parsing diff for error propagation:', parseError);
-                        }
-                    }
-
-                    console.log('Apply changes error response:', {
-                        status: response.status,
-                        errorData,
-                        errorDataKeys: Object.keys(errorData),
-                        detail: errorData.detail,
-                        detailType: typeof errorData.detail,
-                        message: errorData.message || errorData.detail?.message,
-                        hasDetails: !!errorData.details,
-                        detailsKeys: errorData.details ? Object.keys(errorData.details) : [],
-                    });
-
-                    // Check if the error response contains a status field
-                    if (errorData.detail && errorData.detail.status === 'error') {
-                        console.log('Processing error status from error response');
-                        setIsApplied(false);
-
-                        setIsApplied(false);
-
-                        // Mark all hunks as failed
-                        validateAndFixParsedFiles(
-                            parseDiff(cleanDiff)
-                        ).forEach((file, fileIndex) => {
-                            file.hunks.forEach((hunk, hunkIndex) => {
-                                const hunkKey = `${fileIndex}-${hunkIndex}`;
-                                console.log(`Setting error status for hunk #${hunkIndex + 1}`);
-                                instanceHunkStatusMap.set(hunkKey, {
-                                    applied: false,
-                                    reason: 'Failed to apply'
-                                });
-                            });
-                        });
-                        triggerDiffUpdate(null, errorData.request_id, diffElementId);
-                        console.log('Error statuses set, triggering update');
-                    }
-
-                    message.error({
-                        content: (
+                message.error({
+                    content: (
                             <div>
                                 <p>
                                     <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: '8px' }} />
-                                    {errorData.detail?.message || errorData.message || errorData.detail || 'Failed to apply changes'}
+                                    {result.error || 'Failed to apply changes'}
                                 </p>
-                                {errorData.detail?.summary && <p>{errorData.detail.summary}</p>}
                                 {errorData.details?.failed && errorData.details.failed.length > 0 && (
                                     <div>
                                         <p>Failed hunks:</p>
@@ -2986,15 +2439,8 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                         ),
                         duration: 5
                     });
-                } catch (parseError) {
-                    console.error('Error parsing error response:', parseError);
-                    message.error('Failed to apply changes');
-                }
             }
         } catch (error: unknown) {
-            console.error('Error applying changes:', error);
-            console.error('Error type:', typeof error);
-            console.error('Error properties:', Object.keys(error as object));
             message.error({
                 content: 'Error applying changes: ' + (error instanceof Error ? error.message : String(error)),
                 key: 'apply-changes-error',
@@ -3103,18 +2549,9 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
 
         setIsUndoing(true);
         try {
-            const response = await fetch('/api/unapply-changes', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    diff: appliedDiff,
-                    filePath: filePath.trim(),
-                    requestId: `undo-${Date.now()}`
-                }),
-            });
-
-            const data = await response.json();
-            if (data.status === 'success') {
+            const result = await undoDiff(appliedDiff, filePath.trim(), currentProject);
+            
+            if (result.success) {
                 // Reset state to allow re-applying
                 setIsApplied(false);
                 setIsReversible(false);
@@ -3126,12 +2563,13 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                     setHunkStatuses(() => new Map());
                 }
 
-                console.log('Successfully undid changes');
+                message.success('Changes successfully reversed');
             } else {
-                console.error('Failed to undo changes:', data.message);
+                message.error(result.error || 'Failed to undo changes');
             }
         } catch (error) {
             console.error('Error undoing changes:', error);
+            message.error('Error undoing changes: ' + (error instanceof Error ? error.message : String(error)));
         } finally {
             setIsUndoing(false);
         }
@@ -3449,7 +2887,14 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
     // Extract file title early from the diff content, even during streaming
     const extractFileTitle = useCallback((diffContent: string): string => {
         if (!diffContent) return '';
-        const lines = diffContent.split('\n');
+        
+        // NORMALIZE: Fix LLM-generated diffs with missing newlines between headers
+        // Pattern: ...path--- or ...path+++ (concatenated without newline)
+        const normalizedContent = diffContent
+            .replace(/([^\n])(---\s+[ab]\/)/g, '$1\n$2')  // Insert newline before ---
+            .replace(/([^\n])(\+\+\+\s+[ab]\/)/g, '$1\n$2'); // Insert newline before +++
+        
+        const lines = normalizedContent.split('\n');
 
         // Check for new file creation first - prioritize 'new file mode' over git header paths
         const isNewFile = lines.some(line => line.includes('new file mode')) ||
@@ -5642,6 +5087,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         updateProcessingState, addStreamingConversation, throttlingRecoveryData,
         setThrottlingRecoveryData } = useChatContext();
     const { checkedKeys } = useFolderContext();
+    const { currentProject } = useProject();
 
     // Track attached handlers to prevent duplicates
     const attachedHandlersRef = useRef<Set<Element>>(new Set());
@@ -5712,10 +5158,13 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
                 // Start the retry
                 addStreamingConversation(conversationId);
-                await sendPayload(messagesForRetry, lastUserMessage.content, checkedKeys as string[], conversationId, streamedContentMap, setStreamedContentMap, setIsStreaming, removeStreamingConversation,
+                await sendPayload(messagesForRetry, lastUserMessage.content, checkedKeys as string[], conversationId, undefined, streamedContentMap, setStreamedContentMap, setIsStreaming, removeStreamingConversation,
                     addMessageToConversation,
                     streamingConversations.has(conversationId),
-                    (state) => updateProcessingState(conversationId, state)
+                    (state) => updateProcessingState(conversationId, state),
+                    undefined, // setReasoningContentMap
+                    undefined, // throttlingRecoveryDataRef
+                    currentProject
                 );
 
                 const next = new Map(throttlingRecoveryData);
@@ -5738,7 +5187,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     }, [currentMessages, throttlingRecoveryData, checkedKeys, streamedContentMap,
         setStreamedContentMap, setIsStreaming, removeStreamingConversation,
         addMessageToConversation, streamingConversations, updateProcessingState,
-        addStreamingConversation, setThrottlingRecoveryData]);
+        addStreamingConversation, setThrottlingRecoveryData, currentProject]);
 
     // Helper to attach handlers to all buttons
     const scanAndAttachHandlers = useCallback(() => {

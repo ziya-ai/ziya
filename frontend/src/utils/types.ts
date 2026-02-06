@@ -51,19 +51,9 @@ export type Message = {
 
 export interface ConversationFolder {
     id: string;
-    name: string;
-    parentId?: string | null; // For nested folders
-    useGlobalContext: boolean; // Whether to use global file context
-    useGlobalModel: boolean; // Whether to use global model config
-    systemInstructions?: string; // Additional system instructions
-    createdAt: number;
-    updatedAt: number;
-}
-
-
-export interface Conversation {
-    id: string;
+    projectId: string;  // NEW: Scope conversations to projects
     title: string;
+    projectId?: string; // Optional for backward compatibility
     messages: Message[];
     lastAccessedAt: number | null;
     hasUnreadResponse?: boolean;

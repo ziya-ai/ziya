@@ -18,6 +18,7 @@ import {
 import { useTheme } from '../context/ThemeContext';
 import PanelResizer from './PanelResizer';
 import { useChatContext } from '../context/ChatContext';
+import { ProjectProvider } from '../context/ProjectContext';
 import { ProfilerWrapper } from './ProfilerWrapper';
 import { SafariWarning } from './SafariWarning';
 import { loadFormatters } from '../utils/mcpFormatterLoader';
@@ -347,6 +348,7 @@ export const App: React.FC = () => {
                         },
                     }}
                 >
+                    <ProjectProvider>
                     <Button
                         className={`panel-toggle ${isPanelCollapsed ? 'collapsed' : ''}`}
                         type="primary"
@@ -486,7 +488,8 @@ export const App: React.FC = () => {
                     <Suspense fallback={null}>
                         <ExportConversationModal visible={showExportModal} onClose={() => setShowExportModal(false)} />
                     </Suspense>
-
+                    
+                    </ProjectProvider>
                 </ConfigProvider>
             </ProfilerWrapper>
         </ExtensionErrorBoundary>

@@ -13,6 +13,7 @@ from pathlib import Path
 from app.mcp.client import MCPClient, MCPResource, MCPTool, MCPPrompt # Assuming MCPClient is in the same directory or sys.path is configured
 from app.utils.logging_utils import logger
 from app.mcp.dynamic_tools import get_dynamic_loader
+import time
 
 
 class MCPManager:
@@ -35,6 +36,12 @@ class MCPManager:
         """
         self.config_path = config_path or self._find_config_file()
         self.clients: Dict[str, MCPClient] = {}
+        
+        # Per-project instance pool for workspace-scoped servers
+        # Structure: {server_name: {project_path: MCPClient}}
+        self.workspace_scoped_clients: Dict[str, Dict[str, MCPClient]] = {}
+        self._workspace_instance_last_used: Dict[str, Dict[str, float]] = {}
+        self._workspace_instance_timeout = 300  # 5 minutes
         self.config_search_paths: List[str] = []
         self.builtin_server_definitions = self._get_builtin_server_definitions()
         self.is_initialized = False
@@ -79,6 +86,25 @@ class MCPManager:
         except Exception as e:
             logger.error(f"Error defining built-in MCP servers: {e}")
         return builtin_servers
+
+    def _is_workspace_scoped(self, server_name: str) -> bool:
+        """Check if MCP server should be instantiated per workspace."""
+        config = self.server_configs.get(server_name, {})
+        
+        # Check explicit configuration
+        if config.get("workspace_scoped") is not None:
+            return config["workspace_scoped"]
+        
+        # Auto-detect based on server name for known filesystem tools
+        filesystem_keywords = ['workspace', 'search', 'filesystem', 'file', 'code', 'git']
+        server_name_lower = server_name.lower()
+        
+        # Also check command/args for filesystem-related tools
+        command_str = ' '.join(config.get('command', [])) if isinstance(config.get('command'), list) else str(config.get('command', ''))
+        args_str = ' '.join(config.get('args', [])) if isinstance(config.get('args'), list) else ''
+        full_command = (command_str + ' ' + args_str).lower()
+        
+        return any(keyword in server_name_lower or keyword in full_command for keyword in filesystem_keywords)
 
     def _find_config_file(self) -> Optional[str]:
         """Find the MCP configuration file."""
@@ -396,10 +422,16 @@ class MCPManager:
         for client in self.clients.values():
             disconnect_tasks.append(client.disconnect())
         
+        # Shutdown workspace-scoped instances
+        for server_instances in self.workspace_scoped_clients.values():
+            for client in server_instances.values():
+                disconnect_tasks.append(client.disconnect())
+        
         if disconnect_tasks:
             await asyncio.gather(*disconnect_tasks, return_exceptions=True)
         
         self.clients.clear()
+        self.workspace_scoped_clients.clear()
         self.invalidate_tools_cache()  # Invalidate cache when clients change
         self.is_initialized = False
         logger.info("MCP Manager shutdown complete")
@@ -535,6 +567,15 @@ class MCPManager:
         self._tools_cache = tools
         self._tools_cache_timestamp = current_time
         logger.debug(f"MCP_MANAGER.get_all_tools: Cached {len(tools)} tools for {self._tools_cache_ttl}s")
+        
+        # Add tools from workspace-scoped instances
+        for server_name, workspace_instances in self.workspace_scoped_clients.items():
+            for workspace_path, client in workspace_instances.items():
+                if client.is_connected:
+                    for tool in client.tools:
+                        if not any(t.name == tool.name and getattr(t, '_server_name', None) == server_name for t in tools):
+                            tool._server_name = server_name  # type: ignore
+                            tools.append(tool)
         
         # Add dynamically loaded tools
         dynamic_loader = get_dynamic_loader()
@@ -781,6 +822,74 @@ class MCPManager:
             logger.warning(f"Error normalizing parameters for {tool_name}: {e}")
             return arguments
 
+    async def _get_or_create_workspace_client(self, server_name: str, workspace_path: str) -> Optional[MCPClient]:
+        """Get or create an MCP client instance for a specific workspace."""
+        workspace_path = os.path.abspath(workspace_path)
+        
+        if server_name not in self.workspace_scoped_clients:
+            self.workspace_scoped_clients[server_name] = {}
+            self._workspace_instance_last_used[server_name] = {}
+        
+        # Check if we already have an instance for this workspace
+        if workspace_path in self.workspace_scoped_clients[server_name]:
+            client = self.workspace_scoped_clients[server_name][workspace_path]
+            self._workspace_instance_last_used[server_name][workspace_path] = time.time()
+            
+            if client.is_connected and (not hasattr(client, '_is_process_healthy') or client._is_process_healthy()):
+                logger.debug(f"♻️ Reusing workspace-scoped client: {server_name} @ {workspace_path}")
+                return client
+            else:
+                logger.warning(f"Workspace-scoped client unhealthy, recreating: {server_name} @ {workspace_path}")
+                await client.disconnect()
+                del self.workspace_scoped_clients[server_name][workspace_path]
+                del self._workspace_instance_last_used[server_name][workspace_path]
+        
+        # Create new instance
+        server_config = self.server_configs.get(server_name)
+        if not server_config:
+            logger.error(f"No config found for server: {server_name}")
+            return None
+        
+        logger.info(f"Creating workspace-scoped MCP instance: {server_name} @ {workspace_path}")
+        
+        # Clone config and set workspace-specific environment
+        workspace_config = server_config.copy()
+        workspace_env = workspace_config.get("env", {}).copy()
+        workspace_env["ZIYA_USER_CODEBASE_DIR"] = workspace_path
+        workspace_config["env"] = workspace_env
+        workspace_config["name"] = f"{server_name}@{os.path.basename(workspace_path)}"
+        
+        client = MCPClient(workspace_config)
+        
+        try:
+            success = await client.connect()
+            
+            if success:
+                self.workspace_scoped_clients[server_name][workspace_path] = client
+                self._workspace_instance_last_used[server_name][workspace_path] = time.time()
+                logger.info(f"Created workspace-scoped client: {server_name} @ {workspace_path}")
+                self.invalidate_tools_cache()
+                return client
+            else:
+                logger.error(f"❌ Failed to start workspace-scoped client: {server_name} @ {workspace_path}")
+                return None
+        except Exception as e:
+            logger.error(f"❌ Error creating workspace-scoped client: {e}")
+            return None
+    
+    async def cleanup_stale_workspace_instances(self):
+        """Clean up workspace-scoped instances that haven't been used recently."""
+        now = time.time()
+        for server_name in list(self.workspace_scoped_clients.keys()):
+            for workspace_path in list(self.workspace_scoped_clients[server_name].keys()):
+                last_used = self._workspace_instance_last_used.get(server_name, {}).get(workspace_path, 0)
+                if now - last_used > self._workspace_instance_timeout:
+                    logger.info(f"Cleaning up stale workspace instance: {server_name} @ {workspace_path}")
+                    client = self.workspace_scoped_clients[server_name][workspace_path]
+                    await client.disconnect()
+                    del self.workspace_scoped_clients[server_name][workspace_path]
+                    del self._workspace_instance_last_used[server_name][workspace_path]
+
     async def call_tool(self, tool_name: str, arguments: Dict[str, Any], server_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Call an MCP tool.
@@ -842,6 +951,34 @@ class MCPManager:
         
         # Check for repetitive calls (conversation-aware)
         conversation_id = arguments.get('conversation_id') if isinstance(arguments, dict) else None
+        
+        # Extract workspace path if provided
+        workspace_path = arguments.get('_workspace_path')
+        
+        # Determine which server has this tool
+        target_server_name = server_name
+        
+        if not target_server_name:
+            # Find which server has this tool
+            for srv_name, client in self.clients.items():
+                if client.is_connected and any(tool.name == internal_tool_name for tool in client.tools):
+                    target_server_name = srv_name
+                    break
+        
+        # If this is a workspace-scoped server and we have a workspace path, route to workspace-specific instance
+        if target_server_name and self._is_workspace_scoped(target_server_name) and workspace_path:
+            logger.info(f"🎯 Routing to workspace-scoped instance: {target_server_name} @ {workspace_path}")
+            workspace_client = await self._get_or_create_workspace_client(target_server_name, workspace_path)
+            
+            if workspace_client:
+                result = await workspace_client.call_tool(internal_tool_name, arguments)
+                
+                # Trigger periodic cleanup
+                if time.time() % 60 < 1:
+                    asyncio.create_task(self.cleanup_stale_workspace_instances())
+                
+                return result
+        
         if self._is_repetitive_call(tool_name, arguments, conversation_id):
             logger.warning(f"🔍 MCP_MANAGER: Blocking repetitive tool call: {tool_name} with {arguments}")
             return {
@@ -894,17 +1031,6 @@ class MCPManager:
                     return {"error": True, "message": f"Server '{server_name}' is unhealthy", "code": -32002}
                     
                 return await client.call_tool(tool_name, arguments)
-                    
-            # If tool call fails with validation error, don't try other servers
-            result = await client.call_tool(tool_name, arguments)
-            
-            # Return validation errors immediately so the model can see them
-            if isinstance(result, dict) and result.get("error"):
-                error_msg = str(result.get("message", ""))
-                if "validation" in error_msg.lower() or "required field" in error_msg.lower():
-                    logger.info(f"Returning validation error to model: {error_msg}")
-                return result
-            
         else:
             # Try all connected servers
             for client in self.clients.values():
@@ -912,27 +1038,24 @@ class MCPManager:
                     # Check if this server has the tool (try both original and internal names)
                     tool_names_to_try = [tool_name, internal_tool_name]
                     for name_to_try in tool_names_to_try:
-                        if not name_to_try:
-                            continue
+                        if any(tool.name == name_to_try for tool in client.tools):
+                            # Ensure client is healthy before making the call
+                            if hasattr(client, '_is_process_healthy') and not await self._ensure_client_healthy(client):
+                                logger.warning(f"Client unhealthy, skipping tool execution")
+                                continue  # Skip this client, try next one
+                            
+                            # Remove the broken 'if not name_to_try' check entirely
                         
-                        # Only call tool if this server actually has it
-                        if not any(tool.name == name_to_try for tool in client.tools):
-                            continue
-                        
-                        # Ensure client is healthy before making the call
-                        if hasattr(client, '_is_process_healthy') and not await self._ensure_client_healthy(client):
-                            logger.warning(f"Client unhealthy, skipping tool execution")
-                            continue
-                        
+                        # Only log detailed call info in server mode
                         try:
-                            logger.debug(f"🔍 MCP_MANAGER: About to call client.call_tool with name='{name_to_try}', arguments={arguments}")
+                            if os.environ.get('ZIYA_MODE', 'server') == 'server':
+                                logger.debug(f"🔍 MCP_MANAGER: About to call client.call_tool with name='{name_to_try}', arguments={arguments}")
                             
                             result = await client.call_tool(name_to_try, arguments)
                             
                             logger.debug(f"🔍 MCP_MANAGER: Tool call succeeded: {name_to_try}")
                             
-                            # Return the result if successful
-                            if result is not None:
+                            if result:
                                 return result
                         except Exception as e:
                             logger.error(f"Error calling tool {name_to_try}: {e}")

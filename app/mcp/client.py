@@ -1065,6 +1065,9 @@ class MCPClient:
             # Record this call attempt
             self._tool_call_timestamps[name] = time.time()
             
+            # DEBUG: Log what we're about to send
+            logger.info(f"🔍 MCP_CLIENT: Calling _send_request with method='tools/call', name='{name}', args={arguments}")
+            
             result = await self._send_request("tools/call", {
                 "name": name,
                 "arguments": arguments

@@ -11,6 +11,7 @@ import { convertKeysToStrings } from "../utils/types";
 import { useSetQuestion } from '../context/QuestionContext';
 import { useFolderContext } from '../context/FolderContext';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
+import { useProject } from '../context/ProjectContext';
 
 // Lazy load the MarkdownRenderer
 import { MarkdownRenderer } from "./MarkdownRenderer";
@@ -42,6 +43,8 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     } = useChatContext();
 
     const { checkedKeys } = useFolderContext();
+    const { currentProject } = useProject();
+    const { activeSkillPrompts } = useProject();
     const setQuestion = useSetQuestion();
     const visibilityRef = useRef<boolean>(true);
     // Memoize conversation-specific streaming state to prevent unnecessary re-renders
@@ -170,13 +173,18 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                 message.content,
                                 convertKeysToStrings(checkedKeys || []),
                                 currentConversationId,
+                                activeSkillPrompts || undefined,
+                                message.images, // Include original images in retry
                                 streamedContentMap,
                                 setStreamedContentMap,
                                 setIsStreaming,
                                 removeStreamingConversation,
                                 addMessageToConversation,
                                 streamingConversations.has(currentConversationId),
-                                (state: 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'error') => updateProcessingState(currentConversationId, state)
+                                (state: 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'error') => updateProcessingState(currentConversationId, state),
+                                undefined, // setReasoningContentMap
+                                undefined, // throttlingRecoveryDataRef
+                                currentProject
                             );
                         } catch (error) {
                             setIsStreaming(false);
@@ -272,13 +280,18 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                     message.content,
                                     convertKeysToStrings(checkedKeys || []),
                                     currentConversationId,
+                                    activeSkillPrompts || undefined,
+                                    message.images, // Include original images
                                     streamedContentMap,
                                     setStreamedContentMap,
                                     setIsStreaming,
                                     removeStreamingConversation,
                                     addMessageToConversation,
                                     streamingConversations.has(currentConversationId),
-                                    (state: 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'error') => updateProcessingState(currentConversationId, state)
+                                (state: 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'error') => updateProcessingState(currentConversationId, state),
+                                undefined, // setReasoningContentMap
+                                undefined, // throttlingRecoveryDataRef
+                                currentProject
                                 );
                             } catch (error) {
                                 setIsStreaming(false);
