@@ -1169,14 +1169,17 @@ def apply_diff_with_difflib_hybrid_forced(
             new_lines_is_addition = h.get('new_lines_is_addition', [])
             old_block = h.get('old_block', [])
             
-            # Check if old_block matches the file EXACTLY at remove_pos
+            # Check if old_block matches the file at remove_pos (with lenient trailing comma handling)
             context_matches = False
             if old_block and remove_pos + len(old_block) <= len(final_lines_with_endings):
                 context_matches = True
                 for i in range(len(old_block)):
                     file_line = final_lines_with_endings[remove_pos + i].rstrip('\r\n')
                     old_line = old_block[i]
-                    if normalize_line_for_comparison(old_line) != normalize_line_for_comparison(file_line):
+                    # Lenient match: ignore trailing comma differences (common in JSON)
+                    old_norm = normalize_line_for_comparison(old_line).rstrip(',')
+                    file_norm = normalize_line_for_comparison(file_line).rstrip(',')
+                    if old_norm != file_norm:
                         context_matches = False
                         break
             
@@ -1229,11 +1232,14 @@ def apply_diff_with_difflib_hybrid_forced(
                         break
                 
                 # Find insertion point by locating context_before in the file
+                # Start searching from remove_pos to avoid finding wrong matches earlier in file
                 insert_pos = remove_pos + len(old_block)  # Default to end of context
                 actual_remove_count = 0
                 if context_before:
                     context_before_norm = normalize_line_for_comparison(context_before)
-                    for i in range(len(final_lines_with_endings)):
+                    # Search starting from remove_pos, not from beginning of file
+                    search_start = max(0, remove_pos - 5)  # Allow small buffer for off-by-one
+                    for i in range(search_start, len(final_lines_with_endings)):
                         if normalize_line_for_comparison(final_lines_with_endings[i]) == context_before_norm:
                             # Found context_before - insert after it
                             insert_pos = i + 1

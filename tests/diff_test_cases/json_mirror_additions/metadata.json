@@ -1,0 +1,4 @@
+{
+    "description": "JSON file with multiple additions in malformed diff - missing hunk headers between addition groups, incorrect line counts, and context mismatch (trailing comma)",
+    "target_file": "satellite.json"
+}
