@@ -1,0 +1,69 @@
+diff --git a/workplace/KuiperEAR-lep-network-configurations/lep/lep-netconf/satellite.json b/workplace/KuiperEAR-lep-network-configurations/lep/lep-netconf/satellite.json
+--- a/workplace/KuiperEAR-lep-network-configurations/lep/lep-netconf/satellite.json
++++ b/workplace/KuiperEAR-lep-network-configurations/lep/lep-netconf/satellite.json
+@@ -648,6 +648,9 @@
+ 			"mirror0.1": {
+ 				"description": "ttc0 ingress mirror"
+ 			},
++			"mirror0.2": {
++				"description": "ttc0 egress mirror"
++			},
+ 			"mirror0.10": {
+ 				"description": "eth0 ingress mirror"
+ 			},
++			"mirror0.11": {
++				"description": "eth0 egress mirror"
++			},
+ 			"mirror0.20": {
+ 				"description": "eth1 ingress mirror"
+ 			},
++			"mirror0.21": {
++				"description": "eth1 egress mirror"
++			},
+ 			"mirror0.30": {
+ 				"description": "eth3 ingress mirror"
+ 			},
++			"mirror0.31": {
++				"description": "eth3 egress mirror"
++			},
+ 			"mirror0.50": {
+ 				"description": "eth5 ingress mirror"
++			},
++			"mirror0.51": {
++				"description": "eth5 egress mirror"
+ 			}
+ 		}
+ 	},
+@@ -787,6 +800,9 @@
+ 			"mirror0.1": {
+ 				"description": "ttc0 ingress mirror"
+ 			},
++			"mirror0.2": {
++				"description": "ttc0 egress mirror"
++			},
+ 			"mirror0.10": {
+ 				"description": "eth0 ingress mirror"
+ 			},
++			"mirror0.11": {
++				"description": "eth0 egress mirror"
++			},
+ 			"mirror0.20": {
+ 				"description": "eth1 ingress mirror"
+ 			},
++			"mirror0.21": {
++				"description": "eth1 egress mirror"
++			},
+ 			"mirror0.30": {
+ 				"description": "eth3 ingress mirror"
+ 			},
++			"mirror0.31": {
++				"description": "eth3 egress mirror"
++			},
+ 			"mirror0.50": {
+ 				"description": "eth5 ingress mirror"
++			},
++			"mirror0.51": {
++				"description": "eth5 egress mirror"
+ 			}
+ 		}
+ 	}

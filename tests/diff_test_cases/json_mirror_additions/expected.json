@@ -1,0 +1,1275 @@
+{
+	"OTAC_MX": {
+		"br0": {
+			"ipv4": "10.211.0.10/16",
+			"additional_ipv4_addresses": [
+				"10.200.200.10/24"
+			],
+			"ipv6_9bytes_suffixes": [
+				"00C1:0000:0001"
+			],
+			"ipv6_prefix_len": "64",
+			"routes": {
+				"sat_mgmt": {
+					"dest": "10.200.200.0/24",
+					"gw": "10.200.200.61"
+				},
+				"ground_services_legacy_ips": {
+					"dest": "2600::/16",
+					"gw_prod_alias": "fred-primary",
+					"metric": "3000"
+				},
+				"ground_services_prod_ips": {
+					"dest": "2606:7b40:1000::/40",
+					"gw_prod_alias": "fred-primary",
+					"metric": "3000"
+				},
+				"ground_umbilical_ipv4": {
+					"dest": "10.32.0.0/16",
+					"gw": "10.200.200.1"
+				}
+			},
+			"suffix": "C1"
+		}
+	},
+	"OTAC_MY": {
+		"br0": {
+			"ipv4": "10.211.0.11/16",
+			"additional_ipv4_addresses": [
+				"10.200.200.11/24"
+			],
+			"ipv6_9bytes_suffixes": [
+				"00C4:0000:0001"
+			],
+			"ipv6_prefix_len": "64",
+			"routes": {
+				"sat_mgmt": {
+					"dest": "10.200.200.0/24",
+					"gw": "10.200.200.61"
+				},
+				"ground_services_legacy_ips": {
+					"dest": "2600::/16",
+					"gw_prod_alias": "fred-primary",
+					"metric": "3000"
+				},
+				"ground_services_prod_ips": {
+					"dest": "2606:7b40:1000::/40",
+					"gw_prod_alias": "fred-primary",
+					"metric": "3000"
+				},
+				"ground_umbilical_ipv4": {
+					"dest": "10.32.0.0/16",
+					"gw": "10.200.200.1"
+				}
+			},
+			"suffix": "C4"
+		}
+	},
+	"OTAC_PX": {
+		"br0": {
+			"ipv4": "10.211.0.12/16",
+			"additional_ipv4_addresses": [
+				"10.200.200.12/24"
+			],
+			"ipv6_9bytes_suffixes": [
+				"00C3:0000:0001"
+			],
+			"ipv6_prefix_len": "64",
+			"routes": {
+				"sat_mgmt": {
+					"dest": "10.200.200.0/24",
+					"gw": "10.200.200.61"
+				},
+				"ground_services_legacy_ips": {
+					"dest": "2600::/16",
+					"gw_prod_alias": "fred-primary",
+					"metric": "3000"
+				},
+				"ground_services_prod_ips": {
+					"dest": "2606:7b40:1000::/40",
+					"gw_prod_alias": "fred-primary",
+					"metric": "3000"
+				},
+				"ground_umbilical_ipv4": {
+					"dest": "10.32.0.0/16",
+					"gw": "10.200.200.1"
+				}
+			},
+			"suffix": "C3"
+		}
+	},
+	"OTAC_PY": {
+		"br0": {
+			"ipv4": "10.211.0.13/16",
+			"additional_ipv4_addresses": [
+				"10.200.200.13/24"
+			],
+			"ipv6_9bytes_suffixes": [
+				"00C2:0000:0001"
+			],
+			"ipv6_prefix_len": "64",
+			"routes": {
+				"sat_mgmt": {
+					"dest": "10.200.200.0/24",
+					"gw": "10.200.200.61"
+				},
+				"ground_services_legacy_ips": {
+					"dest": "2600::/16",
+					"gw_prod_alias": "fred-primary",
+					"metric": "3000"
+				},
+				"ground_services_prod_ips": {
+					"dest": "2606:7b40:1000::/40",
+					"gw_prod_alias": "fred-primary",
+					"metric": "3000"
+				},
+				"ground_umbilical_ipv4": {
+					"dest": "10.32.0.0/16",
+					"gw": "10.200.200.1"
+				}
+			},
+			"suffix": "C2"
+		}
+	},
+	"ST_TRK_1_ZENITH_PY": {
+		"eth0": {
+			"gw": "10.200.128.1",
+			"ipv4": "10.200.128.2/24",
+			"ipv6_9bytes_suffixes": [
+				"C001:0000:0001"
+			],
+			"ipv6_prefix_len": "96",
+			"peers": [
+				"fred-left",
+				"fred-right"
+			],
+			"routes": {
+				"default": {
+					"dest": "0::/0",
+					"gw_ipv6_9bytes_suffix": "C001:0000:0002"
+				}
+			},
+			"suffix": "d4"
+		}
+	},
+	"ST_TRK_2_ZENITH_NY": {
+		"eth0": {
+			"gw": "10.200.129.1",
+			"ipv4": "10.200.129.2/24",
+			"ipv6_9bytes_suffixes": [
+				"C002:0000:0001"
+			],
+			"ipv6_prefix_len": "96",
+			"peers": [
+				"fred-left",
+				"fred-right"
+			],
+			"routes": {
+				"default": {
+					"dest": "0::/0",
+					"gw_ipv6_9bytes_suffix": "C002:0000:0002"
+				}
+			},
+			"suffix": "d5"
+		}
+	},
+	"fmod-versal1": {
+		"dp_interface": "sw25g_m0_p1",
+		"eth0": {
+			"gw": "192.168.0.1",
+			"ipv4": "192.168.0.31/24",
+			"peers": [
+				"fmod-versal1-debug-eth"
+			],
+			"suffix": "0e"
+		},
+		"fmod25g_m1_p1": {
+			"ipv4": "10.200.200.72",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_fmod2_1": {
+					"dest": "10.200.200.87/32"
+				}
+			},
+			"suffix": "36"
+		},
+		"fmod25g_m1_p2": {
+			"ipv4": "10.200.200.73",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_fmod2_2": {
+					"dest": "10.200.200.86/32"
+				}
+			},
+			"suffix": "37"
+		},
+		"fmod25g_m1_p3": {
+			"ipv4": "10.200.200.74",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_fmod2_3": {
+					"dest": "10.200.200.85/32"
+				}
+			},
+			"suffix": "38"
+		},
+		"fmod25g_m2_p0": {
+			"ipv4": "10.200.200.75",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_fmod2_4": {
+					"dest": "10.200.200.84/32"
+				}
+			},
+			"suffix": "39"
+		},
+		"fmod25g_m2_p1": {
+			"ipv4": "10.200.200.76",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_fmod2_5": {
+					"dest": "10.200.200.83/32"
+				}
+			},
+			"suffix": "3A"
+		},
+		"fmod25g_m2_p2": {
+			"ipv4": "10.200.200.77",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_fmod2_6": {
+					"dest": "10.200.200.82/32"
+				}
+			},
+			"suffix": "3B"
+		},
+		"fmod25g_m2_p3": {
+			"ipv4": "10.200.200.78",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_fmod2_7": {
+					"dest": "10.200.200.81/32"
+				}
+			},
+			"suffix": "3C"
+		},
+		"net-c2c": {
+			"ipv4": "10.211.50.2/16",
+			"ipv6_9bytes_suffixes": [
+				"0031:0000:0001"
+			],
+			"ipv6_prefix_len": "64",
+			"additional_ipv4_addresses": [
+				"10.200.200.31/24"
+			],
+			"peers": [
+				"fmod-versal2",
+				"comins-switch-x",
+				"fred-left",
+				"fred-right",
+				"rxpa",
+				"rxpas2",
+				"txpa1",
+				"txpa2",
+				"txpa3"
+			],
+			"routes": {
+				"sat_mgmt": {
+					"dest": "10.200.200.0/24",
+					"gw": "10.200.200.31"
+				},
+				"ground_services_legacy_ips": {
+					"dest": "2600::/16",
+					"gw_prod_alias": "fred-primary",
+					"metric": "3000"
+				},
+				"ground_services_prod_ips": {
+					"dest": "2606:7b40:1000::/40",
+					"gw_prod_alias": "fred-primary",
+					"metric": "3000"
+				},
+				"ground_umbilical_ipv4": {
+					"dest": "10.32.0.0/16",
+					"gw": "10.200.200.1"
+				}
+			},
+			"suffix": "09"
+		},
+		"per0": {
+			"peers": [
+				"ground_gw"
+			],
+			"routes": {
+				"note": "# to be inserted dynamicaly by PER/RA"
+			},
+			"suffix": "fd"
+		},
+		"sw25g_m0_p1": {
+			"ipv4": "10.200.200.32",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_sw1_fmod2": {
+					"dest": "10.200.200.36/32"
+				}
+			},
+			"suffix": "32"
+		},
+		"sw25g_m0_p2": {
+			"ipv4": "10.200.200.33",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_sw2_fmod2": {
+					"dest": "10.200.200.37/32"
+				}
+			},
+			"suffix": "33"
+		},
+		"sw25g_m0_p3": {
+			"ipv4": "10.200.200.34",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_sw3_fmod2": {
+					"dest": "10.200.200.38/32"
+				}
+			},
+			"suffix": "34"
+		},
+		"unmanaged_interfaces": {
+			"Unmanaged": "yes"
+		}
+	},
+	"fmod-versal2": {
+		"dp_interface": "sw25g_m0_p1",
+		"eth0": {
+			"gw": "192.168.0.1",
+			"ipv4": "192.168.0.35/24",
+			"peers": [
+				"fmod-versal2-debug-eth"
+			],
+			"suffix": "0f"
+		},
+		"fmod25g_m1_p0": {
+			"ipv4": "10.200.200.81",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_fmod1_1": {
+					"dest": "10.200.200.78/32"
+				}
+			},
+			"suffix": "45"
+		},
+		"fmod25g_m1_p1": {
+			"ipv4": "10.200.200.82",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_fmod1_2": {
+					"dest": "10.200.200.77/32"
+				}
+			},
+			"suffix": "47"
+		},
+		"fmod25g_m1_p2": {
+			"ipv4": "10.200.200.83",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_fmod1_3": {
+					"dest": "10.200.200.76/32"
+				}
+			},
+			"suffix": "47"
+		},
+		"fmod25g_m1_p3": {
+			"ipv4": "10.200.200.84",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_fmod1_4": {
+					"dest": "10.200.200.75/32"
+				}
+			},
+			"suffix": "48"
+		},
+		"fmod25g_m2_p0": {
+			"ipv4": "10.200.200.85",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_fmod1_5": {
+					"dest": "10.200.200.74/32"
+				}
+			},
+			"suffix": "49"
+		},
+		"fmod25g_m2_p1": {
+			"ipv4": "10.200.200.86",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_fmod1_6": {
+					"dest": "10.200.200.73/32"
+				}
+			},
+			"suffix": "4A"
+		},
+		"fmod25g_m2_p2": {
+			"ipv4": "10.200.200.87",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_fmod1_7": {
+					"dest": "10.200.200.72/32"
+				}
+			},
+			"suffix": "4B"
+		},
+		"net-c2c": {
+			"ipv4": "10.211.50.1/16",
+			"ipv6_9bytes_suffixes": [
+				"0041:0000:0001"
+			],
+			"ipv6_prefix_len": "64",
+			"additional_ipv4_addresses": [
+				"10.200.200.35/24"
+			],
+			"peers": [
+				"fmod-versal1",
+				"comins-switch-y",
+				"fred-left",
+				"fred-right",
+				"rxpa",
+				"rxpas2",
+				"txpa1",
+				"txpa2",
+				"txpa3"
+			],
+			"routes": {
+				"sat_mgmt": {
+					"dest": "10.200.200.0/24",
+					"gw": "10.200.200.35"
+				},
+				"ground_services_legacy_ips": {
+					"dest": "2600::/16",
+					"gw_prod_alias": "fred-primary",
+					"metric": "3000"
+				},
+				"ground_services_prod_ips": {
+					"dest": "2606:7b40:1000::/40",
+					"gw_prod_alias": "fred-primary",
+					"metric": "3000"
+				},
+				"ground_umbilical_ipv4": {
+					"dest": "10.32.0.0/16",
+					"gw": "10.200.200.1"
+				}
+			},
+			"suffix": "05"
+		},
+		"sw25g_m0_p1": {
+			"ipv4": "10.200.200.36",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_sw1_fmod1": {
+					"dest": "10.200.200.32/32"
+				}
+			},
+			"suffix": "42"
+		},
+		"sw25g_m0_p2": {
+			"ipv4": "10.200.200.37",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_sw2_fmod1": {
+					"dest": "10.200.200.33/32"
+				}
+			},
+			"suffix": "43"
+		},
+		"sw25g_m0_p3": {
+			"ipv4": "10.200.200.38",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_sw3_fmod1": {
+					"dest": "10.200.200.34/32"
+				}
+			},
+			"suffix": "44"
+		},
+		"unmanaged_interfaces": {
+			"Unmanaged": "yes"
+		}
+	},
+	"fred-left": {
+		"br0": {
+			"ipv4": "10.200.200.1/24",
+			"ipv6_9bytes_suffixes": [
+				"0001:0000:0001"
+			],
+			"ipv6_prefix_len": "64",
+			"additional_ipv4_addresses": [
+				"10.211.0.1/16"
+			],
+			"neighbor_proxy_suffixes": [
+				"C001:0000:0001",
+				"C001:0000:0002",
+				"C101:0000:0002"
+			],
+			"peers": [
+				"fred-right",
+				"comins-switch-y",
+				"fmod-versal1",
+				"fmod-versal2",
+				"rxpa",
+				"rxpas2",
+				"txpa1",
+				"txpa2",
+				"txpa3"
+			],
+			"routes": {
+				"ST_TRK_2_ZENITH_NY": {
+					"dest": "10.200.129.0/24",
+					"gw": "10.200.200.2"
+				},
+				"selfiecam2": {
+					"dest": "10.200.141.0/24",
+					"gw": "10.200.200.2"
+				},
+				"ttc_exclusive_fallback_ips": {
+					"dest": "2600:7b40:1100::/40",
+					"gw_prod_alias": "fred-right",
+					"metric": "3000"
+				}
+			},
+			"suffix": "f1"
+		},
+		"eth3": {
+			"ipv4": "10.200.128.1/24",
+			"ipv6_9bytes_suffixes": [
+				"C001:0000:0002"
+			],
+			"ipv6_prefix_len": "96",
+			"peers": [
+				"ST_TRK_1_ZENITH_PY"
+			],
+			"suffix": "d0"
+		},
+		"eth4": {
+			"ipv4": "10.200.140.1/24",
+			"ipv6_9bytes_suffixes": [
+				"C101:0000:0002"
+			],
+			"ipv6_prefix_len": "96",
+			"peers": [
+				"selfiecam1"
+			],
+			"suffix": "fa"
+		},
+		"eth5": {
+			"ipv4": "192.168.0.20/24",
+			"peers": [
+				"umbilical"
+			],
+			"routes": {
+				"ground_services_legacy_ips": {
+					"dest": "2600::/16",
+					"gw": "fe80::1000",
+					"metric": "2000"
+				},
+				"ground_services_prod_ips": {
+					"dest": "2606:7b40:1000::/40",
+					"gw": "fe80::1000",
+					"metric": "2000"
+				},
+				"ground_umbilical_ipv4": {
+					"dest": "10.32.0.0/16",
+					"gw": "192.168.0.254"
+				}
+			},
+			"suffix": "ff"
+		},
+		"ttc0": {
+			"peers": [
+				"ground_gw"
+			],
+			"routes": {
+				"ground_prod_legacy": {
+					"dest": "2600::/16",
+					"metric": "1500"
+				},
+				"ground_services_prod_ips": {
+					"dest": "2606:7b40:1000::/40",
+					"metric": "1500"
+				},
+				"ground_services_ttc_only": {
+					"dest": "2606:7b40:1100::/40",
+					"metric": "2000"
+				}
+			},
+			"suffix": "fd"
+		},
+		"ipv6-mirror": {
+			"mirror0": {
+				"description": "base mirror int"
+			},
+			"mirror0.1": {
+				"description": "ttc0 ingress mirror"
+			},
+			"mirror0.2": {
+				"description": "ttc0 egress mirror"
+			},
+			"mirror0.10": {
+				"description": "eth0 ingress mirror"
+			},
+			"mirror0.11": {
+				"description": "eth0 egress mirror"
+			},
+			"mirror0.20": {
+				"description": "eth1 ingress mirror"
+			},
+			"mirror0.21": {
+				"description": "eth1 egress mirror"
+			},
+			"mirror0.30": {
+				"description": "eth3 ingress mirror"
+			},
+			"mirror0.31": {
+				"description": "eth3 egress mirror"
+			},
+			"mirror0.50": {
+				"description": "eth5 ingress mirror"
+			},
+			"mirror0.51": {
+				"description": "eth5 egress mirror"
+			}
+		}
+	},
+	"fred-right": {
+		"br0": {
+			"ipv4": "10.200.200.2/24",
+			"ipv6_9bytes_suffixes": [
+				"0002:0000:0001"
+			],
+			"ipv6_prefix_len": "64",
+			"additional_ipv4_addresses": [
+				"10.211.1.1/16"
+			],
+			"neighbor_proxy_suffixes": [
+				"C002:0000:0001",
+				"C002:0000:0002",
+				"C102:0000:0002"
+			],
+			"peers": [
+				"fred-left",
+				"comins-switch-x",
+				"fmod-versal1",
+				"fmod-versal2",
+				"rxpa",
+				"rxpas2",
+				"txpa1",
+				"txpa2",
+				"txpa3"
+			],
+			"routes": {
+				"ST_TRK_1_ZENITH_PY": {
+					"dest": "10.200.128.0/24",
+					"gw": "10.200.200.1"
+				},
+				"ground_services_prod_ips": {
+					"dest": "2606:7b40:1000::/40",
+					"gw_prod_alias": "fred-left",
+					"metric": "3000"
+				},
+				"ground_services_legacy_ips": {
+					"dest": "2600::/16",
+					"gw_prod_alias": "fred-left",
+					"metric": "3000"
+				},
+				"ground_umbilical_ipv4": {
+					"dest": "10.32.0.0/16",
+					"gw": "10.200.200.1"
+				},
+				"selfiecam1": {
+					"dest": "10.200.140.0/24",
+					"gw": "10.200.200.1"
+				},
+				"ttc_exclusive_fallback_ips": {
+					"dest": "2606:7b40:1100::/40",
+					"gw_prod_alias": "fred-left",
+					"metric": "3000"
+				}
+			},
+			"suffix": "f4"
+		},
+		"eth3": {
+			"ipv4": "10.200.129.1/24",
+			"ipv6_9bytes_suffixes": [
+				"C002:0000:0002"
+			],
+			"ipv6_prefix_len": "96",
+			"peers": [
+				"ST_TRK_2_ZENITH_NY"
+			],
+			"suffix": "d1"
+		},
+		"eth4": {
+			"ipv4": "10.200.141.1/24",
+			"ipv6_9bytes_suffixes": [
+				"C102:0000:0002"
+			],
+			"ipv6_prefix_len": "96",
+			"peers": [
+				"selfiecam2"
+			],
+			"suffix": "fa"
+		},
+		"eth5": {
+			"ipv4": "192.168.0.21/24",
+			"peers": [
+				"fred-right-debug-eth"
+			],
+			"routes": {
+				"ground_services_legacy_ips": {
+					"dest": "2600::/16",
+					"gw": "fe80::1000",
+					"metric": "2000"
+				},
+				"ground_services_prod_ips": {
+					"dest": "2606:7b40:1000::/40",
+					"gw": "fe80::1000",
+					"metric": "2000"
+				}
+			},
+			"suffix": "fe"
+		},
+		"ttc0": {
+			"peers": [
+				"ground_gw"
+			],
+			"routes": {
+				"ground_prod_legacy": {
+					"dest": "2600::/16",
+					"metric": "2000"
+				},
+				"ground_services_ttc_only": {
+					"dest": "2606:7b40:1100::/40",
+					"metric": "2000"
+				},
+				"ground_services_prod_ips": {
+					"dest": "2606:7b40:1000::/40",
+					"metric": "1500"
+				}
+			},
+			"suffix": "fc"
+		},
+		"ipv6-mirror": {
+			"mirror0": {
+				"description": "base mirror int"
+			},
+			"mirror0.1": {
+				"description": "ttc0 ingress mirror"
+			},
+			"mirror0.2": {
+				"description": "ttc0 egress mirror"
+			},
+			"mirror0.10": {
+				"description": "eth0 ingress mirror"
+			},
+			"mirror0.11": {
+				"description": "eth0 egress mirror"
+			},
+			"mirror0.20": {
+				"description": "eth1 ingress mirror"
+			},
+			"mirror0.21": {
+				"description": "eth1 egress mirror"
+			},
+			"mirror0.30": {
+				"description": "eth3 ingress mirror"
+			},
+			"mirror0.31": {
+				"description": "eth3 egress mirror"
+			},
+			"mirror0.50": {
+				"description": "eth5 ingress mirror"
+			},
+			"mirror0.51": {
+				"description": "eth5 egress mirror"
+			}
+		}
+	},
+	"rxpa": {
+		"dp_interface": "sw25g_m2_p0",
+		"eth0": {
+			"gw": "192.168.0.1",
+			"ipv4": "192.168.0.42/24",
+			"peers": [
+				"rxpa-debug-eth"
+			],
+			"suffix": "2e"
+		},
+		"net-c2c": {
+			"ipv4": "10.211.60.1/16",
+			"ipv6_9bytes_suffixes": [
+				"0022:0000:0001"
+			],
+			"ipv6_prefix_len": "64",
+			"additional_ipv4_addresses": [
+				"10.200.200.42/24"
+			],
+			"peers": [
+				"comins-switch-x",
+				"fred-left",
+				"fred-right",
+				"fmod-versal1",
+				"fmod-versal2",
+				"rxpas2",
+				"txpa1",
+				"txpa2",
+				"txpa3"
+			],
+			"routes": {
+				"ground_services_legacy_ips": {
+					"dest": "2600::/16",
+					"gw_prod_alias": "fred-primary",
+					"metric": "3000"
+				},
+				"ground_services_prod_ips": {
+					"dest": "2606:7b40:1000::/40",
+					"gw_prod_alias": "fred-primary",
+					"metric": "3000"
+				},
+				"ground_umbilical_ipv4": {
+					"dest": "10.32.0.0/16",
+					"gw": "10.200.200.1"
+				}
+			},
+			"suffix": "06"
+		},
+		"rxpa25g_m0_p0": {
+			"ipv4": "10.200.200.45",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_rxpas2": {
+					"dest": "10.200.200.48/32"
+				}
+			},
+			"suffix": "25"
+		},
+		"sw25g_m2_p0": {
+			"ipv4": "10.200.200.41",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_sw_txpa2": {
+					"dest": "10.200.200.56/32"
+				}
+			},
+			"suffix": "21"
+		},
+		"txpa25g_m1_p0": {
+			"ipv4": "10.200.200.43",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_txpa2": {
+					"dest": "10.200.200.58/32"
+				}
+			},
+			"suffix": "23"
+		},
+		"unmanaged_interfaces": {
+			"Unmanaged": "yes"
+		}
+
+	},
+	"rxpas2": {
+		"eth0": {
+			"gw": "192.168.0.1",
+			"ipv4": "192.168.0.47/24",
+			"peers": [
+				"rxpas2-debug-eth"
+			],
+			"suffix": "2f"
+		},
+		"net-c2c": {
+			"ipv4": "10.211.70.1/16",
+			"ipv6_9bytes_suffixes": [
+				"0027:0000:0001"
+			],
+			"ipv6_prefix_len": "64",
+			"additional_ipv4_addresses": [
+				"10.200.200.47/24"
+			],
+			"peers": [
+				"comins-switch-x",
+				"fred-left",
+				"fred-right",
+				"fmod-versal1",
+				"fmod-versal2",
+				"rxpa",
+				"txpa1",
+				"txpa2",
+				"txpa3"
+			],
+			"routes": {
+				"ground_services_legacy_ips": {
+					"dest": "2600::/16",
+					"gw_prod_alias": "fred-primary",
+					"metric": "3000"
+				},
+				"ground_services_prod_ips": {
+					"dest": "2606:7b40:1000::/40",
+					"gw_prod_alias": "fred-primary",
+					"metric": "3000"
+				},
+				"ground_umbilical_ipv4": {
+					"dest": "10.32.0.0/16",
+					"gw": "10.200.200.1"
+				}
+			},
+			"suffix": "07"
+		},
+		"rxpa25g_m0_p0": {
+			"ipv4": "10.200.200.49",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_txpa2": {
+					"dest": "10.200.200.60/32"
+				}
+			},
+			"suffix": "29"
+		},
+		"sw25g_m2_p1": {
+			"ipv4": "10.200.200.48",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_rxpas1": {
+					"dest": "10.200.200.45/32"
+				}
+			},
+			"suffix": "28"
+		},
+		"txpa25g_m1_p0": {
+			"Unmanaged": "yes"
+		},
+		"txpa25g_m1_p1": {
+			"Unmanaged": "yes"
+		},
+		"unmanaged_interfaces": {
+			"Unmanaged": "yes"
+		}
+	},
+	"selfiecam-my": {
+		"eth0": {
+			"gw": "10.200.141.1",
+			"ipv4": "10.200.141.20/24",
+			"peers": [
+				"n/a"
+			],
+			"suffix": "F6"
+		}
+	},
+	"selfiecam-py": {
+		"eth0": {
+			"gw": "10.200.140.1",
+			"ipv4": "10.200.140.20/24",
+			"peers": [
+				"n/a"
+			],
+			"suffix": "F5"
+		}
+	},
+	"txpa1": {
+		"dp_interface": "txpa2_swb_p1",
+		"eth0": {
+			"gw": "192.168.0.1",
+			"ipv4": "192.168.0.51/24",
+			"peers": [
+				"txpa1-debug-eth"
+			],
+			"suffix": "1D"
+		},
+		"net-c2c": {
+			"ipv4": "10.211.20.1/16",
+			"ipv6_9bytes_suffixes": [
+				"0011:0000:0001"
+			],
+			"ipv6_prefix_len": "64",
+			"additional_ipv4_addresses": [
+				"10.200.200.51/24"
+			],
+			"peers": [
+				"comins-switch-x",
+				"fred-left",
+				"fred-right",
+				"fmod-versal1",
+				"fmod-versal2",
+				"rxpa",
+				"txpa2",
+				"txpa3"
+			],
+			"routes": {
+				"ground_services_legacy_ips": {
+					"dest": "2600::/16",
+					"gw_prod_alias": "fred-primary",
+					"metric": "3000"
+				},
+				"ground_services_prod_ips": {
+					"dest": "2606:7b40:1000::/40",
+					"gw_prod_alias": "fred-primary",
+					"metric": "3000"
+				},
+				"ground_umbilical_ipv4": {
+					"dest": "10.32.0.0/16",
+					"gw": "10.200.200.1"
+				}
+			},
+			"suffix": "02"
+		},
+		"txpa2_rxpas1_p0": {
+			"Unmanaged": "yes"
+		},
+		"txpa2_rxpas1_p1": {
+			"Unmanaged": "yes"
+		},
+		"txpa2_rxpas2_p1": {
+			"ipv4": "10.200.200.54",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_txpa3": {
+					"dest": "10.200.200.64/32"
+				}
+			},
+			"suffix": "14"
+		},
+		"txpa2_swb_p1": {
+			"ipv4": "10.200.200.52",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_sw_txpa3": {
+					"dest": "10.200.200.62/32"
+				}
+			},
+			"suffix": "12"
+		},
+		"unmanaged_interfaces": {
+			"Unmanaged": "yes"
+		}
+	},
+	"txpa2": {
+		"dp_interface": "txpa2_swb_p1",
+		"eth0": {
+			"gw": "192.168.0.1",
+			"ipv4": "192.168.0.55/24",
+			"peers": [
+				"txpa2-debug-eth"
+			],
+			"suffix": "17"
+		},
+		"net-c2c": {
+			"ipv4": "10.211.30.1/16",
+			"ipv6_9bytes_suffixes": [
+				"0015:0000:0001"
+			],
+			"ipv6_prefix_len": "64",
+			"additional_ipv4_addresses": [
+				"10.200.200.55/24"
+			],
+			"peers": [
+				"comins-switch-y",
+				"fred-left",
+				"fred-right",
+				"fmod-versal1",
+				"fmod-versal2",
+				"rxpa",
+				"rxpas2",
+				"txpa1",
+				"txpa3"
+			],
+			"routes": {
+				"ground_services_legacy_ips": {
+					"dest": "2600::/16",
+					"gw_prod_alias": "fred-primary",
+					"metric": "3000"
+				},
+				"ground_services_prod_ips": {
+					"dest": "2606:7b40:1000::/40",
+					"gw_prod_alias": "fred-primary",
+					"metric": "3000"
+				},
+				"ground_umbilical_ipv4": {
+					"dest": "10.32.0.0/16",
+					"gw": "10.200.200.1"
+				}
+			},
+			"suffix": "03"
+		},
+		"txpa2_rxpas1_p1": {
+			"ipv4": "10.200.200.58",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_rxpas1": {
+					"dest": "10.200.200.43/32"
+				}
+			},
+			"suffix": "18"
+		},
+		"txpa2_rxpas2_p1": {
+			"ipv4": "10.200.200.60",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_rxpas2": {
+					"dest": "10.200.200.49/32"
+				}
+			},
+			"suffix": "1A"
+		},
+		"txpa2_swb_p1": {
+			"ipv4": "10.200.200.56",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_sw_rxpas1": {
+					"dest": "10.200.200.41/32"
+				}
+			},
+			"suffix": "16"
+		},
+		"unmanaged_interfaces": {
+			"Unmanaged": "yes"
+		}
+	},
+	"txpa3": {
+		"dp_interface": "txpa2_rxpas1_p1",
+		"eth0": {
+			"gw": "192.168.0.1",
+			"ipv4": "192.168.0.61/24",
+			"peers": [
+				"txpa3-debug-eth"
+			],
+			"suffix": "1F"
+		},
+		"net-c2c": {
+			"ipv4": "10.211.40.1/16",
+			"ipv6_9bytes_suffixes": [
+				"001B:0000:0001"
+			],
+			"ipv6_prefix_len": "64",
+			"additional_ipv4_addresses": [
+				"10.200.200.61/24"
+			],
+			"peers": [
+				"comins-switch-y",
+				"fred-left",
+				"fred-right",
+				"fmod-versal1",
+				"fmod-versal2",
+				"rxpa",
+				"txpa1",
+				"txpa2"
+			],
+			"routes": {
+				"ground_services_legacy_ips": {
+					"dest": "2600::/16",
+					"gw_prod_alias": "fred-primary",
+					"metric": "3000"
+				},
+				"ground_services_prod_ips": {
+					"dest": "2606:7b40:1000::/40",
+					"gw_prod_alias": "fred-primary",
+					"metric": "3000"
+				},
+				"ground_umbilical_ipv4": {
+					"dest": "10.32.0.0/16",
+					"gw": "10.200.200.1"
+				}
+			},
+			"suffix": "04"
+		},
+		"txpa2_rxpas1_p1": {
+			"ipv4": "10.200.200.62",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_sw_txpa1": {
+					"dest": "10.200.200.52/32"
+				}
+			},
+			"suffix": "1C"
+		},
+		"txpa2_rxpas2_p1": {
+			"ipv4": "10.200.200.64",
+			"peers": [
+				"n/a"
+			],
+			"routes": {
+				"redundant_txpa1": {
+					"dest": "10.200.200.54/32"
+				}
+			},
+			"suffix": "1E"
+		},
+		"txpa2_swb_p0": {
+			"Unmanaged": "yes"
+		},
+		"txpa2_swb_p1": {
+			"Unmanaged": "yes"
+		},
+		"unmanaged_interfaces": {
+			"Unmanaged": "yes"
+		}
+	}
+}
