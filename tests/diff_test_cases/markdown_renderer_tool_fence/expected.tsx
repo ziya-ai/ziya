@@ -5119,11 +5119,6 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
                 // Replace tool blocks with markdown code blocks using a special lang tag
                 toolBlocks.forEach(({ match, toolName, displayHeader, content }) => {
-                    processedMarkdown = processedMarkdown.replace(
-                        match,
-                        `\`\`\`tool:${toolName}|${displayHeader}\n${content}\n\`\`\``
-                    );
-                });
                     // Check if content is wrapped in code fences and extract
                     const codeFenceMatch = content.trim().match(/^```(\w+)?\n([\s\S]*?)\n```$/);
                     if (codeFenceMatch) {
@@ -5135,7 +5130,12 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                             matchName}|${displayHeader}${langSuffix}\n${innerContent.trim()}\n\`\`\``
                         );
                     } else {
+                    processedMarkdown = processedMarkdown.replace(
+                        match,
+                        `\`\`\`tool:${toolName}|${displayHeader}\n${content}\n\`\`\``
+                    );
                     }
+                });
             } catch (toolBlockError) {
                 console.debug('Tool block preprocessing error (handled):', toolBlockError);
             }
