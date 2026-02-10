@@ -4774,37 +4774,37 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                     // Process each segment separately
                     processedMarkdown = segments.map((segment, index) => {
                         // Skip math processing for code blocks (odd indices in the split)
-                        // In math blocks, only unescape quotes, not backslashes
-                        return segment;
-                    }
+                        if (index % 2 === 1 && segment.startsWith('```')) {
+                            return segment;
+                        }
 
+                        // Process math only in non-code segments
+                        let processed = segment;
+
+                        try {
                     console.log('📐 Processing math in segment:', {
                         segmentPreview: segment.substring(0, 100),
                         hasMathbf: segment.includes('mathbf'),
                         hasDisplayMath: segment.includes('$$')
                     });
 
-                    // Process math only in non-code segments
-                    let processed = segment;
-
-                    try {
                             // DEBUG: Check if this segment contains mathbf
                             if (segment.includes('mathbf')) {
                                 console.log('📐 SEGMENT with mathbf detected:', segment.substring(0, 200));
-                        }
-
-                        // Handle display math $$...$$
+                            }
+                            
+                            // Handle display math $$...$$
                         const beforeReplace = processed;
-                        processed = processed.replace(
-                            /\$\$([\s\S]+?)\$\$/g,
+                            processed = processed.replace(
+                                /\$\$([\s\S]+?)\$\$/g,
                             (match, captured) => {
                                 console.log('📐 DISPLAY MATH REPLACEMENT:', { match: match.substring(0, 100), captured: captured.substring(0, 100), hasMathbf: captured.includes('mathbf') });
                                 return '\n<div class="math-display-block">MATH_DISPLAY:' + captured + '</div>\n';
                             }
-                        );
+                            );
                         console.log('📐 After display math replace:', { changed: beforeReplace !== processed, processedPreview: processed.substring(0, 200) });
 
-                        // Handle inline math $...$
+                            // Handle inline math $...$
                             processed = processed.replace(
                                 /\$([^⟩$\n]+?)\$/g,
                                 (match, p1) => {
