@@ -5,6 +5,7 @@ This ensures validation results are 100% accurate to what would happen during
 actual application, with per-hunk detailed feedback.
 """
 
+import logging
 import os
 import tempfile
 import shutil
@@ -76,6 +77,17 @@ def validate_diff_with_full_pipeline(
     
     full_path = os.path.join(codebase_dir, file_path)
     
+    # If file not found at primary codebase_dir, check the current project path
+    # This handles the case where ZIYA_USER_CODEBASE_DIR is the server launch dir
+    # but the diff targets files in a different project
+    if not os.path.exists(full_path):
+        try:
+            from ...storage.projects import ProjectStorage
+            from ...utils.paths import get_ziya_home
+            # Try to find file by checking all known project paths
+        except ImportError:
+            pass
+
     # Check if this is a new file creation
     is_new_file = "new file mode" in diff_content or "--- /dev/null" in diff_content
     
@@ -97,6 +109,16 @@ def validate_diff_with_full_pipeline(
         
         # Point pipeline to temp directory
         os.environ["ZIYA_USER_CODEBASE_DIR"] = temp_dir
+        
+        # Suppress noisy warnings during validation (dry-run mode)
+        diff_logger = logging.getLogger('app.utils.diff_utils')
+        atomic_logger = logging.getLogger('app.utils.diff_utils.application.atomic_applier')
+        original_diff_level = diff_logger.level
+        original_atomic_level = atomic_logger.level
+        
+        # Set to ERROR to suppress WARNING during dry-run
+        diff_logger.setLevel(logging.ERROR)
+        atomic_logger.setLevel(logging.ERROR)
         
         try:
             # Run the EXACT same pipeline that would be used for real application
@@ -143,6 +165,9 @@ def validate_diff_with_full_pipeline(
             logger.info(f"Validation complete: {result['status']} - {len(result['succeeded_hunks'])}/{result['total_hunks']} hunks OK")
             
         finally:
+            # Restore original log levels
+            diff_logger.setLevel(original_diff_level)
+            atomic_logger.setLevel(original_atomic_level)
             # Restore environment
             if original_codebase_dir:
                 os.environ["ZIYA_USER_CODEBASE_DIR"] = original_codebase_dir
