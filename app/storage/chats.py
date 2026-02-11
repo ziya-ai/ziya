@@ -86,7 +86,7 @@ class ChatStorage(BaseStorage[Chat]):
             lastActiveAt=now
         )
         
-        self._write_json(self._chat_file(chat_id), chat.dict())
+        self._write_json(self._chat_file(chat_id), chat.model_dump())
         return chat
     
     def update(self, chat_id: str, data: ChatUpdate) -> Optional[Chat]:
@@ -94,12 +94,12 @@ class ChatStorage(BaseStorage[Chat]):
         if not chat:
             return None
         
-        update_dict = data.dict(exclude_unset=True)
+        update_dict = data.model_dump(exclude_unset=True)
         for key, value in update_dict.items():
             setattr(chat, key, value)
         
         chat.lastActiveAt = int(time.time() * 1000)
-        self._write_json(self._chat_file(chat_id), chat.dict())
+        self._write_json(self._chat_file(chat_id), chat.model_dump())
         return chat
     
     def delete(self, chat_id: str) -> bool:
@@ -117,7 +117,7 @@ class ChatStorage(BaseStorage[Chat]):
         
         chat.messages.append(message)
         chat.lastActiveAt = int(time.time() * 1000)
-        self._write_json(self._chat_file(chat_id), chat.dict())
+        self._write_json(self._chat_file(chat_id), chat.model_dump())
         return chat
     
     def remove_context_from_all_chats(self, context_id: str) -> None:
@@ -125,18 +125,18 @@ class ChatStorage(BaseStorage[Chat]):
         for chat in self.list():
             if context_id in chat.contextIds:
                 chat.contextIds.remove(context_id)
-                self._write_json(self._chat_file(chat.id), chat.dict())
+                self._write_json(self._chat_file(chat.id), chat.model_dump())
     
     def remove_skill_from_all_chats(self, skill_id: str) -> None:
         """Remove a skill from all chats that reference it."""
         for chat in self.list():
             if skill_id in chat.skillIds:
                 chat.skillIds.remove(skill_id)
-                self._write_json(self._chat_file(chat.id), chat.dict())
+                self._write_json(self._chat_file(chat.id), chat.model_dump())
     
     def touch(self, chat_id: str) -> None:
         """Update lastActiveAt timestamp."""
         chat = self.get(chat_id)
         if chat:
             chat.lastActiveAt = int(time.time() * 1000)
-            self._write_json(self._chat_file(chat_id), chat.dict())
+            self._write_json(self._chat_file(chat_id), chat.model_dump())

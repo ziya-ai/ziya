@@ -64,7 +64,7 @@ class ContextStorage(BaseStorage[Context]):
             lastUsedAt=now
         )
         
-        self._write_json(self._context_file(context_id), context.dict())
+        self._write_json(self._context_file(context_id), context.model_dump())
         return context
     
     def update(self, context_id: str, data: ContextUpdate) -> Optional[Context]:
@@ -72,7 +72,7 @@ class ContextStorage(BaseStorage[Context]):
         if not context:
             return None
         
-        update_dict = data.dict(exclude_unset=True)
+        update_dict = data.model_dump(exclude_unset=True)
         
         # Recalculate tokens if files changed
         if 'files' in update_dict and self.project_path:
@@ -90,7 +90,7 @@ class ContextStorage(BaseStorage[Context]):
             setattr(context, key, value)
         
         context.lastUsedAt = int(time.time() * 1000)
-        self._write_json(self._context_file(context_id), context.dict())
+        self._write_json(self._context_file(context_id), context.model_dump())
         return context
     
     def delete(self, context_id: str) -> bool:
@@ -105,4 +105,4 @@ class ContextStorage(BaseStorage[Context]):
         context = self.get(context_id)
         if context:
             context.lastUsedAt = int(time.time() * 1000)
-            self._write_json(self._context_file(context_id), context.dict())
+            self._write_json(self._context_file(context_id), context.model_dump())
