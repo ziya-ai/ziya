@@ -1243,14 +1243,24 @@ export const sendPayload = async (
                 let contentToAdd = '';
 
                 // Check for rewind markers in accumulated content first
-                if (currentContent.includes('<!-- REWIND_MARKER:')) {
-                    const rewindMatch = currentContent.match(/<!-- REWIND_MARKER: (\d+)(?:\|FENCE:([`~])(\w*))? -->(?:<\/span>)?/);
+                // CRITICAL: Check if backend sent a specific marker ID to target
+                if (jsonData.type === 'rewind' && jsonData.to_marker) {
+                    const marker = `<!-- REWIND_MARKER: ${jsonData.to_marker}`;
+                    console.log(`🔄 REWIND: Searching for specific marker: ${marker}`);
+                    
+                    const markerIndex = currentContent.indexOf(marker);
+                    if (markerIndex === -1) {
+                        console.warn(`⚠️ REWIND: Marker not found: ${marker}`);
+                        return;
+                    }
+                    
+                    const rewindMatch = currentContent.substring(markerIndex).match(/<!-- REWIND_MARKER: ([^\s]+)(?:\|FENCE:([`~])(\w*))? -->(?:<\/span>)?/);
                     if (rewindMatch) {
-                        const rewindLineNumber = parseInt(rewindMatch[1], 10);
+                        const markerLabel = rewindMatch[1]; // Could be line number or other ID
                         const fenceType = rewindMatch[2]; // '`' or '~' or undefined
                         const fenceLanguage = rewindMatch[3]; // language tag or undefined
 
-                        console.log(`🔄 REWIND: Marker detected - line ${rewindLineNumber}, fence: ${fenceType ? fenceType.repeat(3) + fenceLanguage : 'none'}`);
+                        console.log(`🔄 REWIND: Marker detected - ${markerLabel}, fence: ${fenceType ? fenceType.repeat(3) + fenceLanguage : 'none'}`);
 
                         /**
                          * Parse markdown structure to detect unclosed blocks
@@ -1299,9 +1309,9 @@ export const sendPayload = async (
 
                         // Remove everything from the rewind marker onwards
                         const lines = currentContent.split('\n');
-                        const markerIndex = lines.findIndex(line => line.includes('<!-- REWIND_MARKER:') || line.includes('<span class="rewind-marker"'));
-                        if (markerIndex >= 0) {
-                            const beforeRewind = lines.slice(0, markerIndex).join('\n');
+                        const lineIndex = lines.findIndex(line => line.includes(marker));
+                        if (lineIndex >= 0) {
+                            const beforeRewind = lines.slice(0, lineIndex).join('\n');
 
                             // Parse markdown state at the rewind point
                             const markdownState = parseMarkdownState(beforeRewind);

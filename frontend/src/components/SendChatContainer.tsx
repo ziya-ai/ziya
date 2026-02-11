@@ -31,6 +31,9 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   const [showContinueButton, setShowContinueButton] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const editorRef = useRef<HTMLDivElement>(null);
+  const draftsRef = useRef<Map<string, string>>(new Map());
+  // Initialize with undefined to avoid circular dependency during initial render
+  const prevConversationIdRef = useRef<string | undefined>(undefined);
   
   const {
     currentConversationId,
@@ -48,7 +51,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   } = useChatContext();
   
   const { checkedKeys } = useFolderContext();
-  const { activeSkillPrompts } = useProject();
+  const { activeSkillPrompts, currentProject } = useProject();
   const { isDarkMode } = useTheme();
   
   const isCurrentlyStreaming = streamingConversations.has(currentConversationId);
@@ -129,10 +132,39 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     }
   }, [currentMessages, streamingConversations, currentConversationId]);
   
-  // Clear images when conversation changes
+  // Save/restore draft text and clear images when conversation changes
   useEffect(() => {
+    const prevId = prevConversationIdRef.current || currentConversationId;
+    
+    // Skip the first run where prevId is undefined
+    if (prevConversationIdRef.current === undefined) {
+      prevConversationIdRef.current = currentConversationId;
+      return;
+    }
+
+    // Save the current editor content as a draft for the conversation we're leaving
+    if (prevId && prevId !== currentConversationId && editorRef.current) {
+      const currentContent = editorRef.current.innerHTML;
+      if (currentContent && currentContent.trim()) {
+        draftsRef.current.set(prevId, currentContent);
+      } else {
+        draftsRef.current.delete(prevId);
+      }
+    }
+
+    // Clear images for the new conversation
     setAttachedImages([]);
-    if (editorRef.current) editorRef.current.innerHTML = '';
+
+    // Restore draft for the conversation we're switching to, or clear
+    if (editorRef.current) {
+      const savedDraft = draftsRef.current.get(currentConversationId);
+      editorRef.current.innerHTML = savedDraft || '';
+      // Sync inputValue state with restored content
+      const { text } = serializeEditorContent();
+      setInputValue(text);
+    }
+
+    prevConversationIdRef.current = currentConversationId;
   }, [currentConversationId]);
   
   // Process image files (from file input or drag-drop)
@@ -335,6 +367,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
         // Clear the input
         if (editorRef.current) editorRef.current.innerHTML = '';
         setInputValue('');
+        draftsRef.current.delete(currentConversationId);
         
         message.success({
           content: (
@@ -402,6 +435,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       if (editorRef.current) editorRef.current.innerHTML = '';
       setInputValue('');
       setAttachedImages([]);
+      draftsRef.current.delete(targetConversationId);
       
       // Start streaming
       addStreamingConversation(targetConversationId);
@@ -424,7 +458,8 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
         addMessageToConversation,
         streamingConversations.has(targetConversationId),
         (state) => updateProcessingState(targetConversationId, state),
-        setReasoningContentMap
+        setReasoningContentMap,
+        currentProject // Pass current project so backend knows working directory
       );
     } catch (error) {
       console.error('Error sending message:', error);

@@ -4,7 +4,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useProject } from '../context/ProjectContext';
 import { Dropdown, Menu, Button, Input, message, Tooltip } from 'antd';
-import { FolderOutlined, DownOutlined, EditOutlined, CheckOutlined, CloseOutlined } from '@ant-design/icons';
+import { FolderOutlined, DownOutlined, EditOutlined, CheckOutlined, CloseOutlined, FolderOpenOutlined } from '@ant-design/icons';
+import { DirectoryBrowserModal } from './DirectoryBrowserModal';
 
 export const ProjectSwitcher: React.FC = () => {
   const { 
@@ -12,11 +13,13 @@ export const ProjectSwitcher: React.FC = () => {
     projects, 
     isLoadingProject, 
     switchProject,
+    createProject,
     updateProject 
   } = useProject();
   const [isOpen, setIsOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editedName, setEditedName] = useState('');
+  const [showDirectoryBrowser, setShowDirectoryBrowser] = useState(false);
   const inputRef = useRef<any>(null);
   
   // Focus input when editing starts
@@ -54,6 +57,26 @@ export const ProjectSwitcher: React.FC = () => {
     setEditedName('');
   };
   
+  const handleOpenFolderClick = () => {
+    setIsOpen(false);
+    setShowDirectoryBrowser(true);
+  };
+  
+  const handleDirectorySelect = async (path: string) => {
+    try {
+      const newProject = await createProject(path);
+      message.success(`Project "${newProject.name}" created`);
+      
+      // Switch to the newly created project
+      await switchProject(newProject.id);
+      
+      setShowDirectoryBrowser(false);
+    } catch (error) {
+      message.error('Failed to create project');
+      console.error('Project creation error:', error);
+    }
+  };
+  
   if (isLoadingProject) {
     return (
       <div style={{ padding: '10px 12px', background: '#0a0a0a', borderBottom: '1px solid #333' }}>
@@ -82,7 +105,9 @@ export const ProjectSwitcher: React.FC = () => {
         minWidth: '280px'
       }}
       onClick={({ key }) => {
-        if (key !== currentProject.id) {
+        if (key === '__open_folder') {
+          handleOpenFolderClick();
+        } else if (key !== currentProject.id) {
           switchProject(key);
         }
         setIsOpen(false);
@@ -132,6 +157,18 @@ export const ProjectSwitcher: React.FC = () => {
           ))}
         </Menu.ItemGroup>
       )}
+      
+      {/* Divider */}
+      <Menu.Divider style={{ margin: '4px 0', background: '#333' }} />
+      
+      {/* Open folder action */}
+      <Menu.Item 
+        key="__open_folder"
+        style={{ color: '#3b82f6', fontWeight: 500, margin: '4px 8px' }}
+        icon={<FolderOpenOutlined />}
+      >
+        Open folder as project...
+      </Menu.Item>
     </Menu>
   );
   
@@ -225,6 +262,13 @@ export const ProjectSwitcher: React.FC = () => {
         </div>
       </Dropdown>
       )}
+      
+      {/* Directory Browser Modal */}
+      <DirectoryBrowserModal
+        open={showDirectoryBrowser}
+        onClose={() => setShowDirectoryBrowser(false)}
+        onSelect={handleDirectorySelect}
+      />
     </div>
   );
 };
