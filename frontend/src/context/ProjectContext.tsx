@@ -26,7 +26,9 @@ interface ProjectContextType {
   isLoadingProject: boolean;
   switchProject: (projectId: string) => Promise<void>;
   refreshProjects: () => Promise<void>;
+  createProject: (path: string, name?: string) => Promise<Project>;
   updateProject: (id: string, updates: ProjectUpdate) => Promise<void>;
+  createProject: (path: string, name?: string) => Promise<Project>;
   
   // Context state
   contexts: Context[];
@@ -275,6 +277,20 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setProjects(allProjects);
   }, []);
   
+  const createProjectFn = useCallback(async (path: string, name?: string) => {
+    const newProject = await projectApi.createProject({ path, name });
+    
+    // Add to projects list
+    setProjects(prev => [...prev, newProject]);
+    
+    // Auto-switch to new project
+    await switchProject(newProject.id);
+    
+    console.log(`✅ Created and switched to project: ${newProject.name} at ${newProject.path}`);
+    
+    return newProject;
+  }, [switchProject]);
+  
   const updateProjectFn = useCallback(async (id: string, updates: ProjectUpdate) => {
     const updated = await projectApi.updateProject(id, updates);
     
@@ -392,6 +408,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     switchProject,
     refreshProjects,
     updateProject: updateProjectFn,
+    createProject: createProjectFn,
     
     // Contexts
     contexts,
@@ -434,6 +451,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     switchProject,
     refreshProjects,
     updateProjectFn,
+    createProjectFn,
     contexts,
     isLoadingContexts,
     createContextFn,
