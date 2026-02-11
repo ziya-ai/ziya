@@ -611,7 +611,7 @@ class StreamingToolExecutor:
         
         return messages
 
-    async def stream_with_tools(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def stream_with_tools(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
         # Initialize streaming metrics
         stream_metrics = {
             'events_sent': 0,
@@ -944,6 +944,18 @@ class StreamingToolExecutor:
             commands_this_iteration = []  # Track commands executed in this specific iteration
             empty_tool_calls_this_iteration = 0  # Track empty tool calls in this iteration
             
+            # Safety guard: prevent sending conversation ending with assistant message
+            # to models that don't support assistant prefill (e.g. Opus 4 via Bedrock)
+            if (iteration > 0 and conversation and
+                    conversation[-1].get('role') == 'assistant' and
+                    not self.model_config.get('supports_assistant_prefill', True)):
+                logger.info(
+                    f"🛑 PREFILL_GUARD: Iteration {iteration} would send conversation ending "
+                    f"with assistant message to non-prefill model. Ending stream."
+                )
+                yield {'type': 'stream_end'}
+                break
+
             body = {
                 "anthropic_version": "bedrock-2023-05-31",
                 "max_tokens": self.model_config.get('max_output_tokens', 4000),
@@ -1905,6 +1917,9 @@ Retry with the 'command' parameter included."""
                                    if builtin_tool:
                                         # Call builtin tool directly
                                         logger.info(f"🔧 Calling builtin tool directly: {actual_tool_name}")
+                                        # Inject project path for workspace-scoped routing
+                                        if project_root:
+                                            args['_workspace_path'] = project_root
                                         result = builtin_tool._run(**args)
                                         
                                         # SECURITY: Sign builtin tool results too
@@ -1917,9 +1932,29 @@ Retry with the 'command' parameter included."""
                                             result = sign_tool_result(actual_tool_name, args, result, conversation_id)
                                             logger.debug(f"🔐 Signed builtin tool result for {actual_tool_name}")
                                    else:
-                                       # Call through MCP manager for external tools
+                                        # Call through MCP manager for external tools
+                                        # Determine which server has this tool
+                                        target_server_name = None
+                                        for tool in all_tools:
+                                            tool_name_check = getattr(tool, 'name', '')
+                                            # Check both with and without mcp_ prefix
+                                            if tool_name_check == actual_tool_name or tool_name_check == f"mcp_{actual_tool_name}":
+                                                # Found the tool, get its server name
+                                                if hasattr(tool, 'metadata') and tool.metadata:
+                                                    target_server_name = tool.metadata.get('server_name')
+                                                    if target_server_name:
+                                                        logger.debug(f"🔍 ROUTING: Found tool {actual_tool_name} belongs to server '{target_server_name}'")
+                                                        break
+                                        
+                                        if not target_server_name:
+                                            logger.warning(f"🔍 ROUTING: Could not determine server for tool {actual_tool_name}, manager will try all servers")
+                                        
+                                        # Inject project path so the MCP manager can route to
+                                        # a workspace-scoped server instance with the correct cwd
+                                        if project_root:
+                                            args['_workspace_path'] = project_root
                                         # External tools get signed in MCPClient.call_tool automatically
-                                       result = await mcp_manager.call_tool(actual_tool_name, args)
+                                        result = await mcp_manager.call_tool(actual_tool_name, args, server_name=target_server_name)
                                     
                                    # Initialize verification tracking variables
                                    is_verified = False
@@ -2136,6 +2171,10 @@ Please retry the tool call with valid JSON. Ensure:
                         max_continuations = 10
                         continuation_happened = False
                         
+                        # Generate a stable marker ID for this continuation cycle
+                        # This allows frontend to jump to the exact same spot on all retry attempts
+                        continuation_marker_id = f"continuation_{time.time_ns()}"
+                        
                         while code_block_tracker.get('in_block') and continuation_count < max_continuations:
                             continuation_count += 1
                             block_type = code_block_tracker.get('block_type', 'code')
@@ -2150,11 +2189,17 @@ Please retry the tool call with valid JSON. Ensure:
                                 logger.info(f"🔄 REWIND: Removed incomplete last line, rewinding to line {len(assistant_lines)}")
                             
                             last_complete_line = len(assistant_lines)
-                            rewind_marker = f"<!-- REWIND_MARKER: {last_complete_line} -->"
+                            
+                            # Use stable marker ID so all retries rewind to the SAME spot
+                            rewind_marker = f"<!-- REWIND_MARKER: {continuation_marker_id} -->"
+                            
                             rewind_chunk = {
                                 'type': 'text',
-                                'content': f"{rewind_marker}\n**🔄 Block continues...**\n",
-                                'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                                'content': f"{rewind_marker}\n\n",
+                                'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms",
+                                # Tell frontend which marker to target
+                                'rewind': True,
+                                'to_marker': continuation_marker_id
                             }
                             logger.info(f"🔄 YIELDING_REWIND: Rewinding to line {last_complete_line}")
                             yield track_yield(rewind_chunk)
@@ -2447,6 +2492,19 @@ Please retry the tool call with valid JSON. Ensure:
                     
                     # No tools executed - check if we should end the stream
                     if assistant_text.strip():
+                        # For models that don't support assistant prefill (e.g. Opus 4 via Bedrock),
+                        # continuing to the next iteration would fail because the conversation ends
+                        # with an assistant message and no tool results to add a user message.
+                        # End the stream gracefully instead of attempting another API call.
+                        supports_prefill = self.model_config.get('supports_assistant_prefill', True)
+                        if not supports_prefill and not tools_executed_this_iteration:
+                            logger.info(
+                                f"🛑 NO_PREFILL_END: Model doesn't support prefill, "
+                                f"ending stream after text-only response (continuation={continuation_happened})"
+                            )
+                            yield {'type': 'stream_end'}
+                            break
+
                         # CRITICAL: Detect stable short responses to prevent infinite loops
                         # If the response is very short (< 50 chars) and we're repeating iterations
                         # with identical output, it's a stable completion - end the stream
@@ -2608,13 +2666,22 @@ Please retry the tool call with valid JSON. Ensure:
                 error_str = str(e)
                 logger.error(f"Error in stream_with_tools iteration {iteration}: {error_str}", exc_info=True)
                 
-                # Check if this is a throttling error
-                is_throttling = any(indicator in error_str for indicator in [
+                # Check if this is a throttling or transient service error
+                is_throttling_error = any(indicator in error_str for indicator in [
                     "ThrottlingException", 
                     "Too many tokens",
                     "Too many requests", 
                     "Rate exceeded",
                 ])
+                
+                # Check for transient AWS service errors that should be retried
+                is_transient_error = any(indicator in error_str for indicator in [
+                    "internalServerException",
+                    "ServiceUnavailableException",
+                    "The system encountered an unexpected error",
+                ])
+                
+                is_throttling = is_throttling_error or is_transient_error
                 
                 # Check for authentication/credential errors
                 from app.plugins import get_active_auth_provider
@@ -2686,21 +2753,28 @@ Please retry the tool call with valid JSON. Ensure:
                     # Check if this is a token-based throttling (more severe)
                     is_token_throttling = "Too many tokens" in error_str
                     
-                    # Yield a special throttling error chunk with all info needed for inline display
+                    # Determine error type for display
+                    if is_transient_error:
+                        error_type = 'transient_service_error'
+                        retry_message = f"AWS service temporarily unavailable after {len(tool_results)} tool execution(s). Retrying..."
+                    else:
+                        error_type = 'throttling_error'
+                        retry_message = f"AWS rate limit exceeded after {len(tool_results)} tool execution(s). Please wait {suggested_wait} seconds before retrying."
+                    
                     yield {
-                        'type': 'throttling_error',
-                        'error': 'throttling_error',
+                        'type': error_type,
+                        'error': error_type,
                         'detail': error_str,
                         'suggested_wait': suggested_wait,
                         'is_token_throttling': is_token_throttling,
                         'iteration': iteration,
                         'tools_executed': len(tool_results),
                         'can_retry': True,
-                        'retry_message': f"AWS rate limit exceeded after {len(tool_results)} tool execution(s). "
-                                       f"Please wait {suggested_wait} seconds before retrying.",
+                        'retry_message': retry_message,
+                        'is_transient': is_transient_error,
                         'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
                     }
-                    logger.info(f"🔄 THROTTLING: Yielded throttling error chunk after {len(tool_results)} tools")
+                    logger.info(f"🔄 RETRY: Yielded {'transient error' if is_transient_error else 'throttling'} chunk after {len(tool_results)} tools")
                     return
                 elif is_auth_error:
                     # For authentication errors, yield a detailed error with helpful message
@@ -2817,10 +2891,12 @@ Please retry the tool call with valid JSON. Ensure:
             
             continuation_conversation = conversation.copy()
             
-            # Use text truncated to last complete line
-            if assistant_text.strip():
+            # Check if model supports assistant message prefill
+            supports_prefill = self.model_config.get('supports_assistant_prefill', True)
+            
+            if assistant_text.strip() and supports_prefill:
+                # Use text truncated to last complete line as assistant prefill
                 lines = assistant_text.split('\n')
-                # Remove incomplete last line if present
                 if lines and lines[-1].strip():
                     lines = lines[:-1]
                 cleaned_text = '\n'.join(lines)
@@ -2829,6 +2905,11 @@ Please retry the tool call with valid JSON. Ensure:
                     continuation_conversation[-1]['content'] = [{"type": "text", "text": cleaned_text}]
                 else:
                     continuation_conversation.append({"role": "assistant", "content": [{"type": "text", "text": cleaned_text}]})
+            elif assistant_text.strip():
+                # For models without prefill support, include context in the user prompt
+                lines = assistant_text.split('\n')
+                last_lines = '\n'.join(lines[-20:]) if len(lines) > 20 else '\n'.join(lines)
+                continuation_prompt = f"You were generating content that ended with:\n```\n{last_lines}\n```\n\n{continuation_prompt}"
             
             continuation_conversation.append({"role": "user", "content": continuation_prompt})
             
