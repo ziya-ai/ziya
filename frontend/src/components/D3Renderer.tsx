@@ -626,10 +626,26 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 if (renderSuccessful) {
                     container.innerHTML = '';
                     container.appendChild(tempContainer);
+
+                    if (mounted.current) setIsLoading(false);
+                    setRenderError(null);
+                    console.log('🔍 RENDERER: Render successful, setting hasSuccessfulRenderRef=true');
+                    onLoad?.();
+                    hasSuccessfulRenderRef.current = true;
+
+                    // Update global cache
+                    globalRenderCache.set(cacheKey, {
+                        rendered: true,
+                        timestamp: Date.now()
+                    });
+                } else {
+                    // Render failed — keep the error state from the catch block
+                    if (mounted.current) setIsLoading(false);
+                    console.log('🔍 RENDERER: Render failed, preserving error state');
                 }
 
                 // Add retry button for Mermaid diagrams if there was an error
-                if (renderError && (currentPlugin?.name === 'mermaid-renderer')) {
+                if (!renderSuccessful && (currentPlugin?.name === 'mermaid-renderer')) {
                     const retryButton = document.createElement('button');
                     retryButton.innerHTML = '🔄 Retry Rendering';
                     retryButton.className = 'diagram-action-button mermaid-retry-button';
@@ -647,17 +663,6 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                     container.appendChild(retryButton);
                 }
 
-                if (mounted.current) setIsLoading(false);
-                setRenderError(null);
-                console.log('🔍 RENDERER: Render successful, setting hasSuccessfulRenderRef=true');
-                onLoad?.();
-                hasSuccessfulRenderRef.current = true;
-
-                // Update global cache
-                globalRenderCache.set(cacheKey, {
-                    rendered: true,
-                    timestamp: Date.now()
-                });
                 return;
             }
         } catch (error: any) {
