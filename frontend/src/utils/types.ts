@@ -49,20 +49,30 @@ export type Message = {
     images?: ImageAttachment[];  // Optional array of attached images
 };
 
-export interface ConversationFolder {
+export interface Conversation {
     id: string;
-    projectId: string;  // NEW: Scope conversations to projects
+    projectId?: string;  // Scope conversations to projects
     title: string;
-    projectId?: string; // Optional for backward compatibility
     messages: Message[];
     lastAccessedAt: number | null;
     hasUnreadResponse?: boolean;
-    _version?: number;  // Optional version field for tracking changes
-    isNew?: boolean;    // Flag for newly created conversations
+    _version?: number;
+    isNew?: boolean;
     isActive: boolean;
     folderId?: string | null;
-    _editInProgress?: boolean; // Flag to indicate an edit operation is in progress
-    displayMode?: 'raw' | 'pretty';  // Store display mode per conversation
+    _editInProgress?: boolean;
+    displayMode?: 'raw' | 'pretty';
+}
+
+export interface ConversationFolder {
+    id: string;
+    name: string;
+    projectId?: string;
+    parentId?: string | null;
+    useGlobalContext?: boolean;
+    useGlobalModel?: boolean;
+    createdAt: number;
+    updatedAt: number;
 }
 
 // Add _edited and _truncatedAfter to Message type
