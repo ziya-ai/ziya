@@ -6,6 +6,7 @@ import { useChatContext } from "./ChatContext";
 import { TreeDataNode } from "antd";
 import { debounce } from "../utils/debounce";
 import { useConfig } from "./ConfigContext";
+import { useProject } from "./ProjectContext";
 
 export interface FolderContextType {
   folders: Folders | undefined;
@@ -69,7 +70,13 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const lastProcessedSelectionRef = useRef<string>('');
 
   // Monitor FolderProvider render performance
+  // Get current project from ProjectContext
+  const { currentProject } = useProject();
   // Remove performance monitoring that's causing overhead
+  
+  // Create ref to avoid stale closures in async callbacks
+  const currentProjectRef = useRef(currentProject);
+  currentProjectRef.current = currentProject;
 
   // CRITICAL: Clear persisted folder selections when ephemeral mode is detected
   useEffect(() => {
@@ -81,37 +88,55 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       try {
         localStorage.removeItem('ZIYA_CHECKED_FOLDERS');
         localStorage.removeItem('ZIYA_EXPANDED_FOLDERS');
-        
+
         // Also clear the state immediately
         setCheckedKeys([]);
         setExpandedKeys([]);
-        
+
         console.log('✅ EPHEMERAL: Folder state cleared');
       } catch (e) {
         console.error('Failed to clear folder state in ephemeral mode:', e);
       }
     }
-  }, [isEphemeralMode]);
-
-  // Cleanup function to remove non-existent files from checkedKeys
+  }, [currentProject]);
+  
   const cleanupCheckedKeys = useCallback(async () => {
     if (!folders || checkedKeys.length === 0) return;
 
+    // Use ref to get the LATEST project path (prevents stale closures)
+    const projectPath = currentProjectRef.current?.path;
+    
+    // Debug: log what we're actually using vs what we have
+    console.log('🔍 CLEANUP_DEBUG:', {
+      refPath: projectPath,
+      directPath: currentProject?.path,
+      refId: currentProjectRef.current?.id,
+      directId: currentProject?.id
+    });
+    if (!projectPath) {
+      console.warn('🧹 CLEANUP: No valid project path available, skipping validation');
+      return;
+    }
+    
+    console.log('🔍 CLEANUP: Validating', checkedKeys.length, 'files against project:', projectPath);
+
     try {
-      // Check which files actually exist
       const response = await fetch('/api/files/validate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ files: checkedKeys.map(String) })
+        body: JSON.stringify({
+          files: checkedKeys.map(String),
+          projectRoot: projectPath
+        })
       });
-      
+
       if (response.ok) {
         const { existingFiles } = await response.json();
         const existingSet = new Set(existingFiles);
-        
+
         // Filter out non-existent files
         const cleanedKeys = checkedKeys.filter(key => existingSet.has(String(key)));
-        
+
         if (cleanedKeys.length !== checkedKeys.length) {
           console.log(`🧹 CLEANUP: Removed ${checkedKeys.length - cleanedKeys.length} non-existent files from selection`);
           setCheckedKeys(cleanedKeys);
@@ -120,7 +145,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     } catch (error) {
       console.warn('Failed to cleanup checked keys:', error);
     }
-  }, [folders, checkedKeys, setCheckedKeys]);
+  }, [folders, checkedKeys, setCheckedKeys, currentProject]);
 
   // Run cleanup when folders are loaded
   useEffect(() => {
@@ -130,6 +155,24 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       return () => clearTimeout(timeoutId);
     }
   }, [folders, cleanupCheckedKeys]);
+
+  // Listen for file selection restoration after project switches
+  useEffect(() => {
+    const handleRestoreSelections = (event: CustomEvent) => {
+      const { projectId, selections } = event.detail;
+
+      // Only restore if this is for the current project
+      if (currentProject?.id === projectId && selections && Array.isArray(selections)) {
+        console.log(`📂 FolderContext: Restoring ${selections.length} file selections for project ${projectId}`);
+        setCheckedKeys(selections);
+      }
+    };
+
+    window.addEventListener('restoreProjectFileSelections', handleRestoreSelections as EventListener);
+    return () => {
+      window.removeEventListener('restoreProjectFileSelections', handleRestoreSelections as EventListener);
+    };
+  }, [currentProject?.id]);
 
   const getFolderTokenCount = useCallback((path: string, folderData: Folders | undefined): number => {
     if (!folderData) {
@@ -258,14 +301,14 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   useEffect(() => {
     const updateDynamicTools = async () => {
       if (!checkedKeys || checkedKeys.length === 0) return;
-      
+
       try {
         const response = await fetch('/api/dynamic-tools/update', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ files: checkedKeys.map(String) })
         });
-        
+
         if (response.ok) {
           const data = await response.json();
           console.log('Dynamic tools updated:', data);
@@ -274,7 +317,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         console.debug('Failed to update dynamic tools:', error);
       }
     };
-    
+
     // Debounce the update to avoid excessive calls
     const timeoutId = setTimeout(updateDynamicTools, 1000);
     return () => clearTimeout(timeoutId);
@@ -458,7 +501,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       console.log('Scan already in progress, skipping fetch');
       return;
     }
-    
+
     // Don't block the main thread - use MessageChannel for true async
     const channel = new MessageChannel();
     channel.port1.onmessage = async () => {
@@ -470,7 +513,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
           const params = new URLSearchParams({ project_path: projectPath });
           url = `/api/folders?${params.toString()}`;
         }
-        
+
         const response = await fetch(url);
         if (!response.ok) {
           throw new Error(`Failed to fetch folders: ${response.status}`);
@@ -508,7 +551,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
             clearInterval(progressIntervalRef.current);
             progressIntervalRef.current = null;
           }
-          
+
           // Validate data before setting
           if (data && typeof data === 'object' && Object.keys(data).length > 0) {
             setFolders(data);
@@ -568,7 +611,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       setScanError(null);
       fetchFolders();
     };
-    
+
     window.addEventListener('refreshFolders', handleRefreshEvent);
     return () => window.removeEventListener('refreshFolders', handleRefreshEvent);
   }, [fetchFolders]);
@@ -621,19 +664,19 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     const handleProjectSwitch = (event: CustomEvent) => {
       const { projectPath } = event.detail;
       console.log('📂 PROJECT_SWITCH: Clearing selection and refreshing for:', projectPath);
-      
+
       // Clear all selections
       setCheckedKeys([]);
       setExpandedKeys([]);
-      
+
       // Clear localStorage to prevent stale selections
       localStorage.removeItem('ZIYA_CHECKED_FOLDERS');
       localStorage.removeItem('ZIYA_EXPANDED_FOLDERS');
-      
+
       // Trigger refresh with new project path
       fetchFolders();
     };
-    
+
     window.addEventListener('projectSwitched', handleProjectSwitch as EventListener);
     return () => window.removeEventListener('projectSwitched', handleProjectSwitch as EventListener);
   }, [fetchFolders]);
@@ -642,11 +685,11 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   useEffect(() => {
     const handleContextSync = (event: CustomEvent) => {
       const { addedFiles, reason } = event.detail;
-      
+
       if (!addedFiles || addedFiles.length === 0) return;
-      
+
       console.log('📂 CONTEXT_SYNC: Backend added files to context:', addedFiles);
-      
+
       // Update checkedKeys to include the new files
       setCheckedKeys(prev => {
         const newKeys = [...prev];
@@ -657,10 +700,10 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         });
         return newKeys;
       });
-      
+
       console.log(`✅ UI synced: ${addedFiles.length} file(s) added to context`);
     };
-    
+
     window.addEventListener('syncContextFromBackend', handleContextSync as EventListener);
     return () => window.removeEventListener('syncContextFromBackend', handleContextSync as EventListener);
   }, []);
@@ -670,31 +713,31 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     const handleAddFiles = (event: CustomEvent) => {
       const { files } = event.detail;
       if (!files || files.length === 0) return;
-      
+
       console.log('📂 CONTEXT_ACTIVATION: Adding files to selection:', files.length);
-      
+
       setCheckedKeys(prev => {
         const newKeys = new Set(prev);
         files.forEach((file: string) => newKeys.add(file));
         return Array.from(newKeys);
       });
     };
-    
+
     const handleRemoveFiles = (event: CustomEvent) => {
       const { files } = event.detail;
       if (!files || files.length === 0) return;
-      
+
       console.log('📂 CONTEXT_DEACTIVATION: Removing files from selection:', files.length);
-      
+
       setCheckedKeys(prev => {
         const filesSet = new Set(files);
         return prev.filter(key => !filesSet.has(String(key)));
       });
     };
-    
+
     window.addEventListener('addFilesToSelection', handleAddFiles as EventListener);
     window.addEventListener('removeFilesFromSelection', handleRemoveFiles as EventListener);
-    
+
     return () => {
       window.removeEventListener('addFilesToSelection', handleAddFiles as EventListener);
       window.removeEventListener('removeFilesFromSelection', handleRemoveFiles as EventListener);
@@ -705,18 +748,18 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const addFilesToContext = useCallback(async (filePaths: string[]) => {
     try {
       console.log('📁 CONTEXT: Adding files to context:', filePaths);
-      
+
       // Add files to checked keys using the existing pattern
       setCheckedKeys(prev => {
         const newKeys = [...prev, ...filePaths.filter(file => !prev.includes(file))];
         console.log('📁 CONTEXT: Updated checked keys:', newKeys);
-        
+
         // Save to localStorage immediately to persist the change
         localStorage.setItem('ZIYA_CHECKED_FOLDERS', JSON.stringify(newKeys));
-        
+
         return newKeys;
       });
-      
+
       console.log('📁 CONTEXT: Files added to context successfully');
     } catch (error) {
       console.error('Error adding files to context:', error);
