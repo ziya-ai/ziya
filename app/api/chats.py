@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Query
 from typing import List, Optional
 import uuid
 
-from ..models.chat import Chat, ChatCreate, ChatUpdate, ChatSummary, Message
+from ..models.chat import Chat, ChatCreate, ChatUpdate, ChatSummary, Message, ChatBulkSync
 from ..models.group import ChatGroup, ChatGroupCreate, ChatGroupUpdate
 from ..storage.projects import ProjectStorage
 from ..storage.chats import ChatStorage
@@ -82,15 +82,23 @@ async def reorder_chat_groups(project_id: str, ordered_ids: List[str]):
 
 # Chats
 
-@router.get("/api/v1/projects/{project_id}/chats", response_model=List[ChatSummary])
+@router.get("/api/v1/projects/{project_id}/chats")
 async def list_chats(
     project_id: str,
     group_id: Optional[str] = Query(None),
     limit: Optional[int] = Query(None),
-    offset: Optional[int] = Query(0)
+    offset: Optional[int] = Query(0),
+    include_messages: bool = Query(False)
 ):
-    """List all chats for a project."""
+    """List all chats for a project. Use include_messages=true for full chat data."""
     storage = get_chat_storage(project_id)
+    
+    if include_messages:
+        chats = storage.list(group_id=group_id)
+        if limit:
+            chats = chats[offset:offset + limit]
+        return chats
+    
     summaries = storage.list_summaries(group_id=group_id)
     
     # Apply pagination
@@ -124,6 +132,45 @@ async def create_chat(project_id: str, data: ChatCreate):
             default_skill_ids = project.settings.defaultSkillIds
     
     return storage.create(data, default_context_ids, default_skill_ids)
+
+@router.post("/api/v1/projects/{project_id}/chats/bulk-sync")
+async def bulk_sync_chats(project_id: str, data: ChatBulkSync):
+    """
+    Bulk upsert chats from frontend (IndexedDB migration).
+    For each chat: if it exists on server and server version is newer, skip.
+    Otherwise, create or overwrite with the provided data.
+    """
+    storage = get_chat_storage(project_id)
+    
+    results = {"created": 0, "updated": 0, "skipped": 0, "errors": []}
+    
+    for chat_data in data.chats:
+        try:
+            existing = storage.get(chat_data.id)
+            
+            if existing:
+                # Update if incoming is newer or same age
+                incoming_time = chat_data.lastActiveAt or chat_data.lastAccessedAt or 0
+                if incoming_time >= existing.lastActiveAt:
+                    # Overwrite with incoming data
+                    storage._write_json(
+                        storage._chat_file(chat_data.id),
+                        chat_data.model_dump()
+                    )
+                    results["updated"] += 1
+                else:
+                    results["skipped"] += 1
+            else:
+                # Create new
+                storage._write_json(
+                    storage._chat_file(chat_data.id),
+                    chat_data.model_dump()
+                )
+                results["created"] += 1
+        except Exception as e:
+            results["errors"].append({"id": chat_data.id, "error": str(e)})
+    
+    return results
 
 @router.get("/api/v1/projects/{project_id}/chats/{chat_id}", response_model=Chat)
 async def get_chat(project_id: str, chat_id: str):
