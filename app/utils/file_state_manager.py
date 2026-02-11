@@ -4,7 +4,7 @@ import os
 import time
 import shutil
 import threading
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, Any
 import hashlib
 import shutil
 from difflib import SequenceMatcher
@@ -29,6 +29,7 @@ class FileStateManager:
     def __init__(self):
         self.state_file = os.path.join(os.path.expanduser("~"), ".ziya", "file_states.json")
         self.conversation_states: Dict[str, Dict[str, FileState]] = {}
+        self.conversation_diffs: Dict[str, List[Dict[str, Any]]] = {}
         self._load_state()
         
     def _load_state(self):
@@ -57,6 +58,13 @@ class FileStateManager:
                     for conv_id, files in data.items():
                         self.conversation_states[conv_id] = {}
                         for file_path, state_data in files.items():
+                            # Skip special keys that aren't file states
+                            if file_path == '_diff_history':
+                                # Load diff history
+                                if conv_id not in self.conversation_diffs:
+                                    self.conversation_diffs[conv_id] = []
+                                self.conversation_diffs[conv_id] = state_data
+                                continue
                             self.conversation_states[conv_id][file_path] = FileState(
                                 path=state_data['path'],
                                 content_hash=state_data['content_hash'],
@@ -93,6 +101,13 @@ class FileStateManager:
                         'last_seen_content': state.last_seen_content,
                         'last_context_submission_content': state.last_context_submission_content
                     }
+            
+            # Save diff history per conversation
+            for conv_id, diffs in self.conversation_diffs.items():
+                if conv_id.startswith('precision_'):
+                    continue
+                if conv_id in data:
+                    data[conv_id]['_diff_history'] = diffs
             
             with open(self.state_file, 'w') as f:
                 json.dump(data, f, indent=2)
@@ -151,6 +166,13 @@ class FileStateManager:
     
     def get_changes_since_last_submission(self, conversation_id: str) -> Dict[str, Set[int]]:
         """Get changes that occurred since the last context submission."""
+        # Increment exchange counter for all diffs in this conversation
+        # This is called at the start of each model turn
+        if conversation_id in self.conversation_diffs:
+            for diff_record in self.conversation_diffs[conversation_id]:
+                diff_record['exchanges_ago'] = diff_record.get('exchanges_ago', 0) + 1
+            self._save_state()
+        
         if conversation_id not in self.conversation_states:
             return {}
             
@@ -621,6 +643,31 @@ Files being tracked for changes: """ + ", ".join(files_with_changes) + "\n"
 
     def format_context_message(self, conversation_id: str, include_recent: bool = True, include_authority: bool = True) -> Tuple[str, str]:
         """Format context message about file changes for the prompt"""
+        # Add recent diffs section if any exist
+        recent_diffs = self.conversation_diffs.get(conversation_id, [])
+        # Filter to active diffs (less than 10 exchanges old)
+        active_diffs = [d for d in recent_diffs if d.get('exchanges_ago', 0) < 10]
+        
+        diff_section = ""
+        if active_diffs:
+            diff_lines = [
+                "\n" + "="*70,
+                "RECENT APPLIED DIFFS (for conversational continuity)",
+                "="*70 + "\n"
+            ]
+            
+            # Show up to 5 most recent
+            for diff_record in reversed(active_diffs[-5:]):
+                exchanges_ago = diff_record.get('exchanges_ago', 0)
+                diff_lines.append(f"### {exchanges_ago} exchange(s) ago - {diff_record['file_path']}")
+                diff_lines.append("")
+                diff_lines.append("```diff")
+                diff_lines.append(diff_record['diff_content'])
+                diff_lines.append("```")
+                diff_lines.append("")
+            
+            diff_section = "\n".join(diff_lines)
+        
         changes = self.get_file_changes(conversation_id)
         if not changes:
             return "", ""
@@ -704,3 +751,34 @@ Files being tracked for changes: """ + ", ".join(files_with_changes) + "\n"
                     existing_state.content_hash = current_hash
 
                     logger.info(f"Updated existing file in state: {file_path} with {len(changed_lines)} changed lines")
+    
+    def record_applied_diff(self, conversation_id: str, file_path: str, diff_content: str, description: str = ""):
+        """
+        Record a successfully applied diff for later reference.
+        
+        Args:
+            conversation_id: The conversation this diff belongs to
+            file_path: Path to the file that was modified
+            diff_content: The actual diff content that was applied
+            description: Optional description of what the diff does
+        """
+        # Ensure conversation exists in diff history
+        if conversation_id not in self.conversation_diffs:
+            self.conversation_diffs[conversation_id] = []
+        
+        # Add new diff (exchange counter incremented in get_changes_since_last_submission)
+        self.conversation_diffs[conversation_id].append({
+            'file_path': file_path,
+            'diff_content': diff_content,
+            'description': description,
+            'exchanges_ago': 0,
+            'timestamp': time.time()
+        })
+        
+        # Keep only last 5 diffs or diffs from last 10 exchanges
+        self.conversation_diffs[conversation_id] = [
+            d for d in self.conversation_diffs[conversation_id]
+            if d.get('exchanges_ago', 0) < 10
+        ][-5:]
+        
+        self._save_state()
