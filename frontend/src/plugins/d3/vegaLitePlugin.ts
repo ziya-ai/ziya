@@ -267,7 +267,6 @@ export const vegaLitePlugin: D3RenderPlugin = {
     });
 
     console.log('Vega-Lite: About to check shouldWaitForComplete condition...');
-    console.log('Vega-Lite: About to check shouldWaitForComplete condition...');
     if (shouldWaitForComplete) {
       console.log('Vega-Lite: Inside shouldWaitForComplete block');
       // Create enhanced waiting interface with debugging options like Mermaid
@@ -421,6 +420,24 @@ export const vegaLitePlugin: D3RenderPlugin = {
       }
 
       const spec = JSON.parse(JSON.stringify(rawSpec)); // Deep clone
+
+      // Detect Vega-only transforms that Vega-Lite will silently ignore.
+      // If found, return the spec unmodified — running our preprocessing on a spec
+      // whose data pipeline will be dropped causes cascading destruction of encodings.
+      const vegaOnlyTransforms = [
+        'stratify', 'partition', 'treemap', 'tree', 'pack', 'nest',
+        'force', 'voronoi', 'contour', 'isocontour', 'linkpath',
+        'pie', 'label', 'crossfilter', 'resolvefilter', 'kde2d'
+      ];
+      if (spec.transform && Array.isArray(spec.transform)) {
+        const vegaTransforms = spec.transform.filter((t: any) =>
+          t.type && vegaOnlyTransforms.includes(t.type)
+        );
+        if (vegaTransforms.length > 0) {
+          console.warn(`🔧 VEGA-PREPROCESS: Spec uses Vega-only transforms (${vegaTransforms.map((t: any) => t.type).join(', ')}). Skipping preprocessing to avoid mangling the spec.`);
+          return spec;
+        }
+      }
 
       console.log('🔧 VEGA-PREPROCESS: Starting comprehensive preprocessing');
 
@@ -824,6 +841,11 @@ export const vegaLitePlugin: D3RenderPlugin = {
         ['color', 'fill', 'stroke'].forEach(channel => {
           const channelSpec = encoding[channel];
           if (channelSpec?.field && channelSpec?.type === 'nominal') {
+            // Respect explicit identity mapping (scale: null) and hidden legends (legend: null)
+            if (channelSpec.scale === null || channelSpec.legend === null) {
+              console.log(`🔧 LEGEND-LABEL-FIX: Skipping ${channel} - has explicit scale:null or legend:null`);
+              return;
+            }
             // Check if the field contains literal color values (hex codes)
             const fieldValues = [...new Set(dataValues.map(d => d[channelSpec.field]))].filter(v => v !== null && v !== undefined);
             const hasHexColors = fieldValues.some(value =>
@@ -933,6 +955,11 @@ export const vegaLitePlugin: D3RenderPlugin = {
         ['color', 'fill', 'stroke'].forEach(channel => {
           const channelSpec = encoding[channel];
           if (channelSpec?.field && channelSpec?.type === 'nominal') {
+            // Respect explicit identity mapping (scale: null)
+            if (channelSpec.scale === null) {
+              console.log(`🔧 LITERAL-COLOR-FIX: Skipping ${channel} - has explicit scale:null (identity mapping)`);
+              return;
+            }
             // Check if the field contains literal color values (hex codes)
             const fieldValues = [...new Set(dataValues.map(d => d[channelSpec.field]))].filter(v => v !== null && v !== undefined);
             const hasHexColors = fieldValues.some(value =>
@@ -1234,6 +1261,23 @@ export const vegaLitePlugin: D3RenderPlugin = {
       if (spec.encoding && spec.data?.values && Array.isArray(spec.data.values) && spec.data.values.length > 0) {
         const availableFields = Object.keys(spec.data.values[0]);
         
+        // Track whether we can fully determine available fields from transforms.
+        // If there are transforms whose output fields we can't predict, skip
+        // field validation — removing encodings based on incomplete info is worse
+        // than letting Vega-Lite surface the error itself.
+        const knownTransformTypes = new Set(['fold', 'calculate', 'window', 'filter', 'bin', 'timeUnit', 'sample', 'extent']);
+        let hasUnknownTransformOutputs = false;
+        if (spec.transform) {
+          spec.transform.forEach((t: any) => {
+            const tKeys = Object.keys(t).filter(k => k !== 'as');
+            const isKnown = tKeys.some(k => knownTransformTypes.has(k));
+            if (!isKnown) {
+              hasUnknownTransformOutputs = true;
+              console.log(`🔧 VEGA-PREPROCESS: Transform with keys [${tKeys.join(', ')}] has unpredictable output fields`);
+            }
+          });
+        }
+
         // CRITICAL: If there's a fold transform, add the fold output fields to available fields
         if (spec.transform) {
           spec.transform.forEach((t: any) => {
@@ -1262,13 +1306,17 @@ export const vegaLitePlugin: D3RenderPlugin = {
         
         console.log('🔧 VEGA-PREPROCESS: Available fields:', availableFields);
 
-        Object.keys(spec.encoding).forEach(channel => {
-          const channelSpec = spec.encoding[channel];
-          if (channelSpec?.field && !availableFields.includes(channelSpec.field)) {
-            console.log(`🔧 VEGA-PREPROCESS: Removing ${channel} encoding with invalid field: ${channelSpec.field}`);
-            delete spec.encoding[channel];
-          }
-        });
+        if (hasUnknownTransformOutputs) {
+          console.log('🔧 VEGA-PREPROCESS: Skipping field validation — transforms with unpredictable outputs detected');
+        } else {
+          Object.keys(spec.encoding).forEach(channel => {
+            const channelSpec = spec.encoding[channel];
+            if (channelSpec?.field && !availableFields.includes(channelSpec.field)) {
+              console.log(`🔧 VEGA-PREPROCESS: Removing ${channel} encoding with invalid field: ${channelSpec.field}`);
+              delete spec.encoding[channel];
+            }
+          });
+        }
       }
 
       // Fix 3: Clean up null/undefined values in scale domains
@@ -3548,12 +3596,25 @@ export const vegaLitePlugin: D3RenderPlugin = {
         const calculatedField = vegaSpec.transform?.find(t => t.calculate && t.as)?.as;
 
         if (calculatedField) {
-          vegaSpec.encoding.theta = {
+          // Verify the calculated field produces numeric values before using it as theta
+          let isNumericField = false;
+          if (vegaSpec.data?.values && Array.isArray(vegaSpec.data.values) && vegaSpec.data.values.length > 0) {
+            const sampleValue = vegaSpec.data.values[0][calculatedField];
+            isNumericField = typeof sampleValue === 'number';
+          }
+          // Also reject fields that are obviously parent/key references
+          const isParentRef = calculatedField.includes('parent') || calculatedField.includes('key') || calculatedField.includes('id');
+
+          if (isNumericField && !isParentRef) {
+            vegaSpec.encoding.theta = {
             field: calculatedField,
             type: 'quantitative',
             title: calculatedField.charAt(0).toUpperCase() + calculatedField.slice(1).replace('_', ' ')
-          };
-          console.log(`Added theta encoding with calculated field: "${calculatedField}"`);
+            };
+            console.log(`Added theta encoding with calculated field: "${calculatedField}"`);
+          } else {
+            console.log(`🔧 ARC-THETA-SKIP: Skipping calculated field "${calculatedField}" - not numeric or is a reference field`);
+          }
         }
       }
 
@@ -3779,6 +3840,10 @@ export const vegaLitePlugin: D3RenderPlugin = {
         // Helper to apply legend column wrapping
         const applyLegendWrapping = (encoding: any, channel: string, data: any[]) => {
           if (!encoding[channel] || !encoding[channel].field) return;
+
+          // Don't wrap legends that are explicitly hidden
+          if (encoding[channel].legend === null || encoding[channel].legend === false) return;
+          if (encoding[channel].scale === null) return; // identity scale, no legend needed
 
           const fieldName = encoding[channel].field;
           const uniqueCount = countUniqueValues(fieldName, data);
