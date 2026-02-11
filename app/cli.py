@@ -1,20 +1,12 @@
 # CRITICAL: Set chat mode before any imports
+# CLI entry point
 import os
 os.environ["ZIYA_MODE"] = "chat"
 os.environ.setdefault("ZIYA_LOG_LEVEL", "WARNING")
+import logging
 
 """
 Ziya CLI - Clean command-line interface.
-# CRITICAL: Force reconfigure all existing loggers to respect chat mode
-# This handles case where modules were imported before ZIYA_MODE was set
-import logging
-for logger_name in logging.Logger.manager.loggerDict:
-    if logger_name.startswith('app.') or logger_name == 'app':
-        existing_logger = logging.getLogger(logger_name)
-        existing_logger.setLevel(logging.WARNING)
-        for handler in existing_logger.handlers:
-            handler.setLevel(logging.WARNING)
-
 
 Usage:
     ziya chat [FILES...]           Interactive chat with optional file context
@@ -31,13 +23,31 @@ Examples:
     ziya review --staged           Review staged git changes
 """
 
+import json
+from datetime import datetime
 import os
 import sys
+from typing import Optional
 import asyncio
+try:
+    # CRITICAL: Force reconfigure all existing loggers to respect chat mode
+    # This handles case where modules were imported before ZIYA_MODE was set
+    for logger_name in list(logging.Logger.manager.loggerDict.keys()):
+        if logger_name.startswith('app.') or logger_name == 'app':
+            try:
+                existing_logger = logging.getLogger(logger_name)
+                existing_logger.setLevel(logging.WARNING)
+                for handler in existing_logger.handlers:
+                    handler.setLevel(logging.WARNING)
+            except Exception:
+                pass  # Skip loggers that can't be configured
+except Exception as e:
+    print(f"Warning: Could not configure logging: {e}", file=sys.stderr)
 import re
 import hashlib
 import argparse
 import time
+import traceback
 from pathlib import Path
 import sys
 from app.utils.logging_utils import logger
@@ -55,6 +65,109 @@ from prompt_toolkit.widgets import RadioList
 from prompt_toolkit.widgets import Label, Button, TextArea
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.formatted_text import FormattedText
+
+
+# ============================================================================
+# Session history management
+# ============================================================================
+
+def get_session_dir() -> Path:
+    """Get the directory for session storage."""
+    session_dir = Path.home() / '.ziya' / 'sessions'
+    session_dir.mkdir(parents=True, exist_ok=True)
+    return session_dir
+
+
+def save_session(cli: 'CLI') -> str:
+    """Save current session and return session ID."""
+    session_dir = get_session_dir()
+    session_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+    session_file = session_dir / f"{session_id}.json"
+    
+    session_data = {
+        'id': session_id,
+        'timestamp': datetime.now().isoformat(),
+        'files': cli.files,
+        'history': cli.history
+    }
+    
+    with open(session_file, 'w') as f:
+        json.dump(session_data, f, indent=2)
+    
+    # Cleanup old sessions (keep last 10)
+    cleanup_old_sessions()
+    
+    return session_id
+
+
+def load_session(session_id: str) -> dict:
+    """Load a session by ID."""
+    session_dir = get_session_dir()
+    session_file = session_dir / f"{session_id}.json"
+    
+    if not session_file.exists():
+        raise FileNotFoundError(f"Session {session_id} not found")
+    
+    with open(session_file, 'r') as f:
+        return json.load(f)
+
+
+def cleanup_old_sessions(keep_count: int = 10):
+    """Keep only the most recent sessions."""
+    session_dir = get_session_dir()
+    sessions = sorted(session_dir.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True)
+    
+    for old_session in sessions[keep_count:]:
+        old_session.unlink()
+
+
+def select_session() -> Optional[str]:
+    """Interactive session selector."""
+    session_dir = get_session_dir()
+    sessions = sorted(session_dir.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True)
+    
+    if not sessions:
+        print("No previous sessions found.")
+        return None
+    
+    # Load session metadata
+    session_list = []
+    for session_file in sessions[:10]:  # Show last 10
+        try:
+            with open(session_file, 'r') as f:
+                data = json.load(f)
+                session_list.append({
+                    'id': data['id'],
+                    'timestamp': data['timestamp'],
+                    'file_count': len(data.get('files', [])),
+                    'message_count': len(data.get('history', []))
+                })
+        except Exception:
+            continue
+    
+    if not session_list:
+        print("No valid sessions found.")
+        return None
+    
+    # Create selection prompt
+    print("\n\033[1;36mAvailable Sessions:\033[0m")
+    for idx, session in enumerate(session_list, 1):
+        timestamp = datetime.fromisoformat(session['timestamp']).strftime('%Y-%m-%d %H:%M:%S')
+        print(f"{idx}. {timestamp} - {session['message_count']} messages, {session['file_count']} files")
+    
+    print("\n0. Cancel (start new session)")
+    
+    while True:
+        choice = input("\nSelect session number: ").strip()
+        if choice == '0':
+            return None
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(session_list):
+                return session_list[idx]['id']
+        except ValueError:
+            pass
+        print("Invalid selection. Please try again.")
 
 
 def print_chat_startup_info(args):
@@ -104,23 +217,31 @@ def setup_env(args):
         os.environ["ZIYA_MODE"] = "debug"
         print("🐛 Debug logging enabled", file=sys.stderr)
     
-    # CRITICAL: Force reconfigure all existing loggers to respect chat mode
+    # Force reconfigure all existing loggers to respect chat mode
     # This handles case where modules were imported before ZIYA_MODE was set
-    import logging
-    # Get the target log level from environment (respects --debug flag)
-    target_level = getattr(logging, os.environ.get('ZIYA_LOG_LEVEL', 'WARNING').upper())
-    for logger_name in logging.Logger.manager.loggerDict:
-        if logger_name.startswith('app.') or logger_name == 'app':
-            existing_logger = logging.getLogger(logger_name)
-            existing_logger.setLevel(target_level)
-            for handler in existing_logger.handlers:
-                handler.setLevel(target_level)
+    try:
+        # Get the target log level from environment (respects --debug flag)
+        target_level = getattr(logging, os.environ.get('ZIYA_LOG_LEVEL', 'WARNING').upper())
+        for logger_name in list(logging.Logger.manager.loggerDict.keys()):
+            if logger_name.startswith('app.') or logger_name == 'app':
+                try:
+                    existing_logger = logging.getLogger(logger_name)
+                    existing_logger.setLevel(target_level)
+                    for handler in existing_logger.handlers:
+                        handler.setLevel(target_level)
+                except Exception:
+                    pass  # Skip loggers that can't be configured
+    except Exception as e:
+        print(f"Warning: Could not reconfigure logging in setup_env: {e}", file=sys.stderr)
+
     
     # Set root directory
     root = getattr(args, 'root', None) or os.getcwd()
     os.environ.setdefault("ZIYA_USER_CODEBASE_DIR", root)
     
     # Model settings
+    if getattr(args, 'model', None):
+        os.environ["ZIYA_MODEL"] = args.model
     
     # AWS settings - set BOTH env vars for compatibility
     profile = getattr(args, 'profile', None) or get_flag_from_argv('profile')
@@ -386,11 +507,25 @@ class CLI:
         # Reset cancellation flag
         self._cancellation_requested = False
         
+        # Track partial response for cancellation scenarios
+        partial_response = ""
+        
         try:
             response = await self._run_with_tools_and_validate(question, stream)
+            partial_response = response
         except Exception as e:
             error_str = str(e)
-            print(f"\n\033[31mError: {error_str}\033[0m", file=sys.stderr)
+            
+            # Extract traceback info for better error reporting
+            tb = traceback.extract_tb(sys.exc_info()[2])
+            if tb:
+                last_frame = tb[-1]
+                location = f"{last_frame.filename}:{last_frame.lineno}"
+                print(f"\n\033[31mError in {location}: {error_str}\033[0m", file=sys.stderr)
+                if os.environ.get('ZIYA_LOG_LEVEL') == 'DEBUG':
+                    traceback.print_exc(file=sys.stderr)
+            else:
+                print(f"\033[31mError: {error_str}\033[0m", file=sys.stderr)
             
             # Check for specific error types
             if 'ThrottlingException' in error_str or 'Too many tokens' in error_str:
@@ -400,13 +535,19 @@ class CLI:
             elif isinstance(e, asyncio.CancelledError):
                 # Graceful cancellation
                 print("\n\033[33mOperation cancelled.\033[0m")
-                return ""
+                # Use partial response accumulated before cancellation
+                response = partial_response
+                # Update history with partial response
+                self.history.append({'type': 'human', 'content': question})
+                if response:
+                    self.history.append({'type': 'ai', 'content': response})
+                return response
             
             return ""
         
         # Update history
         self.history.append({'type': 'human', 'content': question})
-        if response:
+        if response:  # Empty string is falsy, so this works correctly
             # Diff processing now happens in _run_with_tools_and_validate
             pass
             
@@ -415,12 +556,19 @@ class CLI:
         return response
     
     async def _run_with_tools_and_validate(self, question: str, stream: bool = True) -> str:
+        """Run model with tool execution loop."""
         """Run model with tools and validation-feedback loop for diffs."""
         from app.utils.diff_validation_hook import DiffValidationHook
         from langchain_core.messages import HumanMessage
+        from langchain_core.messages import AIMessage
+        from app.agents.agent import file_state_manager
         
-        # Initialize validation hook - runs FULL apply pipeline in dry-run
+        # Use consistent conversation ID for this CLI session
+        conversation_id = f"cli_{os.getpid()}"
+
         validation_hook = DiffValidationHook(
+            file_state_manager=file_state_manager,
+            conversation_id=conversation_id,
             current_context=self.files,
             auto_regenerate=True
         )
@@ -429,7 +577,7 @@ class CLI:
         messages = self._build_messages(question)
         
         # Validation loop - give model chance to fix bad diffs
-        max_attempts = 2
+        max_attempts = 3
         for attempt in range(max_attempts):
             # Reset cancellation flag for each attempt
             self._cancellation_requested = False
@@ -447,7 +595,6 @@ class CLI:
             validation_feedback = validation_hook.validate_and_enhance(
                 content=response,
                 model_messages=messages,
-                send_event=lambda event_type, data: None
             )
             
             # If validation passed, process diffs interactively
@@ -455,12 +602,39 @@ class CLI:
                 if attempt > 0:
                     print("\n\033[32m✓ Diff validation passed\033[0m")
                 
-                # Now show diffs to user for interactive application
-                try:
-                    self.diff_applicator.process_response(response)
-                except Exception as e:
-                    if os.environ.get('ZIYA_LOG_LEVEL') == 'DEBUG':
-                        print(f"\n\033[33mNote: Could not process diffs: {e}\033[0m", file=sys.stderr)
+                # Process diffs in a loop to handle continuations
+                full_response = response
+                while True:
+                    # Show diffs to user for interactive application
+                    try:
+                        completed_normally = self.diff_applicator.process_response(full_response)
+                    except Exception as e:
+                        if os.environ.get('ZIYA_LOG_LEVEL') == 'DEBUG':
+                            print(f"\n\033[33mNote: Could not process diffs: {e}\033[0m", file=sys.stderr)
+                        break
+                    
+                    # After processing diffs, check if model wants to continue
+                    if completed_normally:
+                        # Add the assistant's response to messages so the model
+                        # retains context of what it already said
+                        messages.append(AIMessage(content=response))
+                        summary = self._build_diff_summary()
+                        continuation_message = (
+                            f"{summary}\n\n"
+                            "If there are more changes needed or additional steps to complete, "
+                            "please continue. Otherwise, confirm that all necessary changes have been provided."
+                        )
+                        # Continue conversation with the model
+                        continue_response = await self._continue_conversation(continuation_message, messages)
+                        
+                        # If continuation contains more diffs, process those too
+                        if '```diff' in continue_response:
+                            full_response = continue_response
+                            continue
+                        
+                        # Return combined response
+                        return response + "\n\n" + continue_response
+                    break
                 
                 # Clean up validation hook
                 validation_hook = None
@@ -468,18 +642,79 @@ class CLI:
             
             # Validation failed - regenerate if we have attempts left
             if attempt < max_attempts - 1:
-                print(f"\n\033[33m⚠ Diff validation failed, regenerating corrected version...\033[0m")
+                # Explain what's happening and why
+                print(f"\n\033[33m⚠ Diff couldn't be applied cleanly (hunks don't match current file content)\033[0m")
+                print(f"\033[90mRegenerating with file context... (attempt {attempt + 2}/{max_attempts})\033[0m\n")
+                
+                # After second failure, suggest breaking up the diff
+                if attempt == 1:  # Second attempt - strong guidance to break it down
+                    validation_feedback += (
+                        "\n\n⚠️ CRITICAL: Diff validation failed again.\n\n"
+                        "REQUIRED STRATEGY for next attempt:\n"
+                        "1. Break this change into a SERIES of smaller, independent diffs\n"
+                        "2. Each diff should:\n"
+                        "   - Target 10-20 lines max\n"
+                        "   - Include UNIQUE context (function names, class declarations, distinctive comments)\n"
+                        "   - Be independently applicable (no dependencies between diffs)\n"
+                        "3. Present ONE diff at a time, wait for it to be applied, then continue\n"
+                        "4. The file content is now in your context - verify line numbers and context match exactly\n"
+                    )
+                elif attempt == 2:  # Third attempt - last chance with tool verification
+                    validation_feedback += (
+                        "\n\n🛑 FINAL VALIDATION ATTEMPT\n\n"
+                        "Multiple diffs have failed. Before generating another diff:\n\n"
+                        "1. **VERIFY FILE STATE** - Use tools to check:\n"
+                        "   - Use grep/search tools to find the exact lines you want to modify\n"
+                        "   - Verify the function/class structure matches your understanding\n"
+                        "   - Check line numbers and surrounding context\n"
+                        "2. **IF** verification shows discrepancies, explain what you found\n"
+                        "3. **ONLY THEN** generate ONE minimal diff with:\n"
+                        "   - Complete function/class signature as context\n"
+                        "   - Exact indentation and whitespace from verified content\n"
+                        "   - Unique identifiers (function names, variable names) as anchors\n\n"
+                        "DO NOT guess or rely solely on context - actively verify with tools first.\n"
+                    )
                 
                 # Append feedback and rebuild messages for retry
                 # DON'T rebuild from scratch - just append feedback to existing messages
                 messages.append(HumanMessage(content=validation_feedback))
             else:
-                print(f"\n\033[33m⚠ Diff validation still has issues, showing anyway...\033[0m")
+                # Final attempt failed
+                print(f"\n\033[31m✗ Diff validation failed after {max_attempts} attempts\033[0m")
+                print(f"\033[90mThe model couldn't generate a valid diff. Showing response anyway.\033[0m")
+                print(f"\033[90mReview carefully before applying any changes.\033[0m\n")
         
         # Clean up validation hook after all attempts
         validation_hook = None
         
         return response
+    
+    def _build_diff_summary(self) -> str:
+        """Build a summary message of diff processing results."""
+        applicator = self.diff_applicator
+        # CLIDiffApplicator tracks counts internally during process_response
+        # Check if it has these attributes, otherwise return generic message
+        if hasattr(applicator, 'applied_count'):
+            total = applicator.applied_count + applicator.skipped_count + applicator.failed_count
+            parts = []
+            if applicator.applied_count > 0:
+                parts.append(f"{applicator.applied_count} applied")
+            if applicator.skipped_count > 0:
+                parts.append(f"{applicator.skipped_count} skipped")
+            if applicator.failed_count > 0:
+                parts.append(f"{applicator.failed_count} failed")
+            return f"Diff processing complete: {', '.join(parts)}."
+        return "Diff processing complete."
+    
+    async def _continue_conversation(self, message: str, messages: list) -> str:
+        """Send a continuation message and get model's response."""
+        from langchain_core.messages import HumanMessage
+        
+        # Add continuation message to history
+        messages.append(HumanMessage(content=message))
+        
+        # Get model response using existing method
+        return await self._run_with_tools_from_messages(messages, stream=True)
     
     async def _run_with_tools(self, question: str, stream: bool = True) -> str:
         """Run model with tool execution loop."""
@@ -567,7 +802,16 @@ class CLI:
         
         task = asyncio.create_task(self._stream_handler(stream_task(), stream))
         self._active_task = task
-        return await task
+        
+        try:
+            full_response = await task
+            return full_response
+        except asyncio.CancelledError:
+            # Task was cancelled, but we may have accumulated partial response
+            # The _stream_handler should have returned what it collected so far
+            raise  # Re-raise to be handled by ask()
+        finally:
+            self._active_task = None
     
     def _parse_markdown_state(self, content: str) -> dict:
         """Parse markdown to detect unclosed code blocks."""
@@ -600,168 +844,192 @@ class CLI:
     def _handle_rewind_marker(self, content: str) -> tuple[str, str]:
         """
         Handle rewind markers in streamed content.
+        Truncates content to everything before the last marker.
         Returns (rewound_content, marker_stripped_chunk).
         """
         if '<!-- REWIND_MARKER:' not in content:
             return content, content
         
-        # Parse marker
-        rewind_match = re.search(r'<!-- REWIND_MARKER: (\d+)(?:\|FENCE:([`~])(\w*))? -->(?:</span>)?', content)
-        if not rewind_match:
-            return content, content
-        
-        rewind_line = int(rewind_match.group(1))
-        fence_type = rewind_match.group(2)
-        fence_language = rewind_match.group(3)
-        
-        # Rewind to specified line
+        # Find the last rewind marker in the content
         lines = content.split('\n')
-        marker_line_idx = next((i for i, line in enumerate(lines) if '<!-- REWIND_MARKER:' in line), None)
+        marker_line_idx = None
+        for i in range(len(lines) - 1, -1, -1):
+            if '<!-- REWIND_MARKER:' in lines[i]:
+                marker_line_idx = i
+                break
         
         if marker_line_idx is not None:
             before_rewind = '\n'.join(lines[:marker_line_idx])
             
-            # Check if we're in a code block
+            # Check if we're in a code block and close it properly
             markdown_state = self._parse_markdown_state(before_rewind)
-            in_code_block = fence_type is not None or markdown_state['in_code_block']
+            if markdown_state['in_code_block']:
+                fence_to_use = markdown_state['fence_type'] or '`'
+                before_rewind += '\n' + fence_to_use * 3 + '\n'
             
-            if in_code_block:
-                fence_to_use = fence_type or markdown_state['fence_type'] or '`'
-                rewound = before_rewind + '\n' + fence_to_use * 3 + '\n'
-            else:
-                rewound = before_rewind
-            
-            return rewound, rewound
+            # Strip all markers from content for display
+            stripped = re.sub(r'<!-- REWIND_MARKER: [^\s]+(?: -->|(?:\|FENCE:[`~]\w*)? -->)(?:</span>)?', '', content)
+            return before_rewind, stripped
         
         return content, content
     
     async def _stream_handler(self, stream_generator, stream: bool) -> str:
         """Handle streaming with cancellation support."""
         full_response = ""
+        md_renderer = None
+        if stream:
+            from app.utils.terminal_markdown import StreamingMarkdownRenderer
+            md_renderer = StreamingMarkdownRenderer()
         
-        async for chunk in stream_generator:
-            chunk_type = chunk.get('type')
+        try:
+            async for chunk in stream_generator:
+                chunk_type = chunk.get('type')
             
-            if chunk_type == 'text':
-                content = chunk.get('content', '')
+                if chunk_type == 'text':
+                    content = chunk.get('content', '')
                 
-                # Filter out rewind markers and continuation messages for clean CLI output
-                # These are for GUI DOM manipulation and should be invisible in terminal
-                content = re.sub(r'<!-- REWIND_MARKER: \d+(?:\|FENCE:[`~]\w*)? -->', '', content)
-                content = content.replace('**🔄 Block continues...**', '')
+                    # Add original content (with markers) to full_response for proper rewind processing
+                    full_response += content
                 
-                # Skip if content is now empty after filtering
-                if not content.strip():
-                    full_response += chunk.get('content', '')  # Keep original for history
-                    continue
+                    # For display: filter out rewind markers and continuation messages
+                    display_content = re.sub(r'<!-- REWIND_MARKER: [^\s]+(?: -->|(?:\|FENCE:[`~]\w*)? -->)', '', content)
+                    display_content = display_content.replace('', '')
                 
-                # Add to response
-                if stream:
-                    print(content, end='', flush=True)
-                full_response += content
+                    # Render through markdown renderer or print raw
+                    if display_content.strip():  # Only display if non-empty after filtering
+                        if md_renderer:
+                            md_renderer.feed(display_content)
+                        elif stream:
+                            print(display_content, end='', flush=True)
                 
-                # Handle rewind markers
-                rewound, _ = self._handle_rewind_marker(full_response)
-                if rewound != full_response:
-                    full_response = rewound
-                    # Note: In CLI we can't "rewind" printed output, but we fix internal state
+                    # Handle rewind markers
+                    # This processes markers in the accumulated full_response and rewinds if needed
+                    rewound, _ = self._handle_rewind_marker(full_response)
+                    if rewound != full_response:
+                        full_response = rewound
+                        # Reset markdown renderer since we truncated content
+                        if md_renderer:
+                            from app.utils.terminal_markdown import StreamingMarkdownRenderer
+                            md_renderer = StreamingMarkdownRenderer()
             
-            elif chunk_type == 'tool_execution':
-                tool_name = chunk.get('tool_name', 'unknown')
-                print(f"\n\033[90m⚡ {tool_name}\033[0m", flush=True)
+                elif chunk_type == 'tool_execution':
+                    tool_name = chunk.get('tool_name', 'unknown')
+                    print(f"\n\033[90m⚡ {tool_name}\033[0m", flush=True)
             
-            elif chunk_type == 'tool_start':
-                tool_name = chunk.get('tool_name', 'unknown')
-                print(f"\n\033[36m⚙ Executing {tool_name}...\033[0m", flush=True)
+                elif chunk_type == 'tool_start':
+                    tool_name = chunk.get('tool_name', 'unknown')
+                    print(f"\n\033[36m⚙ Executing {tool_name}...\033[0m", flush=True)
             
-            elif chunk_type == 'tool_display':
-                # Show tool result with formatting
-                tool_name = chunk.get('tool_name', 'unknown')
-                result = chunk.get('result', '')
-                args = chunk.get('args', {})
+                elif chunk_type == 'tool_display':
+                    # Show tool result with formatting
+                    tool_name = chunk.get('tool_name', 'unknown')
+                    result = chunk.get('result', '')
+                    args = chunk.get('args', {})
                 
-                # Build header with any available metadata
-                header_parts = [tool_name]
-                metadata = []
+                    # Build header with any available metadata
+                    header_parts = [tool_name]
+                    metadata = []
                 
-                # Extract common metadata patterns from args
-                if 'thoughtNumber' in args and 'totalThoughts' in args:
-                    # Progress indicator (e.g., thought 3/5)
-                    metadata.append(f"{args['thoughtNumber']}/{args['totalThoughts']}")
+                    # Extract common metadata patterns from args
+                    if 'thoughtNumber' in args and 'totalThoughts' in args:
+                        # Progress indicator (e.g., thought 3/5)
+                        metadata.append(f"{args['thoughtNumber']}/{args['totalThoughts']}")
                 
-                if args.get('isRevision') and 'revisesThought' in args:
-                    # Revision indicator
-                    metadata.append(f"revises #{args['revisesThought']}")
-                elif 'branchId' in args:
-                    # Branch indicator
-                    metadata.append(f"branch: {args['branchId']}")
+                    if args.get('isRevision') and 'revisesThought' in args:
+                        # Revision indicator
+                        metadata.append(f"revises #{args['revisesThought']}")
+                    elif 'branchId' in args:
+                        # Branch indicator
+                        metadata.append(f"branch: {args['branchId']}")
                 
-                if 'branchFromThought' in args:
-                    # Branch origin
-                    metadata.append(f"from #{args['branchFromThought']}")
+                    if 'branchFromThought' in args:
+                        # Branch origin
+                        metadata.append(f"from #{args['branchFromThought']}")
                 
-                # Add command if available (for shell tools)
-                if 'command' in args and not result.startswith('$ '):
-                    metadata.append(f"$ {args['command']}")
+                    # Add command if available (for shell tools)
+                    if 'command' in args and not result.startswith('$ '):
+                        metadata.append(f"$ {args['command']}")
                 
-                # For search tools, show the search query
-                if 'WorkspaceSearch' in tool_name or 'CodeSearch' in tool_name:
-                    # Extract query from args (handle nested tool_input)
-                    search_args = args.get('tool_input', args)
-                    if isinstance(search_args, str):
-                        import json
-                        try:
-                            search_args = json.loads(search_args)
-                        except: pass
-                    query = search_args.get('searchQuery') or search_args.get('query', '')
-                    if query:
-                        metadata.append(f'query: "{query}"')
+                    # For search tools, show the search query
+                    if 'WorkspaceSearch' in tool_name or 'CodeSearch' in tool_name:
+                        # Extract query from args (handle nested tool_input)
+                        search_args = args.get('tool_input', args)
+                        if isinstance(search_args, str):
+                            import json
+                            try:
+                                search_args = json.loads(search_args)
+                            except: pass
+                        query = search_args.get('searchQuery') or search_args.get('query', '')
+                        if query:
+                            metadata.append(f'query: "{query}"')
                 
-                # Build final header
-                if metadata:
-                    header = f"{header_parts[0]} ({', '.join(metadata)})"
-                else:
-                    header = header_parts[0]
+                    # Build final header
+                    if metadata:
+                        header = f"{header_parts[0]} ({', '.join(metadata)})"
+                    else:
+                        header = header_parts[0]
                 
-                # Print header
-                print(f"\n\033[36m┌─ {header}\033[0m", flush=True)
+                    # Print header
+                    print(f"\n\033[36m┌─ {header}\033[0m", flush=True)
                 
-                # Print the thought content if it's in args (for sequential thinking)
-                if 'thought' in args:
-                    thought_text = args['thought']
-                    if thought_text:
-                        for line in thought_text.split('\n'):
-                            print(f"\033[90m│\033[0m {line}", flush=True)
+                    # Print the thought content if it's in args (for sequential thinking)
+                    if 'thought' in args:
+                        thought_text = args['thought']
+                        if thought_text:
+                            for line in thought_text.split('\n'):
+                                print(f"\033[90m│\033[0m {line}", flush=True)
                 
-                # Print result (tool output/response)
-                # For sequential thinking, skip the JSON result if we showed the thought
-                if result:
-                    # Check if result is just JSON metadata (starts with '{' and contains thoughtNumber)
-                    is_json_metadata = result.strip().startswith('{') and 'thoughtNumber' in result
+                    # Print result (tool output/response)
+                    # For sequential thinking, skip the JSON result if we showed the thought
+                    if result:
+                        # Check if result is just JSON metadata (starts with '{' and contains thoughtNumber)
+                        is_json_metadata = result.strip().startswith('{') and 'thoughtNumber' in result
                     
-                    # Only show result if it's not metadata and not a duplicate of the thought
-                    if not is_json_metadata and result != args.get('thought', ''):
-                        for line in result.rstrip('\n').split('\n'):
-                            print(f"\033[90m│\033[0m {line}", flush=True)
+                        # Only show result if it's not metadata and not a duplicate of the thought
+                        if not is_json_metadata and result != args.get('thought', ''):
+                            for line in result.rstrip('\n').split('\n'):
+                                print(f"\033[90m│\033[0m {line}", flush=True)
                 
-                print(f"\033[36m└─\033[0m", flush=True)
+                    print(f"\033[36m└─\033[0m", flush=True)
             
-            elif chunk_type == 'stream_end':
-                break
+                elif chunk_type == 'stream_end':
+                    break
             
-            elif chunk_type == 'throttling_error':
-                # Handle throttling gracefully
-                wait_time = chunk.get('suggested_wait', 60)
-                print(f"\n\033[33m⚠ Rate limit hit. Waiting {wait_time}s...\033[0m\n", file=sys.stderr)
-                # Don't break - let the executor handle the retry
+                elif chunk_type == 'rewind':
+                    # Targeted rewind from streaming_tool_executor
+                    to_marker = chunk.get('to_marker')
+                    if to_marker:
+                        marker_str = f'<!-- REWIND_MARKER: {to_marker}'
+                        marker_pos = full_response.find(marker_str)
+                        if marker_pos >= 0:
+                            full_response = full_response[:marker_pos]
+                            if md_renderer:
+                                from app.utils.terminal_markdown import StreamingMarkdownRenderer
+                                md_renderer = StreamingMarkdownRenderer()
             
-            elif chunk_type == 'error':
-                error_msg = chunk.get('content', 'Unknown error')
-                print(f"\n\033[31mError: {error_msg}\033[0m", file=sys.stderr)
-                break
+                elif chunk_type == 'throttling_error':
+                    # Handle throttling gracefully
+                    wait_time = chunk.get('suggested_wait', 60)
+                    print(f"\n\033[33m⚠ Rate limit hit. Waiting {wait_time}s...\033[0m\n", file=sys.stderr)
+                    # Don't break - let the executor handle the retry
+            
+                elif chunk_type == 'error':
+                    error_msg = chunk.get('content', 'Unknown error')
+                    print(f"\n\033[31mError: {error_msg}\033[0m", file=sys.stderr)
+                    break
+        except asyncio.CancelledError:
+            # Streaming was cancelled - return whatever we accumulated so far
+            print(f"\n\033[90m(Partial response collected: {len(full_response)} chars)\033[0m")
+            if md_renderer:
+                md_renderer.flush()
+            # Return partial response instead of raising
+            return full_response
         
         if stream:
-            print()  # Final newline after streaming
+            if md_renderer:
+                md_renderer.flush()
+            else:
+                print()  # Final newline after streaming
         
         return full_response
     
@@ -873,7 +1141,7 @@ class CLI:
                 try:
                     user_input = await asyncio.to_thread(
                         self.session.prompt,
-                        FormattedText([('bold cyan', '> ')]),
+                        FormattedText([('bold magenta', 'ℤ'), ('cyan', 'iya'), ('', ' '), ('bold cyan', '› ')]),
                         # Add context-aware completion
                         refresh_interval=0.5
                     )
@@ -888,26 +1156,6 @@ class CLI:
                     print("\033[90mGoodbye\033[0m")
                     break
                 
-                if not user_input:
-                    continue
-                
-                # Commands
-                if user_input.startswith('/'):
-                    if not await self._handle_command(user_input):
-                        break
-                    continue
-                
-                # Regular message
-                print()
-                try:
-                    await self.ask(user_input)
-                except asyncio.CancelledError:
-                    # Operation was cancelled, continue the loop
-                    pass
-                print()
-                
-            except KeyboardInterrupt:
-                # Ctrl+C during input - just continue
                 if not user_input:
                     continue
                 
@@ -993,263 +1241,6 @@ class CLI:
         
         return True
 
-    async def _show_model_settings_dialog(self, model_name: str, model_config: dict) -> Optional[dict]:
-        """
-        Show an interactive dialog for configuring model settings.
-        
-        Args:
-            model_name: The selected model name
-            model_config: The model's configuration
-            
-        Returns:
-            Dictionary of settings or None if cancelled
-        """
-        from app.agents.models import ModelManager
-        
-        # Get current effective settings
-        current_settings = ModelManager.get_model_settings()
-        
-        # Build form fields based on model capabilities
-        settings = {}
-        
-        # Temperature
-        temp_range = model_config.get('parameter_ranges', {}).get('temperature', {})
-        temp_min = temp_range.get('min', 0.0)
-        temp_max = temp_range.get('max', 1.0)
-        temp_default = current_settings.get('temperature', temp_range.get('default', 0.3))
-        
-        # Max output tokens
-        max_out_range = model_config.get('max_output_tokens_range', {})
-        if not max_out_range:
-            max_out_tokens = model_config.get('max_output_tokens', 4096)
-            max_out_range = {'min': 1, 'max': max_out_tokens, 'default': max_out_tokens}
-        max_out_default = current_settings.get('max_output_tokens', max_out_range.get('default', 4096))
-        
-        # Top-k (if supported)
-        top_k_range = model_config.get('top_k_range')
-        top_k_default = current_settings.get('top_k', 15) if top_k_range else None
-        
-        # Build the form
-        form_text = f"""
-\033[1mConfigure {model_name}\033[0m
-
-Current Settings:
-  Temperature: {temp_default} (range: {temp_min}-{temp_max})
-  Max Output Tokens: {max_out_default} (range: {max_out_range.get('min', 1)}-{max_out_range.get('max', 4096)})
-"""
-        if top_k_range:
-            form_text += f"  Top-K: {top_k_default} (range: {top_k_range.get('min', 0)}-{top_k_range.get('max', 500)})\n"
-        
-        if model_config.get('supports_thinking'):
-            form_text += f"  Thinking Mode: {current_settings.get('thinking_mode', False)}\n"
-        
-        form_text += """
-\033[90mEnter new values (or press Enter to keep current):\033[0m
-"""
-        
-        # Simple text input for now - we can enhance this later
-        print(form_text)
-        
-        # Temperature input
-        temp_input = input(f"Temperature [{temp_default}]: ").strip()
-        if temp_input:
-            try:
-                settings['temperature'] = float(temp_input)
-                if not (temp_min <= settings['temperature'] <= temp_max):
-                    print(f"\033[33mOut of range, using {temp_default}\033[0m")
-                    settings['temperature'] = temp_default
-            except ValueError:
-                print(f"\033[33mInvalid, using {temp_default}\033[0m")
-                settings['temperature'] = temp_default
-        else:
-            settings['temperature'] = temp_default
-        
-        # Max output tokens
-        from app.agents.models import ModelManager
-        
-        current_settings = ModelManager.get_model_settings()
-        print(f"\n\033[1;36m{'─' * 60}\033[0m")
-        print(f"\033[1;36mConfigure {model_name}\033[0m")
-        print(f"\033[1;36m{'─' * 60}\033[0m")
-        print("\033[90mPress Enter to keep current value, or type new value\033[0m\n")
-        
-        # Temperature
-        temp_range = model_config.get('parameter_ranges', {}).get('temperature', {'min': 0, 'max': 1, 'default': 0.3})
-        current_temp = current_settings.get('temperature', temp_range.get('default', 0.3))
-        temp_input = input(f"Temperature [{temp_range['min']}-{temp_range['max']}] (current: {current_temp}): ").strip()
-        if temp_input:
-            try:
-                val = float(temp_input)
-                if temp_range['min'] <= val <= temp_range['max']:
-                    settings['temperature'] = val
-                else:
-                    print(f"\033[33mOut of range, using {current_temp}\033[0m")
-                    settings['temperature'] = current_temp
-            except ValueError:
-                print(f"\033[33mInvalid, using {current_temp}\033[0m")
-                settings['temperature'] = current_temp
-        else:
-            settings['temperature'] = current_temp
-        
-        # Max output tokens
-        max_output = model_config.get('max_output_tokens', 4096)
-        current_max = current_settings.get('max_output_tokens', max_output)
-        max_input = input(f"Max Output Tokens [1-{max_output}] (current: {current_max}): ").strip()
-        if max_input:
-            try:
-                val = int(max_input)
-                if 1 <= val <= max_output:
-                    settings['max_output_tokens'] = val
-                else:
-                    print(f"\033[33mOut of range, using {current_max}\033[0m")
-                    settings['max_output_tokens'] = current_max
-            except ValueError:
-                print(f"\033[33mInvalid, using {current_max}\033[0m")
-                settings['max_output_tokens'] = current_max
-        else:
-            settings['max_output_tokens'] = current_max
-        
-        # Top-k if supported
-        family = model_config.get('family')
-        if family and 'claude' in family:
-            current_top_k = current_settings.get('top_k', 15)
-            top_k_input = input(f"Top-K [0-500] (current: {current_top_k}): ").strip()
-            if top_k_input:
-                try:
-                    val = int(top_k_input)
-                    if 0 <= val <= 500:
-                        settings['top_k'] = val
-                    else:
-                        print(f"\033[33mOut of range, using {current_top_k}\033[0m")
-                        settings['top_k'] = current_top_k
-                except ValueError:
-                    print(f"\033[33mInvalid, using {current_top_k}\033[0m")
-                    settings['top_k'] = current_top_k
-            else:
-                settings['top_k'] = current_top_k
-        
-        # Sort models: group by family (claude, nova, etc.) then by version descending
-        def sort_key(model_name):
-            # Extract family prefix
-            for prefix in ['sonnet', 'opus', 'haiku', 'nova', 'gemini', 'deepseek', 'openai', 'qwen']:
-                if model_name.lower().startswith(prefix):
-                    rest = model_name[len(prefix):].lstrip('-')
-                    try:
-                        version = float(rest.split('-')[0]) if rest and rest[0].isdigit() else 0
-                    except ValueError:
-                        version = 0
-                    return (prefix, -version, model_name)
-            return ('zzz', 0, model_name)
-        
-        sorted_models = sorted(available_models.keys(), key=sort_key)
-        
-        # Build radio list values with formatted labels
-        radio_values = []
-        for i, model_name in enumerate(sorted_models, 1):
-            config = available_models[model_name]
-            indicators = []
-            if model_name == current_model:
-                indicators.append("✓ current")
-            if model_name == DEFAULT_MODELS.get(endpoint):
-                indicators.append("default")
-            
-            # Show context window with auto-scale info
-            token_limit = config.get('token_limit')
-            extended_limit = config.get('extended_context_limit')
-            supports_extended = config.get('supports_extended_context', False)
-            
-            if supports_extended and extended_limit:
-                # Show base→extended format
-                base_display = f"{token_limit // 1000000}M" if token_limit >= 1000000 else f"{token_limit // 1000}K"
-                extended_display = f"{extended_limit // 1000000}M" if extended_limit >= 1000000 else f"{extended_limit // 1000}K"
-                indicators.append(f"{base_display}→{extended_display} ctx")
-            elif token_limit:
-                # Show just the token limit
-                if token_limit >= 1000000:
-                    indicators.append(f"{token_limit // 1000000}M ctx")
-                else:
-                    indicators.append(f"{token_limit // 1000}K ctx")
-            
-            label_text = model_name
-            if indicators:
-                label_text += f"  ({', '.join(indicators)})"
-            
-            radio_values.append((model_name, label_text))
-        
-        # Create radio list
-        default_model = current_model if current_model in available_models else sorted_models[0]
-        radio_list = RadioList(values=radio_values, default=default_model)
-        
-        # Create application-level key bindings
-        kb = KeyBindings()
-        
-        configure_requested = {'value': False}
-        
-        @kb.add('right')
-        def _(event):
-            # Mark that user wants to configure settings
-            configure_requested['value'] = True
-            # Get the currently highlighted value (not the space-marked one)
-            highlighted_value = radio_list.values[radio_list._selected_index][0]
-            event.app.exit(result=highlighted_value)
-        
-        @kb.add('escape')
-        @kb.add('c-c')
-        def _(event):
-            event.app.exit(result=None)
-        
-        layout = Layout(HSplit([
-            Window(
-                content=FormattedTextControl(text=f'Select Model ({endpoint}) - ↑/↓ to navigate, Enter to select, → to configure, Esc to cancel\n'),
-                height=2
-            ),
-            radio_list,
-        ]))
-        
-        # Create and run application
-        app = Application(
-            layout=layout,
-            key_bindings=kb,
-            full_screen=False,
-            mouse_support=True
-        )
-        
-        try:
-            result = await app.run_async()
-            
-            if result:
-                selected_model = result
-                selected_config = available_models[selected_model]
-                
-                # If user pressed right arrow, show settings dialog
-                if configure_requested['value']:
-                    settings = await self._show_model_settings_dialog(selected_model, selected_config)
-                    if settings is None:
-                        # User cancelled settings, go back to model selection
-                        print(f"\n\033[90mSettings cancelled, keeping model: {current_model}\033[0m")
-                        return
-                    
-                    # Apply settings
-                    for key, value in settings.items():
-                        env_key = f"ZIYA_{key.upper()}"
-                        os.environ[env_key] = str(value)
-                    
-                    print(f"\n\033[32m✓ Switched to {selected_model} with custom settings\033[0m")
-                    for key, value in settings.items():
-                        print(f"  {key}: {value}")
-                else:
-                    print(f"\n\033[32m✓ Switched to {selected_model}\033[0m")
-                
-                os.environ["ZIYA_MODEL"] = result
-                os.environ["ZIYA_MODEL"] = selected_model
-                self._model = None  # Force reload
-            else:
-                print(f"\n\033[90mCancelled\033[0m")
-        except Exception as e:
-            print(f"\n\033[33mInteractive selection failed: {e}\033[0m")
-            print(f"\033[90mCurrent: {current_model}\033[0m")
-            print(f"\033[90mUse: /model <name>\033[0m")
-        
     async def _show_model_settings_dialog(self, model_name: str, model_config: dict) -> Optional[dict]:
         """Show simple text-based settings configuration."""
         from app.agents.models import ModelManager
@@ -1484,6 +1475,9 @@ Current Settings:
                     for key, value in settings.items():
                         print(f"  {key}: {value}")
                 else:
+                    if selected_model == current_model:
+                        print(f"\n\033[90mModel unchanged: {selected_model}\033[0m")
+                        return
                     print(f"\n\033[32m✓ Switched to {selected_model}\033[0m")
                 
                 os.environ["ZIYA_MODEL"] = selected_model
@@ -1535,6 +1529,33 @@ def cmd_chat(args):
     from app.plugins import initialize as initialize_plugins
     initialize_plugins()
     
+    # Handle session resume
+    if getattr(args, 'resume', False):
+        session_id = select_session()
+        if session_id:
+            try:
+                session_data = load_session(session_id)
+                files = session_data.get('files', [])
+                history = session_data.get('history', [])
+                
+                cli = CLI(files=files)
+                cli.history = history
+                
+                print(f"\033[32m✓ Resumed session from {session_data.get('timestamp', 'unknown')}\033[0m")
+                print(f"  Files: {len(files)}, Messages: {len(history)}\n")
+                
+                asyncio.run(_run_async_cli(cli))
+                
+                # Save session on exit (unless ephemeral)
+                if not getattr(args, 'ephemeral', False):
+                    save_session(cli)
+                    print(f"\n\033[90mSession saved\033[0m")
+                
+                return
+            except FileNotFoundError as e:
+                print(f"\033[33m{e}\033[0m")
+                print("\033[90mStarting new session instead\033[0m\n")
+    
     # Now check auth with the profile from setup_env
     profile = getattr(args, 'profile', None)
     if not _check_auth_quick(profile):
@@ -1546,6 +1567,11 @@ def cmd_chat(args):
     
     cli = CLI(files=files)
     asyncio.run(_run_async_cli(cli))
+    
+    # Save session on exit (unless ephemeral)
+    if not getattr(args, 'ephemeral', False):
+        save_session(cli)
+        print(f"\n\033[90mSession saved\033[0m")
 
 
 def cmd_ask(args):
@@ -1749,6 +1775,8 @@ Examples:
     # chat
     chat_parser = subparsers.add_parser('chat', parents=[common_parent], help='Interactive chat')
     chat_parser.add_argument('files', nargs='*', help='Files/directories for context')
+    chat_parser.add_argument('--resume', action='store_true', help='Resume from a previous session')
+    chat_parser.add_argument('--ephemeral', action='store_true', help='Do not save session history')
     chat_parser.set_defaults(func=cmd_chat)
     
     # ask
@@ -1756,8 +1784,6 @@ Examples:
     ask_parser.add_argument('question', nargs='?', help='Question to ask')
     ask_parser.add_argument('files', nargs='*', help='Files for context')
     ask_parser.set_defaults(func=cmd_ask)
-    
-    # review
     review_parser = subparsers.add_parser('review', parents=[common_parent], help='Review code')
     review_parser.add_argument('files', nargs='*', help='Files to review')
     review_parser.add_argument('--staged', '-s', action='store_true', help='Review staged git changes')
@@ -1828,7 +1854,17 @@ def main():
         print()
         sys.exit(0)
     except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
+        # Extract traceback info for better error reporting
+        tb = traceback.extract_tb(sys.exc_info()[2])
+        if tb:
+            last_frame = tb[-1]
+            location = f"{last_frame.filename}:{last_frame.lineno}"
+            print(f"\033[31mError in {location}: {e}\033[0m", file=sys.stderr)
+            if os.environ.get('ZIYA_LOG_LEVEL') == 'DEBUG':
+                print("\nFull traceback:", file=sys.stderr)
+                traceback.print_exc(file=sys.stderr)
+        else:
+            print(f"\033[31mError: {e}\033[0m", file=sys.stderr)
         sys.exit(1)
 
 
