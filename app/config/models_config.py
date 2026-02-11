@@ -31,6 +31,7 @@ GLOBAL_MODEL_DEFAULTS = {
     "supports_vision": False,  # Default: no vision support
     "supports_max_input_tokens": False,
     "default_max_output_tokens": 32768,  # Default value for max_output_tokens
+    "supports_assistant_prefill": True,  # Default: most models support prefill
     "parameter_mappings": {
         "max_output_tokens": ["max_tokens"],  # Some APIs use max_tokens instead
         "temperature": ["temperature"],
@@ -94,7 +95,7 @@ MODEL_FAMILIES = {
         "token_limit": 1000000,  # Explicitly set token limit for nova-premier
         "supports_multimodal": True,
         "supports_vision": True,
-        "context_window": 1000000
+            "supports_assistant_prefill": False,
     },
     "deepseek": {
         "wrapper_class": "DeepSeekWrapper",
@@ -290,6 +291,7 @@ MODEL_CONFIGS = {
             "family": "claude",
             "supports_context_caching": True,
             "supports_vision": True,
+            "supports_assistant_prefill": False,
         },
         "opus4.1": {
             "model_id": {
@@ -323,6 +325,28 @@ MODEL_CONFIGS = {
             "family": "claude",
             "supports_context_caching": True,
             "supports_vision": True,
+            "supports_assistant_prefill": False,
+        },
+        "opus4.6": {
+            "model_id": {
+                "us": "us.anthropic.claude-opus-4-6-v1",
+                "eu": "global.anthropic.claude-opus-4-6-v1"  # Use global profile for EU
+            },
+            "token_limit": 200000,
+            "max_output_tokens": 64000,
+            "default_max_output_tokens": 32000,
+            "max_iterations": 8,
+            "timeout_multiplier": 6,
+            "is_advanced_model": True,
+            "supports_max_input_tokens": True,
+            "supports_thinking": True,
+            "family": "claude",
+            "supports_context_caching": True,
+            "supports_vision": True,
+            "supports_assistant_prefill": False,
+            "supports_extended_context": True,  # Supports 1M token context window
+            "extended_context_limit": 1000000,  # Extended context window size
+            "extended_context_header": "context-1m-2025-08-07",  # Beta header for extended context
         },
         "sonnet": {
             "model_id": {
