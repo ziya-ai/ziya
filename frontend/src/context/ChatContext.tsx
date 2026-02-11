@@ -7,6 +7,8 @@ import { message } from 'antd';
 import { useTheme } from './ThemeContext';
 import { useConfig } from './ConfigContext';
 import { useProject } from './ProjectContext';
+import { useFolderContext } from './FolderContext';
+import * as syncApi from '../api/conversationSyncApi';
 
 export type ProcessingState = 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'awaiting_tool_response' | 'tool_throttling' | 'tool_limit_reached' | 'error';
 
@@ -82,6 +84,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const { isDarkMode } = useTheme();
     const { isEphemeralMode } = useConfig();
     const { currentProject } = useProject();
+    const { checkedKeys } = useFolderContext();
     const renderCount = useRef(0);
     const [isStreaming, setIsStreaming] = useState(false);
     const [streamedContentMap, setStreamedContentMap] = useState(() => new Map<string, string>());
@@ -90,13 +93,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [processingStates, setProcessingStates] = useState(() => new Map<string, ConversationProcessingState>());
     const [conversations, setConversations] = useState<Conversation[]>([]);
     const [isLoadingConversation, setIsLoadingConversation] = useState(false);
-    const [currentConversationId, setCurrentConversationId] = useState<string>(() => {
-        // Don't restore from localStorage yet - wait for config to determine ephemeral mode
-        // The restoration will happen in an effect after config loads
-        const newId = uuidv4();
-        console.log('🆕 CREATED: New conversation ID:', newId);
-        return newId;
-    });
+    const [currentConversationId, setCurrentConversationId] = useState<string>('');
     const currentConversationRef = useRef<string>(currentConversationId);
     const [currentMessages, setCurrentMessages] = useState<Message[]>([]);
 
@@ -105,41 +102,74 @@ export function ChatProvider({ children }: ChatProviderProps) {
         const handleProjectSwitch = async (event: CustomEvent) => {
             const { projectId, projectPath, projectName } = event.detail;
             console.log('💬 PROJECT_SWITCH: Loading conversations for project:', projectName, projectId);
-            
+
             try {
-                // First, check if we need to migrate conversations without projectId
+                // Mark this project as synced so the init effect doesn't re-run
+                serverSyncedForProject.current = projectId;
+
+                // 1. Load from SERVER first (source of truth across ports)
+                let serverChats: syncApi.ServerChat[] = [];
+                try {
+                    serverChats = await syncApi.listChats(projectId);
+                    console.log(`📡 PROJECT_SWITCH: Got ${serverChats.length} chats from server`);
+                } catch (e) {
+                    console.warn('📡 PROJECT_SWITCH: Server unavailable, falling back to IndexedDB:', e);
+                }
+
+                // 2. Load from IndexedDB (local cache)
                 let allConversations = await db.getConversations();
+
+                // 3. Migrate untagged IndexedDB conversations to this project
                 const needsMigration = allConversations.some(c => !c.projectId);
-                
                 if (needsMigration) {
                     console.log('🔄 MIGRATION: Assigning conversations without projectId to current project');
                     allConversations = allConversations.map(c => {
                         if (!c.projectId) {
-                            return { ...c, projectId: currentProject?.id, _version: Date.now() };
+                            return { ...c, projectId: projectId, _version: Date.now() };
                         }
                         return c;
                     });
                     await db.saveConversations(allConversations);
                     console.log('✅ MIGRATION: All conversations now have projectId');
                 }
-                
-                // Load ALL conversations and folders from database
+
+                // 4. Merge: server chats win, then add local-only conversations
+                const localProjectConvs = allConversations.filter(c => c.projectId === projectId);
+                const serverIdSet = new Set(serverChats.map(c => c.id));
+                const localOnly = localProjectConvs.filter(c => !serverIdSet.has(c.id));
+
+                // Convert server chats to frontend Conversation shape
+                const serverAsConversations = serverChats.map((sc: any) => ({
+                    ...sc,
+                    projectId: projectId,
+                    lastAccessedAt: sc.lastAccessedAt || sc.lastActiveAt,
+                    isActive: sc.isActive !== false,
+                    _version: sc._version || Date.now(),
+                }));
+
+                const mergedConversations = [...serverAsConversations, ...localOnly];
+
+                // 5. Push local-only conversations to server (async, non-blocking)
+                if (localOnly.length > 0) {
+                    console.log(`📡 SYNC: Pushing ${localOnly.length} local-only conversations to server`);
+                    const chatsToSync = localOnly.map(c => syncApi.conversationToServerChat(c, projectId));
+                    syncApi.bulkSync(projectId, chatsToSync).then(result => {
+                        console.log('📡 SYNC result:', result);
+                    }).catch(e => console.warn('📡 SYNC failed (non-fatal):', e));
+                }
+
                 const allFolders = await db.getFolders();
-                
-                // Filter by projectId - STRICT match only (no backward compat)
-                const projectConversations = allConversations.filter(c => c.projectId === projectId);
                 const projectFolders = allFolders.filter(f => f.projectId === projectId);
-                
-                console.log(`📊 PROJECT_SWITCH: Found ${projectConversations.length} conversations, ${projectFolders.length} folders for project ${projectName}`);
-                
+
+                console.log(`📊 PROJECT_SWITCH: ${mergedConversations.length} conversations (${serverChats.length} server, ${localOnly.length} local-only), ${projectFolders.length} folders`);
+
                 // Update state with filtered data
-                setConversations(projectConversations);
+                setConversations(mergedConversations);
                 setFolders(projectFolders);
-                
+
                 // Set current conversation
-                if (projectConversations.length > 0) {
-                    // Load most recent conversation for this project
-                    const mostRecent = projectConversations.reduce((a, b) => 
+                if (mergedConversations.length > 0) {
+                    const mostRecent = mergedConversations.reduce((a, b) =>
                         (b.lastAccessedAt || 0) > (a.lastAccessedAt || 0) ? b : a
                     );
                     setCurrentConversationId(mostRecent.id);
@@ -159,13 +189,23 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 setCurrentConversationId(newConversationId);
                 setCurrentMessages([]);
             }
-            
+
             // Clear streaming state
             setStreamedContentMap(new Map());
             setReasoningContentMap(new Map());
             setProcessingStates(new Map());
+
+            // CRITICAL FIX: Restore file selections for the switched-to project
+            const savedSelections = projectFileSelections.current.get(projectId);
+            if (savedSelections && savedSelections.size > 0) {
+                console.log(`📂 Restoring ${savedSelections.size} file selections for project ${projectName}`);
+                // Dispatch event to FolderContext to restore selections
+                window.dispatchEvent(new CustomEvent('restoreProjectFileSelections', {
+                    detail: { projectId, selections: Array.from(savedSelections) }
+                }));
+            }
         };
-        
+
         window.addEventListener('projectSwitched', handleProjectSwitch as EventListener);
         return () => window.removeEventListener('projectSwitched', handleProjectSwitch as EventListener);
     }, [currentProject?.id]);
@@ -220,11 +260,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
     // This must run AFTER config is loaded AND after conversations are initialized
     // CRITICAL: Only run ONCE to prevent overwriting user's current conversation
     useEffect(() => {
-        if (!isEphemeralMode && isInitialized && conversations.length > 0 && !conversationIdRestored.current) {
+        if (!isEphemeralMode && isInitialized && conversations.length > 0 && !conversationIdRestored.current && !currentConversationId) {
             conversationIdRestored.current = true; // Mark as restored to prevent re-running
             try {
                 const savedCurrentId = localStorage.getItem('ZIYA_CURRENT_CONVERSATION_ID');
-                if (savedCurrentId && savedCurrentId !== currentConversationId) {
+                if (savedCurrentId) {
                     // CRITICAL: Only restore if the conversation actually exists
                     const conversationExists = conversations.some(c => c.id === savedCurrentId);
                     if (conversationExists) {
@@ -232,7 +272,18 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         setCurrentConversationId(savedCurrentId);
                     } else {
                         console.warn('⚠️ Saved conversation ID not found in loaded conversations:', savedCurrentId);
+                        // Use the most recent conversation instead
+                        const mostRecent = conversations.reduce((a, b) =>
+                            (b.lastAccessedAt || 0) > (a.lastAccessedAt || 0) ? b : a
+                        );
+                        setCurrentConversationId(mostRecent.id);
                     }
+                } else if (conversations.length > 0) {
+                    // No saved ID, use most recent
+                    const mostRecent = conversations.reduce((a, b) =>
+                        (b.lastAccessedAt || 0) > (a.lastAccessedAt || 0) ? b : a
+                    );
+                    setCurrentConversationId(mostRecent.id);
                 }
             } catch (e) {
                 console.warn('Failed to restore current conversation ID:', e);
@@ -264,6 +315,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const messageUpdateCount = useRef(0);
     const conversationsRef = useRef(conversations);
     const streamingConversationsRef = useRef(streamingConversations);
+
+    // Track which project has been server-synced to avoid duplicate syncs
+    const serverSyncedForProject = useRef<string | null>(null);
+    const dirtyConversationIds = useRef<Set<string>>(new Set());
     const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null);
     const lastManualScrollTime = useRef<number>(0);
     const manualScrollCooldownActive = useRef<boolean>(false);
@@ -271,6 +326,17 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [throttlingRecoveryData, setThrottlingRecoveryData] = useState<Map<string, { toolResults?: any[]; partialContent?: string }>>(new Map());
 
     // CRITICAL: Track scroll state per conversation to prevent cross-conversation interference
+
+    // CRITICAL FIX: Preserve file selections per project across DB refreshes
+    const projectFileSelections = useRef<Map<string, Set<string>>>(new Map());
+
+    // Save current selections before project operations
+    const preserveCurrentFileSelections = useCallback(() => {
+        if (currentProject?.id) {
+            projectFileSelections.current.set(currentProject.id, new Set(checkedKeys));
+        }
+    }, [currentProject?.id, checkedKeys]);
+
     const conversationScrollStates = useRef<Map<string, {
         userScrolledAway: boolean;
         lastManualScrollTime: number;
@@ -504,6 +570,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         skipValidation?: boolean;
         retryCount?: number;
         isRecoveryAttempt?: boolean;
+        changedIds?: string[];
     } = {}) => {
         // Skip all persistence in ephemeral mode
         if (isEphemeralMode) {
@@ -533,6 +600,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
             _version: conv._version || Date.now() // Ensure version is set
         }));
 
+        // Track which conversations are dirty for server sync
+        if (options.changedIds) {
+            options.changedIds.forEach(id => dirtyConversationIds.current.add(id));
+        }
+
         saveQueue.current = saveQueue.current.then(async () => {
             const { skipValidation = false, retryCount = 0, isRecoveryAttempt = false } = options;
             const maxRetries = 3;
@@ -560,6 +632,31 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 // If quota exceeded, we could try to prune old data here
                 // For now, just continue - the data is in React state
                 return; // Exit early, skip validation
+            }
+
+            // DUAL-WRITE: Also sync changed conversations to server (non-blocking)
+            if (currentProject?.id) {
+                const dirty = dirtyConversationIds.current;
+                if (dirty.size > 0) {
+                    const dirtyConvs = validatedConversations.filter(
+                        c => c.projectId === currentProject.id && dirty.has(c.id)
+                    );
+                    dirtyConversationIds.current = new Set();
+                    // Async fire-and-forget — don't block the save queue
+                    Promise.resolve().then(async () => {
+                        try {
+                            const chatsToSync = dirtyConvs.map(c =>
+                                syncApi.conversationToServerChat(c, currentProject.id)
+                            );
+                            if (chatsToSync.length > 0) {
+                                await syncApi.bulkSync(currentProject.id, chatsToSync);
+                                console.log(`📡 DUAL_WRITE: Synced ${chatsToSync.length} dirty conversations to server`);
+                            }
+                        } catch (e) {
+                            console.warn('📡 DUAL_WRITE: Server sync failed (non-fatal):', e);
+                        }
+                    });
+                }
             }
 
             // Post-save validation with healing - only if not explicitly skipped
@@ -648,7 +745,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             }
         });
         return saveQueue.current;
-    }, [createBackup, isEphemeralMode]);
+    }, [createBackup, isEphemeralMode, currentProject?.id]);
 
     // Helper function to merge conversations during healing
     const mergeConversationsForHealing = useCallback((expected: Conversation[], actual: Conversation[]) => {
@@ -742,12 +839,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setConversations(prevConversations => {
             const existingConversation = prevConversations.find(c => c.id === conversationId);
             const isFirstMessage = existingConversation?.messages.length === 0;
-            
+
             // CRITICAL FIX: Determine if this is a non-current conversation dynamically
             // Don't trust the caller's isNonCurrentConversation - compute it from current state
             // This handles concurrent conversations and user switching mid-stream
             const actuallyNonCurrent = conversationId !== currentConversationId;
-            
+
             console.log('Message processing:', {
                 messageRole: message.role,
                 targetConversationId: conversationId,
@@ -797,7 +894,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 }))
             });
 
-            queueSave(updatedConversations).catch(console.error);
+            queueSave(updatedConversations, { changedIds: [conversationId] }).catch(console.error);
 
             return updatedConversations;
         });
@@ -871,130 +968,118 @@ export function ChatProvider({ children }: ChatProviderProps) {
     }, [currentConversationId, conversations]);
 
     const startNewChat = useCallback(async (specificFolderId?: string | null) => {
-        return new Promise<void>(async (resolve, reject) => {
-            // Only attempt recovery if not in cooldown period
-            const now = Date.now();
-            const timeSinceLastRecovery = now - lastRecoveryAttempt.current;
+        // Only attempt recovery if not in cooldown period
+        const now = Date.now();
+        const timeSinceLastRecovery = now - lastRecoveryAttempt.current;
 
-            // Skip recovery if:
-            // 1. Already recovering
-            // 2. Within cooldown period
-            // 3. Conversations exist and appear healthy
-            const shouldSkipRecovery = (
-                recoveryInProgress.current ||
-                timeSinceLastRecovery < RECOVERY_COOLDOWN ||
-                (conversations.length > 0 && conversations.length === conversationsRef.current.length)
+        // Skip recovery if:
+        // 1. Already recovering
+        // 2. Within cooldown period
+        // 3. Conversations exist and appear healthy
+        const shouldSkipRecovery = (
+            recoveryInProgress.current ||
+            timeSinceLastRecovery < RECOVERY_COOLDOWN ||
+            (conversations.length > 0 && conversations.length === conversationsRef.current.length)
+        );
+
+        try {
+            if (!shouldSkipRecovery) {
+                await Promise.race([
+                    attemptDatabaseRecovery(),
+                    new Promise((_, rej) => setTimeout(() => rej(new Error('Recovery timeout')), 5000))
+                ]);
+            }
+        } catch (recoveryError) {
+            console.warn('Database recovery attempt failed or timed out, continuing anyway:', recoveryError);
+        }
+
+        if (!isInitialized) {
+            console.warn('⚠️ NEW CHAT: Context not initialized, attempting initialization...');
+            try {
+                await Promise.race([
+                    initializeWithRecovery(),
+                    new Promise((_, rej) => setTimeout(() => rej(new Error('Init timeout')), 5000))
+                ]);
+                // Give initialization a moment to complete
+                await new Promise(resolve => setTimeout(resolve, 200));
+
+                if (!isInitialized) {
+                    console.warn('⚠️ NEW CHAT: Proceeding with degraded mode (no IndexedDB persistence)');
+                    setIsInitialized(true);
+                }
+            } catch (initError) {
+                console.error('❌ NEW CHAT: Initialization failed, proceeding in localStorage-only mode:', initError);
+                setIsInitialized(true);
+            }
+        }
+        try {
+            const newId = uuidv4();
+
+            // Use the provided folder ID if available, otherwise use the current folder ID
+            const targetFolderId = specificFolderId !== undefined ? specificFolderId : currentFolderId;
+
+            const newConversation: Conversation = {
+                id: newId,
+                title: 'New Conversation',
+                projectId: currentProject?.id,
+                messages: [],
+                folderId: targetFolderId,
+                lastAccessedAt: Date.now(),
+                isActive: true,
+                _version: Date.now(),
+                hasUnreadResponse: false
+            };
+
+            // Clear unread flag from current conversation before creating new one
+            const updatedConversations = conversations.map(conv =>
+                conv.id === currentConversationId
+                    ? { ...conv, hasUnreadResponse: false }
+                    : conv
             );
 
             try {
-                if (!shouldSkipRecovery) {
-                    await attemptDatabaseRecovery();
-                }
-            } catch (recoveryError) {
-                console.warn('Database recovery attempt failed, continuing anyway:', recoveryError);
-            }
-
-            if (!isInitialized) {
-                console.warn('⚠️ NEW CHAT: Context not initialized, attempting initialization...');
                 try {
-                    await initializeWithRecovery();
-                    // Give initialization a moment to complete
-                    await new Promise(resolve => setTimeout(resolve, 200));
-
-                    if (!isInitialized) {
-                        // If still not initialized after attempt, proceed anyway with degraded mode
-                        console.warn('⚠️ NEW CHAT: Proceeding with degraded mode (no IndexedDB persistence)');
-                        setIsInitialized(true);
-                    }
-                } catch (initError) {
-                    console.error('❌ NEW CHAT: Initialization failed, proceeding in localStorage-only mode:', initError);
-                    // Set initialized to true anyway - app can work with localStorage
-                    setIsInitialized(true);
-                }
-            }
-            try {
-                const newId = uuidv4();
-
-                // Use the provided folder ID if available, otherwise use the current folder ID
-                const targetFolderId = specificFolderId !== undefined ? specificFolderId : currentFolderId;
-
-                const newConversation: Conversation = {
-                    id: newId,
-                    title: 'New Conversation',
-                    projectId: currentProject?.id,
-                    messages: [],
-                    folderId: targetFolderId,
-                    lastAccessedAt: Date.now(),
-                    isActive: true,
-                    _version: Date.now(),
-                    hasUnreadResponse: false
-                };
-
-                // Clear unread flag from current conversation before creating new one
-                const updatedConversations = conversations.map(conv =>
-                    conv.id === currentConversationId
-                        ? { ...conv, hasUnreadResponse: false }
-                        : conv
-                );
-
-                try {
-                    try {
-                        await queueSave([...updatedConversations, newConversation]);
-                    } catch (saveError) {
-                        // Log but don't block - persistence failure shouldn't prevent new chats
-                        console.warn('⚠️ NEW CHAT: Save failed, continuing anyway:', saveError);
-                        try {
-                            // Try localStorage backup
-                            const backupData = JSON.stringify([...updatedConversations, newConversation]);
-                            localStorage.setItem('ZIYA_CONVERSATION_BACKUP', backupData);
-                        } catch (backupError) {
-                            console.warn('⚠️ NEW CHAT: Backup also failed:', backupError);
-                        }
-                    }
-
-                    // Update state immediately after successful save
-                    // CRITICAL: Always update state, even if save failed
-                    setConversations([...updatedConversations, newConversation]);
-                    setCurrentMessages([]);
-                    setCurrentConversationId(newId);
-
-                    // CRITICAL: Persist the new conversation ID immediately
-                    try {
-                        localStorage.setItem('ZIYA_CURRENT_CONVERSATION_ID', newId);
-                    } catch (e) {
-                        console.warn('Failed to persist conversation ID:', e);
-                    }
-                    resolve();
-
+                    await queueSave([...updatedConversations, newConversation], { changedIds: [newConversation.id] });
                 } catch (saveError) {
-                    // CRITICAL: Never block new chat creation due to storage issues
-                    console.error('Failed to save new conversation, creating in memory:', saveError);
-
-                    // Create conversation in memory anyway
-                    setConversations([...updatedConversations, newConversation]);
-                    setCurrentMessages([]);
-                    setCurrentConversationId(newId);
+                    console.warn('⚠️ NEW CHAT: Save failed, continuing anyway:', saveError);
                     try {
-                        localStorage.setItem('ZIYA_CURRENT_CONVERSATION_ID', newId);
-                    } catch (e) { /* ignore */ }
-
-                    // Background retry
-                    setTimeout(async () => {
-                        try {
-                            await queueSave([...updatedConversations, newConversation], { skipValidation: true });
-                        } catch (e) {
-                            console.warn('Background save retry failed:', e);
-                        }
-                    }, 2000);
-
-                    // Always resolve - user can work, persistence will catch up
-                    resolve();
+                        const backupData = JSON.stringify([...updatedConversations, newConversation]);
+                        localStorage.setItem('ZIYA_CONVERSATION_BACKUP', backupData);
+                    } catch (backupError) {
+                        console.warn('⚠️ NEW CHAT: Backup also failed:', backupError);
+                    }
                 }
-            } catch (error) {
-                console.error('Failed to save new conversation:', error);
-                reject(error);
+
+                setConversations([...updatedConversations, newConversation]);
+                setCurrentMessages([]);
+                setCurrentConversationId(newId);
+
+                try {
+                    localStorage.setItem('ZIYA_CURRENT_CONVERSATION_ID', newId);
+                } catch (e) {
+                    console.warn('Failed to persist conversation ID:', e);
+                }
+
+            } catch (saveError) {
+                console.error('Failed to save new conversation, creating in memory:', saveError);
+                setConversations([...updatedConversations, newConversation]);
+                setCurrentMessages([]);
+                setCurrentConversationId(newId);
+                try {
+                    localStorage.setItem('ZIYA_CURRENT_CONVERSATION_ID', newId);
+                } catch (e) { /* ignore */ }
+
+                setTimeout(async () => {
+                    try {
+                        await queueSave([...updatedConversations, newConversation], { skipValidation: true, changedIds: [newConversation.id] });
+                    } catch (e) {
+                        console.warn('Background save retry failed:', e);
+                    }
+                }, 2000);
             }
-        });
+        } catch (error) {
+            console.error('Failed to create new conversation:', error);
+        }
     }, [isInitialized, currentConversationId, currentFolderId, conversations, queueSave]);
 
     // Recovery function to fix database sync issues
@@ -1022,7 +1107,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // CRITICAL FIX: Get ALL conversations from database, not just current project's filtered state
             // The 'conversations' state is filtered by project, but the database has ALL projects
             const dbConversations = await db.getConversations();
-            
+
             // For recovery purposes, we should compare the FULL database with itself
             // Memory state is project-filtered and should NOT be used for recovery
             // If we used the filtered state, we'd delete other projects' conversations!
@@ -1054,7 +1139,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
                     // CRITICAL FIX: Check if current conversation is in DB before nuking memory
                     const currentConvInDB = dbConversations.find(c => c.id === currentConversationId);
-                    const currentConvInMemory = memoryConversations.find(c => c.id === currentConversationId);
+                    const currentConvInMemory = conversations.find(c => c.id === currentConversationId);
 
                     if (!currentConvInDB && currentConvInMemory && currentConvInMemory.messages.length > 0) {
                         console.error(`🚨 RECOVERY BLOCKED: Current conversation ${currentConversationId.substring(0, 8)} not in DB but has ${currentConvInMemory.messages.length} messages!`);
@@ -1103,7 +1188,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     console.warn(`⚠️ RECOVERY BLOCKED: Memory state is project-filtered (${memoryActive} conversations)`);
                     console.warn(`⚠️ RECOVERY BLOCKED: Saving would delete ${dbActive - memoryActive} conversations from other projects`);
                     console.log('🔄 RECOVERY: Reloading memory from database instead');
-                    
+
                     // Reload current project's conversations from database
                     const projectConversations = dbConversations.filter(c => c.projectId === currentProject?.id);
                     setConversations(projectConversations);
@@ -1115,7 +1200,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // If DB has MORE conversations, merge carefully
             if (dbActive > memoryActive && difference > 2) {
                 console.log(`🔄 RECOVERY: Syncing conversation states (memory: ${memoryActive}, db: ${dbActive})`);
-                
+
                 // CRITICAL: Only merge conversations for the CURRENT project
                 // Never use filtered memory state to overwrite the entire database
                 console.log('🔄 RECOVERY: Trusting database, reloading filtered view');
@@ -1156,7 +1241,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         : conv);
 
                 // Then persist to database
-                queueSave(updatedConversations).catch(console.error);
+                queueSave(updatedConversations, { changedIds: [currentConversationId] }).catch(console.error);
                 return updatedConversations;
             });
 
@@ -1326,7 +1411,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
             );
 
             // Save the entire updated list to the database once
-            await queueSave(updatedConversationsForDB);
+            const affectedIds = updatedConversationsForDB.filter(c => c.folderId === id).map(c => c.id);
+            await queueSave(updatedConversationsForDB, { changedIds: affectedIds });
 
             // Now update the React state based on the successfully persisted changes
             setConversations(prevConvs => prevConvs.map(conv =>
@@ -1425,10 +1511,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
                 // CRITICAL FIX: Only skip update if we can CONFIRM it's a different conversation
                 // AND the current conversation's messages haven't actually changed
-                const isDefinitelyDifferentConversation = triggeringConversation && 
+                const isDefinitelyDifferentConversation = triggeringConversation &&
                     triggeringConversation.id !== currentConversationId &&
                     messages.length === currentMessages.length;
-                
+
                 if (isDefinitelyDifferentConversation) {
                     console.log('📌 Another conversation updated - preserving current conversation display');
                     return;
@@ -1459,6 +1545,14 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 _version: Date.now(),
                 hasUnreadResponse: false
             }]);
+            
+            // Set the new conversation as current if we don't have one yet
+            if (!currentConversationId) {
+                setCurrentConversationId(newId);
+                setCurrentMessages([]);
+                console.log('✅ EPHEMERAL MODE: Set initial conversation');
+            }
+            
             setIsInitialized(true);
             isRecovering.current = false;
             return;
@@ -1527,10 +1621,17 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
                     // Only add conversations that don't already exist
                     const newConversations = recoveredConversations.filter((c: Conversation) =>
-                        !currentIds.has(c.id) ||
-                        // Update if recovered version has more messages
-                        (c.messages.length > (currentConversations.find(cc => cc.id === c.id)?.messages.length || 0))
+                        !currentIds.has(c.id)
+                        // REMOVED: Never overwrite existing conversations with recovered ones.
+                        // Recovery data may contain truncated/stripped messages from emergency backups
+                        // which would destroy the full content in IndexedDB.
+                        // If the conversation already exists in DB, the DB version is authoritative.
                     );
+
+                    if (newConversations.length !== recoveredConversations.length) {
+                        const skipped = recoveredConversations.length - newConversations.length;
+                        console.log(`ℹ️ RECOVERY: Skipped ${skipped} conversations already in DB (DB is authoritative)`);
+                    }
 
                     if (newConversations.length > 0) {
                         const mergedConversations = [...currentConversations, ...newConversations];
@@ -1787,18 +1888,20 @@ export function ChatProvider({ children }: ChatProviderProps) {
             }
         };
 
-        // Helper to truncate large messages
-        const truncateMessages = (messages: Message[], maxLength: number = 1000): Message[] => {
+        // Helper to strip large binary data from messages without truncating text content.
+        // Text content is NEVER truncated — if space is tight we save fewer conversations instead.
+        const stripBinaryData = (messages: Message[]): Message[] => {
             return messages.map(msg => ({
                 ...msg,
-                content: msg.content.length > maxLength
-                    ? msg.content.substring(0, maxLength) + '...[truncated for backup]'
-                    : msg.content
+                // Strip base64 image data but keep metadata
+                images: msg.images?.map(img => ({ ...img, data: '' })),
+                // Strip any inline base64 data URIs from content (images embedded in markdown)
+                // but NEVER truncate the actual text
             }));
         };
 
-        // Helper to create minimal conversation representation
-        const createMinimalConversation = (conv: Conversation): any => {
+        // Helper to create a lighter conversation representation without destroying content
+        const createLightConversation = (conv: Conversation): any => {
             return {
                 id: conv.id,
                 title: conv.title,
@@ -1806,8 +1909,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 lastAccessedAt: conv.lastAccessedAt,
                 isActive: conv.isActive,
                 messageCount: conv.messages.length,
-                // Keep only last 10 messages with truncated content
-                messages: truncateMessages(conv.messages.slice(-10), 500)
+                // Keep only last 10 messages but with FULL content (just strip binary)
+                messages: stripBinaryData(conv.messages.slice(-10))
             };
         };
 
@@ -1871,13 +1974,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                 if (conv.id === currentConversationId) {
                                     return {
                                         ...conv,
-                                        messages: truncateMessages(conv.messages, 1000)
+                                        messages: stripBinaryData(conv.messages)
                                     };
                                 }
-                                return createMinimalConversation(conv);
+                                return createLightConversation(conv);
                             }),
                         currentConversationId,
-                        currentMessages: truncateMessages(currentMessages.slice(-30), 800),
+                        currentMessages: stripBinaryData(currentMessages.slice(-30)),
                         currentFolderId,
                         timestamp: Date.now(),
                         streamingContent: emergencyData.streamingContent,
@@ -1895,7 +1998,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
                         const ultraMinimalData = {
                             currentConversationId,
-                            currentMessages: truncateMessages(currentMessages.slice(-10), 300),
+                            currentMessages: stripBinaryData(currentMessages.slice(-5)),
                             timestamp: Date.now(),
                             wasStreaming: streamingConversations.size > 0,
                             streamingContent: emergencyData.wasStreaming ?
@@ -2096,16 +2199,16 @@ export function ChatProvider({ children }: ChatProviderProps) {
     // This ensures folder loading doesn't block conversation loading
     useEffect(() => {
         if (!isInitialized) return;
-        
+
         const projectId = currentProject?.id;
-        
+
         const loadFoldersIndependently = async () => {
             try {
                 console.log("Loading folders from database...");
                 // Add a small delay to ensure conversations are loaded first
                 await new Promise(resolve => setTimeout(resolve, 100));
                 let folders = await db.getFolders();
-                
+
                 // Migrate folders without projectId
                 const folderNeedsMigration = folders.some(f => !f.projectId);
                 if (folderNeedsMigration && projectId) {
@@ -2119,12 +2222,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     await Promise.all(folders.map(f => db.saveFolder(f)));
                     console.log('✅ MIGRATION: All folders now have projectId');
                 }
-                
+
                 // Filter to current project only
-                const projectFolders = projectId 
+                const projectFolders = projectId
                     ? folders.filter(f => f.projectId === projectId)
                     : folders;  // Show all only if no project loaded
-                
+
                 setFolders(projectFolders);
                 console.log(`✅ Folders loaded for project ${projectId}: ${projectFolders.length} of ${folders.length} total`);
             } catch (error) {
@@ -2135,6 +2238,100 @@ export function ChatProvider({ children }: ChatProviderProps) {
         };
         loadFoldersIndependently();
     }, [isInitialized, currentProject?.id]); // Reload when project changes
+
+    // Sync conversations with server on initial load (and when project becomes available)
+    // This complements the projectSwitched handler which only fires on user-initiated switches.
+    useEffect(() => {
+        if (!isInitialized || !currentProject?.id) return;
+        if (isEphemeralMode) return;
+
+        // Skip if projectSwitched handler already synced this project
+        if (serverSyncedForProject.current === currentProject.id) return;
+
+        const projectId = currentProject.id;
+        serverSyncedForProject.current = projectId;
+
+        const syncWithServer = async () => {
+            try {
+                // 1. Fetch from server
+                const serverChats = await syncApi.listChats(projectId);
+                console.log(`📡 INIT_SYNC: Got ${serverChats.length} chats from server for project ${projectId}`);
+
+                // 2. Load current IndexedDB state
+                const allConversations = await db.getConversations();
+                const localProjectConvs = allConversations.filter((c: any) => c.projectId === projectId);
+                console.log(`📡 INIT_SYNC: Found ${localProjectConvs.length} local conversations for this project`);
+
+                // 3. Three-way merge: use _version to determine winner, keep all unique
+                const mergedMap = new Map<string, any>();
+                
+                // Start with local conversations
+                localProjectConvs.forEach((conv: any) => {
+                    mergedMap.set(conv.id, conv);
+                });
+
+                // Merge server conversations - only overwrite if server is newer
+                serverChats.forEach((sc: any) => {
+                    const local = mergedMap.get(sc.id);
+                    const serverVersion = sc._version || 0;
+                    const localVersion = local?._version || 0;
+                    
+                    if (!local || serverVersion > localVersion) {
+                        // Server is newer or conversation doesn't exist locally
+                        mergedMap.set(sc.id, {
+                            ...sc,
+                            projectId,
+                            lastAccessedAt: sc.lastAccessedAt || sc.lastActiveAt,
+                            isActive: sc.isActive !== false,
+                            _version: serverVersion,
+                        });
+                    }
+                });
+
+                const mergedProjectConvs = Array.from(mergedMap.values());
+                const localOnlyCount = mergedProjectConvs.filter(c => 
+                    !serverChats.some(sc => sc.id === c.id)
+                ).length;
+
+                // 4. Push local-only and newer-local conversations to server (non-blocking)
+                if (localOnlyCount > 0) {
+                    const chatsToSync = mergedProjectConvs
+                        .filter(c => !serverChats.some(sc => sc.id === c.id && (sc._version || 0) >= (c._version || 0)))
+                        .map((c: any) => syncApi.conversationToServerChat(c, projectId));
+                    syncApi.bulkSync(projectId, chatsToSync).catch(e =>
+                        console.warn('📡 INIT_SYNC: Push to server failed (non-fatal):', e)
+                    );
+                }
+
+                // 5. Update IndexedDB with merged data
+                const otherProjectConvs = allConversations.filter((c: any) => c.projectId !== projectId);
+                await db.saveConversations([...mergedProjectConvs, ...otherProjectConvs]);
+
+                // 6. Update React state (project-filtered)
+                setConversations(mergedProjectConvs);
+
+                console.log(`📡 INIT_SYNC: ${mergedProjectConvs.length} conversations (${serverChats.length} from server, ${localOnlyCount} local-only, ${mergedProjectConvs.length - serverChats.length - localOnlyCount} merged)`);
+
+                // 7. Update current conversation if it doesn't exist in merged set
+                if (mergedProjectConvs.length > 0 && !mergedProjectConvs.some((c: any) => c.id === currentConversationId)) {
+                    const mostRecent = mergedProjectConvs.reduce((a: any, b: any) =>
+                        (b.lastAccessedAt || 0) > (a.lastAccessedAt || 0) ? b : a
+                    );
+                    setCurrentConversationId(mostRecent.id);
+                    setCurrentMessages(mostRecent.messages || []);
+                }
+            } catch (e) {
+                console.warn('📡 INIT_SYNC: Server sync failed, using IndexedDB only:', e);
+                // Fall back to filtering IndexedDB by project
+                const allConversations = await db.getConversations();
+                const projectConversations = allConversations.filter((c: any) => c.projectId === projectId);
+                setConversations(projectConversations);
+            }
+        };
+
+        syncWithServer();
+    }, [isInitialized, currentProject?.id, isEphemeralMode]);
+
     // Listen for model change events
     useEffect(() => {
         window.addEventListener('modelChanged', handleModelChange as EventListener);
@@ -2198,6 +2395,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     const savedFoldersStr = JSON.stringify(savedFolders);
                     if (currentFoldersStr !== savedFoldersStr) {
                         setFolders(savedFolders); // 'setFolders' is the state setter for folders
+
+                        // CRITICAL FIX: After DB refresh, restore file selections
+                        // The DB refresh doesn't include checkedKeys, so we must restore from our cache
+                        if (!isMounted) return;
+                        preserveCurrentFileSelections();
                     }
                 }
             } catch (error) {
@@ -2216,10 +2418,20 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
 
     useEffect(() => {
-        if (!currentConversationId) {
+        // Only create a new conversation ID if we're initialized and still don't have one
+        // This prevents creating IDs before conversations are loaded from the database
+        if (!currentConversationId && isInitialized && conversations.length === 0) {
+            console.log('📝 No conversations loaded, creating initial conversation');
             setCurrentConversationId(uuidv4());
+        } else if (!currentConversationId && isInitialized && conversations.length > 0) {
+            // We have conversations but no current ID - use the most recent
+            const mostRecent = conversations.reduce((a, b) =>
+                (b.lastAccessedAt || 0) > (a.lastAccessedAt || 0) ? b : a
+            );
+            setCurrentConversationId(mostRecent.id);
+            console.log('📝 Using most recent conversation:', mostRecent.id);
         }
-    }, [currentConversationId]);
+    }, [currentConversationId, isInitialized, conversations.length]);
 
     const setDisplayMode = useCallback((conversationId: string, mode: 'raw' | 'pretty') => {
         setConversations(prev => {
@@ -2233,7 +2445,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 }
                 return conv;
             });
-            queueSave(updated).catch(console.error);
+            queueSave(updated, { changedIds: [conversationId] }).catch(console.error);
             return updated;
         });
     }, [queueSave]);
@@ -2254,7 +2466,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 }
                 return conv;
             });
-            queueSave(updated).catch(console.error);
+            queueSave(updated, { changedIds: [conversationId] }).catch(console.error);
 
             // Dispatch event to notify token counter of mute state change
             window.dispatchEvent(new CustomEvent('messagesMutedChanged', {
@@ -2271,16 +2483,16 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const moveChatToGroup = useCallback(async (chatId: string, groupId: string | null) => {
         // TODO: Get project context here when needed
         // For now, just update local state
-        
+
         // Update locally first
         setConversations(prev => prev.map(conv =>
             conv.id === chatId ? { ...conv, folderId: groupId, _version: Date.now() } : conv
         ));
-        
+
         // TODO: When Phase 4 is implemented, sync to server
         // For now, just update local state
     }, []);
-    
+
     const setChatContexts = useCallback(async (
         chatId: string,
         contextIds: string[],
@@ -2290,11 +2502,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
     ) => {
         // TODO: Get project context here when needed
         // For now, just log
-        
+
         // Update chat with new context configuration
         // This will be used when we persist to server in Phase 3
         console.log('Setting chat contexts:', { chatId, contextIds, skillIds, additionalFiles });
-        
+
         // TODO: When Phase 3 is implemented, persist to server
     }, []);
 
