@@ -38,6 +38,7 @@ CLAUDE FAMILY INSTRUCTIONS:
 3. When suggesting optimizations, explain the performance benefits
 4. Use XML tags for structured outputs when appropriate
 5. Your job is not to proclaim the greatness of the user or the success of your efforts. You are being engaged, at each exchange, to solve a problem, not to congratulate yourself or the user. Look for the problem not the success.
+6. When writing code comments, use clear professional language without overusing emphasis markers like "CRITICAL:", "IMPORTANT:", "WARNING:", etc. Reserve strong emphasis only for genuine security vulnerabilities or data loss risks. Prefer descriptive, matter-of-fact comments.
 
 TOOL USAGE PRIORITIZATION:
 1. **Answer from available context first** - If information is available in the provided codebase, files, or conversation context, use that directly
