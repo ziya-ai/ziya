@@ -49,7 +49,7 @@ class SkillStorage(BaseStorage[Skill]):
                     lastUsedAt=now
                 )
                 
-                self._write_json(self._skill_file(skill_id), skill.dict())
+                self._write_json(self._skill_file(skill_id), skill.model_dump())
     
     def get(self, skill_id: str) -> Optional[Skill]:
         data = self._read_json(self._skill_file(skill_id))
@@ -86,7 +86,7 @@ class SkillStorage(BaseStorage[Skill]):
             lastUsedAt=now
         )
         
-        self._write_json(self._skill_file(skill_id), skill.dict())
+        self._write_json(self._skill_file(skill_id), skill.model_dump())
         return skill
     
     def update(self, skill_id: str, data: SkillUpdate) -> Optional[Skill]:
@@ -98,7 +98,7 @@ class SkillStorage(BaseStorage[Skill]):
         if skill.isBuiltIn:
             raise ValueError("Cannot update built-in skills")
         
-        update_dict = data.dict(exclude_unset=True)
+        update_dict = data.model_dump(exclude_unset=True)
         
         # Recalculate tokens if prompt changed
         if 'prompt' in update_dict:
@@ -112,7 +112,7 @@ class SkillStorage(BaseStorage[Skill]):
             setattr(skill, key, value)
         
         skill.lastUsedAt = int(time.time() * 1000)
-        self._write_json(self._skill_file(skill_id), skill.dict())
+        self._write_json(self._skill_file(skill_id), skill.model_dump())
         return skill
     
     def delete(self, skill_id: str) -> bool:
@@ -135,4 +135,4 @@ class SkillStorage(BaseStorage[Skill]):
         skill = self.get(skill_id)
         if skill:
             skill.lastUsedAt = int(time.time() * 1000)
-            self._write_json(self._skill_file(skill_id), skill.dict())
+            self._write_json(self._skill_file(skill_id), skill.model_dump())
