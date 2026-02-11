@@ -12,6 +12,7 @@ router = APIRouter()
 class FileValidationRequest(BaseModel):
     model_config = {"extra": "allow"}
     files: List[str]
+    projectRoot: Optional[str] = None
 
 class FileValidationResponse(BaseModel):
     model_config = {"extra": "allow"}
@@ -25,7 +26,14 @@ async def validate_files(request: FileValidationRequest):
     existing_files = []
     missing_files = []
     
-    # Get base directories to check against
+    # Use provided project root if available, otherwise fall back to environment
+    if request.projectRoot:
+        base_dir = request.projectRoot
+        logger.info(f"🔍 VALIDATE: Using provided project root: {base_dir}")
+    else:
+        base_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        logger.info(f"🔍 VALIDATE: Using environment project root: {base_dir}")
+    
     base_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
     
     # Get external directories if any

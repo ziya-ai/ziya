@@ -891,14 +891,6 @@ app_logger.info("Session management API routes loaded")
 # from app.routes.static_routes import router as static_router
 # app.include_router(static_router)
 
-# Include session management API routes
-app.include_router(projects.router)
-app.include_router(contexts.router)
-app.include_router(skills.router)
-app.include_router(chats.router)
-app.include_router(tokens.router)
-app_logger.info("Session management API routes loaded")
-
 # Initialize Ziya home directory
 @app.on_event("startup")
 async def init_ziya_home():
@@ -1542,7 +1534,7 @@ async def stream_chunks(body):
     
     files = body.get("config", {}).get("files", [])
     conversation_id = body.get("conversation_id")
-    project_root = body.get("config", {}).get("project_root")
+    project_root = body.get("config", {}).get("project_root") or body.get("project_root")
     
     validation_hook = DiffValidationHook(
         enabled=ENABLE_DIFF_VALIDATION,
@@ -1579,7 +1571,7 @@ async def stream_chunks(body):
         chat_history = body.get("chat_history", [])
         files = body.get("config", {}).get("files", [])
         conversation_id = body.get("conversation_id")
-        project_root = body.get("config", {}).get("project_root")
+        project_root = body.get("config", {}).get("project_root") or body.get("project_root")
         
         # Update environment for this request if project root is provided
         if project_root and os.path.isdir(project_root):
@@ -1648,7 +1640,7 @@ async def stream_chunks(body):
                 except Exception as e:
                     logger.warning(f"Failed to get MCP tools: {e}")
                 
-                async for chunk in executor.stream_with_tools(messages, tools=mcp_tools, conversation_id=conversation_id):
+                async for chunk in executor.stream_with_tools(messages, tools=mcp_tools, conversation_id=conversation_id, project_root=project_root):
                     chunk_count += 1
                     
                     if chunk.get('type') == 'text':
@@ -1790,7 +1782,7 @@ async def stream_chunks(body):
                         
                         # Generate again with the feedback
                         logger.info("🔄 Restarting stream with validation feedback")
-                        async for retry_chunk in executor.stream_with_tools(messages, tools=mcp_tools, conversation_id=conversation_id):
+                        async for retry_chunk in executor.stream_with_tools(messages, tools=mcp_tools, conversation_id=conversation_id, project_root=project_root):
                             if retry_chunk.get('type') == 'text':
                                 yield f"data: {json.dumps({'content': retry_chunk.get('content', '')})}\n\n"
                             elif retry_chunk.get('type') == 'tool_display':
@@ -3276,7 +3268,7 @@ async def root(request: Request):
             "request": request,
             "diff_view_type": os.environ.get("ZIYA_DIFF_VIEW_TYPE", "unified"),
             "api_path": "/ziya",
-            "formatter_scripts": formatter_scripts
+            "formatter_scripts": formatter_scripts or []  # Ensure always a list, never None
         }
         
         # Try to render the template
@@ -3721,8 +3713,16 @@ def invalidate_folder_cache():
         return
     
     with _cache_lock:
-        _folder_cache['data'] = None
+        # Preserve external paths when invalidating cache
+        external_paths = None
+        if _folder_cache['data'] and '[external]' in _folder_cache['data']:
+            external_paths = _folder_cache['data']['[external]']
+            logger.info(f"💾 Preserving {len(external_paths.get('children', {}))} external root entries during cache invalidation")
+        
+        _folder_cache['data'] = {'[external]': external_paths} if external_paths else None
         _folder_cache['timestamp'] = 0
+        
+        logger.debug(f"📂 Cache invalidated, external paths preserved: {external_paths is not None}")
     _last_cache_invalidation = current_time
 
 def add_file_to_folder_cache(rel_path: str) -> bool:
@@ -4376,8 +4376,20 @@ def add_external_path_to_cache(full_path: str) -> bool:
     """
     global _folder_cache, _cache_lock
     
-    if _folder_cache['data'] is None:
-        return False
+    # Get the current workspace directory to determine which cache entry to use
+    user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+    user_codebase_dir = os.path.abspath(user_codebase_dir)
+    
+    # Ensure cache entry exists for this workspace
+    with _cache_lock:
+        if user_codebase_dir not in _folder_cache:
+            _folder_cache[user_codebase_dir] = {'timestamp': 0, 'data': None}
+        
+        # Initialize data dict if None
+        if _folder_cache[user_codebase_dir]['data'] is None:
+            _folder_cache[user_codebase_dir]['data'] = {}
+            _folder_cache[user_codebase_dir]['timestamp'] = time.time()
+            logger.info("🔧 Initialized empty folder cache for external path addition")
     
     try:
         from app.utils.directory_util import estimate_tokens_fast
@@ -4424,13 +4436,13 @@ def add_external_path_to_cache(full_path: str) -> bool:
         
         with _cache_lock:
             # Ensure [external] root exists
-            if '[external]' not in _folder_cache['data']:
-                _folder_cache['data']['[external]'] = {'children': {}, 'token_count': 0}
+            if '[external]' not in _folder_cache[user_codebase_dir]['data']:
+                _folder_cache[user_codebase_dir]['data']['[external]'] = {'children': {}, 'token_count': 0}
             
             # Parse the path and create nested structure
             # e.g., /home/user/file.txt -> [external] / home / user / file.txt
             path_parts = full_path.strip('/').split('/')
-            current_level = _folder_cache['data']['[external]']['children']
+            current_level = _folder_cache[user_codebase_dir]['data']['[external]']['children']
             
             # Navigate/create parent directories
             for part in path_parts[:-1]:
@@ -5627,7 +5639,7 @@ async def test_cache_functionality():
 async def update_model_settings(settings: ModelSettingsRequest):
     global model
     import gc
-    original_settings = settings.dict()
+    original_settings = settings.model_dump()
     try:
         # Log the requested settings
 
@@ -5655,7 +5667,7 @@ async def update_model_settings(settings: ModelSettingsRequest):
                 logger.info(f"Switched region to {preferred_region} for model {new_model}")
 
         # Store all settings in environment variables with ZIYA_ prefix
-        for key, value in settings.dict().items():
+        for key, value in settings.model_dump().items():
             if value is not None:  # Only set if value is provided
                 env_key = f"ZIYA_{key.upper()}"
                 logger.info(f"  Set {env_key}={value}")
@@ -6228,9 +6240,16 @@ async def validate_files(request: Request):
     try:
         body = await request.json()
         files = body.get('files', [])
+        project_root = body.get('projectRoot')
         
-        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
-        if not user_codebase_dir:
+        # Use provided project root if available, otherwise fall back to env var
+        if project_root:
+            user_codebase_dir = os.path.abspath(project_root)
+            logger.info(f"🔍 VALIDATE: Using provided project root: {user_codebase_dir}")
+        else:
+            user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+        
+        if not user_codebase_dir or not os.path.isdir(user_codebase_dir):
             return JSONResponse(status_code=500, content={"error": "ZIYA_USER_CODEBASE_DIR not set"})
         
         existing_files = []
