@@ -76,6 +76,7 @@ class MCPManager:
             builtin_servers["shell"] = {
                 "command": sys.executable,
                 "args": ["-u", str(package_dir / "shell_server.py")],
+                "workspace_scoped": True,
                 "enabled": True,
                 "description": "Provides shell command execution",
                 "builtin": True
@@ -893,6 +894,10 @@ class MCPManager:
     async def call_tool(self, tool_name: str, arguments: Dict[str, Any], server_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Call an MCP tool.
+
+        Routing metadata (_workspace_path, conversation_id) is extracted for
+        internal use and stripped before arguments reach any MCP server, so
+        external servers never see unknown parameters.
         
         Args:
             tool_name: Name of the tool to call
@@ -955,6 +960,13 @@ class MCPManager:
         # Extract workspace path if provided
         workspace_path = arguments.get('_workspace_path')
         
+        # Strip routing metadata so MCP servers only see real tool parameters.
+        # This is what makes the approach universal: external servers never
+        # receive keys they don't understand.
+        if isinstance(arguments, dict):
+            arguments = {k: v for k, v in arguments.items()
+                         if k not in ('_workspace_path', 'conversation_id')}
+
         # Determine which server has this tool
         target_server_name = server_name
         
