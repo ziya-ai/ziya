@@ -88,7 +88,7 @@ class ProjectStorage(BaseStorage[Project]):
         (project_dir / "skills").mkdir(exist_ok=True)
         (project_dir / "chats").mkdir(exist_ok=True)
         
-        self._write_json(self._project_file(project_id), project.dict())
+        self._write_json(self._project_file(project_id), project.model_dump())
         return project
     
     def update(self, project_id: str, data: ProjectUpdate) -> Optional[Project]:
@@ -96,12 +96,12 @@ class ProjectStorage(BaseStorage[Project]):
         if not project:
             return None
         
-        update_dict = data.dict(exclude_unset=True)
+        update_dict = data.model_dump(exclude_unset=True)
         for key, value in update_dict.items():
             setattr(project, key, value)
         
         project.lastAccessedAt = int(time.time() * 1000)
-        self._write_json(self._project_file(project_id), project.dict())
+        self._write_json(self._project_file(project_id), project.model_dump())
         return project
     
     def delete(self, project_id: str) -> bool:
@@ -118,4 +118,4 @@ class ProjectStorage(BaseStorage[Project]):
         project = self.get(project_id)
         if project:
             project.lastAccessedAt = int(time.time() * 1000)
-            self._write_json(self._project_file(project_id), project.dict())
+            self._write_json(self._project_file(project_id), project.model_dump())

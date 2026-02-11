@@ -34,7 +34,7 @@ class ChatGroupStorage:
         import json
         temp_path = self.groups_file.with_suffix('.tmp')
         with open(temp_path, 'w') as f:
-            json.dump(groups_file.dict(), f, indent=2)
+            json.dump(groups_file.model_dump(), f, indent=2)
         temp_path.rename(self.groups_file)
     
     def get(self, group_id: str) -> Optional[ChatGroup]:
@@ -76,7 +76,7 @@ class ChatGroupStorage:
         
         for i, group in enumerate(groups_file.groups):
             if group.id == group_id:
-                update_dict = data.dict(exclude_unset=True)
+                update_dict = data.model_dump(exclude_unset=True)
                 for key, value in update_dict.items():
                     setattr(group, key, value)
                 groups_file.groups[i] = group
