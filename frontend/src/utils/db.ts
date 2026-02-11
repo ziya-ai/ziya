@@ -88,12 +88,16 @@ class ConversationDB implements DB {
             return new Promise((resolve, reject) => {
                 checkRequest.onsuccess = () => {
                     const existingVersion = checkRequest.result.version;
-                    checkRequest.result.close();
 
                     // Check for Safari migration issue - missing conversations store
                     const db = checkRequest.result;
                     const hasFolders = db.objectStoreNames.contains('folders');
                     const hasConversations = db.objectStoreNames.contains('conversations');
+                    const hasNoStores = db.objectStoreNames.length === 0;
+
+                    // Close the check connection before proceeding
+                    checkRequest.result.close();
+
                     if (hasFolders && !hasConversations) {
                         console.warn('Safari migration issue detected: folders store exists but conversations store is missing');
                         // Auto-trigger emergency recovery
@@ -105,6 +109,12 @@ class ConversationDB implements DB {
                             }, 100);
                         }).catch(err => console.error('Auto-recovery failed:', err));
                         return;
+                    }
+
+                    // Detect corrupted DB with zero object stores — force version bump
+                    if (hasNoStores) {
+                        console.warn('Corrupted database detected: no object stores exist. Forcing version bump to recreate schema.');
+                        currentVersion = existingVersion + 1;
                     }
 
                     // Use existing version if it's higher
@@ -129,7 +139,16 @@ class ConversationDB implements DB {
                     };
 
                     dbRequest.onblocked = () => {
-                        console.warn('Database opening blocked. Closing other connections...');
+                        console.warn('Database opening blocked. Waiting up to 5s for connections to close...');
+                        setTimeout(() => {
+                            // If we still don't have a valid db after 5s, reject
+                            if (!this.db || !this.db.objectStoreNames.contains(STORE_NAME)) {
+                                console.error('Database upgrade blocked for 5s, rejecting init');
+                                this.initPromise = null;
+                                this.initializing = false;
+                                reject(new Error('Database upgrade blocked by stale connections'));
+                            }
+                        }, 5000);
                     };
 
                     dbRequest.onsuccess = () => {
