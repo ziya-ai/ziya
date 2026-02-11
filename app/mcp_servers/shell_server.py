@@ -396,8 +396,8 @@ class ShellServer:
                     }
                 
                 try:
-                    # Use environment variable which is updated per-request in server.py
-                    # This allows respecting project switches without server restart
+                    # The parent spawns a separate instance of this server per project,
+                    # so our env reflects the correct project directory.
                     cwd = os.environ.get("ZIYA_USER_CODEBASE_DIR")
                     
                     print(f"Executing command: {command}", file=sys.stderr)
