@@ -50,7 +50,13 @@
 {% if formatter_scripts %}
     {% for formatter_script in formatter_scripts %}
     <script type="text/javascript">
-        {{ formatter_script|safe }}
+    (function() {
+        try {
+            {{ formatter_script|safe }}
+        } catch (error) {
+            console.error('Failed to load formatter plugin:', error);
+        }
+    })();
     </script>
     {% endfor %}
 {% endif %}
