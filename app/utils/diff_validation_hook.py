@@ -6,6 +6,7 @@ Backend-managed: checks context, adds files, notifies frontend to sync UI.
 
 import os
 import re
+import logging
 from typing import Optional, Dict, Any, Callable, List, Set
 from app.utils.logging_utils import logger
 from app.utils.diff_utils.validation.pipeline_validator import validate_diff_with_full_pipeline
@@ -19,11 +20,15 @@ class DiffValidationHook:
     
     def __init__(
         self,
+        file_state_manager=None,
+        conversation_id: Optional[str] = None,
         enabled: bool = True,
         auto_regenerate: bool = True,
         current_context: Optional[List[str]] = None
     ):
         self.validated_diffs: Dict[str, bool] = {}
+        self.file_state_manager = file_state_manager
+        self.conversation_id = conversation_id
         self.validation_enabled = enabled
         self.auto_regenerate = auto_regenerate
         self.current_context: Set[str] = set(current_context or [])
@@ -136,12 +141,30 @@ class DiffValidationHook:
         logger.info(f"🔍 VALIDATION_HOOK: Diff content length: {len(diff_content)}")
         logger.info(f"🔍 VALIDATION_HOOK: First 200 chars: {diff_content[:200]}")
         
+        # In CLI mode, suppress verbose validation warnings
+        is_cli_mode = os.environ.get('ZIYA_MODE') == 'chat'
+        original_levels = {}
+        if is_cli_mode:
+            # Suppress WARNING/ERROR logs from validation pipeline
+            for logger_name in ['app.utils.diff_utils.application.git_diff',
+                               'app.utils.diff_utils.pipeline.pipeline_manager',
+                               'app.utils.diff_utils.application.patch_apply',
+                               'app.utils.diff_utils.application.fuzzy_match']:
+                target_logger = logging.getLogger(logger_name)
+                original_levels[logger_name] = target_logger.level
+                target_logger.setLevel(logging.CRITICAL)
+        
         if send_event:
             send_event("diff_validation_status", {
             })
         
         try:
             validation_result = validate_diff_with_full_pipeline(diff_content, file_path)
+            
+            # Restore log levels
+            if is_cli_mode:
+                for logger_name, level in original_levels.items():
+                    logging.getLogger(logger_name).setLevel(level)
             
             # Initialize variables at function scope
             context_was_enhanced = False
@@ -205,6 +228,15 @@ class DiffValidationHook:
             else:
                 # SUCCESS - record this diff as valid
                 self.successful_diffs.append(file_path)
+                
+                # Record the applied diff for history
+                if self.file_state_manager and self.conversation_id:
+                    self.file_state_manager.record_applied_diff(
+                        conversation_id=self.conversation_id,
+                        file_path=file_path,
+                        diff_content=diff_content
+                    )
+                
                 logger.info(f"✅ Diff #{diff_number} validated successfully: {file_path}")
             
             if send_event:
@@ -229,6 +261,7 @@ class DiffValidationHook:
                     return self._build_targeted_feedback(
                         diff_number=diff_number,
                         file_path=file_path,
+                        diff_content=diff_content,
                         validation_result=validation_result,
                         context_was_enhanced=context_was_enhanced
                     )
@@ -250,6 +283,7 @@ class DiffValidationHook:
         self,
         diff_number: int,
         file_path: str,
+        diff_content: str,
         validation_result: Dict[str, Any],
         context_was_enhanced: bool
     ) -> str:
@@ -281,6 +315,13 @@ class DiffValidationHook:
         
         parts.append(f"❌ Diff #{diff_number}: Validation failed")
         parts.append(f"   File: {file_path}")
+        parts.append("")
+        
+        # Show the original diff that failed
+        parts.append("**Your diff that failed:**")
+        parts.append("```diff")
+        parts.append(diff_content)
+        parts.append("```")
         parts.append("")
         
         # Specific error details

@@ -160,7 +160,8 @@ class CLIDiffApplicator:
             
             result = apply_diff_atomically(full_path, diff.content)
             
-            if result.get("status") == "success":
+            status = result.get("status")
+            if status == "success":
                 details = result.get("details", {})
                 if details.get("new_file"):
                     return True, f"Created new file: {diff.file_path}"
@@ -168,6 +169,22 @@ class CLIDiffApplicator:
                     return True, f"Changes already applied to {diff.file_path}"
                 else:
                     return True, f"Successfully applied to {diff.file_path}"
+            elif status == "partial":
+                # Partial success - some hunks applied
+                failures = result.get("failures", [])
+                applied_count = result.get("applied_hunks", 0)
+                failed_count = len(failures)
+                
+                # Build a helpful message
+                msg_parts = [f"Partially applied to {diff.file_path}"]
+                msg_parts.append(f"({applied_count} hunks succeeded, {failed_count} failed)")
+                
+                # Show first failure reason
+                if failures:
+                    first_failure = failures[0].get("message", "Unknown error")
+                    msg_parts.append(f"First failure: {first_failure}")
+                
+                return True, " - ".join(msg_parts)
             else:
                 # Clean, user-friendly error message
                 error_details = result.get("details", {})
