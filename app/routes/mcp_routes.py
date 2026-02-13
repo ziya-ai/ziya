@@ -13,6 +13,7 @@ from dataclasses import asdict
 from app.mcp.manager import get_mcp_manager
 from app.utils.logging_utils import logger
 from app.config.shell_config import DEFAULT_SHELL_CONFIG, get_default_shell_config
+from app.config.write_policy import DEFAULT_WRITE_POLICY, get_write_policy_manager
 from app.mcp.permissions import get_permissions_manager
 from app.agents.agent import estimate_token_count
 from app.config.models_config import MODEL_CONFIGS
@@ -38,6 +39,10 @@ class ShellConfig(BaseModel):
     safeGitOperations: List[str] = DEFAULT_SHELL_CONFIG["safeGitOperations"]
     timeout: int = DEFAULT_SHELL_CONFIG["timeout"]
     persist: bool = False  # New field to indicate whether to save to config file
+    safeWritePaths: List[str] = DEFAULT_WRITE_POLICY["safe_write_paths"]
+    allowedWritePatterns: List[str] = DEFAULT_WRITE_POLICY["allowed_write_patterns"]
+    allowedInterpreters: List[str] = DEFAULT_WRITE_POLICY["allowed_interpreters"]
+    alwaysBlocked: List[str] = DEFAULT_WRITE_POLICY["always_blocked"]
 
 class ServerToggleRequest(BaseModel):
     model_config = {"extra": "allow"}
@@ -259,6 +264,7 @@ async def get_mcp_status():
         permissions = permissions_manager.get_permissions()
         
         server_token_costs = {}
+        server_tool_details = {}
         total_tool_tokens = 0
         enabled_tool_tokens = 0
         
@@ -299,6 +305,12 @@ async def get_mcp_status():
                     enabled_token_count = count_server_tool_tokens(enabled_tools_dict)
                     enabled_tool_tokens += enabled_token_count
                     
+                    server_tool_details[server_name] = {
+                        "total_tools": len(tools_dict),
+                        "enabled_tools": len(enabled_tools_dict),
+                        "enabled_tokens": enabled_token_count,
+                    }
+                    
                     logger.debug(f"Server {server_name}: {len(enabled_tools_dict)}/{len(tools_dict)} tools enabled, {enabled_token_count}/{token_count} tokens")
         
         # Add dynamic tools to token calculation
@@ -336,6 +348,7 @@ async def get_mcp_status():
                 "servers": server_token_costs,
                 "total_tool_tokens": total_tool_tokens,
                 "enabled_tool_tokens": enabled_tool_tokens,
+                "server_details": server_tool_details,
                 "instructions": instruction_costs
             }
         }
@@ -565,12 +578,22 @@ async def get_shell_config():
             # Extract timeout from environment
             timeout = int(server_env.get("COMMAND_TIMEOUT", DEFAULT_SHELL_CONFIG["timeout"]))
             
+            # Extract write policy from environment
+            safe_write_paths = [p.strip() for p in server_env.get("SAFE_WRITE_PATHS", ",".join(DEFAULT_WRITE_POLICY["safe_write_paths"])).split(",") if p.strip()]
+            allowed_write_patterns = [p.strip() for p in server_env.get("ALLOWED_WRITE_PATTERNS", "").split(",") if p.strip()]
+            allowed_interpreters = [p.strip() for p in server_env.get("ALLOWED_INTERPRETERS", ",".join(DEFAULT_WRITE_POLICY["allowed_interpreters"])).split(",") if p.strip()]
+            always_blocked = [p.strip() for p in server_env.get("ALWAYS_BLOCKED_COMMANDS", ",".join(DEFAULT_WRITE_POLICY["always_blocked"])).split(",") if p.strip()]
+
             return {
                 "enabled": True,
                 "allowedCommands": allowed_commands,
                 "gitOperationsEnabled": git_operations_enabled,
                 "safeGitOperations": git_operations,
-                "timeout": timeout
+                "timeout": timeout,
+                "safeWritePaths": safe_write_paths,
+                "allowedWritePatterns": allowed_write_patterns,
+                "allowedInterpreters": allowed_interpreters,
+                "alwaysBlocked": always_blocked,
             }
         else:
             # Shell server not connected, but check the actual server config
@@ -586,7 +609,11 @@ async def get_shell_config():
                 **default_config,
                 "enabled": configured_enabled,
                 "connected": False,  # Add this to distinguish config vs connection state
-                "timeout": timeout
+                "timeout": timeout,
+                "safeWritePaths": DEFAULT_WRITE_POLICY["safe_write_paths"],
+                "allowedWritePatterns": DEFAULT_WRITE_POLICY["allowed_write_patterns"],
+                "allowedInterpreters": DEFAULT_WRITE_POLICY["allowed_interpreters"],
+                "alwaysBlocked": DEFAULT_WRITE_POLICY["always_blocked"],
             }
         
     except Exception as e:
@@ -628,7 +655,11 @@ async def update_shell_config(config: ShellConfig):
                 "ALLOW_COMMANDS": ",".join(config.allowedCommands),
                 "GIT_OPERATIONS_ENABLED": "true" if config.gitOperationsEnabled else "false",
                 "SAFE_GIT_OPERATIONS": ",".join(config.safeGitOperations),
-                "COMMAND_TIMEOUT": str(config.timeout)
+                "COMMAND_TIMEOUT": str(config.timeout),
+                "SAFE_WRITE_PATHS": ",".join(config.safeWritePaths),
+                "ALLOWED_WRITE_PATTERNS": ",".join(config.allowedWritePatterns),
+                "ALLOWED_INTERPRETERS": ",".join(config.allowedInterpreters),
+                "ALWAYS_BLOCKED_COMMANDS": ",".join(config.alwaysBlocked),
             }
         }
         
@@ -817,6 +848,55 @@ async def toggle_server(request: ServerToggleRequest):
     except Exception as e:
         logger.error(f"Error toggling server {request.server_name}: {e}")
         raise HTTPException(status_code=500, detail=f"Error toggling server: {str(e)}")
+
+class WritePolicyUpdate(BaseModel):
+    model_config = {"extra": "allow"}
+    project_id: str
+    safe_write_paths: Optional[List[str]] = None
+    allowed_write_patterns: Optional[List[str]] = None
+    allowed_interpreters: Optional[List[str]] = None
+    always_blocked: Optional[List[str]] = None
+
+
+@router.get("/write-policy/{project_id}")
+async def get_project_write_policy(project_id: str):
+    """Get effective write policy for a project."""
+    try:
+        from app.storage.projects import ProjectStorage
+        from app.utils.paths import get_ziya_home
+        storage = ProjectStorage(get_ziya_home())
+        project = storage.get(project_id)
+        project_root = project.path if project else ""
+
+        manager = get_write_policy_manager()
+        manager.load_for_project(project_id, project_root)
+        return {"policy": manager.get_effective_policy(), "project_id": project_id}
+    except Exception as e:
+        logger.error(f"Error getting write policy: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/write-policy")
+async def update_project_write_policy(request: WritePolicyUpdate):
+    """Update per-project write policy overrides."""
+    try:
+        overrides = {}
+        if request.safe_write_paths is not None:
+            overrides["safe_write_paths"] = request.safe_write_paths
+        if request.allowed_write_patterns is not None:
+            overrides["allowed_write_patterns"] = request.allowed_write_patterns
+        if request.allowed_interpreters is not None:
+            overrides["allowed_interpreters"] = request.allowed_interpreters
+        if request.always_blocked is not None:
+            overrides["always_blocked"] = request.always_blocked
+
+        manager = get_write_policy_manager()
+        manager.update_project_policy(request.project_id, overrides)
+        return {"success": True, "policy": manager.get_effective_policy()}
+    except Exception as e:
+        logger.error(f"Error updating write policy: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/permissions")
 async def get_mcp_permissions():

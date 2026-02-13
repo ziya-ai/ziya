@@ -4,9 +4,17 @@ Project data models.
 from pydantic import BaseModel
 from typing import List, Optional
 
+class WritePolicy(BaseModel):
+    """Per-project write policy overrides."""
+    safe_write_paths: List[str] = []
+    allowed_write_patterns: List[str] = []
+    allowed_interpreters: List[str] = []
+    always_blocked: List[str] = []
+
 class ProjectSettings(BaseModel):
     defaultContextIds: List[str] = []
     defaultSkillIds: List[str] = []
+    writePolicy: Optional[WritePolicy] = None
 
 class Project(BaseModel):
     id: str
