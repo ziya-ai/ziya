@@ -83,9 +83,11 @@ class PrecisionPromptSystem:
                 # Escape remaining braces
                 text = text.replace('{', '{{').replace('}', '}}')
                 
-                # Restore template literals
+                # Restore template literals — but escape their inner braces too,
+                # because Python's str.format() will still interpret {var} inside ${var}.
                 for i, placeholder_text in enumerate(placeholders):
-                    text = text.replace(f'__TEMPLATE_{i}__', placeholder_text)
+                    escaped_placeholder = placeholder_text.replace('{', '{{').replace('}', '}}')
+                    text = text.replace(f'__TEMPLATE_{i}__', escaped_placeholder)
                 
                 return text
             
@@ -122,9 +124,10 @@ class PrecisionPromptSystem:
             return messages
             
         except Exception as e:
-            import logging
+            import logging, traceback
             logger = logging.getLogger(__name__)
             logger.warning(f"Error in precision system: {e}")
+            logger.warning(f"Traceback:\n{traceback.format_exc()}")
             # Fallback to minimal system
             return self._fallback_build_messages(question, chat_history)
     
@@ -134,9 +137,14 @@ class PrecisionPromptSystem:
             {"role": "system", "content": "You are an excellent coder. Help the user with their coding tasks."}
         ]
         
-        # Add chat history
+        # Add chat history — normalize 'type' key to 'role' so LangChain conversion works
         for msg in chat_history:
-            messages.append(msg)
+            if isinstance(msg, dict):
+                role = msg.get('role') or msg.get('type', 'user')
+                role = 'user' if role in ('human', 'user') else 'assistant'
+                messages.append({"role": role, "content": msg.get('content', '')})
+            else:
+                messages.append(msg)
         
         # Add current question
         if question:
