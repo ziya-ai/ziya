@@ -1400,6 +1400,16 @@ export const sendPayload = async (
 
                         // Continue processing this chunk in case there's actual content after the marker
                     }
+
+                    // Always strip any remaining REWIND_MARKER patterns from content
+                    // regardless of whether the regex matched above (handles all formats)
+                    if (jsonData.content && jsonData.content.includes('REWIND_MARKER')) {
+                        jsonData.content = jsonData.content
+                            .replace(/<!-- REWIND_MARKER:[\s\S]*?-->\n*/g, '')
+                            .replace(/\*\*🔄 Response continues\.\.\.\*\*\n*/g, '')
+                            .replace(/\*\*🔄 Block continues\.\.\.\*\*\n*/g, '');
+                        console.log('🔄 REWIND: Stripped unrecognized REWIND_MARKER from content');
+                    }
                 }
 
                 // Handle continuation rewind markers
