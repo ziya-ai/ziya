@@ -530,6 +530,19 @@ export const MUIFileExplorer = () => {
     }
   }, [folders]);
 
+  // Re-apply search filter when tree data changes (e.g., after project switch)
+  // This prevents stale filteredTreeData from showing old project directories
+  useEffect(() => {
+    if (searchValue && muiTreeData.length > 0) {
+      const { filteredData, expandedKeys: newExpandedKeys } = filterTreeData(muiTreeData, searchValue);
+      setFilteredTreeData(filteredData);
+      setExpandedKeys(prev => {
+        const merged = new Set([...prev, ...newExpandedKeys]);
+        return Array.from(merged);
+      });
+    }
+  }, [muiTreeData]);
+
   // Separate effect for database folder loading - with guards to prevent loops
   useEffect(() => {
     const now = Date.now();
