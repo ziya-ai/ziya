@@ -10,6 +10,11 @@ interface PluginMetadata {
 // Lazy-loadable plugin registry
 const pluginMetadata: PluginMetadata[] = [
   {
+    name: 'vega-renderer',
+    priority: 9,
+    loader: async () => (await import('./vegaPlugin')).vegaPlugin
+  },
+  {
     name: 'network-diagram',
     priority: 1,
     loader: async () => (await import('./networkDiagram')).networkDiagramPlugin
