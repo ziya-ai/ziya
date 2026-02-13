@@ -150,7 +150,10 @@ class MCPClient:
             
             # Use the preserved user codebase directory instead of current working directory
             # The current working directory may have changed during module imports
-            working_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+            # For workspace-scoped instances, prefer the env override from server config
+            config_env = self.server_config.get("env", {})
+            working_dir = config_env.get("ZIYA_USER_CODEBASE_DIR") or os.environ.get("ZIYA_USER_CODEBASE_DIR")
+
             if not working_dir:
                 working_dir = os.getcwd()
                 logger.warning(f"ZIYA_USER_CODEBASE_DIR not set, using current directory: {working_dir}")
