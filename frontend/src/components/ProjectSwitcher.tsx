@@ -4,7 +4,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useProject } from '../context/ProjectContext';
 import { Dropdown, Menu, Button, Input, message, Tooltip } from 'antd';
-import { FolderOutlined, DownOutlined, EditOutlined, CheckOutlined, CloseOutlined, FolderOpenOutlined } from '@ant-design/icons';
+import { FolderOutlined, DownOutlined, EditOutlined, CheckOutlined, CloseOutlined, FolderOpenOutlined, SettingOutlined } from '@ant-design/icons';
+import ProjectManagerModal from './ProjectManagerModal';
 import { DirectoryBrowserModal } from './DirectoryBrowserModal';
 
 export const ProjectSwitcher: React.FC = () => {
@@ -20,6 +21,7 @@ export const ProjectSwitcher: React.FC = () => {
   const [isEditing, setIsEditing] = useState(false);
   const [editedName, setEditedName] = useState('');
   const [showDirectoryBrowser, setShowDirectoryBrowser] = useState(false);
+  const [showProjectManager, setShowProjectManager] = useState(false);
   const inputRef = useRef<any>(null);
   
   // Focus input when editing starts
@@ -107,6 +109,9 @@ export const ProjectSwitcher: React.FC = () => {
       onClick={({ key }) => {
         if (key === '__open_folder') {
           handleOpenFolderClick();
+          } else if (key === '__manage_projects') {
+            setIsOpen(false);
+            setShowProjectManager(true);
         } else if (key !== currentProject.id) {
           switchProject(key);
         }
@@ -168,6 +173,15 @@ export const ProjectSwitcher: React.FC = () => {
         icon={<FolderOpenOutlined />}
       >
         Open folder as project...
+      </Menu.Item>
+
+      {/* Manage projects action */}
+      <Menu.Item
+        key="__manage_projects"
+        style={{ color: '#8b5cf6', fontWeight: 500, margin: '4px 8px' }}
+        icon={<SettingOutlined />}
+      >
+        Manage projects...
       </Menu.Item>
     </Menu>
   );
@@ -268,6 +282,12 @@ export const ProjectSwitcher: React.FC = () => {
         open={showDirectoryBrowser}
         onClose={() => setShowDirectoryBrowser(false)}
         onSelect={handleDirectorySelect}
+      />
+
+      {/* Project Manager Modal */}
+      <ProjectManagerModal
+        visible={showProjectManager}
+        onClose={() => setShowProjectManager(false)}
       />
     </div>
   );

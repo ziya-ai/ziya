@@ -348,7 +348,6 @@ export const App: React.FC = () => {
                         },
                     }}
                 >
-                    <ProjectProvider>
                     <Button
                         className={`panel-toggle ${isPanelCollapsed ? 'collapsed' : ''}`}
                         type="primary"
@@ -488,8 +487,7 @@ export const App: React.FC = () => {
                     <Suspense fallback={null}>
                         <ExportConversationModal visible={showExportModal} onClose={() => setShowExportModal(false)} />
                     </Suspense>
-                    
-                    </ProjectProvider>
+
                 </ConfigProvider>
             </ProfilerWrapper>
         </ExtensionErrorBoundary>

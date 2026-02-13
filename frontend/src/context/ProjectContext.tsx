@@ -1,7 +1,7 @@
 /**
  * ProjectContext - Manages projects, contexts, and skills
  */
-import React, { 
+ import React, {
   createContext, 
   useContext, 
   useState, 
@@ -18,6 +18,7 @@ import * as projectApi from '../api/projectApi';
 import * as contextApi from '../api/contextApi';
 import * as skillApi from '../api/skillApi';
 import * as tokenApi from '../api/tokenApi';
+import { db } from '../utils/db';
 
 interface ProjectContextType {
   // Project state
@@ -26,8 +27,9 @@ interface ProjectContextType {
   isLoadingProject: boolean;
   switchProject: (projectId: string) => Promise<void>;
   refreshProjects: () => Promise<void>;
-  createProject: (path: string, name?: string) => Promise<Project>;
   updateProject: (id: string, updates: ProjectUpdate) => Promise<void>;
+  deleteProject: (id: string) => Promise<void>;
+  mergeProjects: (sourceId: string, targetId: string) => Promise<void>;
   createProject: (path: string, name?: string) => Promise<Project>;
   
   // Context state
@@ -301,6 +303,54 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setProjects(prev => prev.map(p => p.id === id ? updated : p));
   }, [currentProject]);
   
+  const deleteProjectFn = useCallback(async (id: string) => {
+    if (currentProject?.id === id) {
+      throw new Error('Cannot delete the currently active project');
+    }
+
+    await projectApi.deleteProject(id);
+    setProjects(prev => prev.filter(p => p.id !== id));
+  }, [currentProject]);
+
+  const mergeProjectsFn = useCallback(async (sourceId: string, targetId: string) => {
+    if (sourceId === targetId) {
+      throw new Error('Cannot merge a project into itself');
+    }
+
+    // Reassign conversations and folders directly in IndexedDB
+    const allConversations = await db.getConversations();
+    const updated = allConversations.map(c =>
+      c.projectId === sourceId
+        ? { ...c, projectId: targetId, _version: Date.now() }
+        : c
+    );
+    await db.saveConversations(updated);
+
+    const allFolders = await db.getFolders();
+    const foldersToUpdate = allFolders.filter(f => f.projectId === sourceId);
+    for (const folder of foldersToUpdate) {
+      await db.saveFolder({ ...folder, projectId: targetId });
+    }
+
+    console.log(
+      `📦 MERGE: Reassigned ${updated.filter(c => c.projectId === targetId && allConversations.find(o => o.id === c.id)?.projectId === sourceId).length} conversations and ${foldersToUpdate.length} folders from ${sourceId} to ${targetId}`
+    );
+
+    // Delete the source project from backend storage
+    await projectApi.deleteProject(sourceId);
+    setProjects(prev => prev.filter(p => p.id !== sourceId));
+
+    // If the deleted project was the current project, switch to target
+    if (currentProject?.id === sourceId) {
+      await switchProject(targetId);
+    }
+
+    // Notify ChatContext to reload from IndexedDB so it picks up the reassigned items
+    window.dispatchEvent(new CustomEvent('projectSwitched', {
+      detail: { projectId: targetId, projectPath: '', projectName: '' }
+    }));
+  }, [currentProject, switchProject]);
+
   // Context actions
   const createContextFn = useCallback(async (name: string, files: string[]) => {
     if (!currentProject) throw new Error('No project selected');
@@ -409,6 +459,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     refreshProjects,
     updateProject: updateProjectFn,
     createProject: createProjectFn,
+    deleteProject: deleteProjectFn,
+    mergeProjects: mergeProjectsFn,
     
     // Contexts
     contexts,
@@ -452,6 +504,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     refreshProjects,
     updateProjectFn,
     createProjectFn,
+    deleteProjectFn,
+    mergeProjectsFn,
     contexts,
     isLoadingContexts,
     createContextFn,
