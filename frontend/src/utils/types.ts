@@ -53,6 +53,7 @@ export interface Conversation {
     id: string;
     projectId?: string;  // Scope conversations to projects
     title: string;
+    isGlobal?: boolean;  // When true, visible in all projects
     messages: Message[];
     lastAccessedAt: number | null;
     hasUnreadResponse?: boolean;
@@ -68,6 +69,7 @@ export interface ConversationFolder {
     id: string;
     name: string;
     projectId?: string;
+    isGlobal?: boolean;  // When true, folder visible in all projects
     parentId?: string | null;
     useGlobalContext?: boolean;
     useGlobalModel?: boolean;

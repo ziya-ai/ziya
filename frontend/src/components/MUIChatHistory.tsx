@@ -5,6 +5,7 @@ import ExportConversationModal from './ExportConversationModal';
 import { useChatContext } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
 import { Conversation, ConversationFolder, SearchResult } from '../utils/types';
+import { useProject } from '../context/ProjectContext';
 import { db } from '../utils/db';
 import { v4 as uuidv4 } from 'uuid';
 // MUI imports
@@ -15,6 +16,7 @@ import Typography from '@mui/material/Typography';
 import TextField from '@mui/material/TextField';
 import Button from '@mui/material/Button';
 import Menu from '@mui/material/Menu';
+import PublicIcon from '@mui/icons-material/Public';
 import ListItemIcon from '@mui/material/ListItemIcon';
 import ListItemText from '@mui/material/ListItemText';
 import IconButton from '@mui/material/IconButton';
@@ -50,6 +52,8 @@ import {
   ExportOutlined as AntExportOutlined,
   FolderOutlined as AntFolderOutlined,
   PushpinOutlined as AntPushpinOutlined,
+  GlobalOutlined as AntGlobalOutlined,
+  SwapOutlined as AntSwapOutlined,
 } from '@ant-design/icons';
 
 // Spinning animation for the loading icon
@@ -137,6 +141,7 @@ interface ChatTreeItemProps {
   isFolder?: boolean;
   isPinned?: boolean;
   isCurrentItem?: boolean;
+  isGlobalItem?: boolean;
   isStreaming?: boolean;
   hasUnreadResponse?: boolean;
   conversationCount?: number;
@@ -149,6 +154,8 @@ interface ChatTreeItemProps {
   onCompress: (id: string) => void;
   onExport?: (id: string) => void;
   onMove: (id: string, folderId: string | null) => void;
+  onToggleGlobal?: (id: string) => void;
+  onMoveToProject?: (id: string, anchorEl: HTMLElement) => void;
   onOpenMoveMenu?: (id: string, anchorEl: HTMLElement) => void;
   onCreateSubfolder?: (id: string) => void;
   onMoveFolder?: (id: string, parentId: string | null) => void;
@@ -174,6 +181,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     isFolder = false,
     isPinned = false,
     isCurrentItem = false,
+    isGlobalItem = false,
     isStreaming = false,
     hasUnreadResponse = false,
     conversationCount = 0,
@@ -183,6 +191,8 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     onExport,
     onPin,
     onConfigure,
+    onToggleGlobal,
+    onMoveToProject,
     onFork,
     onCompress,
     onMove,
@@ -324,6 +334,9 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                 {isPinned && (
                   <PushPinIcon fontSize="small" color="primary" sx={{ ml: 0.5, fontSize: 14 }} />
                 )}
+                {isGlobalItem && (
+                  <Tooltip title="Visible in all projects"><PublicIcon fontSize="small" color="info" sx={{ ml: 0.5, fontSize: 14 }} /></Tooltip>
+                )}
                 {isFolder && conversationCount > 0 && (
                   <Typography variant="caption" sx={{ ml: 0.5, color: 'text.secondary' }}>({conversationCount})</Typography>
                 )}
@@ -352,7 +365,8 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                       isFolder={isFolder}
                       nodeId={nodeId}
                       onEdit={onEdit} onDelete={onDelete} onFork={onFork} onCompress={onCompress} onExport={onExport}
-                      onOpenMoveMenu={onOpenMoveMenu} // Pass the handler
+                      onOpenMoveMenu={onOpenMoveMenu}
+                      onToggleGlobal={onToggleGlobal} onMoveToProject={onMoveToProject} isGlobalItem={isGlobalItem}
                       onConfigure={onConfigure} onPin={onPin} isPinned={isPinned} onCreateSubfolder={onCreateSubfolder}
                     />}
                     trigger={['click']}
@@ -387,7 +401,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
   );
 });
 
-const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress, onExport, onOpenMoveMenu, onConfigure, onPin, isPinned, onCreateSubfolder }) => {
+const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress, onExport, onOpenMoveMenu, onToggleGlobal, onMoveToProject, isGlobalItem, onConfigure, onPin, isPinned, onCreateSubfolder }) => {
   const handleAntAction = (actionCallback: (id: string) => void, originalEvent?: React.MouseEvent | Event) => {
     originalEvent?.stopPropagation();
     actionCallback(nodeId);
@@ -403,7 +417,17 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
       {
         key: 'move', label: 'Move to', icon: <AntFolderOutlined />, onClick: (e) => {
           e.domEvent.stopPropagation();
-          onOpenMoveMenu && onOpenMoveMenu(nodeId, e.domEvent.currentTarget as HTMLElement); // Pass the clicked element as anchor
+          onOpenMoveMenu && onOpenMoveMenu(nodeId, e.domEvent.currentTarget as HTMLElement);
+        }
+      },
+      { key: 'global-toggle', label: isGlobalItem ? '📌 This project only' : '🌐 Share across projects', icon: <AntGlobalOutlined />, onClick: (e) => {
+          e.domEvent.stopPropagation();
+          onToggleGlobal && onToggleGlobal(nodeId);
+        }
+      },
+      { key: 'move-project', label: 'Move to project…', icon: <AntSwapOutlined />, onClick: (e) => {
+          e.domEvent.stopPropagation();
+          onMoveToProject && onMoveToProject(nodeId, e.domEvent.currentTarget as HTMLElement);
         }
       },
       { key: 'export', label: 'Export', icon: <AntExportOutlined />, onClick: (e) => handleAntAction(onExport, e.domEvent) },
@@ -420,6 +444,16 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
         key: 'move', label: 'Move to', icon: <AntFolderOutlined />, onClick: (e) => {
           e.domEvent.stopPropagation();
           onOpenMoveMenu && onOpenMoveMenu(nodeId, e.domEvent.currentTarget as HTMLElement);
+        }
+      },
+      { key: 'global-toggle', label: isGlobalItem ? '📌 This project only' : '🌐 Share across projects', icon: <AntGlobalOutlined />, onClick: (e) => {
+          e.domEvent.stopPropagation();
+          onToggleGlobal && onToggleGlobal(nodeId);
+        }
+      },
+      { key: 'move-project', label: 'Move to project…', icon: <AntSwapOutlined />, onClick: (e) => {
+          e.domEvent.stopPropagation();
+          onMoveToProject && onMoveToProject(nodeId, e.domEvent.currentTarget as HTMLElement);
         }
       },
       { type: 'divider' as const },
@@ -533,6 +567,58 @@ const MoveToFolderMenu = ({
   );
 };
 
+const MoveToProjectMenu = ({
+  anchorEl,
+  open,
+  onClose,
+  projects,
+  currentProjectId,
+  onMoveToProject,
+  nodeId
+}: {
+  anchorEl: HTMLElement | null;
+  open: boolean;
+  onClose: () => void;
+  projects: Array<{ id: string; name: string; path: string }>;
+  currentProjectId: string | undefined;
+  onMoveToProject: (conversationId: string, projectId: string) => void;
+  nodeId: string | null;
+}) => {
+  if (!nodeId) return null;
+
+  // Strip conv- prefix for conversations
+  const cleanId = nodeId.startsWith('conv-') ? nodeId.substring(5) : nodeId;
+
+  return (
+    <Menu
+      anchorEl={anchorEl}
+      open={open}
+      onClose={onClose}
+      anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+      transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+    >
+      {projects
+        .filter(p => p.id !== currentProjectId)
+        .map(project => (
+          <MenuItem
+            key={project.id}
+            onClick={(e) => {
+              e.stopPropagation();
+              onMoveToProject(cleanId, project.id);
+              onClose();
+            }}
+          >
+            <ListItemIcon><FolderIcon fontSize="small" /></ListItemIcon>
+            <ListItemText primary={project.name} secondary={project.path} />
+          </MenuItem>
+        ))}
+      {projects.filter(p => p.id !== currentProjectId).length === 0 && (
+        <MenuItem disabled>No other projects available</MenuItem>
+      )}
+    </Menu>
+  );
+};
+
 const MUIChatHistory = () => {
   const {
     conversations,
@@ -541,6 +627,9 @@ const MUIChatHistory = () => {
     setConversations,
     isLoadingConversation,
     streamingConversations,
+    toggleConversationGlobal,
+    moveConversationToProject,
+    toggleFolderGlobal,
     startNewChat,
     loadConversation,
     folders,
@@ -555,6 +644,7 @@ const MUIChatHistory = () => {
   } = useChatContext();
 
   const { isDarkMode } = useTheme();
+  const { projects, currentProject } = useProject();
   const [expandedNodes, setExpandedNodes] = useState<React.Key[]>([]);
   const chatHistoryRef = useRef<HTMLDivElement>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -567,6 +657,11 @@ const MUIChatHistory = () => {
   const [folderConfigForm] = Form.useForm();
 
   const [moveToMenuState, setMoveToMenuState] =
+    useState<{
+      anchorEl: null | HTMLElement;
+      nodeId: null | string
+    }>({ anchorEl: null, nodeId: null });
+  const [moveToProjectMenuState, setMoveToProjectMenuState] =
     useState<{
       anchorEl: null | HTMLElement;
       nodeId: null | string
@@ -741,6 +836,41 @@ const MUIChatHistory = () => {
   const handleCloseMoveMenu = () => {
     console.log("Closing move menu");
     setMoveToMenuState({ anchorEl: null, nodeId: null });
+  };
+
+  // Handle toggling global status
+  const handleToggleGlobal = async (nodeId: string) => {
+    const isConversation = nodeId.startsWith('conv-');
+
+    if (isConversation) {
+      const cleanId = nodeId.substring(5);
+      await toggleConversationGlobal(cleanId);
+      // Re-read from state after toggle (state is updated by the callback)
+      const conv = conversations.find(c => c.id === cleanId);
+      // The toggle flips the value, so the NEW state is the opposite of what we just read
+      const wasGlobal = conv?.isGlobal;
+      message.success(!wasGlobal ? 'Shared across all projects' : 'Restricted to current project');
+    } else {
+      // It's a folder ID directly
+      const folder = folders.find(f => f.id === nodeId);
+      await toggleFolderGlobal(nodeId);
+      // Same logic: state was toggled, so the message should reflect the NEW state
+      const wasGlobal = folder?.isGlobal;
+      message.success(!wasGlobal ? 'Folder shared across all projects' : 'Folder restricted to current project');
+    }
+  };
+
+  // Handle opening the move-to-project menu
+  const handleOpenMoveToProjectMenu = (nodeId: string, anchorEl: HTMLElement) => {
+    setMoveToProjectMenuState({ anchorEl, nodeId });
+  };
+
+  // Handle moving a conversation to another project
+  const handleMoveToProject = async (conversationId: string, targetProjectId: string) => {
+    await moveConversationToProject(conversationId, targetProjectId);
+    const targetProject = projects.find(p => p.id === targetProjectId);
+    message.success(`Moved to project "${targetProject?.name || 'Unknown'}"`);
+    setMoveToProjectMenuState({ anchorEl: null, nodeId: null });
   };
 
   // Handle moving a conversation to a folder
@@ -1733,8 +1863,8 @@ const MUIChatHistory = () => {
   const treeData = useMemo(() => {
     // Create a stable hash of inputs to detect actual changes
     const inputHash = JSON.stringify({
-      folders: folders.map(f => ({ id: f.id, name: f.name, parentId: f.parentId })),
-      conversations: conversations.map(c => ({ id: c.id, title: c.title, folderId: c.folderId, isActive: c.isActive, lastAccessedAt: c.lastAccessedAt })),
+      folders: folders.map(f => ({ id: f.id, name: f.name, parentId: f.parentId, isGlobal: f.isGlobal })),
+      conversations: conversations.map(c => ({ id: c.id, title: c.title, folderId: c.folderId, isActive: c.isActive, lastAccessedAt: c.lastAccessedAt, isGlobal: c.isGlobal })),
       pinnedFolders: Array.from(pinnedFolders)
     });
 
@@ -2157,6 +2287,9 @@ const MUIChatHistory = () => {
       const isCurrentItem = isFolder
         ? node.id === currentFolderId
         : node.id.startsWith('conv-') && node.id.substring(5) === currentConversationId;
+      const isGlobalItem = isFolder
+        ? node.folder?.isGlobal === true
+        : node.conversation?.isGlobal === true;
       const hasUnreadResponse = !isFolder && node.id.startsWith('conv-') &&
         node.conversation?.hasUnreadResponse && node.id.substring(5) !== currentConversationId;
 
@@ -2219,6 +2352,7 @@ const MUIChatHistory = () => {
           isFolder={isFolder}
           isPinned={isPinned}
           isCurrentItem={isCurrentItem}
+          isGlobalItem={isGlobalItem}
           isStreaming={isStreamingConv}
           hasUnreadResponse={hasUnreadResponse}
           conversationCount={conversationCount}
@@ -2232,6 +2366,8 @@ const MUIChatHistory = () => {
           onCompress={handleCompressConversation}
           onMove={handleMoveConversation}
           onOpenMoveMenu={handleOpenMoveMenu}
+          onToggleGlobal={handleToggleGlobal}
+          onMoveToProject={handleOpenMoveToProjectMenu}
           onCreateSubfolder={handleCreateSubfolder}
           isEditing={isEditing}
           editValue={editValue}
@@ -2492,6 +2628,17 @@ const MUIChatHistory = () => {
           onMove={handleMoveConversation}
           onMoveFolder={handleMoveFolder}
           nodeId={moveToMenuState.nodeId}
+        />
+
+        {/* Move to project menu */}
+        <MoveToProjectMenu
+          anchorEl={moveToProjectMenuState.anchorEl}
+          open={Boolean(moveToProjectMenuState.anchorEl)}
+          onClose={() => setMoveToProjectMenuState({ anchorEl: null, nodeId: null })}
+          projects={projects}
+          currentProjectId={currentProject?.id}
+          onMoveToProject={handleMoveToProject}
+          nodeId={moveToProjectMenuState.nodeId}
         />
       </Box>
 
