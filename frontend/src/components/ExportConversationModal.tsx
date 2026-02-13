@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { Modal, Radio, Button, message, Space, Typography, Divider, Progress } from 'antd';
-import { CopyOutlined, DownloadOutlined, GithubOutlined, CloudOutlined } from '@ant-design/icons';
+import { Modal, Radio, Button, message, Space, Typography, Divider, Progress, Switch, Segmented } from 'antd';
+import { CopyOutlined, DownloadOutlined, GithubOutlined, CloudOutlined, FileTextOutlined, LinkOutlined, PictureOutlined } from '@ant-design/icons';
 import { useChatContext } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
 import { captureAllVisualizations } from '../utils/visualizationCapture';
 
 const { Text, Paragraph } = Typography;
+
+type ExportMode = 'copy' | 'download' | 'paste';
 
 interface ExportConversationModalProps {
     visible: boolean;
@@ -13,7 +15,9 @@ interface ExportConversationModalProps {
 }
 
 const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visible, onClose }) => {
+    const [exportMode, setExportMode] = useState<ExportMode>('copy');
     const [format, setFormat] = useState<'markdown' | 'html'>('markdown');
+    const [embedImages, setEmbedImages] = useState(false);
     const [target, setTarget] = useState<'public' | 'internal'>('public');
     const [isExporting, setIsExporting] = useState(false);
     const [exportedContent, setExportedContent] = useState<string | null>(null);
@@ -31,17 +35,17 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
     const { currentConversationId, currentMessages } = useChatContext();
     const { isDarkMode } = useTheme();
 
-    // Reset state when modal closes
     useEffect(() => {
         if (!visible) {
             setExportedContent(null);
             setIsExporting(false);
             setCaptureProgress(0);
             setCaptureStatus('');
+            setExportMode('copy');
             setFormat('markdown');
+            setEmbedImages(false);
             setTarget('public');
         } else {
-            // Load available targets when modal opens
             loadExportTargets();
         }
     }, [visible]);
@@ -58,47 +62,49 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
         }
     };
 
-    const handleExport = async () => {
+    const generateExport = async (opts?: { formatOverride?: string }): Promise<string | null> => {
         setIsExporting(true);
         setCaptureProgress(0);
-        setCaptureStatus('Capturing visualizations...');
-        
+
         try {
-            // Step 1: Capture all visualizations from the DOM
-            const capturedDiagrams = await captureAllVisualizations();
-            setCaptureProgress(50);
-            setCaptureStatus(`Captured ${capturedDiagrams.length} visualization(s). Generating export...`);
-            
-            // Step 2: Export conversation with captured diagrams
+            let capturedDiagrams: any[] = [];
+
+            if (embedImages) {
+                setCaptureStatus('Capturing visualizations...');
+                capturedDiagrams = await captureAllVisualizations();
+                setCaptureProgress(50);
+                setCaptureStatus(`Captured ${capturedDiagrams.length} visualization(s). Generating export...`);
+            } else {
+                setCaptureProgress(30);
+                setCaptureStatus('Generating export...');
+            }
+
+            const effectiveFormat = opts?.formatOverride || format;
+
             const response = await fetch('/api/export-conversation', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     conversation_id: currentConversationId,
                     messages: currentMessages,
-                    format,
+                    format: effectiveFormat,
                     target,
                     captured_diagrams: capturedDiagrams
                 })
             });
-            
+
             setCaptureProgress(100);
             setCaptureStatus('Export complete!');
 
-            if (!response.ok) {
-                throw new Error('Export failed');
-            }
+            if (!response.ok) throw new Error('Export failed');
 
             const data = await response.json();
             setExportedContent(data.content);
-            
-            const successMsg = data.diagrams_count > 0 
-                ? `Conversation exported with ${data.diagrams_count} embedded visualization(s)!`
-                : 'Conversation exported successfully!';
-            message.success(successMsg);
+            return data.content;
         } catch (error) {
             message.error('Failed to export conversation');
             console.error('Export error:', error);
+            return null;
         } finally {
             setIsExporting(false);
             setTimeout(() => {
@@ -108,27 +114,30 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
         }
     };
 
-    const copyToClipboard = async () => {
-        if (!exportedContent) return;
+    const handleCopyToClipboard = async () => {
+        // Always generate markdown for clipboard copy
+        const content = exportedContent || await generateExport({ formatOverride: 'markdown' });
+        if (!content) return;
 
         try {
-            await navigator.clipboard.writeText(exportedContent);
+            await navigator.clipboard.writeText(content);
             message.success('Copied to clipboard!');
         } catch (error) {
             message.error('Failed to copy to clipboard');
         }
     };
 
-    const downloadFile = () => {
-        if (!exportedContent) return;
+    const handleDownloadFile = async () => {
+        const content = exportedContent || await generateExport();
+        if (!content) return;
 
-        const blob = new Blob([exportedContent], { 
-            type: format === 'html' ? 'text/html' : 'text/markdown' 
-        });
+        const ext = format === 'html' ? 'html' : 'md';
+        const mimeType = format === 'html' ? 'text/html' : 'text/markdown';
+        const blob = new Blob([content], { type: mimeType });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `ziya_conversation_${Date.now()}.${format === 'html' ? 'html' : 'md'}`;
+        a.download = `ziya_conversation_${Date.now()}.${ext}`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -136,20 +145,27 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
         message.success('Downloaded successfully!');
     };
 
-    const openInNewWindow = () => {
-        if (!exportedContent || format !== 'html') return;
+    const handlePasteExport = async () => {
+        const content = exportedContent || await generateExport();
+        if (!content) return;
 
+        try {
+            await navigator.clipboard.writeText(content);
+            const serviceInfo = getPasteServiceInfo();
+            message.info(`Opening ${serviceInfo.name}...`);
+            window.open(serviceInfo.url || 'https://gist.github.com', '_blank');
+        } catch (error) {
+            message.error('Failed to copy to clipboard');
+        }
+    };
+
+    const handlePreviewHtml = () => {
+        if (!exportedContent || format !== 'html') return;
         const newWindow = window.open('', '_blank');
         if (newWindow) {
             newWindow.document.write(exportedContent);
             newWindow.document.close();
         }
-    };
-
-    const openPasteService = () => {
-        const serviceInfo = getPasteServiceInfo();
-        const url = serviceInfo?.url || 'https://gist.github.com';
-        window.open(url, '_blank');
     };
 
     const getPasteServiceInfo = () => {
@@ -158,193 +174,279 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
 
     const serviceInfo = getPasteServiceInfo();
 
+    // Mode-specific footer buttons
+    const getFooterButtons = () => {
+        const buttons: React.ReactNode[] = [
+            <Button key="close" onClick={onClose}>Close</Button>
+        ];
+
+        if (isExporting) return buttons;
+
+        if (exportMode === 'copy') {
+            if (exportedContent) {
+                buttons.push(
+                    <Button key="copy-again" icon={<CopyOutlined />} onClick={handleCopyToClipboard}>
+                        Copy Again
+                    </Button>
+                );
+            } else {
+                buttons.push(
+                    <Button
+                        key="copy"
+                        type="primary"
+                        icon={<CopyOutlined />}
+                        onClick={handleCopyToClipboard}
+                        disabled={currentMessages.length === 0}
+                    >
+                        Copy Markdown to Clipboard
+                    </Button>
+                );
+            }
+        } else if (exportMode === 'download') {
+            if (exportedContent) {
+                buttons.push(
+                    <Button key="download-again" icon={<DownloadOutlined />} onClick={handleDownloadFile}>
+                        Download Again
+                    </Button>
+                );
+                if (format === 'html') {
+                    buttons.push(
+                        <Button key="preview" onClick={handlePreviewHtml}>Preview</Button>
+                    );
+                }
+            } else {
+                buttons.push(
+                    <Button
+                        key="download"
+                        type="primary"
+                        icon={<DownloadOutlined />}
+                        onClick={handleDownloadFile}
+                        disabled={currentMessages.length === 0}
+                    >
+                        Download .{format === 'html' ? 'html' : 'md'} File
+                    </Button>
+                );
+            }
+        } else {
+            // paste mode
+            if (exportedContent) {
+                buttons.push(
+                    <Button key="copy" icon={<CopyOutlined />} onClick={handleCopyToClipboard}>
+                        Copy to Clipboard
+                    </Button>,
+                    <Button key="download" icon={<DownloadOutlined />} onClick={handleDownloadFile}>
+                        Download
+                    </Button>,
+                    <Button
+                        key="copy-open"
+                        type="primary"
+                        icon={<CopyOutlined />}
+                        onClick={handlePasteExport}
+                    >
+                        Copy & Open {serviceInfo?.name}
+                    </Button>
+                );
+            } else {
+                buttons.push(
+                    <Button
+                        key="generate"
+                        type="primary"
+                        onClick={() => generateExport()}
+                        disabled={currentMessages.length === 0}
+                    >
+                        Generate Export
+                    </Button>
+                );
+            }
+        }
+
+        return buttons;
+    };
+
+    // Clear generated content when switching modes / format / options
+    useEffect(() => {
+        setExportedContent(null);
+    }, [exportMode, format, embedImages, target]);
+
+    const renderOptions = () => (
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+            {/* Image embedding toggle — shown for all modes */}
+            <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                padding: '10px 14px',
+                background: isDarkMode ? '#1f1f1f' : '#f6f8fa',
+                borderRadius: 6,
+                border: `1px solid ${isDarkMode ? '#30363d' : '#d0d7de'}`
+            }}>
+                <PictureOutlined style={{ fontSize: 18, color: embedImages ? '#1890ff' : '#8c8c8c' }} />
+                <div style={{ flex: 1 }}>
+                    <Text strong>Embed rendered images</Text>
+                    <div style={{ fontSize: 12, color: '#8c8c8c' }}>
+                        {embedImages
+                            ? 'Visualizations will be captured from the page and embedded as images'
+                            : 'Visualizations will be exported as source code blocks (mermaid, graphviz, etc.)'}
+                    </div>
+                </div>
+                <Switch checked={embedImages} onChange={setEmbedImages} />
+            </div>
+
+            {/* Mode-specific options */}
+            {exportMode === 'copy' && (
+                <Paragraph style={{ fontSize: 12, color: '#8c8c8c', margin: 0 }}>
+                    Generates raw Markdown and copies it to your clipboard. Paste into any editor, README, wiki, or document.
+                </Paragraph>
+            )}
+
+            {exportMode === 'download' && (
+                <div>
+                    <Text strong style={{ display: 'block', marginBottom: 8 }}>File Format</Text>
+                    <Radio.Group value={format} onChange={(e) => setFormat(e.target.value)}>
+                        <Space direction="vertical">
+                            <Radio value="markdown">
+                                Markdown (.md) — portable, editable, works in GitHub / editors
+                            </Radio>
+                            <Radio value="html">
+                                HTML (.html) — standalone file with embedded styles, open in browser
+                            </Radio>
+                        </Space>
+                    </Radio.Group>
+                </div>
+            )}
+
+            {exportMode === 'paste' && (
+                <>
+                    <div>
+                        <Text strong style={{ display: 'block', marginBottom: 8 }}>Paste Service</Text>
+                        <Radio.Group value={target} onChange={(e) => setTarget(e.target.value)} style={{ display: 'block' }}>
+                            <Space direction="vertical">
+                                {availableTargets.map(t => (
+                                    <Radio key={t.id} value={t.id}>
+                                        <Space>
+                                            {t.icon === 'GithubOutlined' && <GithubOutlined />}
+                                            {t.icon === 'CloudOutlined' && <CloudOutlined />}
+                                            <span>{t.name}</span>
+                                        </Space>
+                                    </Radio>
+                                ))}
+                            </Space>
+                        </Radio.Group>
+                    </div>
+                    <div>
+                        <Text strong style={{ display: 'block', marginBottom: 8 }}>Format</Text>
+                        <Radio.Group value={format} onChange={(e) => setFormat(e.target.value)}>
+                            <Space direction="vertical">
+                                <Radio value="markdown">
+                                    Markdown (.md) — <strong>Recommended for Gist</strong>
+                                </Radio>
+                                <Radio value="html">
+                                    HTML (.html) — standalone with embedded styles
+                                </Radio>
+                            </Space>
+                        </Radio.Group>
+                    </div>
+                    {target === 'public' && format === 'markdown' && (
+                        <div style={{
+                            padding: '8px 12px',
+                            background: isDarkMode ? '#1a3a1a' : '#f6ffed',
+                            border: `1px solid ${isDarkMode ? '#274d27' : '#b7eb8f'}`,
+                            borderRadius: 4,
+                            fontSize: 12
+                        }}>
+                            💡 <strong>Tip:</strong> Name your Gist file with a <code>.md</code> extension for proper rendering.
+                        </div>
+                    )}
+                </>
+            )}
+        </Space>
+    );
+
+    const renderExportedPreview = () => (
+        <div>
+            <Text type="success" strong>✓ Export Ready</Text>
+            <Paragraph style={{ marginTop: 8 }}>
+                {exportMode === 'copy' && 'Markdown has been copied to your clipboard.'}
+                {exportMode === 'download' && 'Your file has been downloaded.'}
+                {exportMode === 'paste' && `Content is ready for ${serviceInfo?.name}. Click "Copy & Open" to proceed.`}
+            </Paragraph>
+
+            <div style={{
+                padding: 12,
+                background: isDarkMode ? '#1f1f1f' : '#f6f8fa',
+                borderRadius: 6,
+                border: `1px solid ${isDarkMode ? '#30363d' : '#d0d7de'}`,
+                maxHeight: 250,
+                overflow: 'auto'
+            }}>
+                <pre style={{
+                    margin: 0,
+                    fontSize: 11,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    fontFamily: 'monospace'
+                }}>
+                    {exportedContent!.substring(0, 1500)}
+                    {exportedContent!.length > 1500 && '\n\n... (truncated preview)'}
+                </pre>
+            </div>
+
+            <Paragraph style={{ marginTop: 12, fontSize: 12, color: '#8c8c8c' }}>
+                <strong>Size:</strong> {(exportedContent!.length / 1024).toFixed(1)} KB •
+                <strong> Messages:</strong> {currentMessages.filter(m => m.content?.trim()).length}
+                {embedImages && <> • <strong>Images:</strong> embedded</>}
+            </Paragraph>
+        </div>
+    );
+
+    const renderProgress = () => (
+        <div style={{ textAlign: 'center', padding: '40px 20px' }}>
+            <Progress
+                percent={captureProgress}
+                status={captureProgress === 100 ? 'success' : 'active'}
+            />
+            <p style={{ marginTop: 16, color: '#8c8c8c' }}>{captureStatus}</p>
+        </div>
+    );
+
     return (
         <Modal
             title="Export Conversation"
             open={visible}
             onCancel={onClose}
             width={700}
-            footer={[
-                <Button key="close" onClick={onClose}>
-                    Close
-                </Button>,
-                exportedContent && (
-                    <Button
-                        key="copy"
-                        icon={<CopyOutlined />}
-                        onClick={copyToClipboard}
-                    >
-                        Copy to Clipboard
-                    </Button>
-                ),
-                exportedContent && (
-                    <Button
-                        key="download"
-                        icon={<DownloadOutlined />}
-                        onClick={downloadFile}
-                    >
-                        Download
-                    </Button>
-                ),
-                exportedContent && format === 'html' && (
-                    <Button
-                        key="preview"
-                        onClick={openInNewWindow}
-                    >
-                        Preview
-                    </Button>
-                ),
-                exportedContent ? (
-                    <Button
-                        key="copy-and-open"
-                        type="primary"
-                        icon={<CopyOutlined />}
-                        onClick={() => { copyToClipboard(); message.info('Opening ' + serviceInfo.name + '...'); openPasteService(); }}
-                    >
-                        Copy & Open {serviceInfo.name}
-                    </Button>
-                ) : (
-                    <Button
-                        key="export"
-                        type="primary"
-                        loading={isExporting}
-                        onClick={handleExport}
-                        disabled={currentMessages.length === 0}
-                    >
-                        Generate Export
-                    </Button>
-                )
-            ]}
+            footer={getFooterButtons()}
         >
-            {!exportedContent ? (
-                isExporting ? (
-                    <div style={{ textAlign: 'center', padding: '40px 20px' }}>
-                        <Progress 
-                            percent={captureProgress} 
-                            status={captureProgress === 100 ? 'success' : 'active'}
-                        />
-                        <p style={{ marginTop: 16, color: '#57606a' }}>
-                            {captureStatus}
-                        </p>
-                    </div>
-                ) : (
-                <div>
-                    <Space direction="vertical" style={{ width: '100%' }} size="large">
-                        <div>
-                            <Text strong>Target Paste Service</Text>
-                            <Radio.Group
-                                value={target}
-                                onChange={(e) => setTarget(e.target.value)}
-                                style={{ marginTop: 8, display: 'block' }}
-                            >
-                                <Space direction="vertical">
-                                    {availableTargets.map(target => (
-                                        <Radio key={target.id} value={target.id}>
-                                        <Space>
-                                                {target.icon === 'GithubOutlined' && <GithubOutlined />}
-                                                {target.icon === 'CloudOutlined' && <CloudOutlined />}
-                                                <span>{target.name}</span>
-                                        </Space>
-                                    </Radio>
-                                    ))}
-                                </Space>
-                            </Radio.Group>
-                            <Radio.Group
-                                value={format}
-                                onChange={(e) => setFormat(e.target.value)}
-                                style={{ marginTop: 8, display: 'block' }}
-                            >
-                                <Space direction="vertical">
-                                    <Radio value="markdown">
-                                        Markdown (.md) - <strong>Recommended for GitHub Gist</strong>, preserves formatting
-                                    </Radio>
-                                    <Radio value="html">
-                                        HTML (.html) - Standalone file with embedded styles
-                                    </Radio>
-                                </Space>
-                            </Radio.Group>
-                        </div>
-                        
-                        {target === 'public' && format === 'markdown' && (
-                            <div style={{
-                                padding: '8px 12px',
-                                background: isDarkMode ? '#1a3a1a' : '#f6ffed',
-                                border: `1px solid ${isDarkMode ? '#274d27' : '#b7eb8f'}`,
-                                borderRadius: '4px',
-                                fontSize: '12px'
-                            }}>
-                                💡 <strong>Tip:</strong> When creating your Gist, name the file with a <code>.md</code> extension (e.g., <code>conversation.md</code>) for proper markdown rendering.
-                            </div>
-                        )}
+            {/* Mode selector */}
+            <Segmented
+                block
+                value={exportMode}
+                onChange={(val) => setExportMode(val as ExportMode)}
+                options={[
+                    { label: '📋 Copy to Clipboard', value: 'copy' },
+                    { label: '💾 Download File', value: 'download' },
+                    { label: '🔗 Paste Service', value: 'paste' },
+                ]}
+                style={{ marginBottom: 20 }}
+            />
 
-                        <Divider style={{ margin: '12px 0' }} />
+            {isExporting
+                ? renderProgress()
+                : exportedContent
+                    ? renderExportedPreview()
+                    : renderOptions()
+            }
 
-                        <div style={{
-                            padding: '12px',
-                            background: isDarkMode ? '#1f1f1f' : '#f6f8fa',
-                            borderRadius: '6px',
-                            border: `1px solid ${isDarkMode ? '#30363d' : '#d0d7de'}`
-                        }}>
-                            <Space>
-                                {serviceInfo.icon}
-                                <Text strong>{serviceInfo.name}</Text>
-                            </Space>
-                            <Paragraph style={{ marginTop: 8, marginBottom: 8, fontSize: '13px' }}>
-                                {serviceInfo.description}
-                            </Paragraph>
-                            <Button
-                                type="link"
-                                size="small"
-                                onClick={openPasteService}
-                                style={{ padding: 0 }}
-                            >
-                                Open {serviceInfo.name} →
-                            </Button>
-                        </div>
-                        
-                        <Paragraph style={{ fontSize: '12px', color: '#57606a', marginTop: 8 }}>
-                            <strong>Note:</strong> This export will include:
-                            • All conversation messages with formatting
-                            • Embedded rendered visualizations (diagrams, charts)
-                            • Source code for all visualizations
-                            • Metadata footer with Ziya version and model info
-                        </Paragraph>
-                    </Space>
-                </div>
-                )
-            ) : (
-                <div>
-                    <Text type="success" strong>✓ Export Ready</Text>
-                    <Paragraph style={{ marginTop: 8 }}>
-                        Your conversation has been formatted for <strong>{serviceInfo.name}</strong>.
-                        Click "Copy to Clipboard" to copy the content and automatically open {serviceInfo.name}.
+            {/* Note about what's included */}
+            {!exportedContent && !isExporting && (
+                <>
+                    <Divider style={{ margin: '16px 0 12px' }} />
+                    <Paragraph style={{ fontSize: 12, color: '#8c8c8c', margin: 0 }}>
+                        <strong>Includes:</strong> all conversation messages with formatting, code blocks, diffs,
+                        {embedImages ? ' embedded rendered visualizations,' : ' visualization source code,'}
+                        {' '}and metadata footer.
                     </Paragraph>
-                    
-                    <div style={{
-                        padding: '12px',
-                        background: isDarkMode ? '#1f1f1f' : '#f6f8fa',
-                        borderRadius: '6px',
-                        border: `1px solid ${isDarkMode ? '#30363d' : '#d0d7de'}`,
-                        maxHeight: '300px',
-                        overflow: 'auto'
-                    }}>
-                        <pre style={{ 
-                            margin: 0, 
-                            fontSize: '11px',
-                            whiteSpace: 'pre-wrap',
-                            wordBreak: 'break-word',
-                            fontFamily: 'monospace'
-                        }}>
-                            {exportedContent.substring(0, 1000)}
-                            {exportedContent.length > 1000 && '\n\n... (truncated preview)'}
-                        </pre>
-                    </div>
-                    
-                    <Paragraph style={{ marginTop: 12, fontSize: '12px', color: '#57606a' }}>
-                        <strong>Size:</strong> {(exportedContent.length / 1024).toFixed(1)} KB • 
-                        <strong> Messages:</strong> {currentMessages.filter(m => m.content?.trim()).length}
-                    </Paragraph>
-                </div>
+                </>
             )}
         </Modal>
     );
