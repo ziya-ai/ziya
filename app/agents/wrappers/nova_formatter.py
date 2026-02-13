@@ -154,13 +154,14 @@ class NovaFormatter:
                 # Handle already formatted content (for multimodal)
                 formatted_content = content
                 # Ensure there's at least one content block with non-empty text
-                has_valid_text = False
+                has_valid_content = False
                 for block in formatted_content:
-                    if "text" in block and block["text"].strip():
-                        has_valid_text = True
+                    if ("text" in block and block["text"].strip()) or "image" in block:
+                        has_valid_content = True
                         break
-                if not has_valid_text and formatted_content:
-                    formatted_content[0]["text"] = "Hello"  # Add text to first block if all empty
+                if not has_valid_content and formatted_content:
+                    # Insert a text block rather than overwriting a potential image block
+                    formatted_content.insert(0, {"text": "Hello"})
 
             formatted_messages.append({
                 "role": role,
