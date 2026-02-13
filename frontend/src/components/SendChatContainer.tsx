@@ -459,6 +459,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
         streamingConversations.has(targetConversationId),
         (state) => updateProcessingState(targetConversationId, state),
         setReasoningContentMap,
+        undefined, // throttlingRecoveryDataRef - not used here
         currentProject // Pass current project so backend knows working directory
       );
     } catch (error) {
@@ -471,7 +472,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     isCurrentlyStreaming, currentConversationId, setUserHasScrolled, addMessageToConversation,
     addStreamingConversation, currentMessages, checkedKeys, activeSkillPrompts,
     streamedContentMap, setStreamedContentMap, setIsStreaming, removeStreamingConversation,
-    streamingConversations, updateProcessingState, setReasoningContentMap
+    streamingConversations, updateProcessingState, setReasoningContentMap, currentProject
   ]);
   
   // Handle keyboard events - must be after sendToolFeedback and handleSend
