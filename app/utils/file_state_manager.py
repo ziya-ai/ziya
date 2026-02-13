@@ -227,7 +227,7 @@ class FileStateManager:
         
         if disk_content is None:
             # read_file_content returns None on error or unsupported files
-            logger.warning(f"Could not read {full_path} from disk: {e}")
+            logger.warning(f"Could not read {full_path} from disk: file not found or unsupported format")
             return False
         
         disk_lines = disk_content.splitlines()
@@ -314,7 +314,7 @@ class FileStateManager:
         
         if disk_content is None:
             # read_file_content returns None on error or unsupported files
-            logger.warning(f"Could not read {full_path} from disk: {e}")
+            logger.warning(f"Could not read {full_path} from disk: file not found or unsupported format")
             return False
         
         disk_lines = disk_content.splitlines()
@@ -483,7 +483,7 @@ class FileStateManager:
         
         if disk_content is None:
             # read_file_content returns None on error or unsupported files
-            logger.warning(f"Could not read {full_path} from disk: {e}")
+            logger.warning(f"Could not read {full_path} from disk: file not found or unsupported format")
             return False
         
         disk_lines = disk_content.splitlines()
