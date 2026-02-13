@@ -1,0 +1,4 @@
+{
+  "description": "Test title extraction from marks and legend/footer layout reorder in vegaPlugin.ts - falsely detected as already applied",
+  "target_file": "frontend/src/plugins/d3/vegaPlugin.ts"
+}
