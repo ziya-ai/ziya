@@ -618,6 +618,7 @@ async def chat_endpoint(request: Request):
         conversation_id = body.get('conversation_id')
         system_prompt_addition = body.get('systemPromptAddition', '')
         project_root = body.get('project_root')
+        logger.info(f"🔍 CHAT_ENDPOINT: project_root from request = '{project_root}', body keys = {list(body.keys())}")
         
         # Log if we received any messages with images
         messages_with_images = sum(1 for msg in messages if isinstance(msg, (list, tuple)) and len(msg) >= 3)
@@ -699,6 +700,8 @@ async def chat_endpoint(request: Request):
                         elif role in ['assistant', 'ai']:
                             chat_history.append({'type': 'ai', 'content': content, 'images': images})
             
+            logger.info(f"🔍 CHAT_ENDPOINT: Built chat_history with {len(chat_history)} entries")
+
             # Format the data for stream_chunks - LangChain expects files at top level
             formatted_body = {
                 'question': question,
@@ -1543,17 +1546,17 @@ async def stream_chunks(body):
     )
     accumulated_content = ""
     
-    # Temporarily reduce context to test tool execution
-    if body.get("question") and "distribution by file type" in body.get("question", "").lower():
-        logger.debug("🔍 TEMP: Reducing context for tool execution test")
-        if "config" in body and "files" in body["config"]:
-            body["config"]["files"] = []  # Skip file context to avoid throttling
-    
-        # Update environment for this request if project root is provided
-        if project_root and os.path.isdir(project_root):
-            os.environ["ZIYA_USER_CODEBASE_DIR"] = project_root
-            logger.info(f"🔄 PROJECT: Updated working directory to {project_root}")
-        
+    # Update environment for this request if project root is provided
+    if project_root and os.path.isdir(project_root):
+        os.environ["ZIYA_USER_CODEBASE_DIR"] = project_root
+        logger.info(f"🔄 PROJECT: Updated working directory to {project_root}")
+
+    # Update environment for this request if project root is provided
+    # This MUST happen unconditionally before any tool execution
+    if project_root and os.path.isdir(project_root):
+        os.environ["ZIYA_USER_CODEBASE_DIR"] = project_root
+        logger.info(f"🔄 PROJECT: Updated working directory to {project_root}")
+
     # Restore 0.3.0 direct streaming behavior
     use_direct_streaming = True
     
@@ -1643,6 +1646,14 @@ async def stream_chunks(body):
                 async for chunk in executor.stream_with_tools(messages, tools=mcp_tools, conversation_id=conversation_id, project_root=project_root):
                     chunk_count += 1
                     
+                    # Centralized REWIND_MARKER stripping: remove from ALL text content
+                    # before any downstream processing (diff-fence, accumulator, yield).
+                    # Rewind metadata is carried by chunk['rewind'] / chunk['to_marker'],
+                    # not by the HTML comment in content.
+                    if chunk.get('type') == 'text' and chunk.get('content') and not chunk.get('rewind'):
+                        import re as _re_strip
+                        chunk['content'] = _re_strip.sub(r'<!-- REWIND_MARKER: [^>]+ -->\n*', '', chunk['content'])
+
                     if chunk.get('type') == 'text':
                         content = chunk.get('content', '')
 
@@ -1687,7 +1698,17 @@ async def stream_chunks(body):
                     # Convert to expected format and yield all chunk types
                     if chunk.get('type') == 'text':
                         content = chunk.get('content', '')
-                        yield f"data: {json.dumps({'content': content})}\n\n"
+                        # Forward rewind chunks with metadata so frontend can splice properly
+                        if chunk.get('rewind') and chunk.get('to_marker'):
+                            yield f"data: {json.dumps({'type': 'rewind', 'to_marker': chunk['to_marker'], 'content': content})}\n\n"
+                        else:
+                            # Safety net: strip REWIND_MARKER HTML comments that leaked into content
+                            import re as _re
+                            cleaned = _re.sub(r'<!-- REWIND_MARKER: [^>]+ -->\n*', '', content)
+                            if cleaned != content:
+                                logger.warning(f"🔄 REWIND_LEAK: Stripped leaked REWIND_MARKER from content chunk")
+                            if cleaned:
+                                yield f"data: {json.dumps({'content': cleaned})}\n\n"
                     elif chunk.get('type') == 'tool_start':
                         # Stream tool start notification
                         yield f"data: {json.dumps({'tool_start': chunk})}\n\n"
