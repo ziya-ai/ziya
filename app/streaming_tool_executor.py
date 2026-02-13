@@ -2195,7 +2195,7 @@ Please retry the tool call with valid JSON. Ensure:
                             
                             rewind_chunk = {
                                 'type': 'text',
-                                'content': f"{rewind_marker}\n\n",
+                                'content': '',
                                 'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms",
                                 # Tell frontend which marker to target
                                 'rewind': True,
@@ -2849,8 +2849,10 @@ Please retry the tool call with valid JSON. Ensure:
         for line in lines:
             stripped = line.strip()
             if stripped.startswith('```'):
-                # Extract potential language/type after ```
-                lang_or_type = stripped[3:].strip()
+                # Count ALL leading backticks (handles ````, `````, etc.)
+                backtick_count = len(stripped) - len(stripped.lstrip('`'))
+                # Extract language/type AFTER all leading backticks
+                lang_or_type = stripped[backtick_count:].strip()
                 
                 if lang_or_type:
                     # Has a language specifier - this is ALWAYS an opening, even if we're in a block
@@ -2859,13 +2861,15 @@ Please retry the tool call with valid JSON. Ensure:
                         logger.debug(f"🔍 TRACKER: Implicitly closing {tracker['block_type']} block, opening {lang_or_type} block")
                     tracker['in_block'] = True
                     tracker['block_type'] = lang_or_type
+                    tracker['backtick_count'] = backtick_count
                     tracker['accumulated_content'] = line + '\n'
-                    logger.debug(f"🔍 TRACKER: Opened {lang_or_type} block")
+                    logger.debug(f"🔍 TRACKER: Opened {lang_or_type} block ({backtick_count} backticks)")
                 elif tracker['in_block']:
-                    # No language specifier and we're in a block - this is a closing ```
+                    # No language specifier and we're in a block - this is a closing fence
                     tracker['in_block'] = False
                     tracker['block_type'] = None
-                    logger.debug(f"🔍 TRACKER: Closed block")
+                    tracker['backtick_count'] = 0
+                    logger.debug(f"🔍 TRACKER: Closed block ({backtick_count} backticks)")
         
         # Log state changes for debugging
         if was_in_block != tracker.get('in_block') or was_block_type != tracker.get('block_type'):
