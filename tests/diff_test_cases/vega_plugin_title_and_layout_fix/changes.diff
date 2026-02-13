@@ -1,0 +1,47 @@
+diff --git a/frontend/src/plugins/d3/vegaPlugin.ts b/frontend/src/plugins/d3/vegaPlugin.ts
+--- a/frontend/src/plugins/d3/vegaPlugin.ts
++++ b/frontend/src/plugins/d3/vegaPlugin.ts
+@@ -106,19 +106,25 @@
+     // --- Build HTML chrome (title, legend, footer) outside the SVG ---
+     // This avoids coordinate issues when postRenderSizing rewrites the viewBox.
+-    const title = vegaSpec.title?.text || '';
++
++    // Extract title from vegaSpec.title, or from a static text mark near the top
++    let title = vegaSpec.title?.text || vegaSpec.title || '';
++    if (!title && vegaSpec.marks) {
++      const titleMark = vegaSpec.marks.find((m: any) =>
++        m.type === 'text' && !m.from?.data &&
++        m.encode?.enter?.y?.value !== undefined && m.encode?.enter?.y?.value < 30
++      );
++      if (titleMark) {
++        title = titleMark.encode?.enter?.text?.value || '';
++      }
++    }
+     const titleEl = document.createElement('div');
+     titleEl.style.cssText = `text-align:center; font-size:16px; font-weight:bold; color:${isDarkMode ? '#ddd' : '#333'}; padding:8px 0 4px; font-family:system-ui,-apple-system,sans-serif;`;
+-    titleEl.textContent = title || '';
++    titleEl.textContent = title;
+     if (title) container.appendChild(titleEl);
+-    // Remove title from spec so Vega doesn't also render it
+     delete vegaSpec.title;
+ 
+     const legendEl = document.createElement('div');
+-    legendEl.style.cssText = `position:absolute; top:${title ? '36px' : '8px'}; right:12px; z-index:10; font-size:12px; font-family:system-ui,-apple-system,sans-serif; color:${isDarkMode ? '#bbb' : '#555'}; line-height:1.8;`;
+-    // Build legend from marks if spec has a known color scheme
+-    // (populated below after we inspect the data)
++    legendEl.style.cssText = `text-align:right; font-size:12px; font-family:system-ui,-apple-system,sans-serif; color:${isDarkMode ? '#bbb' : '#555'}; line-height:1.8; padding:4px 12px;`;
+     container.appendChild(legendEl);
+ 
+-    const footerEl = document.createElement('div');
+-    footerEl.style.cssText = `text-align:center; font-size:13px; font-style:italic; color:${isDarkMode ? '#888' : '#999'}; padding:4px 0 8px; font-family:system-ui,-apple-system,sans-serif;`;
+-    footerEl.textContent = 'Hover any section for line details';
+-    container.appendChild(footerEl);
+-
+     const renderDiv = document.createElement('div');
+     renderDiv.style.cssText = 'width:100%; max-width:100%; overflow:hidden; box-sizing:border-box;';
+     container.appendChild(renderDiv);
++
++    const footerEl = document.createElement('div');
++    footerEl.style.cssText = `text-align:center; font-size:13px; font-style:italic; color:${isDarkMode ? '#888' : '#999'}; padding:4px 0 8px; font-family:system-ui,-apple-system,sans-serif;`;
++    footerEl.textContent = 'Hover any section for line details';
++    container.appendChild(footerEl);
