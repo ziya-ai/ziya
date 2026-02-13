@@ -11,7 +11,7 @@ import json
 from unittest.mock import patch
 from dotenv import load_dotenv, find_dotenv
 
-import app.config as config
+import app.config.models_config as config
 from app.agents.models import ModelManager
 from app.utils.prompt_extensions import PromptExtensionManager
 from app.extensions import init_extensions
@@ -44,65 +44,24 @@ def check_google_credentials():
 
 
 def initialize_llm_for_model(endpoint, model):
-    """Initialize an LLM for the given endpoint and model."""
-    # Set environment variables
+    """Initialize an LLM for the given endpoint and model using the real ModelManager."""
+    # Clean env vars that leak between model inits
+    for var in ["ZIYA_MAX_OUTPUT_TOKENS", "ZIYA_MAX_TOKENS", "AWS_REGION"]:
+        os.environ.pop(var, None)
+    
     os.environ["ZIYA_ENDPOINT"] = endpoint
     os.environ["ZIYA_MODEL"] = model
     
-    # For Bedrock, always use the ziya profile
     if endpoint == "bedrock":
         os.environ["ZIYA_AWS_PROFILE"] = "ziya"
         os.environ["AWS_PROFILE"] = "ziya"
     
-    # Initialize model manager
-    model_manager = ModelManager()
-    
-    # Get model configuration
-    model_config = model_manager.get_model_config(endpoint, model)
-    
-    # Initialize the LLM based on endpoint
-    if endpoint == "bedrock":
-        from langchain_aws import ChatBedrock
-        import boto3
-        
-        # Create a session with the ziya profile
-        session = boto3.Session(profile_name="ziya")
-        
-        # Create the client using the session
-        client = session.client('bedrock-runtime')
-        
-        # Create the LLM
-        llm = ChatBedrock(
-            model_id=model_config["model_id"],
-            client=client,
-            model_kwargs={
-                "temperature": float(os.environ.get("ZIYA_TEMPERATURE", 0.3)),
-                "top_p": float(os.environ.get("ZIYA_TOP_P", 0.9)),
-                "top_k": int(os.environ.get("ZIYA_TOP_K", 40)),
-                "max_tokens": int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 4096))
-            }
-        )
-        return llm, model_config
-    
-    elif endpoint == "google":
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        
-        # Check if Google credentials are available
-        if not check_google_credentials():
-            pytest.fail("Google API key or credentials not available. Please set GOOGLE_API_KEY environment variable or configure application default credentials.")
-        
-        # Create the LLM
-        llm = ChatGoogleGenerativeAI(
-            model=model_config["model_id"],
-            temperature=float(os.environ.get("ZIYA_TEMPERATURE", 0.3)),
-            top_p=float(os.environ.get("ZIYA_TOP_P", 0.9)),
-            top_k=int(os.environ.get("ZIYA_TOP_K", 40)),
-            max_output_tokens=int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 4096))
-        )
-        return llm, model_config
-    
-    else:
-        raise ValueError(f"Unsupported endpoint: {endpoint}")
+    # Use the real ModelManager which handles all parameter filtering, region
+    # selection, wrapper class routing, and model_id resolution correctly.
+    ModelManager._reset_state()
+    llm = ModelManager.initialize_model(force_reinit=True)
+    model_config = ModelManager.get_model_config(endpoint, model)
+    return llm, model_config
 
 
 def get_all_available_models():
@@ -134,17 +93,6 @@ def test_all_models(endpoint, model, setup_extensions):
     if endpoint == "google" and not check_google_credentials():
         pytest.fail("Google API key or credentials not available. Please set GOOGLE_API_KEY environment variable or configure application default credentials.")
     
-    # Skip specific models that are known to have issues
-    if model == "sonnet3.7":
-        pytest.skip("Skipping sonnet3.7 due to throttling issues")
-    
-    if model == "deepseek-r1":
-        pytest.skip("Skipping deepseek-r1 as it doesn't support chat interface")
-        
-    # Skip gemini-pro as it's been deprecated in favor of gemini-1.5-pro
-    if model == "gemini-pro":
-        pytest.skip("Skipping gemini-pro as it's been deprecated in favor of gemini-1.5-pro")
-    
     try:
         # Initialize the LLM
         llm, model_config = initialize_llm_for_model(endpoint, model)
@@ -165,14 +113,32 @@ def test_all_models(endpoint, model, setup_extensions):
         
         # Make a simple query
         start_time = time.time()
-        response = llm.invoke(extended_prompt)
-        end_time = time.time()
         
-        # Extract the content from the response
-        if hasattr(response, 'content'):
-            content = response.content
+        # Google DirectGoogleModel uses async astream, everything else uses invoke
+        if hasattr(llm, 'astream') and not hasattr(llm, 'invoke'):
+            import asyncio
+            from langchain_core.messages import HumanMessage
+            
+            async def _call_google():
+                content_parts = []
+                async for chunk in llm.astream([HumanMessage(content=extended_prompt)]):
+                    if isinstance(chunk, dict) and chunk.get("type") == "text":
+                        content_parts.append(chunk.get("content", ""))
+                    elif isinstance(chunk, dict) and chunk.get("type") == "thinking":
+                        pass  # skip thinking chunks
+                    elif hasattr(chunk, 'content'):
+                        content_parts.append(str(chunk.content))
+                return "".join(content_parts)
+            
+            content = asyncio.run(_call_google())
         else:
-            content = str(response)
+            response = llm.invoke(extended_prompt)
+            if hasattr(response, 'content'):
+                content = response.content
+            else:
+                content = str(response)
+        
+        end_time = time.time()
         
         # Log the response time
         print(f"Response time: {end_time - start_time:.2f} seconds")
