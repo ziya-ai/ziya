@@ -562,10 +562,21 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
                     logger.debug(f"Distinctive block not distinctive enough ({len(non_trivial_lines)} non-trivial lines) - skipping already-applied check")
                     return False
                 
+                # Check if the distinctive added lines also appear in the removed lines.
+                # If so, this is a code-move diff and finding them in the file is expected
+                # (they exist at their OLD location), not evidence of already-applied state.
+                removed_normalized = [normalize_line_for_comparison(line) for line in removed_lines]
+                removed_as_str = "\n".join(removed_normalized)
+                distinctive_as_str = "\n".join(distinctive_normalized)
+                is_code_move = distinctive_as_str in removed_as_str
+
                 for search_pos in range(len(file_lines) - len(distinctive_added) + 1):
                     file_block = [normalize_line_for_comparison(file_lines[search_pos + i]) 
                                  for i in range(len(distinctive_added))]
                     if file_block == distinctive_normalized:
+                        if is_code_move:
+                            logger.debug(f"Distinctive added content found at pos {search_pos} but also present in removed lines (code move) - not already applied")
+                            continue
                         logger.debug(f"Hunk appears already applied: distinctive added content found at pos {search_pos}")
                         return True
                 
