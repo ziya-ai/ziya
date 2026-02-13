@@ -14,6 +14,10 @@ interface ShellConfig {
     safeGitOperations: string[];
     timeout: number;
     persist?: boolean;
+    safeWritePaths: string[];
+    allowedWritePatterns: string[];
+    allowedInterpreters: string[];
+    alwaysBlocked: string[];
 }
 
 const { Panel } = Collapse;
@@ -23,6 +27,10 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
     const [originalConfig, setOriginalConfig] = useState<ShellConfig | null>(null);
     const [newCommand, setNewCommand] = useState('');
     const [loading, setLoading] = useState(false);
+    const [newWritePath, setNewWritePath] = useState('');
+    const [newWritePattern, setNewWritePattern] = useState('');
+    const [newInterpreter, setNewInterpreter] = useState('');
+    const [newBlockedCmd, setNewBlockedCmd] = useState('');
 
     useEffect(() => {
         if (visible) {
@@ -35,8 +43,15 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
             const response = await fetch('/api/mcp/shell-config');
             if (response.ok) {
                 const data = await response.json();
-                setConfig(data);
-                setOriginalConfig(data);
+                const normalized: ShellConfig = {
+                    ...data,
+                    safeWritePaths: data.safeWritePaths ?? ['.ziya/', '/tmp/', '/var/tmp/', '/dev/null'],
+                    allowedWritePatterns: data.allowedWritePatterns ?? [],
+                    allowedInterpreters: data.allowedInterpreters ?? ['python3', 'python', 'node', 'ruby'],
+                    alwaysBlocked: data.alwaysBlocked ?? ['sudo', 'su', 'vim', 'nano', 'emacs', 'systemctl', 'service'],
+                };
+                setConfig(normalized);
+                setOriginalConfig(normalized);
             }
         } catch (error) {
             console.error('Failed to fetch shell config:', error);
@@ -45,9 +60,13 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                 allowedCommands: [],
                 gitOperationsEnabled: true,
                 safeGitOperations: [],
-                timeout: 30
+                timeout: 30,
+                safeWritePaths: ['.ziya/', '/tmp/', '/var/tmp/', '/dev/null'],
+                allowedWritePatterns: [],
+                allowedInterpreters: ['python3', 'python', 'node', 'ruby'],
+                alwaysBlocked: ['sudo', 'su', 'vim', 'nano', 'emacs', 'systemctl', 'service'],
             });
-            setOriginalConfig(defaultConfig);
+            setOriginalConfig(null);
         }
     };
 
@@ -343,12 +362,49 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                     </Panel>
 
                     <Panel header="Advanced Configuration" key="2">
-                        <Alert
-                            message="Advanced Configuration"
-                            description="This section is reserved for future advanced shell configuration options."
-                            type="info"
-                            showIcon
-                        />
+                        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                            <Alert message="Global Write Policy" description="Controls where shell commands can write. Per-project write patterns are configured in Manage Projects (from the project switcher dropdown)." type="info" showIcon style={{ marginBottom: 8 }} />
+
+                            <div>
+                                <h5>Safe Write Paths</h5>
+                                <div style={{ marginBottom: 8, color: '#666', fontSize: '12px' }}>Path prefixes always writable (e.g., .ziya/, /tmp/)</div>
+                                <Input.Group compact style={{ marginBottom: 8 }}>
+                                    <Input placeholder=".ziya/ or /tmp/" value={newWritePath} onChange={(e) => setNewWritePath(e.target.value)} onPressEnter={() => { if (newWritePath.trim() && config && !config.safeWritePaths.includes(newWritePath.trim())) { setConfig(prev => ({ ...prev!, safeWritePaths: [...prev!.safeWritePaths, newWritePath.trim()] })); setNewWritePath(''); } }} style={{ width: 'calc(100% - 80px)' }} />
+                                    <Button type="primary" icon={<PlusOutlined />} onClick={() => { if (newWritePath.trim() && config && !config.safeWritePaths.includes(newWritePath.trim())) { setConfig(prev => ({ ...prev!, safeWritePaths: [...prev!.safeWritePaths, newWritePath.trim()] })); setNewWritePath(''); } }} style={{ width: 80 }}>Add</Button>
+                                </Input.Group>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                                    {config.safeWritePaths.map(p => (<Tag key={p} closable color="green" onClose={() => setConfig(prev => ({ ...prev!, safeWritePaths: prev!.safeWritePaths.filter(x => x !== p) }))}>{p}</Tag>))}
+                                </div>
+                            </div>
+
+                            <Divider style={{ margin: '8px 0' }} />
+
+                            <div>
+                                <h5>Allowed Interpreters</h5>
+                                <div style={{ marginBottom: 8, color: '#666', fontSize: '12px' }}>Script interpreters allowed for computation. File writes are heuristic-blocked.</div>
+                                <Input.Group compact style={{ marginBottom: 8 }}>
+                                    <Input placeholder="python3" value={newInterpreter} onChange={(e) => setNewInterpreter(e.target.value)} onPressEnter={() => { if (newInterpreter.trim() && config && !config.allowedInterpreters.includes(newInterpreter.trim())) { setConfig(prev => ({ ...prev!, allowedInterpreters: [...prev!.allowedInterpreters, newInterpreter.trim()] })); setNewInterpreter(''); } }} style={{ width: 'calc(100% - 80px)' }} />
+                                    <Button type="primary" icon={<PlusOutlined />} onClick={() => { if (newInterpreter.trim() && config && !config.allowedInterpreters.includes(newInterpreter.trim())) { setConfig(prev => ({ ...prev!, allowedInterpreters: [...prev!.allowedInterpreters, newInterpreter.trim()] })); setNewInterpreter(''); } }} style={{ width: 80 }}>Add</Button>
+                                </Input.Group>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                                    {config.allowedInterpreters.map(p => (<Tag key={p} closable color="cyan" onClose={() => setConfig(prev => ({ ...prev!, allowedInterpreters: prev!.allowedInterpreters.filter(x => x !== p) }))}>{p}</Tag>))}
+                                </div>
+                            </div>
+
+                            <Divider style={{ margin: '8px 0' }} />
+
+                            <div>
+                                <h5>Always Blocked</h5>
+                                <div style={{ marginBottom: 8, color: '#666', fontSize: '12px' }}>Commands never allowed regardless of arguments.</div>
+                                <Input.Group compact style={{ marginBottom: 8 }}>
+                                    <Input placeholder="sudo" value={newBlockedCmd} onChange={(e) => setNewBlockedCmd(e.target.value)} onPressEnter={() => { if (newBlockedCmd.trim() && config && !config.alwaysBlocked.includes(newBlockedCmd.trim())) { setConfig(prev => ({ ...prev!, alwaysBlocked: [...prev!.alwaysBlocked, newBlockedCmd.trim()] })); setNewBlockedCmd(''); } }} style={{ width: 'calc(100% - 80px)' }} />
+                                    <Button type="primary" icon={<PlusOutlined />} onClick={() => { if (newBlockedCmd.trim() && config && !config.alwaysBlocked.includes(newBlockedCmd.trim())) { setConfig(prev => ({ ...prev!, alwaysBlocked: [...prev!.alwaysBlocked, newBlockedCmd.trim()] })); setNewBlockedCmd(''); } }} style={{ width: 80 }}>Add</Button>
+                                </Input.Group>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                                    {config.alwaysBlocked.map(p => (<Tag key={p} closable color="red" onClose={() => setConfig(prev => ({ ...prev!, alwaysBlocked: prev!.alwaysBlocked.filter(x => x !== p) }))}>{p}</Tag>))}
+                                </div>
+                            </div>
+                        </Space>
                     </Panel>
                 </Collapse>
             </Space>
