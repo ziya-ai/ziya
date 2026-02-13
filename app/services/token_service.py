@@ -3,21 +3,32 @@ Token counting service for contexts and skills.
 """
 from pathlib import Path
 from typing import List, Dict
-import tiktoken
+
+try:
+    import tiktoken
+    _TIKTOKEN_AVAILABLE = True
+except ImportError:
+    _TIKTOKEN_AVAILABLE = False
+
 
 class TokenService:
     """Service for calculating token counts."""
     
     def __init__(self, model: str = "cl100k_base"):
-        self.encoding = tiktoken.get_encoding(model)
+        if _TIKTOKEN_AVAILABLE:
+            self.encoding = tiktoken.get_encoding(model)
+        else:
+            self.encoding = None
     
     def count_tokens(self, text: str) -> int:
         """Count tokens in a string."""
-        try:
-            return len(self.encoding.encode(text))
-        except Exception:
-            # Fallback to rough estimate if encoding fails
-            return len(text) // 4
+        if self.encoding is not None:
+            try:
+                return len(self.encoding.encode(text))
+            except Exception:
+                pass
+        # Fallback to rough estimate if tiktoken unavailable or encoding fails
+        return len(text) // 4
     
     def count_tokens_for_file(self, base_path: str, relative_path: str) -> int:
         """Count tokens for a single file."""
