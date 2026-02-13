@@ -448,6 +448,10 @@ class DiffRegressionTest(unittest.TestCase):
         """Test removing extra closing brace from vegaLitePlugin.ts"""
         self.run_diff_test('vega_lite_closing_brace_fix')
 
+    def test_vega_plugin_title_and_layout_fix(self):
+        """Test title extraction from marks and legend/footer layout reorder in vegaPlugin.ts - falsely detected as already applied"""
+        self.run_diff_test('vega_plugin_title_and_layout_fix')
+
     # MRE test cases
     def test_MRE_binary_file_changes(self):
         """Test handling of binary file changes"""
