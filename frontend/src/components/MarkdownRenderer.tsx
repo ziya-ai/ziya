@@ -1519,7 +1519,8 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                 newStart: 0,
                                 newLines: 0,
                                 changes: diff.split('\n')
-                                    .filter(line => !line.match(/^(diff --git|index|---|^\+\+\+)/))
+                                    .filter(line => line.startsWith('-') && !line.startsWith('---'))
+                                    .filter(line => line.trim().length > 0)
                                     .map((line, index: number) => ({
                                         type: 'delete' as const,
                                         content: line.slice(1),
