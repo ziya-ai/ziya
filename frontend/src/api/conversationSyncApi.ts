@@ -16,6 +16,7 @@ export interface ServerChat {
   additionalPrompt?: string | null;
   messages: any[];
   createdAt: number;
+  isGlobal?: boolean;
   lastActiveAt: number;
   // Frontend-preserved fields
   projectId?: string;
