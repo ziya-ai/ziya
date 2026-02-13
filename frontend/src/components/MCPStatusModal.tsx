@@ -80,6 +80,11 @@ interface MCPStatus {
         servers: Record<string, number>;
         total_tool_tokens: number;
         enabled_tool_tokens: number;
+        server_details?: Record<string, {
+            total_tools: number;
+            enabled_tools: number;
+            enabled_tokens: number;
+        }>;
         instructions: {
             total_instruction_tokens: number;
             enabled_models: number;
@@ -882,12 +887,27 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                 {server.builtin && <Tag color="blue">built-in</Tag>}
                                             </Space>
                                             <Space>
-                                                <Tag icon={<ToolOutlined />}>{server.tools} tools</Tag>
+                                                <Tag icon={<ToolOutlined />}>
+                                                    {(() => {
+                                                        const details = status.token_costs?.server_details?.[name];
+                                                        if (details && details.enabled_tools < details.total_tools) {
+                                                            return `${details.enabled_tools}/${details.total_tools} tools`;
+                                                        }
+                                                        return `${server.tools} tools`;
+                                                    })()}
+                                                </Tag>
                                                 <Tag icon={<DatabaseOutlined />}>{server.resources} resources</Tag>
                                                 {status.token_costs?.servers[name] !== undefined && (
-                                                    <Tag color={isEnabled && server.connected ? undefined : 'default'} 
+                                                    <Tag color={isEnabled && server.connected ? undefined : 'default'}
                                                          style={isEnabled && server.connected ? {} : { opacity: 0.5 }}>
-                                                        {formatTokenCount(status.token_costs.servers[name])} tokens
+                                                        {(() => {
+                                                            const details = status.token_costs?.server_details?.[name];
+                                                            const totalTokens = status.token_costs!.servers[name];
+                                                            if (details && details.enabled_tokens < totalTokens) {
+                                                                return `${formatTokenCount(details.enabled_tokens)}/${formatTokenCount(totalTokens)} tokens`;
+                                                            }
+                                                            return `${formatTokenCount(totalTokens)} tokens`;
+                                                        })()}
                                                     </Tag>
                                                 )}
                                             </Space>
@@ -905,19 +925,17 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                 />
                                                 <span style={{ marginLeft: 8 }}>{isEnabled ? 'Enabled' : 'Disabled'}</span>
                                                 {isEnabled && server.tools > 0 && (() => {
-                                                    // Count tools that are enabled (explicitly or by default)
-                                                    const disabledTools = Object.keys(permissions?.servers?.[name]?.tools || {})
-                                                        .filter(toolName => permissions?.servers?.[name]?.tools?.[toolName]?.permission === 'disabled').length;
-                                                    const enabledTools = server.tools - disabledTools;
-                                                    const totalTools = server.tools;
+                                                    const details = status.token_costs?.server_details?.[name];
+                                                    const totalTools = details?.total_tools ?? server.tools;
+                                                    const enabledTools = details?.enabled_tools ?? totalTools;
+                                                    const disabledTools = totalTools - enabledTools;
                                                     
-                                                    // Show count with helpful indicator
                                                     if (disabledTools > 0) {
-                                                        return <span style={{ marginLeft: 8, fontSize: '11px', color: '#ff4d4f' }}>({disabledTools} disabled)</span>;
+                                                        return <span style={{ marginLeft: 8, fontSize: '11px', color: '#ff4d4f' }}>({enabledTools}/{totalTools} tools enabled)</span>;
                                                     }
                                                     return (
                                                         <span style={{ marginLeft: 8, fontSize: '11px', color: '#999' }}>
-                                                            (all tools enabled)
+                                                            ({totalTools} tools, all enabled)
                                                         </span>
                                                     );
                                                 })()}
@@ -926,15 +944,8 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                 <Descriptions.Item label="Context Cost">
                                                     {(() => {
                                                         const totalTokens = status.token_costs.servers[name];
-                                                        const serverPerms = permissions?.servers?.[name] || {};
-                                                        const toolPerms = serverPerms.tools || {};
-                                                        
-                                                        const disabledToolCount = Object.values(toolPerms).filter(
-                                                            (p: any) => p?.permission === 'disabled'
-                                                        ).length;
-                                                        
-                                                        const enabledRatio = server.tools > 0 ? (server.tools - disabledToolCount) / server.tools : 1;
-                                                        const enabledTokens = Math.round(totalTokens * enabledRatio);
+                                                        const details = status.token_costs?.server_details?.[name];
+                                                        const enabledTokens = details?.enabled_tokens ?? totalTokens;
                                                         const disabledTokens = totalTokens - enabledTokens;
                                                         
                                                         return (
