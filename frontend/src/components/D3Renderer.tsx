@@ -124,6 +124,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     const hasSuccessfulRenderRef = useRef<boolean>(false);
     const lastThemeRef = useRef<boolean>(isDarkMode);
     const [hasSuccessfulRender, setHasSuccessfulRender] = useState<boolean>(false);
+    const [renderedContentHeight, setRenderedContentHeight] = useState<number | null>(null);
     const isDarkModeRef = useRef<boolean>(isDarkMode);
 
     // Generate a stable cache key for this spec
@@ -267,6 +268,22 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
         const handleVegaRenderComplete = (event: Event) => {
             const customEvent = event as CustomEvent;
             console.log('🎉 VEGA-COMPLETE: Received vega-render-complete event', customEvent.detail);
+
+            // Measure the rendered content and propagate height via React state
+            // so the outer container claims proper space in document flow.
+            // DOM manipulation alone doesn't work because React's layout
+            // doesn't know about the imperative height changes.
+            const eventContainer = vegaContainerRef.current || d3ContainerRef.current;
+            if (eventContainer) {
+                const renderedSvg = eventContainer.querySelector('svg');
+                const vegaEmbedDiv = eventContainer.querySelector('.vega-embed') as HTMLElement;
+                const contentEl = renderedSvg || vegaEmbedDiv;
+                if (contentEl) {
+                    const contentRect = contentEl.getBoundingClientRect();
+                    const neededH = Math.ceil(contentRect.height) + 40;
+                    setRenderedContentHeight(neededH);
+                }
+            }
             
             // Update component state to reflect successful render
             if (mounted.current && customEvent.detail?.success) {
@@ -525,18 +542,19 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 // Set container dimensions - but allow height to grow for joint-renderer and drawio-renderer
                 const isJointRenderer = plugin?.name === 'joint-renderer';
                 const isDrawioRenderer = currentPlugin?.name === 'drawio-renderer';
+                const isVegaRenderer = currentPlugin?.name === 'vega-renderer';
 
                 // Also check if container will contain error content
                 const willHaveError = renderError !== null;
 
-                container.style.width = (isJointRenderer || isDrawioRenderer) ? '100%' : `${width}px`;
+                container.style.width = (isJointRenderer || isDrawioRenderer || isVegaRenderer) ? '100%' : `${width}px`;
                 // Allow auto height for joint, drawio, and error states
-                container.style.height = (isJointRenderer || isDrawioRenderer || willHaveError) ? 'auto' : `${height}px`;
-                container.style.minHeight = isJointRenderer ? '400px' : 'unset';
-                container.style.maxHeight = (isJointRenderer || willHaveError) ? 'none' : 'unset';
+                container.style.height = (isJointRenderer || isDrawioRenderer || isVegaRenderer || willHaveError) ? 'auto' : `${height}px`;
+                container.style.minHeight = (isJointRenderer || isVegaRenderer) ? '400px' : 'unset';
+                container.style.maxHeight = (isJointRenderer || isVegaRenderer || willHaveError) ? 'none' : 'unset';
                 container.style.position = 'relative';
                 // Use visible/auto overflow for joint, drawio, and errors
-                container.style.overflow = (isJointRenderer || isDrawioRenderer || willHaveError) ? 'visible' : 'hidden';
+                container.style.overflow = (isJointRenderer || isDrawioRenderer || isVegaRenderer || willHaveError) ? 'visible' : 'hidden';
                 const isGraphvizOrMermaid = currentPlugin?.name === 'graphviz-renderer' || currentPlugin?.name === 'mermaid-renderer';
                 // For Graphviz or Mermaid, override the container style to be more flexible
                 if (isGraphvizOrMermaid) {
@@ -838,7 +856,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
         width: '100%',
         maxWidth: '100%',
         height: 'auto',
-        minHeight: 'auto',
+        minHeight: renderedContentHeight ? `${renderedContentHeight}px` : 'auto',
         display: 'block',
         margin: '1em 0',
         padding: 0,
