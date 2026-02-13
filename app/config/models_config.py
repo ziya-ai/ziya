@@ -145,6 +145,37 @@ MODEL_FAMILIES = {
             "topP": 0.9,
             "maxTokens": 1000
         }
+    },
+    "kimi": {
+        "wrapper_class": "OpenAIBedrock",
+        "supported_parameters": ["temperature", "top_p", "max_tokens"],
+        "parameter_ranges": {
+            "temperature": {"min": 0.0, "max": 1.0, "default": 0.7},
+            "top_p": {"min": 0.0, "max": 1.0, "default": 0.9},
+            "max_tokens": {"min": 1, "max": 8192, "default": 4096}
+        },
+        "supports_thinking": True,
+        "token_limit": 128000
+    },
+    "minimax": {
+        "wrapper_class": "OpenAIBedrock",
+        "supported_parameters": ["temperature", "top_p", "max_tokens"],
+        "parameter_ranges": {
+            "temperature": {"min": 0.0, "max": 1.0, "default": 0.7},
+            "top_p": {"min": 0.0, "max": 1.0, "default": 0.9},
+            "max_tokens": {"min": 1, "max": 8192, "default": 4096}
+        },
+        "token_limit": 1000000
+    },
+    "glm": {
+        "wrapper_class": "OpenAIBedrock",
+        "supported_parameters": ["temperature", "top_p", "max_tokens"],
+        "parameter_ranges": {
+            "temperature": {"min": 0.0, "max": 1.0, "default": 0.7},
+            "top_p": {"min": 0.0, "max": 1.0, "default": 0.9},
+            "max_tokens": {"min": 1, "max": 8192, "default": 4096}
+        },
+        "token_limit": 128000
     }
 }
 
@@ -398,6 +429,7 @@ MODEL_CONFIGS = {
             },
             "family": "nova",  # Use nova family which doesn't include top_k
             "supports_multimodal": False,  # Override the family default
+            "supports_vision": False,  # Nova Micro is text-only
             "context_window": 128000,  # Override the family default
             "parameter_mappings": {
                 "max_tokens": "maxTokens"  # Nova uses maxTokens instead of max_tokens
@@ -450,6 +482,83 @@ MODEL_CONFIGS = {
             "max_input_tokens": 128000,
             "context_window": 128000,
             "default_max_output_tokens": 4096
+        },
+        "deepseek-v3.2": {
+            "model_id": {
+                "us": "deepseek.v3.2"
+            },
+            "family": "deepseek",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 128000,
+            "context_window": 128000,
+            "default_max_output_tokens": 4096,
+            "region": "us-west-2"
+        },
+        "deepseek-v3": {
+            "model_id": {
+                "us": "deepseek.v3-v1:0"
+            },
+            "family": "deepseek",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 128000,
+            "context_window": 128000,
+            "default_max_output_tokens": 4096,
+            "region": "us-west-2"
+        },
+        "kimi-k2.5": {
+            "model_id": {
+                "us": "moonshotai.kimi-k2.5"
+            },
+            "family": "kimi",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 128000,
+            "context_window": 128000,
+            "default_max_output_tokens": 4096,
+            "region": "us-west-2"
+        },
+        "minimax-m2.1": {
+            "model_id": {
+                "us": "minimax.minimax-m2.1"
+            },
+            "family": "minimax",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 1000000,
+            "context_window": 1000000,
+            "default_max_output_tokens": 4096,
+            "region": "us-west-2"
+        },
+        "glm-4.7": {
+            "model_id": {
+                "us": "zai.glm-4.7"
+            },
+            "family": "glm",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 128000,
+            "context_window": 128000,
+            "default_max_output_tokens": 4096,
+            "region": "us-west-2"
+        },
+        "glm-4.7-flash": {
+            "model_id": {
+                "us": "zai.glm-4.7-flash"
+            },
+            "family": "glm",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 128000,
+            "context_window": 128000,
+            "default_max_output_tokens": 4096,
+            "region": "us-west-2"
+        },
+        "qwen3-coder-next": {
+            "model_id": {
+                "us": "qwen.qwen3-next-80b-a3b"
+            },
+            "family": "oss_openai_gpt",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 128000,
+            "context_window": 128000,
+            "default_max_output_tokens": 4096,
+            "region": "us-west-2"
         }
     },
     "google": {
@@ -464,7 +573,7 @@ MODEL_CONFIGS = {
             "native_function_calling": True,
         },
         "gemini-flash": {
-            "model_id": "gemini-2.5-flash-preview-05-20",
+            "model_id": "gemini-2.5-flash",
             "token_limit": 1048576,
             "family": "gemini-flash",
             "max_output_tokens": 65535,
@@ -494,26 +603,6 @@ MODEL_CONFIGS = {
             "supports_function_calling": False,  # This model doesn't support function calling per Google docs
             "native_function_calling": False,
         },
-        "gemini-1.5-flash": {
-            "model_id": "gemini-1.5-flash",
-            "token_limit": 1048576,
-            "family": "gemini-flash",
-            "max_output_tokens": 8192,
-            "convert_system_message_to_human": False,
-            "supports_vision": True,
-            "supports_function_calling": True,
-            "native_function_calling": False,
-        },
-        "gemini-1.5-pro": {
-            "model_id": "gemini-1.5-pro",
-            "token_limit": 1000000,
-            "family": "gemini-pro",
-            "max_output_tokens": 2048,
-            "convert_system_message_to_human": False,
-            "supports_vision": True,
-            "supports_function_calling": True,
-            "native_function_calling": False,
-        },
         "gemini-3-pro": {
             "model_id": "gemini-3-pro-preview",
             "token_limit": 1048576,
@@ -525,6 +614,29 @@ MODEL_CONFIGS = {
             "supports_function_calling": True,
             "native_function_calling": True,
             "thinking_level": "medium"
+        },
+        "gemini-3-flash": {
+            "model_id": "gemini-3-flash-preview",
+            "token_limit": 1048576,
+            "family": "gemini-3",
+            "max_output_tokens": 65536,
+            "default_max_output_tokens": 8192,
+            "convert_system_message_to_human": False,
+            "supports_vision": True,
+            "supports_function_calling": True,
+            "native_function_calling": True,
+            "thinking_level": "medium"
+        },
+        "gemini-2.5-flash-lite": {
+            "model_id": "gemini-2.5-flash-lite",
+            "token_limit": 1048576,
+            "family": "gemini-flash",
+            "max_output_tokens": 65536,
+            "convert_system_message_to_human": False,
+            "supports_vision": True,
+            "supports_function_calling": True,
+            "native_function_calling": True,
+            "supports_thinking": True,
         },
     }
 }
