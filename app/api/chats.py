@@ -149,9 +149,14 @@ async def bulk_sync_chats(project_id: str, data: ChatBulkSync):
             existing = storage.get(chat_data.id)
             
             if existing:
-                # Update if incoming is newer or same age
-                incoming_time = chat_data.lastActiveAt or chat_data.lastAccessedAt or 0
-                if incoming_time >= existing.lastActiveAt:
+                # Use _version (frontend's authoritative version counter) for
+                # comparison, falling back to lastActiveAt for pre-_version data.
+                existing_extra = existing.model_dump()
+                incoming_extra = chat_data.model_dump()
+                incoming_ver = incoming_extra.get('_version') or chat_data.lastActiveAt or chat_data.lastAccessedAt or 0
+                existing_ver = existing_extra.get('_version') or existing.lastActiveAt or 0
+
+                if incoming_ver >= existing_ver:
                     # Overwrite with incoming data
                     storage._write_json(
                         storage._chat_file(chat_data.id),
