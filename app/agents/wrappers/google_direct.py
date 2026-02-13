@@ -194,6 +194,21 @@ class DirectGoogleModel:
                                 }
                             })
                     
+                    elif part_type == 'image_url':
+                        # LangChain standard format: {"type": "image_url", "image_url": {"url": "data:mime;base64,..."}}
+                        import base64 as b64mod
+                        url = part.get('image_url', {}).get('url', '')
+                        if url.startswith('data:'):
+                            # Parse data URI: data:mime_type;base64,data
+                            header, data = url.split(',', 1)
+                            mime_type = header.split(':')[1].split(';')[0]
+                            google_parts.append({
+                                'inline_data': {
+                                    'mime_type': mime_type,
+                                    'data': data
+                                }
+                            })
+
                     elif 'text' in part:
                         # Direct text in dict
                         google_parts.append({'text': part['text']})

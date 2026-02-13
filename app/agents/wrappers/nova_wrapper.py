@@ -142,6 +142,55 @@ class NovaWrapper(BaseChatModel):
             
         logger.info(f"Initialized NovaWrapper with model_kwargs: {self.model_kwargs}")
     
+    def _convert_content_for_nova(self, content):
+        """Convert LangChain message content to Nova Converse API format.
+        
+        Handles string content (passthrough) and multimodal list content
+        by converting image_url/image parts to Nova's image block format.
+        """
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return str(content)
+        
+        import base64 as b64mod
+        nova_blocks = []
+        for part in content:
+            if isinstance(part, str):
+                nova_blocks.append({"text": part})
+            elif isinstance(part, dict):
+                ptype = part.get("type")
+                if ptype == "text":
+                    nova_blocks.append({"text": part.get("text", "")})
+                elif ptype == "image_url":
+                    # LangChain standard: {"type": "image_url", "image_url": {"url": "data:mime;base64,..."}}
+                    url = part.get("image_url", {}).get("url", "")
+                    if url.startswith("data:"):
+                        header, data = url.split(",", 1)
+                        mime = header.split(":")[1].split(";")[0]
+                        fmt = mime.split("/")[1]  # e.g. "png" from "image/png"
+                        nova_blocks.append({
+                            "image": {
+                                "format": fmt,
+                                "source": {"bytes": b64mod.b64decode(data)}
+                            }
+                        })
+                elif ptype == "image":
+                    # Bedrock/Anthropic format: {"type": "image", "source": {"type": "base64", ...}}
+                    source = part.get("source", {})
+                    if source.get("type") == "base64":
+                        mime = source.get("media_type", "image/png")
+                        fmt = mime.split("/")[1]
+                        nova_blocks.append({
+                            "image": {
+                                "format": fmt,
+                                "source": {"bytes": b64mod.b64decode(source.get("data", ""))}
+                            }
+                        })
+                else:
+                    nova_blocks.append({"text": str(part)})
+        return nova_blocks
+
     def _format_messages(self, messages: List[BaseMessage]) -> Dict[str, Any]:
         """
         Format messages for the Nova model.
@@ -167,10 +216,14 @@ class NovaWrapper(BaseChatModel):
         message_dicts = []
         for message in messages:
             if isinstance(message, HumanMessage):
-                content = message.content
+                content = self._convert_content_for_nova(message.content)
                 # Prepend system content to ALL user messages to maintain conversational memory
                 if system_content:
-                    content = f"{system_content}\n\n{content}"
+                    if isinstance(content, str):
+                        content = f"{system_content}\n\n{content}"
+                    elif isinstance(content, list):
+                        # Prepend system text as first block
+                        content = [{"text": system_content}] + content
                 
                 message_dicts.append({
                     "role": "user",
@@ -195,10 +248,13 @@ class NovaWrapper(BaseChatModel):
                     logger.warning(f"Skipping unsupported role: {role}")
                     continue
                 
-                content = message.content
+                content = self._convert_content_for_nova(message.content)
                 # Prepend system content to user messages for conversational memory
                 if role == "user" and system_content:
-                    content = f"{system_content}\n\n{content}"
+                    if isinstance(content, str):
+                        content = f"{system_content}\n\n{content}"
+                    elif isinstance(content, list):
+                        content = [{"text": system_content}] + content
                 
                 message_dicts.append({
                     "role": role,
