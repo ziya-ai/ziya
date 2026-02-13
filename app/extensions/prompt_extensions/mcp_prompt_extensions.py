@@ -143,16 +143,23 @@ DO NOT guess names from similar tools. Each tool has its own parameter names.
     if any("shell" in tool.lower() or "run_shell_command" in tool for tool in available_tools):
         mcp_guidelines += """
 
-🛑 SHELL COMMAND RESTRICTIONS 🛑
-Tools are for READING and ANALYZING code, not changing it.
-When using shell commands, stick to read-only operations like:
-- ls, find, grep, cat, head, tail, wc, du, df
-- git status, git log, git show, git diff
+🛑 SHELL WRITE POLICY (ENFORCED AT RUNTIME) 🛑
+The shell blocks write operations to project files at runtime:
 
-PROHIBITED shell operations:
-- File modifications: cp, mv, rm, touch, mkdir, chmod, chown
-- Text editing: sed, awk with -i, nano, vim, echo >
-- System changes: sudo, su, systemctl, service
+BLOCKED:
+- In-place edits: `sed -i`, `awk -i`, `perl -i`
+- Output redirection to project files: `> file`, `>> file`
+- Destructive commands on project files: rm, mv, cp, mkdir, chmod
+- Always blocked: sudo, su, vim, nano, emacs, systemctl
+
+ALLOWED:
+- All read-only commands — unrestricted
+- Computation: `python3 -c '...'`, `python3 -m pytest`, `echo expr | bc`
+- Writes to approved paths: .ziya/, /tmp/ (plus project-configured patterns)
+- Git safe operations: status, log, show, diff, blame, etc.
+
+For ALL code changes to project files, provide git diffs.
+Shell is for reading, analyzing, and running computations — not modifying project files.
 """
     
     logger.debug(f"MCP_GUIDELINES: Appending guidelines for {len(available_tools)} tools")
