@@ -70,6 +70,9 @@ interface ChatContext {
     throttlingRecoveryData: Map<string, { toolResults?: any[]; partialContent?: string }>;
     setThrottlingRecoveryData: (data: Map<string, any>) => void;
     moveChatToGroup: (chatId: string, groupId: string | null) => Promise<void>;
+    toggleConversationGlobal: (conversationId: string) => Promise<void>;
+    moveConversationToProject: (conversationId: string, targetProjectId: string) => Promise<void>;
+    toggleFolderGlobal: (folderId: string) => Promise<void>;
     setChatContexts: (chatId: string, contextIds: string[], skillIds: string[], additionalFiles: string[], additionalPrompt: string | null) => Promise<void>;
 }
 
@@ -97,6 +100,31 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const currentConversationRef = useRef<string>(currentConversationId);
     const [currentMessages, setCurrentMessages] = useState<Message[]>([]);
 
+    /**
+     * Tag any IndexedDB conversations that lack a projectId with the given projectId.
+     * Returns the full (mutated) conversation list after persisting the migration.
+     * Both INIT_SYNC and PROJECT_SWITCH call this to avoid duplicating migration logic.
+     */
+    const migrateUntaggedConversations = useCallback(async (
+        allConversations: Conversation[],
+        projectId: string
+    ): Promise<Conversation[]> => {
+        const untagged = allConversations.filter(c => !c.projectId);
+        if (untagged.length === 0) return allConversations;
+
+        console.log(`🔄 MIGRATION: Tagging ${untagged.length} conversations without projectId → project "${projectId}"`);
+        const migrated = allConversations.map(c => {
+            if (!c.projectId) {
+                return { ...c, projectId, _version: Date.now() };
+            }
+            return c;
+        });
+
+        await db.saveConversations(migrated);
+        console.log(`✅ MIGRATION: Tagged ${untagged.length} conversations`);
+        return migrated;
+    }, []);
+
     // Listen for project switch - reload project-specific conversations
     useEffect(() => {
         const handleProjectSwitch = async (event: CustomEvent) => {
@@ -119,25 +147,16 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 // 2. Load from IndexedDB (local cache)
                 let allConversations = await db.getConversations();
 
-                // 3. Migrate untagged IndexedDB conversations to this project
-                const needsMigration = allConversations.some(c => !c.projectId);
-                if (needsMigration) {
-                    console.log('🔄 MIGRATION: Assigning conversations without projectId to current project');
-                    allConversations = allConversations.map(c => {
-                        if (!c.projectId) {
-                            return { ...c, projectId: projectId, _version: Date.now() };
-                        }
-                        return c;
-                    });
-                    await db.saveConversations(allConversations);
-                    console.log('✅ MIGRATION: All conversations now have projectId');
-                }
+                // 3. Migrate untagged conversations (shared helper)
+                allConversations = await migrateUntaggedConversations(allConversations, projectId);
 
                 // 4. Merge: server chats win, then add local-only conversations
-                const localProjectConvs = allConversations.filter(c => c.projectId === projectId);
+                const localProjectConvs = allConversations.filter(c => c.projectId === projectId || c.isGlobal);
                 const serverIdSet = new Set(serverChats.map(c => c.id));
                 const localOnly = localProjectConvs.filter(c => !serverIdSet.has(c.id));
 
+                // Also include global server chats that may belong to other projects
+                const globalServerChats = serverChats.filter((sc: any) => sc.isGlobal);
                 // Convert server chats to frontend Conversation shape
                 const serverAsConversations = serverChats.map((sc: any) => ({
                     ...sc,
@@ -159,7 +178,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 }
 
                 const allFolders = await db.getFolders();
-                const projectFolders = allFolders.filter(f => f.projectId === projectId);
+                const globalFolderIds = new Set(allFolders.filter(f => f.isGlobal).map(f => f.id));
+                const projectFolders = allFolders.filter(f => f.projectId === projectId || f.isGlobal);
 
                 console.log(`📊 PROJECT_SWITCH: ${mergedConversations.length} conversations (${serverChats.length} server, ${localOnly.length} local-only), ${projectFolders.length} folders`);
 
@@ -178,6 +198,17 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 } else {
                     // No conversations for this project - create new one
                     const newConversationId = uuidv4();
+                    const newConversation: Conversation = {
+                        id: newConversationId,
+                        title: 'New Conversation',
+                        projectId,
+                        messages: [],
+                        lastAccessedAt: Date.now(),
+                        isActive: true,
+                        _version: Date.now(),
+                        hasUnreadResponse: false
+                    };
+                    setConversations(prev => [...prev, newConversation]);
                     setCurrentConversationId(newConversationId);
                     setCurrentMessages([]);
                     console.log('✅ PROJECT_SWITCH: No conversations found, created new one');
@@ -305,6 +336,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [dynamicTitleLength, setDynamicTitleLength] = useState<number>(50); // Default reasonable length
     const processedModelChanges = useRef<Set<string>>(new Set());
     const saveQueue = useRef<Promise<void>>(Promise.resolve());
+    const otherProjectConvsCache = useRef<{convs: any[], timestamp: number}>({convs: [], timestamp: 0});  // BUGFIX: Cache other-project convos to avoid reading ALL from DB on every save
     const [lastResponseIncomplete, setLastResponseIncomplete] = useState<boolean>(false);
     const isRecovering = useRef<boolean>(false);
     const lastRecoveryAttempt = useRef<number>(0);
@@ -526,45 +558,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
         return processingStates.get(conversationId)?.state || 'idle';
     }, [processingStates]);
 
-    // Enhanced backup system with corruption detection
-    const createBackup = useCallback(async (conversations: Conversation[]) => {
-        // Skip backups in ephemeral mode
-        if (isEphemeralMode) {
-            return;
-        }
-
-        try {
-            // More robust filtering to prevent data loss
-            // The original logic c.isActive !== false was losing conversations with undefined isActive
-            const activeConversations = conversations.filter(c => {
-                // Explicitly exclude only conversations marked as false
-                // Include: true, undefined, null (default to active)
-                if (c.isActive === false) return false;
-
-                // Additional safety: exclude conversations without messages only if explicitly inactive
-                if (!c.messages || c.messages.length === 0) {
-                    return c.isActive === true; // Only include empty conversations if explicitly active
-                }
-
-                return true; // Include all other conversations
-            });
-            if (activeConversations.length > 0) {
-                const backupData = JSON.stringify(activeConversations);
-
-                // Verify backup integrity before saving
-                const parsed = JSON.parse(backupData);
-                if (Array.isArray(parsed) && parsed.length === activeConversations.length) {
-                    localStorage.setItem('ZIYA_CONVERSATION_BACKUP', backupData);
-                    localStorage.setItem('ZIYA_BACKUP_TIMESTAMP', Date.now().toString());
-                } else {
-                    console.error('❌ Backup verification failed');
-                }
-            }
-        } catch (e) {
-            console.error('❌ Backup creation failed:', e);
-        }
-    }, [isEphemeralMode]);
-
     // Queue-based save system to prevent race conditions
     const queueSave = useCallback(async (conversations: Conversation[], options: {
         skipValidation?: boolean;
@@ -615,12 +608,20 @@ export function ChatProvider({ children }: ChatProviderProps) {
             console.debug(`Saving ${validatedConversations.length} conversations (${activeCount} active)`);
 
             // SAFETY CHECK: Never save filtered conversations list
-            // If we're in a project-filtered view, we must merge with other projects' conversations
+            // BUGFIX: Cache other-project conversations instead of reading ALL from DB on every save
             if (currentProject?.id) {
-                const allDbConversations = await db.getConversations();
-                const otherProjectConversations = allDbConversations.filter(c => c.projectId !== currentProject.id);
+                const cache = otherProjectConvsCache.current;
+                const cacheAge = Date.now() - cache.timestamp;
+                let otherProjectConversations: Conversation[];
+                if (cacheAge > 60000 || cache.convs.length === 0) {
+                    const allDbConversations = await db.getConversations();
+                    otherProjectConversations = allDbConversations.filter(c => c.projectId !== currentProject.id);
+                    otherProjectConvsCache.current = { convs: otherProjectConversations, timestamp: Date.now() };
+                    console.log(`💾 SAVE: Refreshed other-project cache: ${otherProjectConversations.length} conversations`);
+                } else {
+                    otherProjectConversations = cache.convs;
+                }
                 validatedConversations = [...validatedConversations, ...otherProjectConversations];
-                console.log(`💾 SAVE: Merged ${otherProjectConversations.length} conversations from other projects`);
             }
 
             // Save all conversations - but don't throw if it fails
@@ -704,12 +705,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             // Merge current and saved data to ensure consistency
                             const mergedConversations = mergeConversationsForHealing(validatedConversations, savedConversations);
 
-                            // CRITICAL: Only retry if merge produced valid results
-                            return queueSave(mergedConversations, {
-                                skipValidation: false,
-                                retryCount: retryCount + 1,
-                                isRecoveryAttempt: true
-                            });
+                            // Save directly — re-entering queueSave from inside the queue deadlocks the promise chain
+                            await db.saveConversations(mergedConversations);
+                            console.log(`✅ HEALING: Direct save completed (attempt ${retryCount + 1}/${maxRetries})`);
                         } else {
                             // After max retries, disable validation but continue operation
                             console.error(`🚨 HEALING FAILED: After ${maxRetries} attempts, disabling validation to prevent app failure`);
@@ -733,11 +731,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     if (retryCount < maxRetries && !isRecoveryAttempt) {
                         console.log(`🔄 VALIDATION RETRY ${retryCount + 1}/${maxRetries}: Retrying after validation error`);
                         await new Promise(resolve => setTimeout(resolve, 200 * (retryCount + 1)));
-                        return queueSave(validatedConversations, {
-                            skipValidation: false,
-                            retryCount: retryCount + 1,
-                            isRecoveryAttempt: true
-                        });
+                        // Save directly — re-entering queueSave from inside the queue deadlocks the promise chain
+                        await db.saveConversations(validatedConversations);
+                        console.log(`✅ VALIDATION RETRY: Direct save completed (attempt ${retryCount + 1}/${maxRetries})`);
                     } else {
                         console.warn('🏥 EMERGENCY MODE: Skipping validation due to persistent errors');
                     }
@@ -745,7 +741,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             }
         });
         return saveQueue.current;
-    }, [createBackup, isEphemeralMode, currentProject?.id]);
+    }, [isEphemeralMode, currentProject?.id]);
 
     // Helper function to merge conversations during healing
     const mergeConversationsForHealing = useCallback((expected: Conversation[], actual: Conversation[]) => {
@@ -869,14 +865,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             title: isFirstMessage && message.role === 'human' ? message.content.slice(0, dynamicTitleLength) + (message.content.length > dynamicTitleLength ? '...' : '') : conv.title
                         };
                     }
-                    // Ensure isActive is explicitly set for all conversations
-                    return { ...conv, isActive: conv.isActive !== false ? true : false };
+                    // BUGFIX: Return same reference for unchanged conversations to prevent unnecessary re-renders
+                    return conv;
                 })
                 : [...prevConversations, {
                     id: conversationId,
                     title: message.role === 'human'
                         ? message.content.slice(0, dynamicTitleLength) + (message.content.length > dynamicTitleLength ? '...' : '')
                         : 'New Conversation',
+                    projectId: currentProject?.id,
                     messages: [message],
                     folderId: folderId,
                     lastAccessedAt: Date.now(),
@@ -1149,28 +1146,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         await db.saveConversations([...dbConversations, currentConvInMemory]);
                         console.log('✅ RECOVERY: Protected current conversation from deletion');
                         return;
-                    }
-
-                    // CRITICAL FIX: Check backup before deleting it
-                    const backup = localStorage.getItem('ZIYA_CONVERSATION_BACKUP');
-                    if (backup) {
-                        const backupConversations = JSON.parse(backup);
-                        const backupIds = new Set(backupConversations.map(c => c.id));
-
-                        // Find conversations in backup that aren't in DB
-                        const missingFromDB = backupConversations.filter(bc =>
-                            !dbConversations.find(dc => dc.id === bc.id) &&
-                            bc.isActive !== false &&
-                            bc.messages.length > 0
-                        );
-
-                        if (missingFromDB.length > 0) {
-                            console.warn(`🚨 RECOVERY: Backup has ${missingFromDB.length} conversations not in DB!`);
-                            console.log('🔄 RECOVERY: Merging backup conversations into DB');
-                            await db.saveConversations([...dbConversations, ...missingFromDB]);
-                            console.log('✅ RECOVERY: Restored conversations from backup');
-                            return;
-                        }
                     }
 
                     console.log(`🔄 RECOVERY: Trusting database (${dbActive}) over memory (${memoryActive})`);
@@ -1558,115 +1533,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
             return;
         }
 
-        // EMERGENCY RECOVERY SYSTEM: Check for unsaved conversations before initialization
-        const checkForUnsavedConversations = async () => {
-            try {
-                const emergencyRecovery = localStorage.getItem('ZIYA_EMERGENCY_CONVERSATION_RECOVERY');
-                const enhancedBackup = localStorage.getItem('ZIYA_CONVERSATION_BACKUP_WITH_RECOVERY');
-
-                if (emergencyRecovery || enhancedBackup) {
-                    console.warn('🚨 EMERGENCY RECOVERY: Found unsaved conversation data during init');
-
-                    // Load current conversations from DB
-                    const currentConversations = await db.getConversations();
-                    const currentIds = new Set(currentConversations.map(c => c.id));
-
-                    let recoveryData: any = null;
-                    let recoveredConversations: Conversation[] = [];
-
-                    if (enhancedBackup) {
-                        recoveryData = JSON.parse(enhancedBackup);
-                        // Handle both old format (array) and new format (object)
-                        recoveredConversations = Array.isArray(recoveryData)
-                            ? recoveryData
-                            : recoveryData.conversations || [];
-                    } else if (emergencyRecovery) {
-                        recoveryData = JSON.parse(emergencyRecovery);
-                        recoveredConversations = recoveryData.conversations || [];
-
-                        // CRITICAL: Restore streaming content that was in progress
-                        if (recoveryData.wasStreaming && recoveryData.streamingContent) {
-                            console.log('📡 RECOVERY: Found streaming content in backup');
-
-                            // Merge streaming content into messages
-                            Object.entries(recoveryData.streamingContent).forEach(([convId, content]) => {
-                                if (!content || (content as string).trim().length === 0) return;
-
-                                const conv = recoveredConversations.find(c => c.id === convId);
-                                if (conv) {
-                                    // Check if last message is already this content
-                                    const lastMsg = conv.messages[conv.messages.length - 1];
-                                    if (lastMsg?.content !== content) {
-                                        conv.messages.push({
-                                            id: uuidv4(),
-                                            role: 'assistant',
-                                            content: content as string,
-                                            _timestamp: Date.now(),
-                                            _recovered: true
-                                        });
-                                        console.log(`✅ RECOVERY: Restored streaming content for ${convId.substring(0, 8)}`);
-                                    }
-                                }
-                            });
-                        }
-
-                        // Restore current conversation context
-                        if (recoveryData.currentConversationId && recoveryData.currentMessages) {
-                            setTimeout(() => {
-                                setCurrentConversationId(recoveryData.currentConversationId);
-                                setCurrentMessages(recoveryData.currentMessages);
-                            }, 100);
-                        }
-                    }
-
-                    // Only add conversations that don't already exist
-                    const newConversations = recoveredConversations.filter((c: Conversation) =>
-                        !currentIds.has(c.id)
-                        // REMOVED: Never overwrite existing conversations with recovered ones.
-                        // Recovery data may contain truncated/stripped messages from emergency backups
-                        // which would destroy the full content in IndexedDB.
-                        // If the conversation already exists in DB, the DB version is authoritative.
-                    );
-
-                    if (newConversations.length !== recoveredConversations.length) {
-                        const skipped = recoveredConversations.length - newConversations.length;
-                        console.log(`ℹ️ RECOVERY: Skipped ${skipped} conversations already in DB (DB is authoritative)`);
-                    }
-
-                    if (newConversations.length > 0) {
-                        const mergedConversations = [...currentConversations, ...newConversations];
-                        await db.saveConversations(mergedConversations);
-
-                        // CRITICAL FIX: Update React state immediately after saving
-                        setConversations(mergedConversations);
-
-                        // Restore the current conversation if it was backed up
-                        if (recoveryData.currentConversationId) {
-                            setCurrentConversationId(recoveryData.currentConversationId);
-                        }
-
-                        console.log(`✅ RECOVERY: Restored ${newConversations.length} missing conversations`);
-                    } else {
-                        console.log('ℹ️ RECOVERY: No new conversations to restore');
-                    }
-
-                    // CRITICAL: ALWAYS clean up recovery data, even if nothing to restore
-                    // Leaving stale recovery data causes it to trigger again and again
-                    localStorage.removeItem('ZIYA_EMERGENCY_CONVERSATION_RECOVERY');
-                    localStorage.removeItem('ZIYA_CONVERSATION_BACKUP_WITH_RECOVERY');
-                    console.log('✅ Cleaned up recovery data');
-                }
-            } catch (error) {
-                console.error('❌ RECOVERY: Failed to process emergency recovery:', error);
-                // Clean up even on error to prevent recovery loops
-                localStorage.removeItem('ZIYA_EMERGENCY_CONVERSATION_RECOVERY');
-                localStorage.removeItem('ZIYA_CONVERSATION_BACKUP_WITH_RECOVERY');
-            }
-        };
-
-        // Run emergency recovery check
-        await checkForUnsavedConversations();
-
         initializationStarted.current = true;
         isRecovering.current = true;
 
@@ -1688,28 +1554,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // CRITICAL: Verify the restored currentConversationId exists in loaded conversations
             const savedCurrentId = localStorage.getItem('ZIYA_CURRENT_CONVERSATION_ID');
             if (savedCurrentId && !savedConversations.some(conv => conv.id === savedCurrentId)) {
-                // CRITICAL FIX: Check backups BEFORE switching to different conversation
-                let recovered = false;
-                for (const key of ['ZIYA_CONVERSATION_BACKUP', 'ZIYA_EMERGENCY_CONVERSATION_RECOVERY', 'ZIYA_CONVERSATION_BACKUP_WITH_RECOVERY']) {
-                    if (recovered) break;
-                    try {
-                        const data = localStorage.getItem(key);
-                        if (data) {
-                            const parsed = JSON.parse(data);
-                            const convs = Array.isArray(parsed) ? parsed : (parsed.conversations || []);
-                            const found = convs.find((c: any) => c.id === savedCurrentId);
-                            if (found) {
-                                console.log(`✅ RECOVERY: Found current conversation in ${key}`);
-                                recovered = true;
-                                savedConversations.push(found);
-                                setConversations([...savedConversations]);
-                                db.saveConversations([...savedConversations]).catch(e => console.warn('Recovery save failed:', e));
-                            }
-                        }
-                    } catch { /* ignore */ }
-                }
-
-                if (!recovered && savedConversations.length > 0) {
+                // Saved conversation ID not found in IndexedDB.
+                // INIT_SYNC will merge from server shortly; for now use most recent local.
+                if (savedConversations.length > 0) {
                     console.warn(`⚠️ ORPHANED CONVERSATION: ${savedCurrentId} not found anywhere`);
                     const mostRecent = savedConversations.reduce((a, b) =>
                         (b.lastAccessedAt || 0) > (a.lastAccessedAt || 0) ? b : a
@@ -1722,56 +1569,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // Always mark as initialized to allow app to function
             setIsInitialized(true);
 
-            // Handle backup/recovery operations asynchronously - don't block UI
-            setTimeout(async () => {
-                // Check for corruption by comparing with backup - but be careful!
-                const backup = localStorage.getItem('ZIYA_CONVERSATION_BACKUP');
-                if (backup) {
-                    const backupConversations = JSON.parse(backup);
-
-                    // CRITICAL FIX: Don't blindly trust backup over IndexedDB
-                    // The backup might be from a different browser tab with partial state
-
-                    // Instead, MERGE conversations from both sources
-                    const allConversationIds = new Set([
-                        ...savedConversations.map(c => c.id),
-                        ...backupConversations.map(c => c.id)
-                    ]);
-
-                    console.log('🔄 INIT MERGE:', {
-                        dbCount: savedConversations.length,
-                        backupCount: backupConversations.length,
-                        uniqueIds: allConversationIds.size
-                    });
-
-                    // Only restore if backup has conversations that DB doesn't
-                    const missingInDb = backupConversations.filter(bc =>
-                        !savedConversations.find(sc => sc.id === bc.id)
-                    );
-
-                    if (missingInDb.length > 0) {
-                        console.warn(`⚠️ Found ${missingInDb.length} conversations in backup but not in IndexedDB:`,
-                            missingInDb.map(c => c.id.substring(0, 8)));
-
-                        // Merge instead of replace
-                        const mergedConversations = [
-                            ...savedConversations,
-                            ...missingInDb
-                        ];
-
-                        await db.saveConversations(mergedConversations);
-                        setConversations(mergedConversations);
-                        console.log('✅ Merged backup conversations into IndexedDB');
-                    } else {
-                        // Backup has no additional conversations, create new backup from DB
-                        await createBackup(savedConversations);
-                    }
-                } else {
-                    // No backup exists, create one
-                    await createBackup(savedConversations);
-                }
-            }, 0);
-
         } catch (error) {
             console.error('❌ INIT: Database initialization failed:', error);
             isDatabaseHealthy = false;
@@ -1780,356 +1577,31 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // The app should be able to create new conversations even if DB initialization failed
             setIsInitialized(true);
 
-            // Try to recover from localStorage backup as fallback
-            try {
-                const backup = localStorage.getItem('ZIYA_CONVERSATION_BACKUP');
-                if (backup) {
-                    const backupConversations = JSON.parse(backup);
-                    console.log(`🔄 INIT: Loaded ${backupConversations.length} conversations from localStorage backup`);
-                    setConversations(backupConversations);
-                }
-            } catch (backupError) {
-                console.error('❌ INIT: Failed to load backup, starting with empty state:', backupError);
-                setConversations([]);
-            }
-
-            console.warn('⚠️ INIT: App running in degraded mode - persistence may be limited to localStorage');
+            // IndexedDB failed. INIT_SYNC will try the server next.
+            // If server also fails, the user starts fresh.
+            console.warn('⚠️ INIT: IndexedDB failed. Server sync will attempt recovery.');
         } finally {
             isRecovering.current = false;
         }
-    }, [createBackup, currentConversationId]);
+    }, [currentConversationId]);
 
 
 
     useEffect(() => {
-        // ============================================================================
-        // CRITICAL FIX: Emergency backup system to prevent conversation loss
-        // ============================================================================
-        // This fixes the bug where conversations vanish when navigating away during
-        // active streaming or before IndexedDB saves complete.
-
-        // Helper to estimate storage size in bytes
-        const estimateSize = (obj: any): number => {
-            try {
-                return JSON.stringify(obj).length * 2; // UTF-16 uses 2 bytes per char
-            } catch {
-                return 0;
-            }
-        };
-
-        // Helper to get available localStorage space
-        const getAvailableSpace = (): number => {
-            try {
-                // Test by trying to add data
-                let total = 0;
-                for (let i = 0; i < localStorage.length; i++) {
-                    const key = localStorage.key(i);
-                    if (key) {
-                        const item = localStorage.getItem(key) || '';
-                        total += key.length + item.length;
-                    }
-                }
-                // Most browsers: 5-10MB limit, assume 5MB conservative
-                const QUOTA_LIMIT = 5 * 1024 * 1024;
-                return Math.max(0, QUOTA_LIMIT - total * 2); // UTF-16
-            } catch {
-                return 0;
-            }
-        };
-
-        // Helper to clean up old localStorage entries
-        const cleanupOldEntries = () => {
-            try {
-                const keysToCleanup = [];
-                for (let i = 0; i < localStorage.length; i++) {
-                    const key = localStorage.key(i);
-                    if (key?.startsWith('ZIYA_')) {
-                        keysToCleanup.push(key);
-                    }
-                }
-
-                // CRITICAL: Don't delete keys that store plain strings (not JSON objects)
-                const protectedKeys = new Set([
-                    'ZIYA_CURRENT_CONVERSATION_ID',
-                    'ZIYA_DB_NAME',
-                    'ZIYA_ACTIVE_TAB',
-                    'ZIYA_BACKUP_TIMESTAMP',
-                    'ZIYA_THEME_PREFERENCE',
-                    'ZIYA_TOP_DOWN_MODE',
-                    'ZIYA_PANEL_COLLAPSED',
-                    'ZIYA_PANEL_WIDTH',
-                    'safari-warning-dismissed'
-                ]);
-
-                keysToCleanup.forEach(key => {
-                    // Never delete protected keys
-                    if (protectedKeys.has(key)) {
-                        return;
-                    }
-
-                    try {
-                        const item = localStorage.getItem(key);
-                        if (item) {
-                            const data = JSON.parse(item);
-                            const age = Date.now() - (data.timestamp || 0);
-                            // Remove entries older than 1 hour or without timestamp
-                            if (age > 3600000 || !data.timestamp) {
-                                localStorage.removeItem(key);
-                                console.log(`🧹 Cleaned up old entry: ${key} (age: ${(age / 60000).toFixed(0)}min)`);
-                            }
-                        }
-                    } catch (e) {
-                        // If parsing fails, it might be a plain string value - don't delete
-                        console.debug(`Skipped cleanup for non-JSON key: ${key}`);
-                    }
-                });
-            } catch (error) {
-                console.debug('Cleanup error:', error);
-            }
-        };
-
-        // Helper to strip large binary data from messages without truncating text content.
-        // Text content is NEVER truncated — if space is tight we save fewer conversations instead.
-        const stripBinaryData = (messages: Message[]): Message[] => {
-            return messages.map(msg => ({
-                ...msg,
-                // Strip base64 image data but keep metadata
-                images: msg.images?.map(img => ({ ...img, data: '' })),
-                // Strip any inline base64 data URIs from content (images embedded in markdown)
-                // but NEVER truncate the actual text
-            }));
-        };
-
-        // Helper to create a lighter conversation representation without destroying content
-        const createLightConversation = (conv: Conversation): any => {
-            return {
-                id: conv.id,
-                title: conv.title,
-                folderId: conv.folderId,
-                lastAccessedAt: conv.lastAccessedAt,
-                isActive: conv.isActive,
-                messageCount: conv.messages.length,
-                // Keep only last 10 messages but with FULL content (just strip binary)
-                messages: stripBinaryData(conv.messages.slice(-10))
-            };
-        };
-
-        const createEmergencyBackup = () => {
-            // CRITICAL: Don't create emergency backups until initialization completes
-            // Creating backups with empty initial state overwrites good recovery data
-            if (!isInitialized || conversations.length === 0) {
-                console.debug('Skipping emergency backup - not initialized or no conversations');
-                return;
-            }
-
-            // Skip all backups in ephemeral mode
-            if (isEphemeralMode) {
-                return;
-            }
-
-            // Clean up old entries first to free space
-            cleanupOldEntries();
-
-            // Check available space
-            const availableSpace = getAvailableSpace();
-            console.log('💾 BACKUP: Available localStorage space:', (availableSpace / 1024).toFixed(2), 'KB');
-
-            // If we have less than 500KB available, skip backup
-            if (availableSpace < 500 * 1024) {
-                console.warn('⚠️ BACKUP: Insufficient space, skipping emergency backup');
-                console.warn('💡 BACKUP: Consider clearing browser cache or old conversation data');
-                return;
-            }
-
-            try {
-                // Include ALL current state, not just what's persisted
-                const emergencyData = {
-                    conversations: conversations.filter(c => c.isActive !== false),
-                    currentConversationId,
-                    currentMessages,
-                    currentFolderId,
-                    timestamp: Date.now(),
-                    // CRITICAL: Capture streaming content before it's lost
-                    streamingContent: Object.fromEntries(streamedContentMap),
-                    streamingConversations: Array.from(streamingConversations),
-                    wasStreaming: streamingConversations.size > 0,
-                };
-
-                // Estimate size
-                const estimatedSize = estimateSize(emergencyData);
-                const QUOTA_THRESHOLD = Math.min(availableSpace * 0.8, 4 * 1024 * 1024); // 80% of available or 4MB
-
-                console.log('💾 BACKUP: Estimated size:', (estimatedSize / 1024).toFixed(2), 'KB, threshold:', (QUOTA_THRESHOLD / 1024).toFixed(2), 'KB');
-
-                // Progressive compression strategies
-                if (estimatedSize > QUOTA_THRESHOLD) {
-                    console.warn('⚠️ BACKUP: Data too large, applying compression');
-
-                    // Strategy 1: Keep only recent conversations with truncated messages
-                    const compressedData = {
-                        conversations: emergencyData.conversations
-                            .slice(-5) // Last 5 conversations only
-                            .map(conv => {
-                                // Keep current conversation with more detail
-                                if (conv.id === currentConversationId) {
-                                    return {
-                                        ...conv,
-                                        messages: stripBinaryData(conv.messages)
-                                    };
-                                }
-                                return createLightConversation(conv);
-                            }),
-                        currentConversationId,
-                        currentMessages: stripBinaryData(currentMessages.slice(-30)),
-                        currentFolderId,
-                        timestamp: Date.now(),
-                        streamingContent: emergencyData.streamingContent,
-                        streamingConversations: emergencyData.streamingConversations,
-                        wasStreaming: emergencyData.wasStreaming,
-                        _compressed: true
-                    };
-
-                    const compressedSize = estimateSize(compressedData);
-                    console.log('💾 BACKUP: Compressed size:', (compressedSize / 1024).toFixed(2), 'KB');
-
-                    // If still too large, try ultra-minimal
-                    if (compressedSize > QUOTA_THRESHOLD) {
-                        console.warn('⚠️ BACKUP: Still too large, using ultra-minimal backup');
-
-                        const ultraMinimalData = {
-                            currentConversationId,
-                            currentMessages: stripBinaryData(currentMessages.slice(-5)),
-                            timestamp: Date.now(),
-                            wasStreaming: streamingConversations.size > 0,
-                            streamingContent: emergencyData.wasStreaming ?
-                                Object.fromEntries(
-                                    Array.from(streamedContentMap.entries())
-                                        .map(([id, content]) => [id, content.substring(0, 500)])
-                                ) : {},
-                            _ultraMinimal: true
-                        };
-
-                        localStorage.setItem('ZIYA_EMERGENCY_CONVERSATION_RECOVERY',
-                            JSON.stringify(ultraMinimalData));
-                        console.log('💾 BACKUP: Saved ultra-minimal backup');
-                        return;
-                    }
-
-                    localStorage.setItem('ZIYA_EMERGENCY_CONVERSATION_RECOVERY',
-                        JSON.stringify(compressedData));
-                    localStorage.setItem('ZIYA_CONVERSATION_BACKUP_WITH_RECOVERY',
-                        JSON.stringify(compressedData.conversations));
-                    console.log('💾 BACKUP: Saved compressed backup');
-                    return;
-                }
-
-                // Synchronous localStorage save (works during page unload)
-                localStorage.setItem('ZIYA_EMERGENCY_CONVERSATION_RECOVERY',
-                    JSON.stringify(emergencyData));
-
-                // Also update the regular backup with recovery flag
-                localStorage.setItem('ZIYA_CONVERSATION_BACKUP_WITH_RECOVERY',
-                    JSON.stringify(emergencyData.conversations));
-
-                console.log('💾 EMERGENCY BACKUP:', {
-                    conversations: emergencyData.conversations.length,
-                    wasStreaming: emergencyData.wasStreaming,
-                    streamingIds: emergencyData.streamingConversations,
-                    size: (estimatedSize / 1024).toFixed(2) + ' KB'
-                });
-            } catch (error) {
-                // Check if this is a quota error
-                const isQuotaError = error instanceof Error &&
-                    (error.name === 'QuotaExceededError' || error.message.includes('quota'));
-
-                if (isQuotaError) {
-                    console.error('❌ QUOTA EXCEEDED during backup, trying fallback strategies');
-
-                    // Clean up ALL old entries aggressively
-                    try {
-                        ['ZIYA_EMERGENCY_CONVERSATION_RECOVERY',
-                            'ZIYA_CONVERSATION_BACKUP_WITH_RECOVERY',
-                            'ZIYA_LAST_MESSAGES',
-                            'ZIYA_CONVERSATION_BACKUP'].forEach(key => {
-                                try { localStorage.removeItem(key); } catch { }
-                            });
-                        console.log('🧹 Cleared all backup entries to free space');
-                    } catch { }
-
-                    // Try absolute minimal backup
-                    try {
-                        const absoluteMinimal = {
-                            id: currentConversationId,
-                            timestamp: Date.now(),
-                            messageCount: currentMessages.length
-                        };
-                        localStorage.setItem('ZIYA_LAST_CONVERSATION_ID',
-                            JSON.stringify(absoluteMinimal));
-                        console.log('💾 BACKUP: Saved absolute minimal backup (metadata only)');
-                    } catch (finalError) {
-                        console.error('❌ All backup strategies exhausted');
-                        // Show user notification about storage issue
-                        console.warn('💡 USER ACTION NEEDED: Clear browser cache to free storage space');
-                    }
-                } else {
-                    console.error('❌ EMERGENCY BACKUP failed (non-quota error):', error);
-                }
-            }
-        };
-
-        // Handle page unload - create emergency backup
+        // Warn user before leaving if a response is still streaming.
+        // No content backup needed — server and IndexedDB have the data.
         const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-            console.log('🚪 BEFOREUNLOAD: Creating emergency backup');
-            createEmergencyBackup();
-
-            // Warn user if actively streaming
             if (streamingConversations.size > 0) {
-                const message = 'A response is still being generated. Leaving now may lose your conversation.';
+                const msg = 'A response is still being generated. Leaving now may lose the in-progress response.';
                 e.preventDefault();
-                e.returnValue = message;
-                return message;
+                e.returnValue = msg;
+                return msg;
             }
         };
 
-        // Handle visibility changes (catches mobile browser backgrounding)
-        const handleVisibilityChange = () => {
-            if (document.hidden) {
-                console.log('👁️ VISIBILITY: Page hidden, creating emergency backup');
-                createEmergencyBackup();
-            }
-        };
-
-        // Handle page hide (more reliable than beforeunload on some browsers)
-        const handlePageHide = () => {
-            console.log('🚫 PAGEHIDE: Creating emergency backup');
-            createEmergencyBackup();
-        };
-
-        // Periodic emergency backup during streaming (every 10 seconds)
-        let streamingBackupInterval: NodeJS.Timeout | null = null;
-        if (streamingConversations.size > 0) {
-            streamingBackupInterval = setInterval(() => {
-                console.log('🔄 STREAMING BACKUP: Auto-backup during stream');
-                createEmergencyBackup();
-            }, 10000);
-        }
-
-        // Attach all handlers
         window.addEventListener('beforeunload', handleBeforeUnload);
-        document.addEventListener('visibilitychange', handleVisibilityChange);
-        window.addEventListener('pagehide', handlePageHide);
-
-        // Cleanup
-        return () => {
-            window.removeEventListener('beforeunload', handleBeforeUnload);
-            document.removeEventListener('visibilitychange', handleVisibilityChange);
-            window.removeEventListener('pagehide', handlePageHide);
-            if (streamingBackupInterval) {
-                clearInterval(streamingBackupInterval);
-            }
-        };
-    }, [conversations, currentConversationId, currentMessages, currentFolderId,
-        streamedContentMap, streamingConversations]);
+        return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+    }, [streamingConversations]);
 
     useEffect(() => {
         // Only initialize once
@@ -2139,61 +1611,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
         initializeWithRecovery();
 
-        // Skip backup system entirely in ephemeral mode
-        if (isEphemeralMode) {
-            return;
-        }
-
-        // Enhanced backup interval - but merge with existing backup instead of replacing
-        const backupInterval = setInterval(() => {
-            if (conversations.length > 0) {
-                // CRITICAL FIX: Merge with existing backup instead of replacing
-                const existingBackup = localStorage.getItem('ZIYA_CONVERSATION_BACKUP');
-                if (existingBackup) {
-                    try {
-                        const existingBackupData = JSON.parse(existingBackup);
-
-                        // Merge: keep conversations from backup that aren't in current state
-                        const currentIds = new Set(conversations.map(c => c.id));
-                        const missingFromCurrent = existingBackupData.filter(
-                            (bc: Conversation) => !currentIds.has(bc.id) && bc.isActive !== false
-                        );
-
-                        if (missingFromCurrent.length > 0) {
-                            console.log(`🔄 BACKUP MERGE: Adding ${missingFromCurrent.length} conversations from previous backup`);
-                            const mergedForBackup = [...conversations, ...missingFromCurrent];
-                            createBackup(mergedForBackup);
-                        } else {
-                            createBackup(conversations);
-                        }
-                    } catch (e) {
-                        console.error('Failed to merge with existing backup:', e);
-                        createBackup(conversations);
-                    }
-                } else {
-                    createBackup(conversations);
-                }
-            }
-        }, 60000);
-
-        // Also create backup immediately on mount
-        if (conversations.length > 0) createBackup(conversations);
-
         const request = indexedDB.open('ZiyaDB');
         request.onerror = (event) => {
             const error = (event.target as IDBOpenDBRequest).error?.message || 'Unknown IndexedDB error';
             setDbError(error);
         };
-
-        return () => {
-            clearInterval(backupInterval);
-            // Don't close database connection here - it may interrupt ongoing transactions
-            // The database connection will be managed by the DB class itself
-            // if (db.db) {
-            //     db.db.close();
-            // }
-        };
-    }, [initializeWithRecovery, createBackup, conversations, isEphemeralMode]);
+    }, [initializeWithRecovery, isEphemeralMode]);
 
     // Load folders independently of initialization state
     // This ensures folder loading doesn't block conversation loading
@@ -2225,7 +1648,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
                 // Filter to current project only
                 const projectFolders = projectId
-                    ? folders.filter(f => f.projectId === projectId)
+                    ? folders.filter(f => f.projectId === projectId || f.isGlobal)
                     : folders;  // Show all only if no project loaded
 
                 setFolders(projectFolders);
@@ -2258,8 +1681,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 console.log(`📡 INIT_SYNC: Got ${serverChats.length} chats from server for project ${projectId}`);
 
                 // 2. Load current IndexedDB state
-                const allConversations = await db.getConversations();
-                const localProjectConvs = allConversations.filter((c: any) => c.projectId === projectId);
+                let allConversations = await db.getConversations();
+
+                // 2a. Migrate untagged conversations (shared helper)
+                allConversations = await migrateUntaggedConversations(allConversations, projectId);
+
+                const localProjectConvs = allConversations.filter((c: any) => c.projectId === projectId || c.isGlobal);
                 console.log(`📡 INIT_SYNC: Found ${localProjectConvs.length} local conversations for this project`);
 
                 // 3. Three-way merge: use _version to determine winner, keep all unique
@@ -2320,11 +1747,24 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     setCurrentConversationId(mostRecent.id);
                     setCurrentMessages(mostRecent.messages || []);
                 }
+
+                // Clean up legacy localStorage backups now that merge is complete.
+                // Deferred from initializeWithRecovery to ensure data survives until
+                // server sync has had a chance to preserve everything.
+                try {
+                    localStorage.removeItem('ZIYA_EMERGENCY_CONVERSATION_RECOVERY');
+                    localStorage.removeItem('ZIYA_CONVERSATION_BACKUP_WITH_RECOVERY');
+                    localStorage.removeItem('ZIYA_CONVERSATION_BACKUP');
+                } catch (e) {
+                    console.debug('Failed to clean up legacy localStorage keys:', e);
+                }
             } catch (e) {
                 console.warn('📡 INIT_SYNC: Server sync failed, using IndexedDB only:', e);
-                // Fall back to filtering IndexedDB by project
-                const allConversations = await db.getConversations();
-                const projectConversations = allConversations.filter((c: any) => c.projectId === projectId);
+                // Fall back to IndexedDB only — still must migrate before filtering,
+                // otherwise untagged (legacy) conversations silently vanish from the UI.
+                let allConversations = await db.getConversations();
+                allConversations = await migrateUntaggedConversations(allConversations, projectId);
+                const projectConversations = allConversations.filter((c: any) => c.projectId === projectId || c.isGlobal);
                 setConversations(projectConversations);
             }
         };
@@ -2510,6 +1950,66 @@ export function ChatProvider({ children }: ChatProviderProps) {
         // TODO: When Phase 3 is implemented, persist to server
     }, []);
 
+    const toggleFolderGlobal = useCallback(async (folderId: string) => {
+        const folder = folders.find(f => f.id === folderId);
+        if (!folder) return;
+
+        const wasGlobal = folder.isGlobal;
+        const updatedFolder: ConversationFolder = {
+            ...folder,
+            isGlobal: !wasGlobal,
+            // When un-globaling, pin to current project
+            projectId: wasGlobal ? currentProject?.id : folder.projectId,
+            updatedAt: Date.now()
+        };
+
+        await updateFolder(updatedFolder);
+        console.log(`📁 Folder "${folder.name}" is now ${updatedFolder.isGlobal ? 'global' : 'project-scoped'}`);
+    }, [folders, currentProject?.id, updateFolder]);
+
+    const toggleConversationGlobal = useCallback(async (conversationId: string) => {
+        setConversations(prev => {
+            const updated = prev.map(conv => {
+                if (conv.id === conversationId) {
+                    const wasGlobal = conv.isGlobal;
+                    return {
+                        ...conv,
+                        isGlobal: !wasGlobal,
+                        // When un-globaling, pin to current project
+                        projectId: wasGlobal ? currentProject?.id : conv.projectId,
+                        _version: Date.now()
+                    };
+                }
+                return conv;
+            });
+            queueSave(updated, { changedIds: [conversationId] }).catch(console.error);
+            return updated;
+        });
+    }, [currentProject?.id, queueSave]);
+
+    const moveConversationToProject = useCallback(async (conversationId: string, targetProjectId: string) => {
+        setConversations(prev => {
+            const updated = prev.map(conv => {
+                if (conv.id === conversationId) {
+                    return {
+                        ...conv,
+                        projectId: targetProjectId,
+                        isGlobal: false,
+                        _version: Date.now()
+                    };
+                }
+                return conv;
+            });
+            queueSave(updated, { changedIds: [conversationId] }).catch(console.error);
+
+            // If moved away from current project, remove from visible list
+            if (targetProjectId !== currentProject?.id) {
+                return updated.filter(c => c.id !== conversationId || c.projectId === currentProject?.id || c.isGlobal);
+            }
+            return updated;
+        });
+    }, [currentProject?.id, queueSave]);
+
     const value = useMemo(() => ({
         streamedContentMap,
         reasoningContentMap,
@@ -2574,6 +2074,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
         throttlingRecoveryData,
         setThrottlingRecoveryData,
         moveChatToGroup,
+        toggleConversationGlobal,
+        moveConversationToProject,
+        toggleFolderGlobal,
         setChatContexts,
     }), [
         streamedContentMap,
@@ -2624,6 +2127,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
         throttlingRecoveryData,
         setThrottlingRecoveryData,
         moveChatToGroup,
+        toggleConversationGlobal,
+        moveConversationToProject,
+        toggleFolderGlobal,
         setChatContexts,
     ]);
 

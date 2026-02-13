@@ -49,6 +49,7 @@ interface DB {
 
 class ConversationDB implements DB {
     private saveInProgress = false;
+    private lastBackupTime = 0;  // BUGFIX: Throttle localStorage backups
     private lastSavedData: string | null = null;
     private lastKnownVersion: number = 0;
     private connectionAttempts = 0;
@@ -435,7 +436,7 @@ class ConversationDB implements DB {
             return new Promise<void>((resolve, reject) => {
                 const conversationsToSave = uniqueConversations.map(conv => ({
                     ...conv,
-                    _version: Date.now(),
+                    _version: conv._version || Date.now(),  // BUGFIX: preserve existing _version instead of overwriting all
                     messages: conv.messages.map(msg => ({
                         ...msg,
                         _timestamp: msg._timestamp || Date.now()
@@ -451,7 +452,10 @@ class ConversationDB implements DB {
                     isActive: c.isActive
                 })));
 
-                // Create a backup in localStorage before saving
+                // BUGFIX: Throttle localStorage backup to once per 30s (was serializing ALL convos on every save!)
+                const now = Date.now();
+                if (now - this.lastBackupTime > 30000) {
+                    this.lastBackupTime = now;
                 try {
                     const activeConversations = conversationsToSave.filter(c => c.isActive !== false);
                     if (activeConversations.length > 0) {
@@ -478,6 +482,7 @@ class ConversationDB implements DB {
                 } catch (e) {
                     console.error('Error backing up conversations to localStorage:', e);
                 }
+                }  // end throttle check
 
                 const putRequest = store.put(conversationsToSave, 'current');
 
