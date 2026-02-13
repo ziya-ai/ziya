@@ -16,6 +16,8 @@ from typing import Dict, Any, Optional
 # Import centralized shell configuration
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.config.shell_config import DEFAULT_SHELL_CONFIG
+from app.config.write_policy import WritePolicyManager
+from app.mcp_servers.write_policy import ShellWriteChecker
 
 
 # Global timeout tracking
@@ -30,6 +32,11 @@ class ShellServer:
         
         # Use centralized configuration as the single source of truth
         self.allowed_commands = DEFAULT_SHELL_CONFIG["allowedCommands"].copy()
+
+        # Write policy
+        self.wp_manager = WritePolicyManager()
+        self.wp_manager.merge_env_overrides(dict(os.environ))
+        self.write_checker = ShellWriteChecker(self.wp_manager)
 
         # Get configuration from environment
         self.git_operations_enabled = os.environ.get('GIT_OPERATIONS_ENABLED', 'true').lower() in ('true', '1', 'yes')
@@ -51,6 +58,11 @@ class ShellServer:
         for cmd in env_commands:
             if cmd and cmd not in self.allowed_commands:
                 self.allowed_commands.append(cmd)
+
+        # Add interpreters to command allowlist
+        for interp in self.wp_manager.policy.get('allowed_interpreters', []):
+            if interp not in self.allowed_commands:
+                self.allowed_commands.append(interp)
 
         # Build safe command patterns dynamically from allowed commands
         self.safe_command_patterns = self._build_safe_command_patterns()
@@ -92,6 +104,9 @@ class ShellServer:
         available_commands = ', '.join(sorted(set([p.split('_')[0] if '_' in p else p for p in self.safe_command_patterns.keys()])))
         print(f"Available commands: {available_commands}", file=sys.stderr)
         print(f"Git operations enabled: {self.git_operations_enabled}", file=sys.stderr)
+        print(f"Safe write paths: {self.wp_manager.policy.get('safe_write_paths', [])}", file=sys.stderr)
+        print(f"Write patterns: {self.wp_manager.policy.get('allowed_write_patterns', [])}", file=sys.stderr)
+        print(f"Interpreters: {self.wp_manager.policy.get('allowed_interpreters', [])}", file=sys.stderr)
         
     def _split_by_shell_operators(self, command: str) -> list[tuple[str, str]]:
         """
@@ -395,6 +410,20 @@ class ShellServer:
                         }
                     }
                 
+                # Write policy check (after allowlist, before execution)
+                write_ok, write_reason = self.write_checker.check(
+                    command, self._split_by_shell_operators
+                )
+                if not write_ok:
+                    return {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {
+                            "code": -32602,
+                            "message": f"🚫 WRITE BLOCKED: {write_reason}"
+                        }
+                    }
+
                 try:
                     # The parent spawns a separate instance of this server per project,
                     # so our env reflects the correct project directory.
