@@ -70,6 +70,8 @@ scapy = ">=2.6.2"
 
 [tool.poetry.extras]
 local = ["torch"]
+tokens = ["tiktoken"]
+all = ["torch", "tiktoken", "numba", "transformers"]
 
 [tool.poetry.scripts]
 ziya = 'app.ziya_exec:ziya'
