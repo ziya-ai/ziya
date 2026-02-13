@@ -28,23 +28,25 @@ export function extractAllFilesFromDiff(diffContent: string): string[] {
     }
 
     for (const line of lines) {
+        // Helper to check if a path is the special /dev/null sentinel (with or without leading slash)
+        const isDevNull = (p: string) => p === '/dev/null' || p === 'dev/null';
         // Extract from git diff headers
         const gitMatch = line.match(/^diff --git (?:a\/)?([^\s]+) (?:b\/)?([^\s]+)$/);
         if (gitMatch) {
             const oldPath = gitMatch[1];
             const newPath = gitMatch[2];
-            if (newPath !== '/dev/null') files.push(newPath);
-            if (oldPath !== '/dev/null' && oldPath !== newPath) files.push(oldPath);
+            if (!isDevNull(newPath)) files.push(newPath);
+            if (!isDevNull(oldPath) && oldPath !== newPath) files.push(oldPath);
         }
 
         // Extract from unified diff headers as backup
         const minusMatch = line.match(/^--- a\/(.+)$/);
-        if (minusMatch && !minusMatch[1].includes('/dev/null')) {
+        if (minusMatch && !isDevNull(minusMatch[1])) {
             files.push(minusMatch[1]);
         }
 
         const plusMatch = line.match(/^\+\+\+ b\/(.+)$/);
-        if (plusMatch && !plusMatch[1].includes('/dev/null')) {
+        if (plusMatch && !isDevNull(plusMatch[1])) {
             files.push(plusMatch[1]);
         }
     }
