@@ -629,6 +629,7 @@ const MUIChatHistory = () => {
     streamingConversations,
     toggleConversationGlobal,
     moveConversationToProject,
+    moveFolderToProject,
     toggleFolderGlobal,
     startNewChat,
     loadConversation,
@@ -866,10 +867,21 @@ const MUIChatHistory = () => {
   };
 
   // Handle moving a conversation to another project
-  const handleMoveToProject = async (conversationId: string, targetProjectId: string) => {
-    await moveConversationToProject(conversationId, targetProjectId);
+  const handleMoveToProject = async (nodeId: string, targetProjectId: string) => {
     const targetProject = projects.find(p => p.id === targetProjectId);
-    message.success(`Moved to project "${targetProject?.name || 'Unknown'}"`);
+    const targetName = targetProject?.name || 'Unknown';
+
+    // Check if this is a folder (folder IDs exist in the folders array)
+    const isFolder = folders.some(f => f.id === nodeId);
+    if (isFolder) {
+      await moveFolderToProject(nodeId, targetProjectId);
+      message.success(`Folder moved to project "${targetName}"`);
+      setMoveToProjectMenuState({ anchorEl: null, nodeId: null });
+      return;
+    }
+
+    await moveConversationToProject(nodeId, targetProjectId);
+    message.success(`Moved to project "${targetName}"`);
     setMoveToProjectMenuState({ anchorEl: null, nodeId: null });
   };
 
@@ -1874,13 +1886,6 @@ const MUIChatHistory = () => {
     }
     lastTreeDataInputsRef.current = inputHash;
 
-    console.log('🔄 REBUILDING TREE DATA:', {
-      foldersCount: folders.length,
-      conversationsCount: conversations.length,
-      pinnedFoldersCount: pinnedFolders.size,
-      timestamp: Date.now()
-    });
-
     const folderMap = new Map();
     folders.forEach(folder => {
       folderMap.set(folder.id, {
@@ -1938,9 +1943,10 @@ const MUIChatHistory = () => {
       }
     });
 
-    // Add conversations that are not in any folder to the root
+    // Add conversations that are not in any folder (or whose folder is missing from
+    // the current view, e.g. a globally-shared conv whose folder isn't shared) to root
     activeConversations.forEach(conv => {
-      if (!conv.folderId) {
+      if (!conv.folderId || !folderMap.has(conv.folderId)) {
         rootItems.push({
           id: `conv-${conv.id}`,
           name: conv.title,
@@ -1949,12 +1955,33 @@ const MUIChatHistory = () => {
       }
     });
 
+    // Roll up conversation counts from subfolders into parent folders.
+    // After the tree is assembled, each folder's conversationCount only
+    // reflects its direct conversation children.  Walk bottom-up so that
+    // nested subfolder counts propagate all the way to the root.
+    const rollUpConversationCount = (node: any): number => {
+      if (!node.folder) return 0; // leaf conversation node
+      let total = node.conversationCount || 0; // direct conversations
+      if (node.children) {
+        for (const child of node.children) {
+          if (child.folder) {
+            total += rollUpConversationCount(child);
+          }
+        }
+      }
+      node.conversationCount = total;
+      return total;
+    };
+
     // Debug log to check folder structure
-    console.log('Built folder structure:',
+    console.debug('Built folder structure:',
       rootItems.map(item => ({
         id: item.id, name: item.name, childCount: item.children?.length || 0, isFolder: !!item.folder
       }))
     );
+
+    // Apply roll-up before sorting
+    rootItems.forEach(item => { if (item.folder) rollUpConversationCount(item); });
 
     // Sort each level - folders first, then conversations
     const sortNodes = (nodes: any[]): any[] => {

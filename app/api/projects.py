@@ -53,6 +53,9 @@ async def get_current_project():
 @router.post("", response_model=Project)
 async def create_project(data: ProjectCreate):
     """Create or get existing project for a path."""
+    # If path is provided, resolve it to absolute
+    if data.path:
+        data.path = os.path.abspath(os.path.expanduser(data.path))
     storage = get_project_storage()
     return storage.create(data)
 
