@@ -630,7 +630,29 @@ def apply_diff_with_difflib_hybrid_forced(
         if strict_ok:
             remove_pos = strict_checked_pos # Assign if strict match OK
             logger.debug(f"Hunk #{hunk_idx}: Using strict match position {remove_pos}")
-        else:
+        elif not strict_ok and h.get('removed_lines') and len(h['old_block']) < h.get('old_count', 0) * 0.5:
+            # Truncated diff: old_block has fewer lines than old_count claims.
+            # The old_block may not match as a block, but we can find the removed
+            # lines near the expected position and do a targeted replacement.
+            removed = h['removed_lines']
+            normalized_removed = [normalize_line_for_comparison(line) for line in removed]
+            search_start = max(0, initial_pos - 10)
+            search_end = min(len(final_lines_with_endings) - len(removed) + 1, initial_pos + h.get('old_count', 20) + 10)
+            for sp in range(search_start, search_end):
+                file_slice = [normalize_line_for_comparison(final_lines_with_endings[sp + j]) for j in range(len(removed))]
+                if file_slice == normalized_removed:
+                    remove_pos = sp
+                    # Override old_block and new_lines to just the changed lines
+                    # so removal/insertion counts are correct
+                    h['old_block'] = removed
+                    h['old_count'] = len(removed)
+                    h['new_lines'] = h.get('added_lines', [])
+                    h['new_count'] = len(h['new_lines'])
+                    logger.info(f"Hunk #{hunk_idx}: Truncated diff - found removed lines at pos {sp}, using targeted replacement")
+                    break
+            if remove_pos == -1:
+                logger.debug(f"Hunk #{hunk_idx}: Truncated diff - could not find removed lines near expected position, falling through to fuzzy")
+        if remove_pos == -1 and not strict_ok:
             # --- Inlined try_fuzzy_match ---
             fuzzy_initial_pos_search = initial_pos # Use the initially calculated pos to search around
             fuzzy_best_ratio = 0.0

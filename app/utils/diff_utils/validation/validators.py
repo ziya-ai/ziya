@@ -540,6 +540,19 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
     # If removal validation fails, check if it's because the hunk was already applied
     if removed_lines:
         removal_matches = _validate_removal_content(file_lines, removed_lines, pos)
+        # If removal content doesn't match at pos, also try at the correct offset
+        # within the hunk (pos may be the hunk start, but removed lines can be
+        # preceded by context lines)
+        if not removal_matches:
+            hunk_lines = hunk.get('lines', [])
+            context_offset = 0
+            for hl in hunk_lines:
+                if hl.startswith('-') and not hl.startswith('--- '):
+                    break
+                if not hl.startswith('+') and not hl.startswith('+++ '):
+                    context_offset += 1
+            if context_offset > 0:
+                removal_matches = _validate_removal_content(file_lines, removed_lines, pos + context_offset)
         if removal_matches:
             # The content to be removed IS in the file - hunk is NOT already applied
             logger.debug(f"Removal content found at pos {pos} - hunk NOT already applied")
@@ -570,7 +583,7 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
                 distinctive_as_str = "\n".join(distinctive_normalized)
                 is_code_move = distinctive_as_str in removed_as_str
 
-                for search_pos in range(len(file_lines) - len(distinctive_added) + 1):
+                for search_pos in range(max(0, pos - 5), min(len(file_lines) - len(distinctive_added) + 1, pos + hunk.get('old_count', hunk.get('src_count', 20)) + 5)):
                     file_block = [normalize_line_for_comparison(file_lines[search_pos + i]) 
                                  for i in range(len(distinctive_added))]
                     if file_block == distinctive_normalized:
