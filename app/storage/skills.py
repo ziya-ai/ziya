@@ -17,6 +17,7 @@ class SkillStorage(BaseStorage[Skill]):
     
     def __init__(self, project_dir: Path, token_service: TokenService):
         self.skills_dir = project_dir / "skills"
+        self.project_dir = project_dir
         self.token_service = token_service
         super().__init__(self.skills_dir)
         
@@ -42,6 +43,7 @@ class SkillStorage(BaseStorage[Skill]):
                     name=built_in_data['name'],
                     description=built_in_data['description'],
                     prompt=built_in_data['prompt'],
+                    source='builtin',
                     color=built_in_data['color'],
                     tokenCount=self.token_service.count_tokens(built_in_data['prompt']),
                     isBuiltIn=True,
@@ -66,25 +68,47 @@ class SkillStorage(BaseStorage[Skill]):
         
         # Sort: built-ins first, then by last used
         return sorted(skills, key=lambda s: (not s.isBuiltIn, -s.lastUsedAt))
+
+    def _calculate_total_tokens(self, prompt: str, files: list = None) -> int:
+        """Calculate total token count for a skill (prompt + included files)."""
+        total = self.token_service.count_tokens(prompt)
+        if files:
+            project_root = str(self.project_dir)
+            for f in files:
+                total += self.token_service.count_tokens_for_file(project_root, f)
+        return total
+
+    def _build_extra_fields(self, data) -> dict:
+        """Extract enhanced skill fields from create/update data."""
+        fields = {}
+        for field in ('toolIds', 'files', 'contextIds', 'modelOverrides', 'allowImplicitInvocation'):
+            value = getattr(data, field, None)
+            if value is not None:
+                fields[field] = value.model_dump() if hasattr(value, 'model_dump') else value
+        return fields
     
     def create(self, data: SkillCreate) -> Skill:
         skill_id = str(uuid.uuid4())
         now = int(time.time() * 1000)
         
         # Calculate token count for the prompt
-        token_count = self.token_service.count_tokens(data.prompt)
+        token_count = self._calculate_total_tokens(data.prompt, data.files)
         
-        skill = Skill(
-            id=skill_id,
-            name=data.name,
-            description=data.description,
-            prompt=data.prompt,
-            color=generate_color(data.name),
-            tokenCount=token_count,
-            isBuiltIn=False,
-            createdAt=now,
-            lastUsedAt=now
-        )
+        extra = self._build_extra_fields(data)
+        
+        skill = Skill(**{
+            'id': skill_id,
+            'name': data.name,
+            'description': data.description,
+            'prompt': data.prompt,
+            'color': generate_color(data.name),
+            'tokenCount': token_count,
+            'isBuiltIn': False,
+            'source': 'custom',
+            'createdAt': now,
+            'lastUsedAt': now,
+            **extra,
+        })
         
         self._write_json(self._skill_file(skill_id), skill.model_dump())
         return skill
@@ -101,8 +125,14 @@ class SkillStorage(BaseStorage[Skill]):
         update_dict = data.model_dump(exclude_unset=True)
         
         # Recalculate tokens if prompt changed
-        if 'prompt' in update_dict:
-            update_dict['tokenCount'] = self.token_service.count_tokens(update_dict['prompt'])
+        prompt = update_dict.get('prompt', skill.prompt)
+        files = update_dict.get('files', skill.files)
+        if 'prompt' in update_dict or 'files' in update_dict:
+            update_dict['tokenCount'] = self._calculate_total_tokens(prompt, files)
+        
+        # Convert Pydantic models to dicts for serialization
+        if 'modelOverrides' in update_dict and hasattr(update_dict['modelOverrides'], 'model_dump'):
+            update_dict['modelOverrides'] = update_dict['modelOverrides'].model_dump()
         
         # Regenerate color if name changed
         if 'name' in update_dict:
