@@ -7,6 +7,7 @@ import { TreeDataNode } from "antd";
 import { debounce } from "../utils/debounce";
 import { useConfig } from "./ConfigContext";
 import { useProject } from "./ProjectContext";
+import { getTabState, setTabState } from '../utils/tabState';
 
 export interface FolderContextType {
   folders: Folders | undefined;
@@ -42,7 +43,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const [treeData, setTreeData] = useState<TreeDataNode[]>([]);
   const [checkedKeys, setCheckedKeys] = useState<React.Key[]>(() => {
     try {
-      const saved = localStorage.getItem('ZIYA_CHECKED_FOLDERS');
+      const saved = getTabState('ZIYA_CHECKED_FOLDERS');
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
@@ -52,7 +53,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const [searchValue, setSearchValue] = useState('');
   const [expandedKeys, setExpandedKeys] = useState<React.Key[]>(() => {
     try {
-      const saved = localStorage.getItem('ZIYA_EXPANDED_FOLDERS');
+      const saved = getTabState('ZIYA_EXPANDED_FOLDERS');
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
@@ -86,8 +87,8 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
       // Clear all folder-related localStorage
       try {
-        localStorage.removeItem('ZIYA_CHECKED_FOLDERS');
-        localStorage.removeItem('ZIYA_EXPANDED_FOLDERS');
+        sessionStorage.removeItem('ZIYA_CHECKED_FOLDERS');
+        sessionStorage.removeItem('ZIYA_EXPANDED_FOLDERS');
 
         // Also clear the state immediately
         setCheckedKeys([]);
@@ -282,7 +283,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   // Save expanded folders whenever they change
   useEffect(() => {
     try {
-      localStorage.setItem('ZIYA_EXPANDED_FOLDERS', JSON.stringify(Array.from(expandedKeys)));
+      setTabState('ZIYA_EXPANDED_FOLDERS', JSON.stringify(Array.from(expandedKeys)));
     } catch (error) {
       console.warn('Failed to save expanded folders to localStorage (QuotaExceeded?):', error);
     }
@@ -291,7 +292,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   // Save checked folders whenever they change
   useEffect(() => {
     try {
-      localStorage.setItem('ZIYA_CHECKED_FOLDERS', JSON.stringify(Array.from(checkedKeys)));
+      setTabState('ZIYA_CHECKED_FOLDERS', JSON.stringify(Array.from(checkedKeys)));
     } catch (error) {
       console.warn('Failed to save checked folders to localStorage (QuotaExceeded?):', error);
     }
@@ -514,7 +515,9 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
           url = `/api/folders?${params.toString()}`;
         }
 
-        const response = await fetch(url);
+        const response = await fetch(url, {
+          headers: projectPath ? { 'X-Project-Root': projectPath } : {},
+        });
         if (!response.ok) {
           throw new Error(`Failed to fetch folders: ${response.status}`);
         }
@@ -669,9 +672,9 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       setCheckedKeys([]);
       setExpandedKeys([]);
 
-      // Clear localStorage to prevent stale selections
-      localStorage.removeItem('ZIYA_CHECKED_FOLDERS');
-      localStorage.removeItem('ZIYA_EXPANDED_FOLDERS');
+      // Clear sessionStorage to prevent stale selections
+      sessionStorage.removeItem('ZIYA_CHECKED_FOLDERS');
+      sessionStorage.removeItem('ZIYA_EXPANDED_FOLDERS');
 
       // Trigger refresh with new project path
       fetchFolders();
@@ -755,7 +758,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         console.log('📁 CONTEXT: Updated checked keys:', newKeys);
 
         // Save to localStorage immediately to persist the change
-        localStorage.setItem('ZIYA_CHECKED_FOLDERS', JSON.stringify(newKeys));
+        setTabState('ZIYA_CHECKED_FOLDERS', JSON.stringify(newKeys));
 
         return newKeys;
       });
