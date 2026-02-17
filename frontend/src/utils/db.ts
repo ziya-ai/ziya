@@ -456,32 +456,10 @@ class ConversationDB implements DB {
                 const now = Date.now();
                 if (now - this.lastBackupTime > 30000) {
                     this.lastBackupTime = now;
-                try {
-                    const activeConversations = conversationsToSave.filter(c => c.isActive !== false);
-                    if (activeConversations.length > 0) {
-                        // Strip out image data to avoid exceeding localStorage quota
-                        const conversationsWithoutImages = activeConversations.map(conv => ({
-                            ...conv,
-                            messages: conv.messages.map(msg => {
-                                if (msg.images && msg.images.length > 0) {
-                                    // Keep image metadata but remove the large base64 data
-                                    return {
-                                        ...msg,
-                                        images: msg.images.map(img => ({
-                                            ...img,
-                                            data: '' // Clear the base64 data
-                                        }))
-                                    };
-                                }
-                                return msg;
-                            })
-                        }));
-                        localStorage.setItem('ZIYA_CONVERSATION_BACKUP', JSON.stringify(conversationsWithoutImages));
-                        console.debug('Created backup of', activeConversations.length, 'conversations in localStorage (images excluded)');
-                    }
-                } catch (e) {
-                    console.error('Error backing up conversations to localStorage:', e);
-                }
+                    // localStorage backup removed — server dual-write
+                    // (bulkSync to ~/.ziya/projects/{pid}/chats/) is the
+                    // backup mechanism. localStorage has a ~5MB quota that
+                    // overflows with large conversation histories.
                 }  // end throttle check
 
                 const putRequest = store.put(conversationsToSave, 'current');
@@ -528,26 +506,16 @@ class ConversationDB implements DB {
 
     // Add a method to restore from backup if needed
     async restoreFromBackup(): Promise<Conversation[]> {
+        // Server-side recovery: INIT_SYNC in ChatContext fetches from
+        // /api/v1/projects/{pid}/chats and merges into IndexedDB.
+        // This method is a last-resort fallback that returns empty —
+        // the real recovery happens in ChatContext's initialization flow.
+        console.warn('restoreFromBackup called — server sync in ChatContext handles recovery');
         try {
-            const backup = localStorage.getItem('ZIYA_CONVERSATION_BACKUP');
-            if (backup) {
-                const conversations = JSON.parse(backup);
-                if (Array.isArray(conversations) && conversations.length > 0) {
-                    console.log('Restoring', conversations.length, 'conversations from backup');
-
-                    // Save to database
-                    try {
-                        await this.saveConversations(conversations);
-                        console.log('Successfully restored conversations to database');
-                    } catch (e) {
-                        console.error('Failed to save restored conversations to database:', e);
-                    }
-
-                    return conversations;
-                }
-            }
+            // Clean up legacy localStorage backup if it exists
+            localStorage.removeItem('ZIYA_CONVERSATION_BACKUP');
         } catch (e) {
-            console.error('Error restoring from backup:', e);
+            // Ignore — localStorage may not be available
         }
 
         // Return empty array if no backup or error

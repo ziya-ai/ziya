@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Query
 from typing import List, Optional
 import uuid
 
-from ..models.chat import Chat, ChatCreate, ChatUpdate, ChatSummary, Message, ChatBulkSync
+from ..models.chat import Chat, ChatCreate, ChatUpdate, ChatSummary, Message, ChatBulkSync, ChatGroupBulkSync
 from ..models.group import ChatGroup, ChatGroupCreate, ChatGroupUpdate
 from ..storage.projects import ProjectStorage
 from ..storage.chats import ChatStorage
@@ -79,6 +79,46 @@ async def reorder_chat_groups(project_id: str, ordered_ids: List[str]):
     """Reorder chat groups."""
     storage = get_group_storage(project_id)
     return storage.reorder(ordered_ids)
+
+@router.post("/api/v1/projects/{project_id}/chat-groups/bulk-sync")
+async def bulk_sync_groups(project_id: str, data: ChatGroupBulkSync):
+    """
+    Bulk upsert chat groups/folders from frontend (cross-port sync).
+    For each group: if server version is newer, skip. Otherwise upsert.
+    """
+    storage = get_group_storage(project_id)
+    
+    results = {"created": 0, "updated": 0, "skipped": 0, "errors": []}
+    
+    for group_data in data.groups:
+        try:
+            existing = storage.get(group_data.id)
+            
+            if existing:
+                incoming_dump = group_data.model_dump()
+                existing_dump = existing.model_dump()
+                incoming_ver = incoming_dump.get('updatedAt') or existing_dump.get('createdAt') or 0
+                existing_ver = existing_dump.get('updatedAt') or existing.createdAt or 0
+
+                if incoming_ver >= existing_ver:
+                    groups_file = storage._read_groups_file()
+                    groups_file.groups = [
+                        ChatGroup(**incoming_dump) if g.id == group_data.id else g
+                        for g in groups_file.groups
+                    ]
+                    storage._write_groups_file(groups_file)
+                    results["updated"] += 1
+                else:
+                    results["skipped"] += 1
+            else:
+                groups_file = storage._read_groups_file()
+                groups_file.groups.append(ChatGroup(**group_data.model_dump()))
+                storage._write_groups_file(groups_file)
+                results["created"] += 1
+        except Exception as e:
+            results["errors"].append({"id": group_data.id, "error": str(e)})
+    
+    return results
 
 # Chats
 
