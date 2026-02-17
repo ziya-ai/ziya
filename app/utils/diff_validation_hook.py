@@ -298,27 +298,25 @@ class DiffValidationHook:
         """
         parts = []
         
-        # Header: Make it crystal clear which diff is the problem
-        parts.append("=" * 80)
-        parts.append(f"DIFF VALIDATION ISSUE - DIFF #{diff_number} ONLY")
-        parts.append("=" * 80)
-        parts.append("")
-        
-        # Status summary: Show what's good vs bad
+        # Lead with the constraint — what NOT to do
         total_validated = len(self.validated_diffs)
         successful_count = len(self.successful_diffs)
         
-        if successful_count > 0:
-            parts.append(f"✅ Diffs 1-{successful_count}: Successfully validated")
-            parts.append(f"   Files: {', '.join(self.successful_diffs)}")
-            parts.append("")
-        
-        parts.append(f"❌ Diff #{diff_number}: Validation failed")
-        parts.append(f"   File: {file_path}")
+        parts.append(f"⚠️ DIFF #{diff_number} for {file_path} FAILED validation.")
         parts.append("")
         
-        # Show the original diff that failed
-        parts.append("**Your diff that failed:**")
+        if successful_count > 0:
+            parts.append(f"DO NOT regenerate these — they already passed and will be applied:")
+            for f in self.successful_diffs:
+                parts.append(f"  ✅ {f}")
+            parts.append("")
+            parts.append(f"ONLY provide a corrected diff for: {file_path}")
+        else:
+            parts.append(f"Provide a corrected diff for: {file_path}")
+        parts.append("")
+        
+        # Error details
+        parts.append("Your diff that failed:")
         parts.append("```diff")
         parts.append(diff_content)
         parts.append("```")
@@ -329,20 +327,12 @@ class DiffValidationHook:
         parts.append(validation_result["model_feedback"])
         parts.append("")
         
-        # Context enhancement notification
         if context_was_enhanced:
-            parts.append("**Context Updated:**")
-            parts.append(f"I've added {file_path} to your context above (see the file content).")
-            parts.append("")
+            parts.append(f"The current content of {file_path} has been added to your context above.")
+            parts.append("Use it to verify line numbers and context lines in your corrected diff.")
+        else:
+            parts.append("Use the error details above to fix the hunk context/line numbers.")
         
-        # Clear, actionable instructions
-        parts.append("**What to do:**")
-        parts.append(f"1. Provide ONLY a corrected diff for {file_path}")
-        parts.append(f"2. DO NOT regenerate diffs 1-{successful_count} (they already passed)")
-        parts.append(f"3. Use the {'current file content shown above' if context_was_enhanced else 'error details above'} to fix the issue")
-        parts.append("")
-        
-        parts.append("=" * 80)
         
         return "\n".join(parts)
     
