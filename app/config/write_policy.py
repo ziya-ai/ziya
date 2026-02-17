@@ -133,11 +133,40 @@ class WritePolicyManager:
 
     # -- Public API (usable by any tool) ---------------------------------
 
+    def _ensure_loaded_for_root(self, project_root: str) -> None:
+        """
+        Lazily load project-specific policy when the project root is known
+        but ``load_for_project`` has not been called yet (or was called for
+        a different project).  Resolves project_id by scanning
+        ``~/.ziya/projects/*/project.json`` for a matching ``path`` field.
+        """
+        if not project_root or self._project_root == project_root:
+            return  # Already loaded for this root (or no root provided)
+
+        import json as _json
+        projects_dir = Path.home() / ".ziya" / "projects"
+        if not projects_dir.is_dir():
+            return
+        for candidate in projects_dir.iterdir():
+            pf = candidate / "project.json"
+            if pf.is_file():
+                try:
+                    with open(pf) as f:
+                        data = _json.load(f)
+                    if data.get("path") == project_root:
+                        self.load_for_project(data["id"], project_root)
+                        return
+                except Exception:
+                    continue
+
     def is_write_allowed(self, target_path: str, project_root: str = "") -> bool:
         root = project_root or self._project_root or os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
+        self._ensure_loaded_for_root(root)
         return self._check_path(target_path, root)
 
     def check_write(self, target_path: str, project_root: str = "") -> Tuple[bool, str]:
+        root = project_root or self._project_root or os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
+        self._ensure_loaded_for_root(root)
         if self.is_write_allowed(target_path, project_root):
             return True, ""
         patterns = self._policy.get('allowed_write_patterns', [])
