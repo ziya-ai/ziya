@@ -13,6 +13,7 @@ import { useTheme } from '../context/ThemeContext';
 import StopStreamButton from './StopStreamButton';
 import { ThrottlingErrorDisplay } from './ThrottlingErrorDisplay';
 import { detectIncompleteResponse } from '../utils/responseUtils';
+import { useServerStatus } from '../context/ServerStatusContext';
 import { v4 as uuidv4 } from 'uuid';
 
 interface SendChatContainerProps {
@@ -21,7 +22,7 @@ interface SendChatContainerProps {
 
 export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) => {
   const [inputValue, setInputValue] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submittingConversationId, setSubmittingConversationId] = useState<string | null>(null);
   const [attachedImages, setAttachedImages] = useState<ImageAttachment[]>([]);
   const [supportsVision, setSupportsVision] = useState(false);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
@@ -52,25 +53,31 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   
   const { checkedKeys } = useFolderContext();
   const { activeSkillPrompts, currentProject } = useProject();
+  const { isServerReachable } = useServerStatus();
   const { isDarkMode } = useTheme();
   
   const isCurrentlyStreaming = streamingConversations.has(currentConversationId);
+  // isSubmitting is true only when the CURRENT conversation has a send in flight.
+  // A send running for a different conversation (user switched tabs) must not block.
+  const isSubmitting = submittingConversationId === currentConversationId;
   const shouldSendAsFeedback = isCurrentlyStreaming && inputValue.trim().length > 0;
   
-  // Memoized disabled state to prevent unnecessary re-renders
+  // Disabled when: no content, OR this conversation is streaming, OR server is unreachable
   const isDisabled = useMemo(() => 
-    (!inputValue.trim() && attachedImages.length === 0) || isCurrentlyStreaming,
-    [inputValue, attachedImages.length, isCurrentlyStreaming]
+    (!inputValue.trim() && attachedImages.length === 0) || isCurrentlyStreaming || !isServerReachable,
+    [inputValue, attachedImages.length, isCurrentlyStreaming, isServerReachable]
   );
   
   // Memoized button title for accessibility
   const buttonTitle = useMemo(() =>
-    isCurrentlyStreaming
+    !isServerReachable
+      ? "Server is unreachable"
+      : isCurrentlyStreaming
       ? "Waiting for AI response..."
       : currentMessages[currentMessages.length - 1]?.role === 'human'
         ? "AI response may have failed - click Send to retry"
         : "Send message",
-    [isCurrentlyStreaming, currentMessages]
+    [isCurrentlyStreaming, currentMessages, isServerReachable]
   );
   
   // Check if current model supports vision
@@ -339,6 +346,19 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     setInputValue(text);
   }, [serializeEditorContent]);
   
+  // Remove an inline image element from the editor and clean up state
+  const removeImageElement = useCallback((imgElement: HTMLElement) => {
+    const imageId = imgElement.dataset.imageId;
+    if (imageId) {
+      setAttachedImages(prev => prev.filter(img => img.id !== imageId));
+    }
+    imgElement.remove();
+    // Re-sync input value after DOM change
+    requestAnimationFrame(() => {
+      handleInput();
+    });
+  }, [handleInput]);
+
   // Send feedback to running tools
   const sendToolFeedback = useCallback(async () => {
     if (!inputValue.trim() || isSendingFeedback) return;
@@ -408,15 +428,14 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     
     // Don't allow sending while streaming
     if (isCurrentlyStreaming) {
-      console.warn('Cannot send while streaming - use feedback instead');
       return;
     }
-    
-    setIsSubmitting(true);
     
     // CRITICAL: Capture conversation ID before any async operations
     // This ensures responses go to the correct conversation even if user switches
     const targetConversationId = currentConversationId;
+    
+    setSubmittingConversationId(targetConversationId);
     
     // Reset scroll state so auto-scroll works for new messages
     setUserHasScrolled(false);
@@ -465,7 +484,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     } catch (error) {
       console.error('Error sending message:', error);
     } finally {
-      setIsSubmitting(false);
+      setSubmittingConversationId(null);
     }
   }, [
     shouldSendAsFeedback, sendToolFeedback, serializeEditorContent, isSubmitting,
@@ -484,8 +503,69 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       } else {
         handleSend();
       }
+      return;
     }
-  }, [shouldSendAsFeedback, sendToolFeedback, handleSend]);
+
+    // Handle Backspace / Delete over inline images (contentEditable='false' elements
+    // are not natively removable via keyboard in most browsers)
+    if (e.key === 'Backspace' || e.key === 'Delete') {
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0) return;
+
+      // Case 1: Non-collapsed selection that contains (or is) an image
+      if (!sel.isCollapsed) {
+        const range = sel.getRangeAt(0);
+        const fragment = range.cloneContents();
+        const imgs = fragment.querySelectorAll('img[data-image-id]');
+        if (imgs.length > 0) {
+          // Let the browser delete the range, but also clean up our state
+          // We need to find the actual DOM images (not the cloned ones)
+          const editor = editorRef.current;
+          if (editor) {
+            const imageIds = new Set(Array.from(imgs).map(img => (img as HTMLElement).dataset.imageId));
+            // After the browser processes the deletion, sync state
+            requestAnimationFrame(() => {
+              setAttachedImages(prev => prev.filter(img => !imageIds.has(img.id)));
+              handleInput();
+            });
+          }
+        }
+        return; // let browser handle the range deletion
+      }
+
+      // Case 2: Collapsed cursor — check adjacent node
+      const { anchorNode, anchorOffset } = sel;
+      if (!anchorNode) return;
+
+      let targetImg: HTMLElement | null = null;
+
+      if (anchorNode.nodeType === Node.ELEMENT_NODE) {
+        // Cursor is between child nodes of a container (e.g. the editor div itself)
+        const children = anchorNode.childNodes;
+        if (e.key === 'Backspace' && anchorOffset > 0) {
+          const prev = children[anchorOffset - 1] as HTMLElement;
+          if (prev?.tagName === 'IMG') targetImg = prev;
+        } else if (e.key === 'Delete' && anchorOffset < children.length) {
+          const next = children[anchorOffset] as HTMLElement;
+          if (next?.tagName === 'IMG') targetImg = next;
+        }
+      } else if (anchorNode.nodeType === Node.TEXT_NODE) {
+        // Cursor is inside a text node — check siblings
+        if (e.key === 'Backspace' && anchorOffset === 0) {
+          const prev = anchorNode.previousSibling as HTMLElement;
+          if (prev?.tagName === 'IMG') targetImg = prev;
+        } else if (e.key === 'Delete' && anchorOffset === (anchorNode.textContent?.length || 0)) {
+          const next = anchorNode.nextSibling as HTMLElement;
+          if (next?.tagName === 'IMG') targetImg = next;
+        }
+      }
+
+      if (targetImg && targetImg.dataset?.imageId) {
+        e.preventDefault();
+        removeImageElement(targetImg);
+      }
+    }
+  }, [shouldSendAsFeedback, sendToolFeedback, handleSend, removeImageElement, handleInput]);
   
   return (
     <div 

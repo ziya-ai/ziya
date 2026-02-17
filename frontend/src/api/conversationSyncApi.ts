@@ -37,17 +37,29 @@ export interface BulkSyncResult {
 
 const BASE = '/api/v1/projects';
 
-export async function listChats(projectId: string, includeMessages = true): Promise<ServerChat[]> {
-  const res = await fetch(`${BASE}/${projectId}/chats?include_messages=${includeMessages}`);
+/**
+ * Get project-scoping header for server-side request isolation.
+ */
+function projectHeaders(): Record<string, string> {
+  const path = (window as any).__ZIYA_CURRENT_PROJECT_PATH__;
+  return path ? { 'X-Project-Root': path } : {};
+}
+
+export async function listChats(projectId: string, includeMessages = false): Promise<ServerChat[]> {
+  const res = await fetch(`${BASE}/${projectId}/chats?include_messages=${includeMessages}`, {
+    headers: projectHeaders(),
+  });
   if (!res.ok) {
-    console.warn('Failed to list chats from server:', res.status);
+    console.debug('Failed to list chats from server:', res.status);
     return [];
   }
   return res.json();
 }
 
 export async function getChat(projectId: string, chatId: string): Promise<ServerChat | null> {
-  const res = await fetch(`${BASE}/${projectId}/chats/${chatId}`);
+  const res = await fetch(`${BASE}/${projectId}/chats/${chatId}`, {
+    headers: projectHeaders(),
+  });
   if (!res.ok) return null;
   return res.json();
 }
@@ -55,7 +67,7 @@ export async function getChat(projectId: string, chatId: string): Promise<Server
 export async function bulkSync(projectId: string, chats: ServerChat[]): Promise<BulkSyncResult> {
   const res = await fetch(`${BASE}/${projectId}/chats/bulk-sync`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...projectHeaders() },
     body: JSON.stringify({ chats }),
   });
   if (!res.ok) {

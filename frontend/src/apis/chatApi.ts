@@ -4,7 +4,7 @@ import { Message, ImageAttachment } from '../utils/types';
 import { AppConfig, DEFAULT_CONFIG } from '../types/config';
 import { formatMCPOutput, enhanceToolDisplayHeader } from '../utils/mcpFormatter';
 import { handleToolStart, handleToolDisplay, ToolEventContext } from '../utils/mcpToolHandlers';
-import { Project } from '../context/ProjectContext';
+import { Project } from '../types/project';
 
 import { extractSingleFileDiff } from '../utils/diffUtils';
 // WebSocket for real-time feedback
@@ -721,7 +721,7 @@ export const sendPayload = async (
         }
 
         setIsStreaming(true);
-        let response = await getApiResponse(messagesToSend, question, checkedItems, conversationId, signal, currentProject);
+        let response = await getApiResponse(messagesToSend, question, checkedItems, conversationId, signal, currentProject, activeSkillPrompts);
         console.log("Initial API response:", response.status, response.statusText);
 
         if (!response.ok) {
@@ -731,7 +731,7 @@ export const sendPayload = async (
                 // Add a small delay before retrying
                 await new Promise(resolve => setTimeout(resolve, 2000));
                 // Retry the request once
-                let retryResponse = await getApiResponse(messagesToSend, question, checkedItems, conversationId, signal, currentProject);
+                let retryResponse = await getApiResponse(messagesToSend, question, checkedItems, conversationId, signal, currentProject, activeSkillPrompts);
                 if (!retryResponse.ok) {
                     throw await handleStreamError(retryResponse);
                 }
@@ -1181,7 +1181,6 @@ export const sendPayload = async (
 
                         // Clean up and stop processing
                         removeStreamingConversation(conversationId);
-                        setIsStreaming(false);
                         return;
                     }
 
@@ -1622,21 +1621,12 @@ export const sendPayload = async (
                     // Create tool display with header - handle hierarchical results
                     let toolResultContent: string;
                     let toolResultDisplay: string;
-                    if (actualToolName === 'run_shell_command') {
-                        // Shell commands: wrap in TOOL_BLOCK with shell code fence inside
-                        // CRITICAL: Use lang attribute in fence to store header, not HTML comments
-                        // HTML comments inside/around code fences get rendered literally by marked.js
-                        // Use 'sh' lang for Prism syntax highlighting of shell output
-                        toolResultContent = displayContent;
-                        const fence = '`'.repeat(4);
-                        const needsExtraNewline = !currentContent.endsWith('\n\n');
-                        // Use the lang attribute to encode tool info: tool:toolName|displayHeader
-                        // This works because marked.js preserves the lang attribute in code tokens
-                        toolResultDisplay = `${needsExtraNewline ? '\n\n' : '\n'}` +
-                            `${fence}tool:${toolName}|${displayHeader}|sh\n${toolResultContent}\n${fence}\n\n`;
+                    // Backend syntax hint for Prism highlighting
+                    const resultSyntax = unwrappedData.syntax || 'text';
+                    const resultFence = '`'.repeat(4);
+                    const needsExtraNewline = !currentContent.endsWith('\n\n');
 
-
-                    } else if (formatted.hierarchicalResults && formatted.hierarchicalResults.length > 0) {
+                    if (formatted.hierarchicalResults && formatted.hierarchicalResults.length > 0) {
                         // Add verification status to metadata
                         // Store for MarkdownRenderer to display lock icon
                         // CRITICAL: Pass hierarchicalResults as JSON structure, NOT as serialized markdown.
@@ -1648,18 +1638,12 @@ export const sendPayload = async (
                             type: formatted.type,
                             hierarchicalResults: formatted.hierarchicalResults
                         });
-                        const needsExtraNewline = !currentContent.endsWith('\n\n');
-                        toolResultDisplay = `${needsExtraNewline ? '\n\n' : '\n'}<!-- TOOL_BLOCK_START:${toolName}|${displayHeader}|${unwrappedData.tool_id} -->\n${toolResultContent}\n<!-- TOOL_BLOCK_END:${toolName}|${unwrappedData.tool_id} -->\n\n`;
-                    } else if (formatted.type === 'search_results' && formatted.content) {
-                        // For search results without hierarchical structure, show the formatted content
-                        toolResultContent = formatted.content;
-                        const needsExtraNewline = !currentContent.endsWith('\n\n');
                         toolResultDisplay = `${needsExtraNewline ? '\n\n' : '\n'}<!-- TOOL_BLOCK_START:${toolName}|${displayHeader}|${unwrappedData.tool_id} -->\n${toolResultContent}\n<!-- TOOL_BLOCK_END:${toolName}|${unwrappedData.tool_id} -->\n\n`;
                     } else {
-                        // Default: use formatted content as-is
+                        // Default for ALL tools: code fence with syntax hint
                         toolResultContent = formatted.content;
-                        const needsExtraNewline = !currentContent.endsWith('\n\n');
-                        toolResultDisplay = `${needsExtraNewline ? '\n\n' : '\n'}<!-- TOOL_BLOCK_START:${toolName}|${displayHeader}|${unwrappedData.tool_id} -->\n${toolResultContent}\n<!-- TOOL_BLOCK_END:${toolName}|${unwrappedData.tool_id} -->\n\n`;
+                        toolResultDisplay = `${needsExtraNewline ? '\n\n' : '\n'}` +
+                            `${resultFence}tool:${toolName}|${displayHeader}|${resultSyntax}\n${toolResultContent}\n${resultFence}\n\n`;
                     }
 
                     // STRATEGY 1: Use tool_id marker (most reliable)
@@ -1911,15 +1895,15 @@ export const sendPayload = async (
                     let toolStartDisplay: string;
 
                     const fence = '`'.repeat(4);
+                    // Backend sends 'syntax' hint for Prism highlighting
+                    const syntax = unwrappedData.syntax || 'text';
+
                     if (actualToolName === 'run_shell_command' && inputArgs.command) {
-                        // Use tool: lang attribute instead of HTML comments for shell commands
-                        toolStartDisplay = `\n\n<!-- TOOL_MARKER:${unwrappedData.tool_id} -->\n${fence}tool:${toolName}|${displayHeader}\n$ ${inputArgs.command}\n⏳ Running...\n${fence}\n\n`;
-                    } else if (actualToolName === 'get_current_time') {
-                        // Add TOOL_MARKER for reliable replacement
-                        toolStartDisplay = `\n\n\n⏳ Getting current time...\n\n\n`;
+                        // Shell commands: include the command line in the loading display
+                        toolStartDisplay = `\n\n\n${fence}tool:${toolName}|${displayHeader}|${syntax}\n$ ${inputArgs.command}\n⏳ Running...\n${fence}\n\n`;
                     } else {
                         // Add TOOL_MARKER for all tools so tool_display can find and replace reliably
-                        toolStartDisplay = `\n<!-- TOOL_MARKER:${unwrappedData.tool_id} -->\n<!-- TOOL_BLOCK_START:${toolName}|${displayHeader}|${unwrappedData.tool_id} -->\n⏳ Running...\n<!-- TOOL_BLOCK_END:${toolName}|${unwrappedData.tool_id} -->\n\n`;
+                        toolStartDisplay = `\n\n\n${fence}tool:${toolName}|${displayHeader}|${syntax}\n⏳ Running...\n${fence}\n\n`;
                     }
 
                     console.log('🔧 TOOL_START formatted:', toolStartDisplay);
@@ -2077,7 +2061,6 @@ export const sendPayload = async (
 
                                         // Clean up
                                         setIsStreaming(false);
-                                        removeStreamingConversation(conversationId);
                                         setStreamedContentMap((prev: Map<string, string>) => new Map(prev));
                                         break;
                                     }
@@ -2130,7 +2113,6 @@ export const sendPayload = async (
                             console.log("Stream aborted by user");
                             errorOccurred = true;
                             removeStreamingConversation(conversationId);
-                            setIsStreaming(false);
                             return 'Response generation stopped by user.';
                         }
                         const { done, value } = await reader.read();
@@ -2160,7 +2142,6 @@ export const sendPayload = async (
                             if (isAborted) {
                                 console.log("Stream was aborted during processing, discarding chunk");
                                 removeStreamingConversation(conversationId);
-                                setIsStreaming(false);
                                 return 'Response generation stopped by user.';
                             }
                             console.log("Empty chunk received, continuing");
@@ -2211,7 +2192,6 @@ export const sendPayload = async (
 
                         errorOccurred = true;
                         removeStreamingConversation(conversationId);
-                        setIsStreaming(false);
                         break;
                     }
                 }
@@ -2220,7 +2200,6 @@ export const sendPayload = async (
                 if (error instanceof DOMException && error.name === 'AbortError') return '';
                 console.error('Unhandled Stream error in readStream:', { error });
                 removeStreamingConversation(conversationId);
-                setIsStreaming(false);
                 throw error;
             } finally {
                 // Flush any remaining bytes in the decoder
@@ -2278,7 +2257,6 @@ export const sendPayload = async (
                     content_vs_bytes_ratio: (currentContent.length / metrics.bytes_received * 100).toFixed(1) + '%'
                 });
 
-                setIsStreaming(false);
                 return !errorOccurred && currentContent ? currentContent : '';
             }
         }
@@ -2383,10 +2361,8 @@ export const sendPayload = async (
 
             console.error('Stream processing error in readStream catch block:', { error });
             removeStreamingConversation(conversationId);
-            setIsStreaming(false);
             throw error;
         } finally {
-            setIsStreaming(false);
         }
     } catch (error) {
         console.error('Error in sendPayload:', error);
@@ -2406,12 +2382,10 @@ export const sendPayload = async (
         if (eventSource && typeof eventSource.close === 'function') eventSource.close();
         // Clear streaming state
         setIsStreaming(false);
-        removeStreamingConversation(conversationId);
         throw error;
     } finally {
         if (eventSource && typeof eventSource.close === 'function') eventSource.close();
         document.removeEventListener('abortStream', abortListener as EventListener);
-        setIsStreaming(false);
         removeStreamingConversation(conversationId);
 
         // Only disconnect WebSocket if we're truly done and not just switching conversations
@@ -2506,7 +2480,10 @@ export async function applyDiff(
 
         const response = await fetch('/api/apply-changes', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                ...((currentProject?.path) ? { 'X-Project-Root': currentProject.path } : {}),
+            },
             body: JSON.stringify({
                 diff: cleanDiff,
                 filePath: filePath.trim(),
@@ -2577,7 +2554,10 @@ export async function undoDiff(
     try {
         const response = await fetch('/api/unapply-changes', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                ...((currentProject?.path) ? { 'X-Project-Root': currentProject.path } : {}),
+            },
             body: JSON.stringify({
                 diff,
                 filePath: filePath.trim(),
@@ -2746,7 +2726,7 @@ function handleSequentialThinkingDisplay(
 }
 */
 
-async function getApiResponse(messages: any[], question: string, checkedItems: string[], conversationId: string, signal?: AbortSignal, currentProject?: { id: string; name: string; path: string } | null) {
+async function getApiResponse(messages: any[], question: string, checkedItems: string[], conversationId: string, signal?: AbortSignal, currentProject?: { id: string; name: string; path: string } | null, activeSkillPrompts?: string) {
     const messageTuples: string[][] = [];
 
     // Messages are already filtered in SendChatContainer, no need to filter again
@@ -2767,13 +2747,12 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
     console.log('🔍 API: Sending conversation_id to server:', conversationId);
     console.log('🖼️ API: Messages with images:', messages.filter(m => m.images?.length > 0).length);
     
-    // Include active skill prompts if provided
-    const activeSkillPrompts = ''; // TODO: Wire up skill prompts
+    // Include active skill prompts from caller
     const systemPromptAddition = activeSkillPrompts ? `\n\n${activeSkillPrompts}` : '';
 
     const payload = {
-        messages: messageTuples,
         question,
+        messages: messageTuples,
         systemPromptAddition,
         conversation_id: conversationId,
         files: checkedItems,
@@ -2784,9 +2763,7 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-            // conversation_id is now in the payload body
-            // But also add it to headers for error middleware
-            'X-Conversation-Id': conversationId || ''
+                ...((currentProject?.path) ? { 'X-Project-Root': currentProject.path } : {}),
         },
         body: JSON.stringify(payload),
         signal
@@ -2809,7 +2786,7 @@ export const restartStreamWithEnhancedContext = async (
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'Accept': 'text/event-stream'
+                ...((currentProject?.path) ? { 'X-Project-Root': currentProject.path } : {}),
             },
             body: JSON.stringify({
                 conversation_id: conversationId,
