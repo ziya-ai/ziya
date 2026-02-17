@@ -52,6 +52,9 @@ class ChatStorage(BaseStorage[Chat]):
         """List chats without messages for performance."""
         summaries = []
         for chat in self.list(group_id):
+            # Extract _version from extra fields for polling comparisons
+            chat_extra = chat.model_dump()
+            version = chat_extra.get('_version')
             summaries.append(ChatSummary(
                 id=chat.id,
                 title=chat.title,
@@ -61,7 +64,8 @@ class ChatStorage(BaseStorage[Chat]):
                 additionalFiles=chat.additionalFiles,
                 messageCount=len(chat.messages),
                 createdAt=chat.createdAt,
-                lastActiveAt=chat.lastActiveAt
+                lastActiveAt=chat.lastActiveAt,
+                **({'_version': version} if version else {})
             ))
         return summaries
     
