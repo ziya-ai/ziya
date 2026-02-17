@@ -25,7 +25,7 @@ export interface Project {
 }
 
 export interface ProjectCreate {
-  path: string;
+  path?: string;
   name?: string;
 }
 
