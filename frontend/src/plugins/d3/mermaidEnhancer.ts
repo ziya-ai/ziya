@@ -652,8 +652,13 @@ export function initMermaidEnhancer(): void {
 
       let result = definition;
 
-      // Fix section syntax - remove colons from section headers
-      result = result.replace(/^(\s*section\s+[^:\n]+):\s*$/gm, '$1');
+      // Fix section syntax - replace colons in section headers with dashes.
+      // Mermaid's journey parser uses colons as task data delimiters, so colons
+      // inside section names (e.g. "section Day 1: The Edge") cause parse errors.
+      result = result.replace(/^(\s*section\s+)(.+)$/gm, (match, prefix, name) => {
+        if (!name.includes(':')) return match;
+        return prefix + name.replace(/:/g, ' -');
+      });
 
       // Fix task format - ensure proper spacing and participant handling
       // Tasks should be in format: "Task Name: score: participant1, participant2"
@@ -2809,8 +2814,13 @@ export function initMermaidEnhancer(): void {
     // Fix common syntax issues
     let processed = def;
 
-    // Ensure proper line breaks between sections
-    processed = processed.replace(/(\w+)(\s*\n\s*[A-Z])/g, '$1\n$2');
+    // Ensure proper line breaks between sections.
+    // Skip journey and gantt diagrams — their parsers require strict
+    // whitespace with no blank lines between section headers and tasks.
+    const trimmedStart = def.trimStart();
+    if (!trimmedStart.startsWith('journey') && !trimmedStart.startsWith('gantt')) {
+      processed = processed.replace(/(\w+)(\s*\n\s*[A-Z])/g, '$1\n$2');
+    }
 
     // Fix missing spaces in arrows
     processed = processed.replace(/(\w+)-->/g, '$1 -->');
