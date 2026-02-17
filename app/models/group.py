@@ -5,6 +5,8 @@ from pydantic import BaseModel
 from typing import List, Optional
 
 class ChatGroup(BaseModel):
+    model_config = {"extra": "allow"}
+
     id: str
     name: str
     defaultContextIds: List[str] = []
@@ -14,6 +16,7 @@ class ChatGroup(BaseModel):
     createdAt: int
 
 class ChatGroupCreate(BaseModel):
+    model_config = {"extra": "allow"}
     name: str
     defaultContextIds: Optional[List[str]] = None
     defaultSkillIds: Optional[List[str]] = None

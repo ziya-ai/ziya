@@ -3,6 +3,7 @@ Chat data models.
 """
 from pydantic import BaseModel
 from typing import List, Optional, Any, Dict
+from .group import ChatGroup
 
 class Message(BaseModel):
     model_config = {"extra": "allow"}
@@ -57,6 +58,7 @@ class ChatUpdate(BaseModel):
 
 class ChatSummary(BaseModel):
     """Chat without messages, for list views."""
+    model_config = {"extra": "allow"}
     id: str
     title: str
     groupId: Optional[str]
@@ -71,3 +73,8 @@ class ChatSummary(BaseModel):
 class ChatBulkSync(BaseModel):
     """Request body for bulk sync endpoint."""
     chats: List[Chat]
+
+
+class ChatGroupBulkSync(BaseModel):
+    """Request body for bulk group/folder sync endpoint."""
+    groups: List[ChatGroup]
