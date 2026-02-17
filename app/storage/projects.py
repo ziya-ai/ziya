@@ -57,12 +57,13 @@ class ProjectStorage(BaseStorage[Project]):
     
     def create(self, data: ProjectCreate) -> Project:
         """Create a new project or return existing one for the path."""
-        # Check if project already exists for this path
-        existing = self.get_by_path(data.path)
-        if existing:
-            # Update lastAccessedAt
-            self.touch(existing.id)
-            return existing
+        # Check if project already exists for this path (only if path is provided)
+        if data.path:
+            existing = self.get_by_path(data.path)
+            if existing:
+                # Update lastAccessedAt
+                self.touch(existing.id)
+                return existing
         
         project_id = str(uuid.uuid4())
         now = int(time.time() * 1000)
@@ -70,12 +71,17 @@ class ProjectStorage(BaseStorage[Project]):
         # Default name is the directory basename
         name = data.name
         if not name:
-            name = Path(data.path).name or "Unnamed Project"
+            if data.path:
+                name = Path(data.path).name or "Unnamed Project"
+            else:
+                name = "Unnamed Project"
+        
+        path = data.path or ""
         
         project = Project(
             id=project_id,
             name=name,
-            path=data.path,
+            path=path,
             createdAt=now,
             lastAccessedAt=now,
             settings=ProjectSettings(defaultContextIds=[], defaultSkillIds=[])

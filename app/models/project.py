@@ -25,7 +25,7 @@ class Project(BaseModel):
     settings: ProjectSettings
 
 class ProjectCreate(BaseModel):
-    path: str
+    path: Optional[str] = None
     name: Optional[str] = None
 
 class ProjectUpdate(BaseModel):

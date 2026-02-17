@@ -3,7 +3,8 @@ import { Modal, Button, Input, Tag, Space, message, Divider, Alert, Collapse, Em
 import {
     DeleteOutlined, SettingOutlined, MergeCellsOutlined,
     EditOutlined, CheckOutlined, CloseOutlined,
-    FolderOutlined, ExclamationCircleOutlined
+    FolderOutlined, ExclamationCircleOutlined,
+    PlusOutlined, FolderAddOutlined
 } from '@ant-design/icons';
 import { useProject } from '../context/ProjectContext';
 import { useTheme } from '../context/ThemeContext';
@@ -12,6 +13,12 @@ import { WritePolicy } from '../types/project';
 
 const { Panel } = Collapse;
 
+interface BrowseEntry {
+    name: string;
+    path: string;
+    is_dir: boolean;
+}
+
 interface ProjectManagerModalProps {
     visible: boolean;
     onClose: () => void;
@@ -19,7 +26,7 @@ interface ProjectManagerModalProps {
 
 const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onClose }) => {
     const { currentProject, projects, switchProject, updateProject, deleteProject, mergeProjects, refreshProjects } = useProject();
-    const { conversations } = useChatContext();
+    const { conversations, startNewChat } = useChatContext();
     const { isDarkMode } = useTheme();
 
     const [editingId, setEditingId] = useState<string | null>(null);
@@ -34,6 +41,15 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
     const [writePolicy, setWritePolicy] = useState<WritePolicy>({});
     const [newPattern, setNewPattern] = useState('');
     const [newWritePath, setNewWritePath] = useState('');
+
+    // New project creation state
+    const [showCreateForm, setShowCreateForm] = useState(false);
+    const [newProjectName, setNewProjectName] = useState('');
+    const [newProjectPath, setNewProjectPath] = useState('');
+    const [isCreating, setIsCreating] = useState(false);
+    const [showBrowseModal, setShowBrowseModal] = useState(false);
+    const [browseEntries, setBrowseEntries] = useState<BrowseEntry[]>([]);
+    const [browsePath, setBrowsePath] = useState('~');
 
     useEffect(() => {
         if (visible) refreshProjects();
@@ -107,6 +123,69 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
         } finally {
             setIsProcessing(false);
         }
+    };
+
+    const handleCreateProject = async () => {
+        const name = newProjectName.trim();
+        if (!name) {
+            message.error('Project name is required');
+            return;
+        }
+
+        setIsCreating(true);
+        try {
+            const { createProject } = await import('../context/ProjectContext').then(m => {
+                // We already have createProject from useProject hook — use the API directly
+                return { createProject: async (path: string, projectName?: string) => {
+                    const { api } = await import('../api/index');
+                    return api.post<any>('/projects', { path: path || undefined, name: projectName });
+                }};
+            });
+
+            const path = newProjectPath.trim() || undefined;
+            const newProject = await createProject(path || '', name);
+
+            message.success(`Project "${name}" created`);
+            setNewProjectName('');
+            setNewProjectPath('');
+            setShowCreateForm(false);
+
+            // Refresh project list and switch to the new project
+            await refreshProjects();
+
+            if (newProject?.id) {
+                await switchProject(newProject.id);
+            }
+
+            onClose();
+        } catch (error: any) {
+            message.error(error.message || 'Failed to create project');
+        } finally {
+            setIsCreating(false);
+        }
+    };
+
+    const handleBrowse = async (path: string) => {
+        try {
+            const response = await fetch(`/api/browse-directory?path=${encodeURIComponent(path)}`);
+            if (response.ok) {
+                const data = await response.json();
+                setBrowsePath(data.current_path);
+                setBrowseEntries(data.entries.filter((e: BrowseEntry) => e.is_dir));
+            }
+        } catch (error) {
+            console.error('Failed to browse directory:', error);
+        }
+    };
+
+    const openBrowseModal = () => {
+        setShowBrowseModal(true);
+        handleBrowse(newProjectPath || '~');
+    };
+
+    const selectBrowsePath = (path: string) => {
+        setNewProjectPath(path);
+        setShowBrowseModal(false);
     };
 
     const handleSaveWritePolicy = async () => {
@@ -431,6 +510,106 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
                     })}
                 </div>
             )}
+
+            <Divider style={{ margin: '16px 0 12px' }} />
+
+            {!showCreateForm ? (
+                <Button
+                    type="dashed"
+                    block
+                    icon={<PlusOutlined />}
+                    onClick={() => setShowCreateForm(true)}
+                    style={{ height: 44 }}
+                >
+                    Create New Project
+                </Button>
+            ) : (
+                <div style={{
+                    padding: 16,
+                    borderRadius: 8,
+                    border: `1px solid ${isDarkMode ? '#177ddc' : '#91d5ff'}`,
+                    backgroundColor: isDarkMode ? '#111d2c' : '#f0f8ff',
+                }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                        <FolderAddOutlined style={{ fontSize: 16, color: '#1890ff' }} />
+                        <strong>New Project</strong>
+                    </div>
+
+                    <div style={{ marginBottom: 10 }}>
+                        <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>Project Name *</div>
+                        <Input
+                            placeholder="e.g. My Idea, Research Notes, Side Project"
+                            value={newProjectName}
+                            onChange={e => setNewProjectName(e.target.value)}
+                            onPressEnter={handleCreateProject}
+                            autoFocus
+                        />
+                    </div>
+
+                    <div style={{ marginBottom: 12 }}>
+                        <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>
+                            Directory Path <span style={{ fontStyle: 'italic' }}>(optional — leave empty for idea/scratch projects)</span>
+                        </div>
+                        <Input.Group compact>
+                            <Input
+                                placeholder="/path/to/directory (optional)"
+                                value={newProjectPath}
+                                onChange={e => setNewProjectPath(e.target.value)}
+                                onPressEnter={handleCreateProject}
+                                style={{ width: 'calc(100% - 80px)' }}
+                            />
+                            <Button onClick={openBrowseModal} style={{ width: 80 }}>
+                                Browse
+                            </Button>
+                        </Input.Group>
+                    </div>
+
+                    <Space>
+                        <Button type="primary" icon={<PlusOutlined />} loading={isCreating}
+                            onClick={handleCreateProject}
+                            disabled={!newProjectName.trim()}
+                        >
+                            Create
+                        </Button>
+                        <Button onClick={() => { setShowCreateForm(false); setNewProjectName(''); setNewProjectPath(''); }}>
+                            Cancel
+                        </Button>
+                    </Space>
+                </div>
+            )}
+
+            {/* Directory browser modal */}
+            <Modal
+                title="Select Directory"
+                open={showBrowseModal}
+                onCancel={() => setShowBrowseModal(false)}
+                width={500}
+                footer={null}
+            >
+                <div style={{ marginBottom: 12 }}>
+                    <strong>Current:</strong> <code style={{ fontSize: 12 }}>{browsePath}</code>
+                    <Button size="small" style={{ marginLeft: 8 }}
+                        onClick={() => selectBrowsePath(browsePath)}>Select This</Button>
+                    <Button size="small" type="link"
+                        onClick={() => handleBrowse(browsePath + '/..')}>Up ↑</Button>
+                </div>
+                <List
+                    size="small"
+                    dataSource={browseEntries}
+                    style={{ maxHeight: 400, overflow: 'auto' }}
+                    renderItem={(entry: BrowseEntry) => (
+                        <List.Item style={{ cursor: 'pointer', padding: '6px 12px' }}
+                            onClick={() => handleBrowse(entry.path)}>
+                            <FolderOutlined style={{ marginRight: 8, color: '#faad14' }} />
+                            {entry.name}
+                            <Button size="small" type="link" style={{ marginLeft: 'auto' }}
+                                onClick={(e) => { e.stopPropagation(); selectBrowsePath(entry.path); }}>
+                                Select
+                            </Button>
+                        </List.Item>
+                    )}
+                />
+            </Modal>
         </Modal>
     );
 };

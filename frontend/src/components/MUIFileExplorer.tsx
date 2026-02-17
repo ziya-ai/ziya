@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffe
 import { useFolderContext } from '../context/FolderContext';
 import { useTheme } from '../context/ThemeContext';
 import { fetchConfig } from '../apis/chatApi';
+import { useProject } from '../context/ProjectContext';
 import { Folders } from '../utils/types';
 import { debounce } from 'lodash';
 import { message } from 'antd';
@@ -115,6 +116,7 @@ export const MUIFileExplorer = () => {
   const [addMode, setAddMode] = useState<'browser' | 'context'>('context');
   const [projectRoot, setProjectRoot] = useState<string>('~');
 
+  const { currentProject } = useProject();
   // Lightweight caches - only computed when needed
   const tokenCalculationCache = useRef(new Map());
   const nodePathCache = useRef(new Map());
@@ -773,8 +775,9 @@ export const MUIFileExplorer = () => {
     setAddPathDialogOpen(true);
     setSelectedPaths(new Set());
     setAddMode('browser'); // Default to browser (safer, allows review before adding to context) // Default to context for files
-    browseDirectory(projectRoot);
-  }, [browseDirectory, projectRoot]);
+    const startDir = currentProject?.path || projectRoot;
+    browseDirectory(startDir);
+  }, [browseDirectory, currentProject?.path, projectRoot]);
 
   // Close dialog
   const handleCloseAddPathDialog = useCallback(() => {
