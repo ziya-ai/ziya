@@ -336,6 +336,47 @@ class StreamingToolExecutor:
             # For other tools, return result as-is
             return result_text
     
+    # Extension-to-Prism-language map. Single source of truth — the frontend
+    # never needs its own copy.  Used by _infer_syntax_hint() to derive a
+    # content-language tag for tool results so the frontend can apply Prism
+    # syntax highlighting generically.
+    _EXT_TO_LANG = {
+        '.py': 'python', '.pyw': 'python',
+        '.js': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript',
+        '.ts': 'typescript', '.tsx': 'tsx', '.jsx': 'jsx',
+        '.json': 'json', '.jsonl': 'json',
+        '.md': 'markdown', '.mdx': 'markdown',
+        '.yaml': 'yaml', '.yml': 'yaml', '.toml': 'toml',
+        '.html': 'html', '.htm': 'html', '.xml': 'xml', '.svg': 'xml',
+        '.css': 'css', '.scss': 'scss', '.less': 'less',
+        '.sh': 'bash', '.bash': 'bash', '.zsh': 'bash',
+        '.rs': 'rust', '.go': 'go', '.java': 'java',
+        '.rb': 'ruby', '.php': 'php', '.swift': 'swift',
+        '.c': 'c', '.h': 'c', '.cpp': 'cpp', '.hpp': 'cpp', '.cc': 'cpp',
+        '.cs': 'csharp', '.sql': 'sql',
+        '.r': 'r', '.R': 'r',
+        '.tf': 'hcl', '.hcl': 'hcl',
+        '.dockerfile': 'docker', '.Dockerfile': 'docker',
+        '.makefile': 'makefile', '.mk': 'makefile',
+        '.ini': 'ini', '.cfg': 'ini', '.conf': 'ini',
+        '.graphql': 'graphql', '.gql': 'graphql',
+        '.proto': 'protobuf',
+    }
+
+    def _infer_syntax_hint(self, tool_name: str, args: dict) -> str:
+        """Infer a Prism language hint from the tool name and arguments."""
+        actual = self._normalize_tool_name(tool_name)
+        if actual == 'run_shell_command':
+            return 'bash'
+        # For any tool that operates on a file path, derive from extension
+        file_path = args.get('path') or args.get('file_path') or args.get('url') or ''
+        if file_path:
+            import os
+            _, ext = os.path.splitext(file_path)
+            if ext:
+                return self._EXT_TO_LANG.get(ext.lower(), 'text')
+        return 'text'
+
     def _get_tool_header(self, tool_name: str, args: dict) -> str:
         """Get appropriate header for tool display."""
         actual_tool_name = self._normalize_tool_name(tool_name)
@@ -897,7 +938,8 @@ class StreamingToolExecutor:
                 try:
                     from app.server import active_feedback_connections
                     if conversation_id in active_feedback_connections:
-                        feedback_queue = active_feedback_connections[conversation_id]['feedback_queue']
+                        conns = active_feedback_connections[conversation_id]
+                        feedback_queue = conns[0]['feedback_queue'] if conns else None
                         try:
                             feedback_data = feedback_queue.get_nowait()
                             if feedback_data.get('type') == 'tool_feedback':
@@ -1268,13 +1310,13 @@ class StreamingToolExecutor:
                                 estimation_error = abs(estimated_tokens - actual_tokens)
                                 error_pct = (estimation_error / actual_tokens * 100) if actual_tokens > 0 else 0
                                 
-                                logger.info("=" * 80)
-                                logger.info("📊 ESTIMATION ACCURACY CHECK")
-                                logger.info("=" * 80)
-                                logger.info(f"   Our Estimate:   {estimated_tokens:>8,} tokens ({estimation_method})")
-                                logger.info(f"   Bedrock Total:  {actual_tokens:>8,} tokens (fresh + cached)")
-                                logger.info(f"     └─ Fresh:     {fresh:>8,} tokens (billable)")
-                                logger.info(f"     └─ Cached:    {cached:>8,} tokens (free but counts for throttle)")
+                                logger.debug("=" * 80)
+                                logger.debug("📊 ESTIMATION ACCURACY CHECK")
+                                logger.debug("=" * 80)
+                                logger.debug(f"   Our Estimate:   {estimated_tokens:>8,} tokens ({estimation_method})")
+                                logger.debug(f"   Bedrock Total:  {actual_tokens:>8,} tokens (fresh + cached)")
+                                logger.debug(f"     └─ Fresh:     {fresh:>8,} tokens (billable)")
+                                logger.debug(f"     └─ Cached:    {cached:>8,} tokens (free but counts for throttle)")
                                 if cache_written > 0:
                                     logger.info(f"     └─ Written:   {cache_written:>8,} tokens (cache creation)")
                                     logger.info(f"   Note: Using fresh + written for comparison (first request)")
@@ -1363,8 +1405,8 @@ class StreamingToolExecutor:
                                     # Subtract fixed costs (baseline + chat) to get file-only tokens
                                     # This allows calibrator to learn pure file tokenization rate
                                     file_only_tokens = max(1, calibration_tokens - baseline_overhead - chat_tokens)
-                                    
-                                    logger.info(f"📊 CALIBRATION: Total={calibration_tokens:,}, Baseline={baseline_overhead:,}, "
+
+                                    logger.debug(f"📊 CALIBRATION: Total={calibration_tokens:,}, Baseline={baseline_overhead:,}, "
                                                f"Chat={chat_tokens:,}, File-only={file_only_tokens:,}")
                                     
                                     # Record actual token usage for calibration
@@ -1845,6 +1887,7 @@ Retry with the 'command' parameter included."""
                                     'tool_name': tool_name,
                                     'display_header': self._get_tool_header(tool_name, args),
                                     'args': args,
+                                    'syntax': self._infer_syntax_hint(tool_name, args),
                                     'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
                                 }
                                 
@@ -1853,7 +1896,8 @@ Retry with the 'command' parameter included."""
                                     try:
                                         from app.server import active_feedback_connections
                                         if conversation_id in active_feedback_connections:
-                                            feedback_queue = active_feedback_connections[conversation_id]['feedback_queue']
+                                            conns = active_feedback_connections[conversation_id]
+                                            feedback_queue = conns[0]['feedback_queue'] if conns else None
                                             # Check for feedback without blocking
                                             try:
                                                 feedback_data = feedback_queue.get_nowait()
@@ -1898,7 +1942,7 @@ Retry with the 'command' parameter included."""
                                 # Execute the tool immediately
                                 try:
                                    # Import signing and verification functions
-                                   from app.mcp.signing import verify_tool_result, strip_signature_metadata
+                                   from app.mcp.signing import verify_tool_result, strip_signature_metadata, sign_tool_result
                                    
                                    # Check if this is a builtin DirectMCPTool
                                    logger.debug(f"🔍 BUILTIN_CHECK: Looking for tool '{actual_tool_name}' in {len(all_tools)} tools")
@@ -2054,6 +2098,7 @@ Please try again or proceed without this tool."""
                                            'tool_name': tool_name,
                                            'result': self._format_tool_result(tool_name, result_text, args),
                                            'args': args,
+                                           'syntax': self._infer_syntax_hint(tool_name, args),
                                            'verified': is_verified,
                                            'verification_error': verification_error,
                                            'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
@@ -2441,7 +2486,8 @@ Please retry the tool call with valid JSON. Ensure:
                         try:
                             from app.server import active_feedback_connections
                             if conversation_id in active_feedback_connections:
-                                feedback_queue = active_feedback_connections[conversation_id]['feedback_queue']
+                                conns = active_feedback_connections[conversation_id]
+                                feedback_queue = conns[0]['feedback_queue'] if conns else None
                                 
                                 # Drain any pending feedback
                                 try:
@@ -2579,7 +2625,8 @@ Please retry the tool call with valid JSON. Ensure:
                     try:
                         from app.server import active_feedback_connections
                         if conversation_id in active_feedback_connections:
-                            feedback_queue = active_feedback_connections[conversation_id]['feedback_queue']
+                            conns = active_feedback_connections[conversation_id]
+                            feedback_queue = conns[0]['feedback_queue'] if conns else None
                             
                             # Collect ALL pending feedback messages
                             pending_feedback = []
@@ -2674,6 +2721,17 @@ Please retry the tool call with valid JSON. Ensure:
                     "Rate exceeded",
                 ])
                 
+                # Check for read timeout errors (mid-stream connection drops)
+                is_read_timeout = any(indicator in error_str for indicator in [
+                    "Read timed out",
+                    "ReadTimeoutError",
+                    "Read timeout",
+                    "request timed out",
+                    "read operation timed out",
+                    "ConnectionResetError",
+                    "Connection reset by peer",
+                ])
+
                 # Check for transient AWS service errors that should be retried
                 is_transient_error = any(indicator in error_str for indicator in [
                     "internalServerException",
@@ -2681,7 +2739,7 @@ Please retry the tool call with valid JSON. Ensure:
                     "The system encountered an unexpected error",
                 ])
                 
-                is_throttling = is_throttling_error or is_transient_error
+                is_throttling = is_throttling_error or is_transient_error or is_read_timeout
                 
                 # Check for authentication/credential errors
                 from app.plugins import get_active_auth_provider
@@ -2710,15 +2768,21 @@ Please retry the tool call with valid JSON. Ensure:
                     # Calculate intelligent backoff based on cache health and token usage
                     throttle_state['retry_count'] += 1
                     
-                    # Exponential time backoff
-                    time_delay = throttle_state['base_delay'] * (2 ** throttle_state['retry_count'])
+                    # Exponential time backoff - shorter for read timeouts since they're transient
+                    if is_read_timeout:
+                        time_delay = min(throttle_state['base_delay'] * (2 ** (throttle_state['retry_count'] - 1)), 15)
+                    else:
+                        time_delay = throttle_state['base_delay'] * (2 ** throttle_state['retry_count'])
                     
                     # CRITICAL: Reduce output tokens to decrease throttle pressure
                     # Per @animeshx: "more throttled with a higher output token limit"
                     current_max_tokens = body.get('max_tokens', 4000)
                     
-                    # Aggressive reduction strategy
-                    if throttle_state['cache_working'] == False:
+                    # Aggressive reduction strategy - but NOT for read timeouts
+                    # Read timeouts are network issues, not token pressure
+                    if is_read_timeout:
+                        reduction_factor = 1.0  # Don't reduce tokens for timeouts
+                    elif throttle_state['cache_working'] == False:
                         # Cache is broken - reduce more aggressively
                         reduction_factor = 0.5  # 50% of original
                         logger.warning("🔥 CACHE BROKEN: Using aggressive output token reduction")
@@ -2757,10 +2821,42 @@ Please retry the tool call with valid JSON. Ensure:
                     if is_transient_error:
                         error_type = 'transient_service_error'
                         retry_message = f"AWS service temporarily unavailable after {len(tool_results)} tool execution(s). Retrying..."
+                    elif is_read_timeout:
+                        error_type = 'throttling_error'
+                        retry_message = f"Connection timed out during streaming. Retrying in {time_delay}s... (attempt {throttle_state['retry_count']}/{throttle_state['max_retries']})"
                     else:
                         error_type = 'throttling_error'
                         retry_message = f"AWS rate limit exceeded after {len(tool_results)} tool execution(s). Please wait {suggested_wait} seconds before retrying."
                     
+                    # For read timeouts with remaining retries, retry internally instead of yielding to frontend
+                    if is_read_timeout and throttle_state['retry_count'] <= throttle_state['max_retries']:
+                        logger.warning(f"🔄 READ_TIMEOUT_RETRY: Attempt {throttle_state['retry_count']}/{throttle_state['max_retries']}, "
+                                      f"waiting {time_delay}s before retry")
+                        
+                        # Yield a heartbeat so the frontend knows we're still alive
+                        yield {
+                            'type': 'heartbeat',
+                            'heartbeat': True,
+                            'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                        }
+                        
+                        # If we had partial text from this iteration, preserve it
+                        if assistant_text.strip():
+                            logger.info(f"🔄 READ_TIMEOUT_RETRY: Preserving {len(assistant_text)} chars of partial text")
+                            yield {
+                                'type': 'text',
+                                'content': '\n\n⏳ *Connection timed out, retrying...*\n\n',
+                                'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                            }
+                        
+                        await asyncio.sleep(time_delay)
+                        
+                        # Reset iteration-specific state for the retry
+                        self._cleanup_iteration_resources()
+                        
+                        # Don't increment iteration counter - retry the same iteration
+                        continue
+
                     yield {
                         'type': error_type,
                         'error': error_type,
