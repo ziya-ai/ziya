@@ -1,0 +1,7 @@
+diff --git a/app/utils/custom_bedrock.py b/app/utils/custom_bedrock.py
+--- a/app/utils/custom_bedrock.py
++++ b/app/utils/custom_bedrock.py
+@@ -253,7 +253,7 @@
+ 
+-                logger.info(f"🔍 EXTENDED_CONTEXT: Conversation {conversation_id} already extended, starting with headers")
++                logger.debug(f"🔍 EXTENDED_CONTEXT: Conversation {conversation_id} already extended, starting with headers")
