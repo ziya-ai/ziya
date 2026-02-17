@@ -1871,7 +1871,7 @@ def extract_codebase(x):
         codebase = enhance_context_with_ast(question, {"codebase": codebase}).get("codebase", codebase)
         logger.info("Enhanced codebase context with AST information")
 
-    logger.info(f"Changes detected - Overall: {bool(overall_changes)}, Recent: {bool(recent_changes)}")
+    logger.debug(f"Changes detected - Overall: {bool(overall_changes)}, Recent: {bool(recent_changes)}")
 
     result = []
 

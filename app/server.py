@@ -83,6 +83,7 @@ from app.utils.custom_exceptions import ThrottlingException, ExpiredTokenExcepti
 from app.utils.custom_exceptions import ValidationError
 from app.utils.file_utils import read_file_content
 from app.middleware import RequestSizeMiddleware, ModelSettingsMiddleware, ErrorHandlingMiddleware, HunkStatusMiddleware, StreamingMiddleware
+from app.middleware.project_context import ProjectContextMiddleware
 from app.utils.context_enhancer import initialize_ast_if_enabled
 from fastapi.websockets import WebSocketState
 from app.middleware.continuation import ContinuationMiddleware
@@ -96,7 +97,7 @@ from app.api import projects, contexts, skills, chats, tokens
 from app.utils.paths import get_ziya_home
 from app.utils.logging_utils import logger as app_logger
 
-# WebSocket support for real-time feedback
+active_feedback_connections: dict[str, list[dict]] = {}  # conversation_id → list of connection dicts
 from fastapi.websockets import WebSocket, WebSocketDisconnect
  
 # Track active WebSocket connections for feedback
@@ -110,9 +111,6 @@ _security_stats = {
     'last_reset': time.time()
 }
 _security_stats_lock = threading.Lock()
-
-# Track active WebSocket connections for feedback
-active_feedback_connections = {}
 
 # Track active WebSocket connections for file tree updates
 active_file_tree_connections = set()
@@ -529,6 +527,19 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Suppress noisy access logs for high-frequency polling endpoints.
+# These are routine background sync requests that clutter the console.
+import logging as _logging
+
+class _PollingAccessFilter(_logging.Filter):
+    """Filter routine polling GETs from uvicorn access log."""
+    _quiet = {'/chats?', '/chat-groups', '/skills', '/contexts'}
+    def filter(self, record: _logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(q in msg for q in self._quiet)
+
+_logging.getLogger("uvicorn.access").addFilter(_PollingAccessFilter())
+
 @app.websocket("/ws/feedback/{conversation_id}")
 async def feedback_websocket(websocket: WebSocket, conversation_id: str):
     """WebSocket endpoint for real-time streaming feedback."""
@@ -537,11 +548,14 @@ async def feedback_websocket(websocket: WebSocket, conversation_id: str):
     logger.info(f"🔄 FEEDBACK: WebSocket connected for conversation {conversation_id}")
     
     # Register this connection
-    active_feedback_connections[conversation_id] = {
+    conn_entry = {
         'websocket': websocket,
         'connected_at': time.time(),
         'feedback_queue': asyncio.Queue()
     }
+    if conversation_id not in active_feedback_connections:
+        active_feedback_connections[conversation_id] = []
+    active_feedback_connections[conversation_id].append(conn_entry)
     
     try:
         while True:
@@ -553,13 +567,15 @@ async def feedback_websocket(websocket: WebSocket, conversation_id: str):
                 if feedback_type == 'tool_feedback':
                     logger.info(f"🔄 FEEDBACK: Received tool feedback for {conversation_id}: {data.get('message', '')}")
                     
-                    # Add to feedback queue for tool execution to consume
+                    # Add to feedback queue of ALL connections for this conversation
                     if conversation_id in active_feedback_connections:
-                        await active_feedback_connections[conversation_id]['feedback_queue'].put(data)
+                        for conn in active_feedback_connections[conversation_id]:
+                            await conn['feedback_queue'].put(data)
                 elif feedback_type == 'interrupt':
                     logger.info(f"🔄 FEEDBACK: Received interrupt request for {conversation_id}")
-                    # Signal tool execution to pause/stop
-                    await active_feedback_connections[conversation_id]['feedback_queue'].put({'type': 'interrupt'})
+                    if conversation_id in active_feedback_connections:
+                        for conn in active_feedback_connections[conversation_id]:
+                            await conn['feedback_queue'].put({'type': 'interrupt'})
                 
             except WebSocketDisconnect:
                 logger.info(f"🔄 FEEDBACK: WebSocket disconnected for {conversation_id}")
@@ -567,7 +583,13 @@ async def feedback_websocket(websocket: WebSocket, conversation_id: str):
     finally:
         # Clean up connection
         if conversation_id in active_feedback_connections:
-            del active_feedback_connections[conversation_id]
+            active_feedback_connections[conversation_id] = [
+                c for c in active_feedback_connections[conversation_id]
+                if c['websocket'] is not websocket
+            ]
+            # Remove the key entirely if no connections remain
+            if not active_feedback_connections[conversation_id]:
+                del active_feedback_connections[conversation_id]
 
 # Create the FastAPI app
 @app.websocket("/ws/file-tree")
@@ -824,6 +846,10 @@ app.add_middleware(HunkStatusMiddleware)
 
 # Add continuation middleware
 app.add_middleware(ContinuationMiddleware)
+
+# Project context middleware — outermost so all handlers see the correct project root.
+# Reads X-Project-Root header and sets request-scoped ContextVar.
+app.add_middleware(ProjectContextMiddleware)
 
 # Import and include AST routes
 from app.routes.ast_routes import router as ast_router
@@ -1539,6 +1565,12 @@ async def stream_chunks(body):
     conversation_id = body.get("conversation_id")
     project_root = body.get("config", {}).get("project_root") or body.get("project_root")
     
+    # Use request-scoped context (set by ProjectContextMiddleware) if no explicit body param.
+    # Fall back to body param for backwards compatibility with older frontends.
+    if not project_root:
+        from app.context import get_project_root_or_none
+        project_root = get_project_root_or_none()
+
     validation_hook = DiffValidationHook(
         enabled=ENABLE_DIFF_VALIDATION,
         auto_regenerate=AUTO_REGENERATE_INVALID_DIFFS,
@@ -1546,16 +1578,12 @@ async def stream_chunks(body):
     )
     accumulated_content = ""
     
-    # Update environment for this request if project root is provided
+    # Project root is now handled by ProjectContextMiddleware via X-Project-Root header.
+    # Also set the ContextVar from the body param for backwards compatibility.
     if project_root and os.path.isdir(project_root):
-        os.environ["ZIYA_USER_CODEBASE_DIR"] = project_root
-        logger.info(f"🔄 PROJECT: Updated working directory to {project_root}")
-
-    # Update environment for this request if project root is provided
-    # This MUST happen unconditionally before any tool execution
-    if project_root and os.path.isdir(project_root):
-        os.environ["ZIYA_USER_CODEBASE_DIR"] = project_root
-        logger.info(f"🔄 PROJECT: Updated working directory to {project_root}")
+        from app.context import set_project_root
+        set_project_root(project_root)
+        logger.info(f"🔄 PROJECT: Request-scoped project root = {project_root}")
 
     # Restore 0.3.0 direct streaming behavior
     use_direct_streaming = True
@@ -1575,11 +1603,6 @@ async def stream_chunks(body):
         files = body.get("config", {}).get("files", [])
         conversation_id = body.get("conversation_id")
         project_root = body.get("config", {}).get("project_root") or body.get("project_root")
-        
-        # Update environment for this request if project root is provided
-        if project_root and os.path.isdir(project_root):
-            os.environ["ZIYA_USER_CODEBASE_DIR"] = project_root
-            logger.info(f"🔄 PROJECT: Updated working directory to {project_root}")
         
         logger.debug(f"🔍 DIRECT_STREAMING_DEBUG: question='{question}', chat_history={len(chat_history)}, files={len(files)}")
         
@@ -1801,22 +1824,33 @@ async def stream_chunks(body):
                         enhanced_feedback = validation_feedback
                         messages.append(HumanMessage(content=enhanced_feedback))
                         
+                        # Send a transition marker so the frontend can show a separator
+                        yield f"data: {json.dumps({'type': 'validation_retry', 'content': '\\n\\n---\\n\\n**Correcting failed diff(s):**\\n\\n'})}\n\n"
+                        
                         # Generate again with the feedback
                         logger.info("🔄 Restarting stream with validation feedback")
                         async for retry_chunk in executor.stream_with_tools(messages, tools=mcp_tools, conversation_id=conversation_id, project_root=project_root):
                             if retry_chunk.get('type') == 'text':
                                 yield f"data: {json.dumps({'content': retry_chunk.get('content', '')})}\n\n"
+                            elif retry_chunk.get('type') == 'tool_start':
+                                yield f"data: {json.dumps({'tool_start': retry_chunk})}\n\n"
+                            elif retry_chunk.get('type') == 'tool_execution':
+                                yield f"data: {json.dumps({'tool_execution': retry_chunk})}\n\n"
                             elif retry_chunk.get('type') == 'tool_display':
                                 yield f"data: {json.dumps({'tool_result': retry_chunk})}\n\n"
+                            elif retry_chunk.get('type') == 'throttling_error':
+                                yield f"data: {json.dumps(retry_chunk)}\n\n"
                             elif retry_chunk.get('type') == 'stream_end':
                                 break
                     else:
-                        # BIG FLASH: Validation passed
-                        logger.info("=" * 80)
-                        logger.info("✅ POST-STREAM DIFF VALIDATION PASSED ✅")
-                        logger.info("=" * 80)
-                        logger.info(f"All hunks validated successfully (this may be a regenerated diff)")
-                        logger.info("=" * 80)
+                        # Only log success banner if diffs were actually validated
+                        summary = validation_hook.get_validation_summary()
+                        if summary['total_validated'] > 0:
+                            logger.info("=" * 80)
+                            logger.info("✅ POST-STREAM DIFF VALIDATION PASSED ✅")
+                            logger.info("=" * 80)
+                            logger.info(f"All {summary['total_validated']} diff(s) validated successfully")
+                            logger.info("=" * 80)
                 
                 # Always send done message at the end
                 # Log complete response at INFO level before sending done marker
@@ -3717,7 +3751,7 @@ async def favicon():
 
 
 # Cache for folder structure with timestamp
-_folder_cache = {'timestamp': 0, 'data': None}
+_folder_cache: dict[str, dict] = {}  # keyed by absolute directory path
 _cache_lock = threading.Lock()
 _background_scan_thread = None
 _last_cache_invalidation = 0
@@ -3734,16 +3768,14 @@ def invalidate_folder_cache():
         return
     
     with _cache_lock:
-        # Preserve external paths when invalidating cache
-        external_paths = None
-        if _folder_cache['data'] and '[external]' in _folder_cache['data']:
-            external_paths = _folder_cache['data']['[external]']
-            logger.info(f"💾 Preserving {len(external_paths.get('children', {}))} external root entries during cache invalidation")
-        
-        _folder_cache['data'] = {'[external]': external_paths} if external_paths else None
-        _folder_cache['timestamp'] = 0
-        
-        logger.debug(f"📂 Cache invalidated, external paths preserved: {external_paths is not None}")
+        for dir_key in list(_folder_cache.keys()):
+            entry = _folder_cache[dir_key]
+            external_paths = None
+            if entry.get('data') and '[external]' in entry['data']:
+                external_paths = entry['data']['[external]']
+            entry['data'] = {'[external]': external_paths} if external_paths else None
+            entry['timestamp'] = 0
+        logger.debug(f"📂 Cache invalidated for {len(_folder_cache)} project(s)")
     _last_cache_invalidation = current_time
 
 def add_file_to_folder_cache(rel_path: str) -> bool:
@@ -3758,12 +3790,14 @@ def add_file_to_folder_cache(rel_path: str) -> bool:
     """
     global _folder_cache, _cache_lock
     
-    # Skip if no cache exists yet
-    if _folder_cache['data'] is None:
+    from app.context import get_project_root
+    project_root = get_project_root()
+    entry = _folder_cache.get(project_root)
+    if not entry or entry.get('data') is None:
         return False
     
     try:
-        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        user_codebase_dir = project_root
         full_path = os.path.join(user_codebase_dir, rel_path)
         
         # Calculate token count for new file
@@ -3774,7 +3808,7 @@ def add_file_to_folder_cache(rel_path: str) -> bool:
         path_parts = rel_path.split(os.sep)
         
         with _cache_lock:
-            current_level = _folder_cache['data']
+            current_level = entry['data']
             
             # Navigate/create parent directories
             for part in path_parts[:-1]:
@@ -3820,11 +3854,14 @@ def update_file_in_folder_cache(rel_path: str) -> bool:
     """Update token count for modified file in cache."""
     global _folder_cache, _cache_lock
     
-    if _folder_cache['data'] is None:
+    from app.context import get_project_root
+    project_root = get_project_root()
+    entry = _folder_cache.get(project_root)
+    if not entry or entry.get('data') is None:
         return False
     
     try:
-        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        user_codebase_dir = project_root
         full_path = os.path.join(user_codebase_dir, rel_path)
         
         from app.utils.directory_util import estimate_tokens_fast
@@ -3833,7 +3870,7 @@ def update_file_in_folder_cache(rel_path: str) -> bool:
         path_parts = rel_path.split(os.sep)
         
         with _cache_lock:
-            current_level = _folder_cache['data']
+            current_level = entry['data']
             
             # Navigate to file location
             for part in path_parts[:-1]:
@@ -3857,14 +3894,17 @@ def remove_file_from_folder_cache(rel_path: str) -> bool:
     """Remove deleted file from cache."""
     global _folder_cache, _cache_lock
     
-    if _folder_cache['data'] is None:
+    from app.context import get_project_root
+    project_root = get_project_root()
+    entry = _folder_cache.get(project_root)
+    if not entry or entry.get('data') is None:
         return False
     
     try:
         path_parts = rel_path.split(os.sep)
         
         with _cache_lock:
-            current_level = _folder_cache['data']
+            current_level = entry['data']
             
             # Navigate to parent directory
             for part in path_parts[:-1]:
@@ -4119,8 +4159,7 @@ async def pcap_status():
 async def clear_folder_cache():
     """Clear the folder structure cache."""
     global _folder_cache
-    _folder_cache['data'] = None
-    _folder_cache['timestamp'] = 0
+    _folder_cache = {}
     logger.info("Folder cache cleared")
     return {"cleared": True}
 
@@ -4499,7 +4538,10 @@ def add_directory_to_folder_cache(rel_path: str, full_path: str, is_inside_works
     """
     global _folder_cache, _cache_lock
     
-    if _folder_cache['data'] is None:
+    from app.context import get_project_root
+    project_root = get_project_root()
+    entry = _folder_cache.get(project_root)
+    if not entry or entry.get('data') is None:
         return False
     
     try:
@@ -4545,7 +4587,7 @@ def add_directory_to_folder_cache(rel_path: str, full_path: str, is_inside_works
         
         with _cache_lock:
             path_parts = rel_path.split(os.sep)
-            current_level = _folder_cache['data']
+            current_level = entry['data']
             
             # Navigate/create parent directories
             for part in path_parts[:-1]:
@@ -4612,9 +4654,11 @@ async def get_folders_cached():
                 return result
                 
             # Fall back to folder cache if available
-            if _folder_cache['data'] is not None:
+            # _folder_cache is now a per-directory dict
+            dir_entry = _folder_cache.get(user_codebase_dir)
+            if dir_entry and dir_entry.get('data') is not None:
                 logger.info("🚀 Returning basic folder cache (instant)")
-                return _folder_cache['data']
+                return dir_entry['data']
                 
         # No cache available
         return {"error": "No cached data available"}
@@ -4957,19 +5001,6 @@ async def api_get_folders(refresh: bool = False, project_path: str = Query(None)
                 else:
                     token_count = value.get('token_count', 0)
                     logger.info(f"📄 {current_path} ({token_count} tokens)")
-    
-    # Add cache headers to help frontend avoid unnecessary requests
-    if refresh:
-        # If refresh requested, invalidate caches BEFORE any processing
-        logger.info("🔄 Refresh requested - invalidating caches")
-        invalidate_folder_cache()
-        
-        # Also invalidate the gitignore patterns cache to pick up new files
-        import app.utils.directory_util as dir_util
-        dir_util._ignored_patterns_cache = None
-        dir_util._ignored_patterns_cache_dir = None
-        dir_util._ignored_patterns_cache_time = 0
-        logger.info("🔄 Invalidated gitignore patterns cache")
     
     # Add cache headers to help frontend avoid unnecessary requests
     if refresh:
@@ -5584,7 +5615,7 @@ async def get_accurate_token_counts(request: AccurateTokenCountRequest) -> Dict[
                 # Get the estimated count for comparison
                 from app.utils.directory_util import estimate_tokens_fast
                 estimated_count = estimate_tokens_fast(full_path)
-                logger.info(f"File: {file_path} - ACCURATE: {accurate_count} vs ESTIMATED: {estimated_count} (diff: {accurate_count - estimated_count})")
+                logger.debug(f"File: {file_path} - ACCURATE: {accurate_count} vs ESTIMATED: {estimated_count} (diff: {accurate_count - estimated_count})")
                 results[file_path] = {
                     "accurate_count": accurate_count,
                     "timestamp": int(time.time())

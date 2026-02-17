@@ -576,7 +576,7 @@ class ModelManager:
         
         # Check if we can reuse existing client
         if config_hash in cls._state['persistent_bedrock_clients']:
-            logger.info(f"Reusing persistent Bedrock client for {aws_profile}/{region}/{model_id}")
+            logger.debug(f"Reusing persistent Bedrock client for {aws_profile}/{region}/{model_id}")
             return cls._state['persistent_bedrock_clients'][config_hash]
         
         # Create new client

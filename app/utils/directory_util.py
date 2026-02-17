@@ -13,12 +13,9 @@ from app.utils.document_extractor import is_tool_backed_file
 from app.utils.logging_utils import logger
 from app.utils.gitignore_parser import parse_gitignore_patterns
 
-# Enhanced global cache for folder structure with directory modification tracking
-_folder_cache = {
-    'timestamp': 0, 
-    'data': None, 
-    'directory_mtime': 0
-}
+# Per-directory folder structure cache.
+# Keys are absolute directory paths; values have {timestamp, data, directory_mtime}.
+_folder_cache: Dict[str, Dict[str, Any]] = {}
 
 # Global progress tracking
 _scan_progress = {"active": False, "progress": {}, "cancelled": False, "start_time": 0, "last_update": 0, "estimated_total": 0}
@@ -48,7 +45,8 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
         return _ignored_patterns_cache
     
     logger.info(f"🔍 Building gitignore patterns for {directory}...")
-    user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", directory)
+    # Use the directory argument as-is — it was already resolved by the caller.
+    user_codebase_dir = directory
     
     # CRITICAL: Warn users EARLY if scanning will be slow
     import sys
@@ -1202,7 +1200,6 @@ def get_accurate_token_count(file_path: str) -> int:
             # Skip files with excessive token counts (>50k tokens)
             if token_count > 50000:
                 logger.debug(f"File has excessive tokens {file_path}: {token_count} tokens")
-                logger.info(f"Limiting token count for large file {os.path.basename(file_path)}: {token_count} -> 0")
                 return 0
             
             return token_count
@@ -1279,13 +1276,17 @@ def get_basic_folder_structure(directory: str) -> Dict[str, Any]:
             
             # Cache the result
             with _scan_lock:
-                _folder_cache['data'] = result
-                _folder_cache['timestamp'] = time.time()
+                entry = {
+                    'data': result if result else {},
+                    'timestamp': time.time(),
+                    'directory_mtime': 0,
+                }
                 try:
-                    _folder_cache['directory_mtime'] = os.path.getmtime(directory)
+                    entry['directory_mtime'] = os.path.getmtime(directory)
                 except OSError:
-                    _folder_cache['directory_mtime'] = time.time()
-            logger.info("Background folder scan finished and result cached.")
+                    entry['directory_mtime'] = time.time()
+                _folder_cache[directory] = entry
+            logger.info(f"Background folder scan finished and result cached for {directory}.")
     
         with _scan_lock:
             if _scan_thread and _scan_thread.is_alive():
@@ -1305,19 +1306,20 @@ def get_basic_folder_structure(directory: str) -> Dict[str, Any]:
         global _folder_cache, _scan_thread
     
         current_time = time.time()
-        cache_age = current_time - _folder_cache['timestamp']
+        entry = _folder_cache.get(directory, {'timestamp': 0, 'data': None, 'directory_mtime': 0})
+        cache_age = current_time - entry['timestamp']
         
         try:
             current_dir_mtime = os.path.getmtime(directory)
-            directory_changed = current_dir_mtime > _folder_cache['directory_mtime']
+            directory_changed = current_dir_mtime > entry['directory_mtime']
         except OSError:
             directory_changed = True
             current_dir_mtime = 0
 
             # Return fresh cache immediately
-            if _folder_cache['data'] is not None and cache_age < 10 and not directory_changed:
+            if entry['data'] is not None and cache_age < 10 and not directory_changed:
                 logger.info(f"Returning fresh folder structure cache (age: {cache_age:.1f}s)")
-                return _folder_cache['data']
+                return entry['data']
             
     # If cache is stale or doesn't exist, manage background scan
     with _scan_lock:
@@ -1355,9 +1357,9 @@ def get_basic_folder_structure(directory: str) -> Dict[str, Any]:
         else:
             logger.info("Folder scan is already in progress.")
             # Return current state (stale cache or empty dict) and indicate scanning
-            if _folder_cache['data']:
+            if entry['data']:
                 logger.info("Returning stale cache while scan runs in background.")
-                return {**_folder_cache['data'], "_stale_and_scanning": True}
+                return {**entry['data'], "_stale_and_scanning": True}
             else:
                 logger.info("No cache available. Indicating scan is in progress.")
                 return {"_scanning": True, "children": {}}
