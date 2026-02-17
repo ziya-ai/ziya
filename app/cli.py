@@ -582,8 +582,7 @@ class CLI:
             # Reset cancellation flag for each attempt
             self._cancellation_requested = False
             
-            # Run the model
-            response = await self._run_with_tools_from_messages(messages, stream and attempt == 0)
+            response = await self._run_with_tools_from_messages(messages, stream)
             
             # If no diffs, we're done
             if '```diff' not in response:
@@ -602,6 +601,11 @@ class CLI:
                 if attempt > 0:
                     print("\n\033[32m✓ Diff validation passed\033[0m")
                 
+                # Sync auto-added context files back to CLI's file list
+                for f in validation_hook.added_files:
+                    if f not in self.files:
+                        self.files.append(f)
+
                 # Process diffs in a loop to handle continuations
                 full_response = response
                 while True:
@@ -644,6 +648,11 @@ class CLI:
             if attempt < max_attempts - 1:
                 # Explain what's happening and why
                 print(f"\n\033[33m⚠ Diff couldn't be applied cleanly (hunks don't match current file content)\033[0m")
+                failed_files = [d['file_path'] for d in validation_hook.failed_diff_details]
+                passed_files = validation_hook.successful_diffs
+                if passed_files:
+                    print(f"\033[32m  ✓ Passed: {', '.join(passed_files)}\033[0m")
+                print(f"\033[31m  ✗ Failed: {', '.join(failed_files)}\033[0m")
                 print(f"\033[90mRegenerating with file context... (attempt {attempt + 2}/{max_attempts})\033[0m\n")
                 
                 # After second failure, suggest breaking up the diff
@@ -685,6 +694,11 @@ class CLI:
                 print(f"\033[90mReview carefully before applying any changes.\033[0m\n")
         
         # Clean up validation hook after all attempts
+        # Sync any auto-added files even on failure path
+        if validation_hook and validation_hook.added_files:
+            for f in validation_hook.added_files:
+                if f not in self.files:
+                    self.files.append(f)
         validation_hook = None
         
         return response

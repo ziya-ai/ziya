@@ -106,6 +106,18 @@ class PrecisionPromptSystem:
                 if hasattr(msg, 'type') and hasattr(msg, 'content'):
                     role = 'system' if msg.type == 'system' else ('user' if msg.type == 'human' else 'assistant')
                     messages.append({"role": role, "content": msg.content})
+
+            # Inject project-specific fileio write policy instructions into
+            # the system message.  This runs per-request (not cached in the
+            # template) so different projects get accurate instructions.
+            if messages and messages[0]["role"] == "system":
+                try:
+                    from app.utils.fileio_prompt import get_fileio_prompt_section
+                    fileio_section = get_fileio_prompt_section()
+                    if fileio_section:
+                        messages[0]["content"] += fileio_section
+                except Exception as e:
+                    pass  # Non-fatal — fileio instructions are advisory
             
             # Add chat history before the question
             if chat_history:
