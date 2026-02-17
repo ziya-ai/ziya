@@ -207,10 +207,26 @@ class CustomBedrockClient:
         # Retry the request with extended context headers
         logger.debug(f"🚀 EXTENDED_CONTEXT: About to retry streaming call with extended context")
         
+        # Retry with backoff on timeouts
+        last_error = None
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                result = self.original_invoke(**kwargs)
+                logger.debug(f"🚀 EXTENDED_CONTEXT: Streaming retry completed successfully")
+                return result
+            except Exception as attempt_error:
+                last_error = attempt_error
+                if "timeout" in str(attempt_error).lower() and attempt < max_attempts - 1:
+                    import time
+                    delay = [1, 3][attempt]
+                    logger.warning(f"🔄 EXTENDED_CONTEXT: Timeout on attempt {attempt + 1}/{max_attempts}, retrying in {delay}s")
+                    time.sleep(delay)
+                    continue
+                break
+
         try:
-            result = self.original_invoke(**kwargs)
-            logger.debug(f"🚀 EXTENDED_CONTEXT: Streaming retry completed successfully")
-            return result
+            raise last_error
         except Exception as retry_error:
             retry_error_str = str(retry_error)
             logger.error(f"🚀 EXTENDED_CONTEXT: Retry failed with error: {retry_error_str}")
