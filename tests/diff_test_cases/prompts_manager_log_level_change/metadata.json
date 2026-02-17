@@ -1,0 +1,4 @@
+{
+  "description": "Change logger.info to logger.debug for cached prompt message - falsely detected as already applied",
+  "target_file": "app/agents/prompts_manager.py"
+}

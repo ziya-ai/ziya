@@ -1,0 +1,4 @@
+{
+  "description": "Change logger.info to logger.debug for extended context message - truncated hunk with mismatched old_count",
+  "target_file": "app/utils/custom_bedrock.py"
+}

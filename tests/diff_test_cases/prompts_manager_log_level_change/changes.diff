@@ -1,0 +1,7 @@
+diff --git a/app/agents/prompts_manager.py b/app/agents/prompts_manager.py
+--- a/app/agents/prompts_manager.py
++++ b/app/agents/prompts_manager.py
+@@ -49,7 +49,7 @@
+ 
+-        logger.info(f"Using cached extended prompt for {cache_key}")
++        logger.debug(f"Using cached extended prompt for {cache_key}")
