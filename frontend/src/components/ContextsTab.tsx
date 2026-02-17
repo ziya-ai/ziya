@@ -3,6 +3,7 @@
  */
 import React, { useState, useMemo } from 'react';
 import { useProject } from '../context/ProjectContext';
+import { Context } from '../types/context';
 import { Input, Button, Divider, message } from 'antd';
 import { SearchOutlined } from '@ant-design/icons';
 import { useFolderContext } from '../context/FolderContext';
@@ -242,7 +243,7 @@ export const ContextsTab: React.FC = () => {
                 onChange={() => {}} 
                 onClick={e => {
                   e.stopPropagation();
-                  isActive ? removeContextFromLens(ctx.id) : addContextToLens(ctx.id);
+                  isActive ? removeSkillFromLens(skill.id) : addSkillToLens(skill.id);
                 }}
               />
               <div style={{ flex: 1 }}>
