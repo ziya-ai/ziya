@@ -23,6 +23,7 @@ import { ProfilerWrapper } from './ProfilerWrapper';
 import { SafariWarning } from './SafariWarning';
 import { loadFormatters } from '../utils/mcpFormatterLoader';
 import { useConfig } from '../context/ConfigContext'
+import { ServerStatusBanner } from './ServerStatusBanner';
 import { useScrollManager } from '../hooks/useScrollManager';
 import { ScrollIndicator } from './ScrollIndicator';
 const ShellConfigModal = React.lazy(() => import("./ShellConfigModal"));
@@ -337,6 +338,7 @@ export const App: React.FC = () => {
     return (
         <ExtensionErrorBoundary>
             <ProfilerWrapper id="App">
+                <ServerStatusBanner />
                 <SafariWarning />
                 <ConfigProvider
                     theme={{
