@@ -1,0 +1,14 @@
+diff --git a/frontend/src/apis/chatApi.ts b/frontend/src/apis/chatApi.ts
+--- a/frontend/src/apis/chatApi.ts
++++ b/frontend/src/apis/chatApi.ts
+@@ -2505,7 +2505,10 @@
+         const response = await fetch('/api/apply-changes', {
+             method: 'POST',
+-            headers: { 'Content-Type': 'application/json' },
++            headers: {
++                'Content-Type': 'application/json',
++                ...((currentProject?.path) ? { 'X-Project-Root': currentProject.path } : {}),
++            },
+             body: JSON.stringify({
+                 diff: cleanDiff,
+                 filePath: filePath.trim(),

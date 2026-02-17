@@ -1,0 +1,4 @@
+{
+  "description": "Expand single-line headers object to multi-line with X-Project-Root header in apply-changes fetch - falsely detected as already applied",
+  "target_file": "frontend/src/apis/chatApi.ts"
+}
