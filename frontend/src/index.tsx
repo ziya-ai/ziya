@@ -19,6 +19,7 @@ import { FolderProvider } from "./context/FolderContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { ConfigProvider } from './context/ConfigContext';
 import { QuestionProvider } from "./context/QuestionContext";
+import { ServerStatusProvider } from './context/ServerStatusContext';
 import { ProjectProvider } from './context/ProjectContext';
 
 // hide unhandled promise rejections from making console spam
@@ -46,27 +47,29 @@ root.render(
     // <React.StrictMode>
     <ConfigProvider>
         <ThemeProvider>
-            <ProjectProvider>
-                <ChatProvider>
-                    <FolderProvider>
-                        <QuestionProvider>
-                        <BrowserRouter>
-                            <Routes>
-                                <Route path="/" element={<App />} />
-                                <Route
+            <ServerStatusProvider>
+                <ProjectProvider>
+                    <ChatProvider>
+                        <FolderProvider>
+                            <QuestionProvider>
+                            <BrowserRouter>
+                                <Routes>
+                                    <Route path="/" element={<App />} />
+                                    <Route
                                     path="/info"
                                     element={<SystemInfo />}
-                                />
-                                <Route
+                                    />
+                                    <Route
                                     path="/debug"
                                     element={<Debug />}
-                                />
-                            </Routes>
-                        </BrowserRouter>
-                        </QuestionProvider>
-                    </FolderProvider>
-                </ChatProvider>
-            </ProjectProvider>
+                                    />
+                                </Routes>
+                            </BrowserRouter>
+                            </QuestionProvider>
+                        </FolderProvider>
+                    </ChatProvider>
+                </ProjectProvider>
+            </ServerStatusProvider>
         </ThemeProvider>
     </ConfigProvider>
     // </React.StrictMode>
