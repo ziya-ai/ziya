@@ -27,7 +27,14 @@ BUILTIN_TOOL_CATEGORIES: Dict[str, Dict[str, any]] = {
         "enabled_by_default": True,
         "requires_dependencies": [],
         "tools": [],
-    }
+    },
+    "fileio": {
+        "name": "File I/O",
+        "description": "Read, write, and list files for agentic state tracking and design doc maintenance",
+        "enabled_by_default": True,
+        "requires_dependencies": [],
+        "tools": [],
+    },
 }
 
 
@@ -66,12 +73,26 @@ def get_architecture_shapes_tools() -> List[Type[BaseMCPTool]]:
         return []
 
 
+def get_fileio_tools() -> List[Type[BaseMCPTool]]:
+    """Get file I/O tools for agentic state tracking."""
+    try:
+        from app.mcp.tools.fileio import (
+            FileReadTool, FileWriteTool, FileListTool
+        )
+        return [FileReadTool, FileWriteTool, FileListTool]
+    except ImportError as e:
+        logger.warning(f"Could not import fileio tools: {e}")
+        return []
+
+
 def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
     """Get builtin tools for a specific category."""
     if category == "pcap_analysis":
         return get_pcap_analysis_tools()
     elif category == "architecture_shapes":
         return get_architecture_shapes_tools()
+    elif category == "fileio":
+        return get_fileio_tools()
     return []
 
 
