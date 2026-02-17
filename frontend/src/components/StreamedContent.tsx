@@ -29,6 +29,7 @@ export const StreamedContent: React.FC<{}> = () => {
     const {
         streamedContentMap,
         addMessageToConversation,
+        addStreamingConversation,
         isStreaming,
         setIsStreaming,
         currentConversationId,
@@ -528,6 +529,7 @@ document.addEventListener('preservedContent', handlePreservedContent as EventLis
 
 // Handle authentication error retry events
 const handleRetryAuthError = async (event: CustomEvent) => {
+    console.log('🔄 RETRY_AUTH: Handler invoked with detail:', event.detail);
     const { conversationId: retryConversationId } = event.detail;
 
     if (retryConversationId !== currentConversationId) {
@@ -551,12 +553,16 @@ const handleRetryAuthError = async (event: CustomEvent) => {
         // Clear the error message and retry
         const messagesToSend = currentMessages.filter(msg => !msg.muted);
 
+        // Mark the conversation as streaming so the UI reflects the retry
+        addStreamingConversation(retryConversationId);
+
         await sendPayload(
             messagesToSend,
             lastHumanMessage.content,
             convertKeysToStrings(checkedKeys),
             currentConversationId,
             activeSkillPrompts || undefined,
+            undefined, // images - not re-sending images on retry
             streamedContentMap,
             setStreamedContentMap,
             setIsStreaming,
@@ -564,22 +570,36 @@ const handleRetryAuthError = async (event: CustomEvent) => {
             addMessageToConversation,
             true,
             (state) => updateProcessingState(currentConversationId, state),
-                        setReasoningContentMap,
-                        undefined, // throttlingRecoveryDataRef
-                        currentProject
-                    );
+            setReasoningContentMap,
+            undefined, // throttlingRecoveryDataRef
+            currentProject
+        );
     } catch (error) {
         console.error('Retry after auth error failed:', error);
     }
 };
 
-document.addEventListener('retryAuthError', handleRetryAuthError as EventListener);
+window.addEventListener('retryAuthError', handleRetryAuthError as EventListener);
 
 return () => {
     document.removeEventListener('preservedContent', handlePreservedContent as EventListener);
-    document.removeEventListener('retryAuthError', handleRetryAuthError as EventListener);
+    window.removeEventListener('retryAuthError', handleRetryAuthError as EventListener);
 };
-        }, [currentConversationId, addMessageToConversation]);
+        }, [
+            currentConversationId,
+            addMessageToConversation,
+            addStreamingConversation,
+            currentMessages,
+            checkedKeys,
+            activeSkillPrompts,
+            streamedContentMap,
+            setStreamedContentMap,
+            setIsStreaming,
+            removeStreamingConversation,
+            updateProcessingState,
+            setReasoningContentMap,
+            currentProject
+        ]);
 
 // Reset error when new content starts streaming
 useEffect(() => {

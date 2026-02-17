@@ -192,30 +192,27 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
         actualToolName === 'WorkspaceSearch';
     const isShellCommand = actualToolName === 'mcp_run_shell_command';
 
-    // Load Prism highlighting for shell output if needed
+    // Load Prism highlighting for any tool that has a language hint
+    const hasSyntaxHighlighting = contentLanguage && contentLanguage !== 'text' && contentLanguage !== 'markdown';
     useEffect(() => {
-        if (isShellCommand && contentLanguage === 'sh') {
-            const loadShellHighlighting = async () => {
+        if (hasSyntaxHighlighting) {
+            const loadHighlighting = async () => {
                 try {
-                    await loadPrismLanguage('bash'); // 'bash' covers shell/sh syntax
+                    const prismLang = contentLanguage === 'sh' ? 'bash' : contentLanguage;
+                    await loadPrismLanguage(prismLang);
                     const prism = window.Prism;
-                    if (prism && prism.languages.bash) {
-                        const highlighted = prism.highlight(
-                            content,
-                            prism.languages.bash,
-                            'bash'
-                        );
+                    if (prism && prism.languages[prismLang]) {
+                        const highlighted = prism.highlight(content, prism.languages[prismLang], prismLang);
                         setHighlightedShellOutput(highlighted);
-                        setIsShellHighlightLoaded(true);
                     }
                 } catch (error) {
-                    console.warn('Failed to load shell highlighting:', error);
-                    setIsShellHighlightLoaded(true); // Mark as loaded anyway to show plain text
+                    console.warn(`Failed to load ${contentLanguage} highlighting:`, error);
                 }
+                setIsShellHighlightLoaded(true);
             };
-            loadShellHighlighting();
+            loadHighlighting();
         }
-    }, [isShellCommand, contentLanguage, content]);
+    }, [hasSyntaxHighlighting, contentLanguage, content]);
     const queryMatch = isSearchTool && content.match(/Query:\s*\*?\*?"([^"]+)"\*?\*?/);
     const searchQuery = queryMatch ? queryMatch[1] : '';
 
@@ -695,7 +692,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
                         dangerouslySetInnerHTML={{ __html: renderedHtml }}
                     />
                 ) : (
-                    isShellCommand && contentLanguage === 'sh' && isShellHighlightLoaded ? (
+                    hasSyntaxHighlighting && isShellHighlightLoaded && highlightedShellOutput ? (
                         <pre style={{
                             margin: 0,
                             padding: '16px',
@@ -705,7 +702,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
                             maxHeight: isExpanded ? 'none' : '400px',
                             overflow: isExpanded ? 'visible' : 'auto'
                         }}>
-                            <code className="language-bash" dangerouslySetInnerHTML={{ __html: highlightedShellOutput }} />
+                            <code className={`language-${contentLanguage === 'sh' ? 'bash' : contentLanguage}`} dangerouslySetInnerHTML={{ __html: highlightedShellOutput }} />
                         </pre>
                     ) : (
                         <pre style={{
