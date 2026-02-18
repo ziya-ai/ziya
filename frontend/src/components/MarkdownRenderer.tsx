@@ -26,7 +26,7 @@ import {
     undoDiff,
     parseHunkStatuses 
 } from '../apis/chatApi';
-import { extractAllFilesFromDiff, checkFilesInContext } from '../utils/diffUtils';
+import { extractAllFilesFromDiff, checkFilesInContext, findSupersededDiffIndices } from '../utils/diffUtils';
 import { formatMCPOutput } from '../utils/mcpFormatter';
 import { HTMLMockupRenderer } from './HTMLMockupRenderer';
 import { useProject } from '../context/ProjectContext';
@@ -2594,10 +2594,11 @@ interface DiffTokenProps {
     index: number;
     enableCodeApply: boolean;
     isDarkMode: boolean;
+    superseded?: boolean;
     isStreaming?: boolean;
 }
 
-const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffTokenProps): JSX.Element => {
+const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode, superseded = false }: DiffTokenProps): JSX.Element => {
     const { isStreaming, streamingConversations, currentConversationId,
         currentMessages, addMessageToConversation, setStreamedContentMap,
         removeStreamingConversation, setIsStreaming } = useChatContext();
@@ -2830,6 +2831,7 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
                 index={index}
                 elementId={diffId}
                 enableCodeApply={enableCodeApply}
+                superseded={superseded}
                 isStreaming={isStreaming}
             />
         </div>
@@ -2845,7 +2847,7 @@ interface DiffViewWrapperProps {
     elementId?: string;
 }
 
-const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: DiffViewWrapperProps) => {
+const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, index, elementId }: DiffViewWrapperProps) => {
     const [viewType, setViewType] = useState<'unified' | 'split'>(window.diffViewType || 'unified');
     const [showLineNumbers, setShowLineNumbers] = useState<boolean>(window.diffShowLineNumbers || false);
     const { currentConversationId } = useChatContext(); // Add access to currentConversationId
@@ -3097,7 +3099,19 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
     const diffText = currentContent; // Use the state variable for streaming support
 
     return (
-        <div id={`diff-view-wrapper-${stableElementIdRef.current}`}>
+        <div id={`diff-view-wrapper-${stableElementIdRef.current}`}
+            className={superseded ? 'diff-superseded' : ''}
+            style={superseded ? { opacity: 0.45, pointerEvents: 'none', position: 'relative' } : undefined}
+        >
+            {superseded && (
+                <div style={{
+                    padding: '6px 12px', background: '#faad14', color: '#000',
+                    fontSize: '12px', fontWeight: 500, borderRadius: '4px 4px 0 0',
+                    textAlign: 'center', pointerEvents: 'auto',
+                }}>
+                    ⊘ Superseded by a later revision below
+                </div>
+            )}
             <DiffControls
                 displayMode={displayMode}
                 viewType={viewType}
@@ -3137,7 +3151,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
             </div>
         </div>
     );
-}, (prev, next) => !next.forceRender && prev.token.text === next.token.text && prev.enableCodeApply === next.enableCodeApply);
+}, (prev, next) => !next.forceRender && prev.token.text === next.token.text && prev.enableCodeApply === next.enableCodeApply && prev.superseded === next.superseded);
 
 interface CodeBlockProps {
     token: TokenWithText;
@@ -3694,6 +3708,22 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
         debugLog(`Processing ${tokens.length} tokens`);
     }
 
+    // Pre-scan diff tokens to detect superseded diffs (earlier revision for
+    // the same file with overlapping hunk ranges).
+    let supersededIndices = new Set<number>();
+    if (!isSubRender) {
+        const diffTexts: { index: number; text: string }[] = [];
+        tokens.forEach((token, index) => {
+            if (determineTokenType(token) === 'diff' && (token as TokenWithText).text) {
+                diffTexts.push({ index, text: (token as TokenWithText).text });
+            }
+        });
+        if (diffTexts.length > 1) {
+            const rawSuperseded = findSupersededDiffIndices(diffTexts.map(d => d.text));
+            rawSuperseded.forEach(di => supersededIndices.add(diffTexts[di].index));
+        }
+    }
+
     return tokens.map((token, index) => {
         const previousToken = index > 0 ? tokens[index - 1] : null;
         // Determine the definitive type for rendering
@@ -3754,7 +3784,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         const fileDiffs = splitMultiFileDiffs(cleanedDiff);
                         if (fileDiffs.length > 1) {
                             console.log('🎨 MarkdownRenderer - Rendering multi-file diff');
-                            return renderMultiFileDiff(diffToken, index, enableCodeApply, isDarkMode);
+                            return renderMultiFileDiff(diffToken, index, enableCodeApply, isDarkMode, onOpenShellConfig, supersededIndices.has(index));
                         }
                     }
 
@@ -3762,7 +3792,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     if (isDebugLoggingEnabled() && false) {
                         debugLog('Rendering single DiffToken component');
                     }
-                    return <DiffToken key={index} token={diffToken} index={index} enableCodeApply={enableCodeApply} isDarkMode={isDarkMode} />;
+                    return <DiffToken key={index} token={diffToken} index={index} enableCodeApply={enableCodeApply} isDarkMode={isDarkMode} superseded={supersededIndices.has(index)} />;
 
                 case 'html-mockup':
                     if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
@@ -4451,7 +4481,7 @@ const splitMultiFileDiffs = (diffText: string): string[] => {
 };
 
 // Function to handle multi-file diffs with proper recursive rendering
-const renderMultiFileDiff = (token: TokenWithText, index: number, enableCodeApply: boolean, isDarkMode: boolean, onOpenShellConfig?: () => void): JSX.Element => {
+const renderMultiFileDiff = (token: TokenWithText, index: number, enableCodeApply: boolean, isDarkMode: boolean, onOpenShellConfig?: () => void, superseded: boolean = false): JSX.Element => {
     // Split the diff into separate file diffs
     const fileDiffs = splitMultiFileDiffs(token.text);
 
@@ -4470,7 +4500,18 @@ const renderMultiFileDiff = (token: TokenWithText, index: number, enableCodeAppl
 
     // Render each file diff as a complete component with its own controls
     return (
-        <div key={index} className="multi-file-diff">
+        <div key={index} className={`multi-file-diff${superseded ? ' diff-superseded' : ''}`}
+            style={superseded ? { opacity: 0.45, pointerEvents: 'none', position: 'relative' } : undefined}
+        >
+            {superseded && (
+                <div style={{
+                    padding: '6px 12px', background: '#faad14', color: '#000',
+                    fontSize: '12px', fontWeight: 500, borderRadius: '4px 4px 0 0',
+                    textAlign: 'center', pointerEvents: 'auto',
+                }}>
+                    ⊘ Superseded by a later revision below
+                </div>
+            )}
             {fileDiffs.map((diffContent, fileIndex) => {
                 // Create a stable key for each file diff
                 const stableKey = `diff-${index}-file-${fileIndex}`;
