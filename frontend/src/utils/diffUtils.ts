@@ -70,7 +70,7 @@ export function extractAllFilesFromDiff(diffContent: string): string[] {
  * Check which files are in current context (local check, no API call)
  */
 export function checkFilesInContext(
-    filePaths: string[], 
+    filePaths: string[],
     currentFiles: string[] = []
 ): { missingFiles: string[], availableFiles: string[] } {
     const missingFiles: string[] = [];
@@ -209,4 +209,87 @@ export function extractSingleFileDiff(fullDiff: string, filePath: string): strin
         console.error("Error extracting single file diff:", error);
         return fullDiff.trim();
     }
+}
+
+/**
+ * Parse @@ hunk headers from a diff to get the original-file line ranges it touches.
+ * Returns an array of [start, end] tuples (inclusive, 1-based).
+ * New-file-creation hunks (@@ -0,0 …) produce no ranges.
+ */
+export function parseHunkRanges(diffContent: string): [number, number][] {
+    const ranges: [number, number][] = [];
+    const hunkHeaderRegex = /@@ -(\d+)(?:,(\d+))? \+/g;
+    let match;
+    while ((match = hunkHeaderRegex.exec(diffContent)) !== null) {
+        const start = parseInt(match[1], 10);
+        const count = match[2] !== undefined ? parseInt(match[2], 10) : 1;
+        if (start === 0 && count === 0) continue; // new-file creation
+        const end = start + Math.max(count - 1, 0);
+        ranges.push([start, end]);
+    }
+    return ranges;
+}
+
+/**
+ * Extract the target file path from a single-file diff block.
+ * Looks for `+++ b/path` first, then `+++ path`.
+ */
+export function extractDiffFilePath(diffContent: string): string | null {
+    for (const line of diffContent.split('\n')) {
+        if (line.startsWith('+++ b/')) return line.substring(6).trim();
+        if (line.startsWith('+++ ')) {
+            let path = line.substring(4).trim();
+            if (path.startsWith('b/')) path = path.substring(2);
+            if (path === '/dev/null') continue;
+            return path;
+        }
+    }
+    return null;
+}
+
+/**
+ * Return true if any range in `a` overlaps any range in `b`.
+ */
+function rangesOverlap(a: [number, number][], b: [number, number][]): boolean {
+    for (const [aStart, aEnd] of a) {
+        for (const [bStart, bEnd] of b) {
+            if (aStart <= bEnd && bStart <= aEnd) return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Given an ordered array of single-file diff strings, return the set of
+ * indices that are superseded by a later diff for the same file with
+ * overlapping hunk ranges.
+ *
+ * Two diffs for the same file that target non-overlapping line ranges
+ * are treated as independent changes and both kept.
+ */
+export function findSupersededDiffIndices(diffs: string[]): Set<number> {
+    if (diffs.length <= 1) return new Set();
+
+    const filePaths = diffs.map(extractDiffFilePath);
+    const hunkRanges = diffs.map(parseHunkRanges);
+    const superseded = new Set<number>();
+
+    for (let i = 0; i < diffs.length; i++) {
+        if (!filePaths[i]) continue;
+        for (let j = i + 1; j < diffs.length; j++) {
+            if (filePaths[j] !== filePaths[i]) continue;
+
+            // Both are new-file diffs for the same path — later wins
+            if (hunkRanges[i].length === 0 && hunkRanges[j].length === 0) {
+                superseded.add(i);
+                break;
+            }
+
+            if (rangesOverlap(hunkRanges[i], hunkRanges[j])) {
+                superseded.add(i);
+                break;
+            }
+        }
+    }
+    return superseded;
 }
