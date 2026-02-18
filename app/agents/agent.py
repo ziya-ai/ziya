@@ -1612,19 +1612,18 @@ def is_file_allowed_by_filters(file_path: str) -> bool:
     return True
 
 def get_combined_docs_from_files(files, conversation_id: str = "default") -> str:
-    logger.info("=== get_combined_docs_from_files called ===")
+    logger.debug("=== get_combined_docs_from_files called ===")
     logger.debug(f"🔍 FILES_DEBUG: Called with {len(files)} files: {files[:5]}..." if len(files) > 5 else f"🔍 FILES_DEBUG: Called with files: {files}")
-    logger.info(f"Called with files: {files}")
-    print(f"🔍 FILE_CONTENT_DEBUG: get_combined_docs_from_files called with {len(files)} files")
+    logger.debug(f"Called with files: {files}")
     combined_contents: str = ""
     logger.debug("Processing files:")
     print_file_tree(files if isinstance(files, list) else files.get("config", {}).get("files", []))
     
     # Log the raw files input
-    logger.info(f"Raw files input type: {type(files)}")
-    logger.info(f"Files to process: {files}")
+    logger.debug(f"Raw files input type: {type(files)}")
+    logger.debug(f"Files to process: {files}")
     
-    logger.info(f"Processing files with conversation_id: {conversation_id}")
+    logger.debug(f"Processing files with conversation_id: {conversation_id}")
     
     # Filter files based on include-only and exclude settings BEFORE processing
     if isinstance(files, list):
@@ -1639,7 +1638,11 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
     ast_context = ""
     ast_token_count = 0
 
-    user_codebase_dir: str = os.environ["ZIYA_USER_CODEBASE_DIR"]
+    try:
+        from app.context import get_project_root
+        user_codebase_dir: str = get_project_root()
+    except ImportError:
+        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
     for file_path in files:
         full_path = os.path.join(user_codebase_dir, file_path)
         
@@ -1696,8 +1699,6 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
         except Exception as e:
             logger.error(f"Error processing {file_path}: {str(e)}")
     
-    print(f"🔍 FILE_CONTENT_DEBUG: get_combined_docs_from_files returning {len(combined_contents)} chars")
-
     file_count = len([l for l in combined_contents.split('\n') if l.startswith('File: ')])
     logger.debug(f"Combined {file_count} files, {len(combined_contents)} chars")
     
@@ -1706,7 +1707,11 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
 def extract_file_paths_from_input(x) -> List[str]:
     """Extract file paths from agent input for cache tracking."""
     files = x["config"].get("files", [])
-    user_codebase_dir = os.environ["ZIYA_USER_CODEBASE_DIR"]
+    try:
+        from app.context import get_project_root
+        user_codebase_dir = get_project_root()
+    except ImportError:
+        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
     
     file_paths = []
     for file_path in files:
@@ -1794,9 +1799,8 @@ def extract_codebase(x):
         logger.info("No files selected, returning placeholder codebase message")
         return "No files have been selected for context analysis."
     
-    logger.debug(f"🔍 EXTRACT_CODEBASE_DEBUG: extract_codebase called with {len(files)} files")
+    logger.debug(f"extract_codebase called with {len(files)} files")
     logger.debug(f"🔍 EXTRACT_CODEBASE_DEBUG: First 5 files: {files[:5]}")
-    print(f"🔍 EXTRACT_CODEBASE_DEBUG: extract_codebase called with {len(files)} files")
     conversation_id = (
         x.get("conversation_id") or 
         x.get("config", {}).get("conversation_id") or
@@ -1807,14 +1811,19 @@ def extract_codebase(x):
     logger.debug(f"extract_codebase input keys: {list(x.keys()) if isinstance(x, dict) else type(x)}")
 
     logger.debug(f"Extracting codebase for files: {files}")
-    logger.info(f"Processing with conversation_id: {conversation_id}")
+    logger.debug(f"Processing with conversation_id: {conversation_id}")
 
     # Initialize conversation state FIRST, before any file processing
     # This ensures the context cache system can find the conversation state
     file_contents = {}
     for file_path in files:
         try:
-            full_path = os.path.join(os.environ["ZIYA_USER_CODEBASE_DIR"], file_path)
+            try:
+                from app.context import get_project_root
+                _root = get_project_root()
+            except ImportError:
+                _root = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+            full_path = os.path.join(_root, file_path)
             if os.path.isdir(full_path):
                 logger.debug(f"Skipping directory: {file_path}")
                 continue
@@ -1841,17 +1850,17 @@ def extract_codebase(x):
         # Initialize conversation state for NEW conversations only
         logger.debug(f"🔍 FILE_STATE: Initializing NEW conversation {conversation_id} with {len(file_contents)} files")
         file_state_manager.initialize_conversation(conversation_id, file_contents, force_reset=True)
-        logger.info(f"Initialized new conversation {conversation_id} with {len(file_contents)} files")
+        logger.debug(f"Initialized new conversation {conversation_id} with {len(file_contents)} files")
         # Set initial context submission baseline for new conversations
         file_state_manager.mark_context_submission(conversation_id)
-        logger.info(f"Set initial context submission baseline for conversation {conversation_id}")
+        logger.debug(f"Set initial context submission baseline for conversation {conversation_id}")
     else:
         # For EXISTING conversations, refresh files from disk to catch external changes
-        logger.info(f"🔍 FILE_STATE: Refreshing existing conversation {conversation_id} from disk")
+        logger.debug(f"🔍 FILE_STATE: Refreshing existing conversation {conversation_id} from disk")
         base_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
         refresh_results = file_state_manager.refresh_all_files_from_disk(conversation_id, base_dir)
         changed_count = sum(1 for changed in refresh_results.values() if changed)
-        logger.info(f"Refreshed conversation {conversation_id}: {changed_count} files changed on disk")
+        logger.debug(f"Refreshed conversation {conversation_id}: {changed_count} files changed on disk")
     
     # Update any files that may have changed
     file_state_manager.update_files_in_state(conversation_id, file_contents)
@@ -2228,7 +2237,12 @@ def update_conversation_state(conversation_id: str, file_paths: List[str]) -> No
     # Read current file contents, skipping directories
     file_contents = {}
     for file_path in file_paths:
-        full_path = os.path.join(os.environ["ZIYA_USER_CODEBASE_DIR"], file_path)
+        try:
+            from app.context import get_project_root
+            _root = get_project_root()
+        except ImportError:
+            _root = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        full_path = os.path.join(_root, file_path)
         if os.path.isdir(full_path):
             # Skip directories silently
             continue

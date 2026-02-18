@@ -207,26 +207,12 @@ class CustomBedrockClient:
         # Retry the request with extended context headers
         logger.debug(f"🚀 EXTENDED_CONTEXT: About to retry streaming call with extended context")
         
-        # Retry with backoff on timeouts
-        last_error = None
-        max_attempts = 3
-        for attempt in range(max_attempts):
-            try:
-                result = self.original_invoke(**kwargs)
-                logger.debug(f"🚀 EXTENDED_CONTEXT: Streaming retry completed successfully")
-                return result
-            except Exception as attempt_error:
-                last_error = attempt_error
-                if "timeout" in str(attempt_error).lower() and attempt < max_attempts - 1:
-                    import time
-                    delay = [1, 3][attempt]
-                    logger.warning(f"🔄 EXTENDED_CONTEXT: Timeout on attempt {attempt + 1}/{max_attempts}, retrying in {delay}s")
-                    time.sleep(delay)
-                    continue
-                break
-
+        # Single attempt — timeout retries are handled by StreamingToolExecutor
+        # with asyncio.sleep (non-blocking) instead of time.sleep (blocks event loop)
         try:
-            raise last_error
+            result = self.original_invoke(**kwargs)
+            logger.debug(f"🚀 EXTENDED_CONTEXT: Streaming retry completed successfully")
+            return result
         except Exception as retry_error:
             retry_error_str = str(retry_error)
             logger.error(f"🚀 EXTENDED_CONTEXT: Retry failed with error: {retry_error_str}")
@@ -301,57 +287,19 @@ class CustomBedrockClient:
                         if ("ThrottlingException" in error_message or 
                             "Too many tokens" in error_message or
                             "rate limit" in error_message.lower()):
-                            # Mark as throttled and recreate client without boto3 retries
-                            if not self.throttled:
-                                self.throttled = True
-                                logger.info("🔄 THROTTLE_DETECTED: Disabling boto3 retries for subsequent attempts")
-                                from botocore.config import Config
-                                import boto3
-                                retry_config = Config(retries={'max_attempts': 1, 'mode': 'standard'})
-                                new_client = boto3.client('bedrock-runtime', region_name=self.region, config=retry_config)
-                                self.client = new_client
-                                self.original_invoke = new_client.invoke_model_with_response_stream
-                                if hasattr(new_client, 'invoke_model'):
-                                    self.original_invoke_model = new_client.invoke_model
-                            # Don't retry here, let streaming_tool_executor handle throttling retries
+                            # Don't retry here — let StreamingToolExecutor handle
+                            # throttling retries with asyncio.sleep (non-blocking)
                             raise
                         
+                        # Timeout errors: don't retry here with blocking time.sleep.
+                        # Let StreamingToolExecutor handle retries with asyncio.sleep
+                        # so the event loop stays responsive to health checks and other requests.
                         if "timeout" in error_message.lower():
-                            # Retry timeouts immediately with short delays
-                            max_retries = 2
-                            for retry_attempt in range(max_retries):
-                                delays = [1, 2]
-                                delay = delays[retry_attempt]
-                                # Use longer delays for extended context operations
-                                if self._should_use_extended_context(conversation_id):
-                                    delay = delay * 3  # 3s, 6s for extended context
-                                    logger.warning(f"🔄 EXTENDED_TIMEOUT_RETRY: Attempt {retry_attempt + 1}/{max_retries} after {delay}s delay")
-                                else:
-                                    logger.warning(f"🔄 TIMEOUT_RETRY: Attempt {retry_attempt + 1}/{max_retries} after {delay}s delay")
-                                
-                                import time
-                                time.sleep(delay)
-                                
-                                try:
-                                    return self.original_invoke(**kwargs)
-                                except Exception as retry_error:
-                                    retry_error_str = str(retry_error)
-                                    if retry_attempt == max_retries - 1:
-                                        logger.error(f"🔄 TIMEOUT_RETRY: All {max_retries} retry attempts failed: {retry_error_str}")
-                                        # For final timeout failures, enhance error with preservation context
-                                        if "timeout" in retry_error_str.lower():
-                                            enhanced_error = Exception(f"Request timed out after {max_retries} attempts: {retry_error_str}")
-                                            enhanced_error.response_metadata = {
-                                                'has_preserved_content': True,
-                                                'preserved_content': 'Generation was interrupted by timeout but may have produced substantial content.'
-                                            }
-                                            raise enhanced_error
-                                        raise retry_error
-                                    elif "timeout" not in retry_error_str.lower():
-                                        raise retry_error
-                        
+                            logger.warning(f"🔄 TIMEOUT: Propagating to caller for async retry: {error_message[:100]}")
+                            raise
+
                         # Check if it's a context limit error
-                        elif (("input length and `max_tokens` exceed context limit" in error_message or
+                        if (("input length and `max_tokens` exceed context limit" in error_message or
                             "Input is too long" in error_message) and conversation_id):
                             
                             # Check if we've already failed with extended context for this conversation
