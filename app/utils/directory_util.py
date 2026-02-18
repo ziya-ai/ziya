@@ -71,6 +71,7 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
         print(f"📁 Directory: {directory}", file=sys.stderr)
         print(f"📊 Root contains {root_entries} entries", file=sys.stderr)
         print("\n💡 TIP: For faster startup, start Ziya in a project root directory", file=sys.stderr)
+        print("   Or use: ziya --directory <project-path>", file=sys.stderr)
         print("   Or use: --include-only <path> to scan specific directories", file=sys.stderr)
         print("="*70 + "\n", file=sys.stderr)
         
@@ -443,6 +444,7 @@ def detect_large_directory_and_warn(directory: str) -> None:
         print(f"📁 Directory: {directory}", file=sys.stderr)
         print(f"📊 Root contains {root_entries} entries", file=sys.stderr)
         print("\n💡 TIP: For faster startup, start Ziya in a project root directory", file=sys.stderr)
+        print("   Or use: ziya --directory <project-path>", file=sys.stderr)
         print("   Or use: --include-only <path> to scan specific directories", file=sys.stderr)
         print("="*70 + "\n", file=sys.stderr)
 
