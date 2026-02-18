@@ -176,9 +176,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 const mergedConversations = [...serverAsConversations, ...localOnly];
 
                 // 5. Push local-only conversations to server (async, non-blocking)
-                if (localOnly.length > 0) {
-                    console.log(`📡 SYNC: Pushing ${localOnly.length} local-only conversations to server`);
-                    const chatsToSync = localOnly.map(c => syncApi.conversationToServerChat(c, projectId));
+                const activeLocalOnly = localOnly.filter(c => c.isActive !== false);
+                if (activeLocalOnly.length > 0) {
+                    console.log(`📡 SYNC: Pushing ${activeLocalOnly.length} local-only conversations to server`);
+                    const chatsToSync = activeLocalOnly.map(c => syncApi.conversationToServerChat(c, projectId));
                     syncApi.bulkSync(projectId, chatsToSync).then(result => {
                         console.log('📡 SYNC result:', result);
                     }).catch(e => console.warn('📡 SYNC failed (non-fatal):', e));
@@ -515,6 +516,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const addStreamingConversation = useCallback((id: string) => {
         setStreamingConversations(prev => {
             const next = new Set(prev);
+            // Update local streaming state
             console.log('Adding to streaming set:', { id, currentSet: Array.from(prev) });
             next.add(id);
             setStreamedContentMap(prev => new Map(prev).set(id, ''));
@@ -523,13 +525,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
             return next;
         });
         updateProcessingState(id, 'sending');
+        // Relay to other same-project tabs so they can show streaming UI
+        projectSync.post('streaming-state', { conversationId: id, state: 'sending' });
     }, [updateProcessingState]);
 
     const removeStreamingConversation = useCallback((id: string) => {
         // CRITICAL: Check if this is the CURRENT conversation
         const isCurrentConv = id === currentConversationId;
 
-        console.log('Removing from streaming set:', { id, currentSet: Array.from(streamingConversations) });
+        console.log('Removing from streaming set:', { id });
         setStreamingConversations(prev => {
             const next = new Set(prev);
             // CRITICAL: Preserve scroll for non-current conversations
@@ -559,6 +563,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
             next.set(id, { state: 'idle', lastUpdated: Date.now() });
             return next;
         });
+        // Relay to other same-project tabs so they can stop showing streaming UI
+        projectSync.post('streaming-ended', { conversationId: id });
     }, [currentConversationId]);
 
     const getProcessingState = useCallback((conversationId: string): ProcessingState => {
@@ -667,7 +673,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     // Include ALL dirty conversations, not just current project's.
                     // Moved conversations have a different projectId but still need syncing.
                     const dirtyConvs = finalConversations.filter(
-                        c => dirty.has(c.id)
+                        c => dirty.has(c.id) && c.isActive !== false
                     );
                     dirtyConversationIds.current = new Set();
                     Promise.resolve().then(async () => {
@@ -1639,6 +1645,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
             if (!isServerReachable) {
                 return;
             }
+            // Skip polling when any conversation is actively streaming.
+            // This tab's own state is authoritative during streaming; the server
+            // poll would race with addMessageToConversation / queueSave and
+            // clobber in-progress or just-completed conversation data.
+            if (streamingConversationsRef.current.size > 0) return;
             // Skip polling when tab is not visible — no need to sync background tabs
             if (document.hidden) {
                 return;
@@ -1647,7 +1658,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 // 1. Fetch from server
                 // Use summaries (no messages) for polling — only fetch full data on version mismatch
                 const serverChats = await syncApi.listChats(projectId, false);
-                console.log(`📡 SERVER_SYNC: Got ${serverChats.length} chats from server for project ${projectId}`);
+                console.debug(`📡 SERVER_SYNC: Got ${serverChats.length} chat summaries from server`);
 
                 // 2. Load current IndexedDB state
                 let allConversations = await db.getConversations();
@@ -1660,38 +1671,121 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
                 const localProjectConvs = allConversations.filter((c: any) => c.projectId === projectId || c.isGlobal);
 
+                // 2b. Detect conversations that need full fetch:
+                //     - Server-only (new from another instance)
+                //     - Server version newer than local (updated from another instance)
+                const localMap = new Map(localProjectConvs.map((c: any) => [c.id, c]));
+                const needFullFetch: string[] = [];
+
+                for (const sc of serverChats) {
+                    const local = localMap.get(sc.id);
+                    if (!local) {
+                        needFullFetch.push(sc.id);
+                    } else {
+                        const serverVer = (sc as any)._version || sc.lastActiveAt || 0;
+                        const localVer = (local as any)._version || local.lastAccessedAt || 0;
+                        if (serverVer > localVer) {
+                            needFullFetch.push(sc.id);
+                        }
+                    }
+                }
+
+                // Fetch full data only for conversations that are new or updated
+                const fullFetchMap = new Map<string, any>();
+                if (needFullFetch.length > 0) {
+                    console.log(`📡 SERVER_SYNC: Fetching full data for ${needFullFetch.length} new/updated conversation(s)`);
+                    const results = await Promise.allSettled(
+                        needFullFetch.map(id => syncApi.getChat(projectId, id))
+                    );
+                    results.forEach((result, i) => {
+                        if (result.status === 'fulfilled' && result.value) {
+                            fullFetchMap.set(needFullFetch[i], result.value);
+                        }
+                    });
+                }
+
                 // 3. Three-way merge: use _version to determine winner, keep all unique
                 const mergedMap = new Map<string, any>();
-                
+
                 // Start with local conversations
                 localProjectConvs.forEach((conv: any) => {
                     mergedMap.set(conv.id, conv);
                 });
 
-                // Merge server conversations - only overwrite if server is newer
+                // Merge server conversations
                 serverChats.forEach((sc: any) => {
                     const local = mergedMap.get(sc.id);
                     const serverVersion = sc._version || 0;
                     const localVersion = local?._version || 0;
                     
-                    if (!local || serverVersion > localVersion) {
-                        mergedMap.set(sc.id, {
-                            ...sc,
-                            // Preserve the server's projectId — don't force the polling project.
-                            // Conversations that were moved to another project retain their new projectId.
-                            projectId: sc.projectId || projectId,
-                            lastAccessedAt: sc.lastAccessedAt || sc.lastActiveAt,
-                            isActive: sc.isActive !== false,
-                            _version: serverVersion,
-                        });
+                    if (!local) {
+                        // Server-only conversation — use full-fetched data if available
+                        const full = fullFetchMap.get(sc.id);
+                        if (full) {
+                            mergedMap.set(sc.id, {
+                                ...full,
+                                projectId: full.projectId || projectId,
+                                lastAccessedAt: full.lastAccessedAt || full.lastActiveAt,
+                                isActive: full.isActive !== false,
+                                _version: full._version || Date.now(),
+                            });
+                        }
+                        // If full fetch failed, skip — will retry next poll
+                    } else if (serverVersion > localVersion) {
+                        // Server is newer — use full-fetched data if available,
+                        // otherwise update metadata only from summary
+                        const full = fullFetchMap.get(sc.id);
+                        if (full) {
+                            mergedMap.set(sc.id, {
+                                ...full,
+                                projectId: full.projectId || projectId,
+                                lastAccessedAt: full.lastAccessedAt || full.lastActiveAt,
+                                isActive: full.isActive !== false,
+                                _version: full._version || Date.now(),
+                            });
+                        } else {
+                            // Summary-only update (full fetch wasn't needed or failed)
+                            mergedMap.set(sc.id, {
+                                ...local,
+                                title: sc.title || local.title,
+                                projectId: sc.projectId || local.projectId || projectId,
+                                lastActiveAt: sc.lastActiveAt || local.lastActiveAt,
+                                _version: serverVersion,
+                            });
+                        }
                     }
                 });
 
                 const mergedProjectConvs = Array.from(mergedMap.values());
 
+                // 3b. Detect locally-present conversations that the server no longer has.
+                // This means another instance deleted them — mark inactive locally.
+                // CRITICAL: Only consider conversations that are old enough to have been
+                // synced. Recently-created or recently-modified conversations may simply
+                // not have reached the server yet (bulk-sync is async/non-blocking).
+                const SYNC_GRACE_PERIOD_MS = 60_000; // 60 seconds
+                const now = Date.now();
+                const serverIdSet = new Set(serverChats.map((sc: any) => sc.id));
+                const deletedIds: string[] = [];
+                for (let i = mergedProjectConvs.length - 1; i >= 0; i--) {
+                    const conv = mergedProjectConvs[i];
+                    if (conv.isActive !== false && conv.messages?.length > 0 && !serverIdSet.has(conv.id)) {
+                        const convAge = now - (conv._version || conv.lastAccessedAt || now);
+                        if (convAge > SYNC_GRACE_PERIOD_MS) {
+                            console.log(`📡 SERVER_SYNC: "${conv.title}" (${conv.id.substring(0, 8)}) gone from server for >${SYNC_GRACE_PERIOD_MS / 1000}s — removing locally`);
+                            deletedIds.push(conv.id);
+                            mergedProjectConvs.splice(i, 1);
+                        }
+                    }
+                }
+
                 // 4. Push local-only / newer-local conversations to server (non-blocking)
                 const chatsToSync = mergedProjectConvs
                     .filter(c => {
+                        // Don't push conversations we just marked as deleted
+                        if (deletedIds.includes(c.id)) return false;
+                        // Don't push inactive (deleted) conversations back to server
+                        if (c.isActive === false) return false;
                         const sc = serverChats.find(sc => sc.id === c.id);
                         if (!sc) return true; // local-only, needs push
                         // Only push if local has a _version AND it's strictly greater than server's
@@ -1861,6 +1955,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
         if (!currentProject?.id) return;
         projectSync.join(currentProject.id);
 
+        // Batch cross-tab streaming updates with requestAnimationFrame.
+        // Multiple BroadcastChannel messages can arrive faster than React
+        // can re-render; coalescing into one setState per frame avoids
+        // creating intermediate Map objects and re-rendering 10+ consumers.
+        let pendingChunk: { conversationId: string; content: string; reasoning?: string } | null = null;
+        let chunkRafId: number | null = null;
+
         const handleConversationsChanged = async (msg: any) => {
             if (!isInitialized) return;
             try {
@@ -1887,11 +1988,33 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
         const handleStreamingChunk = (msg: any) => {
             const { conversationId, content, reasoning } = msg;
-            if (content) {
-                setStreamedContentMap(prev => new Map(prev).set(conversationId, content));
-            }
-            if (reasoning) {
-                setReasoningContentMap(prev => new Map(prev).set(conversationId, reasoning));
+            if (!content && !reasoning) return;
+
+            // Ensure this conversation is marked as streaming in case we missed
+            // the initial streaming-state event (e.g., tab opened mid-stream).
+            // Set.has is O(1); new Set is created only when actually needed.
+            setStreamingConversations(prev =>
+                prev.has(conversationId) ? prev : new Set(prev).add(conversationId));
+
+            // Stash the latest payload; the rAF callback will pick it up.
+            // If another message arrives before the frame fires, we overwrite —
+            // chatApi sends the full accumulated string, not deltas.
+            pendingChunk = { conversationId, content, reasoning };
+
+            if (chunkRafId === null) {
+                chunkRafId = requestAnimationFrame(() => {
+                    chunkRafId = null;
+                    if (!pendingChunk) return;
+                    const { conversationId: cid, content: c, reasoning: r } = pendingChunk;
+                    pendingChunk = null;
+
+                    if (c) {
+                        setStreamedContentMap(prev => new Map(prev).set(cid, c));
+                    }
+                    if (r) {
+                        setReasoningContentMap(prev => new Map(prev).set(cid, r));
+                    }
+                });
             }
         };
 
@@ -1916,6 +2039,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
         projectSync.on('streaming-ended', handleStreamingEnded);
 
         return () => {
+            // Cancel any pending rAF to prevent setState after unmount
+            if (chunkRafId !== null) {
+                cancelAnimationFrame(chunkRafId);
+                chunkRafId = null;
+            }
+            pendingChunk = null;
             projectSync.off('conversations-changed', handleConversationsChanged);
             projectSync.off('conversation-created', handleConversationsChanged);
             projectSync.off('conversation-deleted', handleConversationsChanged);
