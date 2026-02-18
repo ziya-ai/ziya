@@ -261,6 +261,9 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
 active_streams = {}
 active_streams_lock = threading.Lock()
 
+# Event loop reference for cross-thread async scheduling (set during lifespan startup)
+_main_event_loop = None
+
 # Use configuration from config module
 # For model configurations, see app/config.py
 
@@ -316,6 +319,11 @@ async def lifespan(app: FastAPI):
     CRITICAL: This must return quickly to allow the server to start accepting requests.
     All heavy initialization is deferred to background tasks.
     """
+    # Capture the main event loop so background threads (file watcher, etc.)
+    # can schedule async coroutines via run_coroutine_threadsafe.
+    global _main_event_loop
+    _main_event_loop = asyncio.get_running_loop()
+
     # Initialize Ziya home directory
     ziya_home = get_ziya_home()
     app_logger.info(f"Ziya home directory initialized at {ziya_home}")
@@ -533,7 +541,7 @@ import logging as _logging
 
 class _PollingAccessFilter(_logging.Filter):
     """Filter routine polling GETs from uvicorn access log."""
-    _quiet = {'/chats?', '/chat-groups', '/skills', '/contexts'}
+    _quiet = {'/chats?', '/chat-groups', '/skills', '/contexts', '/api/config'}
     def filter(self, record: _logging.LogRecord) -> bool:
         msg = record.getMessage()
         return not any(q in msg for q in self._quiet)
@@ -3112,63 +3120,6 @@ async def stream_chunks(body):
                 # Clean up and exit gracefully
                 await cleanup_stream(conversation_id)
                 return
-                
-                if is_token_throttling and token_throttling_retries < max_token_throttling_retries:
-                    token_throttling_retries += 1
-                    logger.info(f"🔄 TOKEN_THROTTLING: Detected token throttling in multi-round session, attempt {token_throttling_retries}/{max_token_throttling_retries}")
-                    
-                    # Send status update to frontend
-                    status_update = {
-                        "type": "token_throttling_retry",
-                        "message": f"Token limit reached, retrying with fresh connection in 20s (attempt {token_throttling_retries}/{max_token_throttling_retries})",
-                        "retry_attempt": token_throttling_retries,
-                        "wait_time": 20
-                    }
-                    final_retry_msg = f"\\n🔄 Retrying with fresh connection... (attempt {token_throttling_retries}/{max_token_throttling_retries})\\n"
-                    yield f"data: {json.dumps({'content': final_retry_msg})}\n\n"
-                    
-                    # Wait 20 seconds and retry with fresh connection
-                    await asyncio.sleep(20)
-                    
-                    # Reset iteration counter to retry the current iteration
-                    iteration -= 1
-                    if iteration < 1:
-                        iteration = 1
-                    continue
-                
-                # Preserve any accumulated response content before handling the error
-                if current_response and len(current_response.strip()) > 0:
-                    logger.info(f"Preserving {len(current_response)} characters of partial response before error")
-                    logger.debug(f"PARTIAL RESPONSE PRESERVED (AGENT ERROR):\n{current_response}")
-                    
-                    # Send the partial content to the frontend
-                    yield f"data: {json.dumps({'content': current_response})}\n\n"
-                    
-                    # Send warning about partial response
-                    warning_msg = f"Server encountered an error after generating {len(current_response)} characters. The partial response has been preserved."
-                    yield f"data: {json.dumps({'warning': warning_msg})}\n\n"
-                    
-                    full_response = current_response  # Ensure it's preserved in full_response
-                
-                # Handle ValidationError specifically by sending proper SSE error
-                from app.utils.custom_exceptions import ValidationError
-                if isinstance(e, ValidationError):
-                    logger.debug("🔍 AGENT: Handling ValidationError in streaming context, sending SSE error")
-                    error_data = {
-                        "error": "validation_error",
-                        "conversation_id": body.get("conversation_id"),
-                        "detail": str(e),
-                        "status_code": 413
-                    }
-                    
-                    # Send error as direct SSE data
-                    yield f"data: {json.dumps(error_data)}\n\n"
-                    yield f"data: [DONE]\n\n"
-                    
-                    # Clean up and return
-                    await cleanup_stream(conversation_id)
-                    return
-                
                 break
 
         # Log why the iteration loop ended
@@ -3834,21 +3785,17 @@ def _schedule_broadcast(event_type: str, rel_path: str, token_count: int = 0):
     """Schedule a broadcast, handling the case where no event loop is running."""
     try:
         loop = asyncio.get_running_loop()
-        task = loop.create_task(broadcast_file_tree_update(event_type, rel_path, token_count))
-        task.add_done_callback(lambda t: logger.error(f"File tree broadcast failed: {t.exception()}") if t.exception() else None)
+        loop.create_task(broadcast_file_tree_update(event_type, rel_path, token_count))
     except RuntimeError:
-        # No running event loop - try to get or create one
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.call_soon_threadsafe(
-                    lambda: asyncio.ensure_future(broadcast_file_tree_update(event_type, rel_path, token_count))
-                )
-            else:
-                # No running loop, just log and skip the broadcast
-                logger.debug(f"Skipping broadcast for {event_type}: {rel_path} (no event loop)")
-        except Exception as e:
-            logger.debug(f"Skipping broadcast for {event_type}: {rel_path} ({e})")
+        # Called from a background thread (file watcher, threadpool worker).
+        # Use the main event loop captured at startup.
+        if _main_event_loop is not None and _main_event_loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                broadcast_file_tree_update(event_type, rel_path, token_count),
+                _main_event_loop
+            )
+        else:
+            logger.debug(f"Skipping broadcast for {event_type}: {rel_path} (no main event loop)")
 
 def update_file_in_folder_cache(rel_path: str) -> bool:
     """Update token count for modified file in cache."""
@@ -4675,8 +4622,6 @@ async def get_folders_with_accurate_tokens():
         if not user_codebase_dir:
             logger.warning("ZIYA_USER_CODEBASE_DIR environment variable not set")
             user_codebase_dir = os.getcwd()
-            logger.info(f"ZIYA_USER_CODEBASE_DIR not set, using current directory: {user_codebase_dir}")
-            os.environ["ZIYA_USER_CODEBASE_DIR"] = user_codebase_dir
             
         # Get max depth from environment or use default
         try:
@@ -4796,6 +4741,14 @@ async def get_folders_with_accurate_tokens():
 def get_config():
     """Get application configuration for frontend."""
     # Base config from environment
+    # Cache the merged config to avoid re-reading plugin files on every poll.
+    # Invalidated only on model change or explicit refresh.
+    if not hasattr(get_config, '_cache'):
+        get_config._cache = None
+
+    if get_config._cache is not None:
+        return get_config._cache
+
     config = {
         'theme': os.environ.get('ZIYA_THEME', 'light'),
         'defaultModel': os.environ.get('ZIYA_MODEL'),
@@ -4811,17 +4764,17 @@ def get_config():
     try:
         from app.plugins import get_all_config_providers
         for provider in get_all_config_providers():
-            logger.info(f"Checking provider: {provider.provider_id}")
+            logger.debug(f"Checking provider: {provider.provider_id}")
             if hasattr(provider, 'get_defaults'):
                 defaults = provider.get_defaults()
-                logger.info(f"Provider {provider.provider_id} defaults keys: {defaults.keys()}")
+                logger.debug(f"Provider {provider.provider_id} defaults keys: {defaults.keys()}")
                 if 'frontend' in defaults:
-                    logger.info(f"Found frontend config in {provider.provider_id}: {defaults['frontend']}")
+                    logger.debug(f"Found frontend config in {provider.provider_id}: {defaults['frontend']}")
                     config['frontend'] = defaults['frontend']
     except Exception as e:
         logger.warning(f"Error loading frontend config from providers: {e}")
-        logger.exception(e)
     
+    get_config._cache = config
     return config
 
 @app.get('/api/current-model')
@@ -5029,8 +4982,6 @@ async def api_get_folders(refresh: bool = False, project_path: str = Query(None)
         if not user_codebase_dir:
             logger.warning("ZIYA_USER_CODEBASE_DIR environment variable not set")
             user_codebase_dir = os.getcwd()
-            logger.info(f"ZIYA_USER_CODEBASE_DIR not set, using current directory: {user_codebase_dir}")
-            os.environ["ZIYA_USER_CODEBASE_DIR"] = user_codebase_dir
             
         # Validate the directory exists and is accessible
         if not os.path.exists(user_codebase_dir):
@@ -5319,6 +5270,10 @@ async def set_model(request: SetModelRequest):
             # initialize_langserve(app, agent_executor)
             # _langserve_initialized = True
             logger.info("LangServe completely disabled to prevent duplicate execution - using /api/chat only")
+
+            # Invalidate config cache so next /api/config poll picks up new model
+            if hasattr(get_config, '_cache'):
+                get_config._cache = None
 
             # Force garbage collection after successful model change
             import gc
