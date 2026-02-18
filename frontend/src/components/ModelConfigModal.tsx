@@ -31,6 +31,7 @@ export interface ModelSettings {
   max_input_tokens: number;
   thinking_mode: boolean;  // For DeepSeek/other models
   thinking_level?: string;  // For Gemini 3 models: "low", "medium", "high"
+  thinking_effort?: string;  // For Claude 4.6+ models: "low", "medium", "high", "max"
 }
 
 export interface ModelCapabilities {
@@ -44,6 +45,9 @@ export interface ModelCapabilities {
   max_input_tokens_range?: { min: number; max: number; default: number };
   supports_thinking_level?: boolean;
   thinking_level_default?: string;  // Default thinking level for the model
+  supports_adaptive_thinking?: boolean;
+  is_advanced_model?: boolean;  // Opus-class models that support max effort
+  thinking_effort_default?: string;  // Default thinking effort for Claude 4.6+
 }
 
 const DEFAULT_SETTINGS: ModelSettings = {
@@ -52,7 +56,8 @@ const DEFAULT_SETTINGS: ModelSettings = {
   max_output_tokens: 4096,
   max_input_tokens: 4096,
   thinking_mode: false,
-  thinking_level: "high"
+  thinking_level: "high",
+  thinking_effort: "medium"
 };
 
 export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
@@ -77,7 +82,8 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
     max_output_tokens: currentSettings.max_output_tokens,
     max_input_tokens: capabilities?.token_limit || 4096,
     thinking_mode: currentSettings.thinking_mode,
-    thinking_level: currentSettings.thinking_level || capabilities?.thinking_level_default || 'high'
+    thinking_level: currentSettings.thinking_level || capabilities?.thinking_level_default || 'high',
+    thinking_effort: currentSettings.thinking_effort || capabilities?.thinking_effort_default || 'medium'
   });
   const [sliderValues, setSliderValues] = useState({
     temperature: currentSettings.temperature || 0.3,
@@ -104,7 +110,8 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
         top_k: currentSettings.top_k || capabilities.top_k_range?.default || 15,
         max_output_tokens: currentSettings.max_output_tokens || capabilities.max_output_tokens,
         max_input_tokens: currentSettings.max_input_tokens || capabilities.max_input_tokens || capabilities.token_limit,
-        thinking_level: currentSettings.thinking_level || capabilities.thinking_level_default || 'high'
+        thinking_level: currentSettings.thinking_level || capabilities.thinking_level_default || 'high',
+        thinking_effort: currentSettings.thinking_effort || capabilities.thinking_effort_default || 'medium'
       });
 
       // Force update of slider values
@@ -239,7 +246,8 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
         ...prev,
         max_input_tokens: data.max_input_tokens || data.token_limit || prev.max_input_tokens,
         max_output_tokens: data.max_output_tokens || prev.max_output_tokens,
-        thinking_level: data.thinking_level || prev.thinking_level
+        thinking_level: data.thinking_level || prev.thinking_level,
+        thinking_effort: data.thinking_effort || prev.thinking_effort
       }));
 
       // Get current form values to use as fallbacks
@@ -252,7 +260,8 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
         max_output_tokens: data.max_output_tokens,
         max_input_tokens: data.token_limit,
         thinking_mode: data.supports_thinking ? form.getFieldValue('thinking_mode') || false : false,
-        thinking_level: data.thinking_level_default || 'high'
+        thinking_level: data.thinking_level_default || 'high',
+        thinking_effort: data.thinking_effort_default || 'medium'
       };
 
       // Update form with new values
@@ -372,41 +381,41 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
                     // Handle patterns like "opus4.5", "sonnet3.7", "nova-pro", etc.
                     const match = name.match(/^([a-z]+)(\d+(?:\.\d+)?)?(-.*)?$/i);
                     if (!match) return { family: name, version: 0, subVersion: 0 };
-                    
+
                     const family = match[1]; // "opus", "sonnet", "nova"
                     const versionStr = match[2] || '0'; // "4.5", "3.7", undefined
                     const suffix = match[3] || ''; // "-pro", "-v2", etc.
-                    
+
                     // Parse version as major.minor
                     const versionParts = versionStr.split('.');
                     const major = parseInt(versionParts[0]) || 0;
                     const minor = parseInt(versionParts[1]) || 0;
-                    
+
                     // Combine into single comparable number: 4.5 -> 4.5, 4 -> 4.0
                     const version = major + (minor / 10);
-                    
+
                     // Handle suffixes: -v2 should come before base version
                     let subVersion = 0;
                     if (suffix.includes('-v2')) subVersion = 1;
                     if (suffix.includes('-pro')) subVersion = 2;
                     if (suffix.includes('-premier')) subVersion = 3;
-                    
+
                     return { family, version, subVersion };
                   };
-                  
+
                   const aInfo = extractFamilyAndVersion(a.name);
                   const bInfo = extractFamilyAndVersion(b.name);
-                  
+
                   // First sort by family name alphabetically
                   if (aInfo.family !== bInfo.family) {
                     return aInfo.family.localeCompare(bInfo.family);
                   }
-                  
+
                   // Within same family, sort by version (descending - newest first)
                   if (aInfo.version !== bInfo.version) {
                     return bInfo.version - aInfo.version; // Higher version first
                   }
-                  
+
                   // If versions are the same, sort by subVersion (descending)
                   return bInfo.subVersion - aInfo.subVersion;
                 })
@@ -516,6 +525,29 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
               <Select.Option value="low">Low (faster, less reasoning)</Select.Option>
               <Select.Option value="medium">Medium (balanced)</Select.Option>
               <Select.Option value="high">High (deeper reasoning)</Select.Option>
+            </Select>
+          </Form.Item>
+        )}
+
+        {selectedModelCapabilities?.supports_adaptive_thinking && (
+          <Form.Item
+            label={
+              <span>
+                Thinking Effort
+                <Tooltip title="Controls how much effort the model puts into reasoning. 'medium' is recommended for agentic coding workflows. 'high' gives deeper reasoning at higher latency. 'max' is available for Opus models only.">
+                  <InfoCircleOutlined style={{ marginLeft: 5 }} />
+                </Tooltip>
+              </span>
+            }
+            name="thinking_effort"
+          >
+            <Select>
+              <Select.Option value="low">Low (fastest, minimal reasoning)</Select.Option>
+              <Select.Option value="medium">Medium (recommended for coding)</Select.Option>
+              <Select.Option value="high">High (deeper reasoning, slower)</Select.Option>
+              {selectedModelCapabilities?.is_advanced_model && (
+                <Select.Option value="max">Max (deepest reasoning)</Select.Option>
+              )}
             </Select>
           </Form.Item>
         )}
