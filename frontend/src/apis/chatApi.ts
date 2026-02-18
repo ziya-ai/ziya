@@ -5,6 +5,7 @@ import { AppConfig, DEFAULT_CONFIG } from '../types/config';
 import { formatMCPOutput, enhanceToolDisplayHeader } from '../utils/mcpFormatter';
 import { handleToolStart, handleToolDisplay, ToolEventContext } from '../utils/mcpToolHandlers';
 import { Project } from '../types/project';
+import { projectSync } from '../utils/projectSync';
 
 import { extractSingleFileDiff } from '../utils/diffUtils';
 // WebSocket for real-time feedback
@@ -562,7 +563,7 @@ ${errorDetail}
             _timestamp: Date.now()
         };
         addMessageToConversation(errorMessage, conversationId);
-        
+
         // Attach click handler to the retry button after React renders it
         if (isAuthError) {
             setTimeout(() => {
@@ -571,7 +572,7 @@ ${errorDetail}
                     retryButton.dataset.handlerAttached = 'true';
                     retryButton.addEventListener('click', async () => {
                         console.log('Auth error retry button clicked for conversation:', conversationId);
-                        
+
                         // Trigger a new request with the same conversation
                         // This will pick up fresh credentials if mwinit was run
                         try {
@@ -579,7 +580,7 @@ ${errorDetail}
                             window.dispatchEvent(new CustomEvent('retryAuthError', {
                                 detail: { conversationId }
                             }));
-                            
+
                             // Show feedback that retry is happening
                             retryButton.textContent = '🔄 Retrying...';
                             retryButton.disabled = true;
@@ -626,6 +627,10 @@ export const sendPayload = async (
     let containsDiff = false;
     let errorOccurred = false;
     let errorAlreadyDisplayed = false;  // Track if we've shown an error to prevent duplicates
+    // Throttle BroadcastChannel relay to avoid flooding other tabs
+    let lastBroadcastTime = 0;
+    let hallucinationDetected = false;  // Failsafe: track if model is generating fake tool output
+    const BROADCAST_INTERVAL_MS = 300;
     let toolInputsMap = new Map<string, any>(); // Store tool inputs by tool ID
 
     // Store original params but also track accumulated content for retry
@@ -760,6 +765,9 @@ export const sendPayload = async (
         const processChunk = (chunk: string) => {
             // Add chunk to buffer
             buffer += chunk;
+
+            // Any data from the server proves it's alive — reset the health-check failure counter
+            document.dispatchEvent(new Event('serverAliveProof'));
 
             // Split by double newlines to get complete SSE messages
             const messages = buffer.split('\n\n');
@@ -1246,13 +1254,13 @@ export const sendPayload = async (
                 if (jsonData.type === 'rewind' && jsonData.to_marker) {
                     const marker = `<!-- REWIND_MARKER: ${jsonData.to_marker}`;
                     console.log(`🔄 REWIND: Searching for specific marker: ${marker}`);
-                    
+
                     const markerIndex = currentContent.indexOf(marker);
                     if (markerIndex === -1) {
                         console.warn(`⚠️ REWIND: Marker not found: ${marker}`);
                         return;
                     }
-                    
+
                     const rewindMatch = currentContent.substring(markerIndex).match(/<!-- REWIND_MARKER: ([^\s]+)(?:\|FENCE:([`~])(\w*))? -->(?:<\/span>)?/);
                     if (rewindMatch) {
                         const markerLabel = rewindMatch[1]; // Could be line number or other ID
@@ -1474,9 +1482,75 @@ export const sendPayload = async (
                     contentToAdd = jsonData.text;
                 }
 
-                // Add content if we found any
+                // ============================================================
+                // HALLUCINATION FAILSAFE
+                // Real tool results arrive as tool_result events, not as
+                // streamed content chunks. If the model is generating text
+                // that looks like tool output through the content stream,
+                // it's hallucinating. Detect and abort immediately.
+                // ============================================================
                 if (contentToAdd) {
+                    // Build the candidate content to check (accumulated + new chunk)
+                    const candidateContent = currentContent + contentToAdd;
+
+                    // Patterns that should NEVER appear in the content stream.
+                    // These formats are only produced by the frontend when
+                    // processing real tool_result/tool_start SSE events.
+                    const HALLUCINATION_PATTERNS = [,                   // Tool fence format (4-backtick)    // Tool fence format (3-backtick)
+                        /<TOOL_SENTINEL>/,                 // Sentinel markers
+                        /<\/TOOL_SENTINEL>/,
+                        /<!-- TOOL_BLOCK_START:/,           // Tool block HTML comments
+                        /<!-- TOOL_MARKER:/,
+                        /<!-- TOOL_BLOCK_END:/,
+                        /<name>mcp_[a-zA-Z]/,              // XML tool call format
+                        /<n>mcp_[a-zA-Z]/,
+                        /<arguments>\s*\{/,                 // Argument blocks
+                    ];
+
+                    const matchedPattern = HALLUCINATION_PATTERNS.find(p => p.test(candidateContent));
+
+                    if (matchedPattern && !hallucinationDetected) {
+                        hallucinationDetected = true;
+                        console.error('🚨 HALLUCINATION FAILSAFE: Model is generating fake tool output through content stream!', {
+                            pattern: matchedPattern.toString(),
+                            contentChunkPreview: contentToAdd.substring(0, 200),
+                            accumulatedLength: currentContent.length,
+                        });
+
+                        // Abort the stream - this response is contaminated
+                        abortController.abort();
+
+                        // Strip any hallucinated tool content from what we've accumulated
+                        // Keep everything before the hallucination started
+                        const cleanContent = currentContent;
+
+                        // Show inline error so user knows what happened
+                        const warningMessage = cleanContent
+                            ? cleanContent + '\n\n---\n\n⚠️ **Response interrupted**: The model attempted to fabricate tool output instead of executing actual tools. Please retry your request.'
+                            : '⚠️ **Response interrupted**: The model attempted to fabricate tool output instead of executing actual tools. Please retry your request.';
+
+                        const hallucinationMsg: Message = {
+                            role: 'assistant',
+                            content: warningMessage,
+                            _timestamp: Date.now()
+                        };
+                        addMessageToConversation(hallucinationMsg, conversationId, !isStreamingToCurrentConversation);
+                        removeStreamingConversation(conversationId);
+                        return;
+                    }
+
+                    // No hallucination detected — safe to add content
                     currentContent += contentToAdd;
+
+                    // Relay to other same-project tabs (throttled)
+                    const now = Date.now();
+                    if (now - lastBroadcastTime >= BROADCAST_INTERVAL_MS) {
+                        lastBroadcastTime = now;
+                        projectSync.post('streaming-chunk', {
+                            conversationId,
+                            content: currentContent
+                        });
+                    }
 
                     // Use functional update to prevent race conditions
                     setStreamedContentMap((prev: Map<string, string>) => {
@@ -1699,18 +1773,19 @@ export const sendPayload = async (
                             }
                         } else {
                             // For other tools, look for TOOL_BLOCK_END
-                            const blockEndMarker = `<!-- TOOL_BLOCK_END:${toolName}|${unwrappedData.tool_id} -->`;
-                            const blockEndIndex = currentContent.indexOf(blockEndMarker, markerIndex);
+                            const afterMarker = currentContent.substring(markerIndex);
 
-                            if (blockEndIndex !== -1) {
-                                // Calculate end position
-                                let endIndex = blockEndIndex + blockEndMarker.length;
-                                // Skip trailing newlines
+                            // Find the closing fence (4 backticks followed by newline or end)
+                            const closingFenceMatch = afterMarker.match(/\n````\n/);
+
+                            if (closingFenceMatch && closingFenceMatch.index !== undefined) {
+                                const blockEndIndex = markerIndex + closingFenceMatch.index + closingFenceMatch[0].length;
+
+                                let endIndex = blockEndIndex;
                                 while (endIndex < currentContent.length && currentContent[endIndex] === '\n') {
                                     endIndex++;
                                 }
 
-                                // Replace from marker through end marker
                                 currentContent = currentContent.substring(0, markerIndex) +
                                     toolResultDisplay +
                                     currentContent.substring(endIndex);
@@ -1900,10 +1975,10 @@ export const sendPayload = async (
 
                     if (actualToolName === 'run_shell_command' && inputArgs.command) {
                         // Shell commands: include the command line in the loading display
-                        toolStartDisplay = `\n\n\n${fence}tool:${toolName}|${displayHeader}|${syntax}\n$ ${inputArgs.command}\n⏳ Running...\n${fence}\n\n`;
+                        toolStartDisplay = `\n\n<!-- TOOL_MARKER:${unwrappedData.tool_id} -->\n${fence}tool:${toolName}|${displayHeader}|${syntax}\n$ ${inputArgs.command}\n⏳ Running...\n${fence}\n\n`;
                     } else {
                         // Add TOOL_MARKER for all tools so tool_display can find and replace reliably
-                        toolStartDisplay = `\n\n\n${fence}tool:${toolName}|${displayHeader}|${syntax}\n⏳ Running...\n${fence}\n\n`;
+                        toolStartDisplay = `\n\n<!-- TOOL_MARKER:${unwrappedData.tool_id} -->\n${fence}tool:${toolName}|${displayHeader}|${syntax}\n⏳ Running...\n${fence}\n\n`;
                     }
 
                     console.log('🔧 TOOL_START formatted:', toolStartDisplay);
@@ -2346,6 +2421,10 @@ export const sendPayload = async (
                 // Add to conversation history and remove from streaming
                 const isNonCurrentConversation = !isStreamingToCurrentConversation;
                 addMessageToConversation(aiMessage, conversationId, isNonCurrentConversation);
+                // Final flush: broadcast the complete content so other tabs have it
+                // before streaming-ended clears their streaming state
+                projectSync.post('streaming-chunk', { conversationId, content: currentContent });
+
                 removeStreamingConversation(conversationId);
 
             }
@@ -2386,6 +2465,7 @@ export const sendPayload = async (
     } finally {
         if (eventSource && typeof eventSource.close === 'function') eventSource.close();
         document.removeEventListener('abortStream', abortListener as EventListener);
+        setIsStreaming(false);
         removeStreamingConversation(conversationId);
 
         // Only disconnect WebSocket if we're truly done and not just switching conversations
@@ -2423,12 +2503,12 @@ function extractAndCleanDiff(diff: string, filePath: string): string {
         found: Boolean(diffMatch),
         groups: diffMatch ? diffMatch.length : 0
     });
-    
+
     if (diffMatch) {
         const diffContent = diffMatch[1] as string;
         // If we extracted a diff from markdown and it's a multi-file diff,
         // extract only the relevant file's diff
-        if (diffContent.includes('diff --git') && 
+        if (diffContent.includes('diff --git') &&
             diffContent.indexOf('diff --git') !== diffContent.lastIndexOf('diff --git')) {
             return extractSingleFileDiff(diffContent.trim(), filePath);
         }
@@ -2470,7 +2550,7 @@ export async function applyDiff(
     try {
         // Extract and clean the diff content
         const cleanDiff = extractAndCleanDiff(diff, filePath);
-        
+
         console.log(`Processed diff content for ${elementId}:`, {
             length: cleanDiff.length,
             lines: cleanDiff.split('\n').length,
@@ -2503,7 +2583,7 @@ export async function applyDiff(
         if (response.ok || response.status === 207) {
             const data = await response.json();
             console.log('Apply changes response data:', data);
-            
+
             return {
                 success: response.ok,
                 status: data.status,
@@ -2514,7 +2594,7 @@ export async function applyDiff(
         } else {
             const errorData = await response.json().catch(() => ({}));
             console.log('Apply changes error response:', errorData);
-            
+
             return {
                 success: false,
                 status: 'error',
@@ -2567,16 +2647,16 @@ export async function undoDiff(
         });
 
         const data = await response.json();
-        
+
         if (data.status === 'success') {
-            return { 
-                success: true, 
-                message: data.message || 'Changes successfully reversed' 
+            return {
+                success: true,
+                message: data.message || 'Changes successfully reversed'
             };
         } else {
-            return { 
-                success: false, 
-                error: data.message || 'Failed to undo changes' 
+            return {
+                success: false,
+                error: data.message || 'Failed to undo changes'
             };
         }
     } catch (error) {
@@ -2597,22 +2677,22 @@ export function parseHunkStatuses(
     fileIndex: number = 0
 ): Map<string, { applied: boolean; alreadyApplied?: boolean; reason: string }> {
     const statusMap = new Map();
-    
+
     Object.entries(hunkStatuses).forEach(([hunkId, status]) => {
         const hunkIndex = parseInt(hunkId, 10) - 1; // Convert 1-based to 0-based
         const hunkKey = `${fileIndex}-${hunkIndex}`;
-        
+
         statusMap.set(hunkKey, {
             applied: (status as any).status === 'succeeded' || (status as any).status === 'already_applied',
             alreadyApplied: (status as any).status === 'already_applied',
-            reason: (status as any).status === 'failed' 
+            reason: (status as any).status === 'failed'
                 ? 'Failed in ' + ((status as any).stage || 'unknown') + ' stage'
                 : (status as any).status === 'already_applied'
                     ? 'Already applied'
                     : 'Successfully applied'
         });
     });
-    
+
     return statusMap;
 }
 
@@ -2746,7 +2826,7 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
     // Debug log the conversation ID being sent
     console.log('🔍 API: Sending conversation_id to server:', conversationId);
     console.log('🖼️ API: Messages with images:', messages.filter(m => m.images?.length > 0).length);
-    
+
     // Include active skill prompts from caller
     const systemPromptAddition = activeSkillPrompts ? `\n\n${activeSkillPrompts}` : '';
 
@@ -2763,7 +2843,7 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-                ...((currentProject?.path) ? { 'X-Project-Root': currentProject.path } : {}),
+            ...((currentProject?.path) ? { 'X-Project-Root': currentProject.path } : {}),
         },
         body: JSON.stringify(payload),
         signal
@@ -2776,7 +2856,8 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
 export const restartStreamWithEnhancedContext = async (
     conversationId: string,
     addedFiles: string[],
-    currentFiles: string[] = []
+    currentFiles: string[] = [],
+    projectPath?: string | null
 ): Promise<void> => {
     console.log('🔄 CONTEXT_ENHANCEMENT: Restarting stream with enhanced context:', { conversationId, addedFiles, currentFiles });
 
@@ -2786,7 +2867,7 @@ export const restartStreamWithEnhancedContext = async (
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                ...((currentProject?.path) ? { 'X-Project-Root': currentProject.path } : {}),
+                ...((projectPath) ? { 'X-Project-Root': projectPath } : {}),
             },
             body: JSON.stringify({
                 conversation_id: conversationId,
