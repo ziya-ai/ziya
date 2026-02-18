@@ -1112,7 +1112,11 @@ class MCPClient:
             
         except Exception as e:
             logger.error(f"Error calling MCP tool {name} on {self.server_config.get('name', 'unknown')}: {str(e)}")
-            return None
+            return {
+                "error": True,
+                "message": f"Tool execution failed: {str(e)}",
+                "code": -32603
+            }
             
     def _validate_and_convert_arguments(self, arguments: Dict[str, Any], schema: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Validate and convert argument types based on tool schema."""

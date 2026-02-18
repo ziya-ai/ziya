@@ -42,16 +42,13 @@ class ConnectionPool:
         """
         # Add debug logging
         logger.info(f"🔌 CONNECTION_POOL: Calling tool {tool_name} with arguments {arguments}")
-        print(f"🔌 CONNECTION_POOL: Calling tool {tool_name} with arguments {arguments}")
         
         # Special handling for shell commands
         if tool_name == "run_shell_command" or tool_name == "mcp_run_shell_command":
             logger.info(f"🔌 CONNECTION_POOL: Detected shell command: {arguments.get('command', '')}")
-            print(f"🔌 CONNECTION_POOL: Detected shell command: {arguments.get('command', '')}")
             # Force server_name to "shell" for shell commands
             server_name = "shell"
             logger.info(f"🔌 CONNECTION_POOL: Forcing server_name to 'shell' for shell command")
-            print(f"🔌 CONNECTION_POOL: Forcing server_name to 'shell' for shell command")
         
         # Apply rate limiting
         tool_key = f"{tool_name}:{conversation_id}"

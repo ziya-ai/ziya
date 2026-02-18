@@ -1042,7 +1042,7 @@ class MCPManager:
                     logger.error(f"Client {server_name} is unhealthy, cannot execute tool")
                     return {"error": True, "message": f"Server '{server_name}' is unhealthy", "code": -32002}
                     
-                return await client.call_tool(tool_name, arguments)
+                return await client.call_tool(internal_tool_name, arguments)
         else:
             # Try all connected servers
             for client in self.clients.values():
@@ -1056,22 +1056,20 @@ class MCPManager:
                                 logger.warning(f"Client unhealthy, skipping tool execution")
                                 continue  # Skip this client, try next one
                             
-                            # Remove the broken 'if not name_to_try' check entirely
-                        
-                        # Only log detailed call info in server mode
-                        try:
-                            if os.environ.get('ZIYA_MODE', 'server') == 'server':
-                                logger.debug(f"🔍 MCP_MANAGER: About to call client.call_tool with name='{name_to_try}', arguments={arguments}")
-                            
-                            result = await client.call_tool(name_to_try, arguments)
-                            
-                            logger.debug(f"🔍 MCP_MANAGER: Tool call succeeded: {name_to_try}")
-                            
-                            if result:
-                                return result
-                        except Exception as e:
-                            logger.error(f"Error calling tool {name_to_try}: {e}")
-                            continue
+                            # Only log detailed call info in server mode
+                            try:
+                                if os.environ.get('ZIYA_MODE', 'server') == 'server':
+                                    logger.debug(f"🔍 MCP_MANAGER: About to call client.call_tool with name='{name_to_try}', arguments={arguments}")
+
+                                result = await client.call_tool(name_to_try, arguments)
+
+                                logger.debug(f"🔍 MCP_MANAGER: Tool call succeeded: {name_to_try}")
+
+                                if result:
+                                    return result
+                            except Exception as e:
+                                logger.error(f"Error calling tool {name_to_try}: {e}")
+                                continue
             
             logger.warning(f"🔍 MCP_MANAGER: Tool '{internal_tool_name}' not found in any connected server")
             
