@@ -470,29 +470,8 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
                     letterSpacing: '0.5px'
                 }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <span>{getToolSummary()}</span>
+                        <span>{verified === true && '🔐 '}{getToolSummary()}</span>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                            {/* Security verification badge */}
-                            {verified !== undefined && (
-                                <Tooltip title={verified ? "Cryptographically verified" : `Verification failed: ${verificationError || 'Unknown'}`}>
-                                    <span
-                                        style={{
-                                            fontSize: '11px',
-                                            padding: '2px 8px',
-                                            borderRadius: '4px',
-                                            backgroundColor: verified ? 'rgba(46, 160, 67, 0.15)' : 'rgba(248, 81, 73, 0.15)',
-                                            color: verified ? '#3fb950' : '#f85149',
-                                            border: `1px solid ${verified ? '#3fb950' : '#f85149'}`,
-                                            fontWeight: 'bold',
-                                            display: 'inline-flex',
-                                            alignItems: 'center',
-                                            gap: '4px'
-                                        }}
-                                    >
-                                        {verified ? '🔒 Verified' : '⚠️ Unverified'}
-                                    </span>
-                                </Tooltip>
-                            )}
                             {(renderedHeaderHtml || summary) && (
                                 renderedHeaderHtml ? (
                                     <span style={{ fontSize: '11px', opacity: 0.7, fontWeight: 'normal' }}
@@ -587,26 +566,8 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
                 letterSpacing: '0.5px'
             }}>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <span>{getToolSummary()}</span>
+                    <span>{verified === true && '🔐 '}{getToolSummary()}</span>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        {/* Security verification badge */}
-                        {verified !== undefined && (
-                            <span
-                                style={{
-                                    fontSize: '10px',
-                                    padding: '2px 6px',
-                                    borderRadius: '3px',
-                                    backgroundColor: verified
-                                        ? (isDarkMode ? 'rgba(46, 160, 67, 0.2)' : 'rgba(46, 160, 67, 0.15)')
-                                        : (isDarkMode ? 'rgba(248, 81, 73, 0.2)' : 'rgba(248, 81, 73, 0.15)'),
-                                    color: verified ? '#3fb950' : '#f85149',
-                                    border: `1px solid ${verified ? '#3fb950' : '#f85149'}`
-                                }}
-                                title={verified ? "Cryptographically verified" : `Unverified: ${verificationError || 'Unknown'}`}
-                            >
-                                {verified ? '🔒 Verified' : '⚠️ Unverified'}
-                            </span>
-                        )}
                         {shouldShowCollapsed && (
                             <div style={{
                                 marginLeft: 'auto',
@@ -1046,6 +1007,24 @@ const validateAndFixParsedFiles = (parsedFiles: any[]): any[] => {
     }).filter(file => file.hunks.length > 0);
 };
 
+/**
+ * Safe wrapper around react-diff-view's parseDiff.
+ * parseDiff can throw internally when it encounters malformed hunks
+ * (e.g. accessing .changes on an undefined hunk object).
+ * This wrapper catches those errors and returns an empty array
+ * so callers can fall back to raw rendering.
+ */
+const safeParseDiff = (diffText: string): any[] => {
+    try {
+        return parseDiff(diffText);
+    } catch (error) {
+        if (process.env.NODE_ENV === 'development') {
+            console.warn('safeParseDiff: parseDiff threw internally:', error);
+        }
+        return [];
+    }
+};
+
 // Helper function to check if this is a deletion diff
 const isDeletionDiff = (content: string) => {
     const lines = content.split('\n');
@@ -1349,7 +1328,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
         console.log(`Updating hunk statuses for ${targetDiffId} (we are ${diffId})`, hunkStatuses);
 
         try {
-            const files = parseDiff(diff);
+            const files = safeParseDiff(diff);
             files.forEach((file, fileIndex) => {
                 file.hunks.forEach((hunk, hunkIndex) => {
                     // Create a key for this hunk
@@ -1450,8 +1429,8 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
         const parseAndSetFiles = () => {
             try {
                 const normalizedDiff = normalizeGitDiff(diff);
-                let parsedFiles = validateAndFixParsedFiles(
-                    parseDiff(normalizedDiff)
+                let parsedFiles = validateAndFixParsedFiles(                    
+                    safeParseDiff(normalizedDiff)
                 );
 
                 // Fix incorrectly parsed deletion diffs - check ALL parsed files
@@ -2741,7 +2720,8 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
 
             // Use the imported function
             const allCurrentFiles = Array.from(checkedKeys).map(String);
-            await restartStreamWithEnhancedContext(currentConversationId, addedFiles, allCurrentFiles);
+            const projectRoot = (window as any).__ZIYA_CURRENT_PROJECT_PATH__;
+            await restartStreamWithEnhancedContext(currentConversationId, addedFiles, allCurrentFiles, projectRoot);
 
             // Show subtle notification
             message.info({
@@ -2798,7 +2778,8 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode }: DiffToken
         setNeedsContextEnhancement(false);
         try {
             const allCurrentFiles = Array.from(checkedKeys).map(String);
-            await restartStreamWithEnhancedContext(currentConversationId, missingFilesList, allCurrentFiles);
+            const projectRoot = (window as any).__ZIYA_CURRENT_PROJECT_PATH__;
+            await restartStreamWithEnhancedContext(currentConversationId, missingFilesList, allCurrentFiles, projectRoot);
 
             message.success({
                 content: `Added missing files to context: ${missingFilesList.join(', ')}`,
@@ -3032,7 +3013,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
     useEffect(() => {
         try {
             const parsed = validateAndFixParsedFiles(
-                parseDiff(normalizeGitDiff(currentContent))
+                safeParseDiff(normalizeGitDiff(currentContent))
             );
             if (parsed.length > 0) {
                 parsedFilesRef.current = parsed;
@@ -3043,7 +3024,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, index, elementId }: Diff
             if (lastValidDiffRef.current) {
                 try {
                     parsedFilesRef.current = validateAndFixParsedFiles(
-                        parseDiff(normalizeGitDiff(lastValidDiffRef.current))
+                        safeParseDiff(normalizeGitDiff(lastValidDiffRef.current))
                     );
                 } catch (e) { }
             }
@@ -5156,7 +5137,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
                 // Start the retry
                 addStreamingConversation(conversationId);
-                await sendPayload(messagesForRetry, lastUserMessage.content, checkedKeys as string[], conversationId, undefined, streamedContentMap, setStreamedContentMap, setIsStreaming, removeStreamingConversation,
+                await sendPayload(messagesForRetry, lastUserMessage.content, checkedKeys as string[], conversationId, undefined, undefined, streamedContentMap, setStreamedContentMap, setIsStreaming, removeStreamingConversation,
                     addMessageToConversation,
                     streamingConversations.has(conversationId),
                     (state) => updateProcessingState(conversationId, state),
