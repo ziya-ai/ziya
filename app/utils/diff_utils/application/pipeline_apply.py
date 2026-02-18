@@ -103,11 +103,14 @@ def apply_diff_with_pipeline_approach(
         
         # Save original environment variables
         original_force_difflib = os.environ.get("ZIYA_FORCE_DIFFLIB")
-        original_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
         
-        # Set up the environment for the pipeline
+        # Set up the environment for the pipeline.
+        # Use the request-scoped ContextVar instead of mutating the process-global
+        # env var — env var mutation races under concurrent requests.
+        from app.context import set_project_root, get_project_root
+        original_codebase_dir = get_project_root()
         os.environ["ZIYA_FORCE_DIFFLIB"] = "1"  # Force using difflib
-        os.environ["ZIYA_USER_CODEBASE_DIR"] = temp_dir
+        set_project_root(temp_dir)
         
         try:
             # Apply the diff using the pipeline
@@ -130,8 +133,5 @@ def apply_diff_with_pipeline_approach(
                 os.environ["ZIYA_FORCE_DIFFLIB"] = original_force_difflib
             else:
                 os.environ.pop("ZIYA_FORCE_DIFFLIB", None)
-                
-            if original_codebase_dir is not None:
-                os.environ["ZIYA_USER_CODEBASE_DIR"] = original_codebase_dir
-            else:
-                os.environ.pop("ZIYA_USER_CODEBASE_DIR", None)
+
+            set_project_root(original_context_root)
