@@ -1,7 +1,7 @@
 import React, { createContext, ReactNode, useContext, useCallback, useEffect, useState, useLayoutEffect, useRef, useMemo } from 'react';
 import { Folders } from "../utils/types";
 import { message } from 'antd';
-import { convertToTreeData } from "../utils/folderUtil";
+import { convertToTreeData, insertIntoFolders, updateTokenInFolders, removeFromFolders } from "../utils/folderUtil";
 import { useChatContext } from "./ChatContext";
 import { TreeDataNode } from "antd";
 import { debounce } from "../utils/debounce";
@@ -69,6 +69,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const [accurateTokenCounts, setAccurateTokenCounts] = useState<Record<string, { count: number; timestamp: number }>>({});
   const accurateCountTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastProcessedSelectionRef = useRef<string>('');
+  const fileTreeWsRef = useRef<WebSocket | null>(null);
 
   // Monitor FolderProvider render performance
   // Get current project from ProjectContext
@@ -448,6 +449,88 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       checkFolderProgress();
     };
   }, [isScanning]);
+
+  // ─── File-tree WebSocket: incremental updates without full rescan ───
+  useEffect(() => {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws/file-tree`;
+
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let isUnmounting = false;
+
+    const connect = () => {
+      if (isUnmounting) return;
+      ws = new WebSocket(wsUrl);
+      fileTreeWsRef.current = ws;
+
+      ws.onopen = () => {
+        console.log('📂 FILE_TREE_WS: Connected');
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'connected') return;
+
+          const { type, path: filePath, token_count: tokenCount } = data;
+          if (!filePath || !type) return;
+
+          // Skip external paths
+          if (filePath.startsWith('[external]')) return;
+
+          console.log(`📂 FILE_TREE_WS: ${type} — ${filePath} (${tokenCount ?? 0} tokens)`);
+
+          setFolders((prev) => {
+            if (!prev) return prev;
+            const updated = { ...prev };
+
+            if (type === 'file_added') {
+              insertIntoFolders(updated, filePath, tokenCount ?? 0);
+            } else if (type === 'file_modified') {
+              updateTokenInFolders(updated, filePath, tokenCount ?? 0);
+            } else if (type === 'file_deleted') {
+              removeFromFolders(updated, filePath);
+            }
+
+            try {
+              const treeNodes = convertToTreeData(updated);
+              setTreeData(treeNodes);
+            } catch (e) {
+              console.warn('📂 FILE_TREE_WS: tree rebuild error:', e);
+            }
+
+            return updated;
+          });
+        } catch (e) {
+          console.warn('📂 FILE_TREE_WS: message error:', e);
+        }
+      };
+
+      ws.onclose = () => {
+        console.log('📂 FILE_TREE_WS: Disconnected');
+        fileTreeWsRef.current = null;
+        if (!isUnmounting) {
+          reconnectTimer = setTimeout(connect, 5000);
+        }
+      };
+
+      ws.onerror = () => {
+        // onclose fires after onerror — handles reconnect
+      };
+    };
+
+    connect();
+
+    return () => {
+      isUnmounting = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (ws && ws.readyState <= WebSocket.OPEN) {
+        ws.close();
+      }
+      fileTreeWsRef.current = null;
+    };
+  }, []);
 
   const cancelScan = useCallback(async () => {
     try {
