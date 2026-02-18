@@ -213,9 +213,13 @@ class WritePolicyManager:
                     return True
 
         rel = resolved[len(project_root):].lstrip(os.sep) if (project_root and resolved.startswith(project_root)) else raw
-        for pattern in self._policy.get('allowed_write_patterns', []):
-            if fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(os.path.basename(rel), pattern):
-                return True
+        for raw_pattern in self._policy.get('allowed_write_patterns', []):
+            # Handle comma-separated patterns that were stored as a single
+            # entry (e.g. "*.txt,*.md") by the frontend input field.
+            for pattern in raw_pattern.split(','):
+                pattern = pattern.strip()
+                if pattern and (fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(os.path.basename(rel), pattern)):
+                    return True
         return False
 
 
