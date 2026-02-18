@@ -5406,6 +5406,16 @@ def get_model_capabilities(model: str = None):
             capabilities["thinking_level_default"] = base_model_config.get("thinking_level", "high")
             capabilities["thinking_level"] = effective_settings.get("thinking_level", capabilities["thinking_level_default"])
 
+        # Add adaptive thinking support for Claude 4.6+ models
+        if base_model_config.get("supports_adaptive_thinking"):
+            capabilities["supports_adaptive_thinking"] = True
+            capabilities["thinking_effort_default"] = base_model_config.get("thinking_effort_default", "high")
+            capabilities["thinking_effort"] = effective_settings.get(
+                "thinking_effort",
+                os.environ.get("ZIYA_THINKING_EFFORT", capabilities["thinking_effort_default"])
+            )
+            capabilities["is_advanced_model"] = base_model_config.get("is_advanced_model", False)
+
         # Get base token limit, using extended context if supported
         base_token_limit = base_model_config.get("token_limit", 4096)
         if base_model_config.get("supports_extended_context"):
@@ -5485,6 +5495,7 @@ class ModelSettingsRequest(BaseModel):
     max_output_tokens: int = Field(default=4096, ge=1)
     thinking_mode: bool = Field(default=False)
     thinking_level: Optional[str] = Field(default=None, pattern='^(low|medium|high)$')
+    thinking_effort: Optional[str] = Field(default=None, pattern='^(low|medium|high|max)$')
 
 
 class TokenCountRequest(BaseModel):
