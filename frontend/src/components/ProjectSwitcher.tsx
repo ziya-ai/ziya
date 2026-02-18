@@ -23,6 +23,7 @@ export const ProjectSwitcher: React.FC = () => {
   const [showDirectoryBrowser, setShowDirectoryBrowser] = useState(false);
   const [showProjectManager, setShowProjectManager] = useState(false);
   const inputRef = useRef<any>(null);
+  const [settingsProjectId, setSettingsProjectId] = useState<string | null>(null);
   
   // Focus input when editing starts
   useEffect(() => {
@@ -104,14 +105,21 @@ export const ProjectSwitcher: React.FC = () => {
         background: '#1f1f1f', 
         border: '1px solid #444',
         borderRadius: '8px',
-        minWidth: '280px'
+        minWidth: '280px',
+        maxHeight: 'calc(100vh - 120px)',
       }}
       onClick={({ key }) => {
+        // Guard: key can be undefined if a non-MenuItem element's click propagates
+        if (!key) return;
+
         if (key === '__open_folder') {
           handleOpenFolderClick();
           } else if (key === '__manage_projects') {
             setIsOpen(false);
             setShowProjectManager(true);
+        } else if (key.startsWith('__settings_')) {
+          // Handled by onClick on the gear icon itself; prevent menu close
+          return;
         } else if (key !== currentProject.id) {
           switchProject(key);
         }
@@ -137,6 +145,23 @@ export const ProjectSwitcher: React.FC = () => {
               <div style={{ fontWeight: 500 }}>{currentProject.name}</div>
               <div style={{ fontSize: '10px', opacity: 0.8 }}>{currentProject.path}</div>
             </div>
+            <SettingOutlined
+              style={{
+                fontSize: '13px',
+                opacity: 0.7,
+                padding: '4px',
+                borderRadius: '4px',
+                transition: 'opacity 0.2s, background 0.2s',
+              }}
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsOpen(false);
+                setSettingsProjectId(currentProject.id);
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.background = 'rgba(255,255,255,0.15)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.7'; e.currentTarget.style.background = 'transparent'; }}
+              title="Project settings"
+            />
           </div>
         </Menu.Item>
       </Menu.ItemGroup>
@@ -145,21 +170,43 @@ export const ProjectSwitcher: React.FC = () => {
       {projects.filter(p => p.id !== currentProject.id).length > 0 && (
         <Menu.ItemGroup 
           title={<span style={{ color: '#666', fontSize: '9px', textTransform: 'uppercase' }}>Recent</span>}
+          style={{
+            maxHeight: 'calc(100vh - 340px)',
+            overflowY: 'auto',
+          }}
         >
-          {projects.filter(p => p.id !== currentProject.id).map(project => (
-            <Menu.Item 
-              key={project.id}
-              style={{ margin: '4px 8px', borderRadius: '6px' }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <div style={{ width: '8px', height: '8px', background: '#22c55e', borderRadius: '50%' }} />
-                <div style={{ flex: 1 }}>
-                  <div>{project.name}</div>
-                  <div style={{ fontSize: '10px', color: '#666' }}>{project.path}</div>
+            {projects.filter(p => p.id !== currentProject.id).map(project => (
+              <Menu.Item 
+                key={project.id}
+                style={{ margin: '4px 8px', borderRadius: '6px' }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <div style={{ width: '8px', height: '8px', background: '#22c55e', borderRadius: '50%' }} />
+                  <div style={{ flex: 1 }}>
+                    <div>{project.name}</div>
+                    <div style={{ fontSize: '10px', color: '#666' }}>{project.path}</div>
+                  </div>
+                  <SettingOutlined
+                    style={{
+                      fontSize: '12px',
+                      color: '#888',
+                      opacity: 0.5,
+                      padding: '4px',
+                      borderRadius: '4px',
+                      transition: 'opacity 0.2s, background 0.2s, color 0.2s',
+                    }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsOpen(false);
+                      setSettingsProjectId(project.id);
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.color = '#d4d4d4'; e.currentTarget.style.background = 'rgba(255,255,255,0.1)'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.5'; e.currentTarget.style.color = '#888'; e.currentTarget.style.background = 'transparent'; }}
+                    title="Project settings"
+                  />
                 </div>
-              </div>
-            </Menu.Item>
-          ))}
+              </Menu.Item>
+            ))}
         </Menu.ItemGroup>
       )}
       
@@ -288,6 +335,13 @@ export const ProjectSwitcher: React.FC = () => {
       <ProjectManagerModal
         visible={showProjectManager}
         onClose={() => setShowProjectManager(false)}
+      />
+
+      {/* Project Settings Modal (opened from gear icon in dropdown) */}
+      <ProjectManagerModal
+        visible={!!settingsProjectId}
+        onClose={() => setSettingsProjectId(null)}
+        initialSettingsId={settingsProjectId}
       />
     </div>
   );

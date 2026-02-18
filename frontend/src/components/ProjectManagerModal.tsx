@@ -22,16 +22,17 @@ interface BrowseEntry {
 interface ProjectManagerModalProps {
     visible: boolean;
     onClose: () => void;
+    initialSettingsId?: string | null;
 }
 
-const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onClose }) => {
+const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onClose, initialSettingsId }) => {
     const { currentProject, projects, switchProject, updateProject, deleteProject, mergeProjects, refreshProjects } = useProject();
     const { conversations, startNewChat } = useChatContext();
     const { isDarkMode } = useTheme();
 
     const [editingId, setEditingId] = useState<string | null>(null);
     const [editValue, setEditValue] = useState('');
-    const [settingsId, setSettingsId] = useState<string | null>(null);
+    const [settingsId, setSettingsId] = useState<string | null>(initialSettingsId || null);
     const [mergeSourceId, setMergeSourceId] = useState<string | null>(null);
     const [mergeTargetId, setMergeTargetId] = useState<string | null>(null);
     const [isProcessing, setIsProcessing] = useState(false);
@@ -54,6 +55,13 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
     useEffect(() => {
         if (visible) refreshProjects();
     }, [visible]);
+
+    // Sync settingsId with initialSettingsId prop when modal opens
+    useEffect(() => {
+        if (visible && initialSettingsId) {
+            setSettingsId(initialSettingsId);
+        }
+    }, [visible, initialSettingsId]);
 
     useEffect(() => {
         if (editingId && editInputRef.current) {
@@ -262,11 +270,15 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
                                 value={newPattern}
                                 onChange={e => setNewPattern(e.target.value)}
                                 onPressEnter={() => {
-                                    const v = newPattern.trim();
-                                    if (v && !(writePolicy.allowed_write_patterns || []).includes(v)) {
+                                    const raw = newPattern.trim();
+                                    if (!raw) return;
+                                    const parts = raw.split(',').map(s => s.trim()).filter(Boolean);
+                                    const existing = writePolicy.allowed_write_patterns || [];
+                                    const fresh = parts.filter(p => !existing.includes(p));
+                                    if (fresh.length > 0) {
                                         setWritePolicy(prev => ({
                                             ...prev,
-                                            allowed_write_patterns: [...(prev.allowed_write_patterns || []), v]
+                                            allowed_write_patterns: [...(prev.allowed_write_patterns || []), ...fresh]
                                         }));
                                         setNewPattern('');
                                     }
@@ -274,11 +286,15 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
                                 style={{ width: 'calc(100% - 80px)' }}
                             />
                             <Button type="primary" style={{ width: 80 }} onClick={() => {
-                                const v = newPattern.trim();
-                                if (v && !(writePolicy.allowed_write_patterns || []).includes(v)) {
+                                const raw = newPattern.trim();
+                                if (!raw) return;
+                                const parts = raw.split(',').map(s => s.trim()).filter(Boolean);
+                                const existing = writePolicy.allowed_write_patterns || [];
+                                const fresh = parts.filter(p => !existing.includes(p));
+                                if (fresh.length > 0) {
                                     setWritePolicy(prev => ({
                                         ...prev,
-                                        allowed_write_patterns: [...(prev.allowed_write_patterns || []), v]
+                                        allowed_write_patterns: [...(prev.allowed_write_patterns || []), ...fresh]
                                     }));
                                     setNewPattern('');
                                 }
