@@ -120,14 +120,18 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       return;
     }
     
-    console.log('🔍 CLEANUP: Validating', checkedKeys.length, 'files against project:', projectPath);
+    // External paths (under [external] root) are outside the project root by definition.
+    // They were validated when added, so skip them during cleanup.
+    const keysToValidate = checkedKeys.filter(key => !String(key).startsWith('[external]'));
+    const externalKeys = checkedKeys.filter(key => String(key).startsWith('[external]'));
+    console.log('🔍 CLEANUP: Validating', keysToValidate.length, 'files against project:', projectPath, `(skipping ${externalKeys.length} external)`);
 
     try {
       const response = await fetch('/api/files/validate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          files: checkedKeys.map(String),
+          files: keysToValidate.map(String),
           projectRoot: projectPath
         })
       });
@@ -136,10 +140,11 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         const { existingFiles } = await response.json();
         const existingSet = new Set(existingFiles);
 
-        // Filter out non-existent files
-        const cleanedKeys = checkedKeys.filter(key => existingSet.has(String(key)));
+        // Keep external keys as-is, only filter project files against validation results
+        const cleanedProjectKeys = keysToValidate.filter(key => existingSet.has(String(key)));
+        const cleanedKeys = [...cleanedProjectKeys, ...externalKeys];
 
-        if (cleanedKeys.length !== checkedKeys.length) {
+        if (cleanedProjectKeys.length !== keysToValidate.length) {
           console.log(`🧹 CLEANUP: Removed ${checkedKeys.length - cleanedKeys.length} non-existent files from selection`);
           setCheckedKeys(cleanedKeys);
         }
