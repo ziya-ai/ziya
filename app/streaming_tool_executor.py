@@ -1006,6 +1006,22 @@ class StreamingToolExecutor:
                 "messages": self._prepare_messages_with_cache_control(conversation, iteration)
             }
 
+            # Add adaptive thinking and effort configuration for supported models
+            if self.model_config and self.model_config.get('supports_adaptive_thinking'):
+                thinking_effort = os.environ.get('ZIYA_THINKING_EFFORT',
+                                                 self.model_config.get('thinking_effort_default', 'high'))
+                body["thinking"] = {"type": "adaptive"}
+                if thinking_effort and thinking_effort in ('low', 'medium', 'high', 'max'):
+                    body["effort"] = thinking_effort
+                logger.info(f"🧠 ADAPTIVE_THINKING: Enabled with effort={thinking_effort}")
+            elif self.model_config and self.model_config.get('supports_thinking'):
+                # Fallback: standard extended thinking for older models that support it
+                thinking_mode = os.environ.get('ZIYA_THINKING_MODE', '0') == '1'
+                if thinking_mode:
+                    budget = int(os.environ.get('ZIYA_THINKING_BUDGET', '16000'))
+                    body["thinking"] = {"type": "enabled", "budget_tokens": budget}
+                    logger.info(f"🧠 EXTENDED_THINKING: Enabled with budget_tokens={budget}")
+
             # DEBUG: Log what we're actually sending
             logger.debug(f"🔍 REQUEST_DEBUG: Iteration {iteration}")
             logger.debug(f"   Messages in request: {len(conversation)}")
@@ -1097,7 +1113,11 @@ class StreamingToolExecutor:
                         error_str = str(e)
                         is_rate_limit = ("Too many tokens" in error_str or 
                                        "ThrottlingException" in error_str or
-                                       "Too many requests" in error_str)
+                                       "Too many requests" in error_str or
+                                       "rate limit" in error_str.lower())
+                        is_read_timeout = ("Read timed out" in error_str or
+                                          "ReadTimeoutError" in error_str or
+                                          "timeout" in error_str.lower())
                         is_context_limit = "Input is too long" in error_str or "too large" in error_str
                         
                         # On context limit error, enable extended context and retry
@@ -1116,6 +1136,14 @@ class StreamingToolExecutor:
                                         logger.error(f"🔍 EXTENDED_CONTEXT: Retry with extended context failed: {retry_error}")
                                         raise
                         
+                        # Read timeout retry — non-blocking sleep keeps event loop responsive
+                        if is_read_timeout and not is_rate_limit and retry_attempt < max_retries:
+                            delay = 2 * (retry_attempt + 1)  # 2s, 4s, 6s, 8s
+                            logger.warning(f"🔄 READ_TIMEOUT_RETRY: Attempt {retry_attempt + 1}/{max_retries + 1} "
+                                         f"after {delay}s async delay (event loop stays responsive)")
+                            await asyncio.sleep(delay)
+                            continue
+
                         if is_rate_limit and retry_attempt < max_retries:
                             # Exponential backoff with longer delays to allow token bucket refill
                             # boto3 already did fast retries, so we need longer waits
@@ -1187,15 +1215,18 @@ class StreamingToolExecutor:
                         if iteration == 0:
                             logger.info(f"🔍 METRICS_DEBUG: All fields in metrics:")
                             for key, value in metrics.items():
-                                throttle_state['cache_working'] = False
+                                logger.info(f"   {key}: {value}")
                         elif cached > 0:
                             throttle_state['cache_working'] = True
                             throttle_state['last_cache_efficiency'] = iteration_usage.cache_hit_rate
                             logger.debug(f"✅ CACHE WORKING: {cached:,} tokens reused")
                         
-                            # CRITICAL WARNING: High token counts increase throttle risk
-                            if total_input > 400000:
-                                logger.warning("⚠️  HIGH THROTTLE RISK: Processing {total_input:,} total tokens")
+                            # Warn when total tokens approach the model's context limit
+                            base_limit = self.model_config.get('token_limit', 200000) if self.model_config else 200000
+                            effective_limit = self.model_config.get('extended_context_limit', base_limit) if self.model_config and self.model_config.get('supports_extended_context') else base_limit
+                            throttle_warn_threshold = int(effective_limit * 0.8)
+                            if total_input > throttle_warn_threshold:
+                                logger.warning(f"⚠️  HIGH THROTTLE RISK: Processing {total_input:,} total tokens (limit: {effective_limit:,}, threshold: {throttle_warn_threshold:,})")
                                 logger.warning(f"   Even though {cached:,} are cached (free),")
                                 logger.warning(f"   they STILL count toward 'Too many tokens' rate limits")
                                 logger.warning(f"   Consider reducing max_output_tokens on retries")
@@ -1899,7 +1930,9 @@ Retry with the 'command' parameter included."""
                                         from app.server import active_feedback_connections
                                         if conversation_id in active_feedback_connections:
                                             conns = active_feedback_connections[conversation_id]
-                                            feedback_queue = conns[0]['feedback_queue'] if conns else None
+                                            feedback_queue = conns[0]['feedback_queue'] if len(conns) > 0 else None
+                                            if not feedback_queue:
+                                                raise asyncio.QueueEmpty()
                                             # Check for feedback without blocking
                                             try:
                                                 feedback_data = feedback_queue.get_nowait()
@@ -2489,22 +2522,32 @@ Please retry the tool call with valid JSON. Ensure:
                             from app.server import active_feedback_connections
                             if conversation_id in active_feedback_connections:
                                 conns = active_feedback_connections[conversation_id]
-                                feedback_queue = conns[0]['feedback_queue'] if conns else None
+                                feedback_queue = conns[0]['feedback_queue'] if len(conns) > 0 else None
+                                if not feedback_queue:
+                                    raise asyncio.QueueEmpty()
                                 
-                                # Drain any pending feedback
+                                # Grace period: wait briefly for in-flight feedback
+                                # before deciding to end the stream. WebSocket messages
+                                # in transit need time to arrive in the queue.
                                 try:
-                                    while True:
+                                    feedback_data = await asyncio.wait_for(
+                                        feedback_queue.get(), timeout=0.5
+                                    )
+                                    # Got something — drain remaining items immediately
+                                    while feedback_data:
+                                        if feedback_data.get('type') == 'tool_feedback':
+                                            pending_feedback_before_end.append(feedback_data.get('message', ''))
+                                        elif feedback_data.get('type') == 'interrupt':
+                                            logger.info(f"🔄 PRE-END FEEDBACK: Received interrupt before stream end")
+                                            yield track_yield({'type': 'text', 'content': '\n\n**User requested stop.**\n\n'})
+                                            yield track_yield({'type': 'stream_end'})
+                                            return
                                         try:
                                             feedback_data = feedback_queue.get_nowait()
-                                            if feedback_data.get('type') == 'tool_feedback':
-                                                pending_feedback_before_end.append(feedback_data.get('message', ''))
-                                            elif feedback_data.get('type') == 'interrupt':
-                                                logger.info(f"🔄 PRE-END FEEDBACK: Received interrupt before stream end")
-                                                yield track_yield({'type': 'text', 'content': '\n\n**User requested stop.**\n\n'})
-                                                yield track_yield({'type': 'stream_end'})
-                                                return
                                         except asyncio.QueueEmpty:
                                             break
+                                except asyncio.TimeoutError:
+                                    pass  # No feedback arrived within grace period
                                 except Exception as queue_error:
                                     logger.debug(f"Error draining pre-end feedback queue: {queue_error}")
                         except Exception as e:
@@ -2628,26 +2671,34 @@ Please retry the tool call with valid JSON. Ensure:
                         from app.server import active_feedback_connections
                         if conversation_id in active_feedback_connections:
                             conns = active_feedback_connections[conversation_id]
-                            feedback_queue = conns[0]['feedback_queue'] if conns else None
+                            feedback_queue = conns[0]['feedback_queue'] if len(conns) > 0 else None
+                            if not feedback_queue:
+                                raise asyncio.QueueEmpty()
                             
-                            # Collect ALL pending feedback messages
+                            # Grace period: wait up to 500ms for in-flight feedback
+                            # that was sent during the final iteration but hasn't
+                            # arrived in the queue yet.
                             pending_feedback = []
                             try:
-                                while True:
+                                feedback_data = await asyncio.wait_for(
+                                    feedback_queue.get(), timeout=0.5
+                                )
+                                while feedback_data:
+                                    feedback_type = feedback_data.get('type')
+                                    if feedback_type == 'tool_feedback':
+                                        pending_feedback.append(feedback_data.get('message', ''))
+                                        logger.info(f"🔄 POST-LOOP FEEDBACK: Queued tool_feedback: {feedback_data.get('message', '')[:50]}...")
+                                    elif feedback_type == 'interrupt':
+                                        logger.info(f"🔄 POST-LOOP FEEDBACK: Received interrupt after tool chain")
+                                        yield track_yield({'type': 'text', 'content': '\n\n**User requested stop.**\n\n'})
+                                        yield track_yield({'type': 'stream_end'})
+                                        return
                                     try:
                                         feedback_data = feedback_queue.get_nowait()
-                                        feedback_type = feedback_data.get('type')
-                                        if feedback_type == 'tool_feedback':
-                                            pending_feedback.append(feedback_data.get('message', ''))
-                                            logger.info(f"🔄 POST-LOOP FEEDBACK: Queued tool_feedback: {feedback_data.get('message', '')[:50]}...")
-                                        elif feedback_type == 'interrupt':
-                                            # Handle interrupt - stop processing
-                                            logger.info(f"🔄 POST-LOOP FEEDBACK: Received interrupt after tool chain")
-                                            yield track_yield({'type': 'text', 'content': '\n\n**User requested stop.**\n\n'})
-                                            yield track_yield({'type': 'stream_end'})
-                                            return
                                     except asyncio.QueueEmpty:
                                         break
+                            except asyncio.TimeoutError:
+                                pass  # No feedback arrived within grace period
                             except Exception as queue_error:
                                 logger.debug(f"Error draining feedback queue: {queue_error}")
                             
@@ -2702,7 +2753,11 @@ Please retry the tool call with valid JSON. Ensure:
                                                 })
                                         elif chunk['type'] == 'message_stop':
                                             break
-                                            
+
+                                    # Signal stream completion after feedback response
+                                    yield track_yield({'type': 'stream_end'})
+                                    return
+
                                 except Exception as feedback_error:
                                     logger.error(f"Error processing post-loop feedback: {feedback_error}")
                     except Exception as e:
