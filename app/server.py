@@ -1833,7 +1833,7 @@ async def stream_chunks(body):
                         messages.append(HumanMessage(content=enhanced_feedback))
                         
                         # Send a transition marker so the frontend can show a separator
-                        yield f"data: {json.dumps({'type': 'validation_retry', 'content': '\\n\\n---\\n\\n**Correcting failed diff(s):**\\n\\n'})}\n\n"
+                        yield f"data: {json.dumps({'type': 'validation_retry', 'content': '\\n\\n---\\n\\n**Correcting failed diff(s):**\\n\\n'})}\\n\\n"
                         
                         # Generate again with the feedback
                         logger.info("🔄 Restarting stream with validation feedback")
