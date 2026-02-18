@@ -4,7 +4,7 @@ CLI diff applicator - Interactive diff application for terminal.
 import logging
 import os
 import re
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Set
 from app.utils.logging_utils import logger
 
 
@@ -79,6 +79,83 @@ class CLIDiffApplicator:
         
         logger.debug(f"Extracted {len(diffs)} diff blocks from response")
         return diffs
+    
+    @staticmethod
+    def _parse_hunk_ranges(diff_content: str) -> List[Tuple[int, int]]:
+        """
+        Parse @@ headers to get the original-file line ranges this diff touches.
+        
+        Returns a list of (start, end) tuples (inclusive, 1-based).
+        For new file creation (start=0, count=0) returns an empty list
+        since there's no original-side range to compare.
+        """
+        ranges = []
+        for match in re.finditer(r'@@ -(\d+)(?:,(\d+))? \+', diff_content):
+            start = int(match.group(1))
+            count = int(match.group(2)) if match.group(2) is not None else 1
+            if start == 0 and count == 0:
+                # New file creation — no original lines to overlap with
+                continue
+            end = start + max(count - 1, 0)
+            ranges.append((start, end))
+        return ranges
+    
+    @staticmethod
+    def _ranges_overlap(a: List[Tuple[int, int]], b: List[Tuple[int, int]]) -> bool:
+        """Return True if any range in *a* overlaps any range in *b*."""
+        for a_start, a_end in a:
+            for b_start, b_end in b:
+                if a_start <= b_end and b_start <= a_end:
+                    return True
+        return False
+    
+    def _deduplicate_diffs(self, diffs: List[DiffBlock]) -> List[DiffBlock]:
+        """
+        When the model revises a diff, both the original and the corrected
+        version end up in the response.  Detect this by checking for
+        overlapping hunk ranges within the same file and keep only the
+        later (corrected) version.
+        
+        Two diffs for the same file that target *different* line ranges
+        are treated as independent changes and both kept.
+        
+        Diffs whose file path cannot be determined are always kept.
+        """
+        if len(diffs) <= 1:
+            return diffs
+        
+        # Pre-parse hunk ranges for every diff
+        parsed_ranges = [self._parse_hunk_ranges(d.content) for d in diffs]
+        
+        # Walk backwards: for each diff, check if a *later* diff for the
+        # same file has overlapping hunks.  If so, mark the earlier one
+        # as superseded.
+        superseded: Set[int] = set()
+        for i in range(len(diffs)):
+            if diffs[i].file_path is None:
+                continue
+            for j in range(i + 1, len(diffs)):
+                if diffs[j].file_path != diffs[i].file_path:
+                    continue
+                if not parsed_ranges[i] and not parsed_ranges[j]:
+                    # Both are new-file diffs for the same path — later wins
+                    superseded.add(i)
+                    break
+                if self._ranges_overlap(parsed_ranges[i], parsed_ranges[j]):
+                    superseded.add(i)
+                    break
+        
+        if not superseded:
+            return diffs
+        
+        for idx in sorted(superseded):
+            path = diffs[idx].file_path
+            print(
+                f"\033[33m⊘ Skipping earlier diff for {path} "
+                f"(superseded by a later revision)\033[0m"
+            )
+        
+        return [d for i, d in enumerate(diffs) if i not in superseded]
     
     def _print_diff_preview(self, diff: DiffBlock, number: int, total: int):
         """Print a preview of the diff."""
@@ -233,6 +310,9 @@ class CLIDiffApplicator:
         if not diffs:
             # No diffs to process
             return True
+        
+        # Drop earlier diffs whose hunks were superseded by later revisions
+        diffs = self._deduplicate_diffs(diffs)
         
         print(f"\n\033[1mFound {len(diffs)} diff(s) in response\033[0m")
         
