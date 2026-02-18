@@ -758,6 +758,39 @@ const MUIChatHistory = () => {
     }
   }, []);
 
+  // Ensure the folder chain containing the current conversation is always expanded.
+  // This handles project switches, search-result navigation, and any other code path
+  // that programmatically selects a conversation that might live inside a collapsed folder.
+  useEffect(() => {
+    if (!currentConversationId) return;
+
+    const conversation = conversations.find(c => c.id === currentConversationId);
+    if (!conversation?.folderId) return;
+
+    // Collect this folder and all its ancestors
+    const foldersToExpand: string[] = [];
+    let currentId: string | null | undefined = conversation.folderId;
+    const visited = new Set<string>(); // guard against circular parentId references
+
+    while (currentId && !visited.has(currentId)) {
+      visited.add(currentId);
+      const folder = folders.find(f => f.id === currentId);
+      if (!folder) break;
+      foldersToExpand.push(folder.id);
+      currentId = folder.parentId;
+    }
+
+    if (foldersToExpand.length === 0) return;
+
+    // Only update state if there are folders that aren't already expanded
+    setExpandedNodes(prev => {
+      const prevSet = new Set(prev.map(String));
+      const missing = foldersToExpand.filter(id => !prevSet.has(id));
+      if (missing.length === 0) return prev; // no-op, avoid re-render
+      return [...prev, ...missing];
+    });
+  }, [currentConversationId, conversations, folders]);
+
   // Add keyboard shortcut to open debug modal (Ctrl+Shift+D)
   useEffect(() => {
     const handleKeyPress = (e: KeyboardEvent) => {
@@ -1598,11 +1631,18 @@ const MUIChatHistory = () => {
                 isCurrentConversation: conversationId === currentConversationId
               });
 
-              // First persist to IndexedDB
-              const updatedConversations = conversations.map(conv =>
-                conv.id === conversationId
-                  ? { ...conv, isActive: false }
-                  : conv);
+              // Delete from server first (cross-port sync)
+              const projectId = conversations.find(c => c.id === conversationId)?.projectId;
+              if (projectId) {
+                const { deleteChat } = await import('../api/conversationSyncApi');
+                await deleteChat(projectId, conversationId);
+                console.log('📡 Server delete succeeded for', conversationId.substring(0, 8));
+              }
+
+              // Remove from IndexedDB entirely so no sync path re-pushes it
+              const updatedConversations = conversations.filter(
+                (conv: any) => conv.id !== conversationId
+              );
               await db.saveConversations(updatedConversations);
 
               // Then update React state
