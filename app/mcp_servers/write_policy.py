@@ -67,9 +67,25 @@ class ShellWriteChecker:
         if not tok or tok[0] not in self.policy.get('allowed_interpreters', []):
             return True, ""
         s = cmd.strip()
+        
+        # Check if command matches a safe pattern
+        matched_safe_pattern = False
         for pat in self.policy.get('interpreter_safe_patterns', []):
             if re.match(pat, s):
-                return self._redirection(cmd)
+                matched_safe_pattern = True
+                break
+        
+        # Even if safe pattern matched, check for obvious write operations in -c commands
+        if matched_safe_pattern and re.match(r'^python3?\s+-c\s+', s):
+            for pat in self.policy.get('script_write_indicators', []):
+                if re.search(pat, cmd):
+                    return False, f"Script appears to write files (matched: {pat}). Use git diffs."
+        
+        # Safe pattern matched and no obvious writes → only check redirection
+        if matched_safe_pattern:
+            return self._redirection(cmd)
+        
+        # Not a safe pattern → check all write indicators
         for pat in self.policy.get('script_write_indicators', []):
             if re.search(pat, cmd):
                 return False, f"Script appears to write files (matched: {pat}). Use git diffs."
