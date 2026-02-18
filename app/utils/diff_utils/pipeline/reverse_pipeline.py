@@ -42,6 +42,11 @@ def apply_reverse_diff_pipeline(diff_content: str, file_path: str, expected_cont
     with open(file_path, 'r', encoding='utf-8') as f:
         current_content = f.read()
     
+    # If the file already matches the expected content, nothing to reverse
+    if expected_content is not None and current_content.rstrip() == expected_content.rstrip():
+        logger.info("File already matches expected content - nothing to reverse")
+        return {'status': 'success', 'stage': 'already_correct', 'changes_written': False}
+    
     # Stage 1: Try patch -R
     result = _try_patch_reverse(diff_content, file_path, current_content, expected_content)
     if result['success']:
@@ -54,6 +59,16 @@ def apply_reverse_diff_pipeline(diff_content: str, file_path: str, expected_cont
         logger.info("Reverse succeeded via direct replacement")
         return {'status': 'success', 'stage': 'direct_reverse', 'changes_written': True}
     
+    # Stage 2b: Try direct reverse WITHOUT verification — save as best-effort candidate
+    best_effort_content = None
+    result_no_verify = _try_direct_reverse(diff_content, file_path, current_content, None)
+    if result_no_verify['success']:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            best_effort_content = f.read()
+        # Restore file for subsequent stages
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(current_content)
+    
     # Stage 3: Try reversed diff with simplified application
     result = _try_reversed_diff_simple(diff_content, file_path, current_content, expected_content)
     if result['success']:
@@ -63,8 +78,27 @@ def apply_reverse_diff_pipeline(diff_content: str, file_path: str, expected_cont
     # Stage 4: Try reversed diff through full forward pipeline (with fuzzy matching)
     result = _try_reversed_diff_full_pipeline(diff_content, file_path, current_content, expected_content)
     if result['success']:
+        # If we have expected content and a best-effort candidate, compare
+        if expected_content is not None and best_effort_content is not None:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                stage4_content = f.read()
+            import difflib
+            stage2_ratio = difflib.SequenceMatcher(None, best_effort_content, expected_content).ratio()
+            stage4_ratio = difflib.SequenceMatcher(None, stage4_content, expected_content).ratio()
+            if stage2_ratio > stage4_ratio:
+                logger.info(f"Stage 2 result closer to expected ({stage2_ratio:.3f} vs {stage4_ratio:.3f}), using it")
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(best_effort_content)
+                return {'status': 'success', 'stage': 'direct_reverse_best_effort', 'changes_written': True}
         logger.info("Reverse succeeded via full forward pipeline")
         return {'status': 'success', 'stage': 'reversed_diff_full', 'changes_written': True}
+    
+    # If all verified stages failed but we have a best-effort result, use it
+    if best_effort_content is not None:
+        logger.info("Using best-effort direct reverse result")
+        with open(file_path, 'w', encoding='utf-8') as f:
+            f.write(best_effort_content)
+        return {'status': 'success', 'stage': 'direct_reverse_best_effort', 'changes_written': True}
     
     logger.error("All reverse stages failed")
     return {'status': 'failed', 'error': 'All reverse stages failed'}
@@ -133,8 +167,9 @@ def _try_direct_reverse(diff_content: str, file_path: str, current_content: str,
     """
     Stage 2: Direct content replacement.
     
-    Parse the diff and directly replace the "new" content with the "old" content.
-    This works when the forward diff was applied cleanly.
+    Parse the diff, locate the new content block in the file, then surgically
+    replace only the changed lines (keeping the file's actual context lines intact).
+    Falls back to full block replacement if surgical approach fails.
     """
     try:
         hunks = list(parse_unified_diff_exact_plus(diff_content, file_path))
@@ -150,49 +185,94 @@ def _try_direct_reverse(diff_content: str, file_path: str, current_content: str,
         offset = 0
         
         for hunk in hunks:
-            old_lines = []  # Lines removed in forward diff (to restore)
-            new_lines = []  # Lines added in forward diff (to remove)
-            context_before = []  # Context lines before changes
+            new_block = hunk.get('new_lines', [])  # Full new block (context + additions)
+            old_block = hunk.get('old_block', [])   # Full old block (context + removals)
             
-            for line in hunk.get('lines', []):
-                if line.startswith('-') and not line.startswith('---'):
-                    old_lines.append(line[1:])
-                elif line.startswith('+') and not line.startswith('+++'):
-                    new_lines.append(line[1:])
-                elif line.startswith(' ') and not old_lines and not new_lines:
-                    context_before.append(line[1:])
-            
-            if not new_lines and not old_lines:
+            if not new_block and not old_block:
                 continue
             
-            # Find where the new_lines are in the current content
             new_start = hunk.get('new_start', 1) - 1 + offset
             
-            # Search for the new_lines around the expected position
-            found_pos = _find_lines_in_content(result_lines, new_lines, new_start)
-            
-            if found_pos is not None:
-                # Replace new_lines with old_lines
-                old_lines_with_endings = [l + '\n' if not l.endswith('\n') else l for l in old_lines]
-                result_lines[found_pos:found_pos + len(new_lines)] = old_lines_with_endings
-                offset += len(old_lines) - len(new_lines)
-            elif not new_lines and old_lines:
-                # Pure deletion in forward = pure addition in reverse
-                # Use context lines to find position
-                if context_before:
-                    found_pos = _find_lines_in_content(result_lines, context_before, new_start)
-                    if found_pos is not None:
-                        insert_pos = found_pos + len(context_before)
-                    else:
-                        insert_pos = new_start
+            if new_block:
+                # Find the new_block in the current content
+                found_pos = _find_lines_in_content(result_lines, new_block, new_start)
+                
+                if found_pos is not None:
+                    # Surgical replacement: walk the hunk lines and only swap
+                    # the changed portions, keeping the file's actual context
+                    hunk_lines = hunk.get('lines', [])
+                    new_result = []
+                    file_idx = found_pos
+                    
+                    for line in hunk_lines:
+                        if line.startswith('+') and not line.startswith('+++'):
+                            # Added line in forward — skip it (don't include in result)
+                            file_idx += 1
+                        elif line.startswith('-') and not line.startswith('---'):
+                            # Removed line in forward — restore it
+                            new_result.append(line[1:] + '\n' if not line[1:].endswith('\n') else line[1:])
+                        else:
+                            # Context line — keep the file's actual line
+                            if file_idx < len(result_lines):
+                                new_result.append(result_lines[file_idx])
+                            file_idx += 1
+                    
+                    result_lines[found_pos:found_pos + len(new_block)] = new_result
+                    offset += len(new_result) - len(new_block)
                 else:
-                    insert_pos = new_start
-                old_lines_with_endings = [l + '\n' if not l.endswith('\n') else l for l in old_lines]
-                result_lines[insert_pos:insert_pos] = old_lines_with_endings
-                offset += len(old_lines)
+                    # Fallback: process each change group individually
+                    # Extract change groups from hunk lines
+                    hunk_lines = hunk.get('lines', [])
+                    change_groups = []
+                    current_removed = []
+                    current_added = []
+                    context_count = 0
+                    
+                    for line in hunk_lines:
+                        if line.startswith('-') and not line.startswith('---'):
+                            current_removed.append(line[1:])
+                        elif line.startswith('+') and not line.startswith('+++'):
+                            current_added.append(line[1:])
+                        else:
+                            if current_removed or current_added:
+                                change_groups.append((current_removed, current_added, context_count))
+                                current_removed = []
+                                current_added = []
+                            context_count += 1
+                    if current_removed or current_added:
+                        change_groups.append((current_removed, current_added, context_count))
+                    
+                    if not change_groups:
+                        return {'success': False}
+                    
+                    # Apply each change group in reverse order to preserve positions
+                    all_applied = True
+                    for removed, added, _ in reversed(change_groups):
+                        if added:
+                            found = _find_lines_in_content(result_lines, added, new_start)
+                            if found is not None:
+                                restored = [l + '\n' if not l.endswith('\n') else l for l in removed]
+                                result_lines[found:found + len(added)] = restored
+                                offset += len(removed) - len(added)
+                            else:
+                                all_applied = False
+                                break
+                        elif removed:
+                            # Pure deletion in forward — need to re-insert
+                            # Use nearby context to find position
+                            insert_pos = min(new_start, len(result_lines))
+                            restored = [l + '\n' if not l.endswith('\n') else l for l in removed]
+                            result_lines[insert_pos:insert_pos] = restored
+                            offset += len(removed)
+                    
+                    if not all_applied:
+                        return {'success': False}
             else:
-                # Couldn't find the content to replace
-                return {'success': False}
+                # Pure deletion in forward (new_block empty, old_block has content)
+                insert_pos = min(new_start, len(result_lines))
+                old_block_with_endings = [l + '\n' if not l.endswith('\n') else l for l in old_block]
+                result_lines[insert_pos:insert_pos] = old_block_with_endings
+                offset += len(old_block)
         
         # Write the result
         result_content = ''.join(result_lines)
@@ -230,7 +310,17 @@ def _find_lines_in_content(content_lines: List[str], search_lines: List[str], st
                 return False
         return True
     
-    # Search in expanding radius from start_pos
+    def check_match_stripped(pos: int) -> bool:
+        """Fallback: match ignoring leading/trailing whitespace differences."""
+        if pos < 0 or pos + len(search_lines) > len(content_lines):
+            return False
+        for i, search_line in enumerate(search_normalized):
+            content_line = content_lines[pos + i].rstrip('\n\r')
+            if content_line.strip() != search_line.strip():
+                return False
+        return True
+    
+    # Search in expanding radius from start_pos (exact match)
     max_radius = min(100, len(content_lines))
     
     for radius in range(max_radius):
@@ -238,10 +328,32 @@ def _find_lines_in_content(content_lines: List[str], search_lines: List[str], st
             if check_match(pos):
                 return pos
     
-    # Full file search as fallback
+    # Full file search as fallback (exact match)
     for pos in range(len(content_lines)):
         if check_match(pos):
             return pos
+    
+    # Whitespace-normalized search near start_pos as last resort
+    for radius in range(max_radius):
+        for pos in [start_pos + radius, start_pos - radius]:
+            if check_match_stripped(pos):
+                return pos
+    
+    # High-ratio fuzzy match: accept if almost all lines match (for large blocks)
+    if len(search_lines) >= 5:
+        threshold = max(1, len(search_lines) // 6)  # Allow ~1 mismatch per 6 lines
+        for radius in range(max_radius):
+            for pos in [start_pos + radius, start_pos - radius]:
+                if pos < 0 or pos + len(search_lines) > len(content_lines):
+                    continue
+                mismatches = 0
+                for i, search_line in enumerate(search_normalized):
+                    if content_lines[pos + i].rstrip('\n\r') != search_line:
+                        mismatches += 1
+                        if mismatches > threshold:
+                            break
+                if mismatches <= threshold:
+                    return pos
     
     return None
 
@@ -250,8 +362,8 @@ def _try_reversed_diff_simple(diff_content: str, file_path: str, current_content
     """
     Stage 3: Apply reversed diff with simplified matching.
     
-    Generate the reversed diff and apply it without fuzzy matching or
-    "already applied" detection.
+    Generate the reversed diff and apply it using full block matching
+    (old_block → new_lines) without fuzzy matching or "already applied" detection.
     """
     try:
         reversed_diff_content = reverse_diff(diff_content)
@@ -268,47 +380,29 @@ def _try_reversed_diff_simple(diff_content: str, file_path: str, current_content
         offset = 0
         
         for hunk in hunks:
-            old_lines = []  # Lines to find and remove
-            new_lines = []  # Lines to insert
-            context_before = []  # Context lines before changes
+            old_block = hunk.get('old_block', [])   # Full old block to find
+            new_block = hunk.get('new_lines', [])    # Full new block to replace with
             
-            for line in hunk.get('lines', []):
-                if line.startswith('-') and not line.startswith('---'):
-                    old_lines.append(line[1:])
-                elif line.startswith('+') and not line.startswith('+++'):
-                    new_lines.append(line[1:])
-                elif line.startswith(' ') and not old_lines and not new_lines:
-                    # Context line before any changes
-                    context_before.append(line[1:])
-            
-            if not old_lines and not new_lines:
+            if not old_block and not new_block:
                 continue
             
             old_start = hunk.get('old_start', 1) - 1 + offset
             
-            if old_lines:
-                # Find and replace old_lines with new_lines
-                found_pos = _find_lines_in_content(result_lines, old_lines, old_start)
+            if old_block:
+                found_pos = _find_lines_in_content(result_lines, old_block, old_start)
                 
                 if found_pos is not None:
-                    new_lines_with_endings = [l + '\n' if not l.endswith('\n') else l for l in new_lines]
-                    result_lines[found_pos:found_pos + len(old_lines)] = new_lines_with_endings
-                    offset += len(new_lines) - len(old_lines)
+                    new_block_with_endings = [l + '\n' if not l.endswith('\n') else l for l in new_block]
+                    result_lines[found_pos:found_pos + len(old_block)] = new_block_with_endings
+                    offset += len(new_block) - len(old_block)
                 else:
                     return {'success': False}
-            elif new_lines:
-                # Pure addition - use context lines to find position
-                if context_before:
-                    found_pos = _find_lines_in_content(result_lines, context_before, old_start)
-                    if found_pos is not None:
-                        insert_pos = found_pos + len(context_before)
-                    else:
-                        insert_pos = old_start
-                else:
-                    insert_pos = old_start
-                new_lines_with_endings = [l + '\n' if not l.endswith('\n') else l for l in new_lines]
-                result_lines[insert_pos:insert_pos] = new_lines_with_endings
-                offset += len(new_lines)
+            elif new_block:
+                # Pure addition
+                insert_pos = min(old_start, len(result_lines))
+                new_block_with_endings = [l + '\n' if not l.endswith('\n') else l for l in new_block]
+                result_lines[insert_pos:insert_pos] = new_block_with_endings
+                offset += len(new_block)
         
         # Write the result
         result_content = ''.join(result_lines)
