@@ -124,7 +124,12 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
             logger.debug(f"Available diff targets: {[extract_target_file_from_diff(d) for d in individual_diffs]}")
     
     # Get the base directory
-    user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+    # Prefer request-scoped ContextVar (async-safe for concurrent requests)
+    try:
+        from app.context import get_project_root_or_none
+        user_codebase_dir = get_project_root_or_none() or os.environ.get("ZIYA_USER_CODEBASE_DIR")
+    except ImportError:
+        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
     if not user_codebase_dir:
         error = "ZIYA_USER_CODEBASE_DIR environment variable is not set"
         logger.error(error)
@@ -198,8 +203,6 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
         
         if whitespace_only_hunks:
             logger.info(f"Detected whitespace-only changes in hunks: {whitespace_only_hunks}")
-            # For whitespace-only changes, we'll use a special flag
-            os.environ['ZIYA_WHITESPACE_HUNKS'] = ','.join(map(str, whitespace_only_hunks))
     except Exception as e:
         error = f"Error parsing diff: {str(e)}"
         logger.error(error)
@@ -1132,7 +1135,6 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
                 status=HunkStatus.FAILED,
                 error_details={"error": str(e)}
             )
-            return False
         return False
 
 def mark_all_hunks_as_failed(pipeline: DiffPipeline, error_message: str, error_type: str = "application_failed") -> None:

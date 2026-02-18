@@ -70,7 +70,11 @@ def validate_diff_with_full_pipeline(
     result["file_path"] = file_path
     
     # Get the user codebase directory
-    codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+    try:
+        from app.context import get_project_root_or_none
+        codebase_dir = get_project_root_or_none() or os.environ.get("ZIYA_USER_CODEBASE_DIR")
+    except ImportError:
+        codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
     if not codebase_dir:
         result["model_feedback"] = "❌ System error: codebase directory not configured"
         return result
@@ -104,11 +108,11 @@ def validate_diff_with_full_pipeline(
         if os.path.exists(full_path):
             shutil.copy2(full_path, temp_file_path)
         
-        # Save original environment
-        original_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
-        
-        # Point pipeline to temp directory
-        os.environ["ZIYA_USER_CODEBASE_DIR"] = temp_dir
+        # Redirect the pipeline to the temp directory using the request-scoped
+        # ContextVar instead of mutating the process-global env var.
+        from app.context import set_project_root, get_project_root
+        original_context_root = get_project_root()
+        set_project_root(temp_dir)
         
         # Suppress noisy warnings during validation (dry-run mode)
         diff_logger = logging.getLogger('app.utils.diff_utils')
@@ -168,11 +172,8 @@ def validate_diff_with_full_pipeline(
             # Restore original log levels
             diff_logger.setLevel(original_diff_level)
             atomic_logger.setLevel(original_atomic_level)
-            # Restore environment
-            if original_codebase_dir:
-                os.environ["ZIYA_USER_CODEBASE_DIR"] = original_codebase_dir
-            else:
-                os.environ.pop("ZIYA_USER_CODEBASE_DIR", None)
+            # Restore request-scoped project root
+            set_project_root(original_context_root)
     
     return result
 
