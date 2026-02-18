@@ -338,7 +338,10 @@ async def lifespan(app: FastAPI):
         logger.info("MCP integration is disabled.")
     
     # Start folder cache warming in background - don't block server startup
-    asyncio.create_task(_warm_folder_cache_background())
+    # REMOVED: The startup scan was wasted work — the frontend triggers a
+    # project-specific scan when it connects, and the two caches were
+    # split-brained so the startup result was often ignored anyway.
+    _folder_ready = True
     
     # Print clear banner that server is ready
     logger.info("=" * 80)
@@ -347,7 +350,7 @@ async def lifespan(app: FastAPI):
     logger.info("📋 Background tasks running:")
     if os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
         logger.info("   🔧 MCP server initialization")
-    logger.info("   📂 Folder structure scanning")
+    logger.info("   📂 Folder structure scanned on first client connection")
     logger.info("=" * 80)
     
     yield
@@ -4587,7 +4590,7 @@ async def get_folders_cached():
         ignored_patterns = get_ignored_patterns(user_codebase_dir)
         
         # Import here to avoid circular imports
-        from app.utils.directory_util import _folder_cache, _token_cache, _cache_lock
+        from app.utils.directory_util import _folder_cache as du_folder_cache, _token_cache, _cache_lock
         
         # First check if we have any cached data at all
         with _cache_lock:
@@ -4601,12 +4604,18 @@ async def get_folders_cached():
                     result["_accurate_token_counts"] = result["_accurate_tokens"]
                 return result
                 
-            # Fall back to folder cache if available
-            # _folder_cache is now a per-directory dict
-            dir_entry = _folder_cache.get(user_codebase_dir)
+            # Fall back to directory_util's folder cache
+            dir_entry = du_folder_cache.get(user_codebase_dir)
             if dir_entry and dir_entry.get('data') is not None:
-                logger.info("🚀 Returning basic folder cache (instant)")
+                logger.info("🚀 Returning basic folder cache from directory_util (instant)")
                 return dir_entry['data']
+        
+        # Also check server.py's _folder_cache (scan results land here too)
+        abs_dir = os.path.abspath(user_codebase_dir)
+        server_entry = _folder_cache.get(abs_dir)
+        if server_entry and server_entry.get('data') is not None:
+            logger.info("🚀 Returning basic folder cache from server cache (instant)")
+            return server_entry['data']
                 
         # No cache available
         return {"error": "No cached data available"}
@@ -4863,9 +4872,15 @@ def get_model_id():
 
 
 def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int) -> Dict[str, Any]:
-    """Get folder structure with caching and background scanning."""
+    """Get folder structure with caching and background scanning.
+    
+    Checks both server.py's _folder_cache and directory_util's _folder_cache
+    to avoid redundant scans.  Writes results to both caches so all endpoints
+    (including /api/folders-cached) can find them.
+    """
     from app.utils.directory_util import get_folder_structure, get_scan_progress
     from app.utils.directory_util import get_basic_folder_structure
+    import app.utils.directory_util as dir_util
     
     # Normalize directory path for consistent cache keys
     directory = os.path.abspath(directory)
@@ -4887,14 +4902,23 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
         logger.debug("Scan in progress, returning scanning indicator (non-blocking)")
         return {"_scanning": True, "children": {}}
     
-    # Return cached results immediately if available
+    # Return cached results immediately if available (server.py cache)
     if cache_entry['data'] is not None:
-        # Add staleness indicator if cache is very old (> 1 hour)
         if cache_age > 3600:
             logger.debug(f"Returning stale cached folder structure (age: {cache_age:.1f}s)")
             return {**cache_entry['data'], "_stale": True}
         logger.debug(f"Returning cached folder structure (age: {cache_age:.1f}s)")
         return cache_entry['data']
+    
+    # Also check directory_util's cache — a previous scan may have stored results there
+    dir_util_entry = dir_util._folder_cache.get(directory)
+    if dir_util_entry and isinstance(dir_util_entry, dict):
+        data = dir_util_entry.get('data')
+        if data is not None:
+            logger.debug("Found cached folder structure in directory_util cache, promoting")
+            cache_entry['data'] = data
+            cache_entry['timestamp'] = dir_util_entry.get('timestamp', current_time)
+            return data
     
     # No cache available - start background scan and return immediately
     global _background_scan_thread
@@ -4912,9 +4936,15 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
             
             try:
                 result = get_folder_structure(directory, ignored_patterns, max_depth)
-                _scan_progress["last_update"] = time.time()  # Mark progress update
+                _scan_progress["last_update"] = time.time()
                 cache_entry['data'] = result
                 cache_entry['timestamp'] = time.time()
+                # Also write to directory_util's cache so /api/folders-cached finds it
+                dir_util._folder_cache[directory] = {
+                    'timestamp': cache_entry['timestamp'],
+                    'data': result,
+                    'directory_mtime': 0
+                }
                 scan_duration = time.time() - scan_start
                 logger.info(f"📂 Background folder scan completed in {scan_duration:.1f}s")
             except Exception as e:
