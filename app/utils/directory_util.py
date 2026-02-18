@@ -610,114 +610,85 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     progress_interval = 2.0  # Log progress every 2 seconds
     last_stderr_progress_time = time.time()
 
-    def process_dir(path: str, depth: int) -> Dict[str, Any]:
-        """Process a directory recursively."""
-        nonlocal last_progress_check  # Declare nonlocal so we can modify it
-        
-        # CRITICAL: Skip known problematic directories BEFORE any expensive operations
-        # Check basename first (fastest check)
+    # Clear visited directories at start of scan
+    global _visited_directories
+    _visited_directories.clear()
+    
+    # Process the root directory using breadth-first strategy:
+    # Scan everything up to BFS_DEPTH_THRESHOLD first so the UI has a
+    # usable tree quickly, then go deeper for directories that were deferred.
+    BFS_DEPTH_THRESHOLD = 6
+    deferred_dirs: list = []  # [(parent_children_dict, entry_name, entry_path, depth)]
+
+    def process_dir_bfs(path: str, depth: int) -> Dict[str, Any]:
+        """Process a directory, deferring children beyond BFS_DEPTH_THRESHOLD."""
+        nonlocal last_progress_check
+
         dir_basename = os.path.basename(path.rstrip(os.sep))
-        
-        # AGGRESSIVE SKIP: Library directory alone causes 90% of slowness in home dirs
+
         if dir_basename in {
-            'Library',  # Skip entire Library directory - single biggest slowdown
-            'CoreSimulator', 'Containers', 'Caches', 'Logs',
+            'Library', 'CoreSimulator', 'Containers', 'Caches', 'Logs',
             'Application Support', 'Developer', 'News', 'Trial',
             '.Trash', 'Downloads', 'Applications', 'Movies', 'Music', 'Pictures'
         }:
-            logger.debug(f"Early skip of known slow directory: {path}")
             return {'token_count': 0}
-        
-        # Also check depth immediately to avoid processing deep paths
+
         if depth > max_depth:
             return {'token_count': 0}
-        
+
         real_path = os.path.realpath(path)
-        
-        # Check for infinite loops using real path
         if real_path in _visited_directories:
-            logger.debug(f"Skipping already visited directory (symlink loop): {path} -> {real_path}")
             return {'token_count': 0}
-        
         _visited_directories.add(real_path)
-        
+
         dir_start_time = time.time()
-        
-        # Check for cancellation
+
         if _scan_progress.get("cancelled"):
-            logger.info("Scan cancelled by user request")
             _scan_progress["active"] = False
             return {'token_count': 0, 'cancelled': True}
-        
-        # Intelligent timeout: Only abort if we're NOT making progress
+
         current_time = time.time()
         elapsed = current_time - scan_stats['start_time']
-        
-        # Check progress every 10 seconds
+
         if elapsed - (last_progress_check['time'] - scan_stats['start_time']) > 10:
-            dirs_scanned_since_check = scan_stats['directories_scanned'] - last_progress_check['directories']
-            
-            if dirs_scanned_since_check > 0:
-                # Making progress - extend timeout
-                last_progress_check = {
-                    'time': current_time,
-                    'directories': scan_stats['directories_scanned']
-                }
-                logger.debug(f"Progress detected: {dirs_scanned_since_check} dirs in last 10s, continuing scan")
+            dirs_since = scan_stats['directories_scanned'] - last_progress_check['directories']
+            if dirs_since > 0:
+                last_progress_check = {'time': current_time, 'directories': scan_stats['directories_scanned']}
             elif elapsed > max_scan_time:
-                # No progress AND timeout exceeded
-                logger.warning(f"No progress in 10s and timeout reached ({elapsed:.1f}s), aborting")
                 return {'token_count': 0, 'timeout': True}
-        
-        # Hard timeout at 2x the configured timeout regardless of progress
+
         if elapsed > max_scan_time * 2:
-            logger.warning(f"Timeout reached at {elapsed:.1f}s while processing {path}")
             return {'token_count': 0, 'timeout': True}
-        
-        # Log progress periodically
+
         nonlocal last_progress_time
-        
         scan_stats['directories_scanned'] += 1
-        
-        # Update global progress immediately
         _scan_progress["progress"] = {
             "directories": scan_stats['directories_scanned'],
             "files": scan_stats['files_processed'],
             "elapsed": int(elapsed)
         }
         _scan_progress["last_update"] = time.time()
-        
+
         result = {'token_count': 0, 'children': {}}
         total_tokens = 0
-        
+
         try:
             entries = os.listdir(path)
-            logger.debug(f"📁 Directory {path} has {len(entries)} entries: {entries}")
-        except PermissionError:
-            logger.debug(f"Permission denied for {path}")
-            dir_time = time.time() - dir_start_time
-            if dir_time > 0.1:
-                logger.warning(f"🔍 PERF: Permission error check took {dir_time*1000:.1f}ms for {path}")
+        except (PermissionError, OSError):
+            _visited_directories.discard(real_path)
             return {'token_count': 0}
-        except OSError as e:
-            logger.warning(f"OS error accessing {path}: {e}")
-            return {'token_count': 0}
-            
+
         for entry in entries:
-            # Check for cancellation in tight loop
             if _scan_progress.get("cancelled"):
-                logger.info("Scan cancelled during entry processing")
                 break
-            
-            # Progress logging
+
             current_time = time.time()
             elapsed = current_time - scan_stats['start_time']
             if current_time - last_progress_time > progress_interval:
                 progress_pct = f" ({scan_stats['directories_scanned']}/{estimated_total}, {(scan_stats['directories_scanned']/estimated_total*100):.0f}%)" if estimated_total > 0 else ""
                 logger.debug(f"📊 Scan progress: {scan_stats['directories_scanned']} dirs{progress_pct}, {scan_stats['files_processed']} files in {elapsed:.1f}s")
                 last_progress_time = current_time
-                
-                # Also print to stderr every 5 seconds for user visibility
+
                 nonlocal last_stderr_progress_time
                 if current_time - last_stderr_progress_time > 5.0:
                     import sys
@@ -725,75 +696,65 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
                           f"{scan_stats['files_processed']} files ({elapsed:.0f}s elapsed)",
                           end='', file=sys.stderr, flush=True)
                     last_stderr_progress_time = current_time
-                    if elapsed > 30:
-                        print("\n💡 This is taking a while. Consider starting Ziya in a smaller directory.", file=sys.stderr)
-                
-            if entry.startswith('.'):  # Skip hidden files
+
+            if entry.startswith('.'):
                 continue
-                
-            entry_start = time.time()
+
             entry_path = os.path.join(path, entry)
-            path_join_time = time.time() - entry_start
-            if path_join_time > 0.01:
-                logger.warning(f"🔍 PERF: Slow path join for {entry}: {path_join_time*1000:.1f}ms")
-            
-            ignore_start = time.time()
-            # CRITICAL: For directories, add trailing slash to match directory-only gitignore patterns
             check_path = entry_path
             if os.path.isdir(entry_path):
                 check_path = entry_path + os.sep
-                
-            if should_ignore_fn(check_path):  # Skip ignored files/directories
-                ignore_time = time.time() - ignore_start
-                if ignore_time > 0.01:
-                    logger.warning(f"🔍 PERF: Slow gitignore check for {entry}: {ignore_time*1000:.1f}ms")
-                logger.debug(f"Ignoring path: {entry_path}")
+            if should_ignore_fn(check_path):
                 continue
-                
+
             if os.path.isdir(entry_path):
                 if depth < max_depth:
-                    sub_result = process_dir(entry_path, depth + 1)
-                    if sub_result['token_count'] > 0 or sub_result.get('children'):
-                        result['children'][entry] = sub_result
-                        total_tokens += sub_result['token_count'] 
+                    if depth >= BFS_DEPTH_THRESHOLD:
+                        # Defer: record a placeholder so the UI sees the directory exists
+                        result['children'][entry] = {'token_count': 0, 'children': {}}
+                        deferred_dirs.append((result['children'], entry, entry_path, depth + 1))
                     else:
-                        # Skip directories beyond max depth
-                        pass
+                        sub_result = process_dir_bfs(entry_path, depth + 1)
+                        if sub_result['token_count'] > 0 or sub_result.get('children'):
+                            result['children'][entry] = sub_result
+                            total_tokens += sub_result['token_count']
             elif os.path.isfile(entry_path):
-                file_start = time.time()
                 tokens = estimate_tokens_fast(entry_path)
-                file_time = time.time() - file_start
-                if file_time > 0.5:  # Log if a single file takes >0.5s
-                    logger.warning(f"🔍 PERF: Slow token estimation for {entry}: {file_time*1000:.1f}ms")
-                
-                logger.debug(f"📄 File {entry}: tokens={tokens}")
-                if tokens >= 0 or tokens == -1:  # Include all files including empty ones (0 tokens) and tool-backed files (-1)
+                if tokens >= 0 or tokens == -1:
                     scan_stats['files_processed'] += 1
                     result['children'][entry] = {'token_count': tokens}
-                    if tokens > 0:  # Only add positive tokens to total
+                    if tokens > 0:
                         total_tokens += tokens
-                else:
-                    logger.debug(f"⏭️  File {entry} has {tokens} tokens")
-        
+
         result['token_count'] = total_tokens
-        
-        # Remove from visited set when exiting this directory
         _visited_directories.discard(real_path)
-        
-        # Log slow directory processing
+
         dir_time = time.time() - dir_start_time
-        if dir_time > 2.0:  # Log if directory takes >2s
+        if dir_time > 2.0:
             scan_stats['slow_directories'].append((path, dir_time, 'slow_directory'))
-            logger.warning(f"Slow directory scan for {path}: {dir_time:.2f}s ({len(entries)} entries)")
-            
+
         return result
 
-    # Clear visited directories at start of scan
-    global _visited_directories
-    _visited_directories.clear()
-    
-    # Process the root directory
-    root_result = process_dir(directory, 1)
+    # Phase 1: BFS — scan everything up to BFS_DEPTH_THRESHOLD
+    root_result = process_dir_bfs(directory, 1)
+
+    # Phase 2: Process deferred deep directories (breadth-first order)
+    if deferred_dirs:
+        logger.info(f"📂 BFS Phase 2: Processing {len(deferred_dirs)} deferred deep directories")
+    while deferred_dirs:
+        if _scan_progress.get("cancelled"):
+            break
+        elapsed = time.time() - scan_stats['start_time']
+        if elapsed > max_scan_time * 2:
+            logger.warning(f"Timeout during BFS phase 2 at {elapsed:.1f}s, {len(deferred_dirs)} dirs remaining")
+            break
+        parent_children, entry_name, entry_path, depth = deferred_dirs.pop(0)
+        sub_result = process_dir_bfs(entry_path, depth)
+        if sub_result['token_count'] > 0 or sub_result.get('children'):
+            parent_children[entry_name] = sub_result
+        else:
+            # Remove empty placeholder
+            parent_children.pop(entry_name, None)
     
     # Check if we need to include external paths
     # Note: The ignore pattern override above handles paths within the codebase
@@ -822,7 +783,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
             logger.info(f"Including external path: {ext_path}")
             
             # Process the external directory
-            ext_result = process_dir(ext_path, 1)
+            ext_result = process_dir_bfs(ext_path, 1)
             
             # Add the external directory to the root result
             if ext_result['token_count'] > 0 or ext_result.get('children'):
