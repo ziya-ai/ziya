@@ -1,7 +1,8 @@
 /**
  * ServerStatusContext — tracks whether the backend server is reachable.
  *
- * Polls a lightweight endpoint (/api/config) and exposes a boolean.
+ * Polls a lightweight endpoint (/api/config) and exposes a boolean. Uses generous
+ * timeouts and failure thresholds to avoid false "unreachable" banners during load.
  * Components use this to show a connectivity banner and disable actions
  * that require the server (e.g. sending messages).
  */
@@ -37,12 +38,18 @@ export const ServerStatusProvider: React.FC<{ children: ReactNode }> = ({
   // Track consecutive failures to avoid flashing the banner on a single
   // dropped request (e.g. browser GC pause).
   const consecutiveFailures = useRef(0);
-  const FAILURE_THRESHOLD = 2;
+  // Require 3 consecutive failures before showing the banner.
+  // During heavy model operations (streaming, retries) the server event loop
+  // may be briefly busy, so a single or double timeout is not a true outage.
+  const FAILURE_THRESHOLD = 3;
 
   const checkHealth = useCallback(async () => {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5_000);
+      // 12-second timeout: boto3 Bedrock calls can block the event loop for
+      // several seconds during streaming.  A 5s timeout caused false
+      // "unreachable" banners during normal model retries.
+      const timeoutId = setTimeout(() => controller.abort(), 12_000);
 
       const res = await fetch('/api/config', {
         signal: controller.signal,
@@ -90,9 +97,21 @@ export const ServerStatusProvider: React.FC<{ children: ReactNode }> = ({
     };
     window.addEventListener('online', handleOnline);
 
+    // When any streaming response arrives, the server is definitely alive.
+    // Reset consecutive failures so the banner doesn't appear mid-stream.
+    const handleStreamProof = () => {
+      if (consecutiveFailures.current > 0) {
+        consecutiveFailures.current = 0;
+        setIsServerReachable(true);
+      }
+    };
+    // chatApi dispatches this whenever it receives a data chunk from the server
+    document.addEventListener('serverAliveProof', handleStreamProof);
+
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
       window.removeEventListener('online', handleOnline);
+      document.removeEventListener('serverAliveProof', handleStreamProof);
     };
   }, [checkHealth]);
 

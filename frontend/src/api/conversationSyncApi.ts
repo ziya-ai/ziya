@@ -78,6 +78,19 @@ export async function bulkSync(projectId: string, chats: ServerChat[]): Promise<
 }
 
 /**
+ * Delete a chat from server-side storage.
+ * Returns true if deleted (or already gone), false on unexpected error.
+ */
+export async function deleteChat(projectId: string, chatId: string): Promise<boolean> {
+  const res = await fetch(`${BASE}/${projectId}/chats/${chatId}`, {
+    method: 'DELETE',
+    headers: projectHeaders(),
+  });
+  // 404 is fine — already deleted by another instance
+  return res.ok || res.status === 404;
+}
+
+/**
  * Convert a frontend Conversation to a ServerChat for syncing.
  */
 export function conversationToServerChat(conv: any, projectId: string): ServerChat {
