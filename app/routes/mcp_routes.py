@@ -884,7 +884,12 @@ async def update_project_write_policy(request: WritePolicyUpdate):
         if request.safe_write_paths is not None:
             overrides["safe_write_paths"] = request.safe_write_paths
         if request.allowed_write_patterns is not None:
-            overrides["allowed_write_patterns"] = request.allowed_write_patterns
+            # Normalize: split any comma-separated patterns into individual
+            # entries so fnmatch sees one glob per list element.
+            normalized = []
+            for p in request.allowed_write_patterns:
+                normalized.extend(s.strip() for s in p.split(',') if s.strip())
+            overrides["allowed_write_patterns"] = normalized
         if request.allowed_interpreters is not None:
             overrides["allowed_interpreters"] = request.allowed_interpreters
         if request.always_blocked is not None:
