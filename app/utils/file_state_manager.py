@@ -235,7 +235,7 @@ class FileStateManager:
         
         # Check if disk content differs from what we have
         if current_hash != state.content_hash:
-            logger.info(f"File {file_path} changed on disk since last check")
+            logger.debug(f"File {file_path} changed on disk since last check")
             # Update current content but preserve original baseline
             changed_lines = self._compute_changes(state.original_content, state.current_content, disk_lines)
             state.current_content = disk_lines
@@ -272,7 +272,7 @@ class FileStateManager:
         
         changed_files = [f for f, changed in results.items() if changed]
         if changed_files:
-            logger.info(f"Refreshed {len(changed_files)} files from disk for conversation {conversation_id}: {changed_files}")
+            logger.debug(f"Refreshed {len(changed_files)} files from disk for conversation {conversation_id}: {changed_files}")
             self._save_state()
         
         return recent_changes
@@ -321,7 +321,7 @@ class FileStateManager:
         current_hash = self._compute_hash(disk_lines)
         
         if current_hash != state.content_hash:
-            logger.info(f"File {file_path} changed on disk since last check")
+            logger.debug(f"File {file_path} changed on disk since last check")
             changed_lines = self._compute_changes(state.original_content, state.current_content, disk_lines)
             state.current_content = disk_lines
             state.content_hash = current_hash
@@ -347,7 +347,7 @@ class FileStateManager:
         
         changed_files = [f for f, changed in results.items() if changed]
         if changed_files:
-            logger.info(f"Refreshed {len(changed_files)} files from disk: {changed_files}")
+            logger.debug(f"Refreshed {len(changed_files)} files from disk: {changed_files}")
             self._save_state()
         
         return results
@@ -358,7 +358,7 @@ class FileStateManager:
             logger.warning(f"Cannot mark context submission for unknown conversation {conversation_id}")
             return
             
-        logger.info(f"Marking context submission point for conversation {conversation_id}")
+        logger.debug(f"Marking context submission point for conversation {conversation_id}")
         for file_path, state in self.conversation_states[conversation_id].items():
             # Update last context submission content to current content
             state.last_context_submission_content = state.current_content.copy()
@@ -490,7 +490,7 @@ class FileStateManager:
         current_hash = self._compute_hash(disk_lines)
         
         if current_hash != state.content_hash:
-            logger.info(f"File {file_path} changed on disk since last check")
+            logger.debug(f"File {file_path} changed on disk since last check")
             changed_lines = self._compute_changes(state.original_content, state.current_content, disk_lines)
             state.current_content = disk_lines
             state.content_hash = current_hash
@@ -516,7 +516,7 @@ class FileStateManager:
         
         changed_files = [f for f, changed in results.items() if changed]
         if changed_files:
-            logger.info(f"Refreshed {len(changed_files)} files from disk: {changed_files}")
+            logger.debug(f"Refreshed {len(changed_files)} files from disk: {changed_files}")
             self._save_state()
         
         return results
@@ -731,7 +731,7 @@ Files being tracked for changes: """ + ", ".join(files_with_changes) + "\n"
                 for i in range(len(lines)):
                     self.conversation_states[conversation_id][file_path].line_states[i+1] = '+'
                 
-                logger.info(f"Added new file to state: {file_path} with {len(lines)} lines marked as new")
+                logger.debug(f"Added new file to state: {file_path} with {len(lines)} lines marked as new")
             else:
                 # For existing files, check if we need to update the state
                 existing_state = self.conversation_states[conversation_id][file_path]
@@ -750,8 +750,7 @@ Files being tracked for changes: """ + ", ".join(files_with_changes) + "\n"
                     existing_state.current_content = current_lines
                     existing_state.content_hash = current_hash
 
-                    logger.info(f"Updated existing file in state: {file_path} with {len(changed_lines)} changed lines")
-    
+                    logger.debug(f"Updated existing file in state: {file_path} with {len(changed_lines)} changed lines")    
     def record_applied_diff(self, conversation_id: str, file_path: str, diff_content: str, description: str = ""):
         """
         Record a successfully applied diff for later reference.
