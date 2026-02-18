@@ -37,6 +37,10 @@ export const RetrySection: React.FC<RetrySectionProps> = ({index}) => {
                 convertKeysToStrings(checkedKeys),
                 currentConversationId,
                 undefined,
+                undefined, // images
+                streamedContentMap,
+                setStreamedContentMap,
+                setIsStreaming,
                 streamedContentMap,
                 removeStreamingConversation,
                 addMessageToConversation,
