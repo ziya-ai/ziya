@@ -84,6 +84,7 @@ export const ThrottlingErrorDisplay: React.FC<ThrottlingErrorDisplayProps> = ({
         checkedItems,
         conversationId,
         undefined,
+        undefined, // images
         streamedContentMap,
         setStreamedContentMap,
         setIsStreaming,

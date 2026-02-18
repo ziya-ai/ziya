@@ -3,11 +3,14 @@ import { useChatContext } from '../context/ChatContext';
 import { sendPayload } from "../apis/chatApi";
 import { Message, ImageAttachment } from "../utils/types";
 import { useFolderContext } from "../context/FolderContext";
+import { useProject } from "../context/ProjectContext";
 import { Button, Tooltip, Input, Space, message, Image as AntImage } from "antd";
 import { convertKeysToStrings } from '../utils/types';
 import { modelCapabilitiesService } from '../services/modelCapabilitiesService';
-import { EditOutlined, CheckOutlined, CloseOutlined, SaveOutlined, 
-         PictureOutlined, PaperClipOutlined, DeleteOutlined } from "@ant-design/icons";
+import {
+    EditOutlined, CheckOutlined, CloseOutlined, SaveOutlined,
+    PictureOutlined, PaperClipOutlined, DeleteOutlined
+} from "@ant-design/icons";
 
 interface EditSectionProps {
     index: number;
@@ -29,6 +32,7 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
         editingMessageIndex,
         setEditingMessageIndex
     } = useChatContext();
+    const { currentProject } = useProject();
 
     const [editedMessage, setEditedMessage] = useState(currentMessages[index].content);
     const { checkedKeys } = useFolderContext();
@@ -241,11 +245,14 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
                 convertKeysToStrings(checkedKeys),
                 currentConversationId,
                 undefined,
+                undefined, // images
                 streamedContentMap,
+                setStreamedContentMap,
+                setIsStreaming,
                 removeStreamingConversation,
                 addMessageToConversation,
                 streamingConversations.has(currentConversationId),
-                (state) => updateProcessingState(currentConversationId, state),
+                undefined, // setProcessingState - not available in EditSection
                 undefined, // setReasoningContentMap
                 undefined, // throttlingRecoveryDataRef
                 currentProject
@@ -327,10 +334,10 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
                                         alt={img.filename || 'Attached image'}
                                         width={120}
                                         height={120}
-                                        style={{ 
-                                            objectFit: 'cover', 
-                                            borderRadius: '4px', 
-                                            border: '1px solid #d9d9d9' 
+                                        style={{
+                                            objectFit: 'cover',
+                                            borderRadius: '4px',
+                                            border: '1px solid #d9d9d9'
                                         }}
                                         preview={{ mask: <PictureOutlined /> }}
                                     />

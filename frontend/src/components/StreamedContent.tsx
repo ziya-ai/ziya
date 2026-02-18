@@ -458,6 +458,7 @@ export const StreamedContent: React.FC<{}> = () => {
                             convertKeysToStrings(checkedKeys),
                             currentConversationId,
                             activeSkillPrompts || undefined,
+                            undefined, // images
                             streamedContentMap,
                             setStreamedContentMap,
                             setIsStreaming,
