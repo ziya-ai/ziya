@@ -1012,7 +1012,10 @@ class StreamingToolExecutor:
                                                  self.model_config.get('thinking_effort_default', 'high'))
                 body["thinking"] = {"type": "adaptive"}
                 if thinking_effort and thinking_effort in ('low', 'medium', 'high', 'max'):
-                    body["effort"] = thinking_effort
+                    # Effort goes inside output_config for Bedrock API
+                    if "output_config" not in body:
+                        body["output_config"] = {}
+                    body["output_config"]["effort"] = thinking_effort
                 logger.info(f"🧠 ADAPTIVE_THINKING: Enabled with effort={thinking_effort}")
             elif self.model_config and self.model_config.get('supports_thinking'):
                 # Fallback: standard extended thinking for older models that support it
@@ -3065,8 +3068,13 @@ Please retry the tool call with valid JSON. Ensure:
             elif assistant_text.strip():
                 # For models without prefill support, include context in the user prompt
                 lines = assistant_text.split('\n')
-                last_lines = '\n'.join(lines[-20:]) if len(lines) > 20 else '\n'.join(lines)
-                continuation_prompt = f"You were generating content that ended with:\n```\n{last_lines}\n```\n\n{continuation_prompt}"
+                context_size = 60
+                last_lines = '\n'.join(lines[-context_size:]) if len(lines) > context_size else '\n'.join(lines)
+                continuation_prompt = (
+                    f"Your previous response was interrupted and ended with:\n```\n{last_lines}\n```\n\n"
+                    f"Continue from where you left off. Do NOT repeat any of the content shown above. "
+                    f"Begin your output with the very next line after the content above.\n\n{continuation_prompt}"
+                )
             
             continuation_conversation.append({"role": "user", "content": continuation_prompt})
             
