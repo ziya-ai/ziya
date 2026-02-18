@@ -210,15 +210,19 @@ class FileChangeHandler(FileSystemEventHandler):
         if not self._should_process_event(rel_path, "created"):
             return
             
-        # Additional check: if file already exists and was recently modified,
-        # this might be a false create event from an editor
+        # Suppress false create events fired by editors after a modify.
+        # Only suppress when we previously saw a modify for this file within
+        # the last second — a genuinely new file won't have a prior modify.
         full_path = os.path.join(self.base_dir, rel_path)
-        if os.path.exists(full_path) and os.path.getmtime(full_path) + 1.0 > time.time():
-            logger.debug(f"Suppressing false create event for recently modified file: {rel_path}")
-            return
+        if os.path.exists(full_path):
+            modify_key = f"{rel_path}:modified"
+            last_modify = self.recent_events.get(modify_key, 0)
+            if last_modify > 0 and time.time() - last_modify < 1.0:
+                logger.debug(f"Suppressing false create event for recently modified file: {rel_path}")
+                return
             
         is_in_context = any(
-            rel_path in files 
+            rel_path in files
             for conv_id, files in self.file_state_manager.conversation_states.items()
             if not conv_id.startswith('precision_')
         )
