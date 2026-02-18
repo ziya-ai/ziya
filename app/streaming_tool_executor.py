@@ -939,7 +939,9 @@ class StreamingToolExecutor:
                     from app.server import active_feedback_connections
                     if conversation_id in active_feedback_connections:
                         conns = active_feedback_connections[conversation_id]
-                        feedback_queue = conns[0]['feedback_queue'] if conns else None
+                        feedback_queue = conns[0]['feedback_queue'] if len(conns) > 0 else None
+                        if not feedback_queue:
+                            raise asyncio.QueueEmpty()
                         try:
                             feedback_data = feedback_queue.get_nowait()
                             if feedback_data.get('type') == 'tool_feedback':
