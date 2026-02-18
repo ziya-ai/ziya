@@ -1016,6 +1016,11 @@ class StreamingToolExecutor:
                     if "output_config" not in body:
                         body["output_config"] = {}
                     body["output_config"]["effort"] = thinking_effort
+                    # Add effort beta header
+                    if "anthropic_beta" not in body:
+                        body["anthropic_beta"] = []
+                    if "effort-2025-11-24" not in body["anthropic_beta"]:
+                        body["anthropic_beta"].append("effort-2025-11-24")
                 logger.info(f"🧠 ADAPTIVE_THINKING: Enabled with effort={thinking_effort}")
             elif self.model_config and self.model_config.get('supports_thinking'):
                 # Fallback: standard extended thinking for older models that support it
