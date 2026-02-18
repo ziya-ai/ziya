@@ -9,7 +9,7 @@ import os
 # Model configuration
 DEFAULT_ENDPOINT = "bedrock"
 DEFAULT_MODELS = {
-    "bedrock": "sonnet4.5",
+    "bedrock": "sonnet4.6",
     "google": "gemini-3-pro"
 }
 
@@ -261,6 +261,31 @@ MODEL_CONFIGS = {
             "extended_context_limit": 1000000,  # Extended context window size
             "extended_context_header": "context-1m-2025-08-07"  # Same header as sonnet4.0
         },
+        "sonnet4.6": {
+            "model_id": {
+                "us": "us.anthropic.claude-sonnet-4-6",
+                "eu": "global.anthropic.claude-sonnet-4-6"
+            },
+            "available_regions": [
+                "us-east-1", "us-east-2", "us-west-2",
+                "ap-northeast-1", "ap-northeast-3"
+            ],
+            "preferred_region": "us-east-1",
+            "token_limit": 200000,
+            "max_output_tokens": 64000,
+            "default_max_output_tokens": 36000,
+            "supports_max_input_tokens": True,
+            "supports_thinking": True,
+            "supports_vision": True,
+            "family": "claude",
+            "supports_adaptive_thinking": True,
+            "thinking_effort_default": "medium",
+            "supports_context_caching": True,
+            "supports_assistant_prefill": False,
+            "supports_extended_context": True,
+            "extended_context_limit": 1000000,
+            "extended_context_header": "context-1m-2025-08-07"
+        },
         "sonnet3.7": {
             "model_id": "eu.anthropic.claude-3-7-sonnet-20250219-v1:0",
             "available_regions": ["eu-west-1", "eu-central-1"],
@@ -373,6 +398,8 @@ MODEL_CONFIGS = {
             "supports_thinking": True,
             "family": "claude",
             "supports_context_caching": True,
+            "supports_adaptive_thinking": True,
+            "thinking_effort_default": "medium",
             "supports_vision": True,
             "supports_assistant_prefill": False,
             "supports_extended_context": True,  # Supports 1M token context window
@@ -651,7 +678,8 @@ ENV_VAR_MAPPING = {
     "ZIYA_MAX_TOKENS": "max_tokens",
     "ZIYA_MODEL_ID_OVERRIDE": "model_id",
     "AWS_REGION": "region",
-    "ZIYA_THINKING_LEVEL": "thinking_level"
+    "ZIYA_THINKING_LEVEL": "thinking_level",
+    "ZIYA_THINKING_EFFORT": "thinking_effort"
 }
 
 # Default request size limits
