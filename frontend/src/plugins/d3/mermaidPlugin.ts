@@ -363,8 +363,16 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
         let firstLine = lines[0]?.trim() || '';
 
         // Skip YAML frontmatter if present
-        if (firstLine === '---' && lines.length > 2) {
+        if ((firstLine === '---' || firstLine.startsWith('%%')) && lines.length > 2) {
             firstLine = lines.find((line, idx) => idx > 0 && line.trim() && line.trim() !== '---')?.trim() || '';
+        }
+
+        // Skip %%{init:...}%% directives to find actual diagram type
+        if (firstLine.startsWith('%%')) {
+            firstLine = lines.find(line => {
+                const t = line.trim();
+                return t && !t.startsWith('%%');
+            })?.trim() || '';
         }
         const diagramType = firstLine.replace(/^(\w+).*$/, '$1').toLowerCase();
 

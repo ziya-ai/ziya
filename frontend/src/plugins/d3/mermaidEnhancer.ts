@@ -270,8 +270,18 @@ export function preprocessDefinition(definition: string, diagramType?: string, m
 
   // Extract diagram type if not provided
   if (!diagramType) {
-    const firstLine = definition.trim().split('\n')[0];
-    diagramType = firstLine.trim().replace(/^(\w+).*$/, '$1');
+    const lines = definition.trim().split('\n');
+    let typeLine = '';
+    for (const line of lines) {
+      const trimmed = line.trim();
+      // Skip empty lines, comments, and %%{init:...}%% directives
+      if (!trimmed || trimmed.startsWith('%%')) {
+        continue;
+      }
+      typeLine = trimmed;
+      break;
+    }
+    diagramType = typeLine.replace(/^(\w+).*$/, '$1');
   }
 
   // Normalize diagram type if mermaid instance is available
@@ -2322,7 +2332,11 @@ export function initMermaidEnhancer(): void {
   // Add a preprocessor to fix Timeline diagram syntax issues
   registerPreprocessor((def: string, type: string) => {
     if (!def.trim().startsWith('timeline')) {
+      // Also check after skipping directives
+      const stripped = def.replace(/^%%\{.*\}%%\s*/g, '').trim();
+      if (!stripped.startsWith('timeline')) {
       return def;
+      }
     }
 
     // Fix timeline diagram syntax issues
@@ -2359,7 +2373,14 @@ export function initMermaidEnhancer(): void {
 
       // Handle events within sections
       if (inSection && trimmedLine.includes(' : ')) {
-        result.push('        ' + trimmedLine);
+        // Split on the FIRST " : " to separate period from event
+        const delimIndex = trimmedLine.indexOf(' : ');
+        const period = trimmedLine.substring(0, delimIndex);
+        const event = trimmedLine.substring(delimIndex);
+        // Sanitize colons in period text (e.g. timestamps "18:12:11")
+        // Replace colons with ratio symbol (∶) which is visually identical
+        const safePeriod = period.replace(/:/g, '\u2236');
+        result.push('        ' + safePeriod + event);
         continue;
       }
 
@@ -2373,7 +2394,7 @@ export function initMermaidEnhancer(): void {
   }, {
     name: 'timeline-syntax-fix',
     priority: 120,
-    diagramTypes: ['timeline']
+    diagramTypes: ['*']
   });
 
   // Add a preprocessor to fix Gantt diagram date format issues
@@ -3105,9 +3126,20 @@ export function enhanceMermaid(mermaid: any): void {
 
       let diagramType: string;
       const lines = actualDefinition.trim().split('\n');
-      let typeLine = lines[0]?.trim() || '';
-      if (typeLine === '---' && lines.length > 1) {
-        let inFrontmatterDetect = true;
+      let typeLine = '';
+
+      // Skip %%{init:...}%% directives and comments to find the real diagram type
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('%%')) {
+          continue;
+        }
+        typeLine = trimmed;
+        break;
+      }
+
+      if (typeLine === '---') {
+        let inFrontmatterDetect = true;  
         let diagramDeclarationLine = '';
         for (let i = 1; i < lines.length; i++) {
           const currentLineTrimmed = lines[i].trim();
@@ -3122,7 +3154,7 @@ export function enhanceMermaid(mermaid: any): void {
             }
           }
         }
-        typeLine = diagramDeclarationLine || lines[0]?.trim() || ''; // Fallback if no declaration found
+        typeLine = diagramDeclarationLine || typeLine;
       }
       diagramType = typeLine.split(' ')[0].toLowerCase(); // Get the first word as type
 
