@@ -1261,7 +1261,7 @@ export const MUIFileExplorer = () => {
           </Typography>
           {showSlowLoadingTip && (
             <Typography variant="caption" color="warning.main">
-              Tip: Use --include-only or --exclude flags to restrict scope
+              Tip: Use --directory, --include-only, or --exclude flags to restrict scope
             </Typography>
           )}
         </Box>
