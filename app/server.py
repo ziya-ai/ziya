@@ -4637,7 +4637,7 @@ async def get_folders_with_accurate_tokens():
             
         # Get ignored patterns
         ignored_patterns = get_ignored_patterns(user_codebase_dir)
-        logger.info(f"Loaded {len(ignored_patterns)} ignore patterns")
+        logger.debug(f"Loaded {len(ignored_patterns)} ignore patterns")
         
         # Check if we have cached accurate token counts
         from app.utils.directory_util import get_cached_folder_structure_with_tokens
@@ -4975,11 +4975,11 @@ async def api_get_folders(refresh: bool = False, project_path: str = Query(None)
             current_path = f"{path}/{key}" if path else key
             if isinstance(value, dict):
                 if 'children' in value:
-                    logger.info(f"📁 {current_path}/ ({len(value.get('children', {}))} children)")
+                    logger.debug(f"📁 {current_path}/ ({len(value.get('children', {}))} children)")
                     log_folder_contents(value.get('children', {}), current_path, max_depth, current_depth + 1)
                 else:
                     token_count = value.get('token_count', 0)
-                    logger.info(f"📄 {current_path} ({token_count} tokens)")
+                    logger.debug(f"📄 {current_path} ({token_count} tokens)")
     
     # Add cache headers to help frontend avoid unnecessary requests
     if refresh:
@@ -5041,7 +5041,7 @@ async def api_get_folders(refresh: bool = False, project_path: str = Query(None)
         # Get ignored patterns
         try:
             ignored_patterns = get_ignored_patterns(user_codebase_dir)
-            logger.info(f"Loaded {len(ignored_patterns)} ignore patterns")
+            logger.debug(f"Loaded {len(ignored_patterns)} ignore patterns")
         except re.error as e:
             logger.error(f"Invalid gitignore pattern detected: {e}")
             # Use minimal default patterns if gitignore parsing fails
@@ -5059,9 +5059,9 @@ async def api_get_folders(refresh: bool = False, project_path: str = Query(None)
         result = get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth)
         
         # Log the structure we're returning
-        logger.info("=== FOLDER STRUCTURE BEING RETURNED ===")
+        logger.debug("=== FOLDER STRUCTURE BEING RETURNED ===")
         log_folder_contents(result, max_depth=2)
-        logger.info("=== END FOLDER STRUCTURE ===")
+        logger.debug("=== END FOLDER STRUCTURE ===")
         
         # Background calculation is automatically ensured by get_cached_folder_structure_with_tokens
         # Check if we got an error result
@@ -5090,7 +5090,7 @@ async def api_get_folders(refresh: bool = False, project_path: str = Query(None)
         
         collect_sample(result)
         if sample_files:
-            logger.info(f"Sample files with token counts: {sample_files}")
+            logger.debug(f"Sample files with token counts: {sample_files}")
         else:
             logger.debug("No files with token counts found in folder structure")
         
