@@ -6,6 +6,8 @@ from typing import Optional, List
 import uuid
 import time
 
+from app.utils.logging_utils import logger
+
 from .base import BaseStorage
 from ..models.chat import Chat, ChatCreate, ChatUpdate, ChatSummary, Message
 
@@ -15,13 +17,35 @@ class ChatStorage(BaseStorage[Chat]):
     def __init__(self, project_dir: Path):
         self.chats_dir = project_dir / "chats"
         super().__init__(self.chats_dir)
+        self._enforcer = None
+
+    @property
+    def enforcer(self):
+        """Lazy-load the retention enforcer to avoid import cycles."""
+        if self._enforcer is None:
+            from app.plugins.data_retention import get_retention_enforcer
+            self._enforcer = get_retention_enforcer()
+        return self._enforcer
+
+    def _is_chat_expired(self, chat: Chat) -> bool:
+        """Check whether a chat has exceeded the retention policy TTL."""
+        # Use lastActiveAt (milliseconds) — convert to epoch seconds
+        created_epoch = chat.createdAt / 1000.0
+        return self.enforcer.is_expired(created_epoch, "conversation_data")
     
     def _chat_file(self, chat_id: str) -> Path:
         return self.chats_dir / f"{chat_id}.json"
     
     def get(self, chat_id: str) -> Optional[Chat]:
         data = self._read_json(self._chat_file(chat_id))
-        return Chat(**data) if data else None
+        if not data:
+            return None
+        chat = Chat(**data)
+        if self._is_chat_expired(chat):
+            logger.info(f"Chat {chat_id} expired per retention policy, removing")
+            self.delete(chat_id)
+            return None
+        return chat
     
     def list(self, group_id: Optional[str] = None) -> List[Chat]:
         """List chats, optionally filtered by group."""
@@ -37,6 +61,10 @@ class ChatStorage(BaseStorage[Chat]):
             data = self._read_json(chat_file)
             if data:
                 chat = Chat(**data)
+                if self._is_chat_expired(chat):
+                    logger.info(f"Chat {chat.id} expired per retention policy, removing")
+                    self.delete(chat.id)
+                    continue
                 # Filter by group if specified
                 if group_id is not None:
                     if group_id == "ungrouped" and chat.groupId is None:
@@ -47,6 +75,27 @@ class ChatStorage(BaseStorage[Chat]):
                     chats.append(chat)
         
         return sorted(chats, key=lambda c: c.lastActiveAt, reverse=True)
+
+    def purge_expired(self) -> int:
+        """
+        Remove all chats that have exceeded the retention policy.
+
+        Returns the number of chats purged.
+        """
+        purged = 0
+        if not self.chats_dir.exists():
+            return purged
+        for chat_file in self.chats_dir.glob("*.json"):
+            if chat_file.name.startswith('_'):
+                continue
+            data = self._read_json(chat_file)
+            if data:
+                chat = Chat(**data)
+                if self._is_chat_expired(chat):
+                    logger.info(f"Purging expired chat {chat.id}")
+                    chat_file.unlink()
+                    purged += 1
+        return purged
     
     def list_summaries(self, group_id: Optional[str] = None) -> List[ChatSummary]:
         """List chats without messages for performance."""
