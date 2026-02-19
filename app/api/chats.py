@@ -3,6 +3,7 @@ Chat and chat group API endpoints.
 """
 from fastapi import APIRouter, HTTPException, Query
 from typing import List, Optional
+from datetime import timedelta
 import uuid
 
 from ..models.chat import Chat, ChatCreate, ChatUpdate, ChatSummary, Message, ChatBulkSync, ChatGroupBulkSync
@@ -239,6 +240,33 @@ async def update_chat(project_id: str, chat_id: str, data: ChatUpdate):
         raise HTTPException(status_code=404, detail="Chat not found")
     
     return chat
+
+
+# ── Retention policy endpoint ────────────────────────────────────────
+
+@router.get("/api/v1/retention-policy")
+async def get_retention_policy():
+    """
+    Return the effective data retention policy.
+
+    The frontend uses this to purge expired conversations from IndexedDB
+    and to display retention notices to the user.
+    """
+    from app.plugins.data_retention import get_retention_enforcer
+
+    enforcer = get_retention_enforcer()
+    policy = enforcer.policy
+
+    ttl_seconds = policy.get_ttl_seconds("conversation_data")
+
+    return {
+        "conversation_data_ttl_seconds": ttl_seconds,
+        "conversation_data_ttl_days": (
+            ttl_seconds / 86400.0 if ttl_seconds is not None else None
+        ),
+        "policy_reason": policy.policy_reason,
+        "has_retention_policy": ttl_seconds is not None,
+    }
 
 @router.delete("/api/v1/projects/{project_id}/chats/{chat_id}")
 async def delete_chat(project_id: str, chat_id: str):
