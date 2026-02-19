@@ -28,9 +28,11 @@ class FileChangeHandler(FileSystemEventHandler):
         # Cache invalidation debouncing
         self.last_cache_invalidation = 0
         
-        # Initialize gitignore patterns
-        self.ignored_patterns = get_ignored_patterns(self.base_dir)
-        self.should_ignore_fn = parse_gitignore_patterns(self.ignored_patterns)
+        # Initialize gitignore patterns lazily — scanning for .gitignore files
+        # across a large home directory is expensive and blocks startup.
+        self._ignored_patterns_loaded = False
+        self.ignored_patterns = []
+        self.should_ignore_fn = lambda path: False  # placeholder until loaded
         logger.debug(f"FileChangeHandler initialized with {len(self.ignored_patterns)} gitignore patterns")
     
     def _is_editor_temp_file(self, path: str) -> bool:
@@ -53,6 +55,14 @@ class FileChangeHandler(FileSystemEventHandler):
             return True
         return False
         
+    def _ensure_ignore_patterns_loaded(self):
+        """Load gitignore patterns on first use (lazy init)."""
+        if not self._ignored_patterns_loaded:
+            self._ignored_patterns_loaded = True
+            self.ignored_patterns = get_ignored_patterns(self.base_dir)
+            self.should_ignore_fn = parse_gitignore_patterns(self.ignored_patterns)
+            logger.debug(f"Lazy-loaded {len(self.ignored_patterns)} gitignore patterns")
+
     def _should_ignore_path(self, abs_path: str) -> bool:
         """Check if a path should be ignored based on gitignore patterns and dot directories."""
         try:
@@ -62,6 +72,7 @@ class FileChangeHandler(FileSystemEventHandler):
                 if part.startswith('.') and len(part) > 1:
                     return True
 
+            self._ensure_ignore_patterns_loaded()
             if self.should_ignore_fn(abs_path):
                 return True
             
