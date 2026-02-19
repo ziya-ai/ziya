@@ -34,10 +34,34 @@ class MCPPermissionsManager:
             return self._get_default_permissions()
         try:
             with open(self.config_path, 'r') as f:
-                return json.load(f)
+                data = json.load(f)
+            if self._migrate_ask_permissions(data):
+                self.config_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(self.config_path, 'w') as f:
+                    json.dump(data, f, indent=2)
+                logger.info("Migrated 'ask' permissions to 'enabled' (ask mode removed)")
+            return data
         except (json.JSONDecodeError, IOError) as e:
             logger.error(f"Failed to load MCP permissions: {e}")
             return self._get_default_permissions()
+
+    @staticmethod
+    def _migrate_ask_permissions(data: Dict[str, Any]) -> bool:
+        """Replace any 'ask' permission values with 'enabled'. Returns True if anything changed."""
+        changed = False
+        for key in ('server', 'tool'):
+            if data.get('defaults', {}).get(key) == 'ask':
+                data['defaults'][key] = 'enabled'
+                changed = True
+        for server_info in data.get('servers', {}).values():
+            if server_info.get('permission') == 'ask':
+                server_info['permission'] = 'enabled'
+                changed = True
+            for tool_info in server_info.get('tools', {}).values():
+                if tool_info.get('permission') == 'ask':
+                    tool_info['permission'] = 'enabled'
+                    changed = True
+        return changed
 
     def get_permissions(self) -> Dict[str, Any]:
         """Get the current permissions."""
