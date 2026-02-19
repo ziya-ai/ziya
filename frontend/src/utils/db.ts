@@ -1,4 +1,5 @@
 import { Conversation, ConversationFolder, SearchResult, MessageMatch, SearchOptions } from './types';
+import { purgeExpiredConversations } from './retentionPurge';
 import { message } from 'antd';
 import { performEmergencyRecovery } from './emergencyRecovery';
 
@@ -183,6 +184,12 @@ class ConversationDB implements DB {
                             version: this.db.version,
                             stores: Array.from(this.db.objectStoreNames)
                         });
+
+                        // Enforce data retention policy after successful init
+                        purgeExpiredConversations(this).catch(err => {
+                            console.warn('Retention purge failed (non-fatal):', err);
+                        });
+
                         resolve();
 
                     };
