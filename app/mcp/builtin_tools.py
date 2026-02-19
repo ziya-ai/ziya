@@ -126,6 +126,6 @@ def get_enabled_builtin_tools() -> List[BaseMCPTool]:
                     logger.warning(f"Failed to initialize builtin tool {tool_class}: {e}")
     
     if enabled_tools:
-        logger.info(f"Loaded {len(enabled_tools)} enabled builtin tools")
+        logger.debug(f"Loaded {len(enabled_tools)} enabled builtin tools")
     
     return enabled_tools

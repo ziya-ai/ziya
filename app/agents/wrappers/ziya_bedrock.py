@@ -93,7 +93,7 @@ class ZiyaBedrock(Runnable):
         
         model_config = ModelManager.get_model_config(endpoint, model_name)
         filtered_kwargs = ModelManager.filter_model_kwargs(current_model_kwargs, model_config)
-        logger.info(f"Filtered model_kwargs: {filtered_kwargs}")
+        logger.debug(f"Filtered model_kwargs: {filtered_kwargs}")
 
         # Handle boto3 client compatibility issues
         bedrock_client = None
@@ -496,7 +496,7 @@ class ZiyaBedrock(Runnable):
         # Get the model config and filter the kwargs
         model_config = ModelManager.get_model_config(endpoint, model_name)
         filtered_kwargs = ModelManager.filter_model_kwargs(model_kwargs, model_config)
-        logger.info(f"Filtered model_kwargs for {self.model_id}: {filtered_kwargs}")
+        logger.debug(f"Filtered model_kwargs for {self.model_id}: {filtered_kwargs}")
             
         # Create a new bedrock model with updated parameters
         self.bedrock_model = ChatBedrock(
