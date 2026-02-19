@@ -287,14 +287,15 @@ async def get_mcp_status():
                 # Calculate enabled tool tokens by filtering out disabled tools
                 if is_enabled:
                     server_perms = permissions.get('servers', {}).get(server_name, {})
+                    default_tool_perm = permissions.get('defaults', {}).get('tool', 'enabled')
                     enabled_tools_dict = []
                     
                     for tool in client.tools:
                         tool_perms = server_perms.get('tools', {}).get(tool.name, {})
-                        tool_permission = tool_perms.get('permission', permissions.get('defaults', {}).get('tool', 'enabled'))
+                        tool_permission = tool_perms.get('permission', default_tool_perm)
                         
-                        # Only count enabled tools
-                        if tool_permission != 'disabled':
+                        # Only count tools that are explicitly enabled
+                        if tool_permission == 'enabled':
                             enabled_tools_dict.append({
                                 'name': tool.name,
                                 'description': tool.description or '',
