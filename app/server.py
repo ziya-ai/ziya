@@ -499,7 +499,7 @@ async def broadcast_file_tree_update(event_type: str, rel_path: str, token_count
     """Broadcast file tree updates to all connected clients."""
     if not active_file_tree_connections:
         # Log this so we know if the frontend isn't connected
-        logger.warning(f"📢 No active WebSocket connections for file tree updates - {event_type}: {rel_path}")
+        logger.debug(f"📢 No active WebSocket connections for file tree updates - {event_type}: {rel_path}")
         return
     
     logger.info(f"📢 Broadcasting {event_type} for {rel_path} to {len(active_file_tree_connections)} client(s)")

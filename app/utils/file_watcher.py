@@ -54,13 +54,17 @@ class FileChangeHandler(FileSystemEventHandler):
         return False
         
     def _should_ignore_path(self, abs_path: str) -> bool:
-        """Check if a path should be ignored based on gitignore patterns."""
+        """Check if a path should be ignored based on gitignore patterns and dot directories."""
         try:
-            # Check if the path itself should be ignored
+            # Fast check: skip any path containing a dot-directory component
+            # (e.g. .toolbox, .cache, .git, .local, .npm, etc.)
+            for part in abs_path.split(os.sep):
+                if part.startswith('.') and len(part) > 1:
+                    return True
+
             if self.should_ignore_fn(abs_path):
                 return True
             
-            # Also check if any parent directory should be ignored
             parent_dir = os.path.dirname(abs_path)
             while parent_dir and parent_dir != self.base_dir and len(parent_dir) > len(self.base_dir):
                 if self.should_ignore_fn(parent_dir):
@@ -151,7 +155,10 @@ class FileChangeHandler(FileSystemEventHandler):
         )
         
         context_status = " (in context)" if is_in_context else " (not in context)"
-        logger.info(f"📝 File updated: {rel_path}{context_status}")
+        if is_in_context:
+            logger.info(f"📝 File updated: {rel_path}{context_status}")
+        else:
+            logger.debug(f"📝 File updated: {rel_path}{context_status}")
         
         if not should_process:
             return
@@ -227,7 +234,10 @@ class FileChangeHandler(FileSystemEventHandler):
             if not conv_id.startswith('precision_')
         )
         
-        logger.info(f"File created: {rel_path}" + (" (in context)" if is_in_context else ""))
+        if is_in_context:
+            logger.info(f"File created: {rel_path} (in context)")
+        else:
+            logger.debug(f"File created: {rel_path}")
         
         # Try to add to cache incrementally
         from app.server import add_file_to_folder_cache
@@ -236,7 +246,7 @@ class FileChangeHandler(FileSystemEventHandler):
         if not cache_updated:
             # Cache update failed (probably because cache is None after refresh)
             # But we should STILL notify the frontend so it can update its UI
-            logger.info(f"Cache not ready, broadcasting file creation anyway: {rel_path}")
+            logger.debug(f"Cache not ready, broadcasting file creation anyway: {rel_path}")
             
             # Calculate token count for the new file
             full_path = os.path.join(self.base_dir, rel_path)
