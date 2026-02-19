@@ -465,7 +465,7 @@ class ModelManager:
             # Ensure token_limit is included in settings
             if "token_limit" in model_config:
                 settings["token_limit"] = model_config["token_limit"]
-                logger.info(f"Including token_limit in settings: {model_config['token_limit']}")
+                logger.debug(f"Including token_limit in settings: {model_config['token_limit']}")
             
             # Apply environment variable overrides with proper type conversion
             for env_var, config_key in config.ENV_VAR_MAPPING.items():
