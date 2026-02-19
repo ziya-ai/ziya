@@ -1326,7 +1326,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             console.error('Error creating folder:', error);
             throw error;
         }
-    }, []);
+    }, [currentProject?.id]);
 
     const updateFolder = useCallback(async (folder: ConversationFolder): Promise<void> => {
         try {
@@ -1350,7 +1350,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             console.error('Error updating folder:', error);
             throw error;
         }
-    }, []);
+    }, [currentProject?.id]);
 
     const deleteFolder = useCallback(async (id: string): Promise<void> => {
         try {
