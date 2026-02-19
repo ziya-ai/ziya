@@ -539,7 +539,8 @@ import logging as _logging
 
 class _PollingAccessFilter(_logging.Filter):
     """Filter routine polling GETs from uvicorn access log."""
-    _quiet = {'/chats?', '/chat-groups', '/skills', '/contexts', '/api/config'}
+    _quiet = {'/chats?', '/chat-groups', '/skills', '/contexts', '/api/config',
+              '/folder-progress', '/model-capabilities', '/current-model', '/static/'}
     def filter(self, record: _logging.LogRecord) -> bool:
         msg = record.getMessage()
         return not any(q in msg for q in self._quiet)
@@ -3994,7 +3995,7 @@ async def update_dynamic_tools(request: Request):
         body = await request.json()
         files = body.get('files', [])
 
-        logger.info(f"Dynamic tools update requested for {len(files)} files")
+        logger.debug(f"Dynamic tools update requested for {len(files)} files")
 
         from app.mcp.dynamic_tools import get_dynamic_loader
         from app.mcp.manager import get_mcp_manager
@@ -4786,7 +4787,7 @@ def get_config():
 def get_current_model():
     """Get detailed information about the currently active model."""
     try:
-        logger.info("Current model info request received")
+        logger.debug("Current model info request received")
         
         # Get model alias (name) from ModelManager
         model_alias = ModelManager.get_model_alias()
@@ -5558,7 +5559,7 @@ async def count_tokens(request: TokenCountRequest) -> Dict[str, int]:
         # Log which method was actually used (calibrator logs this internally)
         method_used = "estimate_token_count"
 
-        logger.info(f"Counted {token_count} tokens using {method_used} method for text length {len(request.text)}")
+        logger.debug(f"Counted {token_count} tokens using {method_used} method for text length {len(request.text)}")
         return {"token_count": token_count}
     except Exception as e:
         logger.error(f"Error counting tokens: {str(e)}", exc_info=True)

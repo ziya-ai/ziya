@@ -135,7 +135,7 @@ class TokenCalibrator:
                     total_models = len(self.stats_by_model_and_type)
                     total_types = sum(len(types) for types in self.stats_by_model_and_type.values())
                 
-                    logger.info(f"📊 Loaded calibration: {total_models} models, {total_types} file types")
+                    logger.debug(f"📊 Loaded calibration: {total_models} models, {total_types} file types")
                 
                     # Show what we know
                     for model_family, types_dict in list(self.stats_by_model_and_type.items())[:3]:
@@ -143,13 +143,13 @@ class TokenCalibrator:
                                    f"ratio: {self.global_by_model.get(model_family, 'N/A'):.2f}")
                     
                     # Verify what we loaded
-                    logger.info(f"📊 LOADED: global_by_model = {self.global_by_model}")
+                    logger.debug(f"📊 LOADED: global_by_model = {self.global_by_model}")
                     
                     # Log baseline info
                     if self.baseline_overhead_tokens:
-                        logger.info(f"📊 LOADED BASELINES: {len(self.baseline_overhead_tokens)} models")
+                        logger.debug(f"📊 LOADED BASELINES: {len(self.baseline_overhead_tokens)} models")
                         for model, overhead in self.baseline_overhead_tokens.items():
-                            logger.info(f"   {model}: {overhead:,} tokens overhead")
+                            logger.debug(f"   {model}: {overhead:,} tokens overhead")
                 
         except Exception as e:
             logger.debug(f"Could not load calibration data: {e}")

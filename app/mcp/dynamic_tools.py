@@ -87,7 +87,7 @@ class DynamicToolLoader:
             Dict mapping tool names to tool instances
         """
         detected_types = self.detect_file_types(file_paths)
-        logger.info(f"Detected file types: {detected_types}")
+        logger.debug(f"Detected file types: {detected_types}")
         
         newly_loaded = {}
         

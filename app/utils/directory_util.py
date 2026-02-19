@@ -915,7 +915,7 @@ def estimate_tokens_fast(file_path: str) -> int:
         # For very large files (>10MB), estimate tokens without reading
         # This prevents hanging on huge files while keeping them visible
         if file_size > 10 * 1024 * 1024:  # 10MB
-            logger.info(f"Large file detected: {file_path} ({file_size / (1024*1024):.1f}MB) - using size-based estimate")
+            logger.debug(f"Large file detected: {file_path} ({file_size / (1024*1024):.1f}MB) - using size-based estimate")
             # Rough estimate: 4.1 chars per token
             base_chars_per_token = 4.1
             estimated_tokens = int(file_size / base_chars_per_token)
