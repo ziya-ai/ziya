@@ -341,6 +341,7 @@ async def lifespan(app: FastAPI):
     # REMOVED: The startup scan was wasted work — the frontend triggers a
     # project-specific scan when it connects, and the two caches were
     # split-brained so the startup result was often ignored anyway.
+    global _folder_ready
     _folder_ready = True
     
     # Print clear banner that server is ready
@@ -377,7 +378,6 @@ async def lifespan(app: FastAPI):
 
 async def _initialize_mcp_background():
     """Initialize MCP in the background without blocking server startup."""
-    # Track completion for final banner
     global _mcp_ready, _folder_ready, _background_tasks_lock
     _mcp_ready = False
     
@@ -385,42 +385,37 @@ async def _initialize_mcp_background():
     await asyncio.sleep(0.1)
     
     try:
-        logger.info("🔧 Starting background MCP initialization...")
+        logger.debug("🔧 Starting background MCP initialization...")
         
-        # Initialize signing secret for security
         from app.mcp.signing import get_session_secret
-        get_session_secret()  # Generate secret at startup
+        get_session_secret()
         
         from app.mcp.manager import get_mcp_manager
         mcp_manager = get_mcp_manager()
         await mcp_manager.initialize()
         
-        # Log MCP initialization status
         if mcp_manager.is_initialized:
             status = mcp_manager.get_server_status()
             connected_servers = sum(1 for s in status.values() if s["connected"])
             total_tools = sum(s["tools"] for s in status.values())
-            logger.info(f"🔧 MCP initialized: {connected_servers} servers connected, {total_tools} tools available")
             
-            # Initialize secure MCP tools
             from app.mcp.connection_pool import get_connection_pool as get_secure_pool
             secure_pool = get_secure_pool()
             secure_pool.set_server_configs(mcp_manager.server_configs)
-            logger.debug("Initialized secure MCP connection pool")
             
-            # Force garbage collection to ensure clean state
             import gc; gc.collect()
             from app.agents.agent import create_agent_chain, create_agent_executor, model
             agent = create_agent_chain(model.get_model())
             agent_executor = create_agent_executor(agent)
             
             _mcp_ready = True
+            logger.info(f"🔧 MCP ready: {connected_servers} servers, {total_tools} tools")
             _check_and_print_completion_banner()
         else:
             logger.warning("MCP initialization failed or no servers configured")
     except Exception as e:
         logger.warning(f"Background MCP initialization failed: {str(e)}")
-        _mcp_ready = True  # Mark as complete even on failure
+        _mcp_ready = True
         _check_and_print_completion_banner()
 
 

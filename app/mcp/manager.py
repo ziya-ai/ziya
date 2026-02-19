@@ -488,7 +488,7 @@ class MCPManager:
     async def _connect_server(self, server_name: str, client: MCPClient) -> bool:
         """Connect to a single MCP server."""
         try:
-            logger.info(f"Attempting to connect to MCP server: {server_name}")
+            logger.debug(f"Attempting to connect to MCP server: {server_name}")
             logger.debug(f"  Server config: {client.server_config}")
             
             success = await client.connect()
@@ -531,7 +531,7 @@ class MCPManager:
         # Check if cache is valid
         if (self._tools_cache is not None and 
             current_time - self._tools_cache_timestamp < self._tools_cache_ttl):
-            logger.info(f"MCP_MANAGER.get_all_tools: Using cached tools ({len(self._tools_cache)} tools)")
+            logger.debug(f"MCP_MANAGER.get_all_tools: Using cached tools ({len(self._tools_cache)} tools)")
             return self._tools_cache
         
         # Cache miss or expired - fetch fresh tools

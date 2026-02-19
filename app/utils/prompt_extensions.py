@@ -160,7 +160,7 @@ class PromptExtensionManager:
                     logger.debug(f"Skipping disabled family extension for '{model_family}'")
                 else:
                     modified_prompt = extension_fn(modified_prompt, extension_context)
-                    logger.info(f"Applied family extension for '{model_family}' - new length: {len(modified_prompt)}")
+                    logger.debug(f"Applied family extension for '{model_family}' - new length: {len(modified_prompt)}")
                     
                     if debug_enabled:
                         log_prompt_assembly(f"after_family_ext_{model_family}", modified_prompt,

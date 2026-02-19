@@ -398,7 +398,7 @@ class RetryingChatBedrock(Runnable):
             region_prefix = "eu" if region.startswith("eu-") else "us"
             # Use the region-specific model ID if available, otherwise fall back to first available
             model_id = model_id.get(region_prefix, next(iter(model_id.values())))
-            logger.info(f"Using region-specific model ID: {model_id}")
+            logger.debug(f"Using region-specific model ID: {model_id}")
         
 
         # Special handling for stop parameter
@@ -1998,7 +1998,7 @@ def create_agent_chain(chat_model: BaseChatModel):
         logger.info(f"Using cached agent chain for {cache_key_hash}")
         return cached_chain
     
-    logger.info(f"Creating new agent chain for {cache_key_hash}")
+    logger.debug(f"Creating new agent chain for {cache_key_hash}")
     
     # Get model information for prompt extensions
     model_info = get_model_info_from_config()
@@ -2159,7 +2159,7 @@ def create_agent_chain(chat_model: BaseChatModel):
      "model_id": model_id,
      "endpoint": endpoint
     }
-    logger.info(f"AGENT_DEBUG: Passing mcp_context to get_extended_prompt: {mcp_context}")
+    logger.debug(f"AGENT_DEBUG: Passing mcp_context to get_extended_prompt: {mcp_context}")
  
     prompt_template = get_extended_prompt(
      model_name=model_name,
@@ -2287,7 +2287,7 @@ def create_agent_executor(agent_chain: Runnable):
     # Check if MCP is enabled before creating tools
     if os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
         try:
-            logger.info("Attempting to get MCP tools for agent executor...")
+            logger.debug("Attempting to get MCP tools for agent executor...")
             
             from app.mcp.manager import get_mcp_manager
             mcp_manager = get_mcp_manager()

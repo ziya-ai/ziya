@@ -233,7 +233,7 @@ class MCPClient:
             is_external = any(indicator in full_command.lower() 
                             for indicator in ['npx', 'uvx', 'node'])
             
-            logger.info(f"Server {server_name}: is_external={is_external}, using {0.3 if is_external else 0.05}s delay")
+            logger.debug(f"Server {server_name}: is_external={is_external}, using {0.3 if is_external else 0.05}s delay")
             startup_delay = 0.3 if is_external else 0.05
             await asyncio.sleep(startup_delay)
             logger.debug(f"Waited {startup_delay}s for {server_name} to start")
