@@ -792,6 +792,7 @@ class StreamingToolExecutor:
             except Exception as e:
                 logger.debug(f"Could not check baseline status: {e}")
         
+        hallucination_retries = 0
         for iteration in range(100):  # Increased limit to support complex multi-step tasks
             logger.debug(f"🔍 ITERATION_START: Beginning iteration {iteration}")
             hallucination_this_iteration = False
