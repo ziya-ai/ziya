@@ -233,7 +233,7 @@ class CustomBedrockClient:
             if "inference profile" in retry_error_str.lower() or "on-demand throughput" in retry_error_str.lower():
                 logger.error(f"Extended context retry failed with inference profile error: {retry_error_str}")
                 raise retry_error
-            elif ("Input is too long" in retry_error_str or 
+            elif ("Input is too long" in retry_error_str or "prompt is too long" in retry_error_str or 
                 "Connection was closed" in retry_error_str or
                 "ValidationException" in retry_error_str):
                 logger.error("Extended context retry failed - content may be too large even for extended context")
@@ -300,7 +300,7 @@ class CustomBedrockClient:
 
                         # Check if it's a context limit error
                         if (("input length and `max_tokens` exceed context limit" in error_message or
-                            "Input is too long" in error_message) and conversation_id):
+                            "Input is too long" in error_message or "prompt is too long" in error_message) and conversation_id):
                             
                             # Check if we've already failed with extended context for this conversation
                             if conversation_id in self._extended_context_failures:
@@ -372,7 +372,7 @@ class CustomBedrockClient:
                     logger.debug(f"🔍 EXTENDED_CONTEXT: supports_extended_context = {self._supports_extended_context()}")
                     logger.debug(f"🔍 EXTENDED_CONTEXT: should_use_extended_context = {self._should_use_extended_context(conversation_id) if conversation_id else 'N/A'}")
                     
-                    if (("Input is too long" in error_message or 
+                    if (("Input is too long" in error_message or "prompt is too long" in error_message or 
                          "input length and `max_tokens` exceed context limit" in error_message) and
                         self._supports_extended_context() and 
                         conversation_id and 
@@ -421,7 +421,7 @@ class CustomBedrockClient:
                         
                         # Check if it's a context limit error
                         if ("input length and `max_tokens` exceed context limit" in error_message or
-                            "Input is too long" in error_message):
+                            "Input is too long" in error_message or "prompt is too long" in error_message):
                             logger.warning(f"Context limit error detected: {error_message}")
                             
                             # Try extended context if supported and not already using it
