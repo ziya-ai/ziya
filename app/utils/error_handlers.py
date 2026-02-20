@@ -97,7 +97,7 @@ async def handle_streaming_error(request: Request, exc: Exception) -> AsyncItera
             
         status_code = 429
         
-    elif "validationException" in error_message and "Input is too long" in error_message:
+    elif "validationException" in error_message and "Input is too long" in error_message or "prompt is too long" in error_message:
         error_type = ERROR_VALIDATION
         detail = "Selected content is too large for the model. Please reduce the number of files."
         status_code = 413
@@ -154,7 +154,7 @@ def handle_request_exception(request: Request, exc: Exception) -> JSONResponse:
         detail = "Too many requests to AWS Bedrock. Please wait a moment before trying again."
         status_code = 429
         retry_after = "5"
-    elif "validationException" in error_message and "Input is too long" in error_message:
+    elif "validationException" in error_message and "Input is too long" in error_message or "prompt is too long" in error_message:
         error_type = ERROR_VALIDATION
         detail = "Selected content is too large for the model. Please reduce the number of files."
         status_code = 413
@@ -206,7 +206,7 @@ def detect_error_type(error_message: str) -> Tuple[str, str, int, Optional[str]]
         detail = "Too many requests to AWS Bedrock. Please wait a moment before trying again."
         status_code = 429
         retry_after = "5"
-    elif "validationException" in error_message and "Input is too long" in error_message:
+    elif "validationException" in error_message and "Input is too long" in error_message or "prompt is too long" in error_message:
         error_type = ERROR_VALIDATION
         detail = "Selected content is too large for the model. Please reduce the number of files."
         status_code = 413

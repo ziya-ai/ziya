@@ -1126,7 +1126,7 @@ class StreamingToolExecutor:
                         is_read_timeout = ("Read timed out" in error_str or
                                           "ReadTimeoutError" in error_str or
                                           "timeout" in error_str.lower())
-                        is_context_limit = "Input is too long" in error_str or "too large" in error_str
+                        is_context_limit = "Input is too long" in error_str or "too large" in error_str or "prompt is too long" in error_str
                         
                         # On context limit error, enable extended context and retry
                         if is_context_limit and not using_extended_context and self.model_config:

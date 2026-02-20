@@ -422,7 +422,7 @@ class ErrorHandlingMiddleware:
                 return
             
             # Handle validation exceptions
-            if "validationException" in error_message and "Input is too long" in error_message:
+            if "validationException" in error_message and ("Input is too long" in error_message or "prompt is too long" in error_message):
                 logger.info("Detected validation error in middleware - formatting as SSE")
                 
                 if is_streaming_request:
@@ -469,7 +469,7 @@ class ErrorHandlingMiddleware:
                 return
             
             # Handle other validation errors that might not match the specific pattern
-            if "validation" in error_message.lower() and ("too large" in error_message.lower() or "input is too long" in error_message.lower()):
+            if "validation" in error_message.lower() and ("too large" in error_message.lower() or "input is too long" in error_message.lower() or "prompt is too long" in error_message.lower()):
                 logger.info("Detected generic validation error in middleware - formatting as SSE")
                 error_type = "validation_error"
                 detail = "Selected content is too large for the model. Please reduce the number of files."
