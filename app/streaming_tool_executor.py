@@ -794,6 +794,7 @@ class StreamingToolExecutor:
         
         for iteration in range(100):  # Increased limit to support complex multi-step tasks
             logger.debug(f"🔍 ITERATION_START: Beginning iteration {iteration}")
+            hallucination_this_iteration = False
             
             # Suppress verbose iteration logs in chat mode
             chat_mode = os.environ.get('ZIYA_MODE', 'server') == 'chat'
@@ -1175,7 +1176,8 @@ class StreamingToolExecutor:
                 # Timeout protection - use configured timeout from shell config
                 last_activity_time = time.time()
                 from app.config.shell_config import DEFAULT_SHELL_CONFIG
-                chunk_timeout = int(os.environ.get('COMMAND_TIMEOUT', DEFAULT_SHELL_CONFIG["timeout"]))
+                # Stream stall timeout: if no chunk arrives in this many seconds, break out
+                chunk_timeout = int(os.environ.get('STREAM_STALL_TIMEOUT', '120'))  # 2 minutes
 
                 # Initialize content buffer and visualization detector
                 content_buffer = ""
@@ -1192,10 +1194,32 @@ class StreamingToolExecutor:
                 # Track event count for debugging
                 event_count = 0
                 
-                for event in response['body']:
-                    event_count += 1
+                # CRITICAL: Run synchronous boto3 stream iteration in a thread
+                # to avoid blocking the event loop (which would freeze the entire server)
+                stream_body = response['body']
+                
+                def _next_event(iterator):
+                    """Get next event from boto3 stream iterator (runs in thread)."""
+                    try:
+                        return next(iterator)
+                    except StopIteration:
+                        return None
+                
+                stream_iter = iter(stream_body)
+                while True:
+                    try:
+                        event = await asyncio.wait_for(asyncio.to_thread(_next_event, stream_iter), timeout=chunk_timeout)
+                    except asyncio.TimeoutError:
+                        logger.error(f"⏰ STREAM_STALL: No data received for {chunk_timeout}s, breaking out of stream")
+                        yield {'type': 'text', 'content': '\n\n⚠️ *Stream stalled — no data received. Response may be incomplete.*\n\n'}
+                        break
                     
-                    # Decode chunk once for all processing
+                    if event is None:
+                        break  # Stream exhausted (StopIteration)
+
+                    event_count += 1
+                    last_activity_time = time.time()
+
                     if 'chunk' not in event:
                         continue
                     
@@ -1251,11 +1275,6 @@ class StreamingToolExecutor:
                                     logger.info(f"📊 ESTIMATE: Loaded calibrator for accuracy check")
                                 except (ImportError, FileNotFoundError, PermissionError) as e:
                                     logger.warning(f"📊 CALIBRATION_UNAVAILABLE: {type(e).__name__}: {e}")
-                                    calibrator = None
-                                    has_calibration = False
-                                except Exception as e:
-                                    # Log unexpected errors but don't break the flow
-                                    logger.error(f"📊 CALIBRATION_ERROR: Unexpected error loading calibrator: {e}")
                                     calibrator = None
                                     has_calibration = False
                                 except Exception as e:
@@ -1558,6 +1577,41 @@ class StreamingToolExecutor:
                                         continue
                             
                             assistant_text += text
+                            
+                            # HALLUCINATION DETECTION (backend defense-in-depth)
+                            # If the model is generating text that looks like a tool
+                            # security block or fake tool output, stop streaming the
+                            # contaminated text to the frontend immediately.
+                            import re as _re
+                            _BACKEND_HALLUCINATION_PATTERNS = [
+                                _re.compile(r'SECURITY BLOCK:.{0,200}not allowed', _re.DOTALL),
+                                _re.compile(r'Allowed commands:\s*awk'),
+                                _re.compile(r'```+tool:mcp_'),
+                            ]
+                            # Check the trailing window of assistant_text (last 500 chars)
+                            _tail = assistant_text[-500:] if len(assistant_text) > 500 else assistant_text
+                            _hallucination_match = next(
+                                (p for p in _BACKEND_HALLUCINATION_PATTERNS if p.search(_tail)), None
+                            )
+                            if _hallucination_match:
+                                logger.warning(
+                                    f"🚨 HALLUCINATION_BACKEND: Model generating fake tool output! "
+                                    f"Pattern: {_hallucination_match.pattern}, will retry"
+                                )
+                                # Strip contaminated tail from assistant_text
+                                _last_para = assistant_text.rfind('\n\n')
+                                if _last_para > 0:
+                                    _tail_section = assistant_text[_last_para:]
+                                    if _re.search(r'(\$ |ERROR:|SECURITY BLOCK|Allowed commands:|```+tool:)', _tail_section):
+                                        assistant_text = assistant_text[:_last_para].rstrip()
+                                
+                                hallucination_this_iteration = True
+                                _snippet = _tail[-300:] if len(_tail) > 300 else _tail
+                                yield track_yield({
+                                    'type': 'text',
+                                    'content': f'\n\n<details><summary>⚠️ Model attempted to fabricate tool output (auto-retrying)</summary>\n\n```\n{_snippet}\n```\n\n</details>\n\n'
+                                })
+                                break  # Exit stream chunk loop; outer loop will retry
                             
                             # Check for fake tool calls in the text and intercept them
                             # DISABLED: This was causing premature execution of incomplete commands
@@ -1874,8 +1928,6 @@ Retry with the 'command' parameter included."""
                                     completed_tools.add(tool_id)
                                     tools_executed_this_iteration = True  # Continue iteration so model sees error and can retry
                                     continue
-                                    tools_executed_this_iteration = True  # Continue iteration so model sees error and can retry
-                                    continue
                                 
                                 # Update the corresponding entry in all_tool_calls with parsed arguments
                                 for tool_call in all_tool_calls:
@@ -1984,6 +2036,9 @@ Retry with the 'command' parameter included."""
                                
                                 # Execute the tool immediately
                                 try:
+                                   # Timeout for tool execution to prevent server hangs
+                                   TOOL_EXEC_TIMEOUT = int(os.environ.get('TOOL_EXEC_TIMEOUT', '300'))  # 5 min default
+
                                    # Import signing and verification functions
                                    from app.mcp.signing import verify_tool_result, strip_signature_metadata, sign_tool_result
                                    
@@ -2007,7 +2062,8 @@ Retry with the 'command' parameter included."""
                                         # Inject project path for workspace-scoped routing
                                         if project_root:
                                             args['_workspace_path'] = project_root
-                                        result = builtin_tool._run(**args)
+                                        # CRITICAL: Run sync tool in thread to avoid blocking the event loop
+                                        result = await asyncio.wait_for(asyncio.to_thread(builtin_tool._run, **args), timeout=TOOL_EXEC_TIMEOUT)
                                         
                                         # SECURITY: Sign builtin tool results too
                                         # Builtin tools don't go through MCPClient so we sign here
@@ -2041,7 +2097,8 @@ Retry with the 'command' parameter included."""
                                         if project_root:
                                             args['_workspace_path'] = project_root
                                         # External tools get signed in MCPClient.call_tool automatically
-                                        result = await mcp_manager.call_tool(actual_tool_name, args, server_name=target_server_name)
+                                        # Wrap in timeout to prevent indefinite hangs from crashed MCP servers
+                                        result = await asyncio.wait_for(mcp_manager.call_tool(actual_tool_name, args, server_name=target_server_name), timeout=TOOL_EXEC_TIMEOUT)
                                     
                                    # Initialize verification tracking variables
                                    is_verified = False
@@ -2166,6 +2223,15 @@ Please try again or proceed without this tool."""
                                     
                                 except Exception as e:
                                     error_msg = f"Tool error: {str(e)}"
+                                    # Distinguish timeout from other errors for better UX
+                                    if isinstance(e, asyncio.TimeoutError):
+                                        error_msg = f"Tool '{actual_tool_name}' timed out after {TOOL_EXEC_TIMEOUT}s. The tool may be unresponsive."
+                                        logger.error(f"⏰ TOOL_TIMEOUT: {actual_tool_name} exceeded {TOOL_EXEC_TIMEOUT}s")
+                                    elif isinstance(e, Exception) and 'cannot schedule new futures after shutdown' in str(e):
+                                        error_msg = f"Tool execution interrupted (server shutting down)"
+                                    else:
+                                        error_msg = f"Tool error: {str(e)}"
+
                                     logger.error(f"🔍 TOOL_EXECUTION_ERROR: {error_msg}")
                                     tool_results.append({
                                         'tool_id': tool_id,
@@ -2496,6 +2562,28 @@ Please retry the tool call with valid JSON. Ensure:
 
                 # Skip duplicate execution - tools are already executed in content_block_stop
                 # This section was causing duplicate tool execution
+
+                # Handle hallucination recovery — retry with corrective feedback
+                if hallucination_this_iteration:
+                    hallucination_retries += 1
+                    if hallucination_retries >= 3:
+                        logger.error("🚨 HALLUCINATION: Max retries reached, ending stream")
+                        yield track_yield({
+                            'type': 'text',
+                            'content': '\n\n⚠️ Model repeatedly fabricated tool output after 3 attempts. Ending response.\n\n'
+                        })
+                        yield {'type': 'stream_end'}
+                        break
+                    conversation.append({
+                        "role": "user",
+                        "content": "STOP. You just tried to fabricate tool output in your text instead of using the tool calling API. "
+                                   "Do NOT generate fake tool results, shell prompts, or simulated command output. "
+                                   "If you need to run a command, use the run_shell_command tool properly. "
+                                   "Continue your response normally without fabricating any tool output."
+                    })
+                    logger.info(f"🔄 HALLUCINATION_RETRY: Attempt {hallucination_retries}/3, added corrective message")
+                    yield {'type': 'iteration_continue', 'iteration': iteration + 1}
+                    continue
 
                 # Continue to next iteration if tools were executed
                 if tools_executed_this_iteration:
@@ -3026,7 +3114,10 @@ Please retry the tool call with valid JSON. Ensure:
                     tracker['accumulated_content'] = line + '\n'
                     logger.debug(f"🔍 TRACKER: Opened {lang_or_type} block ({backtick_count} backticks)")
                 elif tracker['in_block']:
-                    # No language specifier and we're in a block - this is a closing fence
+                    # No language specifier and we're in a block - closing fence candidate.
+                    # CommonMark: closing fence must have >= opening backtick count.
+                    if backtick_count < tracker.get('backtick_count', 3):
+                        continue  # Not enough backticks to close this block
                     tracker['in_block'] = False
                     tracker['block_type'] = None
                     tracker['backtick_count'] = 0
@@ -3048,11 +3139,13 @@ Please retry the tool call with valid JSON. Ensure:
         """Continue an incomplete code block by making a new API call."""
         try:
             block_type = code_block_tracker['block_type']
+            fence_width = code_block_tracker.get('backtick_count', 3)
+            closing_fence = '`' * fence_width
             # Preserve diff context in continuation prompt
             if block_type == 'diff':
-                continuation_prompt = f"Continue the incomplete diff block from where it left off. Maintain all + and - line prefixes. Output ONLY the continuation of the diff content, preserving the exact diff format."
+                continuation_prompt = f"Continue the incomplete diff block from where it left off. Maintain all + and - line prefixes. Output ONLY the continuation of the diff content, preserving the exact diff format. Close with {closing_fence}"
             else:
-                continuation_prompt = f"Continue the incomplete {block_type} code block from where it left off and close it with ```. Output ONLY the continuation of the code block, no explanations."
+                continuation_prompt = f"Continue the incomplete {block_type} code block from where it left off and close it with {closing_fence}. Output ONLY the continuation of the code block, no explanations."
             
             continuation_conversation = conversation.copy()
             
