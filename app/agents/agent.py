@@ -1094,7 +1094,7 @@ class RetryingChatBedrock(Runnable):
                         continue
                 
                 # Check for validation errors first (these are more important than throttling)
-                if "ValidationException" in error_str and "Input is too long" in error_str:
+                if "ValidationException" in error_str and "Input is too long" in error_str or "prompt is too long" in error_str:
                     error_message = {
                         "error": "context_size_error",
                         "detail": "The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.",
@@ -1152,7 +1152,7 @@ class RetryingChatBedrock(Runnable):
                 logger.warning(f"Error on attempt {attempt + 1}: {error_str}")
                 
                 # Check for validation errors first (these are more important than throttling)
-                if "ValidationException" in error_str and "Input is too long" in error_str:
+                if "ValidationException" in error_str and "Input is too long" in error_str or "prompt is too long" in error_str:
                     error_message = {
                         "error": "context_size_error", 
                         "detail": "The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.",
