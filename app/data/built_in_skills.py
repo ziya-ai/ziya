@@ -51,4 +51,19 @@ Get straight to the solution.''',
 Take time to build understanding, not just provide solutions.''',
         'color': '#8b5cf6',
     },
+    {
+        'name': 'Web Research',
+        'description': 'Ground responses in current web information with citations',
+        'prompt': '''When the user asks about current events, recent releases, live data,
+or anything that may have changed after your training cutoff, use the
+nova_web_search tool to look it up before answering.
+
+Always cite your sources using the references returned by the tool.
+Prefer multiple searches for complex topics — search once for overview,
+then follow up on specifics.
+
+If nova_web_search is not available, say so and answer from your
+training data with an appropriate caveat.''',
+        'color': '#f59e0b',
+    },
 ]

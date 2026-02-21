@@ -5,7 +5,7 @@ These define the contracts that plugin providers must implement.
 """
 
 from abc import ABC, abstractmethod
-from typing import Tuple, Optional, Any, Dict, List
+from typing import Tuple, Optional, Any, Dict, List, Set
 from dataclasses import dataclass, field
 from datetime import timedelta
 
@@ -74,6 +74,16 @@ class ConfigProvider(ABC):
     def should_apply(self) -> bool:
         """Return True if this config should be applied."""
         return True
+
+    def get_allowed_endpoints(self) -> Optional[List[str]]:
+        """
+        Return the list of permitted endpoints for this deployment.
+
+        Return None (default) to allow all endpoints.
+        Return ['bedrock'] to restrict to Bedrock only.
+        When multiple providers declare restrictions, the intersection is used.
+        """
+        return None
 
 
 class FormatterProvider(ABC):
@@ -184,4 +194,46 @@ class DataRetentionProvider(ABC):
 
     def should_apply(self) -> bool:
         """Return True if this retention policy should be applied."""
+        return True
+
+
+class ServiceModelProvider(ABC):
+    """
+    Service model provider interface.
+
+    Plugins implement this to configure small specialized models that
+    augment the primary model with specific capabilities (web search,
+    code execution, knowledge base retrieval, etc.).
+
+    The canonical example is Nova Web Grounding: a lightweight Nova
+    model that performs web searches and returns cited results, exposed
+    as a tool that the primary model can call.
+
+    Providers can enable builtin tool categories by default and supply
+    custom configuration for the underlying service models.
+    """
+
+    provider_id: str = "default"
+    priority: int = 0
+
+    @abstractmethod
+    def get_enabled_service_tools(self) -> Set[str]:
+        """
+        Return builtin tool category names that should be enabled.
+
+        Example: {'nova_grounding'} to auto-enable web search.
+        """
+        pass
+
+    def get_service_model_config(self) -> Dict[str, Any]:
+        """
+        Return configuration overrides for service models.
+
+        Keys are category names, values are config dicts.  For example:
+            {'nova_grounding': {'model': 'nova-premier', 'region': 'us-west-2'}}
+        """
+        return {}
+
+    def should_apply(self) -> bool:
+        """Return True if this provider should be applied."""
         return True
