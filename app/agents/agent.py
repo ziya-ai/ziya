@@ -1644,7 +1644,15 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
     except ImportError:
         user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
     for file_path in files:
-        full_path = os.path.join(user_codebase_dir, file_path)
+        # External paths are prefixed with '[external]' by the frontend tree.
+        # Strip the prefix and restore the leading slash to get the real path.
+        if str(file_path).startswith('[external]'):
+            real_path = str(file_path)[len('[external]'):]
+            if real_path and not real_path.startswith('/'):
+                real_path = '/' + real_path
+            full_path = real_path
+        else:
+            full_path = os.path.join(user_codebase_dir, file_path)
         
         # Check if this is an MCP server file that shouldn't be in the codebase
         if 'mcp_servers' in file_path:

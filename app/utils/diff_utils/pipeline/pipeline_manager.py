@@ -140,11 +140,14 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
     if not file_path:
         for line in git_diff.splitlines():
             if line.startswith('+++ b/'):
-                file_path = os.path.join(user_codebase_dir, line[6:])
+                raw = line[6:]
+                candidate = raw if raw.startswith('/') else '/' + raw
+                file_path = candidate if os.path.exists(candidate) else os.path.join(user_codebase_dir, raw)
                 break
             elif line.startswith('diff --git'):
                 _, _, path = line.partition(' b/')
-                file_path = os.path.join(user_codebase_dir, path)
+                candidate = path if path.startswith('/') else '/' + path
+                file_path = candidate if os.path.exists(candidate) else os.path.join(user_codebase_dir, path)
                 pipeline.file_path = file_path
                 pipeline.result.file_path = file_path
                 break
