@@ -28,6 +28,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [isSendingFeedback, setIsSendingFeedback] = useState(false);
   const [currentToolId, setCurrentToolId] = useState<string | null>(null);
+  const [feedbackStatus, setFeedbackStatus] = useState<'idle' | 'pending' | 'queued' | 'delivered'>('idle');
   const [throttlingError, setThrottlingError] = useState<any>(null);
   const [showContinueButton, setShowContinueButton] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -107,6 +108,47 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     return () => document.removeEventListener('feedbackReady', handleFeedbackReady as EventListener);
   }, [currentConversationId]);
   
+  // Listen for feedback delivery confirmation (SSE event from backend)
+  useEffect(() => {
+    const handleDelivered = (event: CustomEvent) => {
+      if (event.detail?.conversationId === currentConversationId) {
+        console.log('📝 FEEDBACK: Delivery confirmed via SSE:', event.detail.message);
+        setFeedbackStatus('delivered');
+        // Auto-clear after 4s
+        setTimeout(() => setFeedbackStatus('idle'), 4000);
+      }
+    };
+    document.addEventListener('feedbackDelivered', handleDelivered as EventListener);
+    return () => document.removeEventListener('feedbackDelivered', handleDelivered as EventListener);
+  }, [currentConversationId]);
+
+  // Listen for WebSocket-level acknowledgment (feedback reached server queue)
+  useEffect(() => {
+    const feedbackWs = (window as any).feedbackWebSocket;
+    if (!feedbackWs?.ws) return;
+
+    const wsHandler = (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'feedback_status' && data.status === 'delivered') {
+          console.log('📝 FEEDBACK: WebSocket ack received:', data.message);
+          // Upgrade from queued → delivered (monitor captured it)
+          setFeedbackStatus('delivered');
+          setTimeout(() => setFeedbackStatus('idle'), 4000);
+        }
+      } catch { /* ignore non-JSON */ }
+    };
+
+    const ws = feedbackWs.ws as WebSocket;
+    ws.addEventListener('message', wsHandler);
+    return () => ws.removeEventListener('message', wsHandler);
+  }, [isCurrentlyStreaming, currentConversationId]);
+
+  // Reset feedback status when streaming ends
+  useEffect(() => {
+    if (!isCurrentlyStreaming) setFeedbackStatus('idle');
+  }, [isCurrentlyStreaming]);
+
   // Listen for throttling errors from chatApi
   useEffect(() => {
     const handleThrottlingError = (event: CustomEvent) => {
@@ -377,24 +419,23 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       };
       addMessageToConversation(feedbackMessage, currentConversationId);
       
+      setFeedbackStatus('pending');
       // Use the global WebSocket if available
       const feedbackWebSocket = (window as any).feedbackWebSocket;
       if (feedbackWebSocket && (window as any).feedbackWebSocketReady) {
         const toolId = currentToolId || 'streaming_tool';
         feedbackWebSocket.sendFeedback(toolId, feedbackText);
         console.log('🔄 FEEDBACK:', feedbackText);
+        setFeedbackStatus('queued');
         
         // Clear the input
         if (editorRef.current) editorRef.current.innerHTML = '';
         setInputValue('');
         draftsRef.current.delete(currentConversationId);
         
-        message.success({
+        message.info({
           content: (
-            <span>
-              ✅ Feedback queued
-              <br /><span style={{ fontSize: '12px', opacity: 0.8 }}>The model will incorporate this at the next opportunity</span>
-            </span>
+            <span>📤 Feedback sent — waiting for delivery confirmation…</span>
           ),
           duration: 2,
           key: 'feedback-sent'
@@ -696,6 +737,28 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
             )}
           </div>
           
+          {/* Feedback delivery status indicator */}
+          {feedbackStatus !== 'idle' && (
+            <div style={{
+              fontSize: '12px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              color: feedbackStatus === 'delivered'
+                ? (isDarkMode ? '#95de64' : '#52c41a')
+                : (isDarkMode ? '#faad14' : '#d48806'),
+              transition: 'opacity 0.3s',
+              opacity: feedbackStatus === 'idle' ? 0 : 1,
+            }}>
+              <span style={{
+                display: 'inline-block',
+                animation: feedbackStatus !== 'delivered' ? 'pulse 1.2s ease-in-out infinite' : 'none',
+              }}>
+                {feedbackStatus === 'pending' ? '⏳ Sending…' : feedbackStatus === 'queued' ? '📤 Queued — awaiting model…' : '✅ Delivered to model'}
+              </span>
+            </div>
+          )}
+
           {/* Feedback button when streaming with input */}
           {shouldSendAsFeedback ? (
             <Button
