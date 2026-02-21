@@ -48,7 +48,14 @@ def extract_target_file_from_diff(diff_content: str) -> Optional[str]:
     for line in lines:
         # For new files (with standard format)
         if line.startswith('+++ b/'):
-            return line[6:]
+            path = line[6:]
+            # Restore leading slash for absolute paths encoded as '+++ b/Users/...'
+            # This happens when diffing files outside the project root.
+            if path and not path.startswith('/'):
+                candidate = '/' + path
+                if os.path.exists(candidate):
+                    return candidate
+            return path
             
         # For new files (with /dev/null format)
         if line.startswith('+++ ') and not line.startswith('+++ b/') and not line.startswith('+++ /dev/null'):
@@ -63,7 +70,12 @@ def extract_target_file_from_diff(diff_content: str) -> Optional[str]:
         if line.startswith('diff --git'):
             parts = line.split(' b/', 1)
             if len(parts) > 1:
-                return parts[1]
+                path = parts[1]
+                if path and not path.startswith('/'):
+                    candidate = '/' + path
+                    if os.path.exists(candidate):
+                        return candidate
+                return path
                 
     return None
 

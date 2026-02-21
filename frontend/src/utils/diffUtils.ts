@@ -28,26 +28,33 @@ export function extractAllFilesFromDiff(diffContent: string): string[] {
     }
 
     for (const line of lines) {
-        // Helper to check if a path is the special /dev/null sentinel (with or without leading slash)
         const isDevNull = (p: string) => p === '/dev/null' || p === 'dev/null';
-        // Extract from git diff headers
+
+        // git diff strips the leading slash from absolute paths into the a/b/ prefix.
+        // e.g. a file at /Users/foo/bar.py becomes '+++ b/Users/foo/bar.py' in the diff.
+        // Detect and restore the leading slash for common absolute path roots.
+        const restoreLeadingSlash = (p: string): string => {
+            if (p.startsWith('/')) return p;
+            const absoluteRoots = ['Users/', 'home/', 'opt/', 'var/', 'usr/', 'tmp/', 'etc/', 'srv/', 'private/'];
+            return absoluteRoots.some(r => p.startsWith(r)) ? '/' + p : p;
+        };
+
         const gitMatch = line.match(/^diff --git (?:a\/)?([^\s]+) (?:b\/)?([^\s]+)$/);
         if (gitMatch) {
-            const oldPath = gitMatch[1];
-            const newPath = gitMatch[2];
+            const oldPath = restoreLeadingSlash(gitMatch[1]);
+            const newPath = restoreLeadingSlash(gitMatch[2]);
             if (!isDevNull(newPath)) files.push(newPath);
             if (!isDevNull(oldPath) && oldPath !== newPath) files.push(oldPath);
         }
 
-        // Extract from unified diff headers as backup
         const minusMatch = line.match(/^--- a\/(.+)$/);
         if (minusMatch && !isDevNull(minusMatch[1])) {
-            files.push(minusMatch[1]);
+            files.push(restoreLeadingSlash(minusMatch[1]));
         }
 
         const plusMatch = line.match(/^\+\+\+ b\/(.+)$/);
         if (plusMatch && !isDevNull(plusMatch[1])) {
-            files.push(plusMatch[1]);
+            files.push(restoreLeadingSlash(plusMatch[1]));
         }
     }
 
