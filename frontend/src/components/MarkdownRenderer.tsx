@@ -3101,7 +3101,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, inde
     return (
         <div id={`diff-view-wrapper-${stableElementIdRef.current}`}
             className={superseded ? 'diff-superseded' : ''}
-            style={superseded ? { opacity: 0.45, pointerEvents: 'none', position: 'relative' } : undefined}
+            style={superseded ? { opacity: 0.45, position: 'relative' } : undefined}
         >
             {superseded && (
                 <div style={{
@@ -3125,10 +3125,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, inde
                 ref={containerRef}
                 className="diff-container"
                 id={`diff-view-wrapper-${stableElementIdRef.current}`}
-                style={{
-                    // overflowX: viewType === 'split' ? 'auto' : 'hidden',
-                    /*                    maxWidth: '100%'     */
-                }}>
+                style={superseded ? { pointerEvents: 'none' } : {}}>
                 {(displayMode as DisplayMode) === 'raw' ? (
                     <pre className="diff-raw-block" style={{
                         padding: '16px',
@@ -4501,7 +4498,7 @@ const renderMultiFileDiff = (token: TokenWithText, index: number, enableCodeAppl
     // Render each file diff as a complete component with its own controls
     return (
         <div key={index} className={`multi-file-diff${superseded ? ' diff-superseded' : ''}`}
-            style={superseded ? { opacity: 0.45, pointerEvents: 'none', position: 'relative' } : undefined}
+            style={superseded ? { opacity: 0.45, position: 'relative' } : undefined}
         >
             {superseded && (
                 <div style={{
