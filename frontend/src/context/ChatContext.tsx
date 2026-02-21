@@ -1,4 +1,4 @@
-import React, { createContext, ReactNode, useContext, useState, useEffect, Dispatch, SetStateAction, useRef, useCallback, useMemo, useLayoutEffect } from 'react';
+import React, { createContext, ReactNode, useContext, useState, useEffect, Dispatch, SetStateAction, useRef, useCallback, useMemo } from 'react';
 import { Conversation, Message, ConversationFolder } from "../utils/types";
 import { v4 as uuidv4 } from "uuid";
 import { db } from '../utils/db';
@@ -858,7 +858,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             return updatedConversations;
         });
-    }, [currentConversationId, currentFolderId, dynamicTitleLength, queueSave]);
+    }, [currentConversationId, currentFolderId, dynamicTitleLength, queueSave, currentProject?.id]);
 
     // Add a function to handle model change notifications
     const handleModelChange = useCallback((event: CustomEvent) => {
@@ -925,7 +925,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // Mark this change as processed
             processedModelChanges.current.add(changeKey);
         }
-    }, [currentConversationId, conversations]);
+    }, [currentConversationId]);
+
+    // Refs to break forward-reference TDZ: startNewChat calls attemptDatabaseRecovery
+    // and initializeWithRecovery, which are declared later in the file. Accessing a
+    // const before its declaration crashes with "Cannot access before initialization".
+    const attemptDatabaseRecoveryRef = useRef<() => Promise<void>>(() => Promise.resolve());
+    const initializeWithRecoveryRef = useRef<() => Promise<void>>(() => Promise.resolve());
 
     const startNewChat = useCallback(async (specificFolderId?: string | null) => {
         // Only attempt recovery if not in cooldown period
@@ -945,7 +951,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         try {
             if (!shouldSkipRecovery) {
                 await Promise.race([
-                    attemptDatabaseRecovery(),
+                    attemptDatabaseRecoveryRef.current(),
                     new Promise((_, rej) => setTimeout(() => rej(new Error('Recovery timeout')), 5000))
                 ]);
             }
@@ -957,7 +963,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             console.warn('⚠️ NEW CHAT: Context not initialized, attempting initialization...');
             try {
                 await Promise.race([
-                    initializeWithRecovery(),
+                    initializeWithRecoveryRef.current(),
                     new Promise((_, rej) => setTimeout(() => rej(new Error('Init timeout')), 5000))
                 ]);
                 // Give initialization a moment to complete
@@ -1036,8 +1042,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         } catch (error) {
             console.error('Failed to create new conversation:', error);
         }
-    }, [isInitialized, currentConversationId, currentFolderId, conversations, queueSave]);
-
+    }, [isInitialized, currentConversationId, currentFolderId, conversations, queueSave, currentProject?.id]);
     // Recovery function to fix database sync issues
     const attemptDatabaseRecovery = useCallback(async () => {
         // Circuit breaker: Stop recovery if too many consecutive attempts
@@ -1152,6 +1157,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
             recoveryInProgress.current = false;
         }
     }, [conversations, mergeConversationsForHealing]);
+
+    // Sync ref after attemptDatabaseRecovery is initialized (avoids TDZ in startNewChat)
+    attemptDatabaseRecoveryRef.current = attemptDatabaseRecovery;
 
     const loadConversation = useCallback(async (conversationId: string) => {
         setIsLoadingConversation(true);
@@ -1297,7 +1305,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             console.error('Error loading conversation and scrolling to message:', error);
             throw error;
         }
-    }, [loadConversation, isTopToBottom]);
+    }, [loadConversation, isDarkMode]);
 
     // frontend/src/context/ChatContext.tsx
     // Folder management functions
@@ -1550,9 +1558,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
         } finally {
             isRecovering.current = false;
         }
-    }, [currentConversationId]);
+    }, [currentConversationId, isEphemeralMode]);
 
-
+    // Sync ref after initializeWithRecovery is initialized (avoids TDZ in startNewChat)
+    initializeWithRecoveryRef.current = initializeWithRecovery;
 
     useEffect(() => {
         // Warn user before leaving if a response is still streaming.
@@ -2184,11 +2193,19 @@ export function ChatProvider({ children }: ChatProviderProps) {
             queueSave(updated, { changedIds: [conversationId] }).catch(console.error);
             return updated;
         });
-    }, [currentProject?.id, queueSave, conversations, folders, updateFolder]);
-
+    }, [currentProject?.id, queueSave]);
     const moveConversationToProject = useCallback(async (conversationId: string, targetProjectId: string) => {
         const sourceProjectId = currentProject?.id;
+
+        // Capture the conversation data from the updater's `prev` (guaranteed
+        // fresh) instead of the stale `conversations` closure.  The closure
+        // value may be outdated because `conversations` is NOT (and should not
+        // be) in the dependency array — it changes every render.
+        let capturedConv: Conversation | undefined;
+
         setConversations(prev => {
+            capturedConv = prev.find(c => c.id === conversationId);
+
             const updated = prev.map(conv => {
                 if (conv.id === conversationId) {
                     return {
@@ -2202,49 +2219,54 @@ export function ChatProvider({ children }: ChatProviderProps) {
             });
             queueSave(updated, { changedIds: [conversationId] }).catch(console.error);
 
-            // If moved away from current project, remove from visible list immediately
+            // Remove from the visible list when moved to a different project
             if (targetProjectId !== sourceProjectId) {
-                return updated.filter(c => c.id !== conversationId || c.projectId === sourceProjectId || c.isGlobal);
+                return updated.filter(c => c.id !== conversationId);
             }
             return updated;
         });
 
+        // If the moved conversation was the active one, switch away so the
+        // user isn't left with a stale currentConversationId pointing at a
+        // conversation that no longer exists in this project's visible list.
+        if (currentConversationId === conversationId && targetProjectId !== sourceProjectId) {
+            startNewChat();
+        }
+
         // Server-side move: push to target first, THEN delete from source.
         // This ordering ensures the conversation exists on the target before
         // we remove it from the source, preventing data loss on partial failure.
-        if (sourceProjectId && sourceProjectId !== targetProjectId) {
-            const movedConv = conversations.find(c => c.id === conversationId);
-            if (movedConv) {
-                const serverChat = syncApi.conversationToServerChat(
-                    { ...movedConv, projectId: targetProjectId, _version: Date.now() },
-                    targetProjectId
+        if (sourceProjectId && sourceProjectId !== targetProjectId && capturedConv) {
+            const serverChat = syncApi.conversationToServerChat(
+                { ...capturedConv, projectId: targetProjectId, isGlobal: false, _version: Date.now() },
+                targetProjectId
+            );
+            try {
+                // 1. Push to target project on server
+                await syncApi.bulkSync(targetProjectId, [serverChat]);
+                console.log(`📡 Move: pushed conversation to target project ${targetProjectId}`);
+
+                // 2. Delete from source project on server (best-effort, ignore 404)
+                const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+                const projectPath = (window as any).__ZIYA_CURRENT_PROJECT_PATH__;
+                if (projectPath) headers['X-Project-Root'] = projectPath;
+
+                const deleteRes = await fetch(
+                    `/api/v1/projects/${sourceProjectId}/chats/${conversationId}`,
+                    { method: 'DELETE', headers }
                 );
-                try {
-                    // 1. Push to target project on server
-                    await syncApi.bulkSync(targetProjectId, [serverChat]);
-                    console.log(`📡 Move: pushed conversation to target project ${targetProjectId}`);
-
-                    // 2. Delete from source project on server (best-effort, ignore 404)
-                    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-                    const projectPath = (window as any).__ZIYA_CURRENT_PROJECT_PATH__;
-                    if (projectPath) headers['X-Project-Root'] = projectPath;
-
-                    const deleteRes = await fetch(
-                        `/api/v1/projects/${sourceProjectId}/chats/${conversationId}`,
-                        { method: 'DELETE', headers }
-                    );
-                    if (deleteRes.ok) {
-                        console.log(`📡 Move: deleted conversation from source project ${sourceProjectId}`);
-                    } else {
-                        // 404 is expected if the chat was never synced to the source server
-                        console.log(`📡 Move: source delete returned ${deleteRes.status} (non-fatal)`);
-                    }
-                } catch (e) {
-                    console.warn('📡 Move: server-side move failed (non-fatal):', e);
+                if (deleteRes.ok) {
+                    console.log(`📡 Move: deleted conversation from source project ${sourceProjectId}`);
+                } else {
+                    console.log(`📡 Move: source delete returned ${deleteRes.status} (non-fatal)`);
                 }
+            } catch (e) {
+                console.warn('📡 Move: server-side move failed (non-fatal):', e);
             }
+        } else if (sourceProjectId && sourceProjectId !== targetProjectId && !capturedConv) {
+            console.error(`📡 Move: conversation ${conversationId} not found in state — server-side move skipped!`);
         }
-    }, [currentProject?.id, queueSave]);
+    }, [currentProject?.id, queueSave, currentConversationId, startNewChat]);
 
     const moveFolderToProject = useCallback(async (folderId: string, targetProjectId: string) => {
         const sourceProjectId = currentProject?.id;
