@@ -5,6 +5,7 @@ This module contains model-specific configuration constants and settings.
 It should be importable without triggering any side effects or initializations.
 """
 import os
+import json
 
 # Model configuration
 DEFAULT_ENDPOINT = "bedrock"
@@ -997,3 +998,78 @@ def get_model_capabilities(endpoint=None, model_name=None):
         "endpoint": endpoint,
         "model_name": model_name
     }
+
+
+# User-defined model allowlist — None means no restriction
+_user_allowed_models = None
+
+
+def get_user_allowed_models():
+    """Return the user's personal model allowlist as a set, or None if unrestricted."""
+    return _user_allowed_models
+
+
+def _load_user_model_config() -> None:
+    """
+    Load user-local model configuration from ~/.ziya/models.json.
+
+    Two independent capabilities:
+
+    1. ALLOWLIST — restrict the model picker to a named subset.
+       Useful for personal AWS accounts where only certain models are
+       enabled or budgeted.  Global model definitions are unchanged;
+       only the visible list is filtered.
+
+           { "allowed_models": ["sonnet4.0", "haiku-4.5", "nova-lite"] }
+
+    2. CUSTOM ENTRIES — add model definitions not in the global config,
+       e.g. custom inference profile ARNs.  Merged on top of global
+       config; existing entries are updated, new ones are added.
+
+           {
+             "bedrock": {
+               "my-profile": {
+                 "model_id": "arn:aws:bedrock:us-east-1:123:inference-profile/...",
+                 "family": "claude",
+                 "max_output_tokens": 64000
+               }
+             }
+           }
+
+    Both sections are optional and independent.
+    """
+    global _user_allowed_models
+
+    config_path = os.path.join(os.path.expanduser("~"), ".ziya", "models.json")
+    if not os.path.exists(config_path):
+        return
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            user_config = json.load(f)
+
+        if "allowed_models" in user_config:
+            _user_allowed_models = set(user_config["allowed_models"])
+
+        for endpoint, models in user_config.items():
+            if endpoint == "allowed_models" or not isinstance(models, dict):
+                continue
+            if endpoint not in MODEL_CONFIGS:
+                MODEL_CONFIGS[endpoint] = {}
+            for model_name, model_cfg in models.items():
+                if model_name in MODEL_CONFIGS[endpoint]:
+                    MODEL_CONFIGS[endpoint][model_name].update(model_cfg)
+                else:
+                    MODEL_CONFIGS[endpoint][model_name] = model_cfg
+
+        import logging
+        logging.getLogger(__name__).info(
+            f"Loaded ~/.ziya/models.json"
+            + (f": allowlist={sorted(_user_allowed_models)}" if _user_allowed_models else "")
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to load ~/.ziya/models.json: {e}")
+
+
+_load_user_model_config()
