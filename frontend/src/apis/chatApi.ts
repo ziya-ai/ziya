@@ -604,6 +604,52 @@ ${errorDetail}
     }
 }
 
+/**
+ * Repair unbalanced code fences in streamed content.
+ * When hallucinated or malformed content introduces orphan fence markers,
+ * this closes any unclosed fences so the saved markdown is valid.
+ */
+function repairUnbalancedFences(content: string): string {
+    const lines = content.split('\n');
+    const fenceStack: string[] = [];
+
+    for (const line of lines) {
+        const trimmed = line.trimStart();
+        const match = trimmed.match(/^(`{3,}|~{3,})(.*?)$/);
+        if (!match) continue;
+
+        const fenceChars = match[1];
+        const rest = match[2].trim();
+        const fenceType = fenceChars[0];
+
+        if (fenceStack.length > 0) {
+            const top = fenceStack[fenceStack.length - 1];
+            // CommonMark closing fence: same char type, >= opening length, no info string
+            if (fenceType === top[0] && fenceChars.length >= top.length && !rest) {
+                fenceStack.pop();
+                continue;
+            }
+        }
+
+        // Only open a new fence when not already inside one
+        // (inside a code block, non-matching fences are literal text)
+        if (fenceStack.length === 0) {
+            fenceStack.push(fenceChars);
+        }
+    }
+
+    if (fenceStack.length > 0) {
+        console.warn(`🔧 FENCE_REPAIR: Auto-closing ${fenceStack.length} unclosed fence(s)`);
+        let repaired = content;
+        while (fenceStack.length > 0) {
+            const unclosed = fenceStack.pop()!;
+            repaired += '\n' + unclosed + '\n';
+        }
+        return repaired;
+    }
+    return content;
+}
+
 export const sendPayload = async (
     messages: Message[],
     question: string,
@@ -669,9 +715,6 @@ export const sendPayload = async (
 
     let isAborted = false;
 
-    // Remove any existing listeners for this conversation ID to prevent duplicates
-    document.removeEventListener('abortStream', window[`abortListener_${conversationId}`]);
-
     // Set up abort event listener
     const abortListener = (event: CustomEvent) => {
         if (event.detail.conversationId === conversationId) {
@@ -702,7 +745,13 @@ export const sendPayload = async (
             feedbackWebSocket.disconnect();
         }
     };
+
+    // Remove any stale listener from a previous sendPayload call for the same conversation
+    if ((window as any)[`abortListener_${conversationId}`]) {
+        document.removeEventListener('abortStream', (window as any)[`abortListener_${conversationId}`]);
+    }
     document.addEventListener('abortStream', abortListener as EventListener);
+    (window as any)[`abortListener_${conversationId}`] = abortListener;
 
     // CRITICAL FIX: Check if there's already an active stream for this conversation
     if (streamedContentMap.has(conversationId) && streamedContentMap.get(conversationId) !== '') {
@@ -931,25 +980,20 @@ export const sendPayload = async (
                 // JSON parse error, continue processing
             }
 
-            // Check for partial response preservation warnings
-            try {
-                const jsonData = JSON.parse(data);
-                if (jsonData.warning === 'partial_response_preserved') {
-                    console.warn('⚠️ PARTIAL RESPONSE PRESERVED:', jsonData.detail);
-                    console.log('Preserved content:', jsonData.partial_content);
 
-                    // Add the preserved content to current content
-                    if (jsonData.partial_content && !currentContent.includes(jsonData.partial_content)) {
-                        currentContent += jsonData.partial_content;
-                        setStreamedContentMap((prev: Map<string, string>) => {
-                            const next = new Map(prev);
-                            next.set(conversationId, currentContent);
-                            return next;
-                        });
-                    }
+            // Check for partial response preservation warnings
+            if (jsonData && jsonData.warning === 'partial_response_preserved') {
+                console.warn('⚠️ PARTIAL RESPONSE PRESERVED:', jsonData.detail);
+                console.log('Preserved content:', jsonData.partial_content);
+
+                if (jsonData.partial_content && !currentContent.includes(jsonData.partial_content)) {
+                    currentContent += jsonData.partial_content;
+                    setStreamedContentMap((prev: Map<string, string>) => {
+                        const next = new Map(prev);
+                        next.set(conversationId, currentContent);
+                        return next;
+                    });
                 }
-            } catch (e) {
-                // Not a warning JSON, continue processing
             }
 
             // Check for errors using our new function - but be more careful
@@ -1041,6 +1085,7 @@ export const sendPayload = async (
 
                     // Show warning but continue processing
                     showError(`Stream interrupted by ${errorResponse.error} after generating ${Math.round(currentContent.length / 1000)}KB of content. Content preserved.`, conversationId, addMessageToConversation, 'warning');
+                    errorAlreadyDisplayed = true;
                 }
 
                 // CRITICAL: Always use the conversation_id from the original request
@@ -1199,7 +1244,6 @@ export const sendPayload = async (
                 // Handle throttling status messages
                 if (unwrappedData.type === 'throttling_status') {
                     showError(unwrappedData.message, conversationId, addMessageToConversation, 'warning', unwrappedData.type);
-                    showError(unwrappedData.message, conversationId, addMessageToConversation, 'warning');
                     return;
                 }
 
@@ -1474,6 +1518,25 @@ export const sendPayload = async (
                     return;
                 }
 
+                // Handle explicit hallucination signal from backend
+                if (jsonData.type === 'hallucination_detected') {
+                    console.warn('⚠️ HALLUCINATION_BACKEND: Server detected fake tool output:', jsonData.pattern);
+                    // Backend handles retry — just strip contaminated content locally
+                    const lastBreak = currentContent.lastIndexOf('\n\n');
+                    if (lastBreak > 0) {
+                        const tail = currentContent.substring(lastBreak);
+                        if (/(\$ |ERROR:|SECURITY BLOCK|Allowed commands:|📋)/.test(tail)) {
+                            currentContent = currentContent.substring(0, lastBreak).trimEnd();
+                            setStreamedContentMap((prev: Map<string, string>) => {
+                                const next = new Map(prev);
+                                next.set(conversationId, currentContent);
+                                return next;
+                            });
+                        }
+                    }
+                    return; // Backend will retry; stream continues
+                }
+
                 if (jsonData.content) {
                     // Handle any content field - this covers most cases
                     contentToAdd = jsonData.content;
@@ -1490,13 +1553,17 @@ export const sendPayload = async (
                 // it's hallucinating. Detect and abort immediately.
                 // ============================================================
                 if (contentToAdd) {
-                    // Build the candidate content to check (accumulated + new chunk)
-                    const candidateContent = currentContent + contentToAdd;
+                    // Only check the new chunk, not the full accumulation.
+                    // currentContent already contains <!-- TOOL_BLOCK_START: -->
+                    // markers from our own tool_display handler; checking the
+                    // full string false-positives after every tool execution.
+                    const candidateContent = contentToAdd;
 
                     // Patterns that should NEVER appear in the content stream.
                     // These formats are only produced by the frontend when
                     // processing real tool_result/tool_start SSE events.
-                    const HALLUCINATION_PATTERNS = [,                   // Tool fence format (4-backtick)    // Tool fence format (3-backtick)
+                    const HALLUCINATION_PATTERNS = [
+                        /`{3,4}tool:mcp_/,                 // Tool fence format (3 or 4 backtick)
                         /<TOOL_SENTINEL>/,                 // Sentinel markers
                         /<\/TOOL_SENTINEL>/,
                         /<!-- TOOL_BLOCK_START:/,           // Tool block HTML comments
@@ -1505,37 +1572,49 @@ export const sendPayload = async (
                         /<name>mcp_[a-zA-Z]/,              // XML tool call format
                         /<n>mcp_[a-zA-Z]/,
                         /<arguments>\s*\{/,                 // Argument blocks
+                        /SECURITY BLOCK:[\s\S]{0,200}not allowed/,  // Hallucinated shell security output
                     ];
 
                     const matchedPattern = HALLUCINATION_PATTERNS.find(p => p.test(candidateContent));
 
-                    if (matchedPattern && !hallucinationDetected) {
-                        hallucinationDetected = true;
-                        console.error('🚨 HALLUCINATION FAILSAFE: Model is generating fake tool output through content stream!', {
-                            pattern: matchedPattern.toString(),
-                            contentChunkPreview: contentToAdd.substring(0, 200),
-                            accumulatedLength: currentContent.length,
+                    if (matchedPattern) {
+                        if (!hallucinationDetected) {
+                            hallucinationDetected = true;
+                            console.warn('⚠️ HALLUCINATION FAILSAFE: Detected fake tool output in content stream', {
+                                pattern: matchedPattern.toString(),
+                                chunkPreview: contentToAdd.substring(0, 200),
+                            });
+
+                            // Strip contaminated content but DON'T abort — backend handles retry
+                            const lastBreak = currentContent.lastIndexOf('\n\n');
+                            if (lastBreak > 0) {
+                                const tail = currentContent.substring(lastBreak);
+                                if (/(\$ |ERROR:|SECURITY BLOCK|Allowed commands:|📋)/.test(tail)) {
+                                    currentContent = currentContent.substring(0, lastBreak).trimEnd();
+                                }
+                            }
+                        }
+
+                        // Silently drop contaminated chunks (first and subsequent)
+                        setStreamedContentMap((prev: Map<string, string>) => {
+                            const next = new Map(prev);
+                            next.set(conversationId, currentContent);
+                            return next;
                         });
+                        return; // Backend will handle retry
+                    }
 
-                        // Abort the stream - this response is contaminated
-                        abortController.abort();
-
-                        // Strip any hallucinated tool content from what we've accumulated
-                        // Keep everything before the hallucination started
-                        const cleanContent = currentContent;
-
-                        // Show inline error so user knows what happened
-                        const warningMessage = cleanContent
-                            ? cleanContent + '\n\n---\n\n⚠️ **Response interrupted**: The model attempted to fabricate tool output instead of executing actual tools. Please retry your request.'
-                            : '⚠️ **Response interrupted**: The model attempted to fabricate tool output instead of executing actual tools. Please retry your request.';
-
-                        const hallucinationMsg: Message = {
-                            role: 'assistant',
-                            content: warningMessage,
-                            _timestamp: Date.now()
-                        };
-                        addMessageToConversation(hallucinationMsg, conversationId, !isStreamingToCurrentConversation);
-                        removeStreamingConversation(conversationId);
+                    // Handle feedback delivery acknowledgment from backend
+                    if (unwrappedData.type === 'feedback_delivered') {
+                        console.log('📝 FEEDBACK_DELIVERED:', unwrappedData.message);
+                        // Dispatch event so SendChatContainer can update message status
+                        document.dispatchEvent(new CustomEvent('feedbackDelivered', {
+                            detail: {
+                                message: unwrappedData.message,
+                                conversationId,
+                                timestamp: Date.now()
+                            }
+                        }));
                         return;
                     }
 
@@ -2136,7 +2215,11 @@ export const sendPayload = async (
 
                                         // Clean up
                                         setIsStreaming(false);
-                                        setStreamedContentMap((prev: Map<string, string>) => new Map(prev));
+                                        setStreamedContentMap((prev: Map<string, string>) => {
+                                            const next = new Map(prev);
+                                            next.delete(conversationId);
+                                            return next;
+                                        });
                                         break;
                                     }
                                 }
@@ -2320,17 +2403,19 @@ export const sendPayload = async (
                 }
 
                 // Log final streaming metrics
-                console.log('📊 Final streaming metrics:', {
-                    total_chunks: metrics.chunks_received,
-                    total_bytes: metrics.bytes_received,
-                    avg_chunk_size: (metrics.bytes_received / metrics.chunks_received).toFixed(2),
-                    min_chunk: Math.min(...metrics.chunk_sizes),
-                    max_chunk: Math.max(...metrics.chunk_sizes),
-                    chunks_under_10: metrics.chunk_sizes.filter(s => s < 10).length,
-                    duration_ms: Date.now() - metrics.start_time,
-                    content_length: currentContent.length,
-                    content_vs_bytes_ratio: (currentContent.length / metrics.bytes_received * 100).toFixed(1) + '%'
-                });
+                if (metrics.chunks_received > 0) {
+                    console.log('📊 Final streaming metrics:', {
+                        total_chunks: metrics.chunks_received,
+                        total_bytes: metrics.bytes_received,
+                        avg_chunk_size: (metrics.bytes_received / metrics.chunks_received).toFixed(2),
+                        min_chunk: Math.min(...metrics.chunk_sizes),
+                        max_chunk: Math.max(...metrics.chunk_sizes),
+                        chunks_under_10: metrics.chunk_sizes.filter(s => s < 10).length,
+                        duration_ms: Date.now() - metrics.start_time,
+                        content_length: currentContent.length,
+                        content_vs_bytes_ratio: (currentContent.length / metrics.bytes_received * 100).toFixed(1) + '%'
+                    });
+                }
 
                 return !errorOccurred && currentContent ? currentContent : '';
             }
@@ -2411,7 +2496,17 @@ export const sendPayload = async (
                     return currentContent;
                 }
 
-                // Add message to conversation history for context, but keep displaying via StreamedContent
+                // Repair any unclosed code fences before persisting
+                const repairedContent = repairUnbalancedFences(currentContent);
+                if (repairedContent !== currentContent) {
+                    currentContent = repairedContent;
+                    setStreamedContentMap((prev: Map<string, string>) => {
+                        const next = new Map(prev);
+                        next.set(conversationId, currentContent);
+                        return next;
+                    });
+                }
+
                 const aiMessage: Message = {
                     role: 'assistant',
                     content: currentContent,
@@ -2436,7 +2531,6 @@ export const sendPayload = async (
                 console.log('Request was aborted');
                 return 'Response generation stopped by user.';
             }
-            if (error instanceof DOMException && error.name === 'AbortError') return '';
 
             console.error('Stream processing error in readStream catch block:', { error });
             removeStreamingConversation(conversationId);
