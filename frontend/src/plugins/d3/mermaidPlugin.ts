@@ -580,8 +580,14 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
         if (!renderSuccessful) return;
 
         // UNIVERSAL FIX: Apply centralized visibility enhancement with DELAYED execution
-        // CRITICAL: Must run AFTER Mermaid finishes all its CSS styling (500ms ensures this)
-        // This catches journey diagram lines, low-contrast greys, and other visibility issues
+        // SKIP for diagrams that use explicit style statements with color directives
+        // These diagrams have already set proper text colors and the post-processor
+        // incorrectly detects backgrounds, forcing white text on light backgrounds
+        const hasExplicitColors = rawDefinition.includes('style ') && 
+                                   rawDefinition.includes('color:') &&
+                                   (rawDefinition.includes('fill:#') || rawDefinition.includes('fill:rgb'));
+        
+        if (!hasExplicitColors) {
         setTimeout(() => {
             console.log('🎨 DELAYED-VISIBILITY-FIX: Starting universal enhancement');
             const result = enhanceSVGVisibility(svgElement, isDarkMode, { debug: true });
@@ -601,6 +607,9 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             
             console.groupEnd();
         }, 500);
+        } else {
+            console.log('🎨 VISIBILITY-FIX: Skipping post-processing - diagram has explicit color styles');
+        }
 
         // Apply unified responsive scaling for all browsers
         applyUnifiedResponsiveScaling(container, svgElement, isDarkMode);

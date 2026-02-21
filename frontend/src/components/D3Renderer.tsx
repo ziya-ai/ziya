@@ -168,7 +168,19 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     // Size reservation removed - will be handled after plugin loads
 
     // Control when to show raw content vs rendered visualization
+    // CRITICAL: Check global cache FIRST to avoid hiding successfully rendered diagrams
     useEffect(() => {
+        // Check global cache - if this was recently rendered, keep it visible
+        const cacheEntry = globalRenderCache.get(cacheKey);
+        const wasCachedRecently = cacheEntry && (Date.now() - cacheEntry.timestamp) < 5000;
+        
+        if (wasCachedRecently && cacheEntry.rendered) {
+            console.log('🔍 RENDERER: Cache hit - keeping rendered version visible');
+            setShowRawContent(false);
+            hasSuccessfulRenderRef.current = true;
+            return;
+        }
+        
         console.log('🔍 RENDERER: showRawContent effect triggered', {
             hasSuccessfulRender: hasSuccessfulRenderRef.current,
             isMarkdownBlockClosed,
@@ -315,12 +327,19 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
         const cacheEntry = globalRenderCache.get(cacheKey);
         const wasCachedRecently = cacheEntry && (Date.now() - cacheEntry.timestamp) < 5000;
 
-        if (wasCachedRecently && !forceRender && cacheEntry.rendered) {
-            console.log('🔧 D3RENDERER: Skipping - already rendered by another instance within 5s');
-            hasSuccessfulRenderRef.current = true;
-            setIsLoading(false);
-            setShowRawContent(false);  // Critical: hide raw content since we already rendered
-            return;
+        if (wasCachedRecently && !forceRender && cacheEntry?.rendered) {
+            // Check if this container actually has rendered content (not just a cache hit from a previous instance)
+            const containerHasContent = d3ContainerRef.current?.querySelector('svg') !== null ||
+                                        d3ContainerRef.current?.querySelector('.mermaid-wrapper') !== null;
+            if (containerHasContent) {
+                console.log('🔧 D3RENDERER: Skipping - already rendered in THIS instance');
+                hasSuccessfulRenderRef.current = true;
+                setIsLoading(false);
+                setShowRawContent(false);
+                return;
+            }
+            // Cache hit but container is empty (component remounted) - must re-render
+            console.log('🔧 D3RENDERER: Cache hit but container empty (remount) - proceeding to render');
         }
 
         // If we already have a successful render and not forcing, skip

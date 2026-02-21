@@ -207,6 +207,28 @@ const normalizeDrawIOXml = (xml: string): string => {
 
     console.log('📐 DrawIO: Normalized quotes and ampersands in XML');
 
+    // CRITICAL FIX: Clamp relative geometry values for edge labels
+    // MaxGraph rejects x/y values outside [-1, 1] range for relative geometries
+    // Edge labels with x="-0.1" etc need to be clamped to valid range
+    normalized = normalized.replace(
+        /<mxGeometry\s+([^>]*?)x="(-?\d+\.?\d*)"([^>]*?)>/g,
+        (match, before, xValue, after) => {
+            const x = parseFloat(xValue);
+            // Clamp to [-1, 1] for relative geometries, or ensure valid number
+            const clampedX = Math.max(-1, Math.min(1, isNaN(x) ? 0 : x));
+            return `<mxGeometry ${before}x="${clampedX}"${after}>`;
+        }
+    );
+    normalized = normalized.replace(
+        /<mxGeometry\s+([^>]*?)y="(-?\d+\.?\d*)"([^>]*?)>/g,
+        (match, before, yValue, after) => {
+            const y = parseFloat(yValue);
+            const clampedY = Math.max(-1, Math.min(1, isNaN(y) ? 0 : y));
+            return `<mxGeometry ${before}y="${clampedY}"${after}>`;
+        }
+    );
+    console.log('📐 DrawIO: Clamped relative geometry values to valid range');
+
     // Clean up any text content after closing tags (LLM sometimes adds descriptions)
     // Find the last proper closing tag (</mxfile>, </diagram>, or </mxGraphModel>)
     const lastMxfileClose = normalized.lastIndexOf('</mxfile>');
