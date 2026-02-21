@@ -3704,13 +3704,14 @@ async def favicon():
 # Cache for folder structure with timestamp
 _folder_cache: dict[str, dict] = {}  # keyed by absolute directory path
 _cache_lock = threading.Lock()
+_explicit_external_paths: set = set()  # flat set of all explicitly added external paths
 _background_scan_thread = None
 _last_cache_invalidation = 0
 _cache_invalidation_debounce = 2.0  # seconds
 
 
 def invalidate_folder_cache():
-    """Invalidate the folder structure cache with debouncing."""
+    """Invalidate the folder structure cache with debouncing. Drops oversized external paths."""
     global _folder_cache, _last_cache_invalidation, _cache_lock
     current_time = time.time()
     
@@ -3723,11 +3724,34 @@ def invalidate_folder_cache():
             entry = _folder_cache[dir_key]
             external_paths = None
             if entry.get('data') and '[external]' in entry['data']:
-                external_paths = entry['data']['[external]']
+                ext = entry['data']['[external]']
+                # Estimate entry count; drop if too large (safety valve)
+                ext_str_len = len(str(ext)) if ext else 0
+                if ext_str_len < 1_000_000:  # ~1MB serialized = reasonable
+                    external_paths = ext
+                else:
+                    logger.warning(f"🗑️ Dropping oversized external paths ({ext_str_len} chars) during cache invalidation")
             entry['data'] = {'[external]': external_paths} if external_paths else None
             entry['timestamp'] = 0
         logger.debug(f"📂 Cache invalidated for {len(_folder_cache)} project(s)")
     _last_cache_invalidation = current_time
+
+
+def is_path_explicitly_allowed(resolved_path: str, user_codebase_dir: str) -> bool:
+    """
+    Return True if resolved_path is permitted for file operations.
+
+    A path is allowed when it is:
+      1. Inside the project root (normal case), OR
+      2. Under a path that was explicitly added via /api/add-explicit-paths.
+    """
+    if resolved_path.startswith(user_codebase_dir + os.sep) or resolved_path == user_codebase_dir:
+        return True
+    for external in _explicit_external_paths:
+        if resolved_path.startswith(external + os.sep) or resolved_path == external:
+            return True
+    return False
+
 
 def add_file_to_folder_cache(rel_path: str) -> bool:
     """
@@ -4110,6 +4134,20 @@ async def clear_folder_cache():
     logger.info("Folder cache cleared")
     return {"cleared": True}
 
+@app.post("/api/clear-external-paths")
+async def clear_external_paths():
+    """Remove all external paths from the folder cache without clearing project files."""
+    global _folder_cache, _cache_lock
+    removed = 0
+    with _cache_lock:
+        for dir_key in list(_folder_cache.keys()):
+            entry = _folder_cache[dir_key]
+            if entry.get('data') and '[external]' in entry['data']:
+                del entry['data']['[external]']
+                removed += 1
+    logger.info(f"🗑️ Cleared external paths from {removed} cache entries")
+    return {"cleared": removed}
+
 @app.post("/file")
 async def get_file(request: FileRequest):
     """Get the content of a file."""
@@ -4137,9 +4175,28 @@ def get_available_models():
     """Get list of available models for the current endpoint."""
     endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
 
+    # Endpoint restriction from enterprise config providers
+    try:
+        from app.plugins import get_allowed_endpoints
+        allowed_endpoints = get_allowed_endpoints()
+        if allowed_endpoints is not None and endpoint not in allowed_endpoints:
+            logger.warning(f"Endpoint '{endpoint}' not in policy list {allowed_endpoints}, using first allowed")
+            endpoint = allowed_endpoints[0]
+    except Exception:
+        pass
+
+    # Personal model allowlist from ~/.ziya/models.json
+    try:
+        from app.config.models_config import get_user_allowed_models
+        user_allowed = get_user_allowed_models()
+    except Exception:
+        user_allowed = None
+
     try:
         models = []
         for name, config in ModelManager.MODEL_CONFIGS[endpoint].items():
+            if user_allowed is not None and name not in user_allowed:
+                continue
             model_id = config.get("model_id", name)
             
             # For region-specific model IDs, use a simplified representation
@@ -4329,6 +4386,7 @@ async def api_add_explicit_paths(request: AddExplicitPathsRequest):
     global _folder_cache, _cache_lock
     
     user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+    global _explicit_external_paths
     added_paths = []
     errors = []
     
@@ -4344,6 +4402,15 @@ async def api_add_explicit_paths(request: AddExplicitPathsRequest):
                 errors.append(f"Path does not exist: {path}")
                 continue
             
+            # Resolve symlinks for overlap detection during scanning.
+            # We don't reject the path outright — we just warn if it
+            # overlaps the project root.  The scan_directory functions
+            # will skip subdirectories that resolve back into the project.
+            real_path = os.path.realpath(path)
+            real_codebase = os.path.realpath(user_codebase_dir)
+            if real_codebase.startswith(real_path + os.sep) or real_codebase == real_path:
+                logger.info(f"📂 External path '{path}' contains project root — overlapping subtrees will be skipped during scan")
+
             # Determine if this is inside or outside the workspace
             is_inside_workspace = path.startswith(user_codebase_dir + os.sep) or path == user_codebase_dir
             
@@ -4358,10 +4425,14 @@ async def api_add_explicit_paths(request: AddExplicitPathsRequest):
             if os.path.isfile(path):
                 success = add_file_to_folder_cache(rel_path) if is_inside_workspace else add_external_path_to_cache(path)
                 if success:
+                    if not is_inside_workspace:
+                        _explicit_external_paths.add(path)
                     added_paths.append(path)
             elif os.path.isdir(path):
                 success = add_directory_to_folder_cache(rel_path, path, is_inside_workspace)
                 if success:
+                    if not is_inside_workspace:
+                        _explicit_external_paths.add(path)
                     added_paths.append(path)
                     
         except Exception as e:
@@ -4386,6 +4457,7 @@ def add_external_path_to_cache(full_path: str) -> bool:
     # Get the current workspace directory to determine which cache entry to use
     user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
     user_codebase_dir = os.path.abspath(user_codebase_dir)
+    real_codebase = os.path.realpath(user_codebase_dir)
     
     # Ensure cache entry exists for this workspace
     with _cache_lock:
@@ -4403,8 +4475,22 @@ def add_external_path_to_cache(full_path: str) -> bool:
         
         # For directories, scan the contents recursively
         if os.path.isdir(full_path):
+            _ext_entry_count = 0
+            _EXT_MAX_ENTRIES = 10_000
+
             def scan_directory(dir_path: str, max_depth: int = 10, current_depth: int = 0) -> dict:
-                if current_depth >= max_depth:
+                nonlocal _ext_entry_count
+                if current_depth >= max_depth or _ext_entry_count >= _EXT_MAX_ENTRIES:
+                    return {'children': {}, 'token_count': 0}
+
+                # Resolve symlinks and skip directories that overlap with
+                # the project root — prevents symlinks or parent additions
+                # from duplicating the entire project tree.
+                real_dir = os.path.realpath(dir_path)
+                if real_dir.startswith(real_codebase + os.sep) or real_dir == real_codebase:
+                    logger.info(
+                        f"📂 Skipping '{dir_path}' — resolves into project root"
+                    )
                     return {'children': {}, 'token_count': 0}
                 
                 result = {'children': {}, 'token_count': 0}
@@ -4414,9 +4500,11 @@ def add_external_path_to_cache(full_path: str) -> bool:
                     for entry_name in os.listdir(dir_path):
                         if entry_name.startswith('.'):
                             continue
-                        
+                        _ext_entry_count += 1
+                        if _ext_entry_count >= _EXT_MAX_ENTRIES:
+                            logger.warning(f"⚠️ External path scan hit {_EXT_MAX_ENTRIES} entry limit at {dir_path}")
+                            break
                         entry_path = os.path.join(dir_path, entry_name)
-                        
                         try:
                             if os.path.isfile(entry_path):
                                 token_count = estimate_tokens_fast(entry_path)
@@ -4502,6 +4590,13 @@ def add_directory_to_folder_cache(rel_path: str, full_path: str, is_inside_works
         def scan_directory(dir_path: str, max_depth: int = 10, current_depth: int = 0) -> dict:
             if current_depth >= max_depth:
                 return {'children': {}, 'token_count': 0}
+
+                # Skip directories that resolve back into the project root
+                # (symlinks or parent paths that contain the workspace)
+                real_dir = os.path.realpath(dir_path)
+                if real_dir.startswith(real_codebase + os.sep) or real_dir == real_codebase:
+                    logger.info(f"⚠️ Skipping '{dir_path}' — resolves into project root")
+                    return {'children': {}, 'token_count': 0}
             
             result = {'children': {}, 'token_count': 0}
             total_tokens = 0
@@ -5112,6 +5207,36 @@ async def set_model(request: SetModelRequest):
         
         model_id = request.model_id
         logger.info(f"Received model change request: {model_id}")
+
+        # Enforce endpoint restriction from enterprise config providers
+        try:
+            from app.plugins import get_allowed_endpoints
+            allowed_endpoints = get_allowed_endpoints()
+            if allowed_endpoints is not None:
+                target_endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+                if target_endpoint not in allowed_endpoints:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Endpoint '{target_endpoint}' is not permitted. Allowed: {allowed_endpoints}"
+                    )
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
+        # Enforce personal model allowlist from ~/.ziya/models.json
+        try:
+            from app.config.models_config import get_user_allowed_models
+            user_allowed = get_user_allowed_models()
+            if user_allowed is not None and isinstance(model_id, str) and model_id not in user_allowed:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Model '{model_id}' is not in your allowed model list."
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            pass
 
         if not model_id:
             logger.error("Empty model ID provided")
@@ -6535,9 +6660,9 @@ async def apply_changes(request: Request):
             file_path = os.path.join(user_codebase_dir, validated.filePath)
             logger.info(f"Using provided file path: {validated.filePath}")
 
-            # Resolve the absolute path and check if it's within the codebase dir
+            # Resolve the absolute path and verify it is within an allowed root
             resolved_path = os.path.abspath(file_path)
-            if not resolved_path.startswith(user_codebase_dir):
+            if not is_path_explicitly_allowed(resolved_path, user_codebase_dir):
                 logger.error(f"Attempt to access file outside codebase directory: {resolved_path}")
                 raise ValueError("Invalid file path specified")
         else:
