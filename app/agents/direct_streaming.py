@@ -67,12 +67,6 @@ class DirectStreamingAgent:
             # Default to Bedrock mode if initialization fails
             self.executor = StreamingToolExecutor(profile_name=profile_name, region=region)
             self.is_bedrock = True
-        except Exception as e:
-            # Fallback to Bedrock if we can't determine the model type
-            logger.warning(f"Could not determine model type, defaulting to Bedrock: {e}")
-            self.executor = StreamingToolExecutor(profile_name=profile_name, region=region)
-            self.google_model = None
-            self.is_bedrock = True
         
     def convert_langchain_to_openai(self, langchain_messages: List[Any]) -> List[Dict[str, str]]:
         """Convert LangChain messages to OpenAI format"""
