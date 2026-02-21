@@ -35,6 +35,13 @@ BUILTIN_TOOL_CATEGORIES: Dict[str, Dict[str, any]] = {
         "requires_dependencies": [],
         "tools": [],
     },
+    "nova_grounding": {
+        "name": "Nova Web Search",
+        "description": "Web search via Amazon Nova grounding — no external MCP server needed",
+        "enabled_by_default": True,
+        "requires_dependencies": [],
+        "tools": [],
+    },
 }
 
 
@@ -85,14 +92,28 @@ def get_fileio_tools() -> List[Type[BaseMCPTool]]:
         return []
 
 
+def get_nova_grounding_tools() -> List[Type[BaseMCPTool]]:
+    """Get Nova Web Search grounding tools."""
+    try:
+        from app.mcp.tools.nova_grounding import NovaWebSearchTool
+        return [NovaWebSearchTool]
+    except ImportError as e:
+        logger.warning(f"Could not import Nova grounding tools: {e}")
+        return []
+
+
 def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
     """Get builtin tools for a specific category."""
-    if category == "pcap_analysis":
-        return get_pcap_analysis_tools()
-    elif category == "architecture_shapes":
-        return get_architecture_shapes_tools()
-    elif category == "fileio":
-        return get_fileio_tools()
+    tool_getters = {
+        "pcap_analysis": get_pcap_analysis_tools,
+        "architecture_shapes": get_architecture_shapes_tools,
+        "fileio": get_fileio_tools,
+        "nova_grounding": get_nova_grounding_tools,
+    }
+
+    getter = tool_getters.get(category)
+    if getter:
+        return getter()
     return []
 
 
@@ -107,6 +128,15 @@ def is_builtin_category_enabled(category: str) -> bool:
     if env_value is not None:
         return env_value.lower() in ("true", "1", "yes")
     
+    # Check if a service model plugin has enabled this category
+    try:
+        from app.plugins import get_enabled_service_tool_categories
+        plugin_enabled = get_enabled_service_tool_categories()
+        if category in plugin_enabled:
+            return True
+    except Exception:
+        pass
+
     # Fall back to default setting
     return BUILTIN_TOOL_CATEGORIES[category]["enabled_by_default"]
 

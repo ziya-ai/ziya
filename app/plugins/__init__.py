@@ -16,6 +16,7 @@ from app.plugins.interfaces import DataRetentionPolicy
 _auth_providers = []
 _config_providers = []
 _registry_providers = []
+_service_model_providers = []
 _formatter_providers = []
 _tool_validator_providers = []
 _data_retention_providers = []
@@ -69,6 +70,11 @@ def register_data_retention_provider(provider):
     _data_retention_providers.sort(key=lambda p: getattr(p, 'priority', 0), reverse=True)
     logger.debug(f"Registered data retention provider: {getattr(provider, 'provider_id', 'unknown')}")
 
+def register_service_model_provider(provider):
+    """Register a service model provider plugin."""
+    _service_model_providers.append(provider)
+    logger.debug(f"Registered service model provider: {getattr(provider, 'provider_id', 'unknown')}")
+
 def get_all_config_providers() -> List:
     """Get all registered config providers (regardless of should_apply)."""
     return _config_providers.copy()
@@ -104,6 +110,31 @@ def get_active_config_providers() -> List:
             logger.warning(f"Error checking {provider.provider_id}.should_apply(): {e}")
     return active
 
+
+def get_allowed_endpoints() -> Optional[List[str]]:
+    """
+    Resolve the effective allowed endpoints across all active config providers.
+
+    Returns the intersection of all provider restrictions.
+    Returns None if no provider declares a restriction (all endpoints allowed).
+    """
+    restrictions = []
+    for provider in get_active_config_providers():
+        try:
+            allowed = provider.get_allowed_endpoints()
+            if allowed is not None:
+                restrictions.append(list(allowed))
+        except Exception as e:
+            logger.warning(f"Error getting allowed endpoints from {getattr(provider, 'provider_id', '?')}: {e}")
+
+    if not restrictions:
+        return None
+    result = set(restrictions[0])
+    for r in restrictions[1:]:
+        result &= set(r)
+    return sorted(result)
+
+
 def get_registry_providers() -> List:
     """Get all registered MCP registry providers."""
     return _registry_providers.copy()
@@ -119,6 +150,25 @@ def get_tool_validator_providers() -> List:
 def get_data_retention_providers() -> List:
     """Get all registered data retention providers."""
     return _data_retention_providers.copy()
+
+def get_service_model_providers() -> List:
+    """Get all registered service model providers sorted by priority."""
+    return sorted(_service_model_providers, key=lambda p: getattr(p, 'priority', 0), reverse=True)
+
+
+def get_enabled_service_tool_categories() -> set:
+    """
+    Collect all builtin tool categories that service model providers
+    want enabled.  Returns a set of category name strings.
+    """
+    enabled = set()
+    for provider in get_service_model_providers():
+        try:
+            if provider.should_apply():
+                enabled.update(provider.get_enabled_service_tools())
+        except Exception as e:
+            logger.warning(f"Service model provider error: {e}")
+    return enabled
 
 def get_effective_retention_policy() -> DataRetentionPolicy:
     """
