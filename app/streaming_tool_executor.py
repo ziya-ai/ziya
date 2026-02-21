@@ -653,6 +653,76 @@ class StreamingToolExecutor:
         return messages
 
     async def stream_with_tools(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
+        # --- Concurrent feedback monitor ---
+        # Instead of relying solely on discrete polling points, run a
+        # background task that continuously drains the feedback queue and
+        # deposits messages into a thread-safe list.  The main loop picks
+        # them up on every iteration / tool boundary without risk of
+        # missing messages that arrive during long tool executions.
+        _pending_feedback: List[dict] = []
+        _feedback_monitor_task: Optional[asyncio.Task] = None
+
+        async def _feedback_monitor(conv_id: str):
+            """Background coroutine that drains the feedback queue continuously."""
+            try:
+                from app.server import active_feedback_connections
+                while True:
+                    try:
+                        if conv_id not in active_feedback_connections:
+                            await asyncio.sleep(0.3)
+                            continue
+                        conns = active_feedback_connections[conv_id]
+                        if not conns:
+                            await asyncio.sleep(0.3)
+                            continue
+                        queue = conns[0].get('feedback_queue')
+                        if not queue:
+                            await asyncio.sleep(0.3)
+                            continue
+
+                        # Block for up to 1s, then loop to re-check cancellation
+                        try:
+                            data = await asyncio.wait_for(queue.get(), timeout=1.0)
+                        except asyncio.TimeoutError:
+                            continue
+
+                        if data.get('type') == 'interrupt':
+                            _pending_feedback.append({'type': 'interrupt'})
+                            logger.info(f"🔄 FEEDBACK_MONITOR: Captured interrupt for {conv_id}")
+                        elif data.get('type') == 'tool_feedback':
+                            msg = data.get('message', '')
+                            _pending_feedback.append({'type': 'feedback', 'message': msg})
+                            logger.info(f"🔄 FEEDBACK_MONITOR: Captured feedback for {conv_id}: {msg[:60]}")
+
+                            # Send acknowledgment back through WebSocket
+                            try:
+                                ws = conns[0].get('websocket')
+                                if ws:
+                                    import json as _json
+                                    await ws.send_json({
+                                        'type': 'feedback_status',
+                                        'status': 'delivered',
+                                        'feedback_id': data.get('feedback_id', ''),
+                                        'message': msg[:80],
+                                    })
+                            except Exception as ack_err:
+                                logger.debug(f"Could not send feedback ack: {ack_err}")
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as inner_err:
+                        logger.debug(f"Feedback monitor inner error: {inner_err}")
+                        await asyncio.sleep(0.5)
+            except asyncio.CancelledError:
+                logger.debug(f"🔄 FEEDBACK_MONITOR: Stopped for {conv_id}")
+
+        def _drain_pending_feedback() -> List[dict]:
+            """Atomically drain all pending feedback messages."""
+            if not _pending_feedback:
+                return []
+            drained = _pending_feedback.copy()
+            _pending_feedback.clear()
+            return drained
+
         # Initialize streaming metrics
         stream_metrics = {
             'events_sent': 0,
@@ -793,6 +863,12 @@ class StreamingToolExecutor:
                 logger.debug(f"Could not check baseline status: {e}")
         
         hallucination_retries = 0
+
+        # Start the concurrent feedback monitor
+        if conversation_id:
+            _feedback_monitor_task = asyncio.create_task(_feedback_monitor(conversation_id))
+            logger.debug(f"🔄 FEEDBACK_MONITOR: Started for {conversation_id}")
+
         for iteration in range(100):  # Increased limit to support complex multi-step tasks
             logger.debug(f"🔍 ITERATION_START: Beginning iteration {iteration}")
             hallucination_this_iteration = False
@@ -937,45 +1013,34 @@ class StreamingToolExecutor:
             
             # Check for user feedback at the start of each iteration
             if conversation_id and iteration > 0:  # Skip check on first iteration
-                try:
-                    from app.server import active_feedback_connections
-                    if conversation_id in active_feedback_connections:
-                        conns = active_feedback_connections[conversation_id]
-                        feedback_queue = conns[0]['feedback_queue'] if len(conns) > 0 else None
-                        if not feedback_queue:
-                            raise asyncio.QueueEmpty()
-                        try:
-                            feedback_data = feedback_queue.get_nowait()
-                            if feedback_data.get('type') == 'tool_feedback':
-                                feedback_message = feedback_data.get('message', '')
-                                logger.info(f"🔄 FEEDBACK_INTEGRATION: Iteration-level feedback: {feedback_message}")
-                                if any(stop_word in feedback_message.lower() for stop_word in ['stop', 'halt', 'abort', 'cancel', 'quit']):
-                                    yield track_yield({'type': 'text', 'content': f"\n\n**User feedback:** {feedback_message}\n**Stopping execution as requested.**\n\n"})
-                                    yield track_yield({'type': 'stream_end'})
-                                    return
-                                else:
-                                    # Handle directive feedback at iteration level
-                                    logger.info(f"🔄 FEEDBACK_INTEGRATION: Iteration-level directive: {feedback_message}")
-                                    
-                                    # Add feedback to conversation so model can respond
-                                    conversation.append({
-                                        "role": "user",
-                                        "content": f"[User feedback]: {feedback_message}"
-                                    })
-                                    logger.info(f"🔄 FEEDBACK_DELIVERED: Added iteration-level feedback to conversation at iteration {iteration}")
-                                    
-                                    # Let user know feedback was received
-                                    yield track_yield({
-                                        'type': 'text',
-                                        'content': f"\n\n**Feedback received:** {feedback_message}\n**Adjusting approach...**\n\n"
-                                    })
-                                    
-                                    # Continue with the iteration, but now the conversation includes user feedback
-                                    logger.info(f"🔄 FEEDBACK_INTEGRATION: Added feedback to conversation, continuing iteration")
-                        except asyncio.QueueEmpty:
-                            pass
-                except Exception as e:
-                    logger.debug(f"Error checking iteration feedback: {e}")
+                for fb in _drain_pending_feedback():
+                    if fb['type'] == 'interrupt':
+                        yield track_yield({'type': 'text', 'content': '\n\n**User requested stop.**\n\n'})
+                        yield track_yield({'type': 'stream_end'})
+                        if _feedback_monitor_task:
+                            _feedback_monitor_task.cancel()
+                        return
+                    feedback_message = fb.get('message', '')
+                    if any(w in feedback_message.lower() for w in ['stop', 'halt', 'abort', 'cancel', 'quit']):
+                        yield track_yield({'type': 'text', 'content': f"\n\n**User feedback:** {feedback_message}\n**Stopping execution as requested.**\n\n"})
+                        yield track_yield({'type': 'stream_end'})
+                        if _feedback_monitor_task:
+                            _feedback_monitor_task.cancel()
+                        return
+                    logger.info(f"🔄 FEEDBACK_INTEGRATION: Iteration-level directive: {feedback_message}")
+                    conversation.append({
+                        "role": "user",
+                        "content": f"[User feedback]: {feedback_message}"
+                    })
+                    yield track_yield({
+                        'type': 'text',
+                        'content': f"\n\n**📝 Feedback received:** {feedback_message}\n**Adjusting approach...**\n\n"
+                    })
+                    # Send SSE ack so frontend can update status
+                    yield track_yield({
+                        'type': 'feedback_delivered',
+                        'message': feedback_message[:80],
+                    })
             
             # Log last 2 messages to debug conversation state
             if len(conversation) >= 2:
@@ -1023,7 +1088,7 @@ class StreamingToolExecutor:
                         body["anthropic_beta"] = []
                     if "effort-2025-11-24" not in body["anthropic_beta"]:
                         body["anthropic_beta"].append("effort-2025-11-24")
-                logger.info(f"🧠 ADAPTIVE_THINKING: Enabled with effort={thinking_effort}")
+                logger.debug(f"🧠 ADAPTIVE_THINKING: Enabled with effort={thinking_effort}")
             elif self.model_config and self.model_config.get('supports_thinking'):
                 # Fallback: standard extended thinking for older models that support it
                 thinking_mode = os.environ.get('ZIYA_THINKING_MODE', '0') == '1'
@@ -1034,12 +1099,13 @@ class StreamingToolExecutor:
 
             # DEBUG: Log what we're actually sending
             logger.debug(f"🔍 REQUEST_DEBUG: Iteration {iteration}")
-            logger.debug(f"   Messages in request: {len(conversation)}")
-            logger.debug(f"   Max tokens: {body['max_tokens']}")
-            for i, msg in enumerate(conversation[:2]):  # First 2 messages only
-                content = msg.get('content', '')
-                content_len = len(content) if isinstance(content, str) else sum(len(b.get('text', '')) for b in content if b.get('type') == 'text')
-                logger.info(f"   Message {i} ({msg['role']}): {content_len:,} chars")
+            logger.debug(f"   Messages in request: {len(conversation)}, max_tokens: {body['max_tokens']}")
+            total_chars = sum(
+                len(msg.get('content', '')) if isinstance(msg.get('content'), str)
+                else sum(len(b.get('text', '')) for b in msg.get('content', []) if isinstance(b, dict) and b.get('type') == 'text')
+                for msg in conversation
+            )
+            logger.debug(f"   Total conversation size: {total_chars:,} chars across {len(conversation)} messages")
             
             if system_content:
                 # With precision prompts, system content is already clean - no regex needed
@@ -2219,6 +2285,32 @@ Please try again or proceed without this tool."""
                                    # Immediate flush to reduce delay
                                    await asyncio.sleep(0)
                                     
+                                   # Check for feedback that arrived during tool execution
+                                   for fb in _drain_pending_feedback():
+                                       if fb['type'] == 'interrupt':
+                                           yield track_yield({'type': 'text', 'content': '\n\n**User requested stop.**\n\n'})
+                                           yield track_yield({'type': 'stream_end'})
+                                           if _feedback_monitor_task:
+                                               _feedback_monitor_task.cancel()
+                                           return
+                                       fb_msg = fb.get('message', '')
+                                       if any(w in fb_msg.lower() for w in ['stop', 'halt', 'abort', 'cancel', 'quit']):
+                                           yield track_yield({'type': 'text', 'content': f"\n\n**User feedback:** {fb_msg}\n**Stopping execution as requested.**\n\n"})
+                                           yield track_yield({'type': 'stream_end'})
+                                           if _feedback_monitor_task:
+                                               _feedback_monitor_task.cancel()
+                                           return
+                                       logger.info(f"🔄 FEEDBACK_POST_TOOL: Injecting feedback after tool: {fb_msg[:60]}")
+                                       conversation.append({
+                                           "role": "user",
+                                           "content": f"[User feedback]: {fb_msg}"
+                                       })
+                                       yield track_yield({'type': 'text', 'content': f"\n\n**📝 Feedback received:** {fb_msg}\n\n"})
+                                       yield track_yield({
+                                           'type': 'feedback_delivered',
+                                           'message': fb_msg[:80],
+                                       })
+
                                    tools_executed_this_iteration = True
                                    logger.debug(f"🔍 TOOL_EXECUTED_FLAG: Set tools_executed_this_iteration = True for tool {tool_id}")
                                     
@@ -2612,43 +2704,12 @@ Please retry the tool call with valid JSON. Ensure:
                     continue  # Immediately start next iteration
                 else:
                     # CRITICAL: Check for pending feedback BEFORE deciding to end stream
-                    # This ensures feedback sent during the last tool execution is not lost
-                    pending_feedback_before_end = []
-                    if conversation_id:
-                        try:
-                            from app.server import active_feedback_connections
-                            if conversation_id in active_feedback_connections:
-                                conns = active_feedback_connections[conversation_id]
-                                feedback_queue = conns[0]['feedback_queue'] if len(conns) > 0 else None
-                                if not feedback_queue:
-                                    raise asyncio.QueueEmpty()
-                                
-                                # Grace period: wait briefly for in-flight feedback
-                                # before deciding to end the stream. WebSocket messages
-                                # in transit need time to arrive in the queue.
-                                try:
-                                    feedback_data = await asyncio.wait_for(
-                                        feedback_queue.get(), timeout=0.5
-                                    )
-                                    # Got something — drain remaining items immediately
-                                    while feedback_data:
-                                        if feedback_data.get('type') == 'tool_feedback':
-                                            pending_feedback_before_end.append(feedback_data.get('message', ''))
-                                        elif feedback_data.get('type') == 'interrupt':
-                                            logger.info(f"🔄 PRE-END FEEDBACK: Received interrupt before stream end")
-                                            yield track_yield({'type': 'text', 'content': '\n\n**User requested stop.**\n\n'})
-                                            yield track_yield({'type': 'stream_end'})
-                                            return
-                                        try:
-                                            feedback_data = feedback_queue.get_nowait()
-                                        except asyncio.QueueEmpty:
-                                            break
-                                except asyncio.TimeoutError:
-                                    pass  # No feedback arrived within grace period
-                                except Exception as queue_error:
-                                    logger.debug(f"Error draining pre-end feedback queue: {queue_error}")
-                        except Exception as e:
-                            logger.debug(f"Error checking pre-end feedback: {e}")
+                    # Grace period: give the monitor 1.5s to capture any in-flight feedback
+                    await asyncio.sleep(1.5)
+                    pending_feedback_before_end = [
+                        fb.get('message', '') for fb in _drain_pending_feedback()
+                        if fb['type'] == 'feedback'
+                    ]
                     
                     # If we found pending feedback, deliver it before ending
                     if pending_feedback_before_end:
@@ -3051,6 +3112,10 @@ Please retry the tool call with valid JSON. Ensure:
                     logger.error(f"Non-throttling error in iteration {iteration}: {error_str}")
                     yield {'type': 'error', 'content': f'Error: {error_str}'}
                     return
+
+        # Stop the feedback monitor
+        if _feedback_monitor_task:
+            _feedback_monitor_task.cancel()
         
         # FINAL REPORT: Log comprehensive usage summary
         if iteration_usages and conversation_id:
