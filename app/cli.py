@@ -251,6 +251,9 @@ def setup_env(args):
     # AWS region setting
     if getattr(args, 'region', None):
         os.environ["AWS_REGION"] = args.region
+    # Endpoint must be set before auth checks read ZIYA_ENDPOINT
+    if getattr(args, 'endpoint', None):
+        os.environ["ZIYA_ENDPOINT"] = args.endpoint
 def resolve_files(paths: List[str], root: str) -> List[str]:
     """Resolve file/directory paths to list of files."""
     import glob
@@ -751,6 +754,36 @@ class CLI:
         if not tools:
             return await self._simple_invoke(messages, stream)
         
+        # Check for Google endpoint - use native model loop instead of AWS executor
+        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        if endpoint == "google":
+            async def stream_task():
+                async for chunk in self.model.astream(messages, tools=tools):
+                    if self._cancellation_requested:
+                        raise asyncio.CancelledError("User cancelled operation")
+                    yield chunk
+            
+            task = asyncio.create_task(self._stream_handler(stream_task(), stream))
+            self._active_task = task
+            try:
+                return await task
+            finally:
+                self._active_task = None
+
+        if endpoint == "openai":
+            async def stream_task():
+                async for chunk in self.model.astream(messages, tools=tools):
+                    if self._cancellation_requested:
+                        raise asyncio.CancelledError("User cancelled operation")
+                    yield chunk
+            
+            task = asyncio.create_task(self._stream_handler(stream_task(), stream))
+            self._active_task = task
+            try:
+                return await task
+            finally:
+                self._active_task = None
+
         # Get AWS config
         state = ModelManager.get_state()
         aws_profile = state.get('aws_profile')
@@ -800,6 +833,22 @@ class CLI:
         if not tools:
             return await self._simple_invoke(messages, stream)
         
+        # Check for native function calling endpoints - use model loop instead of AWS executor
+        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        if endpoint in ("google", "openai"):
+            async def stream_task():
+                async for chunk in self.model.astream(messages, tools=tools):
+                    if self._cancellation_requested:
+                        raise asyncio.CancelledError("User cancelled operation")
+                    yield chunk
+            
+            task = asyncio.create_task(self._stream_handler(stream_task(), stream))
+            self._active_task = task
+            try:
+                return await task
+            finally:
+                self._active_task = None
+
         state = ModelManager.get_state()
         executor = StreamingToolExecutor(
             profile_name=state.get('aws_profile'),
@@ -1067,7 +1116,11 @@ class CLI:
         if stream:
             response = ""
             async for chunk in self.model.astream(messages):
-                content = getattr(chunk, 'content', '')
+                if isinstance(chunk, dict):
+                    content = chunk.get('content', '')
+                else:
+                    content = getattr(chunk, 'content', '')
+                
                 if isinstance(content, str):
                     print(content, end='', flush=True)
                     response += content
@@ -1075,7 +1128,10 @@ class CLI:
             return response
         else:
             result = await self.model.ainvoke(messages)
-            content = getattr(result, 'content', str(result))
+            if isinstance(result, dict):
+                content = result.get('content', '')
+            else:
+                content = getattr(result, 'content', str(result))
             print(content)
             return content
     
@@ -1140,6 +1196,10 @@ class CLI:
         elif endpoint == "google":
             print("\033[33mTo fix Google credentials:\033[0m", file=sys.stderr)
             print("  • Set GOOGLE_API_KEY environment variable", file=sys.stderr)
+        elif endpoint == "openai":
+            print("\033[33mTo fix OpenAI credentials:\033[0m", file=sys.stderr)
+            print("  • Set OPENAI_API_KEY: export OPENAI_API_KEY=sk-...", file=sys.stderr)
+            print("  • Or set OPENAI_BASE_URL for a compatible local server", file=sys.stderr)
         print(file=sys.stderr)
     
     async def chat(self):
@@ -1730,6 +1790,8 @@ def _check_auth_quick(profile: str = None) -> bool:
             return False
     elif endpoint == "google":
         return bool(os.environ.get("GOOGLE_API_KEY"))
+    elif endpoint == "openai":
+        return bool(os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI_BASE_URL"))
     
     return True
 
@@ -1752,6 +1814,12 @@ def _print_auth_error():
         print("GOOGLE_API_KEY environment variable is not set.\n", file=sys.stderr)
         print("\033[33mTo fix:\033[0m", file=sys.stderr)
         print("  export GOOGLE_API_KEY=<your-api-key>", file=sys.stderr)
+    elif endpoint == "openai":
+        print("OPENAI_API_KEY environment variable is not set.\n", file=sys.stderr)
+        print("\033[33mTo fix:\033[0m", file=sys.stderr)
+        print("  export OPENAI_API_KEY=sk-...", file=sys.stderr)
+        print("  # or for a compatible local server:", file=sys.stderr)
+        print("  export OPENAI_BASE_URL=http://localhost:8080/v1", file=sys.stderr)
     
     print(file=sys.stderr)
 
