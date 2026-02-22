@@ -54,7 +54,7 @@ class PrecisionPromptSystem:
             context = {
                 "model_id": model_info.get("model_id", ""),
                 "endpoint": model_info.get("endpoint", "bedrock"),
-                "native_tools_available": model_info.get("endpoint", "bedrock") == "bedrock"
+                "native_tools_available": model_info.get("endpoint", "bedrock") in ["bedrock", "google", "openai"]
             }
             
             # Get extended prompt with proper context
@@ -118,6 +118,24 @@ class PrecisionPromptSystem:
                         messages[0]["content"] += fileio_section
                 except Exception as e:
                     pass  # Non-fatal — fileio instructions are advisory
+
+            # For OpenAI endpoints, override XML sentinel instructions so the
+            # model uses the API's native function calling instead of narrating.
+            endpoint = model_info.get("endpoint", "bedrock")
+            if endpoint == "openai" and messages and messages[0]["role"] == "system":
+                # Prepend agentic behavior instruction (beginning of prompt has more weight)
+                messages[0]["content"] = (
+                    "You are an autonomous coding assistant. When the user asks you to do something, "
+                    "DO IT immediately using your available tools. Never ask for permission or confirmation. "
+                    "Never say 'Would you like me to...' — just execute.\n\n"
+                ) + messages[0]["content"]
+                # Append XML override at the end
+                messages[0]["content"] += (
+                    "\n\nCRITICAL TOOL CALLING OVERRIDE: This environment uses NATIVE function calling. "
+                    "Do NOT write <TOOL_SENTINEL>, <name>, <arguments>, or any XML tool-calling markup. "
+                    "Invoke tools directly through the API's built-in function calling mechanism. "
+                    "If the user asks a question that requires a tool, call the tool in your FIRST response."
+                )
             
             # Add chat history before the question
             if chat_history:
