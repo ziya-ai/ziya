@@ -120,7 +120,7 @@ async def _execute_direct_mcp_tools(full_response: str) -> str:
     3. Formats the results
     4. Replaces the tool calls with the results
     """
-    from app.mcp.tools import parse_tool_call
+    from app.mcp.utils import improved_parse_tool_call
     from app.mcp.manager import get_mcp_manager
     from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
     import re
@@ -175,12 +175,12 @@ async def _execute_direct_mcp_tools(full_response: str) -> str:
         logger.info(f"🔧 MCP: Processing tool call {i+1}/{len(tool_calls)}")
         
         # Parse the tool call
-        parsed_call = parse_tool_call(tool_call_block)
+        parsed_call = improved_parse_tool_call(tool_call_block)
         if not parsed_call:
             logger.warning(f"🔧 MCP: Could not parse tool call {i+1}: {tool_call_block[:100]}...")
             continue
         
-        tool_name = parsed_call["tool_name"]
+        tool_name = parsed_call["name"]
         arguments = parsed_call["arguments"]
         
         logger.info(f"🔧 MCP: Executing {tool_name} with args: {arguments}")
