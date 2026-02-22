@@ -57,6 +57,21 @@ Ziya supports models from multiple providers. The default model is `sonnet4.6` o
 | `gemini-2.0-flash-lite` | Gemini 2.0 Flash Lite | 1M | No function calling. |
 | `gemini-2.5-flash-lite` | Gemini 2.5 Flash Lite | 1M | Thinking mode. |
 
+### OpenAI
+
+| Alias | Model | Context | Notes |
+|---|---|---|---|
+| `gpt-4.1` | GPT-4.1 | 200K | Native function calling. Vision. |
+| `gpt-4.1-mini` | GPT-4.1 Mini | 200K | Native function calling. Vision. |
+| `gpt-4.1-nano` | GPT-4.1 Nano | 200K | Native function calling. Vision. |
+| `gpt-4o` | GPT-4o | 128K | Native function calling. Vision. |
+| `gpt-4o-mini` | GPT-4o Mini | 128K | Native function calling. Vision. |
+| `o3` | o3 | 200K | Reasoning model. |
+| `o3-mini` | o3 Mini | 200K | Reasoning model. |
+| `o4-mini` | o4 Mini | 200K | Reasoning model. |
+
+> **Note**: OpenAI models require `OPENAI_API_KEY` set in your environment and `--endpoint openai`. Enterprise deployments may restrict available endpoints via policy.
+
 ---
 
 ## Tools
