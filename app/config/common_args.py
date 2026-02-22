@@ -6,6 +6,7 @@ This ensures consistent defaults across server, CLI, and any other clients.
 def add_common_arguments(parser):
     """Add common arguments that are shared between all Ziya clients (server, CLI, etc.)."""
     # Import config for centralized defaults
+    import os
     import app.config.models_config as config
     
     # File/path related arguments
@@ -19,9 +20,20 @@ def add_common_arguments(parser):
                         help='Only include specified paths (comma-separated)')
     
     # Model and endpoint configuration
-    parser.add_argument('--endpoint', type=str, choices=['bedrock', 'google'], 
+    # Initialize plugins early to get enterprise endpoint policy for --help
+    endpoint_help_choices = 'bedrock, google, openai'
+    if not os.environ.get('ZIYA_ALLOW_ALL_ENDPOINTS'):
+        try:
+            from app.plugins import initialize as _init_plugins, get_allowed_endpoints
+            _init_plugins()
+            allowed = get_allowed_endpoints()
+            if allowed is not None:
+                endpoint_help_choices = ', '.join(allowed)
+        except Exception:
+            pass
+    parser.add_argument('--endpoint', type=str,
                         default=config.DEFAULT_ENDPOINT,
-                        help=f'Model endpoint (default: {config.DEFAULT_ENDPOINT})')
+                        help=f'Model endpoint (default: {config.DEFAULT_ENDPOINT}). Available: {endpoint_help_choices}')
     parser.add_argument('--model', '-m', type=str, default=None, 
                         help='Model to use')
     parser.add_argument('--model-id', type=str, default=None,
