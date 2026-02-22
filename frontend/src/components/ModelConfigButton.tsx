@@ -36,6 +36,21 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
     const [isPolling, setIsPolling] = useState(false);
     const lastFetchTimeRef = useRef<number>(0);
 
+    const fetchAvailableModels = async (forEndpoint?: string) => {
+        try {
+            const url = forEndpoint
+                ? `/api/available-models?endpoint=${encodeURIComponent(forEndpoint)}`
+                : '/api/available-models';
+            const response = await fetch(url);
+            if (!response.ok) throw new Error('Failed to fetch available models');
+            const data = await response.json();
+            setAvailableModels(data);
+        } catch (error) {
+            console.error('Error fetching available models:', error);
+            message.error('Failed to load available models');
+        }
+    };
+
     const verifyCurrentModel = useCallback(async () => {
         // Prevent multiple simultaneous calls
     if (isPolling) return;
@@ -67,14 +82,9 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
       if (safeModelId !== currentModelId) {
         setCurrentModelId(safeModelId);
 
-        // Update endpoint based on verified model
-        if (actualEndpoint === 'google') {
-          setEndpoint('google');
-        } else if (actualEndpoint === 'bedrock') {
-          setEndpoint('bedrock');
-        }
-
-        // Update region and display model ID
+        setEndpoint(actualEndpoint);
+        // Always refresh the model list to match the actual running endpoint
+        await fetchAvailableModels(actualEndpoint);
         setRegion(actualRegion);
         setDisplayModelId(actualDisplayModelId);
 
@@ -96,6 +106,8 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
         setEndpoint(actualEndpoint); // Update endpoint even if model ID hasn't changed
         setRegion(actualRegion); // Update region even if model ID hasn't changed
         setDisplayModelId(actualDisplayModelId); // Update display model ID even if model ID hasn't changed
+        // Always refresh model list to match the running endpoint
+        await fetchAvailableModels(actualEndpoint);
       }
     } catch (error) {
       console.error('Error verifying current model:', error);
@@ -224,25 +236,8 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
     return null;
   };
 
-  // Fetch available models
-  useEffect(() => {
-    const fetchAvailableModels = async () => {
-      try {
-        const response = await fetch('/api/available-models');
-        if (!response.ok) {
-          throw new Error('Failed to fetch available models');
-        }
-        const data = await response.json();
-        console.log('Available models:', data);
-        setAvailableModels(data);
-      } catch (error) {
-        console.error('Error fetching available models:', error);
-        message.error('Failed to load available models');
-      }
-    };
-
-    fetchAvailableModels();
-  }, []);
+  // Fetch available models with correct endpoint on mount
+  useEffect(() => { verifyCurrentModel(); }, []);
 
   const handleModelChange = async (selectedModelId: string): Promise<boolean> => {
     try {
