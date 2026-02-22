@@ -99,6 +99,23 @@ When one or more active `ConfigProvider` implementations return a non-None list 
 
 This is how Amazon internal deployments hide the Google/Gemini endpoint — internal users don't have Google API keys, so there's no reason to show those options.
 
+#### Startup Enforcement
+
+The endpoint policy is enforced at three levels:
+
+1. **`--help`** — only allowed endpoints appear in the help text.
+2. **Startup** — if `--endpoint` or `ZIYA_ENDPOINT` specifies a restricted endpoint, Ziya exits with a clear error before any model initialization.
+3. **Runtime** — the model picker API and set-model API only return/accept models from allowed endpoints.
+
+#### Developer Override
+
+Set `ZIYA_ALLOW_ALL_ENDPOINTS=1` to bypass all endpoint restrictions. This is intended for plugin developers and internal testing only — it is not advertised to end users.
+
+```bash
+export ZIYA_ALLOW_ALL_ENDPOINTS=1
+ziya --endpoint openai
+```
+
 ---
 
 ### ServiceModelProvider
