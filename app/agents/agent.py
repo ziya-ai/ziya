@@ -644,7 +644,7 @@ class RetryingChatBedrock(Runnable):
         logger.error(f"🔍 AGENT_ASTREAM: Starting astream with input type: {type(input)}")
         # Reset MCP tool execution counter for new request cycle
         try:
-            from app.mcp.tools import _reset_counter_async
+            from app.mcp.enhanced_tools import _reset_counter_async
             await _reset_counter_async()
         except Exception as e:
             logger.warning(f"Failed to reset MCP tool counter: {e}")
@@ -657,6 +657,10 @@ class RetryingChatBedrock(Runnable):
         
         # Create a copy of kwargs to avoid modifying the original
         filtered_kwargs = {}
+
+        # Extract tools before filtering — SecureMCPTool objects are not
+        # JSON-serializable and tools are not a model inference parameter.
+        tools = kwargs.pop("tools", None)
 
         # If max_tokens is specified in kwargs, use that instead
         if "max_tokens" in kwargs:
@@ -764,6 +768,10 @@ class RetryingChatBedrock(Runnable):
         
         # Create a copy of kwargs to avoid modifying the original
         filtered_kwargs = {}
+
+        # Extract tools before filtering — SecureMCPTool objects are not
+        # JSON-serializable and tools are not a model inference parameter.
+        tools = kwargs.pop("tools", None)
 
         # If max_tokens is specified in kwargs, use that instead
         if "max_tokens" in kwargs:
@@ -885,7 +893,7 @@ class RetryingChatBedrock(Runnable):
                 # Debug the Bedrock client being used
                 if hasattr(self.model, 'client'):
                     client = self.model.client
-                    logger.info(f"Bedrock client type: {type(client)}")
+                    logger.info(f"Model client type: {type(client)}")
                     if hasattr(client, '_request_signer'):
                         logger.info("Client has request signer")
                         signer = client._request_signer
@@ -907,7 +915,12 @@ class RetryingChatBedrock(Runnable):
                 
                 # Merge model_config into kwargs for compatibility with all model types
                 merged_kwargs = {**kwargs, **model_config}
-                    
+
+                # Re-inject tools for models that support native function calling
+                if tools is not None:
+                    merged_kwargs["tools"] = tools
+                    logger.info(f"Re-injected {len(tools)} tools into merged_kwargs")
+
                 async for chunk in self.model.astream(messages, **merged_kwargs):
                     logger.debug(f"🔍 AGENT_MODEL_ASTREAM: Received chunk type: {type(chunk)}, content: {getattr(chunk, 'content', str(chunk))[:100]}")
                     # Check if this is an error chunk that should terminate this specific stream
@@ -2234,7 +2247,7 @@ def get_or_create_agent():
 
 def reset_mcp_tool_counter():
     """Reset the MCP tool execution counter for a new request cycle."""
-    from app.mcp.tools import _tool_execution_counter, _tool_execution_lock
+    from app.mcp.enhanced_tools import _reset_counter_async
     import asyncio
     asyncio.create_task(_reset_counter_async())
 

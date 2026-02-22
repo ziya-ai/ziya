@@ -6,6 +6,8 @@ the model to create and organize conversations for complex multi-threaded tasks.
 """
 
 from typing import List, Type, Optional, Dict, Any
+import re
+import json
 from langchain_core.tools import BaseTool
 
 from app.utils.logging_utils import logger
