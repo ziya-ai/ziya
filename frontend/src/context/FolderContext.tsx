@@ -693,6 +693,16 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     asyncInit();
   }, []); // Add empty dependency array
 
+  // Re-fetch when the active project changes (e.g. after ProjectContext finishes loading)
+  const prevProjectPath = useRef<string | null>(null);
+  useEffect(() => {
+    const newPath = currentProject?.path ?? null;
+    if (newPath && newPath !== prevProjectPath.current) {
+      prevProjectPath.current = newPath;
+      fetchFolders();
+    }
+  }, [currentProject?.path]);
+
   // Listen for manual refresh events
   useEffect(() => {
     const handleRefreshEvent = () => {
