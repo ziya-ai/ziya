@@ -135,6 +135,11 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
         return existingPromise;
     }
 
+    // Reject obviously invalid language names (paths, regexes, multi-word junk)
+    if (!language || language.length > 30 || /[\/\\*?='"{}()\[\]@:]/.test(language)) {
+        return Promise.resolve();
+    }
+
     // Map the language name to its Prism.js equivalent if needed
     const mappedLanguage = languageMap[language] || language;
 

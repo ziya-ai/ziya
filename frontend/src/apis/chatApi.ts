@@ -938,11 +938,10 @@ export const sendPayload = async (
                 }
 
                 // Handle diff validation status (informational only - no rewind)
-                if (unwrappedData.type === 'diff_validation_failed') {
-                    // Just log it - the model will naturally acknowledge and fix
-                    console.log('📝 DIFF_VALIDATION: Failed, model will provide correction:', unwrappedData);
-                    // No special handling needed - model continues naturally
-                    // The broken diff stays visible, correction follows
+                if (unwrappedData.type === 'diff_validation_failed' ||
+                    unwrappedData.type === 'diff_validation_status' ||
+                    unwrappedData.type === 'validation_retry') {
+                    console.log(`📝 ${unwrappedData.type}:`, unwrappedData);
                     return;
                 }
 
@@ -1557,7 +1556,11 @@ export const sendPayload = async (
                     // currentContent already contains <!-- TOOL_BLOCK_START: -->
                     // markers from our own tool_display handler; checking the
                     // full string false-positives after every tool execution.
-                    const candidateContent = contentToAdd;
+                    // Strip inline code and fenced code blocks so the model can
+                    // *discuss* sentinel formats without triggering the detector.
+                    const candidateContent = contentToAdd
+                        .replace(/```[\s\S]*?```/g, '')
+                        .replace(/`[^`]+`/g, '');
 
                     // Patterns that should NEVER appear in the content stream.
                     // These formats are only produced by the frontend when
