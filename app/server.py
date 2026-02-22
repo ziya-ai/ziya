@@ -344,6 +344,18 @@ async def lifespan(app: FastAPI):
     global _folder_ready
     _folder_ready = True
     
+    # Register deferred plugin routes (plugins may have loaded before server)
+    if os.environ.get('ZIYA_LOAD_INTERNAL_PLUGINS') == '1':
+        try:
+            for module_name in ['plugins', 'internal.plugins']:
+                if module_name in sys.modules:
+                    mod = sys.modules[module_name]
+                    if hasattr(mod, 'register_deferred_routes'):
+                        mod.register_deferred_routes(app)
+                    break
+        except Exception as e:
+            logger.warning(f"Could not register deferred plugin routes: {e}")
+
     # Print clear banner that server is ready
     logger.info("=" * 80)
     logger.info("🚀 SERVER READY - Accepting connections now")
@@ -665,10 +677,11 @@ async def chat_endpoint(request: Request):
         is_bedrock_deepseek = current_model and 'deepseek' in current_model.lower()
         is_bedrock_openai = current_model and 'openai' in current_model.lower()
         is_google_model = current_model and ('gemini' in current_model.lower() or 'google' in current_model.lower())
+        is_openai_direct = os.environ.get("ZIYA_ENDPOINT") == "openai"
         # Check if direct streaming is enabled globally - use direct streaming by default for Bedrock models like 0.3.1
-        use_direct_streaming = is_bedrock_claude or is_bedrock_nova or is_bedrock_deepseek or is_bedrock_openai or is_google_model
+        use_direct_streaming = is_bedrock_claude or is_bedrock_nova or is_bedrock_deepseek or is_bedrock_openai or is_google_model or is_openai_direct
         
-        logger.debug(f"🔍 CHAT_ENDPOINT: Current model = {current_model}, is_bedrock_claude = {is_bedrock_claude}")
+        logger.debug(f"🔍 CHAT_ENDPOINT: Current model = {current_model}, is_bedrock_claude = {is_bedrock_claude}, is_openai_direct = {is_openai_direct}")
         
         if use_direct_streaming:
             # Use direct streaming for Bedrock Claude and Nova models
@@ -1644,7 +1657,7 @@ async def stream_chunks(body):
                 
                 # Only use StreamingToolExecutor for Bedrock models
                 if endpoint != 'bedrock':
-                    logger.debug(f"🚀 DIRECT_STREAMING: Endpoint {endpoint} not supported by StreamingToolExecutor, falling back to LangChain")
+                    logger.debug(f"🚀 DIRECT_STREAMING: Endpoint {endpoint} not supported by StreamingToolExecutor, falling back")
                     raise ValueError(f"StreamingToolExecutor only supports bedrock endpoint, got {endpoint}")
                 
                 logger.debug(f"🔍 DIRECT_STREAMING_DEBUG: About to call build_messages_for_streaming with {len(files)} files")
@@ -1922,7 +1935,46 @@ async def stream_chunks(body):
     chat_history = body.get("chat_history", [])
     files = body.get("config", {}).get("files", [])
     conversation_id = body.get("conversation_id")
-    
+
+    # OpenAI endpoint: use the model's own astream with native tool calling
+    if os.environ.get("ZIYA_ENDPOINT") == "openai" and question:
+        try:
+            from app.agents.agent import model as agent_model
+
+            langchain_messages = build_messages_for_streaming(question, chat_history, files, conversation_id, use_langchain_format=True)
+
+            mcp_tools = []
+            try:
+                from app.mcp.enhanced_tools import create_secure_mcp_tools
+                mcp_tools = create_secure_mcp_tools()
+                logger.info(f"OpenAI path: loaded {len(mcp_tools)} MCP tools")
+            except Exception as e:
+                logger.warning(f"Failed to get MCP tools for OpenAI: {e}")
+
+            model_instance = agent_model.get_model()
+            # Get the underlying DirectOpenAIModel, bypassing the RetryingChatBedrock wrapper
+            raw_model = getattr(model_instance, 'model', model_instance)
+            async for chunk in raw_model.astream(langchain_messages, tools=mcp_tools):
+                if isinstance(chunk, dict):
+                    chunk_type = chunk.get('type', '')
+                    if chunk_type == 'text' and chunk.get('content'):
+                        yield f"data: {json.dumps({'content': chunk['content']})}\n\n"
+                    elif chunk_type == 'tool_start':
+                        yield f"data: {json.dumps({'tool_start': chunk})}\n\n"
+                    elif chunk_type in ('tool_display', 'tool_execution'):
+                        yield f"data: {json.dumps({'tool_result': chunk})}\n\n"
+                    elif chunk_type == 'error':
+                        yield f"data: {json.dumps({'error': chunk.get('content', 'Unknown error')})}\n\n"
+                    elif chunk_type == 'stream_end':
+                        break
+                elif hasattr(chunk, 'content') and chunk.content:
+                    yield f"data: {json.dumps({'content': chunk.content})}\n\n"
+
+            yield f"data: {json.dumps({'done': True})}\n\n"
+            return
+        except Exception as e:
+            logger.error(f"OpenAI direct path failed, falling through: {e}")
+
     if question:
         messages = build_messages_for_streaming(question, chat_history, files, conversation_id, use_langchain_format=True)
         logger.debug(f"🔍 LANGCHAIN_PATH: Built {len(messages)} messages for non-Bedrock model")
@@ -2053,7 +2105,7 @@ async def stream_chunks(body):
                 current_model_id = model_id_result
             
             # OpenAI models should use same message construction as other Bedrock models
-            if current_model_id and 'openai' in current_model_id.lower():
+            if current_model_id and ('openai' in current_model_id.lower() or os.environ.get("ZIYA_ENDPOINT") == "openai"):
                 logger.debug(f"{current_model_id} detected, using same message construction as other Bedrock models")
                 
                 # Extract variables from request body
@@ -2078,11 +2130,12 @@ async def stream_chunks(body):
                 # Use StreamingToolExecutor path for OpenAI models to get same context
                 try:
                     from app.agents.direct_streaming import StreamingToolExecutor
-                    executor = StreamingToolExecutor()
-                    
+                    from app.agents.models import ModelManager
+
                     # Build messages using same method as other Bedrock models
+                    executor = StreamingToolExecutor()
                     messages = executor.build_messages(question, chat_history, files, conversation_id)
-                    
+
                     # Convert to LangChain format for OpenAI wrapper
                     from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
                     langchain_messages = []
@@ -2093,21 +2146,39 @@ async def stream_chunks(body):
                             langchain_messages.append(HumanMessage(content=msg["content"]))
                         elif msg["role"] == "assistant":
                             langchain_messages.append(AIMessage(content=msg["content"]))
-                    
-                    # Skip to LangChain execution with proper messages
+
                     messages = langchain_messages
                     logger.debug(f"Built {len(messages)} LangChain messages for OpenAI model")
-                    
-                    # Jump directly to LangChain execution
+
+                    # Load MCP tools for native function calling
+                    mcp_tools = []
+                    try:
+                        from app.mcp.enhanced_tools import create_secure_mcp_tools
+                        mcp_tools = create_secure_mcp_tools()
+                        logger.info(f"OpenAI path: loaded {len(mcp_tools)} MCP tools")
+                    except Exception as e:
+                        logger.warning(f"Failed to get MCP tools for OpenAI: {e}")
+
+                    # Use the model's own astream which has a built-in tool execution loop
                     model_instance = model.get_model()
-                    
-                    # Stream the response
-                    async for chunk in model_instance.astream(messages):
-                        if hasattr(chunk, 'content') and chunk.content:
-                            content_str = chunk.content
-                            if content_str:
-                                yield f"data: {json.dumps({'content': content_str})}\n\n"
-                    
+                    async for chunk in model_instance.astream(messages, tools=mcp_tools if mcp_tools else []):
+                        if isinstance(chunk, dict):
+                            chunk_type = chunk.get('type', '')
+                            if chunk_type == 'text' and chunk.get('content'):
+                                yield f"data: {json.dumps({'content': chunk['content']})}\n\n"
+                                accumulated_content += chunk['content']
+                            elif chunk_type == 'tool_start':
+                                yield f"data: {json.dumps({'tool_start': chunk})}\n\n"
+                            elif chunk_type in ('tool_display', 'tool_execution'):
+                                yield f"data: {json.dumps({'tool_result': chunk})}\n\n"
+                            elif chunk_type == 'error':
+                                yield f"data: {json.dumps({'error': chunk.get('content', 'Unknown error')})}\n\n"
+                            elif chunk_type == 'stream_end':
+                                break
+                        elif hasattr(chunk, 'content') and chunk.content:
+                            yield f"data: {json.dumps({'content': chunk.content})}\n\n"
+                            accumulated_content += chunk.content
+
                     yield f"data: {json.dumps({'done': True})}\n\n"
                     return
                     
@@ -2589,7 +2660,7 @@ async def stream_chunks(body):
                     return
                 
                 # Stream from model for non-Bedrock endpoints (use simple streaming like 0.3.0)
-                async for chunk in model_instance.astream(messages):
+                async for chunk in model_instance.astream(messages, tools=mcp_tools if mcp_tools else []):
                     # CRITICAL: Only use LangChain path for non-Bedrock endpoints
                     endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
                     if endpoint == "bedrock":
@@ -2623,11 +2694,17 @@ async def stream_chunks(body):
                     if isinstance(chunk, dict):
                         if chunk.get('type') == 'text':
                             content_str = chunk.get('content', '')
+                            if not content_str:
+                                continue
                             if content_str:
                                 current_response += content_str
                                 ops = [{"op": "add", "path": "/streamed_output_str/-", "value": content_str}]
                                 yield f"data: {json.dumps({'ops': ops})}\n\n"
                                 chunk_count += 1
+                        elif chunk.get('type') == 'tool_start':
+                            yield f"data: {json.dumps({'tool_start': chunk})}\n\n"
+                        elif chunk.get('type') == 'tool_display':
+                            yield f"data: {json.dumps({'tool_result': chunk})}\n\n"
                         elif chunk.get('type') == 'error':
                             error_msg = chunk.get('content', 'Unknown error')
                             yield f"data: {json.dumps({'error': error_msg})}\n\n"
@@ -4169,21 +4246,22 @@ async def save_file(request: FileContentRequest):
     except Exception as e:
         logger.error(f"Error in save_file: {e}")
         return {"error": str(e)}
-
 @app.get('/api/available-models')
-def get_available_models():
+def get_available_models(endpoint: Optional[str] = None):
     """Get list of available models for the current endpoint."""
-    endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+    endpoint = endpoint or os.environ.get("ZIYA_ENDPOINT", "bedrock")
 
-    # Endpoint restriction from enterprise config providers
-    try:
-        from app.plugins import get_allowed_endpoints
-        allowed_endpoints = get_allowed_endpoints()
-        if allowed_endpoints is not None and endpoint not in allowed_endpoints:
-            logger.warning(f"Endpoint '{endpoint}' not in policy list {allowed_endpoints}, using first allowed")
-            endpoint = allowed_endpoints[0]
-    except Exception:
-        pass
+    # Endpoint restriction from enterprise config.
+    # ZIYA_ALLOW_ALL_ENDPOINTS=1 bypasses the policy for dev/testing.
+    if not os.environ.get("ZIYA_ALLOW_ALL_ENDPOINTS"):
+        try:
+            from app.plugins import get_allowed_endpoints
+            allowed_endpoints = get_allowed_endpoints()
+            if allowed_endpoints is not None and endpoint not in allowed_endpoints:
+                logger.warning(f"Endpoint '{endpoint}' not in policy list {allowed_endpoints}, using first allowed")
+                endpoint = allowed_endpoints[0]
+        except Exception:
+            pass
 
     # Personal model allowlist from ~/.ziya/models.json
     try:
@@ -5209,20 +5287,21 @@ async def set_model(request: SetModelRequest):
         logger.info(f"Received model change request: {model_id}")
 
         # Enforce endpoint restriction from enterprise config providers
-        try:
-            from app.plugins import get_allowed_endpoints
-            allowed_endpoints = get_allowed_endpoints()
-            if allowed_endpoints is not None:
-                target_endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
-                if target_endpoint not in allowed_endpoints:
-                    raise HTTPException(
-                        status_code=403,
-                        detail=f"Endpoint '{target_endpoint}' is not permitted. Allowed: {allowed_endpoints}"
-                    )
-        except HTTPException:
-            raise
-        except Exception:
-            pass
+        if not os.environ.get("ZIYA_ALLOW_ALL_ENDPOINTS"):
+            try:
+                from app.plugins import get_allowed_endpoints
+                allowed_endpoints = get_allowed_endpoints()
+                if allowed_endpoints is not None:
+                    target_endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+                    if target_endpoint not in allowed_endpoints:
+                        raise HTTPException(
+                            status_code=403,
+                            detail=f"Endpoint '{target_endpoint}' is not permitted. Allowed: {allowed_endpoints}"
+                        )
+            except HTTPException:
+                raise
+            except Exception:
+                pass
 
         # Enforce personal model allowlist from ~/.ziya/models.json
         try:
@@ -5392,8 +5471,8 @@ async def set_model(request: SetModelRequest):
                 endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
                 model_name = os.environ.get("ZIYA_MODEL")
                 
-                # For Google models with native function calling, skip agent creation
-                if endpoint == "google" and model_name:
+                # For models with native function calling, skip XML agent creation
+                if endpoint in ("google", "openai") and model_name:
                     model_config = ModelManager.get_model_config(endpoint, model_name)
                     uses_native_calling = model_config.get("native_function_calling", False)
                     
@@ -6236,17 +6315,12 @@ async def reset_mcp_state(request: Request):
         conversation_id = body.get("conversation_id")
         
         from app.mcp.manager import get_mcp_manager
-        from app.mcp.tools import _tool_execution_counter, _consecutive_timeouts, _conversation_tool_states, _reset_counter_async
+        from app.mcp.enhanced_tools import _reset_counter_async
         
         mcp_manager = get_mcp_manager()
         
-        # Reset global state
+        # Reset global state (includes conversation-specific state)
         await _reset_counter_async()
-        
-        # Reset conversation-specific state if provided
-        if conversation_id and conversation_id in _conversation_tool_states:
-            del _conversation_tool_states[conversation_id]
-            logger.info(f"Reset tool state for conversation: {conversation_id}")
         
         # Force reconnection to all MCP servers
         for server_name, client in mcp_manager.clients.items():

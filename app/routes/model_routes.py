@@ -26,11 +26,11 @@ class ModelSettingsRequest(BaseModel):
 
 
 @router.get('/available-models')
-async def available_models():
+async def available_models(endpoint: Optional[str] = None):
     """Get list of available models."""
     # Lazy import to avoid circular dependency
     from app.server import get_available_models
-    return get_available_models()
+    return get_available_models(endpoint=endpoint)
 
 
 @router.get('/current-model')
