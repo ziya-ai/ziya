@@ -101,6 +101,8 @@ CRITICAL: TOOL PARAMETER CALL EXAMPLES
 When calling tools, ensure you match the exact parameter structure from the schema.
 Many tools use a 'tool_input' wrapper - verify the nesting structure carefully.
 
+IMPORTANT: Do NOT output these JSON blocks in your response text. Use the native tool/function calling facility provided by the environment.
+
 """
     
     # Add call examples for all tools
@@ -389,7 +391,7 @@ def _get_tool_call_examples_for_native(available_tools: list) -> str:
                 # Generate example arguments from schema
                 example_args = _generate_example_args_from_schema(schema, clean_name)
                 
-                examples.append(f"""**{display_name} Example:**
+                examples.append(f"""**{display_name} Argument Structure:**
 ```json
 {example_args}
 ```
