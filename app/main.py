@@ -733,6 +733,16 @@ def main():
     from app.plugins import initialize as initialize_plugins
     initialize_plugins()
     logger.info("Plugin system initialized")
+
+    # Enforce enterprise endpoint policy (after plugins are loaded)
+    if not os.environ.get("ZIYA_ALLOW_ALL_ENDPOINTS"):
+        from app.plugins import get_allowed_endpoints
+        allowed = get_allowed_endpoints()
+        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        if allowed is not None and endpoint not in allowed:
+            print(f"\n❌ Endpoint '{endpoint}' is restricted by your enterprise policy.")
+            print(f"   Allowed endpoints: {', '.join(allowed)}\n")
+            sys.exit(1)
     
     # Handle info flag - print system info and exit immediately
     if args.info:
