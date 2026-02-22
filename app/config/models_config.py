@@ -11,7 +11,8 @@ import json
 DEFAULT_ENDPOINT = "bedrock"
 DEFAULT_MODELS = {
     "bedrock": "sonnet4.6",
-    "google": "gemini-3-pro"
+    "google": "gemini-3-pro",
+    "openai": "gpt-4.1"
 }
 
 # Default regions for specific models
@@ -178,6 +179,18 @@ MODEL_FAMILIES = {
         },
         "token_limit": 128000
     }
+,
+    "openai-gpt": {
+        "supported_parameters": ["temperature", "top_p", "max_tokens"],
+        "parameter_ranges": {
+            "temperature": {"min": 0.0, "max": 2.0, "default": 0.3},
+            "top_p": {"min": 0.0, "max": 1.0, "default": 1.0},
+            "max_tokens": {"min": 1, "max": 16384, "default": 4096}
+        },
+        "native_function_calling": True,
+        "supports_vision": True,
+        "token_limit": 128000
+    },
 }
 
 # Endpoint-specific defaults that override globals
@@ -211,7 +224,18 @@ ENDPOINT_DEFAULTS = {
         "convert_system_message_to_human": True,
         "enforce_size_limit": True,
         "max_request_size_mb": 10
-    }
+    },
+    "openai": {
+        "token_limit": 128000,
+        "max_output_tokens": 16384,
+        "default_max_output_tokens": 16384,
+        "supported_parameters": ["temperature", "top_p", "max_tokens"],
+        "parameter_ranges": {
+            "temperature": {"min": 0.0, "max": 2.0, "default": 0.3},
+            "top_p": {"min": 0.0, "max": 1.0, "default": 1.0},
+            "max_tokens": {"min": 1, "max": 16384, "default": 4096}
+        }
+    },
 }
 
 # Model-specific configs that override endpoint defaults
@@ -619,7 +643,7 @@ MODEL_CONFIGS = {
             "convert_system_message_to_human": False,
             "supports_vision": True,
             "supports_function_calling": True,
-            "native_function_calling": False,
+            "native_function_calling": True,
         },
         "gemini-2.0-flash-lite": {
             "model_id": "gemini-2.0-flash-lite",
@@ -628,15 +652,15 @@ MODEL_CONFIGS = {
             "max_output_tokens": 8192,
             "convert_system_message_to_human": False,
             "supports_vision": True,
-            "supports_function_calling": False,  # This model doesn't support function calling per Google docs
-            "native_function_calling": False,
+            "supports_function_calling": True,
+            "native_function_calling": True,
         },
         "gemini-3-pro": {
             "model_id": "gemini-3-pro-preview",
             "token_limit": 1048576,
             "family": "gemini-3",
             "max_output_tokens": 65536,
-            "default_max_output_tokens": 8192,
+            "default_max_output_tokens": 32768,
             "convert_system_message_to_human": False,
             "supports_vision": True,
             "supports_function_calling": True,
@@ -648,7 +672,7 @@ MODEL_CONFIGS = {
             "token_limit": 1048576,
             "family": "gemini-3",
             "max_output_tokens": 65536,
-            "default_max_output_tokens": 8192,
+            "default_max_output_tokens": 32768,
             "convert_system_message_to_human": False,
             "supports_vision": True,
             "supports_function_calling": True,
@@ -665,6 +689,80 @@ MODEL_CONFIGS = {
             "supports_function_calling": True,
             "native_function_calling": True,
             "supports_thinking": True,
+        },
+    },
+    "openai": {
+        "gpt-4.1": {
+            "model_id": "gpt-4.1",
+            "family": "openai-gpt",
+            "token_limit": 200000,
+            "max_output_tokens": 32768,
+            "default_max_output_tokens": 16384,
+            "supports_vision": True,
+            "native_function_calling": True,
+        },
+        "gpt-4.1-mini": {
+            "model_id": "gpt-4.1-mini",
+            "family": "openai-gpt",
+            "token_limit": 200000,
+            "max_output_tokens": 32768,
+            "default_max_output_tokens": 16384,
+            "supports_vision": True,
+            "native_function_calling": True,
+        },
+        "gpt-4.1-nano": {
+            "model_id": "gpt-4.1-nano",
+            "family": "openai-gpt",
+            "token_limit": 200000,
+            "max_output_tokens": 32768,
+            "default_max_output_tokens": 16384,
+            "supports_vision": True,
+            "native_function_calling": True,
+        },
+        "gpt-4o": {
+            "model_id": "gpt-4o",
+            "family": "openai-gpt",
+            "token_limit": 128000,
+            "max_output_tokens": 16384,
+            "default_max_output_tokens": 16384,
+            "supports_vision": True,
+            "native_function_calling": True,
+        },
+        "gpt-4o-mini": {
+            "model_id": "gpt-4o-mini",
+            "family": "openai-gpt",
+            "token_limit": 128000,
+            "max_output_tokens": 16384,
+            "default_max_output_tokens": 16384,
+            "supports_vision": True,
+            "native_function_calling": True,
+        },
+        "o3": {
+            "model_id": "o3",
+            "family": "openai-gpt",
+            "token_limit": 200000,
+            "max_output_tokens": 100000,
+            "default_max_output_tokens": 32768,
+            "supports_thinking": True,
+            "native_function_calling": True,
+        },
+        "o3-mini": {
+            "model_id": "o3-mini",
+            "family": "openai-gpt",
+            "token_limit": 200000,
+            "max_output_tokens": 65536,
+            "default_max_output_tokens": 16384,
+            "supports_thinking": True,
+            "native_function_calling": True,
+        },
+        "o4-mini": {
+            "model_id": "o4-mini",
+            "family": "openai-gpt",
+            "token_limit": 200000,
+            "max_output_tokens": 100000,
+            "default_max_output_tokens": 32768,
+            "supports_thinking": True,
+            "native_function_calling": True,
         },
     }
 }

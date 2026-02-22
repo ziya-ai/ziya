@@ -753,6 +753,9 @@ class ModelManager:
             elif endpoint == "google":
                 logger.info("Using Google authentication flow only")
                 model = cls._initialize_google_model(model_config)
+            elif endpoint == "openai":
+                logger.info("Using OpenAI authentication flow only")
+                model = cls._initialize_openai_model(model_config)
             else:
                 raise ValueError(f"Unsupported endpoint: {endpoint}")
                 
@@ -1224,6 +1227,81 @@ class ModelManager:
         )
         
         return model
+
+    @classmethod
+    def _initialize_openai_model(cls, model_config: Dict[str, Any]):
+        """
+        Initialize an OpenAI model with the direct openai SDK.
+
+        Args:
+            model_config: Model configuration dict
+
+        Returns:
+            DirectOpenAIModel: The initialized model
+        """
+        from app.agents.wrappers.openai_direct import DirectOpenAIModel
+        import gc
+
+        gc.collect()
+        logger.info("Initializing OpenAI model with direct API")
+
+        # Load .env if present
+        try:
+            from dotenv import load_dotenv, find_dotenv
+            dotenv_path = find_dotenv()
+            if dotenv_path:
+                load_dotenv(dotenv_path)
+        except ImportError:
+            pass
+
+        model_id = model_config.get("model_id")
+        temperature = model_config.get("temperature", 0.3)
+        max_output_tokens = model_config.get("max_output_tokens", 16384)
+
+        # Apply environment overrides
+        settings = cls.get_model_settings(model_config)
+        if "temperature" in settings:
+            temperature = settings["temperature"]
+        if "max_output_tokens" in settings:
+            max_output_tokens = settings["max_output_tokens"]
+
+        # Credential check
+        cls._check_openai_credentials()
+
+        api_key = os.environ.get("OPENAI_API_KEY")
+        base_url = os.environ.get("OPENAI_BASE_URL")
+
+        logger.info(
+            f"Initializing OpenAI model: {model_id} "
+            f"(temp={temperature}, max_output_tokens={max_output_tokens})"
+        )
+
+        model = DirectOpenAIModel(
+            model_name=model_id,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            api_key=api_key,
+            base_url=base_url,
+        )
+        return model
+
+    @classmethod
+    def _check_openai_credentials(cls) -> None:
+        """Check that an OpenAI API key is available."""
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if api_key and api_key.strip():
+            logger.info("OpenAI API key found in environment variables")
+            return
+        # Allow OPENAI_BASE_URL without key (e.g. local LLM servers)
+        base_url = os.environ.get("OPENAI_BASE_URL")
+        if base_url:
+            logger.info(f"No OPENAI_API_KEY but OPENAI_BASE_URL is set ({base_url}), proceeding")
+            return
+        raise ValueError(
+            "OpenAI credentials not found. Please set OPENAI_API_KEY:\n"
+            "  export OPENAI_API_KEY=sk-...\n"
+            "Or set OPENAI_BASE_URL for a compatible local server."
+        )
 
     @classmethod
     def _check_google_credentials(cls) -> None:
