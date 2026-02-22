@@ -601,11 +601,12 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
             <Text type="secondary" strong>Endpoint:</Text>{' '}
             <Text type="secondary">{endpoint}</Text>
           </div>
-          <div style={{ marginBottom: 0 }}>
-            <Text type="secondary" strong>Region:</Text>{' '}
-            <Text type="secondary">{region}</Text>
-          </div>
-        </div>
+          {endpoint === 'bedrock' && (
+            <div style={{ marginBottom: 0 }}>
+              <Text type="secondary" strong>Region:</Text>{' '}
+              <Text type="secondary">{region}</Text>
+            </div>
+          )}        </div>
       </Form>
     </Modal>
   );
