@@ -195,16 +195,28 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 setConversations(mergedConversations);
                 setFolders(projectFolders);
 
-                // Set current conversation
-                if (mergedConversations.length > 0) {
+                // Restore the tab's own conversation for this project, or pick
+                // the most recent if we don't have one yet.  Never force-switch
+                // to another tab/window's most-recent conversation.
+                const savedId = getTabState('ZIYA_CURRENT_CONVERSATION_ID');
+                const restoredConv = savedId
+                    ? mergedConversations.find(c => c.id === savedId)
+                    : null;
+
+                if (restoredConv) {
+                    setCurrentConversationId(restoredConv.id);
+                    setCurrentMessages(restoredConv.messages);
+                    console.log(`✅ PROJECT_SWITCH: Restored tab's own conversation "${restoredConv.title}"`);
+                } else if (mergedConversations.length > 0) {
+                    // No saved conversation for this tab — use most recent
+                    // only as a fallback (e.g., first time opening the project).
                     const mostRecent = mergedConversations.reduce((a, b) =>
                         (b.lastAccessedAt || 0) > (a.lastAccessedAt || 0) ? b : a
                     );
                     setCurrentConversationId(mostRecent.id);
                     setCurrentMessages(mostRecent.messages);
-                    console.log(`✅ PROJECT_SWITCH: Loaded conversation "${mostRecent.title}"`);
+                    console.log(`✅ PROJECT_SWITCH: No saved conversation, using most recent "${mostRecent.title}"`);
                 } else {
-                    // No conversations for this project - create new one
                     const newConversationId = uuidv4();
                     const newConversation: Conversation = {
                         id: newConversationId,
@@ -1836,17 +1848,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 });
 
                 // 7. Update current conversation if it doesn't exist in merged set
-                // Only auto-switch if current conversation doesn't exist ANYWHERE in IndexedDB.
-                // It may have been moved to another project but still be the one the user is viewing.
-                const currentExistsAnywhere = allConversations.some((c: any) => c.id === currentConversationId);
-                const currentExistsInProject = mergedProjectConvs.some((c: any) => c.id === currentConversationId);
-                if (mergedProjectConvs.length > 0 && !currentExistsAnywhere) {
-                    const mostRecent = mergedProjectConvs.reduce((a: any, b: any) =>
-                        (b.lastAccessedAt || 0) > (a.lastAccessedAt || 0) ? b : a
-                    );
-                    setCurrentConversationId(mostRecent.id);
-                    setCurrentMessages(mostRecent.messages || []);
-                }
+                // NEVER change currentConversationId from sync polling.
+                // The active conversation is a per-tab view concern and must
+                // only change in response to explicit user actions.  If the
+                // current conversation was deleted on another instance, the
+                // user will notice it's empty and switch themselves.
+                // (The old code auto-switched to mostRecent here, which caused
+                // one window's "new chat" to hijack another window's view.)
 
                 // 8. Sync folders with server (same merge pattern)
                 try {
@@ -2071,15 +2079,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
         if (!currentConversationId && isInitialized && conversations.length === 0) {
             console.log('📝 No conversations loaded, creating initial conversation');
             setCurrentConversationId(uuidv4());
-        } else if (!currentConversationId && isInitialized && conversations.length > 0) {
-            // We have conversations but no current ID - use the most recent
-            const mostRecent = conversations.reduce((a, b) =>
-                (b.lastAccessedAt || 0) > (a.lastAccessedAt || 0) ? b : a
-            );
-            setCurrentConversationId(mostRecent.id);
-            console.log('📝 Using most recent conversation:', mostRecent.id);
         }
-    }, [currentConversationId, isInitialized, conversations.length]);
+        // REMOVED: The else-if branch that auto-selected mostRecent whenever
+        // conversations.length changed.  This was triggered by sync adding
+        // conversations from other windows, causing forced focus switches.
+        // The initial conversation is set by initializeWithRecovery or
+        // handleProjectSwitch; ongoing selection is user-driven only.
+    }, [currentConversationId, isInitialized]);
 
     const setDisplayMode = useCallback((conversationId: string, mode: 'raw' | 'pretty') => {
         setConversations(prev => {

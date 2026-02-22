@@ -731,8 +731,13 @@ export const MUIFileExplorer = () => {
   const refreshFolders = async () => {
     setIsRefreshing(true);
     try {
-      // Just trigger the refresh - let FolderContext handle the rest
-      const response = await fetch('/api/folders?refresh=true');
+      const projectPath = (window as any).__ZIYA_CURRENT_PROJECT_PATH__;
+      const params = new URLSearchParams({ refresh: 'true' });
+      if (projectPath) params.set('project_path', projectPath);
+      const headers: Record<string, string> = {};
+      if (projectPath) headers['X-Project-Root'] = projectPath;
+
+      const response = await fetch(`/api/folders?${params.toString()}`, { headers });
       if (!response.ok) {
         throw new Error(`Failed to refresh folders: ${response.status}`);
       }
