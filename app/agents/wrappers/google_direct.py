@@ -56,7 +56,7 @@ class DirectGoogleModel:
     def _convert_langchain_tools_to_google(self, tools: List[BaseTool]) -> Optional[types.Tool]:
         """Converts LangChain tools to Google GenAI SDK Tool format."""
         if not tools:
-            return []
+            return None
         
         # New SDK uses a different tool format
         from google.genai import types
@@ -64,7 +64,10 @@ class DirectGoogleModel:
         function_declarations = []
         for tool in tools:
             try:
-                schema = tool.args_schema.schema() if tool.args_schema else {}
+                # Ensure schema is a dict
+                schema = tool.args_schema.schema() if tool.args_schema else {"type": "object", "properties": {}}
+                if not isinstance(schema, dict):
+                    schema = schema.dict()
                 
                 # New SDK format
                 func_decl = types.FunctionDeclaration(
@@ -110,10 +113,10 @@ class DirectGoogleModel:
                     response={"content": message.content}
                 )
                 # Merge into previous function message if it exists (for parallel tool calls)
-                if google_messages and google_messages[-1]['role'] == 'function':
+                if google_messages and google_messages[-1]['role'] == 'tool':
                     google_messages[-1]['parts'].append(part)
                 else:
-                    google_messages.append({'role': 'function', 'parts': [part]})
+                    google_messages.append({'role': 'tool', 'parts': [part]})
                 continue
 
             if role:
@@ -240,6 +243,20 @@ class DirectGoogleModel:
                     "max_output_tokens": self.max_output_tokens,
                 }
                 
+                # CRITICAL: Disable safety settings for coding tasks
+                # Code generation often triggers false positives (e.g. "unsafe" scripts)
+                gen_config_params["safety_settings"] = [
+                    types.SafetySetting(
+                        category=category,
+                        threshold=types.HarmBlockThreshold.BLOCK_NONE
+                    ) for category in [
+                        types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                        types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                        types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                        types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                    ]
+                ]
+                
                 # Add system instruction to config if available
                 if system_instruction:
                     gen_config_params["system_instruction"] = system_instruction
@@ -277,10 +294,26 @@ class DirectGoogleModel:
                     'config': config
                 }
                 
+                # Add retry logic for transient errors
+                max_retries = 3
+                base_delay = 1
                 
-                response = await self.client.aio.models.generate_content_stream(
-                    **request_params
-                )
+                for attempt in range(max_retries):
+                    try:
+                        response = await self.client.aio.models.generate_content_stream(
+                            **request_params
+                        )
+                        break
+                    except Exception as e:
+                        # Check for rate limit (429) or server error (500+)
+                        error_str = str(e).lower()
+                        if attempt < max_retries - 1 and ('429' in error_str or '503' in error_str or 'resource exhausted' in error_str):
+                            delay = base_delay * (2 ** attempt)
+                            logger.warning(f"Google API transient error: {e}. Retrying in {delay}s...")
+                            await asyncio.sleep(delay)
+                        else:
+                            raise e
+                            
             except Exception as e:
                 error_message = f"Google API Error ({type(e).__name__}): {str(e)}"
                 logger.error(error_message, exc_info=True)
@@ -328,12 +361,39 @@ class DirectGoogleModel:
             tool_results = []
             for tool_call in tool_calls:
                 tool_name = tool_call.name
+                # Strip mcp_ prefix if present (models are instructed to use it, but internal tools may not have it)
+                if tool_name.startswith("mcp_"):
+                    tool_name = tool_name[4:]
+                
                 tool_args = dict(tool_call.args) if hasattr(tool_call, 'args') and tool_call.args else {}
 
                 yield {"type": "tool_start", "tool_name": tool_name, "input": tool_args}
 
                 try:
                     tool_result_obj = await self.mcp_manager.call_tool(tool_name, tool_args)
+
+                    # Sign and verify the tool result (same as Bedrock path)
+                    try:
+                        from app.mcp.signing import sign_tool_result, verify_tool_result, strip_signature_metadata
+
+                        # Sign the result
+                        tool_result_obj = sign_tool_result(tool_name, tool_args, tool_result_obj)
+
+                        # Verify the signature
+                        is_valid, error_message = verify_tool_result(tool_result_obj, tool_name, tool_args)
+                        if not is_valid:
+                            logger.error(f"🔐 SECURITY: Tool result verification failed for {tool_name}: {error_message}")
+                            yield {"type": "error", "content": f"Tool verification failed for {tool_name}: {error_message}"}
+                            tool_results.append(
+                                types.FunctionResponse(name=tool_name, response={"error": f"Verification failed: {error_message}"})
+                            )
+                            continue
+
+                        # Strip signature metadata before using
+                        tool_result_obj = strip_signature_metadata(tool_result_obj)
+                    except ImportError:
+                        logger.warning("Tool signing module not available, proceeding without verification")
+
                     tool_result_str = self._extract_text_from_mcp_result(tool_result_obj)
 
                     yield {"type": "tool_display", "tool_name": tool_name, "result": tool_result_str}
@@ -351,7 +411,27 @@ class DirectGoogleModel:
 
             # Add tool results to history in new format
             if tool_results:
-                history.append({'role': 'function', 'parts': tool_results})
+                history.append({'role': 'tool', 'parts': tool_results})
+
+    async def ainvoke(self, messages: List[BaseMessage], **kwargs) -> Dict[str, Any]:
+        """
+        Asynchronous invocation (non-streaming).
+        Collects the full response and returns it.
+        """
+        response_content = ""
+        async for chunk in self.astream(messages, **kwargs):
+            if chunk.get("type") == "text":
+                response_content += chunk.get("content", "")
+        
+        return {"content": response_content}
+
+    def invoke(self, messages: List[BaseMessage], **kwargs) -> Dict[str, Any]:
+        """
+        Synchronous invocation.
+        Wraps ainvoke in asyncio.run for compatibility.
+        """
+        import asyncio
+        return asyncio.run(self.ainvoke(messages, **kwargs))
 
     def bind(self, **kwargs):
         """Compatibility method - ignore stop sequences for Google."""
