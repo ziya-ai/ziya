@@ -264,6 +264,12 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
             logger.warning(f"Error reading .gitignore at {path}: {e}")
         return gitignore_patterns
 
+    # Shared state for get_patterns_recursive: visited set prevents symlink/hardlink loops,
+    # wall-clock deadline prevents unbounded scanning in enormous trees.
+    _gitignore_visited = set()
+    _gitignore_deadline = time.time() + 10.0  # 10 second hard cap
+    _GITIGNORE_MAX_ENTRIES_PER_DIR = 10000
+
     def get_patterns_recursive(path: str) -> List[Tuple[str, str]]:
         """Recursively find gitignore patterns with optimizations for speed."""
         patterns: List[Tuple[str, str]] = []
@@ -272,6 +278,11 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
         if (time.time() - scan_start_time) > 10.0 and (time.time() - scan_start_time) % 3 < 0.1:
             print(f"\r🔍 Scanning deep directories... ({time.time() - scan_start_time:.0f}s elapsed)", 
                   end='', file=sys.stderr, flush=True)
+        
+        # Wall-clock bail-out
+        if time.time() > _gitignore_deadline:
+            logger.warning(f"Gitignore scan hit 10s deadline, skipping deeper directories")
+            return patterns
         
         gitignore_path = os.path.join(path, ".gitignore")
         if os.path.exists(gitignore_path):
@@ -291,6 +302,15 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
             logger.debug(f"Reached max gitignore scan depth at {path}")
             return patterns
         
+        # Symlink/hardlink loop protection via realpath visited set
+        try:
+            real_path = os.path.realpath(path)
+        except (OSError, ValueError):
+            return patterns
+        if real_path in _gitignore_visited:
+            return patterns
+        _gitignore_visited.add(real_path)
+
         # Use os.scandir() for faster iteration than glob
         try:
             entries = os.scandir(path)
@@ -298,10 +318,17 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
             logger.debug(f"Cannot access directory {path}: {e}")
             return patterns
         
+        entry_count = 0
         for entry in entries:
             # Skip non-directories
             if not entry.is_dir(follow_symlinks=False):
                 continue
+
+            # Cap entries per directory to avoid blocking on huge flat dirs
+            entry_count += 1
+            if entry_count > _GITIGNORE_MAX_ENTRIES_PER_DIR:
+                logger.warning(f"Skipping remaining entries in {path} (>{_GITIGNORE_MAX_ENTRIES_PER_DIR} children)")
+                break
             
             subdir = entry.path + os.sep
             
@@ -453,6 +480,7 @@ def estimate_directory_count(directory: str, ignored_patterns: List[Tuple[str, s
     """Quick estimate of total directories to scan (only go 3 levels deep for estimate)."""
     should_ignore_fn = parse_gitignore_patterns(ignored_patterns)
     count = 0
+    _estimate_deadline = time.time() + 5.0  # 5 second hard cap (thread-safe)
     
     # CRITICAL: Skip Library directory in estimation to avoid hanging
     if 'Library' in directory or directory.endswith('/Library'):
@@ -465,6 +493,9 @@ def estimate_directory_count(directory: str, ignored_patterns: List[Tuple[str, s
             return 0
         
         # Check for cancellation
+        if time.time() > _estimate_deadline:
+            return 0
+
         if _scan_progress.get("cancelled"):
             return 0
         
@@ -495,31 +526,10 @@ def estimate_directory_count(directory: str, ignored_patterns: List[Tuple[str, s
             pass
         return count
     
-    # Set a short timeout for estimation
-    import signal
+    count = quick_count(directory, 0)
     
-    def timeout_handler(signum, frame):
-        raise TimeoutError("Estimation timeout")
-    
-    # Only use timeout on Unix-like systems
-    if hasattr(signal, 'SIGALRM'):
-        old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(5)  # 5 second timeout for estimation
-        try:
-            count = quick_count(directory, 0)
-        except TimeoutError:
-            logger.warning("Estimation timed out after 5s, skipping estimate")
-            count = 0
-        finally:
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)
-    else:
-        # Windows or other systems - just run without timeout
-        count = quick_count(directory, 0)
-    
-    # Extrapolate to full depth
+    # Extrapolate to full depth based on estimation depth vs actual max_depth
     if count > 0:
-        # Scale estimate based on actual max_depth vs estimation depth
         scaled = count * (max_depth // 2) if max_depth > 2 else count
         return min(scaled, count * 10)  # Cap at 10x to avoid ridiculous estimates
     return 0
@@ -620,6 +630,9 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     BFS_DEPTH_THRESHOLD = 6
     deferred_dirs: list = []  # [(parent_children_dict, entry_name, entry_path, depth)]
 
+    MAX_DEFERRED = 5000  # Prevent OOM on extremely wide trees
+    MAX_ENTRIES_PER_DIR = 10000  # Skip pathologically large flat directories
+
     def process_dir_bfs(path: str, depth: int) -> Dict[str, Any]:
         """Process a directory, deferring children beyond BFS_DEPTH_THRESHOLD."""
         nonlocal last_progress_check
@@ -673,10 +686,25 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
         total_tokens = 0
 
         try:
-            entries = os.listdir(path)
-        except (PermissionError, OSError):
+            dir_scanner = os.scandir(path)
+        except (PermissionError, OSError) as e:
+            logger.debug(f"Cannot access directory {path}: {e}")
             _visited_directories.discard(real_path)
             return {'token_count': 0}
+
+        # Materialize entries with a circuit breaker for pathologically large dirs.
+        # os.scandir is lazy; we consume entries one at a time to stay interruptible.
+        entries = []
+        try:
+            for de in dir_scanner:
+                entries.append(de.name)
+                if len(entries) > MAX_ENTRIES_PER_DIR:
+                    logger.warning(f"⚠️ Directory {path} has >{MAX_ENTRIES_PER_DIR} entries, truncating scan")
+                    break
+        except (PermissionError, OSError) as e:
+            logger.debug(f"Error reading directory entries {path}: {e}")
+        finally:
+            dir_scanner.close()
 
         for entry in entries:
             if _scan_progress.get("cancelled"):
@@ -685,7 +713,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
             current_time = time.time()
             elapsed = current_time - scan_stats['start_time']
             if current_time - last_progress_time > progress_interval:
-                progress_pct = f" ({scan_stats['directories_scanned']}/{estimated_total}, {(scan_stats['directories_scanned']/estimated_total*100):.0f}%)" if estimated_total > 0 else ""
+                progress_pct = f" ({scan_stats['directories_scanned']}/{estimated_total}, {scan_stats['directories_scanned']*100//max(estimated_total,1)}%)" if estimated_total > 0 else ""
                 logger.debug(f"📊 Scan progress: {scan_stats['directories_scanned']} dirs{progress_pct}, {scan_stats['files_processed']} files in {elapsed:.1f}s")
                 last_progress_time = current_time
 
@@ -700,16 +728,17 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
             if entry.startswith('.'):
                 continue
 
-            entry_path = os.path.join(path, entry)
-            check_path = entry_path
-            if os.path.isdir(entry_path):
-                check_path = entry_path + os.sep
+            entry_path = os.path.join(path, entry) if isinstance(entry, str) else entry
+            check_path = entry_path + os.sep if os.path.isdir(entry_path) else entry_path
             if should_ignore_fn(check_path):
                 continue
 
             if os.path.isdir(entry_path):
                 if depth < max_depth:
-                    if depth >= BFS_DEPTH_THRESHOLD:
+                    if len(deferred_dirs) >= MAX_DEFERRED:
+                        # Too many deferred dirs — skip to prevent OOM
+                        pass
+                    elif depth >= BFS_DEPTH_THRESHOLD:
                         # Defer: record a placeholder so the UI sees the directory exists
                         result['children'][entry] = {'token_count': 0, 'children': {}}
                         deferred_dirs.append((result['children'], entry, entry_path, depth + 1))
@@ -1227,103 +1256,3 @@ def get_basic_folder_structure(directory: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Even basic folder structure failed: {e}")
         return {"children": {}, "_error": f"Directory access failed: {str(e)}"}
-
-    def start_background_scan(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int):
-        """Starts the folder scan in a background thread if not already running."""
-        global _scan_thread, _folder_cache
-    
-        def scan_task():
-            logger.info(f"Background folder scan started for {directory}.")
-            # get_folder_structure updates _scan_progress globally
-            result = get_folder_structure(directory, ignored_patterns, max_depth)
-            
-            # Cache the result
-            with _scan_lock:
-                entry = {
-                    'data': result if result else {},
-                    'timestamp': time.time(),
-                    'directory_mtime': 0,
-                }
-                try:
-                    entry['directory_mtime'] = os.path.getmtime(directory)
-                except OSError:
-                    entry['directory_mtime'] = time.time()
-                _folder_cache[directory] = entry
-            logger.info(f"Background folder scan finished and result cached for {directory}.")
-    
-        with _scan_lock:
-            if _scan_thread and _scan_thread.is_alive():
-                logger.info("Folder scan is already in progress.")
-                return
-    
-            _scan_thread = threading.Thread(target=scan_task, daemon=True, name="FolderScanThread")
-            _scan_thread.start()
-            logger.info("Started background folder scan thread.")
-    
-    
-    def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int) -> Dict[str, Any]:
-        """
-        Get folder structure. Returns cached data if available and fresh.
-        If cache is stale, it starts a background scan and returns stale data or a scanning indicator.
-        """
-        global _folder_cache, _scan_thread
-    
-        current_time = time.time()
-        entry = _folder_cache.get(directory, {'timestamp': 0, 'data': None, 'directory_mtime': 0})
-        cache_age = current_time - entry['timestamp']
-        
-        try:
-            current_dir_mtime = os.path.getmtime(directory)
-            directory_changed = current_dir_mtime > entry['directory_mtime']
-        except OSError:
-            directory_changed = True
-            current_dir_mtime = 0
-
-            # Return fresh cache immediately
-            if entry['data'] is not None and cache_age < 10 and not directory_changed:
-                logger.info(f"Returning fresh folder structure cache (age: {cache_age:.1f}s)")
-                return entry['data']
-            
-    # If cache is stale or doesn't exist, manage background scan
-    with _scan_lock:
-        is_scanning = _scan_thread and _scan_thread.is_alive()
-        
-        # Only check health if scan has been running for a while
-        if is_scanning:
-            scan_age = time.time() - _scan_progress.get("start_time", 0)
-            
-            # Don't check health for very new scans (< 10 seconds)
-            if scan_age > 10 and not is_scan_healthy():
-                logger.warning(f"Scan appears stuck after {scan_age:.1f}s, cleaning up and restarting")
-        # If a scan is already running and healthy, just return scanning status
-        if is_scanning and is_scan_healthy():
-            logger.info("Scan is already in progress and healthy, returning scanning indicator")
-            # Give scan a moment to start
-            time.sleep(0.1)
-            return {"_scanning": True, "children": {}}
-        
-            # Don't check health for very new scans (< 10 seconds)
-            _scan_progress["active"] = False
-            _scan_progress["error"] = "Scan timed out or stalled"  
-            # Abandon stuck thread (don't join)
-            _scan_thread = None
-            is_scanning = False
-        elif scan_age <= 10:
-            logger.debug(f"Scan is young ({scan_age:.1f}s), not checking health yet")
-        
-        if not is_scanning:
-            logger.info("Cache is stale or missing. Starting new background scan.")
-            start_background_scan(directory, ignored_patterns, max_depth)
-            # Give scan a moment to start
-            time.sleep(0.1)
-            return {"_scanning": True, "children": {}}
-        else:
-            logger.info("Folder scan is already in progress.")
-            # Return current state (stale cache or empty dict) and indicate scanning
-            if entry['data']:
-                logger.info("Returning stale cache while scan runs in background.")
-                return {**entry['data'], "_stale_and_scanning": True}
-            else:
-                logger.info("No cache available. Indicating scan is in progress.")
-                return {"_scanning": True, "children": {}}
-                return {"_scanning": True}

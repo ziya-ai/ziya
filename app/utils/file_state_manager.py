@@ -30,55 +30,56 @@ class FileStateManager:
         self.state_file = os.path.join(os.path.expanduser("~"), ".ziya", "file_states.json")
         self.conversation_states: Dict[str, Dict[str, FileState]] = {}
         self.conversation_diffs: Dict[str, List[Dict[str, Any]]] = {}
+        self._lock = threading.Lock()
         self._load_state()
         
     def _load_state(self):
         """Load file states from disk."""
-        try:
-            if os.path.exists(self.state_file):
-                # Check file size before loading
-                file_size = os.path.getsize(self.state_file)
-                if file_size > 50 * 1024 * 1024:  # 50MB limit
-                    logger.warning(f"File state file is corrupted (size: {file_size:,} bytes). Creating backup and resetting.")
-                    backup_file = self.state_file + f".backup.{int(time.time())}"
-                    shutil.move(self.state_file, backup_file)
-                    self.conversation_states = {}
-                    return
-                
-                with open(self.state_file, 'r') as f:
-                    try:
-                        data = json.load(f)
-                    except json.JSONDecodeError as e:
-                        logger.warning(f"File state JSON corrupted: {e}. Resetting.")
+        with self._lock:
+            try:
+                if os.path.exists(self.state_file):
+                    # Check file size before loading
+                    file_size = os.path.getsize(self.state_file)
+                    if file_size > 50 * 1024 * 1024:  # 50MB limit
+                        logger.warning(f"File state file is corrupted (size: {file_size:,} bytes). Creating backup and resetting.")
                         backup_file = self.state_file + f".backup.{int(time.time())}"
                         shutil.move(self.state_file, backup_file)
                         self.conversation_states = {}
                         return
-                        
-                    for conv_id, files in data.items():
-                        self.conversation_states[conv_id] = {}
-                        for file_path, state_data in files.items():
-                            # Skip special keys that aren't file states
-                            if file_path == '_diff_history':
-                                # Load diff history
-                                if conv_id not in self.conversation_diffs:
-                                    self.conversation_diffs[conv_id] = []
-                                self.conversation_diffs[conv_id] = state_data
-                                continue
-                            self.conversation_states[conv_id][file_path] = FileState(
-                                path=state_data['path'],
-                                content_hash=state_data['content_hash'],
-                                line_states=state_data['line_states'],
-                                original_content=state_data['original_content'],
-                                current_content=state_data['current_content'],
-                                last_seen_content=state_data['last_seen_content'],
-                                last_context_submission_content=state_data.get('last_context_submission_content', state_data['current_content'])
-                            )
-                if self.conversation_states:
-                    logger.info(f"Loaded file states for {len(self.conversation_states)} conversations")
-        except Exception as e:
-            logger.warning(f"Failed to load file states: {e}")
-            self.conversation_states = {}
+                    
+                    with open(self.state_file, 'r') as f:
+                        try:
+                            data = json.load(f)
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"File state JSON corrupted: {e}. Resetting.")
+                            backup_file = self.state_file + f".backup.{int(time.time())}"
+                            shutil.move(self.state_file, backup_file)
+                            self.conversation_states = {}
+                            return
+                            
+                        for conv_id, files in data.items():
+                            self.conversation_states[conv_id] = {}
+                            for file_path, state_data in files.items():
+                                # Skip special keys that aren't file states
+                                if file_path == '_diff_history':
+                                    if conv_id not in self.conversation_diffs:
+                                        self.conversation_diffs[conv_id] = []
+                                    self.conversation_diffs[conv_id] = state_data
+                                    continue
+                                self.conversation_states[conv_id][file_path] = FileState(
+                                    path=state_data['path'],
+                                    content_hash=state_data['content_hash'],
+                                    line_states={int(k): v for k, v in state_data['line_states'].items()},
+                                    original_content=state_data['original_content'],
+                                    current_content=state_data['current_content'],
+                                    last_seen_content=state_data['last_seen_content'],
+                                    last_context_submission_content=state_data.get('last_context_submission_content', state_data['current_content'])
+                                )
+                        if self.conversation_states:
+                            logger.info(f"Loaded file states for {len(self.conversation_states)} conversations")
+            except Exception as e:
+                logger.warning(f"Failed to load file states: {e}")
+                self.conversation_states = {}
     
     def _save_state(self):
         """Save file states to disk."""
@@ -109,8 +110,9 @@ class FileStateManager:
                 if conv_id in data:
                     data[conv_id]['_diff_history'] = diffs
             
-            with open(self.state_file, 'w') as f:
-                json.dump(data, f, indent=2)
+            with self._lock:
+                with open(self.state_file, 'w') as f:
+                    json.dump(data, f, indent=2)
             logger.debug(f"Saved file states for {len(data)} conversations")
         except Exception as e:
             logger.warning(f"Failed to save file states: {e}")
@@ -193,164 +195,6 @@ class FileStateManager:
                     logger.debug(f"Recent changes in {file_path}: {len(changed_lines)} lines")
         
         return recent_changes
-    
-    def refresh_file_from_disk(self, conversation_id: str, file_path: str, base_dir: str) -> bool:
-        """
-        Refresh a file's current_content from disk without resetting the baseline.
-        
-        This is critical for detecting when a user has NOT applied a suggested diff -
-        the file on disk won't have changed, but we need to make sure we're tracking
-        the actual file content, not what we previously saw or suggested.
-        
-        Args:
-            conversation_id: The conversation ID
-            file_path: Relative path to the file
-            base_dir: Base directory for resolving full paths
-            
-        Returns:
-            True if the file was refreshed and had changes, False otherwise
-        """
-        if conversation_id not in self.conversation_states:
-            logger.warning(f"Cannot refresh file for unknown conversation {conversation_id}")
-            return False
-            
-        state = self.conversation_states[conversation_id].get(file_path)
-        if not state:
-            logger.debug(f"File {file_path} not in conversation {conversation_id}, skipping refresh")
-            return False
-        
-        # Read current content from disk
-        full_path = os.path.join(base_dir, file_path)
-        
-        # Use read_file_content which handles documents, images, etc.
-        disk_content = read_file_content(full_path)
-        
-        if disk_content is None:
-            # read_file_content returns None on error or unsupported files
-            logger.warning(f"Could not read {full_path} from disk: file not found or unsupported format")
-            return False
-        
-        disk_lines = disk_content.splitlines()
-        current_hash = self._compute_hash(disk_lines)
-        
-        # Check if disk content differs from what we have
-        if current_hash != state.content_hash:
-            logger.debug(f"File {file_path} changed on disk since last check")
-            # Update current content but preserve original baseline
-            changed_lines = self._compute_changes(state.original_content, state.current_content, disk_lines)
-            state.current_content = disk_lines
-            state.content_hash = current_hash
-            
-            # Update line states for changed lines
-            for line_num in changed_lines:
-                if line_num not in state.line_states:
-                    state.line_states[line_num] = '+'
-                elif state.line_states[line_num] != '+':
-                    state.line_states[line_num] = '*'
-            
-            return True
-        
-        return False
-    
-    def refresh_all_files_from_disk(self, conversation_id: str, base_dir: str) -> Dict[str, bool]:
-        """
-        Refresh all files in a conversation from disk.
-        
-        Args:
-            conversation_id: The conversation ID
-            base_dir: Base directory for resolving full paths
-            
-        Returns:
-            Dict mapping file paths to whether they changed
-        """
-        if conversation_id not in self.conversation_states:
-            return {}
-        
-        results = {}
-        for file_path in list(self.conversation_states[conversation_id].keys()):
-            results[file_path] = self.refresh_file_from_disk(conversation_id, file_path, base_dir)
-        
-        changed_files = [f for f, changed in results.items() if changed]
-        if changed_files:
-            logger.debug(f"Refreshed {len(changed_files)} files from disk for conversation {conversation_id}: {changed_files}")
-            self._save_state()
-        
-        return recent_changes
-    
-    def has_changes_since_last_context_submission(self, conversation_id: str, file_path: str) -> bool:
-        """Check if a file has changes since the last context submission."""
-        if conversation_id not in self.conversation_states:
-            return False
-        
-        state = self.conversation_states[conversation_id].get(file_path)
-        if not state:
-            return False
-        
-        return state.current_content != state.last_context_submission_content
-    
-    def refresh_file_from_disk(self, conversation_id: str, file_path: str, base_dir: str) -> bool:
-        """
-        Refresh a file's current_content from disk without resetting the baseline.
-        
-        This is critical for detecting when a user has NOT applied a suggested diff -
-        the file on disk won't have changed, but we need to track the actual state.
-        
-        Returns:
-            True if the file was refreshed and had changes, False otherwise
-        """
-        if conversation_id not in self.conversation_states:
-            logger.warning(f"Cannot refresh file for unknown conversation {conversation_id}")
-            return False
-            
-        state = self.conversation_states[conversation_id].get(file_path)
-        if not state:
-            logger.debug(f"File {file_path} not in conversation {conversation_id}, skipping refresh")
-            return False
-        
-        full_path = os.path.join(base_dir, file_path)
-        
-        # Use read_file_content which handles documents, images, etc.
-        disk_content = read_file_content(full_path)
-        
-        if disk_content is None:
-            # read_file_content returns None on error or unsupported files
-            logger.warning(f"Could not read {full_path} from disk: file not found or unsupported format")
-            return False
-        
-        disk_lines = disk_content.splitlines()
-        current_hash = self._compute_hash(disk_lines)
-        
-        if current_hash != state.content_hash:
-            logger.debug(f"File {file_path} changed on disk since last check")
-            changed_lines = self._compute_changes(state.original_content, state.current_content, disk_lines)
-            state.current_content = disk_lines
-            state.content_hash = current_hash
-            
-            for line_num in changed_lines:
-                if line_num not in state.line_states:
-                    state.line_states[line_num] = '+'
-                elif state.line_states[line_num] != '+':
-                    state.line_states[line_num] = '*'
-            
-            return True
-        
-        return False
-    
-    def refresh_all_files_from_disk(self, conversation_id: str, base_dir: str) -> Dict[str, bool]:
-        """Refresh all files in a conversation from disk."""
-        if conversation_id not in self.conversation_states:
-            return {}
-        
-        results = {}
-        for file_path in list(self.conversation_states[conversation_id].keys()):
-            results[file_path] = self.refresh_file_from_disk(conversation_id, file_path, base_dir)
-        
-        changed_files = [f for f, changed in results.items() if changed]
-        if changed_files:
-            logger.debug(f"Refreshed {len(changed_files)} files from disk: {changed_files}")
-            self._save_state()
-        
-        return results
     
     def mark_context_submission(self, conversation_id: str) -> None:
         """Mark the current state as the last context submission point."""
@@ -441,22 +285,6 @@ class FileStateManager:
             
         return annotated_lines, True
 
-    def has_changes_since_last_context_submission(self, conversation_id: str, file_path: str) -> bool:
-        """Check if file has changed since last context submission."""
-        if conversation_id not in self.conversation_states:
-            logger.debug(f"No conversation state for {conversation_id}, treating as changed")
-            return True
-        
-        state = self.conversation_states[conversation_id].get(file_path)
-        if not state:
-            logger.debug(f"No file state for {file_path} in conversation {conversation_id}, treating as changed")
-            return True
-            
-        has_changes = state.current_content != state.last_context_submission_content
-        logger.debug(f"File {file_path} change check: current={len(state.current_content)} lines, "
-                    f"baseline={len(state.last_context_submission_content)} lines, changed={has_changes}")
-        return has_changes
-    
     def refresh_file_from_disk(self, conversation_id: str, file_path: str, base_dir: str) -> bool:
         """
         Refresh a file's current_content from disk without resetting the baseline.
@@ -476,7 +304,8 @@ class FileStateManager:
             logger.debug(f"File {file_path} not in conversation {conversation_id}, skipping refresh")
             return False
         
-        full_path = os.path.join(base_dir, file_path)
+        from app.utils.file_utils import resolve_external_path
+        full_path = resolve_external_path(file_path, base_dir)
         
         # Use read_file_content which handles documents, images, etc.
         disk_content = read_file_content(full_path)
@@ -751,6 +580,9 @@ Files being tracked for changes: """ + ", ".join(files_with_changes) + "\n"
                     existing_state.content_hash = current_hash
 
                     logger.debug(f"Updated existing file in state: {file_path} with {len(changed_lines)} changed lines")    
+
+        self._save_state()
+
     def record_applied_diff(self, conversation_id: str, file_path: str, diff_content: str, description: str = ""):
         """
         Record a successfully applied diff for later reference.

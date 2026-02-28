@@ -1,5 +1,6 @@
 import os
 import time
+import platform
 import threading
 from typing import Dict, Set, Optional, Callable
 from watchdog.observers import Observer
@@ -101,8 +102,11 @@ class FileChangeHandler(FileSystemEventHandler):
             
             # If we see delete -> create -> modify sequence within 0.5 seconds, suppress delete and create
             if event_type == 'deleted':
-                # Start tracking this potential atomic write
-                return False  # Don't log delete events - wait to see if it's atomic
+                # Start tracking this potential atomic write.
+                # Schedule a deferred check: if no create follows within 0.5s,
+                # process the delete. For now, let it through — on_deleted
+                # already checks os.path.exists before removing from cache.
+                pass  # Fall through to normal processing
             elif event_type == 'created':
                 # Check if this follows a recent delete
                 delete_time = self.atomic_write_sequences[rel_path].get('deleted', 0)
@@ -133,6 +137,8 @@ class FileChangeHandler(FileSystemEventHandler):
     def on_modified(self, event: FileSystemEvent):
         """Handle file modification events."""
         if event.is_directory:
+            # Directory metadata changed — not actionable for cache updates.
+            # New directories are handled in on_created.
             return
             
         # Get the relative path from the base directory
@@ -190,8 +196,8 @@ class FileChangeHandler(FileSystemEventHandler):
             self._update_conversations(rel_path, content)
             
             # Update folder cache incrementally instead of invalidating
-            from app.server import update_file_in_folder_cache
-            if update_file_in_folder_cache(rel_path):
+            from app.server import update_file_in_folder_cache as _update_cache
+            if _update_cache(rel_path, base_dir=self.base_dir):
                 logger.debug(f"✅ Incrementally updated cache for modified file: {rel_path}")
             else:
                 # Fallback to invalidation if incremental update fails
@@ -202,16 +208,23 @@ class FileChangeHandler(FileSystemEventHandler):
     
     def on_created(self, event: FileSystemEvent):
         """Handle file creation events."""
-        if event.is_directory:
-            return
-            
         # Get the relative path from the base directory
         abs_path = os.path.abspath(event.src_path)
         if not abs_path.startswith(self.base_dir):
             return
-            
+
         rel_path = os.path.relpath(abs_path, self.base_dir)
-        
+
+        if event.is_directory:
+            # A new directory was created. We can't incrementally add it to
+            # the cache because we don't know its contents yet, but we need
+            # to invalidate so the next refresh picks it up.
+            if self._should_ignore_path(abs_path):
+                return
+            logger.info(f"📁 Directory created: {rel_path}")
+            self._debounced_cache_invalidation()
+            return
+            
         # Skip editor temp files
         if self._is_editor_temp_file(abs_path):
             return
@@ -228,6 +241,11 @@ class FileChangeHandler(FileSystemEventHandler):
         if not self._should_process_event(rel_path, "created"):
             return
             
+        # Skip backup files (matches on_modified skip at line ~179)
+        abs_path = os.path.abspath(event.src_path)
+        if abs_path.endswith('.backup') or '.backup.' in abs_path:
+            return
+
         # Suppress false create events fired by editors after a modify.
         # Only suppress when we previously saw a modify for this file within
         # the last second — a genuinely new file won't have a prior modify.
@@ -251,8 +269,8 @@ class FileChangeHandler(FileSystemEventHandler):
             logger.debug(f"File created: {rel_path}")
         
         # Try to add to cache incrementally
-        from app.server import add_file_to_folder_cache
-        cache_updated = add_file_to_folder_cache(rel_path)
+        from app.server import add_file_to_folder_cache as _add_cache
+        cache_updated = _add_cache(rel_path, base_dir=self.base_dir)
         
         if not cache_updated:
             # Cache update failed (probably because cache is None after refresh)
@@ -287,16 +305,13 @@ class FileChangeHandler(FileSystemEventHandler):
         rel_path = os.path.relpath(abs_path, self.base_dir)
         
         # Skip editor temp files
-        abs_path = os.path.abspath(event.src_path)
-        if not abs_path.startswith(self.base_dir):
-            return
-            
-        rel_path = os.path.relpath(abs_path, self.base_dir)
-        
-        # Skip editor temp files
         if self._is_editor_temp_file(abs_path):
             return
         
+        # Skip backup files
+        if abs_path.endswith('.backup') or '.backup.' in abs_path:
+            return
+
         # Skip files that match gitignore patterns
         if self._should_ignore_path(abs_path):
             logger.debug(f"Ignoring deleted file (matches gitignore): {rel_path}")
@@ -315,8 +330,8 @@ class FileChangeHandler(FileSystemEventHandler):
         logger.info(f"File deleted: {rel_path}" + (" (was in context)" if was_in_context else ""))
         
         # Remove from cache incrementally instead of invalidating
-        from app.server import remove_file_from_folder_cache
-        if remove_file_from_folder_cache(rel_path):
+        from app.server import remove_file_from_folder_cache as _remove_cache
+        if _remove_cache(rel_path, base_dir=self.base_dir):
             logger.debug(f"✅ Incrementally removed file from cache: {rel_path}")
         else:
             # Fallback to invalidation if incremental remove fails
@@ -372,9 +387,6 @@ class FileChangeHandler(FileSystemEventHandler):
                 self.cleanup_old_atomic_sequences()
                 self._last_cleanup = time.time()
             # Don't log or invalidate cache for files not in any conversations
-                self.cleanup_old_atomic_sequences()
-                self._last_cleanup = time.time()
-            # Don't log or invalidate cache for files not in any conversations
     
     def cleanup_old_atomic_sequences(self):
         """Remove old atomic write sequence tracking entries."""
@@ -408,13 +420,35 @@ class FileWatcher:
         self.base_dir = os.path.abspath(base_dir)
         self.file_state_manager = file_state_manager
         self.event_handler = FileChangeHandler(file_state_manager, self.base_dir, cache_invalidation_callback)
-        
-        # Add a special handler for .gitignore files
         self.gitignore_handler = GitignoreChangeHandler(self.event_handler)
-        
         self.observer = Observer()
-        self.observer.schedule(self.event_handler, self.base_dir, recursive=True)
-        self.observer.schedule(self.gitignore_handler, self.base_dir, recursive=True)
+
+        # On Linux, watchdog uses inotify which walks the entire tree synchronously
+        # to add per-directory watches. This can hang for minutes on huge directories.
+        # Defer the recursive walk to a background thread so the server starts immediately.
+        # On macOS (FSEvents), recursive=True is kernel-level and doesn't walk.
+        is_linux = platform.system() == 'Linux'
+
+        if is_linux:
+            # Start non-recursive immediately (watches root dir only)
+            self.observer.schedule(self.event_handler, self.base_dir, recursive=False)
+            self.observer.schedule(self.gitignore_handler, self.base_dir, recursive=False)
+            logger.info("File watcher started (non-recursive, will upgrade in background)")
+            # Upgrade to recursive in a background thread after server is ready
+            def _upgrade_to_recursive():
+                time.sleep(5)  # Let server finish starting
+                try:
+                    self.observer.unschedule_all()
+                    self.observer.schedule(self.event_handler, self.base_dir, recursive=True)
+                    self.observer.schedule(self.gitignore_handler, self.base_dir, recursive=True)
+                    logger.info("File watcher upgraded to recursive mode")
+                except Exception as e:
+                    logger.warning(f"Failed to upgrade file watcher to recursive: {e}")
+            threading.Thread(target=_upgrade_to_recursive, daemon=True, name="WatcherUpgrade").start()
+        else:
+            self.observer.schedule(self.event_handler, self.base_dir, recursive=True)
+            self.observer.schedule(self.gitignore_handler, self.base_dir, recursive=True)
+
         self.observer.start()
         self.initialized = True
         
