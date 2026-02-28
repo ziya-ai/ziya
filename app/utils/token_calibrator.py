@@ -509,7 +509,7 @@ class TokenCalibrator:
         """
         if not model_family:
             model_family = self._get_current_model_family()
-            logger.info(f"📊 ESTIMATE: No model_family provided, inferred: '{model_family}'")
+            logger.debug(f"📊 ESTIMATE: No model_family provided, inferred: '{model_family}'")
         
         # DEBUG: Log what we have available
         logger.debug(f"📊 ESTIMATE-STATE: model_family='{model_family}', "

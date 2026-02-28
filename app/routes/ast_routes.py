@@ -19,7 +19,6 @@ except ImportError:
     get_ast_token_count = lambda: 0
     get_resolution_estimates = lambda: {}
 
-from app.utils.context_enhancer import get_ast_indexing_status
 from app.utils.context_enhancer import get_ast_indexing_status, reset_ast_indexing_status
 from app.utils.logging_utils import logger
 

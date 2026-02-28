@@ -34,14 +34,13 @@ class HunkStatusMiddleware(BaseHTTPMiddleware):
                     try:
                         # For JSONResponse, we can access the body directly
                         body = response.body
-                        
-                        # Parse the JSON
                         import json
                         data = json.loads(body)
                         
                         # If the response contains hunk statuses, store them
                         if "details" in data and "hunk_statuses" in data["details"]:
-                            logger.error(f"Error processing JSONResponse: {str(e)}", exc_info=True)
+                            self.hunk_statuses.update(data["details"]["hunk_statuses"])
+                            logger.info(f"Captured hunk statuses: {list(data['details']['hunk_statuses'].keys())}")
                     except Exception as e:
                         logger.error(f"Error processing JSONResponse: {str(e)}", exc_info=True)
             except Exception as e:
