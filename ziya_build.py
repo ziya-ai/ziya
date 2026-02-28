@@ -89,6 +89,13 @@ def main():
                 
                 if needs_install:
                     print("Running npm install for frontend...")
+                    # Configure npm for Package Builder (Peru WIRE proxy)
+                    if os.environ.get("BRAZIL_PACKAGE_VERSION"):
+                       wire_url = os.environ.get("WIRE_NPM_REPOSITORY_URL")
+                       if wire_url:
+                           print(f"Configuring npm to use WIRE proxy: {wire_url}")
+                           subprocess.run(["npm", "config", "set", "registry", wire_url],
+                                        cwd=str(frontend_project_dir), check=True)
                     subprocess.run(["npm", "install"], cwd=str(frontend_project_dir), check=True, shell=sys.platform == "win32")
                 else:
                     print("Frontend dependencies up to date, skipping npm install.")

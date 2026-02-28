@@ -25,6 +25,7 @@ from app.plugins import (
     register_config_provider,
     register_registry_provider,
     register_data_retention_provider,
+    register_shell_config_provider,
     register_service_model_provider,
 )
 ```

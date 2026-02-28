@@ -49,7 +49,10 @@ Ziya supports models from multiple providers. The default model is `sonnet4.6` o
 
 | Alias | Model | Context | Notes |
 |---|---|---|---|
-| `gemini-3-pro` | Gemini 3 Pro Preview | 1M | Thinking levels. Native function calling. |
+| `gemini-3.1-pro` | Gemini 3.1 Pro Preview | 1M | Thinking levels. Native function calling. Default. |
+| `gemini-3.1-pro-customtools` | Gemini 3.1 Pro Preview (Custom Tools) | 1M | Optimized for agentic workflows with bash/custom tools. |
+| `gemini-latest` | Gemini Pro Latest | 1M | Floating alias — auto-updates to latest Pro model. |
+| `gemini-3-pro` | Gemini 3 Pro Preview | 1M | ⚠️ Deprecated March 9, 2026. Use `gemini-3.1-pro`. |
 | `gemini-3-flash` | Gemini 3 Flash Preview | 1M | Thinking levels. Native function calling. |
 | `gemini-2.5-pro` | Gemini 2.5 Pro | 1M | Native function calling. |
 | `gemini-flash` | Gemini 2.5 Flash | 1M | Native function calling. |
@@ -91,6 +94,8 @@ The model has access to tools it can call autonomously when they would help answ
 ### MCP Tools
 
 Connect any MCP-compatible server to give the model additional capabilities — shell access, internal APIs, databases, and more. See your server's documentation for setup.
+
+The shell command allowlist can be extended by enterprise plugins via the `ShellConfigProvider` interface — see `Enterprise.md` for details. Users can also add commands per-session with `/shell add <cmd>` or persist them with `/shell add <cmd> save`.
 
 ---
 
