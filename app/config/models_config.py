@@ -11,8 +11,9 @@ import json
 DEFAULT_ENDPOINT = "bedrock"
 DEFAULT_MODELS = {
     "bedrock": "sonnet4.6",
-    "google": "gemini-3-pro",
-    "openai": "gpt-4.1"
+    "google": "gemini-3.1-pro",
+    "openai": "gpt-4.1",
+    "anthropic": "claude-sonnet-4-6"
 }
 
 # Default regions for specific models
@@ -658,6 +659,43 @@ MODEL_CONFIGS = {
         "gemini-3-pro": {
             "model_id": "gemini-3-pro-preview",
             "token_limit": 1048576,
+            "deprecated": "Discontinued March 9, 2026. Use gemini-3.1-pro instead.",
+            "family": "gemini-3",
+            "max_output_tokens": 65536,
+            "default_max_output_tokens": 32768,
+            "convert_system_message_to_human": False,
+            "supports_vision": True,
+            "supports_function_calling": True,
+            "native_function_calling": True,
+            "thinking_level": "medium"
+        },
+        "gemini-3.1-pro": {
+            "model_id": "gemini-3.1-pro-preview",
+            "token_limit": 1048576,
+            "family": "gemini-3",
+            "max_output_tokens": 65536,
+            "default_max_output_tokens": 32768,
+            "convert_system_message_to_human": False,
+            "supports_vision": True,
+            "supports_function_calling": True,
+            "native_function_calling": True,
+            "thinking_level": "medium"
+        },
+        "gemini-3.1-pro-customtools": {
+            "model_id": "gemini-3.1-pro-preview-customtools",
+            "token_limit": 1048576,
+            "family": "gemini-3",
+            "max_output_tokens": 65536,
+            "default_max_output_tokens": 32768,
+            "convert_system_message_to_human": False,
+            "supports_vision": True,
+            "supports_function_calling": True,
+            "native_function_calling": True,
+            "thinking_level": "medium"
+        },
+        "gemini-latest": {
+            "model_id": "gemini-pro-latest",
+            "token_limit": 1048576,
             "family": "gemini-3",
             "max_output_tokens": 65536,
             "default_max_output_tokens": 32768,
@@ -761,6 +799,59 @@ MODEL_CONFIGS = {
             "token_limit": 200000,
             "max_output_tokens": 100000,
             "default_max_output_tokens": 32768,
+            "supports_thinking": True,
+            "native_function_calling": True,
+        },
+    },
+    "anthropic": {
+        "claude-sonnet-4-6": {
+            "model_id": "claude-sonnet-4-6",
+            "family": "claude",
+            "token_limit": 200000,
+            "max_output_tokens": 64000,
+            "default_max_output_tokens": 16384,
+            "supports_vision": True,
+            "supports_thinking": True,
+            "supports_adaptive_thinking": True,
+            "native_function_calling": True,
+        },
+        "claude-sonnet-4-5": {
+            "model_id": "claude-sonnet-4-5-20250514",
+            "family": "claude",
+            "token_limit": 200000,
+            "max_output_tokens": 64000,
+            "default_max_output_tokens": 16384,
+            "supports_vision": True,
+            "supports_thinking": True,
+            "native_function_calling": True,
+        },
+        "claude-opus-4-6": {
+            "model_id": "claude-opus-4-6",
+            "family": "claude",
+            "token_limit": 200000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 16384,
+            "supports_vision": True,
+            "supports_thinking": True,
+            "supports_adaptive_thinking": True,
+            "native_function_calling": True,
+        },
+        "claude-haiku-3-5": {
+            "model_id": "claude-3-5-haiku-20241022",
+            "family": "claude",
+            "token_limit": 200000,
+            "max_output_tokens": 8192,
+            "default_max_output_tokens": 8192,
+            "supports_vision": True,
+            "native_function_calling": True,
+        },
+        "claude-haiku-4-5": {
+            "model_id": "claude-haiku-4-5-20251001",
+            "family": "claude",
+            "token_limit": 200000,
+            "max_output_tokens": 64000,
+            "default_max_output_tokens": 16384,
+            "supports_vision": True,
             "supports_thinking": True,
             "native_function_calling": True,
         },
