@@ -35,47 +35,6 @@ from langchain_core.messages import HumanMessage
 import app.config.models_config as config
 
 class ModelManager:
-    """Manages model initialization and configuration."""
-    
-    def __init__(self):
-        """Initialize the model manager."""
-        # Load environment variables
-        load_dotenv(find_dotenv())
-        
-        # Initialize state
-        self._endpoint = os.environ.get("ZIYA_ENDPOINT", config.DEFAULT_ENDPOINT)
-        self._model = os.environ.get("ZIYA_MODEL", config.DEFAULT_MODELS[self._endpoint])
-        self._model_id_override = os.environ.get("ZIYA_MODEL_ID_OVERRIDE")
-        self._llm = None
-        
-        # Initialize model parameters
-        self._temperature = float(os.environ.get("ZIYA_TEMPERATURE", 0.3))
-        self._top_p = float(os.environ.get("ZIYA_TOP_P", 0.9))
-        self._top_k = int(os.environ.get("ZIYA_TOP_K", 40))
-        self._max_output_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 4096))
-        
-        # Initialize the LLM
-        self._initialize_llm()
-    
-    def get_model_config(self):
-        """Get the current model configuration."""
-        model_config = config.MODEL_CONFIGS[self._endpoint][self._model].copy()
-        
-        # Override model ID if specified
-        if self._model_id_override:
-            model_config["model_id"] = self._model_id_override
-        
-        # Update parameters
-        model_config.update({
-            "temperature": self._temperature,
-            "top_p": self._top_p,
-            "top_k": self._top_k,
-            "max_output_tokens": self._max_output_tokens
-        })
-        
-        return model_config
-
-class ModelManager:
     """
     Manages model configuration and initialization with a clear inheritance hierarchy:
     1. Global defaults apply to all models
@@ -192,22 +151,6 @@ class ModelManager:
     def get_state(cls):
         """Get the current ModelManager state."""
         return cls._state.copy()  # Return a copy to prevent external modification
-            
-        # Force garbage collection again to clean up any lingering references
-        gc.collect()
-        
-        # Invalidate prompt extension cache
-        try:
-            from app.agents.prompts_manager import invalidate_prompt_cache
-            invalidate_prompt_cache()
-        except ImportError:
-            logger.debug("Could not invalidate prompt cache - module not available")
-        
-        logger.info("Model state completely reset")
-        # Force garbage collection again after resetting state
-        gc.collect()
-        
-        return cls._state
 
     # Use the configuration from config.py
     DEFAULT_ENDPOINT = config.DEFAULT_ENDPOINT
@@ -639,7 +582,19 @@ class ModelManager:
                 from app.utils.custom_exceptions import KnownCredentialException
                 raise KnownCredentialException(error_msg, is_server_startup=False)
             
-            bedrock_client = session.client('bedrock-runtime', region_name=region)
+            # Configure read timeout high enough for extended-context requests
+            # (1M tokens can take 2-3 minutes for the API to start streaming).
+            # Disable boto3's own retries — retry logic lives in BedrockProvider
+            # and StreamingToolExecutor where it can use async sleep.
+            from botocore.config import Config as BotoConfig
+            bedrock_client = session.client(
+                'bedrock-runtime',
+                region_name=region,
+                config=BotoConfig(
+                    read_timeout=300,
+                    retries={'max_attempts': 0},
+                ),
+            )
             logger.info(f"Created fresh bedrock client with profile {aws_profile} and region {region}")
             
             # Test the client to ensure it's working properly
@@ -756,6 +711,9 @@ class ModelManager:
             elif endpoint == "openai":
                 logger.info("Using OpenAI authentication flow only")
                 model = cls._initialize_openai_model(model_config)
+            elif endpoint == "anthropic":
+                logger.info("Using Anthropic authentication flow only")
+                model = cls._initialize_anthropic_model(model_config)
             else:
                 raise ValueError(f"Unsupported endpoint: {endpoint}")
                 
@@ -1301,6 +1259,41 @@ class ModelManager:
             "OpenAI credentials not found. Please set OPENAI_API_KEY:\n"
             "  export OPENAI_API_KEY=sk-...\n"
             "Or set OPENAI_BASE_URL for a compatible local server."
+        )
+
+    @classmethod
+    def _initialize_anthropic_model(cls, model_config: Dict[str, Any]):
+        """Initialize an Anthropic model with the direct anthropic SDK."""
+        from app.agents.wrappers.anthropic_direct import DirectAnthropicModel
+        import gc
+        gc.collect()
+        logger.info("Initializing Anthropic model with direct API")
+
+        model_id = model_config.get("model_id")
+        temperature = model_config.get("temperature", 0.3)
+        max_output_tokens = model_config.get("max_output_tokens", 16384)
+
+        settings = cls.get_model_settings(model_config)
+        if "temperature" in settings:
+            temperature = settings["temperature"]
+        if "max_output_tokens" in settings:
+            max_output_tokens = settings["max_output_tokens"]
+
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "Anthropic credentials not found. Please set ANTHROPIC_API_KEY:\n"
+                "  export ANTHROPIC_API_KEY=sk-ant-..."
+            )
+        logger.info("Anthropic API key found in environment variables")
+
+        logger.info(f"Initializing Anthropic model: {model_id} (temp={temperature}, max_output_tokens={max_output_tokens})")
+
+        return DirectAnthropicModel(
+            model_name=model_id,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            api_key=api_key,
         )
 
     @classmethod

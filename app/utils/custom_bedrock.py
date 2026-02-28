@@ -366,28 +366,6 @@ class CustomBedrockClient:
                     # to avoid breaking async context
                     logger.debug("🔍 EXTENDED_CONTEXT: Skipping CustomBedrockClient retry for streaming - letting StreamingToolExecutor handle it")
                     raise
-                    error_message = str(e)
-                    logger.debug(f"🔍 EXTENDED_CONTEXT: Checking error for extended context retry: {error_message[:100]}...")
-                    logger.debug(f"🔍 EXTENDED_CONTEXT: conversation_id = {conversation_id}")
-                    logger.debug(f"🔍 EXTENDED_CONTEXT: supports_extended_context = {self._supports_extended_context()}")
-                    logger.debug(f"🔍 EXTENDED_CONTEXT: should_use_extended_context = {self._should_use_extended_context(conversation_id) if conversation_id else 'N/A'}")
-                    
-                    if (("Input is too long" in error_message or "prompt is too long" in error_message or 
-                         "input length and `max_tokens` exceed context limit" in error_message) and
-                        self._supports_extended_context() and 
-                        conversation_id and 
-                        not self._should_use_extended_context(conversation_id)):
-                        
-                        logger.info("🚀 EXTENDED_CONTEXT: Attempting retry with extended context")
-                        try:
-                            return self._retry_with_extended_context(kwargs, error_message, conversation_id)
-                        except Exception as retry_error:
-                            logger.error(f"Extended context retry failed: {retry_error}")
-                    else:
-                        logger.debug("🔍 EXTENDED_CONTEXT: Extended context retry conditions not met")
-                    
-                    # Fall back to original method if our customization fails
-                    return self.original_invoke(**kwargs)
             else:
                 # If no body or not a string, just call the original method
                 return self.original_invoke(**kwargs)

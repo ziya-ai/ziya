@@ -3,7 +3,7 @@ Token counting routes.
 """
 from fastapi import APIRouter
 from pydantic import BaseModel
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import logging
 
 logger = logging.getLogger("ZIYA")
