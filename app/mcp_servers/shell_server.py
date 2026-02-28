@@ -15,7 +15,7 @@ from typing import Dict, Any, Optional
 
 # Import centralized shell configuration
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from app.config.shell_config import DEFAULT_SHELL_CONFIG
+from app.config.shell_config import get_default_shell_config
 from app.config.write_policy import WritePolicyManager
 from app.mcp_servers.write_policy import ShellWriteChecker
 
@@ -30,8 +30,12 @@ class ShellServer:
     def __init__(self):
         self.request_id = 0
         
-        # Use centralized configuration as the single source of truth
-        self.allowed_commands = DEFAULT_SHELL_CONFIG["allowedCommands"].copy()
+        # Yolo mode — bypass command allowlist (except always_blocked)
+        self.yolo_mode = os.environ.get('YOLO_MODE', 'false').lower() in ('true', '1', 'yes')
+
+        # Use centralized configuration (merged with plugin provider additions)
+        self._effective_config = get_default_shell_config()
+        self.allowed_commands = self._effective_config["allowedCommands"].copy()
 
         # Write policy
         self.wp_manager = WritePolicyManager()
@@ -103,6 +107,7 @@ class ShellServer:
         print(f"Shell server starting with {len(self.safe_command_patterns)} allowed command patterns", file=sys.stderr)
         available_commands = ', '.join(sorted(set([p.split('_')[0] if '_' in p else p for p in self.safe_command_patterns.keys()])))
         print(f"Available commands: {available_commands}", file=sys.stderr)
+        print(f"YOLO mode: {self.yolo_mode}", file=sys.stderr)
         print(f"Git operations enabled: {self.git_operations_enabled}", file=sys.stderr)
         print(f"Safe write paths: {self.wp_manager.policy.get('safe_write_paths', [])}", file=sys.stderr)
         print(f"Write patterns: {self.wp_manager.policy.get('allowed_write_patterns', [])}", file=sys.stderr)
@@ -215,9 +220,18 @@ class ShellServer:
             return False
         
         command = command.strip()
-        
-        # Clean command - remove any output that got included (take only first line)
         command = command.split('\n')[0].strip()
+
+        # YOLO mode — allow everything except always_blocked commands
+        if self.yolo_mode:
+            always_blocked = self.wp_manager.policy.get('always_blocked', [])
+            for token in re.split(r'\s*[|;&]+\s*', command):
+                first_word = token.strip().split()[0] if token.strip() else ''
+                if first_word in always_blocked:
+                    print(f"YOLO mode: '{first_word}' is in always_blocked list", file=sys.stderr)
+                    return False
+            print(f"YOLO mode: allowing '{command[:80]}'", file=sys.stderr)
+            return True
         
         # Split by shell operators and validate each segment
         segments = self._split_by_shell_operators(command)
@@ -382,6 +396,7 @@ class ShellServer:
                 timeout_param = arguments.get("timeout", self.command_timeout)
                 try:
                     timeout = float(timeout_param) if timeout_param is not None else 10
+                    timeout = None if timeout == 0 else timeout
                 except (ValueError, TypeError):
                     # If conversion fails, use default timeout
                     timeout = self.command_timeout
@@ -411,7 +426,7 @@ class ShellServer:
                     }
                 
                 # Write policy check (after allowlist, before execution)
-                write_ok, write_reason = self.write_checker.check(
+                write_ok, write_reason = (True, "") if self.yolo_mode else self.write_checker.check(
                     command, self._split_by_shell_operators
                 )
                 if not write_ok:
@@ -485,10 +500,6 @@ class ShellServer:
                             "message": f"Error executing command: {str(e)}"
                         }
                     }
-                else:
-                    # Reset timeout counter on successful execution
-                    if command in _consecutive_timeouts:
-                        _consecutive_timeouts[command] = 0
         
         # Handle notifications (no response needed)
         if method == "notifications/initialized":

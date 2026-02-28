@@ -18,6 +18,7 @@ _config_providers = []
 _registry_providers = []
 _service_model_providers = []
 _formatter_providers = []
+_shell_config_providers = []
 _tool_validator_providers = []
 _data_retention_providers = []
 _initialized = False
@@ -43,6 +44,17 @@ def register_registry_provider(provider):
     _registry_providers.append(provider)
     # Suppress in chat mode - only show in server mode
     logger.debug(f"Registered registry provider: {getattr(provider, 'identifier', 'unknown')}")
+
+def register_shell_config_provider(provider):
+    """
+    Register a shell configuration provider plugin.
+
+    Providers contribute additional allowed commands, git operations,
+    and interpreters that are merged into the base shell config.
+    """
+    _shell_config_providers.append(provider)
+    _shell_config_providers.sort(key=lambda p: getattr(p, 'priority', 0), reverse=True)
+    logger.debug(f"Registered shell config provider: {getattr(provider, 'provider_id', 'unknown')}")
 
 def register_formatter_provider(provider):
     """Register a formatter provider plugin."""
@@ -78,6 +90,11 @@ def register_service_model_provider(provider):
 def get_all_config_providers() -> List:
     """Get all registered config providers (regardless of should_apply)."""
     return _config_providers.copy()
+
+
+def get_shell_config_providers() -> List:
+    """Get all registered shell config providers."""
+    return _shell_config_providers.copy()
 
 
 def get_active_auth_provider():
@@ -121,6 +138,8 @@ def get_allowed_endpoints() -> Optional[List[str]]:
     restrictions = []
     for provider in get_active_config_providers():
         try:
+            if not hasattr(provider, 'get_allowed_endpoints'):
+                continue
             allowed = provider.get_allowed_endpoints()
             if allowed is not None:
                 restrictions.append(list(allowed))
@@ -133,6 +152,54 @@ def get_allowed_endpoints() -> Optional[List[str]]:
     for r in restrictions[1:]:
         result &= set(r)
     return sorted(result)
+
+
+def get_shell_config_additions() -> dict:
+    """
+    Collect shell config additions from all active shell config providers.
+
+    Returns a dict with keys:
+      - additional_commands: list[str]
+      - additional_git_operations: list[str]
+      - additional_interpreters: list[str]
+      - additional_write_patterns: list[str]
+      - providers: list[str]  (provider_ids that contributed)
+    """
+    commands = []
+    git_ops = []
+    interpreters = []
+    write_patterns = []
+    providers = []
+
+    for provider in _shell_config_providers:
+        try:
+            if hasattr(provider, 'should_apply') and not provider.should_apply():
+                continue
+            pid = getattr(provider, 'provider_id', 'unknown')
+            providers.append(pid)
+
+            for cmd in provider.get_additional_commands():
+                if cmd not in commands:
+                    commands.append(cmd)
+            for op in provider.get_additional_git_operations():
+                if op not in git_ops:
+                    git_ops.append(op)
+            for interp in provider.get_additional_interpreters():
+                if interp not in interpreters:
+                    interpreters.append(interp)
+            for pat in provider.get_additional_write_patterns():
+                if pat not in write_patterns:
+                    write_patterns.append(pat)
+        except Exception as e:
+            logger.warning(f"Error collecting shell config from {getattr(provider, 'provider_id', '?')}: {e}")
+
+    return {
+        "additional_commands": commands,
+        "additional_git_operations": git_ops,
+        "additional_interpreters": interpreters,
+        "additional_write_patterns": write_patterns,
+        "providers": providers,
+    }
 
 
 def get_registry_providers() -> List:

@@ -326,6 +326,9 @@ class CLI:
         self._diff_applicator = None  # Lazy-load diff applicator
         self._last_ctrl_c_time = 0  # Track last Ctrl+C press for double-tap exit
         self._last_input_time = 0  # Track last input time for paste detection
+        self._session_shell_commands = None  # Session-local shell command overrides
+        self._session_yolo = False  # Session-local yolo mode (never persisted)
+        self._session_timeout = None  # Session-local command timeout override
         self._setup_prompt_session()
     
     @property
@@ -376,6 +379,7 @@ class CLI:
                 self.command_completer = WordCompleter([
                     '/add', '/a',
                     '/rm', '/remove',
+                    '/shell',
                     '/files', '/ls', '/f',
                     '/clear', '/c',
                     '/model', '/m',
@@ -835,7 +839,7 @@ class CLI:
         
         # Check for native function calling endpoints - use model loop instead of AWS executor
         endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
-        if endpoint in ("google", "openai"):
+        if endpoint in ("google", "openai", "anthropic"):
             async def stream_task():
                 async for chunk in self.model.astream(messages, tools=tools):
                     if self._cancellation_requested:
@@ -1200,6 +1204,9 @@ class CLI:
             print("\033[33mTo fix OpenAI credentials:\033[0m", file=sys.stderr)
             print("  • Set OPENAI_API_KEY: export OPENAI_API_KEY=sk-...", file=sys.stderr)
             print("  • Or set OPENAI_BASE_URL for a compatible local server", file=sys.stderr)
+        elif endpoint == "anthropic":
+            print("\033[33mTo fix Anthropic credentials:\033[0m", file=sys.stderr)
+            print("  • Set ANTHROPIC_API_KEY: export ANTHROPIC_API_KEY=sk-ant-...", file=sys.stderr)
         print(file=sys.stderr)
     
     async def chat(self):
@@ -1271,6 +1278,14 @@ class CLI:
   /add <path>    Add file or directory to context
   /rm <path>     Remove from context  
   /files         List context files
+  /shell         Manage shell commands (session-local by default)
+                 /shell add <cmd>   Add to allowlist
+                 /shell rm <cmd>    Remove from allowlist
+                 /shell yolo        Enable YOLO mode (session only)
+                 /shell yolo off    Disable YOLO mode
+                 /shell reset       Reset to defaults
+                 /shell timeout <s> Set command timeout (0=none)
+                 Append 'save' to persist: /shell add git save
   /clear         Clear conversation history
   /model <name>  Switch model
   /quit          Exit
@@ -1307,6 +1322,10 @@ class CLI:
                 before = len(self.files)
                 self.files = [f for f in self.files if arg not in f]
                 print(f"\033[90mRemoved {before - len(self.files)} files\033[0m")
+
+        elif command == '/shell':
+            await self._handle_shell_command(arg)
+
         elif command in ['/model', '/m']:
             await self._handle_model_selection_async(arg)
         
@@ -1314,6 +1333,244 @@ class CLI:
             print(f"\033[90mUnknown command: {command}\033[0m")
         
         return True
+
+    async def _handle_shell_command(self, arg: str):
+        """Handle /shell subcommands for managing allowed shell commands."""
+        from app.config.shell_config import (
+            DEFAULT_SHELL_CONFIG,
+            set_persisted_allowed_commands,
+            reset_shell_config,
+            get_default_shell_config,
+        )
+
+        parts = arg.split() if arg else []
+        sub = parts[0] if parts else ''
+        rest = arg[len(sub):].strip() if sub else ''
+
+        # Split rest by commas if present, otherwise treat as space-separated tokens
+        # But for add/rm: if no commas, treat entire rest as ONE command (e.g. "git add")
+        has_commas = ',' in rest
+
+        # Check for trailing 'save' keyword
+        persist = rest.endswith(' save') or rest == 'save'
+        if persist:
+            rest = rest.rsplit(' save', 1)[0].strip() if rest.endswith(' save') else ''
+
+        # Parse command list: commas = multiple commands, no commas = single command
+        if has_commas:
+            sub_args = [c.strip() for c in rest.split(',') if c.strip()]
+        else:
+            sub_args = [rest] if rest else []
+
+        # /shell  or  /shell list
+        if sub in ('', 'list', 'ls'):
+            commands = self._get_session_commands()
+            commands.sort()
+            yolo = self._session_yolo
+
+            if yolo:
+                print("\033[1;33m⚠️  YOLO MODE — all commands allowed "
+                      "(except sudo/vim/nano/emacs/systemctl)\033[0m\n")
+
+            print(f"\033[1mAllowed shell commands ({len(commands)}):\033[0m")
+            col_width = max(len(c) for c in commands) + 2 if commands else 20
+            cols = max(1, 80 // col_width)
+            for i in range(0, len(commands), cols):
+                row = commands[i:i + cols]
+                print("  " + "".join(c.ljust(col_width) for c in row))
+
+            merged_config = get_default_shell_config()
+            defaults = set(merged_config["allowedCommands"])
+            base_defaults = set(DEFAULT_SHELL_CONFIG["allowedCommands"])
+            plugin_commands = sorted(defaults - base_defaults)
+            added = sorted(set(commands) - defaults)
+            removed = sorted(base_defaults - set(commands))
+            if plugin_commands:
+                print(f"\n\033[34m🔌 From plugins: {', '.join(plugin_commands)}\033[0m")
+            if added:
+                print(f"\n\033[32m+ Custom: {', '.join(added)}\033[0m")
+            if removed:
+                print(f"\033[31m- Removed from defaults: {', '.join(removed)}\033[0m")
+            return
+
+        # /shell add <cmd> [cmd...] [save]
+        if sub == 'add':
+            if not sub_args:
+                print("Usage: /shell add <command> [command...] [save]")
+                return
+            commands = self._get_session_commands()
+            added = []
+            for cmd in sub_args:
+                if cmd not in commands:
+                    commands.append(cmd)
+                    added.append(cmd)
+            if added:
+                self._session_shell_commands = commands
+                if persist:
+                    set_persisted_allowed_commands(commands)
+                print(f"\033[32m✓ Added: {', '.join(added)}\033[0m")
+                if persist:
+                    print("\033[90m  (saved permanently)\033[0m")
+                else:
+                    print("\033[90m  (session only — add 'save' to persist)\033[0m")
+                await self._restart_shell_server()
+            else:
+                print("Already in allowlist.")
+            return
+
+        # /shell rm|remove <cmd> [cmd...] [save]
+        if sub in ('rm', 'remove'):
+            if not sub_args:
+                print("Usage: /shell rm <command> [command...] [save]")
+                return
+            commands = self._get_session_commands()
+            removed = []
+            for cmd in sub_args:
+                if cmd in commands:
+                    commands.remove(cmd)
+                    removed.append(cmd)
+            if removed:
+                self._session_shell_commands = commands
+                if persist:
+                    set_persisted_allowed_commands(commands)
+                print(f"\033[31m✓ Removed: {', '.join(removed)}\033[0m")
+                if persist:
+                    print("\033[90m  (saved permanently)\033[0m")
+                else:
+                    print("\033[90m  (session only — add 'save' to persist)\033[0m")
+                await self._restart_shell_server()
+            else:
+                print("Not in allowlist.")
+            return
+
+        # /shell yolo [off]  — always session-only
+        if sub == 'yolo':
+            if sub_args and sub_args[0] == 'off':
+                self._session_yolo = False
+                print("\033[32m✓ YOLO mode disabled.\033[0m")
+                await self._restart_shell_server()
+                return
+
+            if self._session_yolo:
+                print("\033[33mYOLO mode is already enabled.\033[0m")
+                print("Disable with: /shell yolo off")
+                return
+
+            print("\033[1;33m" + "=" * 50)
+            print("  ⚠️   YOLO MODE — LIVING DANGEROUSLY")
+            print("=" * 50 + "\033[0m")
+            print("\nAllows the AI to run \033[1many\033[0m shell command.")
+            print("Still blocked: sudo, vim, nano, emacs, systemctl\n")
+
+            try:
+                confirm = await asyncio.to_thread(
+                    input, "\033[1mType 'yolo' to confirm: \033[0m"
+                )
+            except (EOFError, KeyboardInterrupt):
+                print("\nAborted.")
+                return
+            if confirm.strip().lower() != 'yolo':
+                print("Aborted.")
+                return
+
+            self._session_yolo = True
+            print("\n\033[1;33m🔥 YOLO mode enabled (this session only).\033[0m")
+            print("Disable with: /shell yolo off")
+            await self._restart_shell_server()
+            return
+
+        # /shell reset [save]
+        if sub == 'reset':
+            merged_config = get_default_shell_config()
+            self._session_shell_commands = merged_config["allowedCommands"].copy()
+            self._session_yolo = False
+            if persist:
+                reset_shell_config()
+            n = len(self._session_shell_commands)
+            print(f"\033[32m✓ Shell config reset to defaults ({n} commands, YOLO off)\033[0m")
+            if persist:
+                print("\033[90m  (saved permanently)\033[0m")
+            else:
+                print("\033[90m  (session only — add 'save' to persist)\033[0m")
+            await self._restart_shell_server()
+            return
+
+        # /shell timeout <seconds> [save]
+        if sub == 'timeout':
+            if not sub_args:
+                current = self._session_timeout
+                if current is None:
+                    from app.config.shell_config import _read_mcp_config
+                    cfg = _read_mcp_config()
+                    current = int(cfg.get("mcpServers", {}).get("shell", {}).get("env", {}).get("COMMAND_TIMEOUT", "30"))
+                if current == 0:
+                    print(f"\033[1mCommand timeout: disabled (no limit)\033[0m")
+                else:
+                    print(f"\033[1mCommand timeout: {current}s\033[0m")
+                return
+            try:
+                val = int(sub_args[0])
+                if val < 0:
+                    raise ValueError
+            except ValueError:
+                print("Usage: /shell timeout <seconds>  (0 to disable)")
+                return
+            self._session_timeout = val
+            if persist:
+                from app.config.shell_config import _read_mcp_config, _ensure_shell_env, _write_mcp_config
+                cfg = _read_mcp_config()
+                env = _ensure_shell_env(cfg)
+                env["COMMAND_TIMEOUT"] = str(val)
+                _write_mcp_config(cfg)
+            if val == 0:
+                print("\033[33m✓ Command timeout disabled (no limit)\033[0m")
+            else:
+                print(f"\033[32m✓ Command timeout: {val}s\033[0m")
+            if persist:
+                print("\033[90m  (saved permanently)\033[0m")
+            else:
+                print("\033[90m  (session only — add 'save' to persist)\033[0m")
+            await self._restart_shell_server()
+            return
+
+        print(f"\033[90mUnknown: /shell {sub}\033[0m")
+        print("Usage: /shell [list|add|rm|yolo|timeout|reset]")
+        print("  Append 'save' to persist changes across sessions.")
+
+    def _get_session_commands(self) -> list:
+        """Get the effective command list (session override or persisted)."""
+        if self._session_shell_commands is not None:
+            return self._session_shell_commands.copy()
+        from app.config.shell_config import get_persisted_allowed_commands
+        return get_persisted_allowed_commands()
+
+    async def _restart_shell_server(self):
+        """Restart the shell MCP server with current session state."""
+        try:
+            from app.mcp.manager import get_mcp_manager
+            from app.config.shell_config import _read_mcp_config
+            mcp_manager = get_mcp_manager()
+            if mcp_manager and mcp_manager.is_initialized:
+                # Build config from persisted base + session overrides
+                cfg = _read_mcp_config()
+                shell_cfg = cfg.get("mcpServers", {}).get("shell", {})
+                if not shell_cfg:
+                    shell_cfg = mcp_manager.server_configs.get("shell", {})
+                shell_cfg = dict(shell_cfg)  # copy
+                env = dict(shell_cfg.get("env", {}))
+                # Apply session-local overrides
+                env["ALLOW_COMMANDS"] = ",".join(self._get_session_commands())
+                env["YOLO_MODE"] = "true" if self._session_yolo else "false"
+                if self._session_timeout is not None:
+                    env["COMMAND_TIMEOUT"] = str(self._session_timeout)
+                shell_cfg["env"] = env
+                ok = await mcp_manager.restart_server("shell", shell_cfg)
+                if ok:
+                    print("\033[32m✓ Shell server restarted — changes are live.\033[0m")
+                    return
+            print("\033[2mRestart Ziya session for changes to take effect.\033[0m")
+        except Exception as e:
+            print(f"\033[2mRestart Ziya session for changes to take effect. ({e})\033[0m")
 
     async def _show_model_settings_dialog(self, model_name: str, model_config: dict) -> Optional[dict]:
         """Show simple text-based settings configuration."""
@@ -1792,6 +2049,8 @@ def _check_auth_quick(profile: str = None) -> bool:
         return bool(os.environ.get("GOOGLE_API_KEY"))
     elif endpoint == "openai":
         return bool(os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI_BASE_URL"))
+    elif endpoint == "anthropic":
+        return bool(os.environ.get("ANTHROPIC_API_KEY"))
     
     return True
 
@@ -1818,6 +2077,10 @@ def _print_auth_error():
         print("OPENAI_API_KEY environment variable is not set.\n", file=sys.stderr)
         print("\033[33mTo fix:\033[0m", file=sys.stderr)
         print("  export OPENAI_API_KEY=sk-...", file=sys.stderr)
+    elif endpoint == "anthropic":
+        print("ANTHROPIC_API_KEY environment variable is not set.\n", file=sys.stderr)
+        print("\033[33mTo fix:\033[0m", file=sys.stderr)
+        print("  export ANTHROPIC_API_KEY=sk-ant-...", file=sys.stderr)
         print("  # or for a compatible local server:", file=sys.stderr)
         print("  export OPENAI_BASE_URL=http://localhost:8080/v1", file=sys.stderr)
     
