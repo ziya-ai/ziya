@@ -5,6 +5,28 @@ from app.utils.logging_utils import logger
 from app.utils.document_extractor import is_document_file, extract_document_text, is_tool_backed_file
  
 # Define binary extensions once at module level
+
+EXTERNAL_PREFIX = '[external]'
+
+
+def resolve_external_path(file_path: str, base_dir: str) -> str:
+    """Resolve a file path that may carry the [external] prefix.
+
+    External paths are absolute paths outside the project root that were
+    added via the "Add External Path" feature.  In the UI tree they are
+    stored with a ``[external]`` prefix (e.g. ``[external]/home/user/foo.py``).
+
+    Returns the absolute filesystem path suitable for ``open()`` / ``os.path.*``.
+    """
+    s = str(file_path)
+    if s.startswith(EXTERNAL_PREFIX):
+        real = s[len(EXTERNAL_PREFIX):]
+        if real and not real.startswith('/'):
+            real = '/' + real
+        return real
+    return os.path.join(base_dir, s)
+
+
 BINARY_EXTENSIONS = {
     '.pyc', '.pyo', '.pyd', '.ico', '.png', '.jpg', '.jpeg', '.gif', '.svg',
     '.core', '.bin', '.exe', '.dll', '.so', '.dylib', '.class',
@@ -88,8 +110,7 @@ def read_file_content(file_path: str) -> Optional[str]:
         file_path: Path to the file
         
     Returns:
-        Returns:
-            File content as string, or None if reading failed
+        File content as string, or None if reading failed
     """
     try:
         # Check if this file has specialized tool support - return context note instead
