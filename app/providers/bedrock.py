@@ -1,0 +1,461 @@
+"""
+Bedrock LLM Provider — streams responses via boto3 invoke_model_with_response_stream.
+
+Extracted from StreamingToolExecutor to separate API-specific code from
+orchestration logic.  This provider:
+  - Builds Bedrock-specific request bodies (anthropic_version, tools, thinking)
+  - Handles retry with exponential backoff for rate limits and timeouts
+  - Parses the boto3 chunked stream into normalized StreamEvent objects
+  - Formats conversation messages (assistant turns, tool results)
+  - Manages prompt caching within Bedrock's 4-block limit
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import copy
+import os
+import time
+from typing import Any, AsyncGenerator, Dict, List, Optional
+
+from app.providers.base import (
+    ErrorEvent,
+    ErrorType,
+    LLMProvider,
+    ProviderConfig,
+    StreamEnd,
+    StreamEvent,
+    TextDelta,
+    ThinkingDelta,
+    ToolUseEnd,
+    ToolUseInput,
+    ToolUseStart,
+    UsageEvent,
+)
+from app.utils.logging_utils import get_mode_aware_logger
+
+logger = get_mode_aware_logger(__name__)
+
+
+class BedrockProvider(LLMProvider):
+    """Streams Claude responses via AWS Bedrock."""
+
+    def __init__(
+        self,
+        model_id: str,
+        model_config: Dict[str, Any],
+        aws_profile: str = "ziya",
+        region: str = "us-west-2",
+    ):
+        self.model_id = model_id
+        self.model_config = model_config
+        self._region = region
+        self._use_extended_context = False
+
+        from app.agents.models import ModelManager
+
+        try:
+            self.bedrock = ModelManager._get_persistent_bedrock_client(
+                aws_profile=aws_profile,
+                region=region,
+                model_id=model_id,
+                model_config=model_config,
+            )
+            logger.debug("BedrockProvider: using ModelManager wrapped client")
+        except Exception as e:
+            logger.warning(f"BedrockProvider: wrapped client failed ({e}), falling back to direct boto3")
+            import boto3
+            session = boto3.Session(profile_name=aws_profile)
+            self.bedrock = session.client("bedrock-runtime", region_name=region)
+
+    # ------------------------------------------------------------------
+    # LLMProvider interface
+    # ------------------------------------------------------------------
+
+    async def stream_response(
+        self,
+        messages: List[Dict[str, Any]],
+        system_content: Optional[str],
+        tools: List[Dict[str, Any]],
+        config: ProviderConfig,
+    ) -> AsyncGenerator[StreamEvent, None]:
+        body = self._build_request_body(messages, system_content, tools, config)
+
+        # Retry loop with exponential backoff
+        # Timeout for the initial API connection (not per-chunk).
+        # Extended context requests can take longer to start streaming.
+        connect_timeout = int(os.environ.get("BEDROCK_CONNECT_TIMEOUT", "180"))
+        max_retries = 4
+        base_delay = 2
+        response = None
+
+        for retry_attempt in range(max_retries + 1):
+            try:
+                api_params = {
+                    "modelId": self.model_id,
+                    "body": json.dumps(body),
+                }
+                # Run the synchronous boto3 call in a thread so it doesn't
+                # block the event loop while waiting for the Bedrock API to
+                # start streaming (can be slow for extended-context requests).
+                response = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self.bedrock.invoke_model_with_response_stream, **api_params
+                    ),
+                    timeout=connect_timeout,
+                )
+                break
+            except Exception as e:
+                error_str = str(e)
+                classified = self._classify_error(error_str)
+
+                # Context limit → try extended context once
+                if (
+                    classified == ErrorType.CONTEXT_LIMIT
+                    and not self._use_extended_context
+                    and self.model_config.get("supports_extended_context")
+                ):
+                    header = self.model_config.get("extended_context_header")
+                    if header:
+                        logger.info(f"BedrockProvider: enabling extended context ({header})")
+                        body["anthropic_beta"] = [header]
+                        self._use_extended_context = True
+                        try:
+                            api_params["body"] = json.dumps(body)
+                            response = await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    self.bedrock.invoke_model_with_response_stream,
+                                    **api_params,
+                                ),
+                                timeout=connect_timeout,
+                            )
+                            break
+                        except Exception:
+                            pass  # fall through to normal retry / error
+
+                retryable = classified in (ErrorType.THROTTLE, ErrorType.READ_TIMEOUT, ErrorType.OVERLOADED)
+                if retryable and retry_attempt < max_retries:
+                    if classified == ErrorType.THROTTLE:
+                        delay = base_delay * (2 ** retry_attempt) + 4
+                    else:
+                        delay = 2 * (retry_attempt + 1)
+                    logger.warning(
+                        f"BedrockProvider: {classified.name} retry {retry_attempt + 1}/{max_retries + 1} "
+                        f"after {delay}s"
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+
+                # Non-retryable or retries exhausted
+                yield ErrorEvent(
+                    message=error_str,
+                    error_type=classified,
+                    retryable=False,
+                )
+                return
+
+        if response is None:
+            yield ErrorEvent(message="No response after retries", error_type=ErrorType.UNKNOWN)
+            return
+
+        # Parse the boto3 stream into normalized events
+        async for event in self._parse_stream(response, config):
+            yield event
+
+    def build_assistant_message(
+        self,
+        text: str,
+        tool_uses: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        content_blocks: List[Dict[str, Any]] = []
+        if text.strip():
+            content_blocks.append({"type": "text", "text": text.rstrip()})
+        for tu in tool_uses:
+            name = tu["name"]
+            # Bedrock expects names without mcp_ prefix
+            if name.startswith("mcp_"):
+                name = name[4:]
+            content_blocks.append({
+                "type": "tool_use",
+                "id": tu["id"],
+                "name": name,
+                "input": tu.get("input", {}),
+            })
+        return {"role": "assistant", "content": content_blocks}
+
+    def build_tool_result_message(
+        self,
+        tool_results: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        blocks = []
+        for tr in tool_results:
+            blocks.append({
+                "type": "tool_result",
+                "tool_use_id": tr["tool_use_id"],
+                "content": tr["content"],
+            })
+        return {"role": "user", "content": blocks}
+
+    def prepare_cache_control(
+        self,
+        messages: List[Dict[str, Any]],
+        iteration: int,
+    ) -> List[Dict[str, Any]]:
+        """Bedrock prompt caching: max 4 cache_control blocks.
+
+        System prompt uses 1 block.  We place 1 block at a conversation
+        boundary, leaving 2 blocks as headroom.
+        """
+        if iteration == 0 or len(messages) < 6:
+            return messages
+
+        messages = copy.deepcopy(messages)
+
+        # Strip existing markers
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        block.pop("cache_control", None)
+
+        # Place marker at boundary (4 messages from end)
+        cache_boundary = len(messages) - 4
+        if cache_boundary <= 0:
+            return messages
+
+        boundary_msg = messages[cache_boundary]
+        content = boundary_msg.get("content")
+        if isinstance(content, str):
+            boundary_msg["content"] = [{
+                "type": "text",
+                "text": content,
+                "cache_control": {"type": "ephemeral"},
+            }]
+        elif isinstance(content, list) and content:
+            last_block = content[-1]
+            if isinstance(last_block, dict):
+                last_block["cache_control"] = {"type": "ephemeral"}
+
+        return messages
+
+    def supports_feature(self, feature_name: str) -> bool:
+        feature_map = {
+            "thinking": self.model_config.get("supports_thinking", False),
+            "adaptive_thinking": self.model_config.get("supports_adaptive_thinking", False),
+            "extended_context": self.model_config.get("supports_extended_context", False),
+            "cache_control": True,  # Bedrock Claude always supports caching
+            "assistant_prefill": self.model_config.get("supports_assistant_prefill", True),
+        }
+        return bool(feature_map.get(feature_name, False))
+
+    @property
+    def provider_name(self) -> str:
+        return "bedrock"
+
+    # ------------------------------------------------------------------
+    # Internal: request body building
+    # ------------------------------------------------------------------
+
+    def _build_request_body(
+        self,
+        messages: List[Dict[str, Any]],
+        system_content: Optional[str],
+        tools: List[Dict[str, Any]],
+        config: ProviderConfig,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": config.max_output_tokens,
+            "messages": self.prepare_cache_control(messages, config.iteration),
+        }
+
+        # System prompt with cache control
+        if system_content:
+            if len(system_content) > 1024:
+                body["system"] = [{
+                    "type": "text",
+                    "text": system_content,
+                    "cache_control": {"type": "ephemeral"},
+                }]
+            else:
+                body["system"] = system_content
+
+        # Temperature
+        if config.temperature is not None:
+            body["temperature"] = config.temperature
+
+        # Thinking configuration
+        if config.thinking:
+            self._apply_thinking(body, config.thinking)
+
+        # Extended context header (persists once enabled)
+        if self._use_extended_context:
+            header = self.model_config.get("extended_context_header")
+            if header:
+                body.setdefault("anthropic_beta", [])
+                if header not in body["anthropic_beta"]:
+                    body["anthropic_beta"].append(header)
+
+        # Tools
+        if tools and not config.suppress_tools:
+            body["tools"] = tools
+            body["tool_choice"] = {"type": "auto"}
+
+        return body
+
+    def _apply_thinking(self, body: Dict[str, Any], thinking: "ThinkingConfig") -> None:
+        from app.providers.base import ThinkingConfig  # avoid circular at module level
+
+        if thinking.mode == "adaptive":
+            body["thinking"] = {"type": "adaptive"}
+            if thinking.effort in ("low", "medium", "high", "max"):
+                body.setdefault("output_config", {})["effort"] = thinking.effort
+                body.setdefault("anthropic_beta", [])
+                if "effort-2025-11-24" not in body["anthropic_beta"]:
+                    body["anthropic_beta"].append("effort-2025-11-24")
+        elif thinking.mode == "enabled" and thinking.enabled:
+            body["thinking"] = {"type": "enabled", "budget_tokens": thinking.budget_tokens}
+
+    # ------------------------------------------------------------------
+    # Internal: stream parsing
+    # ------------------------------------------------------------------
+
+    async def _parse_stream(
+        self,
+        response: Any,
+        config: ProviderConfig,
+    ) -> AsyncGenerator[StreamEvent, None]:
+        """Parse boto3 streaming response into normalized events."""
+        stream_body = response["body"]
+        chunk_timeout = int(os.environ.get("STREAM_STALL_TIMEOUT", "120"))
+
+        # Active tool tracking within this single response
+        active_tools: Dict[str, Dict[str, Any]] = {}  # tool_id -> {name, partial_json, index}
+
+        def _next_event(iterator):
+            try:
+                return next(iterator)
+            except StopIteration:
+                return None
+
+        stream_iter = iter(stream_body)
+        while True:
+            try:
+                event = await asyncio.wait_for(
+                    asyncio.to_thread(_next_event, stream_iter),
+                    timeout=chunk_timeout,
+                )
+            except asyncio.TimeoutError:
+                yield ErrorEvent(
+                    message=f"Stream stalled — no data for {chunk_timeout}s",
+                    error_type=ErrorType.READ_TIMEOUT,
+                    retryable=False,
+                )
+                return
+
+            if event is None:
+                break  # stream exhausted
+
+            if "chunk" not in event:
+                continue
+
+            chunk_bytes = event["chunk"]["bytes"]
+            chunk_str = self._decode_chunk_bytes(chunk_bytes)
+            chunk = json.loads(chunk_str)
+
+            # Usage metrics
+            if "amazon-bedrock-invocationMetrics" in chunk:
+                m = chunk["amazon-bedrock-invocationMetrics"]
+                yield UsageEvent(
+                    input_tokens=m.get("inputTokenCount", 0),
+                    output_tokens=m.get("outputTokenCount", 0),
+                    cache_read_tokens=m.get("cacheReadInputTokenCount", 0),
+                    cache_write_tokens=m.get("cacheWriteInputTokenCount", 0),
+                )
+
+            chunk_type = chunk.get("type", "")
+
+            if chunk_type == "content_block_start":
+                cb = chunk.get("content_block", {})
+                idx = chunk.get("index", 0)
+                if cb.get("type") == "tool_use":
+                    tool_id = cb.get("id", "")
+                    tool_name = cb.get("name", "")
+                    active_tools[tool_id] = {
+                        "name": tool_name,
+                        "partial_json": "",
+                        "index": idx,
+                    }
+                    yield ToolUseStart(id=tool_id, name=tool_name, index=idx)
+
+            elif chunk_type == "content_block_delta":
+                delta = chunk.get("delta", {})
+                idx = chunk.get("index", 0)
+                delta_type = delta.get("type", "")
+
+                if delta_type == "text_delta":
+                    yield TextDelta(content=delta.get("text", ""))
+
+                elif delta_type == "thinking_delta":
+                    yield ThinkingDelta(content=delta.get("thinking", ""))
+
+                elif delta_type == "input_json_delta":
+                    partial = delta.get("partial_json", "")
+                    # Accumulate for ToolUseEnd
+                    for tid, tdata in active_tools.items():
+                        if tdata["index"] == idx:
+                            tdata["partial_json"] += partial
+                            break
+                    yield ToolUseInput(partial_json=partial, index=idx)
+
+            elif chunk_type == "content_block_stop":
+                idx = chunk.get("index", 0)
+                # Find the tool that just finished
+                finished_id = None
+                for tid, tdata in active_tools.items():
+                    if tdata["index"] == idx:
+                        finished_id = tid
+                        break
+                if finished_id:
+                    tdata = active_tools.pop(finished_id)
+                    try:
+                        parsed_input = json.loads(tdata["partial_json"]) if tdata["partial_json"] else {}
+                    except json.JSONDecodeError:
+                        parsed_input = {}
+                    yield ToolUseEnd(
+                        id=finished_id,
+                        name=tdata["name"],
+                        input=parsed_input,
+                        index=idx,
+                    )
+
+            elif chunk_type == "message_stop":
+                stop_reason = chunk.get("stop_reason", chunk.get("amazon-bedrock-stop-reason", "end_turn"))
+                yield StreamEnd(stop_reason=stop_reason)
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _decode_chunk_bytes(chunk_bytes: Any) -> str:
+        if isinstance(chunk_bytes, bytes):
+            return chunk_bytes.decode("utf-8")
+        if isinstance(chunk_bytes, str):
+            return chunk_bytes
+        raise TypeError(f"Unexpected chunk type: {type(chunk_bytes)}")
+
+    @staticmethod
+    def _classify_error(error_str: str) -> ErrorType:
+        lowered = error_str.lower()
+        if any(s in error_str for s in ("ThrottlingException", "Too many tokens", "Too many requests")) or "rate limit" in lowered:
+            return ErrorType.THROTTLE
+        if any(s in error_str for s in ("Input is too long", "too large", "prompt is too long")):
+            return ErrorType.CONTEXT_LIMIT
+        if any(s in error_str for s in ("Read timed out", "ReadTimeoutError")) or "timeout" in lowered:
+            return ErrorType.READ_TIMEOUT
+        if "overloaded" in lowered or "529" in error_str or "ServiceUnavailableException" in error_str:
+            return ErrorType.OVERLOADED
+        return ErrorType.UNKNOWN
