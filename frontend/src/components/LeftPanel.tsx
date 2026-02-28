@@ -43,13 +43,15 @@ export const LeftPanel: React.FC = () => {
   }, []);
   
   // Create dropdown menu for overflow tabs
-  const overflowMenu = (
-    <Menu onClick={({ key }) => setActiveTab(key)} selectedKeys={[activeTab]}>
-      {allTabs.map(tab => (
-        <Menu.Item key={tab.key} icon={tab.icon}>{tab.label}</Menu.Item>
-      ))}
-    </Menu>
-  );
+  const overflowMenuProps = {
+    items: allTabs.map(tab => ({
+      key: tab.key,
+      icon: tab.icon,
+      label: tab.label,
+    })),
+    onClick: ({ key }: { key: string }) => setActiveTab(key),
+    selectedKeys: [activeTab],
+  };
   
   return (
     <div style={{ 
@@ -82,7 +84,7 @@ export const LeftPanel: React.FC = () => {
         }}
         tabBarExtraContent={
           isCompact && (
-            <Dropdown overlay={overflowMenu} trigger={['click']} placement="bottomRight">
+            <Dropdown menu={overflowMenuProps} trigger={['click']} placement="bottomRight">
               <div style={{
                 padding: '4px 8px',
                 cursor: 'pointer',
@@ -112,7 +114,7 @@ export const LeftPanel: React.FC = () => {
         >
           <ActiveContextBar />
           <div style={{ flex: 1, overflowY: 'auto', padding: '8px' }}>
-            <FolderTree />
+            <FolderTree isPanelCollapsed={false} />
           </div>
         </TabPane>
         

@@ -260,7 +260,17 @@ export function extractDiffFilePath(diffContent: string): string | null {
 function rangesOverlap(a: [number, number][], b: [number, number][]): boolean {
     for (const [aStart, aEnd] of a) {
         for (const [bStart, bEnd] of b) {
-            if (aStart <= bEnd && bStart <= aEnd) return true;
+            if (aStart <= bEnd && bStart <= aEnd) {
+                // Calculate actual overlap size. Adjacent hunks sharing
+                // only a few lines of context are complementary changes,
+                // not revisions. Require >50% of the smaller hunk to
+                // overlap before treating it as a superseding revision.
+                const overlapStart = Math.max(aStart, bStart);
+                const overlapEnd = Math.min(aEnd, bEnd);
+                const overlapSize = overlapEnd - overlapStart + 1;
+                const smallerHunk = Math.min(aEnd - aStart + 1, bEnd - bStart + 1);
+                if (smallerHunk > 0 && overlapSize / smallerHunk > 0.5) return true;
+            }
         }
     }
     return false;

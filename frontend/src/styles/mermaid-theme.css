@@ -39,18 +39,19 @@
     stroke-width: 1.5px !important;
 }
 
-/* Text on darker backgrounds should be black for contrast */
+/* Text on darker backgrounds should be black for contrast,
+   but NOT when user has set explicit inline styles */
 .dark .mermaid-container .node .label text,
 .dark .mermaid-container .cluster .label text {
     fill: #000000;
-    color: #000000 !important;
+    color: #000000;
 }
 
 /* Text on lighter backgrounds should be white for contrast */
 .dark .mermaid-container .edgeLabel text,
 .dark .mermaid-container text:not(.node .label text):not(.cluster .label text) {
-    fill: #eceff4 !important;
-    color: #eceff4 !important;
+    fill: #eceff4;
+    color: #eceff4;
 }
 
 /* Node styling */

@@ -835,15 +835,18 @@ export const MUIFileExplorer = () => {
 
 
       if (response.ok) {
+        const result = await response.json();
         message.success(`Added: ${path.split('/').pop()}`);
-        // Files always go to context, so only trigger context update
-        // Directories respect addMode setting
-        if (isDir && addMode === 'browser') {
-          // Only refresh folders if we added a directory to the browser
-          window.dispatchEvent(new CustomEvent('refreshFolders'));
-        } else {
-          // Files and context-mode directories trigger context update
-          window.dispatchEvent(new CustomEvent('contextUpdated'));
+
+        // Always refresh the folder tree so new entries are visible
+        window.dispatchEvent(new CustomEvent('refreshFolders'));
+
+        // If the backend returned context_keys, auto-select them
+        if (result.context_keys && result.context_keys.length > 0) {
+          setCheckedKeys(prev => {
+            const merged = new Set([...prev.map(String), ...result.context_keys]);
+            return Array.from(merged);
+          });
         }
       } else {
         const error = await response.json();
@@ -888,7 +891,17 @@ export const MUIFileExplorer = () => {
         const result = await response.json();
         message.success(`Added ${result.added_count || selectedPaths.size} path(s)`);
         handleCloseAddPathDialog();
+
+        // Refresh folder tree so the new entries appear
         window.dispatchEvent(new CustomEvent('refreshFolders'));
+
+        // If the backend returned context_keys (add_to_context mode), select them
+        if (result.context_keys && result.context_keys.length > 0) {
+          setCheckedKeys(prev => {
+            const merged = new Set([...prev.map(String), ...result.context_keys]);
+            return Array.from(merged);
+          });
+        }
       } else {
         const error = await response.json();
         message.error(error.detail || 'Failed to add paths');
@@ -1240,7 +1253,7 @@ export const MUIFileExplorer = () => {
 
     window.addEventListener('accurateTokenCountsUpdated', handleAccurateTokenCountsUpdated);
     return () => window.removeEventListener('accurateTokenCountsUpdated', handleAccurateTokenCountsUpdated);
-  });
+  }, []);
   // Show loading state while scanning and no data
   if ((isScanning || isInitialLoad) && (!hasLoadedData || !muiTreeData || muiTreeData.length === 0)) {
     const showSlowLoadingTip = scanProgress && scanProgress.elapsed >= 60;

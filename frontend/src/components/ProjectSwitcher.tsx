@@ -5,6 +5,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useProject } from '../context/ProjectContext';
 import { Dropdown, Menu, Button, Input, message, Tooltip } from 'antd';
 import { FolderOutlined, DownOutlined, EditOutlined, CheckOutlined, CloseOutlined, FolderOpenOutlined, SettingOutlined } from '@ant-design/icons';
+import { useTheme } from '../context/ThemeContext';
 import ProjectManagerModal from './ProjectManagerModal';
 import { DirectoryBrowserModal } from './DirectoryBrowserModal';
 
@@ -17,6 +18,7 @@ export const ProjectSwitcher: React.FC = () => {
     createProject,
     updateProject 
   } = useProject();
+  const { isDarkMode } = useTheme();
   const [isOpen, setIsOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editedName, setEditedName] = useState('');
@@ -82,8 +84,8 @@ export const ProjectSwitcher: React.FC = () => {
   
   if (isLoadingProject) {
     return (
-      <div style={{ padding: '10px 12px', background: '#0a0a0a', borderBottom: '1px solid #333' }}>
-        <div style={{ height: '32px', background: '#1f1f1f', borderRadius: '6px', animation: 'pulse 1.5s infinite' }} />
+      <div style={{ padding: '10px 12px', background: isDarkMode ? '#0a0a0a' : '#ffffff', borderBottom: `1px solid ${isDarkMode ? '#333' : '#e0e0e0'}` }}>
+        <div style={{ height: '32px', background: isDarkMode ? '#1f1f1f' : '#f0f0f0', borderRadius: '6px', animation: 'pulse 1.5s infinite' }} />
       </div>
     );
   }
@@ -91,8 +93,8 @@ export const ProjectSwitcher: React.FC = () => {
   // If no project after loading, show error state
   if (!currentProject) {
     return (
-      <div style={{ padding: '10px 12px', background: '#0a0a0a', borderBottom: '1px solid #333' }}>
-        <div style={{ padding: '8px', background: '#1f1f1f', borderRadius: '6px', color: '#ef4444', fontSize: '12px', textAlign: 'center' }}>
+      <div style={{ padding: '10px 12px', background: isDarkMode ? '#0a0a0a' : '#ffffff', borderBottom: `1px solid ${isDarkMode ? '#333' : '#e0e0e0'}` }}>
+        <div style={{ padding: '8px', background: isDarkMode ? '#1f1f1f' : '#f0f0f0', borderRadius: '6px', color: '#ef4444', fontSize: '12px', textAlign: 'center' }}>
           Failed to load project
         </div>
       </div>
@@ -102,8 +104,8 @@ export const ProjectSwitcher: React.FC = () => {
   const menu = (
     <Menu
       style={{ 
-        background: '#1f1f1f', 
-        border: '1px solid #444',
+        background: isDarkMode ? '#1f1f1f' : '#ffffff', 
+        border: `1px solid ${isDarkMode ? '#444' : '#d9d9d9'}`,
         borderRadius: '8px',
         minWidth: '280px',
         maxHeight: 'calc(100vh - 120px)',
@@ -128,7 +130,7 @@ export const ProjectSwitcher: React.FC = () => {
     >
       {/* Current project */}
       <Menu.ItemGroup 
-        title={<span style={{ color: '#666', fontSize: '9px', textTransform: 'uppercase' }}>Current</span>}
+        title={<span style={{ color: isDarkMode ? '#666' : '#999', fontSize: '9px', textTransform: 'uppercase' }}>Current</span>}
       >
         <Menu.Item 
           key={currentProject.id}
@@ -169,7 +171,7 @@ export const ProjectSwitcher: React.FC = () => {
       {/* Other projects */}
       {projects.filter(p => p.id !== currentProject.id).length > 0 && (
         <Menu.ItemGroup 
-          title={<span style={{ color: '#666', fontSize: '9px', textTransform: 'uppercase' }}>Recent</span>}
+          title={<span style={{ color: isDarkMode ? '#666' : '#999', fontSize: '9px', textTransform: 'uppercase' }}>Recent</span>}
           style={{
             maxHeight: 'calc(100vh - 340px)',
             overflowY: 'auto',
@@ -184,7 +186,7 @@ export const ProjectSwitcher: React.FC = () => {
                   <div style={{ width: '8px', height: '8px', background: '#22c55e', borderRadius: '50%' }} />
                   <div style={{ flex: 1 }}>
                     <div>{project.name}</div>
-                    <div style={{ fontSize: '10px', color: '#666' }}>{project.path}</div>
+                    <div style={{ fontSize: '10px', color: isDarkMode ? '#666' : '#999' }}>{project.path}</div>
                   </div>
                   <SettingOutlined
                     style={{
@@ -211,7 +213,7 @@ export const ProjectSwitcher: React.FC = () => {
       )}
       
       {/* Divider */}
-      <Menu.Divider style={{ margin: '4px 0', background: '#333' }} />
+      <Menu.Divider style={{ margin: '4px 0', background: isDarkMode ? '#333' : '#e0e0e0' }} />
       
       {/* Open folder action */}
       <Menu.Item 
@@ -234,7 +236,7 @@ export const ProjectSwitcher: React.FC = () => {
   );
   
   return (
-    <div style={{ padding: '10px 12px', borderBottom: '1px solid #333', background: '#0a0a0a' }}>
+    <div style={{ padding: '10px 12px', borderBottom: `1px solid ${isDarkMode ? '#333' : '#e0e0e0'}`, background: isDarkMode ? '#0a0a0a' : '#ffffff' }}>
       {isEditing ? (
         // Inline editing mode
         <div style={{ 
@@ -242,7 +244,7 @@ export const ProjectSwitcher: React.FC = () => {
           alignItems: 'center', 
           gap: '6px',
           padding: '6px 10px',
-          background: '#1f1f1f',
+          background: isDarkMode ? '#1f1f1f' : '#f5f5f5',
           border: '1px solid #2563eb',
           borderRadius: '6px'
         }}>
@@ -258,8 +260,8 @@ export const ProjectSwitcher: React.FC = () => {
               fontSize: '13px',
               height: '24px',
               padding: '0 6px',
-              background: '#141414',
-              border: '1px solid #333'
+              background: isDarkMode ? '#141414' : '#ffffff',
+              border: `1px solid ${isDarkMode ? '#333' : '#d9d9d9'}`
             }}
             placeholder="Project name"
           />
@@ -281,7 +283,7 @@ export const ProjectSwitcher: React.FC = () => {
       ) : (
         // Normal display mode
         <Dropdown 
-        overlay={menu} 
+        dropdownRender={() => menu}
         trigger={['click']}
         open={isOpen}
         onOpenChange={setIsOpen}
@@ -292,21 +294,21 @@ export const ProjectSwitcher: React.FC = () => {
             alignItems: 'center', 
             gap: '8px', 
             padding: '6px 10px', 
-            background: '#1f1f1f', 
-            border: '1px solid #333',
+            background: isDarkMode ? '#1f1f1f' : '#f5f5f5', 
+            border: `1px solid ${isDarkMode ? '#333' : '#d9d9d9'}`,
             borderRadius: '6px',
             cursor: 'pointer'
           }}
         >
           <div style={{ width: '8px', height: '8px', background: '#22c55e', borderRadius: '50%' }} />
           <div style={{ flex: 1 }}>
-            <div style={{ fontSize: '13px', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <div style={{ fontSize: '13px', fontWeight: 500, display: 'flex', alignItems: 'center', gap: '6px', color: isDarkMode ? '#e0e0e0' : '#1a1a1a' }}>
               {currentProject.name}
               <Tooltip title="Edit project name">
                 <EditOutlined 
                   style={{ 
                     fontSize: '11px', 
-                    color: '#666',
+                    color: isDarkMode ? '#666' : '#999',
                     cursor: 'pointer',
                     opacity: 0.6,
                     transition: 'opacity 0.2s'
@@ -317,9 +319,9 @@ export const ProjectSwitcher: React.FC = () => {
                 />
               </Tooltip>
             </div>
-            <div style={{ fontSize: '9px', color: '#666', marginTop: '2px' }}>{currentProject.path}</div>
+            <div style={{ fontSize: '9px', color: isDarkMode ? '#666' : '#888', marginTop: '2px' }}>{currentProject.path}</div>
           </div>
-          <DownOutlined style={{ fontSize: '10px', color: '#666' }} />
+          <DownOutlined style={{ fontSize: '10px', color: isDarkMode ? '#666' : '#999' }} />
         </div>
       </Dropdown>
       )}

@@ -3,6 +3,7 @@ import {useChatContext} from '../context/ChatContext';
 import {sendPayload} from "../apis/chatApi";
 import {Message} from "../utils/types";
 import {useFolderContext} from "../context/FolderContext";
+import {useProject} from "../context/ProjectContext";
 import {Button, Tooltip, Space} from "antd";
 import { convertKeysToStrings } from '../utils/types';
 import {RedoOutlined, LoadingOutlined} from "@ant-design/icons";
@@ -17,13 +18,15 @@ export const RetrySection: React.FC<RetrySectionProps> = ({index}) => {
         currentConversationId,
         addMessageToConversation,
         setIsStreaming,
+	updateProcessingState,
+	removeStreamingConversation,
 	streamedContentMap,
 	setStreamedContentMap,
-	removeStreamingConversation,
 	streamingConversations
     } = useChatContext();
     
     const {checkedKeys} = useFolderContext();
+    const { currentProject } = useProject();
 
     const handleRetry = async () => {
         const lastHumanMessage = currentMessages[index];
@@ -38,7 +41,6 @@ export const RetrySection: React.FC<RetrySectionProps> = ({index}) => {
                 currentConversationId,
                 undefined,
                 undefined, // images
-                streamedContentMap,
                 setStreamedContentMap,
                 setIsStreaming,
                 streamedContentMap,

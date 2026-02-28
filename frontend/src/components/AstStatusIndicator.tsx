@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { Progress, Tooltip, Card } from 'antd';
 import { AstStatus, fetchAstStatus } from '../apis/astApi';
 import { useTheme } from '../context/ThemeContext';
@@ -62,6 +62,7 @@ const AstStatusIndicator: React.FC = () => {
   const [visible, setVisible] = useState<boolean>(false);
   const [hasSeenActiveIndexing, setHasSeenActiveIndexing] = useState<boolean>(false);
   const { isDarkMode } = useTheme();
+  const hasSeenActiveIndexingRef = useRef(false);
 
   useEffect(() => {
     // Early exit if AST is not enabled in environment
@@ -100,7 +101,8 @@ const AstStatusIndicator: React.FC = () => {
 
           // Track if we've ever seen active indexing
           if (astStatus.is_indexing || astStatus.is_complete) {
-            setHasSeenActiveIndexing(true);
+            hasSeenActiveIndexingRef.current = true;
+            setHasSeenActiveIndexing(true); // still update state for rendering
           }
 
           // Show the indicator if indexing is in progress
@@ -129,7 +131,7 @@ const AstStatusIndicator: React.FC = () => {
         console.error('Error checking AST status:', error);
 
         // Only continue checking if we've previously seen active indexing
-        if (hasSeenActiveIndexing) {
+        if (hasSeenActiveIndexingRef.current) {
           // Try again after a delay
           if (mounted) {
             timer = window.setTimeout(checkStatus, AST_STATUS_CHECK_INTERVAL);
@@ -177,7 +179,7 @@ const AstStatusIndicator: React.FC = () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('ast-config-changed', handleConfigChange);
     };
-  }, [hasSeenActiveIndexing]);
+  }, []); // stable — uses ref for hasSeenActiveIndexing checks inside the effect
 
   // Don't render anything if there's no status, if it shouldn't be visible, or if we haven't seen active indexing
   if (!status || !visible) {

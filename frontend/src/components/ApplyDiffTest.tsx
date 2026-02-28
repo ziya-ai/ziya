@@ -21,7 +21,7 @@ const ApplyDiffTest: React.FC = () => {
 
     useEffect(() => {
         loadTestCases();
-    });
+    }, []);
 
     const loadTestCases = async () => {
         try {

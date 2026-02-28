@@ -21,6 +21,11 @@ const sanitizeHTML = (html: string): string => {
     sanitized = sanitized.replace(/href\s*=\s*["']javascript:[^"']*["']/gi, 'href="#"');
     sanitized = sanitized.replace(/src\s*=\s*["']javascript:[^"']*["']/gi, 'src=""');
     
+    // Remove dialog-triggering calls from inline content
+    sanitized = sanitized.replace(/\balert\s*\(/g, 'void(');
+    sanitized = sanitized.replace(/\bconfirm\s*\(/g, 'void(');
+    sanitized = sanitized.replace(/\bprompt\s*\(/g, 'void(');
+
     return sanitized;
 };
 
@@ -208,8 +213,9 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
                     padding: '16px'
                 }}>
                     <iframe
-                        ref={iframeRef}
                         srcDoc={iframeContent}
+                        ref={iframeRef}
+                        sandbox="allow-scripts"
                         style={{
                             width: '100%',
                             height: `${iframeHeight}px`,
@@ -217,7 +223,6 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
                             borderRadius: '4px',
                             transition: 'height 0.3s ease'
                         }}
-                        sandbox="allow-same-origin allow-scripts"
                         title="HTML Mockup Preview"
                     />
                 </div>
@@ -240,7 +245,7 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
                         border: 'none',
                         borderRadius: '4px'
                     }}
-                    sandbox="allow-same-origin allow-scripts"
+                    sandbox="allow-scripts"
                     title="HTML Mockup Fullscreen"
                 />
             </Modal>

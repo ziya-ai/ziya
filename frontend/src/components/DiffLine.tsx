@@ -16,6 +16,7 @@ interface DiffLineProps {
 
 // Add a cache for whitespace visualization
 const whitespaceCache = new Map<string, string>();
+const WHITESPACE_CACHE_MAX = 5000;
 
 export const DiffLine = React.memo(({
     content,
@@ -46,6 +47,11 @@ export const DiffLine = React.memo(({
     const visualizeWhitespace = (text: string): string => {
         // Use cache to avoid repeated processing
         const cacheKey = `${text}-${type}`;
+        // Evict oldest entries when cache exceeds limit
+        if (whitespaceCache.size > WHITESPACE_CACHE_MAX) {
+            const firstKey = whitespaceCache.keys().next().value;
+            if (firstKey !== undefined) whitespaceCache.delete(firstKey);
+        }
         if (whitespaceCache.has(cacheKey)) {
             return whitespaceCache.get(cacheKey)!;
         }

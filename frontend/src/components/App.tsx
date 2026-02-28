@@ -110,6 +110,7 @@ export const App: React.FC = () => {
         return saved ? JSON.parse(saved) : false;
     });
     const { isEphemeralMode } = useConfig();
+    const { version } = useConfig();
 
     // Validate panel width from localStorage
     const getValidPanelWidth = (width: number): number => {
@@ -368,7 +369,6 @@ export const App: React.FC = () => {
                         isPanelCollapsed={isPanelCollapsed}
                     />
 
-                    <div style={{ height: 'var(--header-height)' }}>
                         <div className={`app-header ${isPanelCollapsed ? 'panel-collapsed' : ''}`}
                             style={{
                                 position: 'fixed',
@@ -376,22 +376,46 @@ export const App: React.FC = () => {
                                 zIndex: 1000
                             }}>
                             <h2 style={{
-                                color: isDarkMode ? '#fff' : '#000',
-                                transition: 'color 0.3s ease',
                                 transform: 'translateZ(0)' // force GPU accel
                             }}>
-                                <div style={{ position: 'absolute', left: '10px', display: 'flex', gap: '10px' }}>
-                                    <Tooltip title={`Switch to ${isTopToBottom ? 'bottom-up' : 'top-down'} view`}>
-                                        <Button
-                                            icon={<SwapOutlined rotate={90} />}
-                                            onClick={toggleDirection}
-                                            type={isTopToBottom ? 'primary' : 'default'}
-                                        >
-                                            {isTopToBottom ? 'Top-Down' : 'Bottom-Up'}
-                                        </Button>
-                                    </Tooltip>
-                                </div>
-                                Ziya: Code Assist
+                                <span 
+                                    key={`z-${isDarkMode ? 'dark' : 'light'}`}
+                                    style={{
+                                    background: isDarkMode
+                                        ? 'linear-gradient(90deg, #b32ca8 0%, #2dd4bf 100%)'
+                                        : 'linear-gradient(90deg, #b32ca8 0%, #0d9488 100%)',
+                                    WebkitBackgroundClip: 'text',
+                                    WebkitTextFillColor: 'transparent',
+                                    backgroundClip: 'text',
+                                    color: 'transparent',
+                                    filter: isDarkMode
+                                        ? 'drop-shadow(0 0 12px rgba(179, 44, 168, 0.4))'
+                                        : 'drop-shadow(0 0 8px rgba(179, 44, 168, 0.2))',
+                                    fontWeight: 800,
+                                    fontSize: '1.3em',
+                                    letterSpacing: '-0.02em',
+                                    fontFamily: 'Georgia, "Times New Roman", serif',
+                                    verticalAlign: 'middle',
+                                    lineHeight: 1,
+                                }}>ℤ</span>
+                                <span 
+                                    key={`iya-${isDarkMode ? 'dark' : 'light'}`}
+                                    style={{
+                                    fontWeight: 700,
+                                    letterSpacing: '0.10em',
+                                    marginLeft: '4px',
+                                    fontSize: '0.92em',
+                                    position: 'relative' as const,
+                                    top: '1px',
+                                    fontFamily: "'Avenir Next', Avenir, Montserrat, 'Trebuchet MS', sans-serif",
+                                    background: isDarkMode
+                                        ? 'linear-gradient(90deg, #8b3aaa 0%, #2dd4bf 100%)'
+                                        : 'linear-gradient(90deg, #8b2a9a 0%, #0d9488 100%)',
+                                    WebkitBackgroundClip: 'text',
+                                    WebkitTextFillColor: 'transparent',
+                                    backgroundClip: 'text',
+                                    color: 'transparent',
+                                }}>iya</span>
                                 {isEphemeralMode && (
                                     <Tooltip title="Ephemeral mode: No data persisted after closing. Each browser tab has independent, non-shared state.">
                                         <span
@@ -406,6 +430,17 @@ export const App: React.FC = () => {
                                     </Tooltip>
                                 )}
                             </h2>
+                            <div style={{ position: 'absolute', left: '10px', display: 'flex', gap: '10px' }}>
+                                <Tooltip title={`Switch to ${isTopToBottom ? 'bottom-up' : 'top-down'} view`}>
+                                    <Button
+                                        icon={<SwapOutlined rotate={90} />}
+                                        onClick={toggleDirection}
+                                        type={isTopToBottom ? 'primary' : 'default'}
+                                    >
+                                        {isTopToBottom ? 'Top-Down' : 'Bottom-Up'}
+                                    </Button>
+                                </Tooltip>
+                            </div>
                             <div style={{ position: 'absolute', right: '10px', display: 'flex', gap: '10px' }}>
                                 <Tooltip title="Toggle theme">
                                     <Button icon={<BulbOutlined />} onClick={toggleTheme} />
@@ -428,11 +463,8 @@ export const App: React.FC = () => {
                                 </Tooltip>
                             </div>
                         </div>
-                    </div>
                     <div className={`container ${isPanelCollapsed ? 'panel-collapsed' : ''}`}
                         style={{
-                            marginTop: 'var(--header-height)',
-                            height: 'calc(100vh - var(--header-height))',
                             display: 'flex',
                             width: '100vw',
                             overflow: 'hidden'
@@ -489,6 +521,18 @@ export const App: React.FC = () => {
                     <Suspense fallback={null}>
                         <ExportConversationModal visible={showExportModal} onClose={() => setShowExportModal(false)} />
                     </Suspense>
+
+                    <div style={{
+                        position: 'fixed',
+                        bottom: '2px',
+                        right: '4px',
+                        fontSize: '9px',
+                        color: isDarkMode ? 'rgba(255,255,255,0.165)' : 'rgba(0,0,0,0.165)',
+                        fontFamily: 'monospace',
+                        zIndex: 1,
+                        userSelect: 'none',
+                        pointerEvents: 'none',
+                    }}>v{version}</div>
 
                 </ConfigProvider>
             </ProfilerWrapper>

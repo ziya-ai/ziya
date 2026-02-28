@@ -102,6 +102,7 @@ export const TokenCountDisplay = memo(() => {
         try {
             const response = await fetch('/api/ast/resolutions');
             if (response.ok) {
+                const data = await response.json();
                 console.log('Fetched AST resolutions:', data.resolutions);
                 setAstResolutions(data.resolutions || {});
                 setCurrentAstResolution(data.current_resolution || 'medium');
@@ -221,6 +222,38 @@ export const TokenCountDisplay = memo(() => {
         return () => {
             isMounted = false;
         };
+    }, []);
+
+    // Re-fetch MCP token count when servers are toggled
+    useEffect(() => {
+        const handleMCPStatusChange = async () => {
+            try {
+                const response = await fetch('/api/mcp/status');
+                if (response.ok) {
+                    const data = await response.json();
+                    const isEnabled = data.initialized && !data.disabled;
+                    setMcpEnabled(isEnabled);
+
+                    if (isEnabled && data.token_costs) {
+                        const nonBuiltinServers = Object.keys(data.servers || {}).filter(
+                            name => !builtinServerNames.includes(name)
+                        );
+                        if (nonBuiltinServers.length > 0) {
+                            setMcpTokenCount(data.token_costs.enabled_tool_tokens || 0);
+                            setMcpServerCount(nonBuiltinServers.length);
+                        } else {
+                            setMcpTokenCount(0);
+                            setMcpServerCount(0);
+                        }
+                    }
+                }
+            } catch (error) {
+                console.debug('Could not refresh MCP status:', error);
+            }
+        };
+
+        window.addEventListener('mcpStatusChanged', handleMCPStatusChange);
+        return () => window.removeEventListener('mcpStatusChanged', handleMCPStatusChange);
     }, []);
 
     const handleAstResolutionChange = useCallback(async (newResolution: string) => {

@@ -179,14 +179,13 @@ export const graphvizPlugin: D3RenderPlugin = {
             // Conservative streaming approach - only render when markdown block is closed
             // This allows the content to display as highlighted code during streaming
             if (!spec.isMarkdownBlockClosed && !spec.forceRender) {
-                console.log('Graphviz: Markdown block still open, letting content display as code');
-                // Don't show a waiting message - let the markdown renderer show the code
-                // Just remove the loading spinner and return
-                try {
-                    container.innerHTML = '';
-                } catch (e) {
-                    console.warn('Could not remove loading spinner:', e);
+                // If we already have a rendered diagram, preserve it — a late
+                // re-render with stale flags must not destroy finished work.
+                if (container.querySelector('svg') || container.querySelector('.diagram-actions')) {
+                    return;
                 }
+                console.log('Graphviz: Markdown block still open, letting content display as code');
+                container.innerHTML = '';
                 return; // Exit early - let markdown renderer handle the streaming content
             }
 

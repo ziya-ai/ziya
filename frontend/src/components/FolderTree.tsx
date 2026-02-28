@@ -151,9 +151,10 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
             const response = await fetch('/api/model-id');
             const data = await response.json();
             setModelId(data.model_id);
-            if (!modelDisplayName) {
-                setModelDisplayName(data.model_id);
-            }
+            setModelDisplayName(prev => {
+                if (!prev) return data.model_id;
+                return prev;
+            });
         } catch (error) {
             console.error('Error fetching model ID:', error);
         }

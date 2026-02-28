@@ -127,10 +127,10 @@ export const DebugControls: React.FC<DebugControlsProps> = ({ setDebugView }) =>
         <>
             <Tooltip title="Debug Tools">
                 <Dropdown
-                    overlay={menu}
+                    menu={{ items: menu.props.items || [] }}
                     trigger={['click']}
-                    onVisibleChange={setMenuVisible}
-                    visible={menuVisible}
+                    onOpenChange={setMenuVisible}
+                    open={menuVisible}
                 >
                     <Button icon={<ToolOutlined />} />
                 </Dropdown>

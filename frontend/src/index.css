@@ -97,14 +97,18 @@ div.diff-view.smaller-diff-view.diff-view-split > table.diff-table > tbody > tr 
   margin: 0;
   left: 0;
   border-bottom: 1px solid #e8e8e8;
-  background-color: inherit;
+  background: #f5f3f5;
   top: 0;
+  height: var(--header-height);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .app-header h2 {
   display: flex;
   justify-content: center;
-  margin: 1rem 0;
+  margin: 0;
   width: auto;
   position: relative;
 }
@@ -131,7 +135,7 @@ div.diff-view.smaller-diff-view.diff-view-split > table.diff-table > tbody > tr 
 }
 
 .dark .app-header {
-  background-color: #141414;
+  background: linear-gradient(90deg, #18121b 0%, #0d2220 100%);
   border-bottom-color: #303030;
 }
 
@@ -169,7 +173,7 @@ body.dark a:active {
 /* Container Layout */
 .container {
   position: fixed;
-  top: calc(var(--app-header-height));
+  top: var(--header-height);
   left: 0;
   right: 0;
   bottom: 0;
@@ -179,8 +183,8 @@ body.dark a:active {
   border: none;
   background-color: inherit;
   will-change: transform;
-  height: calc(100vh - var(--app-header-height));
-  display: flex; /* Match App.tsx */
+  height: calc(100vh - var(--header-height));
+  display: flex;
   flex-direction: row;
 }
 
@@ -200,7 +204,7 @@ body.dark a:active {
   left: var(--folder-panel-width);
   width: calc(100vw - var(--folder-panel-width));
   padding: 0;
-  border: 1p solid #ccc;
+  border: 1px solid #ccc;
   border-radius: 6px;
   background-color: inherit;
   transition: none; /* Remove transitions that cause reflows */

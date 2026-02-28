@@ -1,4 +1,4 @@
-import React, { useState, Suspense } from 'react';
+import React, { useState, useEffect, Suspense } from 'react';
 import { Card, Tabs, Button, Tooltip, Modal, message, Space, Alert, Typography } from 'antd';
 import {
     ExperimentOutlined,

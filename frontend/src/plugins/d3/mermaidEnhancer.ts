@@ -2872,21 +2872,23 @@ export function initMermaidEnhancer(): void {
     // Extract classDef statements and modify them for better dark mode visibility
     // Pattern: classDef className fill:#lightcolor,stroke:#darkcolor,stroke-width:2px
     processedDef = processedDef.replace(
-      /classDef\s+(\w+)\s+fill:(#[a-fA-F0-9]{6}),stroke:(#[a-fA-F0-9]{6}),stroke-width:(\d+px)/g,
+      /classDef\s+(\w+)\s+fill:(#[a-fA-F0-9]{3,6}),stroke:(#[a-fA-F0-9]{3,6}),stroke-width:(\d+px)(?!,color:)/g,
       (match, className, fillColor, strokeColor, strokeWidth) => {
-        // Add color property using the stroke color for better text visibility
-        return `classDef ${className} fill:${fillColor},stroke:${strokeColor},stroke-width:${strokeWidth},color:${strokeColor}`;
+        // Add color property for text visibility — contrast against the FILL, not stroke
+        const textColor = getOptimalTextColor(fillColor);
+        return `classDef ${className} fill:${fillColor},stroke:${strokeColor},stroke-width:${strokeWidth},color:${textColor}`;
       }
     );
+
 
     // Handle style statements for individual nodes
     // Pattern: style NodeName fill:#color,stroke:#color,stroke-width:3px
     processedDef = processedDef.replace(
-      /style\s+(\w+)\s+fill:(#[a-fA-F0-9]{6}),stroke:(#[a-fA-F0-9]{6}),stroke-width:(\d+px)/g,
+      /style\s+(\w+)\s+fill:(#[a-fA-F0-9]{3,6}),stroke:(#[a-fA-F0-9]{3,6}),stroke-width:(\d+px)(?!,color:)/g,
       (match, nodeName, fillColor, strokeColor, strokeWidth) => {
-        // Add color property using the stroke color, or a high-contrast color if stroke is too light
-        const contrastColor = getContrastColor(strokeColor, fillColor);
-        return `style ${nodeName} fill:${fillColor},stroke:${strokeColor},stroke-width:${strokeWidth},color:${contrastColor}`;
+        // Add color property for text visibility — contrast against the FILL background
+        const textColor = getOptimalTextColor(fillColor);
+        return `style ${nodeName} fill:${fillColor},stroke:${strokeColor},stroke-width:${strokeWidth},color:${textColor}`;
       }
     );
 

@@ -145,6 +145,22 @@ const processedWindowEvents = new Set<string>();
 // Add a map to track which request ID corresponds to which diff element
 const diffRequestMap = new Map<string, string>();
 
+/**
+ * Generate a stable, deterministic ID from diff content.
+ * Same diff content always produces the same ID, so applied-state
+ * survives component unmount/remount cycles.
+ */
+function stableDiffId(diffContent: string): string {
+    // djb2 hash — fast and collision-resistant enough for UI keys
+    let hash = 5381;
+    const str = diffContent.slice(0, 2000); // cap input for performance
+    for (let i = 0; i < str.length; i++) {
+        hash = ((hash << 5) + hash + str.charCodeAt(i)) | 0;
+    }
+    // Unsigned hex for a compact, URL-safe string
+    return `diff-${(hash >>> 0).toString(36)}`;
+}
+
 interface ApplyChangesButtonProps {
     diff: string;
     filePath: string;
@@ -293,7 +309,6 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
                     .replace(/(<h3[^>]*>.*?<\/h3>)\s+/g, '$1\n') // Reduce space after headers
                     .replace(/<br>\s*<br>/g, '<br>'); // Remove double line breaks
 
-                setRenderedHtml(result);
                 setRenderedHtml(styledHtml);
             } else {
                 result.then(setRenderedHtml);
@@ -363,21 +378,21 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
     };
 
     // Check if this is a security error from shell command blocking
-    let isSecurityError = content.includes('🚫 SECURITY BLOCK') ||
-        content.includes('Command not allowed') ||
-        content.includes('COMMAND BLOCKED');
+    let isSecurityError = content.includes('🚫 SECURITY' + ' BLOCK') ||
+        content.includes('🚫 WRITE' + ' BLOCKED') ||
+        content.includes('Command' + ' not allowed');
 
     let securityErrorMessage = content;
 
     // Check if content is a JSON error object from MCP server
-    if (content.includes("'error': True") && content.includes('SECURITY BLOCK')) {
+    if (content.includes("'error': True") && content.includes('SECURITY' + ' BLOCK')) {
         try {
             // Extract the message from the JSON-like string
             const messageMatch = content.match(/'message': "([^"]+)"/);
             if (messageMatch) {
                 let message = messageMatch[1].replace(/\\n/g, '\n');
-                // Remove the redundant "🚫 SECURITY BLOCK:" prefix since we show it in the title
-                message = message.replace(/^🚫 SECURITY BLOCK:\s*/, '');
+                // Remove the redundant security error prefix since we show it in the title
+                message = message.replace(new RegExp('^🚫 SECURITY' + ' BLOCK:\\s*'), '');
                 securityErrorMessage = message;
                 isSecurityError = true;
             }
@@ -751,6 +766,7 @@ declare global {
         diffShowLineNumbers?: boolean;
         diffDisplayMode?: 'raw' | 'pretty';
         hunkStatusRegistry: Map<string, Map<string, HunkStatus>>;
+        appliedDiffsRegistry: Set<string>;
     }
 }
 
@@ -769,7 +785,7 @@ class ErrorBoundary extends React.Component<
         return { hasError: true };
     }
 
-    componentDidCatch(_error, errorInfo) {
+    componentDidCatch(error, errorInfo) {
         const errorType: ErrorType = this.props.type || 'unknown';
         console.error(`${errorType} rendering error:`, error, errorInfo);
     }
@@ -1144,14 +1160,7 @@ const normalizeGitDiff = (diff: string): string => {
                         const newLines = newCount || '1';
                         return `@@ -${oldStart},${oldLines} +${newStart},${newLines} @@`;
                     });
-                return normalizedHunk !== line; // Only include if we normalized it
-            }
-            if (line.startsWith('---') || line.startsWith('+++')) {
-                return false;
-            }
-            if (line.startsWith('@@')) {
-                // Keep hunk headers
-                return true;
+                return true; // Always include hunk headers (normalized or not)
             }
             // Check for +/- anywhere in the leading whitespace
             const trimmed = line.trimStart();
@@ -1170,15 +1179,9 @@ const normalizeGitDiff = (diff: string): string => {
                 if (indentMatch[1] === '-') removeCount++;
                 return true;
             }
-            if (line.trim().length > 0) {
-                contextCount++;
-                return true;
-            }
-            if (line.trim().length === 0) {
-                contextCount++;
-                return true;
-            }
-            return false;
+            // Context line (non-empty or empty — both are kept)
+            contextCount++;
+            return true;
         });
 
         // Find and normalize any hunk headers in the content
@@ -1283,7 +1286,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     const forceRenderRef = useRef<boolean>(false);
 
     // Use a stable ID that doesn't change on re-renders
-    const diffId = useRef<string>(elementId || `diff-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`).current;
+    const diffId = useRef<string>(elementId || stableDiffId(diff)).current;
 
     // Flag to prevent rendering during streaming
     const isStreamingRef = useRef<boolean>(false);
@@ -1303,6 +1306,18 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
         // Initialize the global registry if it doesn't exist
         window.diffElementPaths = window.diffElementPaths || new Map();
         window.hunkStatusRegistry = window.hunkStatusRegistry || new Map();
+        window.appliedDiffsRegistry = window.appliedDiffsRegistry || new Set();
+
+        // Restore hunk statuses from global registry on mount.
+        // Because diffId is now content-based (stable), this finds
+        // previously stored statuses even after unmount/remount.
+        if (window.hunkStatusRegistry.has(diffId)) {
+            const existingStatuses = window.hunkStatusRegistry.get(diffId);
+            if (existingStatuses && existingStatuses.size > 0) {
+                setInstanceHunkStatusMap(new Map(existingStatuses));
+                setStatusUpdateCounter(prev => prev + 1);
+            }
+        }
 
     }, []);
 
@@ -1345,19 +1360,8 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                         setInstanceHunkStatusMap(prev => {
                             const newMap = new Map(prev);
 
-                            // Also update the global registry
-                            if (!window.hunkStatusRegistry.has(diffId)) {
-                                window.hunkStatusRegistry.set(diffId, new Map());
-                            }
-                            const registryMap = window.hunkStatusRegistry.get(diffId);
-                            if (registryMap) {
-                                registryMap.set(hunkKey, newMap.get(hunkKey) as HunkStatus);
-
-                                // Only trigger re-render if not streaming or if forced
-                                if (!isStreamingRef.current || force) setStatusUpdateCounter(prev => prev + 1);
-                            }
-
-                            newMap.set(hunkKey, {
+                            // Build the status object first
+                            const hunkStatus: HunkStatus = {
                                 applied: status.status === 'succeeded' || status.status === 'already_applied',
                                 alreadyApplied: status.status === 'already_applied',
                                 reason: status.status === 'failed'
@@ -1365,7 +1369,21 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                     : status.status === 'already_applied'
                                         ? 'Already applied'
                                         : 'Successfully applied'
-                            });
+                            };
+                            newMap.set(hunkKey, hunkStatus);
+
+                            // Also update the global registry
+                            if (!window.hunkStatusRegistry.has(diffId)) {
+                                window.hunkStatusRegistry.set(diffId, new Map());
+                            }
+                            const registryMap = window.hunkStatusRegistry.get(diffId);
+                            if (registryMap) {
+                                registryMap.set(hunkKey, hunkStatus);
+
+                                // Only trigger re-render if not streaming or if forced
+                                if (!isStreamingRef.current || force) setStatusUpdateCounter(prev => prev + 1);
+                            }
+
                             return newMap;
                         });
                         // Update will happen in the renderHunks function
@@ -1388,7 +1406,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
             let isForThisDiff = false;
 
             // Also check if the request ID maps to our diff ID
-            if (event.detail.requestId && diffRequestMap.get(event.detail.requestId) === diffId || event.detail.targetDiffElementId === diffId) {
+            if (event.detail.requestId && (diffRequestMap.get(event.detail.requestId) === diffId || event.detail.targetDiffElementId === diffId)) {
                 isForThisDiff = true;
                 console.log(`direct match for diffId ${diffId}`);
 
@@ -1397,12 +1415,6 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                     Object.entries(event.detail.hunkStatuses).forEach(([hunkId, status]) => {
                         updateHunkStatuses({ [hunkId]: status }, diffId);
                     });
-                }
-
-                // If not a match, skip processing
-                if (!isForThisDiff) {
-                    console.log(`Ignoring event for diff ${event.detail.targetDiffElementId || event.detail.requestId || 'unknown'}, we are ${diffId}`);
-                    return;
                 }
 
                 // Call updateHunkStatuses with the provided data
@@ -1414,14 +1426,14 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                 if (!isStreamingRef.current || isCompletionEvent) {
                     setStatusUpdateCounter(prev => prev + 1);
                 }
-            };
+            }
+        };
 
-            window.addEventListener('hunkStatusUpdate', handleWindowStatusUpdate as EventListener);
+        window.addEventListener('hunkStatusUpdate', handleWindowStatusUpdate as EventListener);
 
-            return () => {
-                window.removeEventListener('hunkStatusUpdate', handleWindowStatusUpdate as EventListener);
-            };
-        }
+        return () => {
+            window.removeEventListener('hunkStatusUpdate', handleWindowStatusUpdate as EventListener);
+        };
     }, [updateHunkStatuses, diffId]);
 
 
@@ -2197,7 +2209,8 @@ const isDiffComplete = (diffContent: string, isStreaming: boolean): boolean => {
 };
 
 const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath, fileIndex, diffElementId, enabled, isStreaming = false, setHunkStatuses }) => {
-    const [isApplied, setIsApplied] = useState(false);
+    // Restore applied state from global registry (survives remounts)
+    const [isApplied, setIsApplied] = useState(() => window.appliedDiffsRegistry?.has(diffElementId) ?? false);
     const [isProcessing, setIsProcessing] = useState(false);
     const [isReversible, setIsReversible] = useState(false);
     const [isUndoing, setIsUndoing] = useState(false);
@@ -2219,7 +2232,8 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
         return isDiffComplete(diff, isStreaming);
     }, [diff, isStreaming]);
 
-    const shouldDisableButton = isApplied || isProcessing || (isStreaming && !diffComplete);
+    // Allow shift+click to force re-apply even when already applied
+    const shouldDisableButton = isProcessing || (isStreaming && !diffComplete);
     const buttonId = useId();
     // Define a function to trigger diff updates
     const triggerDiffUpdate = (hunkStatuses: Record<string, any> | null = null, requestId: string | null = null, diffElementId: string | null = null) => {
@@ -2264,10 +2278,21 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
             observer.disconnect();
         };
     }, []);
+    const handleApplyClick = async (e: React.MouseEvent) => {
+        if (isApplied && !e.shiftKey) return; // normal click on applied → no-op
 
-    const handleApplyChanges = async () => {
-        if (appliedRef.current) return;
+        // Reset state for re-apply (shift+click or first apply)
+        if (isApplied) {
+            setIsApplied(false);
+            window.appliedDiffsRegistry?.delete(diffElementId);
+            // Clear hunk statuses for a clean re-apply
+            if (setHunkStatuses) {
+                setHunkStatuses(() => new Map());
+            }
+            window.hunkStatusRegistry?.delete(diffElementId);
+        }
         appliedRef.current = true;
+
 
 
         // Use our stable request ID for this specific diff application
@@ -2304,6 +2329,8 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                 if (data.status === 'success') {
                     console.log('Processing success status');
                     setIsApplied(true);  // Complete success
+                    // Persist in global registry so state survives remounts
+                    window.appliedDiffsRegistry?.add(diffElementId);
                     // Store reversibility info for undo functionality
                     if (result.reversible) {
                         setIsReversible(true);
@@ -2337,6 +2364,8 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                     console.log('Processing partial status');
                     // Only mark as applied if at least one hunk succeeded
                     setIsApplied(hasSuccessfulHunks);
+
+                    if (hasSuccessfulHunks) window.appliedDiffsRegistry?.add(diffElementId);
 
                     // Handle the new format with hunk_statuses
                     if (data.details?.hunk_statuses) {
@@ -2534,6 +2563,8 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                 setIsReversible(false);
                 setAppliedDiff('');
                 appliedRef.current = false;
+                // Remove from global registry
+                window.appliedDiffsRegistry?.delete(diffElementId);
 
                 // Clear hunk statuses
                 if (setHunkStatuses) {
@@ -2555,14 +2586,16 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
     return enabled ? (
         <>
             <Button
-                onClick={handleApplyChanges}
-                disabled={shouldDisableButton}
+                onClick={handleApplyClick}
+                disabled={isProcessing || (isStreaming && !diffComplete)}
                 loading={isProcessing}
                 type={isApplied ? "default" : "primary"}
-                style={{ marginLeft: '8px' }} id={`apply-changes-${buttonId}`}
-                icon={<CheckOutlined />}
+                style={{ marginLeft: '8px', cursor: isApplied ? 'default' : undefined }}
+                id={`apply-changes-${buttonId}`}
+                icon={isApplied ? undefined : <CheckOutlined />}
+                title={isApplied ? 'Shift+click to re-apply' : 'Apply changes to file'}
             >
-                Apply Changes
+                {isApplied ? 'Applied ✓' : 'Apply Changes'}
             </Button>
             {isApplied && isReversible && (
                 <Button
@@ -2604,8 +2637,7 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode, superseded 
         removeStreamingConversation, setIsStreaming } = useChatContext();
     const { checkedKeys, addFilesToContext } = useFolderContext();
     // Generate a unique ID once when the component mounts
-    const [diffId] = useState(() =>
-        `diff-${Math.random().toString(36).substring(2, 9)}-${Date.now()}`);
+    const [diffId] = useState(() => stableDiffId(token.text));
     const contentRef = useRef<string | null>(null);
     const [isCheckingFiles, setIsCheckingFiles] = useState(false);
     const hasCheckedFilesRef = useRef(false);
@@ -3526,7 +3558,6 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
                         return 'vega-lite';
                     }
                 } catch (error) {
-                    // Not valid JSON, continue with other checks
                 }
             }
         }
@@ -3598,6 +3629,10 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         // Check for Vega-Lite JSON specifications with better error handling
         if (trimmedText.startsWith('{')) {
             try {
+                // Python dict format (single-quoted keys) is not valid JSON - skip early
+                if (!trimmedText.includes('"') && trimmedText.includes("'")) {
+                    throw new Error('skip');
+                }
                 const parsed = JSON.parse(trimmedText);
                 // Check for Vega-Lite schema or typical Vega-Lite structure
                 if (parsed.$schema?.includes('vega-lite') ||
@@ -3607,7 +3642,6 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
                 }
             } catch (error) {
                 // Not valid JSON, continue with other checks
-                console.debug("JSON parse failed for potential Vega-Lite:", error);
             }
         }
 
@@ -3936,10 +3970,10 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                     // Check for security errors in tool output and render them prominently
                     const isSecurityError = toolContent && (
-                        toolContent.includes('🚫 SECURITY BLOCK') ||
-                        toolContent.includes('Command not allowed') ||
-                        toolContent.includes('COMMAND BLOCKED') ||
-                        (toolContent.includes("'error': True") && toolContent.includes('SECURITY BLOCK'))
+                        toolContent.includes('🚫 SECURITY' + ' BLOCK') ||
+                        toolContent.includes('🚫 WRITE' + ' BLOCKED') ||
+                        toolContent.includes('Command' + ' not allowed') ||
+                        (toolContent.includes("'error': True") && toolContent.includes('SECURITY' + ' BLOCK'))
                     );
 
                     if (isSecurityError) {
@@ -3947,7 +3981,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         let errorMessage = toolContent;
                         const pythonDictMatch = toolContent.match(/\{'error': True, 'message': "([^"]*(?:\\.[^"]*)*)"/);
                         if (pythonDictMatch) {
-                            errorMessage = pythonDictMatch[1].replace(/\\n/g, '\n').replace(/^🚫 SECURITY BLOCK:\s*/, '');
+                            errorMessage = pythonDictMatch[1].replace(/\\n/g, '\n').replace(new RegExp('^🚫 SECURITY' + ' BLOCK:\\s*'), '');
                         }
                         return (
                             <Alert key={index} message="🚫 Command Blocked" description={makeShellConfigLinkClickable(errorMessage, onOpenShellConfig)} type="warning" showIcon style={{ margin: '16px 0', border: '2px solid #faad14', whiteSpace: 'pre-line' }} />
@@ -4244,6 +4278,19 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                     const htmlContent = tokenWithText.text;
 
+                    // Strip event handlers and javascript: hrefs before any raw HTML render.
+                    // The tag-name allowlist below only checks tag names, not attributes,
+                    // so <button onclick="alert(1)"> would otherwise pass straight through.
+                    const sanitizeInlineHtml = (raw: string): string => {
+                        let s = raw;
+                        s = s.replace(/\s*on\w+\s*=\s*"[^"]*"/gi, '');
+                        s = s.replace(/\s*on\w+\s*=\s*'[^']*'/gi, '');
+                        s = s.replace(/\s*on\w+\s*=\s*[^\s>]*/gi, '');
+                        s = s.replace(/href\s*=\s*"javascript:[^"]*"/gi, 'href="#"');
+                        s = s.replace(/href\s*=\s*'javascript:[^']*'/gi, "href='#'");
+                        return s;
+                    };
+
                     // Check for angle-bracketed math markers first
                     if (htmlContent.includes('⟨MATH_INLINE:')) {
                         const parts = htmlContent.split(/(⟨MATH_INLINE:[\s\S]*?⟩)/);
@@ -4278,12 +4325,12 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     const isThrottlingMessage = htmlContent.includes('throttle-retry-button') ||
                         (htmlContent.includes('Rate Limit') && htmlContent.includes('<button'));
                     if (isThrottlingMessage) {
-                        return <div key={index} dangerouslySetInnerHTML={{ __html: htmlContent }} />;
+                        return <div key={index} dangerouslySetInnerHTML={{ __html: sanitizeInlineHtml(htmlContent) }} />;
                     }
 
                     // Check if this is a wrapped MathML block
                     if (htmlContent.includes('class="mathml-block"')) {
-                        return <div key={index} dangerouslySetInnerHTML={{ __html: htmlContent }} />;
+                        return <div key={index} dangerouslySetInnerHTML={{ __html: sanitizeInlineHtml(htmlContent) }} />;
                     }
 
                     // Check for KATEX/LATEX math expressions
@@ -4315,7 +4362,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         }
 
                         // All tags are known safe HTML tags - render as HTML
-                        return <div key={index} dangerouslySetInnerHTML={{ __html: htmlContent }} />;
+                        return <div key={index} dangerouslySetInnerHTML={{ __html: sanitizeInlineHtml(htmlContent) }} />;
                     }
 
                     // Render as text content to avoid HTML parsing issues with angle brackets
@@ -5257,10 +5304,6 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
         document.addEventListener('throttlingRecoveryData', handleThrottlingRecoveryData as EventListener);
 
-        return () => {
-            document.removeEventListener('throttlingRecoveryData', handleThrottlingRecoveryData as EventListener);
-        };
-
         const observer = new MutationObserver((mutations) => {
             mutations.forEach((mutation) => {
                 mutation.addedNodes.forEach((node) => {
@@ -5309,6 +5352,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         return () => {
             observer.disconnect();
             document.removeEventListener('throttlingError', handleThrottlingError as EventListener);
+            document.removeEventListener('throttlingRecoveryData', handleThrottlingRecoveryData as EventListener);
             document.removeEventListener('throttleButtonRendered', handleThrottlingError as EventListener);
             attachedHandlersRef.current.clear();
         };

@@ -1,5 +1,7 @@
 // Add to existing info page or create new security section
 
+import React, { useState, useEffect } from 'react';
+
 const SecurityStatusSection = () => {
     const [securityStats, setSecurityStats] = useState<any>(null);
     
