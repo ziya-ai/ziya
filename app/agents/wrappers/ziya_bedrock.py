@@ -177,9 +177,6 @@ class ZiyaBedrock(Runnable):
                     file_state_manager.mark_context_submission(conversation_id)
                     logger.info(f"🔧 CACHE: Early initialization complete for {len(file_contents)} files")
         
-        # Context submission will be marked in extract_codebase before we get here
-            return messages
-            
         # Get model configuration to check caching support
         from app.agents.models import ModelManager
         endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")

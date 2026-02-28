@@ -169,6 +169,9 @@ class DirectOpenAIModel:
             logger.info(f"OpenAI tools: {[t['function']['name'] for t in openai_tools[:10]]}")
         history = self._convert_messages_to_openai_format(messages)
 
+        from app.context import get_project_root
+        self._project_root = get_project_root()
+
         max_rounds = 25  # guard against infinite tool loops
 
         for _round in range(max_rounds):
@@ -302,6 +305,9 @@ class DirectOpenAIModel:
                     tool_args = json.loads(raw_args) if raw_args else {}
                 except json.JSONDecodeError:
                     tool_args = {}
+
+                if self._project_root:
+                    tool_args["_workspace_path"] = self._project_root
 
                 yield {"type": "tool_start", "tool_name": internal_name, "input": tool_args}
 

@@ -164,6 +164,9 @@ class StreamingToolExecutor:
     def __init__(self, profile_name: str = 'ziya', region: str = 'us-west-2', model_id: str = None):
         
         # Only initialize Bedrock client for Bedrock endpoints
+        # Also create provider for the new normalized streaming interface.
+        # During migration, both self.bedrock and self.provider coexist.
+        self.provider = None
         from app.agents.models import ModelManager
         endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
         model_name = os.environ.get("ZIYA_MODEL")
@@ -202,7 +205,22 @@ class StreamingToolExecutor:
         else:
             # Non-Bedrock endpoints don't need a bedrock client
             self.bedrock = None
-            logger.debug(f"🔍 Skipping Bedrock client initialization for endpoint: {endpoint}")
+            logger.debug(f"Skipping Bedrock client initialization for endpoint: {endpoint}")
+
+        # Create the provider (normalized interface for all endpoints)
+        try:
+            from app.providers.factory import create_provider
+            self.provider = create_provider(
+                endpoint=endpoint,
+                model_id=self.model_id,
+                model_config=self.model_config or {},
+                aws_profile=profile_name,
+                region=region,
+            )
+            logger.info(f"StreamingToolExecutor: created {self.provider.provider_name} provider")
+        except Exception as e:
+            logger.warning(f"StreamingToolExecutor: provider creation failed ({e}), will use legacy path")
+            self.provider = None
 
     @staticmethod
     def _normalize_tool_name(tool_name: str) -> str:
@@ -385,6 +403,15 @@ class StreamingToolExecutor:
             return 'Shell Command'
         elif actual_tool_name == 'get_current_time':
             return 'Current Time'
+        elif actual_tool_name == 'file_read':
+            path = args.get('path', '')
+            return f'file read: {path}' if path else 'file read'
+        elif actual_tool_name == 'file_write':
+            path = args.get('path', '')
+            return f'file write: {path}' if path else 'file write'
+        elif actual_tool_name == 'file_list':
+            path = args.get('path', '.')
+            return f'file list: {path}'
         else:
             return actual_tool_name.replace('_', ' ').title()
 
@@ -652,6 +679,42 @@ class StreamingToolExecutor:
         
         return messages
 
+    def _build_provider_config(self, iteration: int, consecutive_empty_tool_calls: int = 0) -> "ProviderConfig":
+        """Build a ProviderConfig for the current iteration.
+
+        Translates model_config and environment variables into the
+        provider-agnostic ProviderConfig that the provider uses to
+        build its request body.
+        """
+        from app.providers.base import ProviderConfig, ThinkingConfig
+
+        thinking = None
+        if self.model_config and self.model_config.get('supports_adaptive_thinking'):
+            effort = os.environ.get(
+                'ZIYA_THINKING_EFFORT',
+                self.model_config.get('thinking_effort_default', 'high'),
+            )
+            thinking = ThinkingConfig(enabled=True, mode="adaptive", effort=effort)
+        elif self.model_config and self.model_config.get('supports_thinking'):
+            thinking_on = os.environ.get('ZIYA_THINKING_MODE', '0') == '1'
+            if thinking_on:
+                budget = int(os.environ.get('ZIYA_THINKING_BUDGET', '16000'))
+
+        return ProviderConfig(
+            max_output_tokens=(
+                int(os.environ["ZIYA_MAX_OUTPUT_TOKENS"])
+                if "ZIYA_MAX_OUTPUT_TOKENS" in os.environ
+                else (self.model_config.get('max_output_tokens', 16384) if self.model_config else 16384)
+            ),
+            temperature=None,  # provider defaults or model default
+            thinking=thinking,
+            enable_cache=True,
+            use_extended_context=False,
+            suppress_tools=(consecutive_empty_tool_calls >= 5),
+            model_config=self.model_config or {},
+            iteration=iteration,
+        )
+
     async def stream_with_tools(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
         # --- Concurrent feedback monitor ---
         # Instead of relying solely on discrete polling points, run a
@@ -766,10 +829,14 @@ class StreamingToolExecutor:
         from app.mcp.enhanced_tools import create_secure_mcp_tools
         all_tools = create_secure_mcp_tools()
         
-        # Separate builtin from external MCP tools for proper naming
         builtin_tool_names = {tool.name for tool in all_tools if isinstance(tool, DirectMCPTool)}
         
-        logger.debug(f"🔍 TOOL_LOADING: Total tools={len(all_tools)}, builtin={len(builtin_tool_names)}, external={len(all_tools)-len(builtin_tool_names)}")
+        # Log at INFO so this is always visible in server output
+        external_count = len(all_tools) - len(builtin_tool_names)
+        logger.info(f"🔧 TOOL_LOADING: {len(all_tools)} tools ({external_count} external, {len(builtin_tool_names)} builtin)")
+        if external_count > 0:
+            external_names = sorted(t.name for t in all_tools if not isinstance(t, DirectMCPTool))
+            logger.info(f"🔧 TOOL_LOADING: External tools: {external_names[:10]}{'...' if len(external_names) > 10 else ''}")
         logger.debug(f"🔍 BUILTIN_TOOLS: {sorted(builtin_tool_names)}")
         
         # Convert ALL tools to JSON-serializable format and deduplicate by name
@@ -834,6 +901,7 @@ class StreamingToolExecutor:
             'last_cache_efficiency': 0.0,
             'cache_working': None,  # None=unknown, True=working, False=broken
             'output_tokens_reduction_factor': 1.0,
+            'max_output_tokens_override': None,
         }
         
         # Track cumulative usage across all iterations
@@ -869,6 +937,14 @@ class StreamingToolExecutor:
             _feedback_monitor_task = asyncio.create_task(_feedback_monitor(conversation_id))
             logger.debug(f"🔄 FEEDBACK_MONITOR: Started for {conversation_id}")
 
+        # Guard: provider must be available
+        if self.provider is None:
+            yield {'type': 'error', 'content': 'LLM provider failed to initialize. Check endpoint configuration and credentials.'}
+            yield {'type': 'stream_end'}
+            if _feedback_monitor_task:
+                _feedback_monitor_task.cancel()
+            return
+
         for iteration in range(100):  # Increased limit to support complex multi-step tasks
             logger.debug(f"🔍 ITERATION_START: Beginning iteration {iteration}")
             hallucination_this_iteration = False
@@ -878,7 +954,7 @@ class StreamingToolExecutor:
             if chat_mode and iteration > 0:
                 # Only log errors in chat mode after first iteration
                 pass
-            
+
             # BASELINE ESTABLISHMENT: Only once per model family
             if should_establish_baseline:
                 should_establish_baseline = False  # Only run once
@@ -887,6 +963,50 @@ class StreamingToolExecutor:
                 try:
                     # Count MCP tools for baseline measurement
                     mcp_tool_count = len(bedrock_tools) if bedrock_tools else 0
+
+                    # Baseline calibration via invoke_model requires a Bedrock client.
+                    # For non-Bedrock endpoints (Anthropic direct, OpenAI, Google),
+                    # use the provider's count_tokens API if available, otherwise
+                    # estimate from serialized JSON size.
+                    if self.bedrock is None:
+                        logger.info(f"📊 BASELINE: No Bedrock client — using provider token counting")
+                        baseline_tokens = 0
+                        
+                        # Try provider's count_tokens API (Anthropic direct has this)
+                        try:
+                            if self.provider and hasattr(self.provider, 'client'):
+                                import anthropic as _anthropic
+                                sync_client = _anthropic.Anthropic(api_key=self.provider.client.api_key)
+                                count_kwargs = {
+                                    "model": self.model_id,
+                                    "messages": [{"role": "user", "content": "Hello"}],
+                                }
+                                if system_content:
+                                    count_kwargs["system"] = system_content if isinstance(system_content, str) else system_content
+                                if bedrock_tools:
+                                    count_kwargs["tools"] = bedrock_tools
+                                resp = sync_client.messages.count_tokens(**count_kwargs)
+                                baseline_tokens = resp.input_tokens
+                                logger.info(f"📊 BASELINE: count_tokens API returned {baseline_tokens:,} tokens")
+                        except Exception as ct_err:
+                            logger.info(f"📊 BASELINE: count_tokens failed ({ct_err}), using JSON size estimate")
+                        
+                        # Fallback: estimate from JSON size with higher multiplier
+                        if baseline_tokens == 0:
+                            tool_json_size = len(json.dumps(bedrock_tools)) if bedrock_tools else 0
+                            # Anthropic's internal tool formatting adds ~2.5x overhead
+                            estimated_tool_tokens = int(tool_json_size * 2.5 / 3.5)
+                            sys_size = len(system_content) if isinstance(system_content, str) else 0
+                            estimated_sys_tokens = int(sys_size / 3.5)
+                            baseline_tokens = estimated_tool_tokens + estimated_sys_tokens
+
+                        calibrator.baseline_overhead_tokens[model_family] = baseline_tokens
+                        calibrator.baselines_measured.add(model_family)
+                        calibrator._save_calibration_data()
+                        logger.info(f"✅ BASELINE (estimated): {baseline_tokens:,} tokens "
+                                    f"(tools: {estimated_tool_tokens:,}, system: {estimated_sys_tokens:,})")
+                        # Skip the Bedrock invoke_model path below
+                        raise RuntimeError("Baseline established via estimation")
                     
                     # Use system_content as-is, just replace file section with placeholder
                     # This ensures cache structure matches real requests perfectly
@@ -1067,106 +1187,24 @@ class StreamingToolExecutor:
                 yield {'type': 'stream_end'}
                 break
 
-            body = {
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": self.model_config.get('max_output_tokens', 4000),
-                "messages": self._prepare_messages_with_cache_control(conversation, iteration)
-            }
+            # Build provider-agnostic config for this iteration
+            provider_config = self._build_provider_config(iteration, consecutive_empty_tool_calls)
 
-            # Add adaptive thinking and effort configuration for supported models
-            if self.model_config and self.model_config.get('supports_adaptive_thinking'):
-                thinking_effort = os.environ.get('ZIYA_THINKING_EFFORT',
-                                                 self.model_config.get('thinking_effort_default', 'high'))
-                body["thinking"] = {"type": "adaptive"}
-                if thinking_effort and thinking_effort in ('low', 'medium', 'high', 'max'):
-                    # Effort goes inside output_config for Bedrock API
-                    if "output_config" not in body:
-                        body["output_config"] = {}
-                    body["output_config"]["effort"] = thinking_effort
-                    # Add effort beta header
-                    if "anthropic_beta" not in body:
-                        body["anthropic_beta"] = []
-                    if "effort-2025-11-24" not in body["anthropic_beta"]:
-                        body["anthropic_beta"].append("effort-2025-11-24")
-                logger.debug(f"🧠 ADAPTIVE_THINKING: Enabled with effort={thinking_effort}")
-            elif self.model_config and self.model_config.get('supports_thinking'):
-                # Fallback: standard extended thinking for older models that support it
-                thinking_mode = os.environ.get('ZIYA_THINKING_MODE', '0') == '1'
-                if thinking_mode:
-                    budget = int(os.environ.get('ZIYA_THINKING_BUDGET', '16000'))
-                    body["thinking"] = {"type": "enabled", "budget_tokens": budget}
-                    logger.info(f"🧠 EXTENDED_THINKING: Enabled with budget_tokens={budget}")
+            # Apply throttle-driven token reduction if active
+            if throttle_state.get('max_output_tokens_override'):
+                provider_config.max_output_tokens = throttle_state['max_output_tokens_override']
 
-            # DEBUG: Log what we're actually sending
-            logger.debug(f"🔍 REQUEST_DEBUG: Iteration {iteration}")
-            logger.debug(f"   Messages in request: {len(conversation)}, max_tokens: {body['max_tokens']}")
+            logger.debug(f"🔍 REQUEST_DEBUG: Iteration {iteration}, provider={self.provider.provider_name}")
+            logger.debug(f"   Messages: {len(conversation)}, max_tokens: {provider_config.max_output_tokens}")
             total_chars = sum(
                 len(msg.get('content', '')) if isinstance(msg.get('content'), str)
                 else sum(len(b.get('text', '')) for b in msg.get('content', []) if isinstance(b, dict) and b.get('type') == 'text')
                 for msg in conversation
             )
             logger.debug(f"   Total conversation size: {total_chars:,} chars across {len(conversation)} messages")
-            
-            if system_content:
-                # With precision prompts, system content is already clean - no regex needed
-                logger.debug(f"🔍 SYSTEM_DEBUG: Using clean system content length: {len(system_content)}")
-                logger.debug(f"🔍 SYSTEM_DEBUG: File count in system content: {system_content.count('File:')}")
-                
-                # Log cache control setup for debugging
-                logger.debug(f"🔍 CACHE_SETUP: Iteration {iteration}")
-                logger.debug(f"   System content length: {len(system_content):,} chars")
-                logger.debug(f"   Conversation messages: {len(conversation)}")
-                
-                # Use system_content as-is - prompt system handles all formatting
-                system_text = system_content
-                
-                # Use prompt caching for large system prompts to speed up iterations
-                if len(system_text) > 1024:
-                    body["system"] = [
-                        {
-                            "type": "text",
-                            "text": system_text,
-                            "cache_control": {"type": "ephemeral"}
-                        }
-                    ]
-                    logger.debug(f"🔍 CACHE: Enabled prompt caching for {len(system_text)} char system prompt")
-                    logger.debug(f"🔍 CACHE_CONTROL: Set cache_control ephemeral on system message")
-                    logger.debug(f"   Expected cache creation: ~{len(system_text) // 4:,} tokens")
-                else:
-                    body["system"] = system_text
-                    logger.warning(f"🔍 CACHE_CONTROL: NOT using cache_control (system too small: {len(system_text)} chars)")
-                
-                logger.debug(f"🔍 SYSTEM_DEBUG: Final system prompt length: {len(system_text)}")
-                logger.debug(f"🔍 SYSTEM_CONTENT_DEBUG: First 500 chars of system prompt: {system_text[:500]}")
-                logger.debug(f"🔍 SYSTEM_CONTENT_DEBUG: System prompt contains 'File:' count: {system_text.count('File:')}")
-                logger.debug(f"🔍 SYSTEM_CONTENT_DEBUG: Last 500 chars of system prompt: {system_text[-500:]}")
-            
-            # If we've already enabled extended context, keep using it
-            if using_extended_context and self.model_config:
-                header_value = self.model_config.get('extended_context_header')
-                if header_value:
-                    body['anthropic_beta'] = [header_value]
-                    logger.debug(f"🔍 EXTENDED_CONTEXT: Continuing with extended context header")
-
-            if bedrock_tools:
-                # Don't send tools if we've had too many consecutive empty calls
-                if consecutive_empty_tool_calls >= 5:
-                    logger.warning(f"🔍 TOOL_SUPPRESSION: Suppressing tools due to {consecutive_empty_tool_calls} consecutive empty calls")
-                    # Don't add tools to body - force model to respond without them
-                else:
-                    body["tools"] = bedrock_tools
-                    # Use "auto" to allow model to decide when to stop
-                    body["tool_choice"] = {"type": "auto"}
-                    logger.debug(f"🔍 TOOL_DEBUG: Sending {len(bedrock_tools)} tools to model: {[t['name'] for t in bedrock_tools]}")
 
             try:
-                # Exponential backoff for rate limiting
-                max_retries = 4
-                base_delay = 2  # Start with 2 seconds
                 iteration_start_time = time.time()
-                
-                # Store original max_tokens for potential reduction
-                original_max_tokens = body.get('max_tokens', 4000)
                 
                 # Initialize tool_results early so it's available in exception handlers
                 tool_results = []
@@ -1175,77 +1213,17 @@ class StreamingToolExecutor:
                 # Track usage for this specific iteration
                 iteration_usage = IterationUsage()
                 
-                for retry_attempt in range(max_retries + 1):
-                    try:
-                        api_params = {
-                            'modelId': self.model_id,
-                            'body': json.dumps(body)
-                        }
-                        
-                        logger.debug(f"🔍 API_PARAMS: Calling invoke_model_with_response_stream with modelId={self.model_id}")
-                        response = self.bedrock.invoke_model_with_response_stream(**api_params)
-                        break  # Success, exit retry loop
-                    except Exception as e:
-                        error_str = str(e)
-                        is_rate_limit = ("Too many tokens" in error_str or 
-                                       "ThrottlingException" in error_str or
-                                       "Too many requests" in error_str or
-                                       "rate limit" in error_str.lower())
-                        is_read_timeout = ("Read timed out" in error_str or
-                                          "ReadTimeoutError" in error_str or
-                                          "timeout" in error_str.lower())
-                        is_context_limit = "Input is too long" in error_str or "too large" in error_str or "prompt is too long" in error_str
-                        
-                        # On context limit error, enable extended context and retry
-                        if is_context_limit and not using_extended_context and self.model_config:
-                            if self.model_config.get('supports_extended_context'):
-                                header_value = self.model_config.get('extended_context_header')
-                                if header_value:
-                                    logger.debug(f"🔍 EXTENDED_CONTEXT: Context limit hit, enabling extended context with header {header_value}")
-                                    body['anthropic_beta'] = [header_value]
-                                    api_params['body'] = json.dumps(body)
-                                    using_extended_context = True  # Set flag to keep using it
-                                    try:
-                                        response = self.bedrock.invoke_model_with_response_stream(**api_params)
-                                        break
-                                    except Exception as retry_error:
-                                        logger.error(f"🔍 EXTENDED_CONTEXT: Retry with extended context failed: {retry_error}")
-                                        raise
-                        
-                        # Read timeout retry — non-blocking sleep keeps event loop responsive
-                        if is_read_timeout and not is_rate_limit and retry_attempt < max_retries:
-                            delay = 2 * (retry_attempt + 1)  # 2s, 4s, 6s, 8s
-                            logger.warning(f"🔄 READ_TIMEOUT_RETRY: Attempt {retry_attempt + 1}/{max_retries + 1} "
-                                         f"after {delay}s async delay (event loop stays responsive)")
-                            await asyncio.sleep(delay)
-                            continue
-
-                        if is_rate_limit and retry_attempt < max_retries:
-                            # Exponential backoff with longer delays to allow token bucket refill
-                            # boto3 already did fast retries, so we need longer waits
-                            delay = base_delay * (2 ** retry_attempt) + 4  # Add 4s base to account for boto3 retries
-                            logger.warning(f"Rate limit hit, retrying in {delay}s (attempt {retry_attempt + 1}/{max_retries + 1})")
-                            await asyncio.sleep(delay)
-                        else:
-                            raise  # Re-raise if not rate limit or max retries exceeded
-
                 # Process this iteration's stream - collect ALL tool calls first
                 assistant_text = ""
                 yielded_text_length = 0  # Track how much text we've yielded
                 all_tool_calls = []  # Collect all tool calls from this response
                 
                 active_tools = {}
-                completed_tools = set()
                 expected_tools = set()
+                completed_tools = set()
                 skipped_tools = set()  # Track tools we're skipping due to limits
                 executed_tool_signatures = set()  # Track tool name + args to prevent duplicates
                 
-                # Timeout protection - use configured timeout from shell config
-                last_activity_time = time.time()
-                from app.config.shell_config import DEFAULT_SHELL_CONFIG
-                # Stream stall timeout: if no chunk arrives in this many seconds, break out
-                chunk_timeout = int(os.environ.get('STREAM_STALL_TIMEOUT', '120'))  # 2 minutes
-
                 # Initialize content buffer and visualization detector
                 content_buffer = ""
                 viz_buffer = ""  # Track potential visualization blocks
@@ -1260,50 +1238,23 @@ class StreamingToolExecutor:
                 
                 # Track event count for debugging
                 event_count = 0
-                
-                # CRITICAL: Run synchronous boto3 stream iteration in a thread
-                # to avoid blocking the event loop (which would freeze the entire server)
-                stream_body = response['body']
-                
-                def _next_event(iterator):
-                    """Get next event from boto3 stream iterator (runs in thread)."""
-                    try:
-                        return next(iterator)
-                    except StopIteration:
-                        return None
-                
-                stream_iter = iter(stream_body)
-                while True:
-                    try:
-                        event = await asyncio.wait_for(asyncio.to_thread(_next_event, stream_iter), timeout=chunk_timeout)
-                    except asyncio.TimeoutError:
-                        logger.error(f"⏰ STREAM_STALL: No data received for {chunk_timeout}s, breaking out of stream")
-                        yield {'type': 'text', 'content': '\n\n⚠️ *Stream stalled — no data received. Response may be incomplete.*\n\n'}
-                        break
-                    
-                    if event is None:
-                        break  # Stream exhausted (StopIteration)
 
+                # Stream via provider — yields normalized StreamEvent objects
+                from app.providers.base import (
+                    TextDelta, ToolUseStart, ToolUseInput, ToolUseEnd,
+                    UsageEvent, ThinkingDelta, ErrorEvent, StreamEnd,
+                )
+                async for stream_event in self.provider.stream_response(
+                    conversation, system_content, bedrock_tools, provider_config
+                ):
                     event_count += 1
-                    last_activity_time = time.time()
 
-                    if 'chunk' not in event:
-                        continue
-                    
-                    chunk_bytes = event['chunk']['bytes']
-                    chunk_str = self._decode_chunk_bytes(chunk_bytes)
-                    chunk = json.loads(chunk_str)
-                    
-                    
-                    # ZERO-COST TELEMETRY: Extract usage from decoded chunks
-                    # Metrics are INSIDE the chunk JSON, not at event level!
-                    if 'amazon-bedrock-invocationMetrics' in chunk:
-                        metrics = chunk['amazon-bedrock-invocationMetrics']
-                        
-                        iteration_usage.input_tokens = metrics.get('inputTokenCount', 0)
-                        iteration_usage.output_tokens = metrics.get('outputTokenCount', 0)
-                        iteration_usage.cache_read_tokens = metrics.get('cacheReadInputTokenCount', 0)
-                        iteration_usage.cache_write_tokens = metrics.get('cacheWriteInputTokenCount', 0)
+                    # --- Usage tracking ---
+                    if isinstance(stream_event, UsageEvent):
+                        iteration_usage.input_tokens = stream_event.input_tokens or iteration_usage.input_tokens
+                        iteration_usage.output_tokens = stream_event.output_tokens or iteration_usage.output_tokens
+                        iteration_usage.cache_read_tokens = stream_event.cache_read_tokens or iteration_usage.cache_read_tokens
+                        iteration_usage.cache_write_tokens = stream_event.cache_write_tokens or iteration_usage.cache_write_tokens
                         
                         # Compute derived values for logging
                         total_input = iteration_usage.input_tokens + iteration_usage.cache_read_tokens
@@ -1312,9 +1263,11 @@ class StreamingToolExecutor:
                         
                         # DEBUG: Log ALL fields in metrics to see what we're getting
                         if iteration == 0:
-                            logger.info(f"🔍 METRICS_DEBUG: All fields in metrics:")
-                            for key, value in metrics.items():
-                                logger.info(f"   {key}: {value}")
+                            logger.info(f"🔍 METRICS_DEBUG: Usage from provider:")
+                            logger.info(f"   input_tokens: {stream_event.input_tokens}")
+                            logger.info(f"   output_tokens: {stream_event.output_tokens}")
+                            logger.info(f"   cache_read_tokens: {stream_event.cache_read_tokens}")
+                            logger.info(f"   cache_write_tokens: {stream_event.cache_write_tokens}")
                         elif cached > 0:
                             throttle_state['cache_working'] = True
                             throttle_state['last_cache_efficiency'] = iteration_usage.cache_hit_rate
@@ -1551,6 +1504,43 @@ class StreamingToolExecutor:
                                 logger.error(f"📊 CALIBRATION ERROR: {calib_error}")
                                 import traceback
                                 logger.error(f"📊 CALIBRATION TRACEBACK:\n{traceback.format_exc()}")
+                        continue  # UsageEvent fully handled, next stream_event
+
+                    # --- Convert StreamEvent to legacy chunk dict ---
+                    # Bridge: translate provider events into the chunk format
+                    # the existing orchestration code expects.  This avoids
+                    # rewriting 800 lines of battle-tested orchestration logic
+                    # in a single pass.  A future cleanup pass can replace
+                    # the chunk['type'] dispatch with isinstance() dispatch.
+                    if isinstance(stream_event, TextDelta):
+                        chunk = {'type': 'content_block_delta',
+                                 'delta': {'type': 'text_delta', 'text': stream_event.content}}
+                    elif isinstance(stream_event, ToolUseStart):
+                        chunk = {'type': 'content_block_start',
+                                 'index': stream_event.index,
+                                 'content_block': {'type': 'tool_use',
+                                                   'id': stream_event.id,
+                                                   'name': stream_event.name}}
+                    elif isinstance(stream_event, ToolUseInput):
+                        chunk = {'type': 'content_block_delta',
+                                 'index': stream_event.index,
+                                 'delta': {'type': 'input_json_delta',
+                                           'partial_json': stream_event.partial_json}}
+                    elif isinstance(stream_event, ToolUseEnd):
+                        chunk = {'type': 'content_block_stop',
+                                 'index': stream_event.index}
+                    elif isinstance(stream_event, ThinkingDelta):
+                        chunk = {'type': 'content_block_delta',
+                                 'delta': {'type': 'thinking_delta',
+                                           'thinking': stream_event.content}}
+                    elif isinstance(stream_event, ErrorEvent):
+                        yield {'type': 'error', 'content': stream_event.message}
+                        break
+                    elif isinstance(stream_event, StreamEnd):
+                        chunk = {'type': 'message_stop',
+                                 'stop_reason': stream_event.stop_reason}
+                    else:
+                        continue  # Unknown event type, skip
                     
                     if chunk['type'] == 'content_block_start':
                         # We already decoded the chunk above for metrics, reuse it
@@ -1643,6 +1633,20 @@ class StreamingToolExecutor:
                                         self._block_opening_buffer = text
                                         continue
                             
+                            # Per-chunk suppression of fake tool-call syntax.
+                            # Must run BEFORE assistant_text accumulation so
+                            # the hallucination detector doesn't see it.
+                            if '```tool:' in text or '`tool:' in text:
+                                if hasattr(self, '_content_optimizer'):
+                                    remaining = self._content_optimizer.flush_remaining()
+                                    if remaining:
+                                        yield track_yield({
+                                            'type': 'text',
+                                            'content': remaining,
+                                            'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                                        })
+                                continue
+
                             assistant_text += text
                             
                             # HALLUCINATION DETECTION (backend defense-in-depth)
@@ -1653,7 +1657,6 @@ class StreamingToolExecutor:
                             _BACKEND_HALLUCINATION_PATTERNS = [
                                 _re.compile(r'SECURITY BLOCK:.{0,200}not allowed', _re.DOTALL),
                                 _re.compile(r'Allowed commands:\s*awk'),
-                                _re.compile(r'```+tool:mcp_'),
                             ]
                             # Check the trailing window of assistant_text (last 500 chars)
                             _tail = assistant_text[-500:] if len(assistant_text) > 500 else assistant_text
@@ -1672,11 +1675,17 @@ class StreamingToolExecutor:
                                     if _re.search(r'(\$ |ERROR:|SECURITY BLOCK|Allowed commands:|```+tool:)', _tail_section):
                                         assistant_text = assistant_text[:_last_para].rstrip()
                                 
+                                # Reset code block tracker - its state is contaminated
+                                # by the hallucinated backticks and unreliable
+                                code_block_tracker['in_block'] = False
+                                code_block_tracker['depth'] = 0
+                                code_block_tracker['block_type'] = None
+
                                 hallucination_this_iteration = True
-                                _snippet = _tail[-300:] if len(_tail) > 300 else _tail
+
                                 yield track_yield({
                                     'type': 'text',
-                                    'content': f'\n\n<details><summary>⚠️ Model attempted to fabricate tool output (auto-retrying)</summary>\n\n```\n{_snippet}\n```\n\n</details>\n\n'
+                                    'content': '\n\n⚠️ Model attempted to fabricate tool output — retrying…\n\n'
                                 })
                                 break  # Exit stream chunk loop; outer loop will retry
                             
@@ -1717,34 +1726,11 @@ class StreamingToolExecutor:
                                                     'content': remaining,
                                                     'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
                                                 })
-                            if '```tool:' in text or '`tool:' in text:
-                                # FLUSH optimizer before skipping fake tool patterns
-                                if hasattr(self, '_content_optimizer'):
-                                    remaining = self._content_optimizer.flush_remaining()
-                                    if remaining:
-                                        yield track_yield({
-                                            'type': 'text',
-                                            'content': remaining,
-                                            'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                                        })
-                                continue
-                            
                             # Initialize content optimizer if not exists
                             if not hasattr(self, '_content_optimizer'):
                                 from app.utils.streaming_optimizer import StreamingContentOptimizer
                                 self._content_optimizer = StreamingContentOptimizer()
                             
-                            
-                            if '```tool:' in text or '`tool:' in text:
-                                if hasattr(self, '_content_optimizer'):
-                                    remaining = self._content_optimizer.flush_remaining()
-                                    if remaining:
-                                        yield track_yield({
-                                            'type': 'text',
-                                            'content': remaining,
-                                            'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                                        })
-                                continue
                             
                             # Check for visualization block boundaries - ensure proper markdown format
                             viz_patterns = ['```vega-lite', '```mermaid', '```graphviz', '```d3']
@@ -1878,6 +1864,25 @@ Please retry the tool call with complete, valid JSON parameters."""
                                     if isinstance(tool_input, dict):
                                         logger.debug(f"🔍 UNWRAP_TOOL_INPUT: Unwrapping tool_input for {tool_name}")
                                         args = tool_input
+                                    elif isinstance(tool_input, str):
+                                        # Model sent bare string as tool_input.
+                                        # Find the tool's single required string param and assign it.
+                                        mapped = False
+                                        actual = self._normalize_tool_name(tool_name)
+                                        for t in all_tools:
+                                            t_name = getattr(t, 'name', '')
+                                            if t_name in (tool_name, actual):
+                                                schema = (t.metadata or {}).get('input_schema', {}) if hasattr(t, 'metadata') else {}
+                                                required = schema.get('required', [])
+                                                props = schema.get('properties', {})
+                                                if len(required) == 1 and props.get(required[0], {}).get('type') == 'string':
+                                                    args = {required[0]: tool_input}
+                                                    mapped = True
+                                                break
+                                        if not mapped:
+                                            # Fallback: most common single-param name
+                                            args = {"command": tool_input}
+                                        logger.debug(f"🔍 UNWRAP_TOOL_INPUT: Bare string → {list(args.keys())} for {tool_name}")
                                 
                                 # Fix parameter type conversion issues
                                 if 'raw' in args and isinstance(args['raw'], str):
@@ -2418,10 +2423,21 @@ Please retry the tool call with valid JSON. Ensure:
                         max_continuations = 10
                         continuation_happened = False
                         
-                        # Generate a stable marker ID for this continuation cycle
-                        # This allows frontend to jump to the exact same spot on all retry attempts
+                        # Generate a stable marker ID for this continuation cycle.
                         continuation_marker_id = f"continuation_{time.time_ns()}"
                         
+                        # Embed the rewind marker in the content stream BEFORE
+                        # the first continuation so the frontend can find it when
+                        # a rewind event references it. The frontend strips
+                        # REWIND_MARKER tags during rewind processing.
+                        if code_block_tracker.get('in_block'):
+                            rewind_marker_text = f""
+                            yield track_yield({
+                                'type': 'text',
+                                'content': rewind_marker_text,
+                                'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                            })
+
                         while code_block_tracker.get('in_block') and continuation_count < max_continuations:
                             continuation_count += 1
                             block_type = code_block_tracker.get('block_type', 'code')
@@ -2437,14 +2453,7 @@ Please retry the tool call with valid JSON. Ensure:
                             
                             last_complete_line = len(assistant_lines)
                             
-                            # Use stable marker ID so all retries rewind to the SAME spot
-                            rewind_marker = f"<!-- REWIND_MARKER: {continuation_marker_id} -->"
-                            
                             rewind_chunk = {
-                                'type': 'text',
-                                'content': '',
-                                'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms",
-                                # Tell frontend which marker to target
                                 'rewind': True,
                                 'to_marker': continuation_marker_id
                             }
@@ -2467,7 +2476,7 @@ Please retry the tool call with valid JSON. Ensure:
                             continuation_happened = True
                             try:
                                 async for continuation_chunk in self._continue_incomplete_code_block(
-                                    conversation, code_block_tracker, mcp_manager, iteration_start_time, assistant_text
+                                    conversation, code_block_tracker, system_content, mcp_manager, iteration_start_time, assistant_text
                                 ):
                                     if continuation_chunk.get('content'):
                                         continuation_had_content = True
@@ -2529,6 +2538,7 @@ Please retry the tool call with valid JSON. Ensure:
                     cumulative_usage.cache_read_tokens += iteration_usage.cache_read_tokens
                     cumulative_usage.cache_write_tokens += iteration_usage.cache_write_tokens
                     
+                    iteration_usages.append(iteration_usage)
                     total_input = iteration_usage.input_tokens + iteration_usage.cache_read_tokens
                     fresh = iteration_usage.input_tokens
                     cached = iteration_usage.cache_read_tokens
@@ -2577,56 +2587,44 @@ Please retry the tool call with valid JSON. Ensure:
                 # Add assistant response to conversation with proper tool_use blocks
                 # ONLY include tool_use blocks that have corresponding tool_results
                 if assistant_text.strip() or tools_executed_this_iteration:
-                    # Build content as list with text and tool_use blocks
-                    content_blocks = []
-                    if assistant_text.strip():
-                        content_blocks.append({"type": "text", "text": assistant_text.rstrip()})
-                    
-                    # Add tool_use blocks ONLY for tools that have results
+                    # Build tool_uses list for the provider's message builder
+                    tool_uses = []
                     for tool_result in tool_results:
-                        # Find the corresponding tool call to get the actual args
                         tool_args = {}
                         for tool_call in all_tool_calls:
                             if tool_call['id'] == tool_result['tool_id']:
                                 tool_args = tool_call.get('args', {})
                                 break
-                        
-                        # Ensure tool_use block has the correct name format
-                        tool_name = tool_result['tool_name']
-                        if tool_name.startswith('mcp_'):
-                            tool_name = tool_name[4:]  # Remove mcp_ prefix for Bedrock
-                        
-                        content_blocks.append({
-                            "type": "tool_use",
+                        tool_uses.append({
                             "id": tool_result['tool_id'],
-                            "name": tool_name,
+                            "name": tool_result['tool_name'],
                             "input": tool_args
                         })
                     
-                    conversation.append({"role": "assistant", "content": content_blocks})
+                    conversation.append(self.provider.build_assistant_message(assistant_text, tool_uses))
             
                 # Add tool results to conversation BEFORE filtering
                 logger.debug(f"🔍 ITERATION_END_CHECK: tools_executed_this_iteration = {tools_executed_this_iteration}, tool_results count = {len(tool_results)}")
                 if tools_executed_this_iteration:
                     logger.debug(f"🔍 TOOL_RESULTS_PROCESSING: Adding {len(tool_results)} tool results to conversation")
+                    provider_tool_results = []
                     for tool_result in tool_results:
                         raw_result = tool_result['result']
                         if isinstance(raw_result, str) and '$ ' in raw_result:
                             lines = raw_result.split('\n')
                             clean_lines = [line for line in lines if not line.startswith('$ ')]
                             raw_result = '\n'.join(clean_lines).strip()
-                        
-                        # Add in tool_result_for_model format so filter can convert to proper Bedrock format
-                        conversation.append({
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "tool_result",
-                                    "tool_use_id": tool_result['tool_id'],
-                                    "content": raw_result
-                                }
-                            ]
+                        provider_tool_results.append({
+                            "tool_use_id": tool_result['tool_id'],
+                            "content": raw_result,
                         })
+                    tool_msg = self.provider.build_tool_result_message(provider_tool_results)
+                    # OpenAI-format providers return multiple messages (one per tool result)
+                    if tool_msg.get("role") == "_multi_tool_results":
+                        for sub_msg in tool_msg["results"]:
+                            conversation.append(sub_msg)
+                    else:
+                        conversation.append(tool_msg)
                 
                 # SAFETY CHECK: Ensure conversation is in valid Bedrock format
                 # Verify that every tool_use in assistant messages has a corresponding tool_result
@@ -2822,7 +2820,7 @@ Please retry the tool call with valid JSON. Ensure:
                         break
                 
                 # CRITICAL: Check for pending feedback after the iteration loop completes
-                # This ensures feedback that arrived during the last iteration or after completion<!-- REWIND_MARKER: 20 -->
+                # This ensures feedback that arrived during the last iteration or after completion
                 # is not lost and gives the model a chance to respond
                 if conversation_id:
                     try:
@@ -2881,41 +2879,25 @@ Please retry the tool call with valid JSON. Ensure:
                                 
                                 # Make ONE additional API call to get model's response to feedback
                                 try:
-                                    body = {
-                                        "anthropic_version": "bedrock-2023-05-31",
-                                        "max_tokens": self.model_config.get('max_output_tokens', 4000),
-                                        "messages": conversation
-                                    }
+                                    # Use provider abstraction for feedback response
+                                    feedback_config = self._build_provider_config(iteration)
+                                    feedback_config.suppress_tools = True
                                     
-                                    if system_content:
-                                        body["system"] = system_content
-                                    
-                                    # Don't send tools for feedback response - just let model respond
-                                    response = self.bedrock.invoke_model_with_response_stream(
-                                        modelId=self.model_id,
-                                        body=json.dumps(body)
-                                    )
-                                    
-                                    # Stream the feedback response
-                                    for event in response['body']:
-                                        chunk = json.loads(event['chunk']['bytes'])
-                                        
-                                        if chunk['type'] == 'content_block_delta':
-                                            delta = chunk.get('delta', {})
-                                            if delta.get('type') == 'text_delta':
-                                                text = delta.get('text', '')
-                                                yield track_yield({
-                                                    'type': 'text',
-                                                    'content': text,
-                                                    'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                                                })
-                                        elif chunk['type'] == 'message_stop':
+                                    async for fb_event in self.provider.stream_response(
+                                        conversation, system_content, bedrock_tools, feedback_config
+                                    ):
+                                        if isinstance(fb_event, TextDelta):
+                                            yield track_yield({
+                                                'type': 'text',
+                                                'content': fb_event.content,
+                                                'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                                            })
+                                        elif isinstance(fb_event, StreamEnd):
                                             break
 
                                     # Signal stream completion after feedback response
                                     yield track_yield({'type': 'stream_end'})
                                     return
-
                                 except Exception as feedback_error:
                                     logger.error(f"Error processing post-loop feedback: {feedback_error}")
                     except Exception as e:
@@ -2991,7 +2973,7 @@ Please retry the tool call with valid JSON. Ensure:
                     
                     # CRITICAL: Reduce output tokens to decrease throttle pressure
                     # Per @animeshx: "more throttled with a higher output token limit"
-                    current_max_tokens = body.get('max_tokens', 4000)
+                    current_max_tokens = provider_config.max_output_tokens
                     
                     # Aggressive reduction strategy - but NOT for read timeouts
                     # Read timeouts are network issues, not token pressure
@@ -3008,15 +2990,14 @@ Please retry the tool call with valid JSON. Ensure:
                         # First retry - moderate reduction
                         reduction_factor = 0.75  # 75% of original
                     
-                    reduced_max_tokens = int(original_max_tokens * reduction_factor)
+                    reduced_max_tokens = int(current_max_tokens * reduction_factor)
                     reduced_max_tokens = max(reduced_max_tokens, 2048)  # Never go below 2048
                     
-                    body['max_tokens'] = reduced_max_tokens
-                    
+                    throttle_state['max_output_tokens_override'] = reduced_max_tokens
                     logger.warning(f"🔄 INTELLIGENT THROTTLE BACKOFF:")
                     logger.warning(f"   Retry #{throttle_state['retry_count']}")
                     logger.warning(f"   Time delay: {min(time_delay, 60)}s")
-                    logger.warning(f"   Output tokens: {original_max_tokens:,} → {reduced_max_tokens:,} ({reduction_factor*100:.0f}%)")
+                    logger.warning(f"   Output tokens: {current_max_tokens:,} → {reduced_max_tokens:,} ({reduction_factor*100:.0f}%)")
                     logger.warning(f"   Cache working: {throttle_state['cache_working']}")
                     logger.warning(f"   Cache efficiency: {throttle_state['last_cache_efficiency']*100:.1f}%")
                     
@@ -3198,12 +3179,15 @@ Please retry the tool call with valid JSON. Ensure:
         self,
         conversation: List[Dict[str, Any]], 
         code_block_tracker: Dict[str, Any],
+        system_content: Optional[str],
         mcp_manager,
         start_time: float,
         assistant_text: str
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Continue an incomplete code block by making a new API call."""
         try:
+            from app.providers.base import TextDelta, StreamEnd
+
             block_type = code_block_tracker['block_type']
             fence_width = code_block_tracker.get('backtick_count', 3)
             closing_fence = '`' * fence_width
@@ -3242,13 +3226,6 @@ Please retry the tool call with valid JSON. Ensure:
             
             continuation_conversation.append({"role": "user", "content": continuation_prompt})
             
-            body = {
-                "messages": continuation_conversation,
-                "max_tokens": self.model_config.get('max_output_tokens', 2000),
-                "temperature": 0.1,
-                "anthropic_version": "bedrock-2023-05-31"
-            }
-            
             logger.info(f"🔄 CONTINUATION: Making API call to continue {block_type} block")
             
             # Yield initial heartbeat
@@ -3258,10 +3235,14 @@ Please retry the tool call with valid JSON. Ensure:
                 'timestamp': f"{int((time.time() - start_time) * 1000)}ms"
             }
             
-            # Make the Bedrock call - this returns immediately with a stream
-            response = self.bedrock.invoke_model_with_response_stream(
-                modelId=self.model_id,
-                body=json.dumps(body)
+            # Use provider abstraction for continuation
+            from app.providers.base import ProviderConfig
+            continuation_config = ProviderConfig(
+                max_output_tokens=self.model_config.get('max_output_tokens', 2000) if self.model_config else 2000,
+                temperature=0.1,
+                enable_cache=False,
+                suppress_tools=True,
+                model_config=self.model_config or {},
             )
             
             # Send heartbeat after getting response object (before first chunk)
@@ -3276,7 +3257,9 @@ Please retry the tool call with valid JSON. Ensure:
             chunk_count = 0
             continuation_buffer = ""  # Buffer for continuation chunks
             
-            for event in response['body']:
+            async for stream_event in self.provider.stream_response(
+                continuation_conversation, system_content, [], continuation_config
+            ):
                 # Send heartbeat every 10 chunks to keep connection alive
                 chunk_count += 1
                 if chunk_count % 10 == 0:
@@ -3286,13 +3269,13 @@ Please retry the tool call with valid JSON. Ensure:
                         'timestamp': f"{int((time.time() - start_time) * 1000)}ms"
                     }
                 
-                chunk_data = self._decode_chunk_bytes(event['chunk']['bytes'])
-                chunk = json.loads(chunk_data)
-                
-                if chunk['type'] == 'content_block_delta':
-                    delta = chunk.get('delta', {})
-                    if delta.get('type') == 'text_delta':
-                        text = delta.get('text', '')
+                if isinstance(stream_event, StreamEnd):
+                    break
+                if not isinstance(stream_event, TextDelta):
+                    continue
+
+                text = stream_event.content
+                if text:
                         
                         # Buffer continuation text to avoid tiny chunks
                         continuation_buffer += text
