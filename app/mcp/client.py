@@ -1200,6 +1200,11 @@ class MCPClient:
             elif expected_type == "boolean" and isinstance(value, str):
                 validated[key] = value.lower() in ("true", "1", "yes")
             else:
+                # Coerce non-string values to string when schema expects string
+                # Models frequently pass numeric IDs (e.g. requestId, testRunIdentifier) as numbers
+                if expected_type == "string" and not isinstance(value, str):
+                    logger.debug(f"Coercing {key}={value!r} ({type(value).__name__}) to string per schema")
+                    value = str(value)
                 validated[key] = value
                 
         return validated

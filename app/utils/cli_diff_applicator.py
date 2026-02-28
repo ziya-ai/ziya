@@ -62,20 +62,32 @@ class CLIDiffApplicator:
         Returns:
             List of DiffBlock objects
         """
-        # Pattern to match ```diff ... ``` blocks (code fences with diff language)
-        # Match until ``` appears at the start of a line to handle nested code blocks
-        # The \n``` ensures we match the closing fence on its own line
-        pattern = r'```diff\n(.*?)\n```'
-        matches = re.finditer(pattern, markdown, re.DOTALL)
-        
+        # Extract diff blocks by tracking fence open/close rather than regex,
+        # so backtick fences inside the diff content don't cause early termination.
         diffs = []
-        for match in matches:
-            diff_content = match.group(1).strip()
-            diffs.append(DiffBlock(
-                content=diff_content,
-                start_pos=match.start(),
-                end_pos=match.end()
-            ))
+        lines = markdown.split('\n')
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+            # Match opening fence: 3+ backticks followed by 'diff'
+            if re.match(r'^`{3,4}diff\s*$', stripped):
+                fence_len = len(stripped.split('diff')[0])  # number of backticks
+                start_pos = sum(len(l) + 1 for l in lines[:i])
+                i += 1
+                content_lines = []
+                # Collect until matching closing fence (same or more backticks, nothing else)
+                while i < len(lines):
+                    close_stripped = lines[i].strip()
+                    if re.match(r'^`{' + str(fence_len) + r',}\s*$', close_stripped):
+                        break
+                    content_lines.append(lines[i])
+                    i += 1
+                end_pos = sum(len(l) + 1 for l in lines[:i + 1])
+                diff_content = '\n'.join(content_lines).strip()
+                if diff_content:
+                    diffs.append(DiffBlock(content=diff_content, start_pos=start_pos, end_pos=end_pos))
+            i += 1
         
         logger.debug(f"Extracted {len(diffs)} diff blocks from response")
         return diffs
@@ -106,7 +118,16 @@ class CLIDiffApplicator:
         for a_start, a_end in a:
             for b_start, b_end in b:
                 if a_start <= b_end and b_start <= a_end:
-                    return True
+                    # Calculate actual overlap size. Adjacent hunks sharing
+                    # only a few lines of context are complementary changes,
+                    # not revisions. Require >50% of the smaller hunk to
+                    # overlap before treating it as a superseding revision.
+                    overlap_start = max(a_start, b_start)
+                    overlap_end = min(a_end, b_end)
+                    overlap_size = overlap_end - overlap_start + 1
+                    smaller_hunk = min(a_end - a_start + 1, b_end - b_start + 1)
+                    if smaller_hunk > 0 and overlap_size / smaller_hunk > 0.5:
+                        return True
         return False
     
     def _deduplicate_diffs(self, diffs: List[DiffBlock]) -> List[DiffBlock]:
