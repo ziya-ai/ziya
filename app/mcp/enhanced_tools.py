@@ -756,8 +756,10 @@ def create_secure_mcp_tools() -> List[BaseTool]:
     # Check cache first
     global _secure_tool_cache, _tool_cache_timestamp
     if _secure_tool_cache and (time.time() - _tool_cache_timestamp < TOOL_CACHE_TTL):
-        logger.debug(f"🔐 Using cached secure MCP tools ({len(_secure_tool_cache)} tools)")
+        logger.info(f"🔐 SECURE_TOOLS: Returning CACHED tools ({len(_secure_tool_cache)} tools, cache age {time.time() - _tool_cache_timestamp:.0f}s)")
         return _secure_tool_cache
+    
+    logger.info(f"🔐 SECURE_TOOLS: Cache miss/expired, rebuilding tool list")
     
     # Check if secure mode is enabled
     secure_mode_enabled = os.environ.get("ZIYA_SECURE_MCP", "true").lower() in ("true", "1", "yes")
@@ -781,6 +783,8 @@ def create_secure_mcp_tools() -> List[BaseTool]:
         
         # Get all MCP tools
         mcp_tools = mcp_manager.get_all_tools()
+        
+        logger.info(f"🔐 SECURE_TOOLS: Manager returned {len(mcp_tools)} tools from {len(mcp_manager.clients)} connected clients")
         
         logger.debug(f"Loading {len(mcp_tools)} MCP tools (filtering disabled tools)")
         # Configure connection pool
