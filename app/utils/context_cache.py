@@ -66,7 +66,7 @@ class ContextCacheManager:
             return False
             
         # Check if content is large enough to benefit from caching
-        import tiktoken
+        from app.utils.tiktoken_compat import tiktoken
         try:
             encoding = tiktoken.get_encoding("cl100k_base")
             token_count = len(encoding.encode(content))

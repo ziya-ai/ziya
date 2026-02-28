@@ -5,28 +5,29 @@ This module provides a way to track conversation_id and other context
 information across the request lifecycle.
 """
 
-import threading
+import contextvars
 from typing import Optional
 from contextlib import contextmanager
 
-# Thread-local storage for conversation context
-_context = threading.local()
+# Async-safe per-task storage for conversation context
+_conversation_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    'conversation_id', default=None
+)
 
 
 def set_conversation_id(conversation_id: str) -> None:
-    """Set the conversation ID for the current thread."""
-    _context.conversation_id = conversation_id
+    """Set the conversation ID for the current async task."""
+    _conversation_id.set(conversation_id)
 
 
 def get_conversation_id() -> Optional[str]:
-    """Get the conversation ID for the current thread."""
-    return getattr(_context, 'conversation_id', None)
+    """Get the conversation ID for the current async task."""
+    return _conversation_id.get()
 
 
 def clear_conversation_context() -> None:
-    """Clear the conversation context for the current thread."""
-    if hasattr(_context, 'conversation_id'):
-        delattr(_context, 'conversation_id')
+    """Clear the conversation context for the current async task."""
+    _conversation_id.set(None)
 
 
 @contextmanager

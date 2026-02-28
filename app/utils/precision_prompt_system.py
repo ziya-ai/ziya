@@ -54,7 +54,7 @@ class PrecisionPromptSystem:
             context = {
                 "model_id": model_info.get("model_id", ""),
                 "endpoint": model_info.get("endpoint", "bedrock"),
-                "native_tools_available": model_info.get("endpoint", "bedrock") in ["bedrock", "google", "openai"]
+                "native_tools_available": model_info.get("endpoint", "bedrock") in ["bedrock", "google", "openai", "anthropic"]
             }
             
             # Get extended prompt with proper context

@@ -89,15 +89,6 @@ def _get_model():
     return _model_instance
 
 # For backward compatibility, create a property-like access
-class _LazyModel:
-    """Wrapper that lazily initializes ModelManager on first access."""
-    def __getattr__(self, name):
-        return getattr(_get_model(), name)
-    def __call__(self, *args, **kwargs):
-        return _get_model()(*args, **kwargs)
-
-model = _LazyModel()
-
 prompt_cache = get_prompt_cache()
 
 def clean_chat_history(chat_history: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
@@ -248,9 +239,9 @@ def _extract_content(x: Any) -> str:
             for chunk in x:
                 if isinstance(chunk, dict) and 'text' in chunk:
                     texts.append(str(chunk['text']))
-                    
-        if texts:
-            return ''.join(texts)  # Direct concatenation without spaces
+
+            if texts:
+                return ''.join(texts)  # Direct concatenation without spaces
             
     # If x is a dict with text field
     if isinstance(x, dict) and 'text' in x:
@@ -277,37 +268,6 @@ def parse_output(message):
     # Import the enhanced parse_output function
     from app.agents.parse_output import parse_output as enhanced_parse_output
     return enhanced_parse_output(message)
-
-    try:
-        # Check if this is an error message
-        error_data = json.loads(content)
-        if error_data.get('error') == 'validation_error':
-            logger.info(f"Detected validation error in output: {content}")
-            return AgentFinish(return_values={"output": content}, log=content)
-    except (json.JSONDecodeError, TypeError, AttributeError):
-        pass
-
-    try:
-        # Extract diff content from markdown code fence if present
-        if "```diff" in content:
-            parts = content.split("```diff")
-            logger.debug(f"Split parts: {len(parts)}")
-            if len(parts) > 1:
-                logger.debug("Processing diff parts:")
-                logger.debug(f"Before diff: {parts[0]}")
-                logger.debug(f"Diff part before cleanup: {parts[1]}")
-
-                diff_content = parts[1].split("```")[0].strip()
-                return AgentFinish(return_values={"output": diff_content}, log=diff_content)
-        
-        # If not a diff or error, clean and return the content
-        text = clean_backtick_sequences(content)
-        logger.info(f"parse_output extracted content size: {len(content)} chars, cleaned size: {len(text)} chars")
-        return AgentFinish(return_values={"output": text}, log=text)
-    except Exception as e:
-        logger.error(f"Error in parse_output content processing: {str(e)}")
-        # Provide a safe fallback
-        return AgentFinish(return_values={"output": content}, log=content)
 
 class MCPToolOutputParser(BaseOutputParser):
     """
@@ -359,6 +319,7 @@ class RetryingChatBedrock(Runnable):
     def __init__(self, model):
         self.model = model
         self.provider = None # to be set by ModelManager
+        self._model_id = None
 
     def _debug_input(self, input: Any):
         """Debug log input structure"""
@@ -444,8 +405,7 @@ class RetryingChatBedrock(Runnable):
         error_message = {
             "error": error_type,
             "detail": detail,
-                    "status_code": status_code,
-                    "stream_id": stream_id
+            "status_code": status_code,
         }
         if retry_after:
             error_message["retry_after"] = retry_after
@@ -487,8 +447,7 @@ class RetryingChatBedrock(Runnable):
         error_message = {
             "error": error_type,
             "detail": detail,
-                    "status_code": status_code,
-                    "stream_id": stream_id
+            "status_code": status_code,
         }
         if retry_after:
             error_message["retry_after"] = retry_after
@@ -691,29 +650,6 @@ class RetryingChatBedrock(Runnable):
         
         # Use filtered kwargs for the rest of the method
         kwargs = filtered_kwargs
-        # Extract conversation_id from config for caching, but don't pass it to the model
-        conversation_id = None
-        if config and isinstance(config, dict):
-            conversation_id = config.get('conversation_id')
-            if conversation_id:
-                logger.info(f"Added conversation_id to astream kwargs for caching: {conversation_id}")
-        
-        # Remove conversation_id from kwargs if it exists (it's not a valid model parameter)
-        # But store it for CustomBedrockClient to access via module global
-        logger.debug(f"🔍 CONVERSATION_ID: filtered_kwargs keys = {list(filtered_kwargs.keys())}")
-        if "conversation_id" in filtered_kwargs:
-            conversation_id = filtered_kwargs["conversation_id"]
-            # Store in a global variable that CustomBedrockClient can access
-            import app.utils.custom_bedrock as custom_bedrock_module
-            custom_bedrock_module._current_conversation_id = conversation_id
-            logger.info(f"Stored conversation_id in module global: {conversation_id}")
-            del filtered_kwargs["conversation_id"]
-            logger.info("Removed conversation_id from model kwargs (not a valid model parameter)")
-        else:
-            logger.debug("🔍 CONVERSATION_ID: No conversation_id found in filtered_kwargs")
-        
-        # Use filtered kwargs for the model call
-        kwargs = filtered_kwargs
         
         accumulated_content = []
         accumulated_text = ""  # String accumulation for preservation
@@ -757,42 +693,6 @@ class RetryingChatBedrock(Runnable):
         else:
             logger.info(f"RETRYING_CHAT_BEDROCK.astream: Input to LLM is not a list of BaseMessages or ChatPromptValue. Type: {type(input)}")
 
-        # Get max_tokens from environment variables
-        max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 0)) or int(os.environ.get("ZIYA_MAX_TOKENS", 0)) or None
-        
-        # Filter kwargs based on model's supported parameters
-        from app.agents.models import ModelManager
-        endpoint = os.environ.get("ZIYA_ENDPOINT", ModelManager.DEFAULT_ENDPOINT)
-        model_name = os.environ.get("ZIYA_MODEL", ModelManager.DEFAULT_MODELS.get(endpoint))
-        model_config = ModelManager.get_model_config(endpoint, model_name)
-        
-        # Create a copy of kwargs to avoid modifying the original
-        filtered_kwargs = {}
-
-        # Extract tools before filtering — SecureMCPTool objects are not
-        # JSON-serializable and tools are not a model inference parameter.
-        tools = kwargs.pop("tools", None)
-
-        # If max_tokens is specified in kwargs, use that instead
-        if "max_tokens" in kwargs:
-            max_tokens = kwargs["max_tokens"]
-        elif max_tokens:
-            # Add max_tokens to kwargs if it's not already there
-            filtered_kwargs["max_tokens"] = max_tokens
-            logger.info(f"Added max_tokens={max_tokens} to astream kwargs from environment")
-
-        # Add other kwargs
-        for key, value in kwargs.items():
-            if key != "max_tokens":  # We've already handled max_tokens
-                filtered_kwargs[key] = value
-                
-        # Filter kwargs based on supported parameters
-        filtered_kwargs = ModelManager.filter_model_kwargs(filtered_kwargs, model_config)
-        logger.info(f"Filtering model kwargs: {filtered_kwargs}")
-        
-        # Use filtered kwargs for the rest of the method
-        kwargs = filtered_kwargs
-        
         # Add AWS credential debugging
         from app.utils.aws_utils import debug_aws_credentials
         # debug_aws_credentials()
@@ -990,42 +890,11 @@ class RetryingChatBedrock(Runnable):
 
                 break  # Success, exit retry loop
                 
-                # Re-raise the exception for the middleware to handle
-                # Create error response while preserving any existing content
-                error_response = {
-                    "error": "throttling_error",
-                    "detail": "Too many requests to AWS Bedrock. Please wait a moment before trying again.",
-                    "status_code": 429,
-                    "retry_after": "5",
-                    "conversation_id": conversation_id,  # Add conversation_id for frontend routing
-                    "stream_id": stream_id,
-                    "preserved_content": ''.join(accumulated_content) if accumulated_content else None,
-                    "preserved_text": accumulated_text if accumulated_text else None,
-                    "successful_tool_results": successful_tool_results if successful_tool_results else None,
-                    "tool_execution_summary": {
-                        "total_attempts": tool_execution_count,
-                        "successful_executions": len(successful_tool_results),
-                        "has_partial_success": len(successful_tool_results) > 0
-                    }
-                }
-                
-                error_json = json.dumps(error_response)
-                logger.info(f"[ERROR_SSE] Preparing throttling error with preserved content: {error_json}")
-                
-                # Create a special error chunk that includes preserved content
-                error_chunk = AIMessageChunk(content=error_json)
-                error_chunk.response_metadata = {
-                    "error_response": True,
-                    "has_preserved_content": True
-                }
-                yield error_chunk
-                
-                # Send DONE marker
-                done_message = "data: [DONE]\n\n"
-                logger.info(f"[ERROR_SSE] Sending DONE marker after throttle error: {done_message}")
-                yield AIMessageChunk(content=done_message)
-                return
             except Exception as e:
+                # ClientError has its own handler below — re-raise so it's caught there
+                if isinstance(e, ClientError):
+                    raise
+
                 # Check if this is a Gemini error that should be handled specially
                 if ChatGoogleGenerativeAIError and isinstance(e, ChatGoogleGenerativeAIError):
                     # Handle as Gemini-specific error
@@ -1107,7 +976,7 @@ class RetryingChatBedrock(Runnable):
                         continue
                 
                 # Check for validation errors first (these are more important than throttling)
-                if "ValidationException" in error_str and "Input is too long" in error_str or "prompt is too long" in error_str:
+                if "ValidationException" in error_str and ("Input is too long" in error_str or "prompt is too long" in error_str):
                     error_message = {
                         "error": "context_size_error",
                         "detail": "The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.",
@@ -1165,7 +1034,7 @@ class RetryingChatBedrock(Runnable):
                 logger.warning(f"Error on attempt {attempt + 1}: {error_str}")
                 
                 # Check for validation errors first (these are more important than throttling)
-                if "ValidationException" in error_str and "Input is too long" in error_str or "prompt is too long" in error_str:
+                if "ValidationException" in error_str and ("Input is too long" in error_str or "prompt is too long" in error_str):
                     error_message = {
                         "error": "context_size_error", 
                         "detail": "The selected content is too large for this model. Please reduce the number of files or use a model with a larger context window.",
@@ -1383,6 +1252,7 @@ class RetryingChatBedrock(Runnable):
         except Exception as e:
             logger.error(f"Error formatting messages: {str(e)}")
             raise
+        return formatted
     def _validate_messages(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
         """Remove any messages with empty content."""
         return [msg for msg in messages if msg.get('content')]
@@ -1502,7 +1372,7 @@ class RetryingChatBedrock(Runnable):
                         for i, msg in enumerate(formatted_input):
                             logger.error(f"Message {i}: {msg}")
                     else:
-                        logger.error(f"Message {i}: {msg}")
+                        logger.error(f"Input (non-list): {formatted_input}")
                 
                 # Handle throttling with proper backoff
                 if "ThrottlingException" in error_str or "Too many requests" in error_str or "Too many tokens" in error_str:
@@ -1537,9 +1407,6 @@ class RetryingChatBedrock(Runnable):
                     # Last attempt failed, raise the exception
                     logger.error(f"All {max_retries} attempts failed")
                     raise
- 
-        return formatted_messages
- 
 
 class LazyLoadedModel:
     def __init__(self):
@@ -1585,7 +1452,7 @@ class LazyLoadedModel:
         return model.bind(**kwargs)
  
 model = LazyLoadedModel()
-llm_with_stop = model.bind(stop=["</tool_input>"])
+llm_with_stop = model.bind(stop=[TOOL_SENTINEL_CLOSE])
 if llm_with_stop is None:
     logger.warning("Model binding failed during initialization - will retry later")
 
@@ -1657,16 +1524,12 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
     except ImportError:
         user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
     for file_path in files:
-        # External paths are prefixed with '[external]' by the frontend tree.
-        # Strip the prefix and restore the leading slash to get the real path.
-        if str(file_path).startswith('[external]'):
-            real_path = str(file_path)[len('[external]'):]
-            if real_path and not real_path.startswith('/'):
-                real_path = '/' + real_path
-            full_path = real_path
-        else:
-            full_path = os.path.join(user_codebase_dir, file_path)
+        from app.utils.file_utils import resolve_external_path, EXTERNAL_PREFIX
+        full_path = resolve_external_path(file_path, user_codebase_dir)
         
+        # For external paths, use the resolved absolute path as the display key
+        display_path = file_path
+
         # Check if this is an MCP server file that shouldn't be in the codebase
         if 'mcp_servers' in file_path:
             logger.warning(f"🔍 FILES_DEBUG: MCP server file detected in file list: {file_path}")
@@ -1676,11 +1539,11 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
             logger.debug(f"Skipping directory: {full_path}")
             continue
         try:
-            from app.utils.file_utils import read_file_content
+            from app.utils.file_utils import read_file_content, EXTERNAL_PREFIX
             # Get annotated content with change tracking
             # CRITICAL: Refresh file from disk before getting annotated content
-            # This ensures we're showing the actual current state, not stale cached state
-            file_state_manager.refresh_file_from_disk(conversation_id, file_path, user_codebase_dir)
+            refresh_base = '' if str(file_path).startswith(EXTERNAL_PREFIX) else user_codebase_dir
+            file_state_manager.refresh_file_from_disk(conversation_id, file_path, refresh_base)
             logger.debug(f"Getting annotated content for {file_path}")
             annotated_lines, success = file_state_manager.get_annotated_content(conversation_id, file_path)
             logger.debug(f"First few annotated lines: {annotated_lines[:3] if annotated_lines else []}")
@@ -1734,9 +1597,10 @@ def extract_file_paths_from_input(x) -> List[str]:
     except ImportError:
         user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
     
+    from app.utils.file_utils import resolve_external_path
     file_paths = []
     for file_path in files:
-        full_path = os.path.join(user_codebase_dir, file_path)
+        full_path = resolve_external_path(file_path, user_codebase_dir)
         if os.path.exists(full_path) and not os.path.isdir(full_path):
             file_paths.append(full_path)
     
@@ -1749,6 +1613,18 @@ def get_conversation_id_from_input(x) -> str:
 def estimate_token_count(text: str) -> int:
     """Estimate token count for caching purposes."""
     try:
+        # Use calibrated estimate if available — the calibrator learns the
+        # actual chars/token ratio from API responses (e.g. Claude uses ~2.67
+        # chars/token, not tiktoken's ~3.2).  This is the single biggest
+        # source of frontend estimation error.
+        from app.utils.token_calibrator import get_token_calibrator
+        calibrator = get_token_calibrator()
+        if calibrator.global_by_model:
+            return calibrator.estimate_tokens(text)
+    except Exception:
+        pass
+    try:
+        # Fallback: raw tiktoken (underestimates ~15-40% for Claude)
         import tiktoken
         encoding = tiktoken.get_encoding("cl100k_base")
         return len(encoding.encode(text))
@@ -1844,7 +1720,8 @@ def extract_codebase(x):
                 _root = get_project_root()
             except ImportError:
                 _root = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
-            full_path = os.path.join(_root, file_path)
+            from app.utils.file_utils import resolve_external_path
+            full_path = resolve_external_path(file_path, _root)
             if os.path.isdir(full_path):
                 logger.debug(f"Skipping directory: {file_path}")
                 continue
@@ -2245,11 +2122,10 @@ def get_or_create_agent():
             logger.warning("Agent creation failed - will retry when credentials are available")
     return agent
 
-def reset_mcp_tool_counter():
+async def reset_mcp_tool_counter():
     """Reset the MCP tool execution counter for a new request cycle."""
     from app.mcp.enhanced_tools import _reset_counter_async
-    import asyncio
-    asyncio.create_task(_reset_counter_async())
+    await _reset_counter_async()
 
 logger.info("Agent chain defined with parse_output")
 def update_conversation_state(conversation_id: str, file_paths: List[str]) -> None:
@@ -2323,7 +2199,6 @@ def create_agent_executor(agent_chain: Runnable):
             from app.mcp.manager import get_mcp_manager
     else:
         logger.debug("MCP is disabled, no tools will be created for agent executor")
-        mcp_manager = get_mcp_manager()
 
     logger.debug(f"AGENT_EXECUTOR: Tools being passed to AgentExecutor: {[tool.name for tool in mcp_tools] if mcp_tools else 'No tools'}")
     # Create the original executor

@@ -491,26 +491,11 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                         event_data = {
                             "type": "preservedContent",
                             "data": warning_msg
-                }
-                yield f"event: preservedContent\n"
-                yield f"data: {json.dumps(event_data)}\n\n"
-            
-            # Send error as SSE data
-            error_msg = {
-                "error": "stream_processing_error",
-                "detail": str(e)
-            }
-            yield f"data: {json.dumps(error_msg)}\n\n"
-            try:
-                yield "data: [DONE]\n\n"
-            except Exception as done_error:
-                logger.error(f"Error sending final DONE marker: {str(done_error)}")
-                # Don't re-raise here as it would cause more protocol errors
-                pass
-            
+                        }
+                        yield f"event: preservedContent\ndata: {json.dumps(event_data)}\n\n"
+
         except Exception as e:
             logger.error(f"Stream processing error: {str(e)}")
-            # Try to send the [DONE] marker
             try:
                 yield "data: [DONE]\n\n"
             except Exception as done_error:

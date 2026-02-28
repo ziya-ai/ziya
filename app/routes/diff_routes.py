@@ -13,19 +13,16 @@ router = APIRouter(prefix="/api", tags=["diff"])
 
 class ApplyPatchRequest(BaseModel):
     model_config = {"extra": "allow"}
-    model_config = {"extra": "allow"}
     patch: str
     conversation_id: str
 
 
 class CheckFilesRequest(BaseModel):
     model_config = {"extra": "allow"}
-    model_config = {"extra": "allow"}
     files: List[str]
 
 
 class ApplyChangesRequest(BaseModel):
-    model_config = {"extra": "allow"}
     model_config = {"extra": "allow"}
     diff: str
     filePath: str = Field(..., description="Path to the file being modified")

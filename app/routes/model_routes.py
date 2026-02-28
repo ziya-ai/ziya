@@ -16,7 +16,6 @@ router = APIRouter(prefix="/api", tags=["models"])
 
 class ModelSettingsRequest(BaseModel):
     model_config = {"extra": "allow"}
-    model_config = {"extra": "allow"}
     temperature: Optional[float] = None
     top_k: Optional[int] = None
     top_p: Optional[float] = None

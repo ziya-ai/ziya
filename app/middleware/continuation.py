@@ -264,8 +264,6 @@ class ContinuationMiddleware(BaseHTTPMiddleware):
                     return break_point
 
         return None
-        
-        return None
     
     def _create_content_chunk(self, content: str) -> str:
         """Create SSE chunk for content."""
