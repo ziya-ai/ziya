@@ -6,6 +6,7 @@ interface ConfigContextType {
     config: AppConfig;
     isLoading: boolean;
     isEphemeralMode: boolean;
+    version: string;
 }
 
 const ConfigContext = createContext<ConfigContextType | undefined>(undefined);
@@ -40,6 +41,7 @@ export function ConfigProvider({ children }: ConfigProviderProps) {
         config,
         isLoading,
         isEphemeralMode: config.ephemeralMode || false,
+        version: config.version || 'dev',
     };
 
     return (

@@ -368,6 +368,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const conversationsRef = useRef(conversations);
     const streamingConversationsRef = useRef(streamingConversations);
 
+    const removedStreamingIds = useRef<Set<string>>(new Set());
     // Track which project has been server-synced to avoid duplicate syncs
     const serverSyncedForProject = useRef<string | null>(null);
     const dirtyConversationIds = useRef<Set<string>>(new Set());
@@ -544,11 +545,24 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const removeStreamingConversation = useCallback((id: string) => {
         // CRITICAL: Check if this is the CURRENT conversation
         const isCurrentConv = id === currentConversationId;
+        
+        // Guard against broadcast loops: each streaming-ended broadcast triggers
+        // listeners which call this function again. Use a ref to dedup.
+        if (removedStreamingIds.current.has(id)) {
+            return;
+        }
+        removedStreamingIds.current.add(id);
+        setTimeout(() => removedStreamingIds.current.delete(id), 2000);
 
-        console.log('Removing from streaming set:', { id });
+        // Check ref to prevent processing if already removed
+        const wasStreaming = streamingConversationsRef.current.has(id);
+        if (!wasStreaming) {
+            return;  // Already removed or never was streaming - skip
+        }
+
         setStreamingConversations(prev => {
             const next = new Set(prev);
-            // CRITICAL: Preserve scroll for non-current conversations
+            // Preserve scroll for non-current conversations
             if (!isCurrentConv) {
                 console.log('📌 Background conversation finished - NO scroll changes:', id.substring(0, 8));
             }

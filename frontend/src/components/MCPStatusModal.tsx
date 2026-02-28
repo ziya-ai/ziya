@@ -209,9 +209,13 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
     const reinitializeMCP = async () => {
         setLoading(true);
         try {
-            const response = await fetch('/api/mcp/initialize', { method: 'POST' });
+            const response = await fetch('/api/mcp/initialize', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+            });
             if (response.ok) {
                 await fetchMCPStatus();
+                window.dispatchEvent(new Event('mcpStatusChanged'));
             }
         } catch (error) {
             console.error('Failed to reinitialize MCP:', error);
@@ -239,6 +243,7 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                 if (result.success) {
                     message.success(result.message);
                     await fetchMCPStatus(); // Refresh status
+                    window.dispatchEvent(new Event('mcpStatusChanged'));
                 } else {
                     message.error(result.message || 'Failed to toggle server');
                 }
@@ -256,8 +261,10 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
     const uninstallService = async (serverName: string) => {
         setToggling(prev => ({ ...prev, [serverName]: true }));
         try {
-            const response = await fetch(`/api/mcp/registry/services/uninstall/${serverName}`, {
-                method: 'DELETE',
+            const response = await fetch('/api/mcp/registry/services/uninstall', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ server_name: serverName }),
             });
 
             if (response.ok) {
@@ -442,15 +449,24 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
             open={visible}
             onCancel={onClose}
             footer={[
-                <Button key="registry" icon={<CloudServerOutlined />} onClick={() => setShowRegistry(true)}>
-                    Browse Registry
-                </Button>,
-                <Button key="reinit" type="primary" onClick={reinitializeMCP} loading={loading}>
-                    Reinitialize
-                </Button>,
-                <Button key="close" onClick={onClose}>
-                    Close
-                </Button>
+                <div key="footer" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <Button icon={<CloudServerOutlined />} onClick={() => setShowRegistry(true)}>
+                            Browse Registry
+                        </Button>
+                        <Tooltip title="Re-reads config from disk and reconnects all servers. This will reset any enable/disable changes made in this session.">
+                            <Button icon={<ReloadOutlined />} onClick={reinitializeMCP} loading={loading}>
+                                Reload Config
+                            </Button>
+                        </Tooltip>
+                        <span style={{ fontSize: '11px', color: '#888', marginLeft: 4 }}>
+                            Changes take effect immediately.
+                        </span>
+                    </div>
+                    <Button type="primary" onClick={onClose}>
+                        Done
+                    </Button>
+                </div>
             ]}
             width={800}
         >
@@ -988,14 +1004,19 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                             const toolPermission = permissions?.servers?.[name]?.tools?.[tool.name]?.permission || permissions?.defaults?.tool || 'enabled';
                                                             const isToolEnabled = toolPermission === 'enabled';
                                                             
+                                                            // Server is enabled only if config says enabled AND it's connected
+                                                            const isServerEnabled = status?.server_configs?.[name]?.enabled !== false && server.connected;
+                                                            const isEffectivelyActive = isToolEnabled && isServerEnabled;
+                                                            
                                                             return (
                                                                 <List.Item style={{ 
-                                                                    opacity: isToolEnabled ? 1 : 0.5,
-                                                                    backgroundColor: isToolEnabled ? 'transparent' : (isDarkMode ? '#1a1a1a' : '#f5f5f5')
+                                                                    opacity: isEffectivelyActive ? 1 : 0.4,
+                                                                    backgroundColor: isEffectivelyActive ? 'transparent' : (isDarkMode ? '#1a1a1a' : '#f5f5f5'),
+                                                                    pointerEvents: isServerEnabled ? 'auto' : 'none',
                                                                 }}>
                                                                     <List.Item.Meta
                                                                         title={
-                                                                            <span style={{ textDecoration: isToolEnabled ? 'none' : 'line-through' }}>
+                                                                            <span style={{ textDecoration: isEffectivelyActive ? 'none' : 'line-through' }}>
                                                                                 {tool.name}
                                                                             </span>
                                                                         }
@@ -1014,10 +1035,11 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                                         <Switch
                                                                             checked={isToolEnabled}
                                                                             onChange={(checked) => updateToolPermission(name, tool.name, checked ? 'enabled' : 'disabled')}
+                                                                            disabled={!isServerEnabled}
                                                                             size="small"
                                                                         />
-                                                                        <span style={{ fontSize: '12px', color: isToolEnabled ? '#52c41a' : '#999' }}>
-                                                                            {isToolEnabled ? 'Enabled' : 'Disabled'}
+                                                                        <span style={{ fontSize: '12px', color: !isServerEnabled ? '#888' : (isToolEnabled ? '#52c41a' : '#999') }}>
+                                                                            {!isServerEnabled ? 'Server off' : (isToolEnabled ? 'Enabled' : 'Disabled')}
                                                                         </span>
                                                                     </Space>
                                                                 </List.Item>

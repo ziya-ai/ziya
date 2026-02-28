@@ -297,14 +297,13 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
 
         // This allows the content to display as highlighted code during streaming
         if (!spec.isMarkdownBlockClosed && !spec.forceRender) {
-            console.log('Mermaid: Markdown block still open, letting content display as code');
-            // Don't show a waiting message - let the markdown renderer show the code
-            // Just remove the loading spinner and return
-            try {
-                container.innerHTML = '';
-            } catch (e) {
-                console.warn('Could not remove loading spinner:', e);
+            // If we already have a rendered diagram, preserve it — a late
+            // re-render with stale flags must not destroy finished work.
+            if (container.querySelector('svg') || container.querySelector('.diagram-actions')) {
+                return;
             }
+            console.log('Mermaid: Markdown block still open, letting content display as code');
+            container.innerHTML = '';
             return; // Exit early - let markdown renderer handle the streaming content
         }
 
@@ -389,14 +388,14 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             themeVariables: isDarkMode ? {
                 // High contrast dark theme
                 primaryColor: '#88c0d0',
-                primaryTextColor: '#000000', // Use black text by default
+                primaryTextColor: '#eceff4', // Light text for dark backgrounds
                 primaryBorderColor: '#88c0d0',
                 lineColor: '#88c0d0',
                 secondaryColor: '#5e81ac',
                 tertiaryColor: '#2e3440',
 
                 // Text colors
-                textColor: '#2e3440',
+                textColor: '#eceff4',
                 loopTextColor: '#eceff4',
 
                 // Node colors
@@ -416,10 +415,10 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                 titleColor: '#88c0d0',
 
                 // Class diagram specific
-                classText: '#000000',
+                classText: '#eceff4',
 
                 // State diagram specific
-                labelColor: '#000000',
+                labelColor: '#eceff4',
 
                 // Sequence diagram specific
                 actorBkg: '#4c566a',
@@ -581,11 +580,10 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
 
         // UNIVERSAL FIX: Apply centralized visibility enhancement with DELAYED execution
         // SKIP for diagrams that use explicit style statements with color directives
-        // These diagrams have already set proper text colors and the post-processor
-        // incorrectly detects backgrounds, forcing white text on light backgrounds
-        const hasExplicitColors = rawDefinition.includes('style ') && 
-                                   rawDefinition.includes('color:') &&
-                                   (rawDefinition.includes('fill:#') || rawDefinition.includes('fill:rgb'));
+        // These diagrams have already set proper text colors; the post-processor
+        // should not override the author's explicit choices
+        const hasExplicitColors = rawDefinition.includes('style ') &&
+                                   rawDefinition.includes('color:');
         
         if (!hasExplicitColors) {
         setTimeout(() => {

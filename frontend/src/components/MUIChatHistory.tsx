@@ -361,7 +361,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                     </Tooltip>
                   )}
                   <Dropdown
-                    overlay={<AntActionMenu // Use the new AntD menu component
+                    dropdownRender={() => <AntActionMenu
                       isFolder={isFolder}
                       nodeId={nodeId}
                       onEdit={onEdit} onDelete={onDelete} onFork={onFork} onCompress={onCompress} onExport={onExport}
