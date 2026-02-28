@@ -86,19 +86,22 @@ def find_endpoint_for_model(model):
     return None
 
 
-def validate_model_and_endpoint(endpoint, model):
+def validate_model_and_endpoint(endpoint, model, explicit_endpoint=False):
     """
     Validate that the specified endpoint and model are valid.
     
     Args:
         endpoint: The endpoint name to validate
         model: The model name to validate
+        explicit_endpoint: If True, the user explicitly specified this endpoint;
+            suppress auto-detection to a different endpoint.
         
     Returns:
         tuple: (is_valid, error_message, corrected_endpoint)
     """
-    # If model is specified but endpoint doesn't contain it, try to auto-detect
-    if model and endpoint in config.MODEL_CONFIGS and model not in config.MODEL_CONFIGS[endpoint]:
+    # If model is specified but endpoint doesn't contain it, try to auto-detect.
+    # Suppress auto-detection when the user explicitly chose an endpoint.
+    if model and endpoint in config.MODEL_CONFIGS and model not in config.MODEL_CONFIGS[endpoint] and not explicit_endpoint:
         correct_endpoint = find_endpoint_for_model(model)
         if correct_endpoint:
             return True, None, correct_endpoint
@@ -173,7 +176,13 @@ def setup_environment(args):
     endpoint = args.endpoint
     model = args.model
     
-    is_valid, error_message, corrected_endpoint = validate_model_and_endpoint(endpoint, model)
+    # Detect whether the user explicitly passed --endpoint on the command line.
+    # We can't rely on args.endpoint being None (it has a default), so check sys.argv.
+    explicit_endpoint = any(
+        arg == '--endpoint' or arg.startswith('--endpoint=')
+        for arg in sys.argv[1:]
+    )
+    is_valid, error_message, corrected_endpoint = validate_model_and_endpoint(endpoint, model, explicit_endpoint=explicit_endpoint)
     if not is_valid:
         logger.error(error_message)
         sys.exit(1)

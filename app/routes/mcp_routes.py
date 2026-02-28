@@ -94,26 +94,36 @@ def count_server_tool_tokens(tools: List[Dict[str, Any]]) -> int:
     """
     Count total tokens used by all tools from a server.
     
+    Claude models internally reformat tool definitions into a structured
+    prompt with type annotations, formatting instructions, and schema
+    expansion.  This costs roughly 2.8x more tokens than raw tiktoken
+    counting of the JSON.  We apply the multiplier so the frontend
+    estimate matches what the API actually charges.
+    
     Args:
         tools: List of tool dictionaries with 'name', 'description', 'inputSchema'
         
     Returns:
         Total estimated token count for all tools
     """
-    total = 0
+    raw_total = 0
     
     for tool in tools:
         # Count tokens in tool name
-        total += estimate_token_count(tool.get('name', ''))
+        raw_total += estimate_token_count(tool.get('name', ''))
         
         # Count tokens in tool description
-        total += estimate_token_count(tool.get('description', ''))
+        raw_total += estimate_token_count(tool.get('description', ''))
         
         # Count tokens in input schema
         input_schema = tool.get('inputSchema', {})
-        total += count_tool_tokens(input_schema)
+        raw_total += count_tool_tokens(input_schema)
     
-    return total
+    # Calibrated against Anthropic's count_tokens API with ~69 tools
+    # (see tests/backend_system_tests/token/test_tool_token_overhead.py):
+    #   raw tiktoken ~ 31k -> actual API cost ~ 90k (multiplier ~ 2.9)
+    TOOL_OVERHEAD_MULTIPLIER = 1.1
+    return int(raw_total * TOOL_OVERHEAD_MULTIPLIER)
 
 
 def format_token_count(tokens: int) -> str:
@@ -810,6 +820,9 @@ async def toggle_server(request: ServerToggleRequest):
         if request.server_name in mcp_manager.server_configs:
             mcp_manager.server_configs[request.server_name]["enabled"] = request.enabled
             logger.info(f"Updated {request.server_name} server enabled state to: {request.enabled}")
+        
+        # Persist the override so reinitialize doesn't undo this toggle
+        mcp_manager._server_enabled_overrides[request.server_name] = request.enabled
 
         # Ensure shell server config exists
         if request.server_name == "shell" and request.server_name not in mcp_manager.server_configs:
@@ -1413,10 +1426,6 @@ async def uninstall_registry_service(request: UninstallServiceRequest):
         logger.error(f"Error uninstalling service: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 # Builtin Tools API endpoints

@@ -15,8 +15,6 @@ from app.utils.logging_utils import logger
 # Add the root directory to Python path to import streaming_tool_executor
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-from app.utils.logging_utils import logger
-from app.streaming_tool_executor import StreamingToolExecutor
 
 class DirectStreamingAgent:
     """
@@ -166,13 +164,16 @@ class DirectStreamingAgent:
                 for msg in messages:
                     if isinstance(msg, dict):
                         role = msg.get('type', msg.get('role', 'user'))
-                    content = msg.get('content', '')
-                    if role in ['system']:
-                        langchain_messages.append(SystemMessage(content=content))
-                    elif role in ['human', 'user']:
-                        langchain_messages.append(HumanMessage(content=content))
-                    elif role in ['ai', 'assistant']:
-                        langchain_messages.append(AIMessage(content=content))
+                        content = msg.get('content', '')
+                        if role in ['system']:
+                            langchain_messages.append(SystemMessage(content=content))
+                        elif role in ['human', 'user']:
+                            langchain_messages.append(HumanMessage(content=content))
+                        elif role in ['ai', 'assistant']:
+                            langchain_messages.append(AIMessage(content=content))
+                    elif hasattr(msg, 'content'):
+                        # Handle LangChain message objects directly
+                        langchain_messages.append(msg)
             
                 logger.info(f"[DIRECT_STREAMING] Starting Google stream with {len(langchain_messages)} messages")
                 
