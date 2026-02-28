@@ -86,6 +86,50 @@ class ConfigProvider(ABC):
         return None
 
 
+class ShellConfigProvider(ABC):
+    """
+    Shell configuration provider interface.
+
+    Plugins implement this to register additional shell commands, git
+    operations, and interpreters that should be allowed by default in
+    their environment.  Additions are merged on top of the base
+    ``DEFAULT_SHELL_CONFIG`` so enterprise plugins can extend the
+    command allowlist without modifying core code.
+    """
+
+    provider_id: str = "default"
+    priority: int = 0
+
+    @abstractmethod
+    def get_additional_commands(self) -> List[str]:
+        """
+        Return shell commands to add to the default allowlist.
+
+        These are merged (union) with ``DEFAULT_SHELL_CONFIG["allowedCommands"]``.
+        """
+        pass
+
+    def get_additional_git_operations(self) -> List[str]:
+        """
+        Return git sub-commands to add to the safe git operations list.
+
+        Default returns empty (no extra git ops).
+        """
+        return []
+
+    def get_additional_interpreters(self) -> List[str]:
+        """Return interpreter commands to add to the allowed interpreters."""
+        return []
+
+    def get_additional_write_patterns(self) -> List[str]:
+        """Return file-path glob patterns to add to allowed write patterns."""
+        return []
+
+    def should_apply(self) -> bool:
+        """Return True if this provider's additions should be applied."""
+        return True
+
+
 class FormatterProvider(ABC):
     """
     Formatter provider interface.

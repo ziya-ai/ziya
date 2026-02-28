@@ -21,7 +21,7 @@ def add_common_arguments(parser):
     
     # Model and endpoint configuration
     # Initialize plugins early to get enterprise endpoint policy for --help
-    endpoint_help_choices = 'bedrock, google, openai'
+    endpoint_help_choices = 'bedrock, google, openai, anthropic'
     if not os.environ.get('ZIYA_ALLOW_ALL_ENDPOINTS'):
         try:
             from app.plugins import initialize as _init_plugins, get_allowed_endpoints
