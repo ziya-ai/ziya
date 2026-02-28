@@ -105,8 +105,12 @@ IMPORTANT: Do NOT output these JSON blocks in your response text. Use the native
 
 """
     
-    # Add call examples for all tools
-    mcp_guidelines += _get_tool_call_examples_for_native(available_tools)
+    # Only add call examples when NOT using native function calling.
+    # When native function calling is active the API already receives the
+    # full tool schemas — injecting examples into the system prompt is
+    # redundant and wastes thousands of tokens.
+    if not native_function_calling:
+        mcp_guidelines += _get_tool_call_examples_for_native(available_tools)
     
     # Only add XML format examples if NOT using native function calling
     if not native_function_calling:

@@ -37,6 +37,10 @@ class MCPManager:
         self.config_path = config_path or self._find_config_file()
         self.clients: Dict[str, MCPClient] = {}
         
+        # Persisted enable/disable overrides that survive reinitialize.
+        # Set by toggle_server, checked during initialize.
+        self._server_enabled_overrides: Dict[str, bool] = {}
+        
         # Per-project instance pool for workspace-scoped servers
         # Structure: {server_name: {project_path: MCPClient}}
         self.workspace_scoped_clients: Dict[str, Dict[str, MCPClient]] = {}
@@ -252,6 +256,13 @@ class MCPManager:
             else:
                 logger.debug(f"No MCP configuration file found. Searched: {getattr(self, 'config_search_paths', [])}. Using built-in server defaults.")
         self.server_configs = server_configs # Store the final merged configs
+    
+        # Apply persisted enable/disable overrides from previous toggle_server calls.
+        # This ensures reinitialize doesn't undo user toggles.
+        for srv_name, is_enabled in self._server_enabled_overrides.items():
+            if srv_name in self.server_configs:
+                self.server_configs[srv_name]["enabled"] = is_enabled
+                logger.info(f"Applied persisted override: {srv_name} enabled={is_enabled}")
     
         try:
             # Connect to each configured server
@@ -536,7 +547,12 @@ class MCPManager:
         
         # Cache miss or expired - fetch fresh tools
         tools = []
-        logger.info(f"MCP_MANAGER.get_all_tools: Starting tool collection. {len(self.clients)} clients total.")
+        # Log the enabled/disabled state of ALL configured servers
+        server_states = {
+            name: {'enabled': cfg.get('enabled', True), 'has_client': name in self.clients}
+            for name, cfg in self.server_configs.items()
+        }
+        logger.info(f"MCP_MANAGER.get_all_tools: {len(self.clients)} clients, server states: {server_states}")
         for server_name, client in self.clients.items():
             # Check both connection status AND enabled status
             server_config = self.server_configs.get(server_name, {})
@@ -603,6 +619,14 @@ class MCPManager:
         self._tools_cache = None
         self._tools_cache_timestamp = 0
         logger.info("MCP_MANAGER: Tools cache invalidated")
+        # Also invalidate the secure tools cache in enhanced_tools.py
+        # so create_secure_mcp_tools() doesn't return stale tools
+        try:
+            from app.mcp.enhanced_tools import invalidate_secure_tools_cache
+            invalidate_secure_tools_cache()
+            logger.info("MCP_MANAGER: Secure tools cache also invalidated")
+        except ImportError:
+            pass
     def get_all_prompts(self) -> List[MCPPrompt]:
         """Get all prompts from all connected MCP servers."""
         prompts = []
@@ -729,6 +753,11 @@ class MCPManager:
                 elif expected_type == 'boolean' and isinstance(value, str):
                     coerced[key] = value.lower() in ('true', '1', 'yes')
                 else:
+                    # Coerce non-string values to string when schema expects string
+                    # Models frequently pass numeric IDs as bare numbers
+                    if expected_type == 'string' and not isinstance(value, str):
+                        logger.debug(f"Coercing {key}={value!r} ({type(value).__name__}) to string per schema")
+                        value = str(value)
                     coerced[key] = value
             else:
                 coerced[key] = value
