@@ -3,9 +3,10 @@ File validation API endpoint.
 """
 
 import os
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from app.utils.logging_utils import logger
 
 router = APIRouter()
 

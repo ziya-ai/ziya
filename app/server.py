@@ -678,8 +678,9 @@ async def chat_endpoint(request: Request):
         is_bedrock_openai = current_model and 'openai' in current_model.lower()
         is_google_model = current_model and ('gemini' in current_model.lower() or 'google' in current_model.lower())
         is_openai_direct = os.environ.get("ZIYA_ENDPOINT") == "openai"
+        is_anthropic_direct = os.environ.get("ZIYA_ENDPOINT") == "anthropic"
         # Check if direct streaming is enabled globally - use direct streaming by default for Bedrock models like 0.3.1
-        use_direct_streaming = is_bedrock_claude or is_bedrock_nova or is_bedrock_deepseek or is_bedrock_openai or is_google_model or is_openai_direct
+        use_direct_streaming = is_bedrock_claude or is_bedrock_nova or is_bedrock_deepseek or is_bedrock_openai or is_google_model or is_openai_direct or is_anthropic_direct
         
         logger.debug(f"🔍 CHAT_ENDPOINT: Current model = {current_model}, is_bedrock_claude = {is_bedrock_claude}, is_openai_direct = {is_openai_direct}")
         
@@ -705,6 +706,7 @@ async def chat_endpoint(request: Request):
                     has_images = bool(last_msg.get('images'))
                 else:
                     last_content = ''
+                    has_images = False
                 
                 # If the last message content matches the question, exclude it
                 # UNLESS it has images - then keep it because question doesn't have image data
@@ -1655,11 +1657,6 @@ async def stream_chunks(body):
                 aws_profile = state.get('aws_profile', 'default')
                 endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
                 
-                # Only use StreamingToolExecutor for Bedrock models
-                if endpoint != 'bedrock':
-                    logger.debug(f"🚀 DIRECT_STREAMING: Endpoint {endpoint} not supported by StreamingToolExecutor, falling back")
-                    raise ValueError(f"StreamingToolExecutor only supports bedrock endpoint, got {endpoint}")
-                
                 logger.debug(f"🔍 DIRECT_STREAMING_DEBUG: About to call build_messages_for_streaming with {len(files)} files")
                 # Build messages with full context using the same function as LangChain path - use langchain format like 0.3.0
                 logger.debug(f"🔍 CALLING_BUILD_MESSAGES: About to call build_messages_for_streaming")
@@ -1935,45 +1932,6 @@ async def stream_chunks(body):
     chat_history = body.get("chat_history", [])
     files = body.get("config", {}).get("files", [])
     conversation_id = body.get("conversation_id")
-
-    # OpenAI endpoint: use the model's own astream with native tool calling
-    if os.environ.get("ZIYA_ENDPOINT") == "openai" and question:
-        try:
-            from app.agents.agent import model as agent_model
-
-            langchain_messages = build_messages_for_streaming(question, chat_history, files, conversation_id, use_langchain_format=True)
-
-            mcp_tools = []
-            try:
-                from app.mcp.enhanced_tools import create_secure_mcp_tools
-                mcp_tools = create_secure_mcp_tools()
-                logger.info(f"OpenAI path: loaded {len(mcp_tools)} MCP tools")
-            except Exception as e:
-                logger.warning(f"Failed to get MCP tools for OpenAI: {e}")
-
-            model_instance = agent_model.get_model()
-            # Get the underlying DirectOpenAIModel, bypassing the RetryingChatBedrock wrapper
-            raw_model = getattr(model_instance, 'model', model_instance)
-            async for chunk in raw_model.astream(langchain_messages, tools=mcp_tools):
-                if isinstance(chunk, dict):
-                    chunk_type = chunk.get('type', '')
-                    if chunk_type == 'text' and chunk.get('content'):
-                        yield f"data: {json.dumps({'content': chunk['content']})}\n\n"
-                    elif chunk_type == 'tool_start':
-                        yield f"data: {json.dumps({'tool_start': chunk})}\n\n"
-                    elif chunk_type in ('tool_display', 'tool_execution'):
-                        yield f"data: {json.dumps({'tool_result': chunk})}\n\n"
-                    elif chunk_type == 'error':
-                        yield f"data: {json.dumps({'error': chunk.get('content', 'Unknown error')})}\n\n"
-                    elif chunk_type == 'stream_end':
-                        break
-                elif hasattr(chunk, 'content') and chunk.content:
-                    yield f"data: {json.dumps({'content': chunk.content})}\n\n"
-
-            yield f"data: {json.dumps({'done': True})}\n\n"
-            return
-        except Exception as e:
-            logger.error(f"OpenAI direct path failed, falling through: {e}")
 
     if question:
         messages = build_messages_for_streaming(question, chat_history, files, conversation_id, use_langchain_format=True)
@@ -2650,6 +2608,7 @@ async def stream_chunks(body):
                 inside_tool_call = False
                 tool_call_buffer = ""
                 tool_call_detected = False  # Flag to suppress ALL output after tool detection
+                buffered_content = ""  # Buffer for content after tool detection
                 pending_tool_execution = False  # Flag to indicate we need to execute tools
                 
                 # DISABLED for Bedrock: LangChain streaming path - causes duplicate execution with StreamingToolExecutor
@@ -2657,6 +2616,7 @@ async def stream_chunks(body):
                 endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
                 if endpoint == "bedrock":
                     logger.info("🚀 DIRECT_STREAMING: LangChain path disabled for Bedrock - using StreamingToolExecutor only")
+                    yield f"data: {json.dumps({'done': True})}\n\n"
                     return
                 
                 # Stream from model for non-Bedrock endpoints (use simple streaming like 0.3.0)
@@ -2956,6 +2916,7 @@ async def stream_chunks(body):
                     if pending_tool_execution or (TOOL_SENTINEL_OPEN in current_response and 
                                                   TOOL_SENTINEL_CLOSE in current_response) and not tool_executed:
                         
+                        tools_handled_inline = False
                         # Count complete tool calls
                         complete_tool_calls = current_response.count(TOOL_SENTINEL_CLOSE)
                         
@@ -2969,24 +2930,23 @@ async def stream_chunks(body):
                             max_tools_per_round = int(os.environ.get("ZIYA_MAX_TOOLS_PER_ROUND", "5"))
                             if complete_tool_calls > max_tools_per_round:
                                 logger.debug(f"🔍 STREAM: Limiting to {max_tools_per_round} tools per round")
-                                # Truncate to first N tool calls
 
-                            # Find the position after the Nth tool call
-                            tool_closes = []
-                            start_pos = 0
-                            for i in range(max_tools_per_round):
-                                pos = current_response.find(TOOL_SENTINEL_CLOSE, start_pos)
-                                if pos != -1:
-                                    tool_closes.append(pos + len(TOOL_SENTINEL_CLOSE))
-                                    start_pos = pos + 1
+                                # Find the position after the Nth tool call
+                                tool_closes = []
+                                start_pos = 0
+                                for i in range(max_tools_per_round):
+                                    pos = current_response.find(TOOL_SENTINEL_CLOSE, start_pos)
+                                    if pos != -1:
+                                        tool_closes.append(pos + len(TOOL_SENTINEL_CLOSE))
+                                        start_pos = pos + 1
 
-                            if tool_closes:
-                                # Truncate current_response to only include first N tool calls
-                                truncated_response = current_response[:tool_closes[-1]]
-                                # Add a note about continuing exploration
-                                truncated_response += "\n\nLet me start with these commands and then continue based on the results."
-                                current_response = truncated_response
-                                complete_tool_calls = max_tools_per_round
+                                if tool_closes:
+                                    # Truncate current_response to only include first N tool calls
+                                    truncated_response = current_response[:tool_closes[-1]]
+                                    # Add a note about continuing exploration
+                                    truncated_response += "\n\nLet me start with these commands and then continue based on the results."
+                                    current_response = truncated_response
+                                    complete_tool_calls = max_tools_per_round
                         
                             # Execute tools immediately
                             try:
@@ -3013,7 +2973,7 @@ async def stream_chunks(body):
                             logger.debug(f"🔍 AGENT: Finished streaming loop for iteration {iteration}")
                                 
                             # Only execute if tools weren't already handled inline
-                            if not locals().get('tools_handled_inline', False):
+                            if not tools_handled_inline:
                                 try:
                                     processed_response, tool_results = await execute_tools_and_update_conversation(
                                         current_response, processed_tool_calls, messages
@@ -3197,7 +3157,6 @@ async def stream_chunks(body):
                 # Clean up and exit gracefully
                 await cleanup_stream(conversation_id)
                 return
-                break
 
         # Log why the iteration loop ended
         logger.debug(f"🔍 AGENT: Iteration loop ended after {iteration} iterations")
@@ -3378,7 +3337,7 @@ async def root(request: Request):
                 <h1>Ziya</h1>
                 <div class="error">
                     <p>Error loading template. Please check server logs.</p>
-                    <p>Error details: """ + str(e) + """</p>
+                    <p>Error details: """ + str(e).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;') + """</p>
                 </div>
                 <p>Please ensure that the templates directory is properly included in the package.</p>
             </div>
@@ -3791,27 +3750,29 @@ def invalidate_folder_cache():
     """Invalidate the folder structure cache with debouncing. Drops oversized external paths."""
     global _folder_cache, _last_cache_invalidation, _cache_lock
     current_time = time.time()
-    
-    # Debounce: only invalidate if enough time has passed
-    if current_time - _last_cache_invalidation < _cache_invalidation_debounce:
-        return
-    
+
     with _cache_lock:
+        # Debounce check under lock to prevent TOCTOU race
+        if current_time - _last_cache_invalidation < _cache_invalidation_debounce:
+            return
+
         for dir_key in list(_folder_cache.keys()):
             entry = _folder_cache[dir_key]
             external_paths = None
             if entry.get('data') and '[external]' in entry['data']:
                 ext = entry['data']['[external]']
-                # Estimate entry count; drop if too large (safety valve)
                 ext_str_len = len(str(ext)) if ext else 0
-                if ext_str_len < 1_000_000:  # ~1MB serialized = reasonable
+                if ext_str_len < 1_000_000:
                     external_paths = ext
                 else:
                     logger.warning(f"🗑️ Dropping oversized external paths ({ext_str_len} chars) during cache invalidation")
-            entry['data'] = {'[external]': external_paths} if external_paths else None
+            if external_paths is not None:
+                entry['data'] = {'[external]': external_paths}
+            else:
+                entry['data'] = None
             entry['timestamp'] = 0
         logger.debug(f"📂 Cache invalidated for {len(_folder_cache)} project(s)")
-    _last_cache_invalidation = current_time
+        _last_cache_invalidation = current_time
 
 
 def is_path_explicitly_allowed(resolved_path: str, user_codebase_dir: str) -> bool:
@@ -3830,20 +3791,24 @@ def is_path_explicitly_allowed(resolved_path: str, user_codebase_dir: str) -> bo
     return False
 
 
-def add_file_to_folder_cache(rel_path: str) -> bool:
+def add_file_to_folder_cache(rel_path: str, base_dir: str = None) -> bool:
     """
     Add a newly created file to the folder cache without full rescan.
     
     Args:
         rel_path: Relative path from user_codebase_dir
+        base_dir: Absolute project root (used by file watcher). Falls back to get_project_root().
         
     Returns:
         True if successfully added, False otherwise
     """
     global _folder_cache, _cache_lock
     
-    from app.context import get_project_root
-    project_root = get_project_root()
+    if base_dir:
+        project_root = os.path.abspath(base_dir)
+    else:
+        from app.context import get_project_root
+        project_root = os.path.abspath(get_project_root())
     entry = _folder_cache.get(project_root)
     if not entry or entry.get('data') is None:
         return False
@@ -3866,7 +3831,10 @@ def add_file_to_folder_cache(rel_path: str) -> bool:
             for part in path_parts[:-1]:
                 if part not in current_level:
                     current_level[part] = {'children': {}, 'token_count': 0}
-                current_level = current_level[part].get('children', {})
+                node = current_level[part]
+                if 'children' not in node:
+                    node['children'] = {}
+                current_level = node['children']
             
             # Add the file
             filename = path_parts[-1]
@@ -3898,12 +3866,15 @@ def _schedule_broadcast(event_type: str, rel_path: str, token_count: int = 0):
         else:
             logger.debug(f"Skipping broadcast for {event_type}: {rel_path} (no main event loop)")
 
-def update_file_in_folder_cache(rel_path: str) -> bool:
+def update_file_in_folder_cache(rel_path: str, base_dir: str = None) -> bool:
     """Update token count for modified file in cache."""
     global _folder_cache, _cache_lock
     
-    from app.context import get_project_root
-    project_root = get_project_root()
+    if base_dir:
+        project_root = os.path.abspath(base_dir)
+    else:
+        from app.context import get_project_root
+        project_root = os.path.abspath(get_project_root())
     entry = _folder_cache.get(project_root)
     if not entry or entry.get('data') is None:
         return False
@@ -3924,7 +3895,10 @@ def update_file_in_folder_cache(rel_path: str) -> bool:
             for part in path_parts[:-1]:
                 if part not in current_level:
                     return False  # Path doesn't exist in cache
-                current_level = current_level[part].get('children', {})
+                node = current_level[part]
+                if 'children' not in node:
+                    return False  # Path component is a file, not a directory
+                current_level = node['children']
             
             filename = path_parts[-1]
             if filename in current_level:
@@ -3938,12 +3912,15 @@ def update_file_in_folder_cache(rel_path: str) -> bool:
     
     return False
 
-def remove_file_from_folder_cache(rel_path: str) -> bool:
+def remove_file_from_folder_cache(rel_path: str, base_dir: str = None) -> bool:
     """Remove deleted file from cache."""
     global _folder_cache, _cache_lock
     
-    from app.context import get_project_root
-    project_root = get_project_root()
+    if base_dir:
+        project_root = os.path.abspath(base_dir)
+    else:
+        from app.context import get_project_root
+        project_root = os.path.abspath(get_project_root())
     entry = _folder_cache.get(project_root)
     if not entry or entry.get('data') is None:
         return False
@@ -3958,7 +3935,10 @@ def remove_file_from_folder_cache(rel_path: str) -> bool:
             for part in path_parts[:-1]:
                 if part not in current_level:
                     return False
-                current_level = current_level[part].get('children', {})
+                node = current_level[part]
+                if 'children' not in node:
+                    return False
+                current_level = node['children']
             
             filename = path_parts[-1]
             if filename in current_level:
@@ -4329,23 +4309,8 @@ if __name__ == "__main__":
     # Set terminal window title for iTerm/xterm
     def set_terminal_title(title):
         """Set the terminal window title for iTerm2 and xterm-compatible terminals."""
-    # Set the AWS profile if provided
-    if args.profile:
-        os.environ["AWS_PROFILE"] = args.profile
-        logger.info(f"Using AWS profile: {args.profile}")
-        
-    # Set the AWS region if provided
-    if args.region:
-        os.environ["AWS_REGION"] = args.region
-        logger.info(f"Using AWS region: {args.region}")
-        
-    # Initialize the model if provided
-    if args.model:
-        try:
-            ModelManager.initialize_model(args.model)
-        except Exception as e:
-            logger.error(f"Error initializing model: {e}")
-            
+        pass
+
     args = parser.parse_args()
     
     # Set the AWS profile if provided
@@ -4466,6 +4431,7 @@ async def api_add_explicit_paths(request: AddExplicitPathsRequest):
     user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
     global _explicit_external_paths
     added_paths = []
+    context_keys = []  # tree keys for files that should be auto-selected
     errors = []
     
     for path in request.paths:
@@ -4512,6 +4478,10 @@ async def api_add_explicit_paths(request: AddExplicitPathsRequest):
                     if not is_inside_workspace:
                         _explicit_external_paths.add(path)
                     added_paths.append(path)
+                    # When add_to_context is requested, collect all leaf file keys
+                    if request.add_to_context:
+                        file_keys = _collect_leaf_file_keys(path, is_inside_workspace, user_codebase_dir)
+                        context_keys.extend(file_keys)
                     
         except Exception as e:
             logger.error(f"Error adding path {path}: {e}")
@@ -4521,8 +4491,36 @@ async def api_add_explicit_paths(request: AddExplicitPathsRequest):
         "added_count": len(added_paths),
         "added_paths": added_paths,
         "errors": errors if errors else None,
-        "add_to_context": request.add_to_context
+        "add_to_context": request.add_to_context,
+        "context_keys": context_keys if context_keys else None
     }
+
+
+def _collect_leaf_file_keys(dir_path: str, is_inside_workspace: bool, user_codebase_dir: str, max_files: int = 5000) -> list:
+    """
+    Walk a directory and return tree keys for every leaf file,
+    matching the key format used by convertToTreeData in the frontend.
+    """
+    keys = []
+    count = 0
+    for root, dirs, files in os.walk(dir_path):
+        # Skip hidden directories
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        for fname in files:
+            if fname.startswith('.'):
+                continue
+            count += 1
+            if count > max_files:
+                logger.warning(f"⚠️ _collect_leaf_file_keys hit {max_files} file limit for {dir_path}")
+                return keys
+            full = os.path.join(root, fname)
+            if is_inside_workspace:
+                key = os.path.relpath(full, user_codebase_dir)
+            else:
+                # External paths use [external]/abs/path/to/file
+                key = "[external]" + full
+            keys.append(key)
+    return keys
 
 
 def add_external_path_to_cache(full_path: str) -> bool:
@@ -4665,16 +4663,25 @@ def add_directory_to_folder_cache(rel_path: str, full_path: str, is_inside_works
             return add_external_path_to_cache(full_path)
         
         # Build the directory structure recursively
+        _scan_visited = set()
+        _scan_deadline = time.time() + 15.0  # 15 second hard cap
+
         def scan_directory(dir_path: str, max_depth: int = 10, current_depth: int = 0) -> dict:
             if current_depth >= max_depth:
                 return {'children': {}, 'token_count': 0}
+            if time.time() > _scan_deadline:
+                return {'children': {}, 'token_count': 0}
 
-                # Skip directories that resolve back into the project root
-                # (symlinks or parent paths that contain the workspace)
+            # Symlink/loop protection
+            try:
                 real_dir = os.path.realpath(dir_path)
-                if real_dir.startswith(real_codebase + os.sep) or real_dir == real_codebase:
-                    logger.info(f"⚠️ Skipping '{dir_path}' — resolves into project root")
-                    return {'children': {}, 'token_count': 0}
+            except (OSError, ValueError):
+                return {'children': {}, 'token_count': 0}
+            if real_dir in _scan_visited:
+                return {'children': {}, 'token_count': 0}
+            if real_dir.startswith(real_codebase + os.sep) or real_dir == real_codebase:
+                return {'children': {}, 'token_count': 0}
+            _scan_visited.add(real_dir)
             
             result = {'children': {}, 'token_count': 0}
             total_tokens = 0
@@ -4828,93 +4835,9 @@ async def get_folders_with_accurate_tokens():
         # Get regular folder structure
         regular_result = await api_get_folders()
         return regular_result
-        # Fall back to regular folder structure and start background calculation
-        return await api_get_folders()
     except Exception as e:
         logger.error(f"Error in get_folders_with_accurate_tokens: {e}")
         return {"error": f"Unexpected error: {str(e)}"}
-        return JSONResponse({"error": str(e)}, status_code=500)
-        files = body.get('files', [])
-        conversation_id = body.get('conversation_id')
-        logger.info(f"Chat API received conversation_id: {conversation_id}")
-        logger.debug(f"🔍 CHAT_API: Received conversation_id from frontend: {conversation_id}")
-
-        # Debug: Log what we received from frontend
-        logger.debug(f"🔍 CHAT_API: Received messages count: {len(messages)}")
-        logger.debug(f"🔍 CHAT_API: Messages structure: {messages[:2] if messages else 'No messages'}")
-        
-        logger.info("=== File Processing Debug ===")
-        logger.info(f"Files received: {files}")
-        
-        # Log message structure for debugging
-        if messages and len(messages) > 0:
-            logger.info(f"[INSTRUMENTATION] First message structure: {type(messages[0])}")
-            if isinstance(messages[0], list) and len(messages[0]) >= 2:
-                logger.info(f"[INSTRUMENTATION] First message format: ['{messages[0][0][:20]}...', '{messages[0][1][:20]}...'] (truncated)")
-            elif isinstance(messages[0], dict):
-                logger.info(f"[INSTRUMENTATION] First message keys: {messages[0].keys()}")
-        
-        # Convert frontend message tuples to proper chat history format
-        formatted_chat_history = []
-        for msg in messages:
-            if isinstance(msg, list) and len(msg) >= 2:
-                role, content = msg[0], msg[1]
-                # Convert role names to match expected format
-                if role in ['human', 'user']:
-                    formatted_chat_history.append({'type': 'human', 'content': content})
-                elif role in ['assistant', 'ai']:
-                    formatted_chat_history.append({'type': 'ai', 'content': content})
-            elif isinstance(msg, dict):
-                # Already in correct format
-                formatted_chat_history.append(msg)
-        
-        # Debug: Log the converted chat history
-        logger.debug(f"🔍 CHAT_API: Converted chat history count: {len(formatted_chat_history)}")
-        
-        # Format the data for the stream endpoint
-        formatted_body = {
-            'question': question,
-            'conversation_id': conversation_id,
-            'chat_history': formatted_chat_history,
-            'config': {
-                'conversation_id': conversation_id,  # Also include in config for backward compatibility
-                'files': files
-            }
-        }
-        
-        logger.info(f"[INSTRUMENTATION] /api/chat formatted body structure: {formatted_body.keys()}")
-        logger.info(f"[INSTRUMENTATION] /api/chat forwarding to /ziya/stream")
-
-        
-        # Call stream_chunks directly to force direct streaming path
-        logger.info("[INSTRUMENTATION] /api/chat calling stream_chunks directly for direct streaming")
-        
-        # DEBUGGING: Wrap the stream_chunks generator to monitor transmission
-        async def debug_stream_wrapper():
-            total_bytes_sent = 0
-            chunk_count = 0
-            async for chunk in stream_chunks(formatted_body):
-                chunk_count += 1
-                chunk_size = len(chunk.encode('utf-8'))
-                total_bytes_sent += chunk_size
-                
-                if chunk_count % 50 == 0:  # Log every 50th chunk
-                    logger.debug(f"🔍 STREAM_PROGRESS: chunk #{chunk_count}, total_bytes={total_bytes_sent}")
-                    
-                yield chunk
-        
-        return StreamingResponse(
-            debug_stream_wrapper(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "POST, OPTIONS",
-                "Access-Control-Allow-Headers": "Content-Type"
-            }
-        )
 
 @app.get('/api/config')
 def get_config():
@@ -4927,18 +4850,18 @@ def get_config():
 
     if get_config._cache is not None:
         return get_config._cache
-
+    from app.utils.version_util import get_current_version
+    
     config = {
         'theme': os.environ.get('ZIYA_THEME', 'light'),
         'defaultModel': os.environ.get('ZIYA_MODEL'),
         'endpoint': os.environ.get('ZIYA_ENDPOINT', 'bedrock'),
         'port': int(os.environ.get('ZIYA_PORT', DEFAULT_PORT)),
         'mcpEnabled': os.environ.get('ZIYA_ENABLE_MCP', 'true').lower() in ('true', '1', 'yes'),
-        'version': os.environ.get('ZIYA_VERSION', 'development'),
+        'version': get_current_version(),
         'ephemeralMode': os.environ.get('ZIYA_EPHEMERAL_MODE', 'false').lower() in ('true', '1', 'yes'),
         'projectRoot': os.environ.get('ZIYA_USER_CODEBASE_DIR', os.getcwd()),
     }
-    
     # Merge frontend config from active config providers
     try:
         from app.plugins import get_all_config_providers
@@ -4966,11 +4889,11 @@ def get_current_model():
         model_alias = ModelManager.get_model_alias()
         
         # Get model ID and endpoint
-        model_id = ModelManager.get_model_id(model)
+        model_id = ModelManager.get_model_id()
         endpoint = os.environ.get("ZIYA_ENDPOINT", config.DEFAULT_ENDPOINT)
         
         # Get model settings through ModelManager
-        model_settings = ModelManager.get_model_settings(model)
+        model_settings = ModelManager.get_model_settings()
 
         # Get model config for token limits
         model_config = ModelManager.get_model_config(endpoint, model_alias)
@@ -5040,7 +4963,7 @@ def get_model_id():
     return {'model_id': ModelManager.get_model_alias()}
 
 
-def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int) -> Dict[str, Any]:
+def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int, synchronous: bool = False) -> Dict[str, Any]:
     """Get folder structure with caching and background scanning.
     
     Checks both server.py's _folder_cache and directory_util's _folder_cache
@@ -5090,6 +5013,25 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
             return data
     
     # No cache available - start background scan and return immediately
+    # Unless synchronous=True (explicit user refresh), in which case scan inline.
+    if synchronous:
+        logger.info(f"📂 Synchronous folder scan for {directory}")
+        try:
+            result = get_folder_structure(directory, ignored_patterns, max_depth)
+            cache_entry['data'] = result
+            cache_entry['timestamp'] = time.time()
+            # Also write to directory_util's cache
+            dir_util._folder_cache[directory] = {
+                'timestamp': cache_entry['timestamp'],
+                'data': result,
+                'directory_mtime': 0
+            }
+            logger.info(f"📂 Synchronous scan completed for {directory}")
+            return result
+        except Exception as e:
+            logger.error(f"📂 Synchronous scan failed: {e}")
+            return {"error": str(e)}
+
     global _background_scan_thread
     if _background_scan_thread is None or not _background_scan_thread.is_alive():
         def background_scan():
@@ -5230,7 +5172,7 @@ async def api_get_folders(refresh: bool = False, project_path: str = Query(None)
         scan_status_before = get_scan_progress()
         
         # Use our enhanced cached folder structure function
-        result = get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth)
+        result = get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth, synchronous=refresh)
         
         # Log the structure we're returning
         logger.debug("=== FOLDER STRUCTURE BEING RETURNED ===")
@@ -5457,9 +5399,10 @@ async def set_model(request: SetModelRequest):
                     detail=f"Failed to change model - expected {expected_model_id}, got {actual_model_id}"
                 )
             logger.info(f"Successfully changed model to {found_alias} ({actual_model_id})")
-            # update the global model reference
+            # Update the global model reference — must reset LazyLoadedModel
+            # so model.get_model() returns the new instance
             global model
-            model = new_model
+            model.reset()
 
             global agent
             global agent_executor
@@ -5472,7 +5415,7 @@ async def set_model(request: SetModelRequest):
                 model_name = os.environ.get("ZIYA_MODEL")
                 
                 # For models with native function calling, skip XML agent creation
-                if endpoint in ("google", "openai") and model_name:
+                if endpoint in ("google", "openai", "anthropic") and model_name:
                     model_config = ModelManager.get_model_config(endpoint, model_name)
                     uses_native_calling = model_config.get("native_function_calling", False)
                     
@@ -5924,9 +5867,9 @@ async def update_model_settings(settings: ModelSettingsRequest):
                 # Special handling for thinking_level - preserve string value
                 if key == 'thinking_level':
                     os.environ[env_key] = value
+                    continue
 
-            # Special handling for boolean values
-                if isinstance(value, bool):
+                elif isinstance(value, bool):
                     os.environ[env_key] = "1" if value else "0"
                 else:
                     os.environ[env_key] = str(value)
@@ -5952,13 +5895,6 @@ async def update_model_settings(settings: ModelSettingsRequest):
         filtered_kwargs = ModelManager.filter_model_kwargs(model_kwargs, model_config)
         logger.info(f"Filtered model kwargs: {filtered_kwargs}")
 
-        # Extract conversation_id from config if available for caching
-        if config and isinstance(config, dict) and config.get('conversation_id'):
-            filtered_kwargs["conversation_id"] = config.get('conversation_id')
-            logger.info(f"Added conversation_id to astream kwargs for caching: {config.get('conversation_id')}")
-        elif hasattr(input, 'get') and input.get('conversation_id'):
-            filtered_kwargs["conversation_id"] = input.get('conversation_id')
-            logger.info(f"Added conversation_id from input to astream kwargs for caching")
 
         # Update the model's kwargs directly
         if hasattr(model, 'model'):

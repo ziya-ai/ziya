@@ -78,8 +78,10 @@ class NovaWrapper(BaseChatModel):
         """
         super().__init__(model_id=model_id, **kwargs)
         
-        # Initialize the client
-        self.client = boto3.client("bedrock-runtime")
+        # Use the client passed via kwargs (from ModelManager's persistent client pool).
+        # Only fall back to a bare boto3 client if none was provided.
+        if self.client is None:
+            self.client = boto3.client("bedrock-runtime")
         
         # Get max_tokens from kwargs or model_kwargs
         max_tokens = kwargs.get("max_tokens")
@@ -139,8 +141,6 @@ class NovaWrapper(BaseChatModel):
             
         except Exception:
             return 4096  # Fallback only if config lookup fails
-            
-        logger.info(f"Initialized NovaWrapper with model_kwargs: {self.model_kwargs}")
     
     def _convert_content_for_nova(self, content):
         """Convert LangChain message content to Nova Converse API format.
@@ -365,16 +365,6 @@ class NovaWrapper(BaseChatModel):
             logger.info("Bedrock converse API call completed successfully")
             
             # Parse the response
-            text = self._parse_response(response)
-            
-            # Clean any empty brackets from the response
-            if isinstance(text, str) and ('[]' in text):
-                cleaned_text = text.strip('[]')
-                if cleaned_text != text:
-                    logger.info(f"Cleaned empty brackets from Nova streaming response")
-                    text = cleaned_text
-
-            logger.info("About to parse response")
             text = self._parse_response(response)
             logger.info(f"Parsed response text length: {len(text)}")
             
@@ -819,10 +809,6 @@ class NovaWrapper(BaseChatModel):
                     'type': 'error',
                     'content': f"Nova streaming error: {str(e)}"
                 }
-            yield {
-                'type': 'error',
-                'content': f"Nova streaming error: {str(e)}"
-            }
     
 
 
