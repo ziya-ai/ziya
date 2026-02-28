@@ -28,6 +28,7 @@ FastAPI Server  (app/server.py)
     │   ├─ ConfigProvider  (+ endpoint restrictions)
     │   ├─ ServiceModelProvider
     │   ├─ DataRetentionProvider
+    │   ├─ ShellConfigProvider
     │   └─ FormatterProvider
     │
     └─ Local Storage  (~/.ziya/)
