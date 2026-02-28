@@ -216,7 +216,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       console.warn(`Limiting token count batch from ${filePaths.length} to 100 files`);
       filePaths = filePaths.slice(0, 100);
     }
-    if (filePaths.length === 0 || filePaths.length > 50) return;
+    if (filePaths.length === 0) return;
 
     // Filter out files we already have recent accurate counts for (within 5 minutes)
     const now = Date.now() / 1000;

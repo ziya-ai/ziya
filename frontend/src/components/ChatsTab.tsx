@@ -59,19 +59,20 @@ export const ChatsTab: React.FC = () => {
     });
   };
   
-  // Render a chat group
-  const renderGroup = (folder: any, chats: any[]) => {
-    const [isCollapsed, setIsCollapsed] = useState(folder.collapsed || false);
+  // Render a chat group — must be a proper component to use hooks
+  const ChatGroup: React.FC<{ folder: any; chats: any[] }> = ({ folder, chats }) => {
+    const [isCollapsed, setIsCollapsed] = useState(folder.collapsed ?? false);
     
-    const groupMenu = (
-      <Menu style={{ background: '#252525', border: '1px solid #444', borderRadius: '8px' }}>
-        <Menu.Item key="rename">Rename</Menu.Item>
-        <Menu.Item key="contexts">Set default contexts...</Menu.Item>
-        <Menu.Item key="skills">Set default skills...</Menu.Item>
-        <Menu.Divider />
-        <Menu.Item key="delete" danger>Delete group</Menu.Item>
-      </Menu>
-    );
+    const groupMenuItems = {
+      items: [
+        { key: 'rename', label: 'Rename' },
+        { key: 'contexts', label: 'Set default contexts...' },
+        { key: 'skills', label: 'Set default skills...' },
+        { type: 'divider' as const },
+        { key: 'delete', label: 'Delete group', danger: true },
+      ],
+      style: { background: '#252525', border: '1px solid #444', borderRadius: '8px' }
+    };
     
     return (
       <div key={folder.id} style={{ marginBottom: '12px' }}>
@@ -96,7 +97,7 @@ export const ChatsTab: React.FC = () => {
           <span style={{ fontSize: '10px', color: '#666' }}>
             {chats.length}
           </span>
-          <Dropdown overlay={groupMenu} trigger={['click']}>
+          <Dropdown menu={groupMenuItems} trigger={['click']}>
             <MoreOutlined 
               style={{ fontSize: '12px', color: '#666', padding: '4px' }}
               onClick={e => e.stopPropagation()}
@@ -213,7 +214,7 @@ export const ChatsTab: React.FC = () => {
         {folders.map(folder => {
           const chats = groupedConversations[folder.id] || [];
           if (chats.length === 0) return null;
-          return renderGroup(folder, chats);
+          return <ChatGroup key={folder.id} folder={folder} chats={chats} />;
         })}
         
         {/* Ungrouped chats */}

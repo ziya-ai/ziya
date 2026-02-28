@@ -43,8 +43,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     } = useChatContext();
 
     const { checkedKeys } = useFolderContext();
-    const { currentProject } = useProject();
-    const { activeSkillPrompts } = useProject();
+    const { currentProject, activeSkillPrompts } = useProject();
     const setQuestion = useSetQuestion();
     const visibilityRef = useRef<boolean>(true);
     // Memoize conversation-specific streaming state to prevent unnecessary re-renders
@@ -304,7 +303,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                 />
             </Tooltip>
         );
-    }, [editingMessageIndex, currentMessages, shouldShowRetry, isCurrentlyStreaming, setStreamedContentMap, setConversations, currentConversationId, addStreamingConversation, checkedKeys, streamedContentMap, setStreamedContentMap, setIsStreaming, removeStreamingConversation, addMessageToConversation, streamingConversations, updateProcessingState, setQuestion]);
+    }, [editingMessageIndex, currentMessages, shouldShowRetry, isCurrentlyStreaming, setStreamedContentMap, setConversations, currentConversationId, addStreamingConversation, checkedKeys, streamedContentMap, setIsStreaming, removeStreamingConversation, addMessageToConversation, streamingConversations, updateProcessingState, setQuestion]);
 
     // Render message for both virtualized and non-virtualized views
     // Measure height after render for virtualization

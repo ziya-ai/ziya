@@ -128,8 +128,6 @@ export const StreamedContent: React.FC<{}> = () => {
         }
 
         return 'idle';
-
-        return 'idle';
     }, []);
 
     // Track if we're waiting for a response in this conversation

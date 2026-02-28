@@ -43,3 +43,20 @@ const examples: MermaidExample[] = [
     deactivate API`
     }
 ];
+
+const MermaidTest: React.FC = () => {
+    return (
+        <Card title="Mermaid Diagram Test">
+            <Space direction="vertical" size="large" style={{ width: '100%' }}>
+                {examples.map((example, index) => (
+                    <Card key={index} type="inner" title={example.name}>
+                        <Text type="secondary">{example.description}</Text>
+                        <D3Renderer spec={{ type: 'mermaid', definition: example.code }} type="d3" />
+                    </Card>
+                ))}
+            </Space>
+        </Card>
+    );
+};
+
+export default MermaidTest;

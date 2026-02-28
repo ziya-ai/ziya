@@ -277,6 +277,8 @@ const DiffTestView: React.FC = () => {
                                         <MarkdownRenderer
                                             markdown={`\`\`\`diff\n${testCase.diff}\n\`\`\``}
                                             enableCodeApply={false}
+                                            // TODO: Pass renderPath when MarkdownRenderer supports it
+                                            // renderPath={renderPath}
                                         />
                                     </div>
                                     {testCase.sourceContent && (
