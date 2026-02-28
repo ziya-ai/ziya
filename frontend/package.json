@@ -83,7 +83,9 @@
     "postcss": "^8.4.31",
     "webpack-dev-server": "^5.2.1",
     "svgo": "^3.0.0",
-    "glob": "^11.0.4"
+    "glob": "^11.0.4",
+    "qs": ">=6.15.0",
+    "serialize-javascript": ">=7.0.3"
   },
   "babel": {
     "presets": [
