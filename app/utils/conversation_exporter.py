@@ -63,33 +63,77 @@ def _clean_tool_blocks(content: str) -> str:
     """
     Replace HTML comment tool blocks with formatted output.
     Converts: <!-- TOOL_BLOCK_START:mcp_tool|Header -->...<!-- TOOL_BLOCK_END:mcp_tool -->
+    Also converts|syntax ... ```` fenced blocks
     To: Formatted markdown section with tool output
     """
     import re
 
     # Pattern to match tool blocks
-    pattern = r'<!-- TOOL_BLOCK_START:(mcp_\w+)\|(.+?) -->\s*(.*?)\s*<!-- TOOL_BLOCK_END:\1 -->'
+    # Markers include an optional tool-use ID suffix (|toolu_xxx) added by chatApi.ts.
+    # Match both formats so the replacement fires and post-tool markdown is preserved.
+    pattern = r'<!-- TOOL_BLOCK_START:(mcp_\w+)\|(.+?)(?:\|toolu_[^>]+)? -->\s*(.*?)\s*<!-- TOOL_BLOCK_END:\1(?:\|toolu_[^>]+)? -->'
 
     def replace_tool_block(match):
         tool_name = match.group(1)
         display_header = match.group(2).strip()
         tool_content = match.group(3).strip()
 
-        # Format as a nice section
-        # Remove "mcp_" prefix and format tool name
-        clean_tool_name = tool_name.replace('mcp_', '').replace('_', ' ').title()
+        # Parse display_header which may contain a syntax hint suffix: "Header|sh"
+        header_parts = display_header.rsplit('|', 1)
+        header_text = header_parts[0].strip()
+        syntax_hint = header_parts[1].strip() if len(header_parts) > 1 and len(header_parts[1].strip()) <= 12 else ''
 
-        # Create formatted output
-        formatted = f"\n**🔧 {display_header}**\n\n"
+        # Use the display header directly — it already contains the
+        # pretty-printed representation built by the streaming pipeline
+        # (e.g. "🔧 Shell Command: $ ls -la"). No recomposition needed.
+        formatted = f"\n**{header_text}**\n\n"
 
-        # Add content in a subtle box
-        formatted += f"<details>\n<summary>Tool Output</summary>\n\n```\n{tool_content}\n```\n\n</details>\n"
+        # Use syntax hint for the code fence language when available
+        fence_lang = syntax_hint if syntax_hint else ''
+        formatted += (
+            f"<details>\n<summary>Tool Output</summary>\n\n"
+            f"```{fence_lang}\n{tool_content}\n```\n\n"
+            f"</details>\n"
+        )
 
         return formatted
 
     cleaned = re.sub(pattern, replace_tool_block, content, flags=re.DOTALL)
-    return cleaned
 
+    # Handle backtick-fenced tool blocks: the default format for non-hierarchical tool results.
+    # The fence uses 4 backticks so it can contain 3-backtick content.
+    fence_pattern = r'(`{4,})tool:(mcp_\w+)\|([^\n]+)\n([\s\S]*?)\1'
+
+    def replace_fence_tool_block(match):
+        fence = match.group(1)
+        tool_name = match.group(2)
+        header_and_syntax = match.group(3).strip()
+        tool_content = match.group(4).strip()
+
+        # Header format: "displayHeader|syntax" (e.g. "Shell: $ ls -la|bash")
+        parts = header_and_syntax.rsplit('|', 1)
+        header_text = parts[0].strip()
+        syntax_hint = ''
+        if len(parts) > 1 and len(parts[1].strip()) <= 12:
+            syntax_hint = parts[1].strip()
+            # "text" is a placeholder, not a real language
+            if syntax_hint == 'text':
+                syntax_hint = ''
+
+        formatted = f"\n**{header_text}**\n\n"
+
+        fence_lang = syntax_hint if syntax_hint else ''
+        formatted += (
+            f"<details>\n<summary>Tool Output</summary>\n\n"
+            f"```{fence_lang}\n{tool_content}\n```\n\n"
+            f"</details>\n"
+        )
+
+        return formatted
+
+    cleaned = re.sub(fence_pattern, replace_fence_tool_block, cleaned)
+
+    return cleaned
 
 def _clean_thinking_blocks(content: str) -> str:
     """

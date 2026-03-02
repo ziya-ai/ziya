@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Modal, Radio, Button, message, Space, Typography, Divider, Progress, Switch, Segmented } from 'antd';
-import { CopyOutlined, DownloadOutlined, GithubOutlined, CloudOutlined, FileTextOutlined, LinkOutlined, PictureOutlined } from '@ant-design/icons';
+import { CopyOutlined, DownloadOutlined, GithubOutlined, CloudOutlined, FileTextOutlined, LinkOutlined, PictureOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import { useChatContext } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
 import { captureAllVisualizations } from '../utils/visualizationCapture';
@@ -21,6 +21,7 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
     const [target, setTarget] = useState<'public' | 'internal'>('public');
     const [isExporting, setIsExporting] = useState(false);
     const [exportedContent, setExportedContent] = useState<string | null>(null);
+    const [pasteUrl, setPasteUrl] = useState<string | null>(null);
     const [captureProgress, setCaptureProgress] = useState<number>(0);
     const [captureStatus, setCaptureStatus] = useState<string>('');
     const [availableTargets, setAvailableTargets] = useState<any[]>([
@@ -40,6 +41,7 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
             setExportedContent(null);
             setIsExporting(false);
             setCaptureProgress(0);
+            setPasteUrl(null);
             setCaptureStatus('');
             setExportMode('copy');
             setFormat('markdown');
@@ -266,6 +268,7 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
     // Clear generated content when switching modes / format / options
     useEffect(() => {
         setExportedContent(null);
+        setPasteUrl(null);
     }, [exportMode, format, embedImages, target]);
 
     const renderOptions = () => (
