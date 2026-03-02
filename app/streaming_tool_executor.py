@@ -1223,6 +1223,7 @@ class StreamingToolExecutor:
                 completed_tools = set()
                 skipped_tools = set()  # Track tools we're skipping due to limits
                 executed_tool_signatures = set()  # Track tool name + args to prevent duplicates
+                _feedback_received = False  # When True, skip remaining tools so model sees feedback immediately
                 
                 # Initialize content buffer and visualization detector
                 content_buffer = ""
@@ -1810,6 +1811,20 @@ class StreamingToolExecutor:
                         
                         if tool_id and tool_id not in completed_tools:
                             tool_data = active_tools[tool_id]
+
+                            # If user feedback was injected during this iteration,
+                            # skip remaining tools so the model can respond to it
+                            # immediately.  Send a stub result to satisfy the API
+                            # contract (every tool_use needs a tool_result).
+                            if _feedback_received:
+                                skip_msg = "Tool execution skipped: user provided real-time feedback that takes priority. Re-evaluate based on the feedback before continuing."
+                                tool_results.append({'tool_id': tool_id, 'tool_name': tool_data['name'], 'result': skip_msg})
+                                yield {'type': 'tool_result_for_model', 'tool_use_id': tool_id, 'content': skip_msg}
+                                completed_tools.add(tool_id)
+                                tools_executed_this_iteration = True
+                                logger.info(f"🔄 FEEDBACK_SKIP: Skipping tool {tool_data['name']} ({tool_id}) — user feedback takes priority")
+                                continue
+
                             tool_name = tool_data['name']
                             args_json = tool_data['partial_json']
                             
@@ -2100,6 +2115,7 @@ Retry with the 'command' parameter included."""
                                                         logger.info(f"🔄 FEEDBACK_INTEGRATION: Skipping planned tool to respond to feedback")
                                                         completed_tools.add(tool_id)
                                                         tools_executed_this_iteration = True
+                                                        _feedback_received = True
                                                         continue
                                             except asyncio.QueueEmpty:
                                                 pass  # No feedback available, continue normally
@@ -2315,6 +2331,7 @@ Please try again or proceed without this tool."""
                                            'type': 'feedback_delivered',
                                            'message': fb_msg[:80],
                                        })
+                                       _feedback_received = True
 
                                    tools_executed_this_iteration = True
                                    logger.debug(f"🔍 TOOL_EXECUTED_FLAG: Set tools_executed_this_iteration = True for tool {tool_id}")
