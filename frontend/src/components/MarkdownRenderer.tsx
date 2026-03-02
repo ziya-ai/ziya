@@ -19,12 +19,12 @@ import { detectFileOperationSyntax, renderFileOperationSafely } from '../utils/f
 import { FileOperationRenderer } from './FileOperationRenderer';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 import 'katex/dist/katex.min.css';
-import { 
-    restartStreamWithEnhancedContext, 
-    sendPayload, 
-    applyDiff, 
+import {
+    restartStreamWithEnhancedContext,
+    sendPayload,
+    applyDiff,
     undoDiff,
-    parseHunkStatuses 
+    parseHunkStatuses
 } from '../apis/chatApi';
 import { extractAllFilesFromDiff, checkFilesInContext, findSupersededDiffIndices } from '../utils/diffUtils';
 import { formatMCPOutput } from '../utils/mcpFormatter';
@@ -141,9 +141,30 @@ const hunkStatusEventBus = new EventTarget();
 const HUNK_STATUS_EVENT = 'hunkStatusUpdate';
 // Add a global set to track processed window events
 const processedWindowEvents = new Set<string>();
+const PROCESSED_EVENTS_MAX = 200;
 
 // Add a map to track which request ID corresponds to which diff element
 const diffRequestMap = new Map<string, string>();
+const DIFF_REQUEST_MAP_MAX = 500;
+
+/**
+ * Prune module-level caches to prevent unbounded memory growth.
+ * Called when the active conversation changes.
+ */
+export function pruneRendererCaches(): void {
+    processedWindowEvents.clear();
+    diffRequestMap.clear();
+
+    // Cap window-level registries — keep the most recent entries
+    if (window.hunkStatusRegistry?.size > 500) {
+        const entries = Array.from(window.hunkStatusRegistry.entries());
+        window.hunkStatusRegistry = new Map(entries.slice(-200));
+    }
+    if (window.appliedDiffsRegistry?.size > 500) {
+        const entries = Array.from(window.appliedDiffsRegistry);
+        window.appliedDiffsRegistry = new Set(entries.slice(-200));
+    }
+}
 
 /**
  * Generate a stable, deterministic ID from diff content.
@@ -1441,7 +1462,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
         const parseAndSetFiles = () => {
             try {
                 const normalizedDiff = normalizeGitDiff(diff);
-                let parsedFiles = validateAndFixParsedFiles(                    
+                let parsedFiles = validateAndFixParsedFiles(
                     safeParseDiff(normalizedDiff)
                 );
 
@@ -2219,7 +2240,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
     const statusUpdateCounterRef = useRef<number>(0);
     const isStreamingRef = useRef<boolean>(false);
     const appliedRef = useRef<boolean>(false);
-    
+
     // Get current project path for diff application
     const { currentProject } = useProject();
     const buttonInstanceId = useRef(`button-${diffElementId}-${Date.now()}`).current;
@@ -2247,6 +2268,11 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
             return;
         }
         if (requestId) processedRequestIds.current.add(requestId);
+
+        // Cap processedWindowEvents to prevent unbounded growth
+        if (processedWindowEvents.size > PROCESSED_EVENTS_MAX) {
+            processedWindowEvents.clear();
+        }
 
         const customEvent = new CustomEvent('hunkStatusUpdate', {
             detail: {
@@ -2297,9 +2323,9 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
 
         // Use our stable request ID for this specific diff application
         const requestId = `${Date.now()}`;
-        
+
         setIsProcessing(true);
-        
+
         // Store the file path for this diff element ID for later matching
         if (diffElementId) {
             window.diffElementPaths = window.diffElementPaths || new Map();
@@ -2311,14 +2337,19 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
         try {
             // Use API layer for diff application
             const result = await applyDiff(diff, filePath, requestId, diffElementId, buttonInstanceId, currentProject);
-            
+
             if (result.success || result.status === 'partial') {
                 const data = result.data!;
-                
+
                 // Store the mapping between request ID and diff element ID
                 if (result.requestId) {
                     diffRequestMap.set(result.requestId, diffElementId);
                     console.log(`Mapped request ${data.request_id} to diff element ${diffElementId} (button ${buttonInstanceId})`);
+                    // Cap diffRequestMap to prevent unbounded growth
+                    if (diffRequestMap.size > DIFF_REQUEST_MAP_MAX) {
+                        const entries = Array.from(diffRequestMap.entries());
+                        entries.slice(0, entries.length - 200).forEach(([k]) => diffRequestMap.delete(k));
+                    }
                 }
 
                 // Check if ANY hunks succeeded before marking as applied
@@ -2342,7 +2373,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                     if (data.details?.hunk_statuses) {
                         // Use utility to parse hunk statuses
                         const parsedStatuses = parseHunkStatuses(data.details.hunk_statuses, fileIndex);
-                        
+
                         // Update local state
                         parsedStatuses.forEach((status, hunkKey) => {
                             if (typeof setHunkStatuses === 'function') {
@@ -2380,7 +2411,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                             }
                         });
                     }
-                    
+
                     triggerDiffUpdate(data.details?.hunk_statuses || {}, data.request_id, diffElementId);
 
                     // Show partial success message with failed hunks
@@ -2414,37 +2445,37 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
             } else {
                 // Handle error response
                 const errorData = result.data || {};
-                    setIsApplied(false);
+                setIsApplied(false);
 
                 message.error({
                     content: (
-                            <div>
-                                <p>
-                                    <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: '8px' }} />
-                                    {result.error || 'Failed to apply changes'}
-                                </p>
-                                {errorData.details?.failed && errorData.details.failed.length > 0 && (
-                                    <div>
-                                        <p>Failed hunks:</p>
-                                        <ul style={{ marginTop: '8px', paddingLeft: '20px', listStyle: 'none' }}>
-                                            {errorData.details.failed.map((hunkId, index) => {
-                                                const hunkStatus = errorData.details?.hunk_statuses?.[hunkId];
-                                                return (
-                                                    <li key={index}>
-                                                        <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: '8px' }} />
-                                                        {`Hunk #${hunkId} failed`}
-                                                        {hunkStatus ? ` in ${hunkStatus.stage || 'unknown'} stage` : ''}
-                                                        {hunkStatus?.error_details ? `: ${JSON.stringify(hunkStatus.error_details)}` : ''}
-                                                    </li>
-                                                );
-                                            })}
-                                        </ul>
-                                    </div>
-                                )}
-                            </div>
-                        ),
-                        duration: 5
-                    });
+                        <div>
+                            <p>
+                                <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: '8px' }} />
+                                {result.error || 'Failed to apply changes'}
+                            </p>
+                            {errorData.details?.failed && errorData.details.failed.length > 0 && (
+                                <div>
+                                    <p>Failed hunks:</p>
+                                    <ul style={{ marginTop: '8px', paddingLeft: '20px', listStyle: 'none' }}>
+                                        {errorData.details.failed.map((hunkId, index) => {
+                                            const hunkStatus = errorData.details?.hunk_statuses?.[hunkId];
+                                            return (
+                                                <li key={index}>
+                                                    <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: '8px' }} />
+                                                    {`Hunk #${hunkId} failed`}
+                                                    {hunkStatus ? ` in ${hunkStatus.stage || 'unknown'} stage` : ''}
+                                                    {hunkStatus?.error_details ? `: ${JSON.stringify(hunkStatus.error_details)}` : ''}
+                                                </li>
+                                            );
+                                        })}
+                                    </ul>
+                                </div>
+                            )}
+                        </div>
+                    ),
+                    duration: 5
+                });
             }
         } catch (error: unknown) {
             message.error({
@@ -2556,7 +2587,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
         setIsUndoing(true);
         try {
             const result = await undoDiff(appliedDiff, filePath.trim(), currentProject);
-            
+
             if (result.success) {
                 // Reset state to allow re-applying
                 setIsApplied(false);
@@ -2900,13 +2931,13 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, inde
     // Extract file title early from the diff content, even during streaming
     const extractFileTitle = useCallback((diffContent: string): string => {
         if (!diffContent) return '';
-        
+
         // NORMALIZE: Fix LLM-generated diffs with missing newlines between headers
         // Pattern: ...path--- or ...path+++ (concatenated without newline)
         const normalizedContent = diffContent
             .replace(/([^\n])(---\s+[ab]\/)/g, '$1\n$2')  // Insert newline before ---
             .replace(/([^\n])(\+\+\+\s+[ab]\/)/g, '$1\n$2'); // Insert newline before +++
-        
+
         const lines = normalizedContent.split('\n');
 
         // Check for new file creation first - prioritize 'new file mode' over git header paths
@@ -2999,6 +3030,8 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, inde
     useEffect(() => {
         initialFileTitleRef.current = null;
         parsedFilesRef.current = []; // Also clear parsed files cache
+        // Prune module-level caches on conversation switch
+        pruneRendererCaches();
     }, [currentConversationId]);
 
     // Cleanup async operations
@@ -4790,6 +4823,24 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 // Strip out TOOL_MARKER comments before rendering
                 // These are internal anchors used by chatApi.ts for replacement logic
                 // and should never be visible to users
+                //
+                // Only strip/convert tool blocks that are NOT inside
+                // a code fence.  If a diff or code block quotes tool markers,
+                // converting them to backtick fences would break the outer fence.
+                const isInsideCodeFence = (src: string, pos: number): boolean => {
+                    let open = false;
+                    let fenceLen = 0;
+                    const lines = src.substring(0, pos).split('\n');
+                    for (const line of lines) {
+                        const fm = line.match(/^(`{3,})/);
+                        if (fm) {
+                            if (!open) { open = true; fenceLen = fm[1].length; }
+                            else if (fm[1].length >= fenceLen && line.trim() === fm[1]) { open = false; }
+                        }
+                    }
+                    return open;
+                };
+
                 processedMarkdown = processedMarkdown.replace(/<!-- TOOL_MARKER:[^>]+ -->\n?/g, '');
 
                 // Format: <!-- TOOL_BLOCK_START:toolName|displayHeader|toolId -->
@@ -4810,6 +4861,13 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
                 // Replace tool blocks with markdown code blocks using a special lang tag
                 toolBlocks.forEach(({ match, toolName, displayHeader, content }) => {
+                    // Skip tool blocks that appear inside a code fence (e.g. inside a diff).
+                    // Converting them would inject backtick fences that break the outer block.
+                    const matchPos = processedMarkdown.indexOf(match);
+                    if (matchPos >= 0 && isInsideCodeFence(processedMarkdown, matchPos)) {
+                        return; // Leave as HTML comment — harmless inside a code block
+                    }
+
                     // CRITICAL: Shell commands should be left as HTML
                     // because they already have the proper ````shell fence structure inside
                     // Converting them creates double-wrapping and escaped backticks
@@ -5304,7 +5362,24 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
         document.addEventListener('throttlingRecoveryData', handleThrottlingRecoveryData as EventListener);
 
-        const observer = new MutationObserver((mutations) => {
+        // Debounced observer callback — during streaming the container
+        // mutates on every chunk, but throttle-retry buttons only appear
+        // after a throttling error.  Batch mutations to avoid hammering
+        // querySelectorAll on every text node insertion.
+        let observerTimer: ReturnType<typeof setTimeout> | null = null;
+        const debouncedObserverCallback = () => {
+            if (observerTimer) return; // Already scheduled
+            observerTimer = setTimeout(() => {
+                observerTimer = null;
+                scanAndAttachHandlers();
+            }, 300);
+        };
+
+        const observer = new MutationObserver((_mutations) => {
+            debouncedObserverCallback();
+            /* Original per-mutation scanning removed — the debounced
+               scanAndAttachHandlers above covers all cases without
+               doing a full DOM scan on every streaming chunk.
             mutations.forEach((mutation) => {
                 mutation.addedNodes.forEach((node) => {
                     if (node.nodeType === Node.ELEMENT_NODE) {
@@ -5324,6 +5399,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                     }
                 });
             });
+            */
         });
 
         // Start observing
@@ -5334,23 +5410,13 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 subtree: true
             });
 
-            // Also check for any existing buttons when effect runs
-            const existingButtons = container.querySelectorAll('.throttle-retry-button');
-            existingButtons.forEach(button => {
-                if (!attachedHandlersRef.current.has(button)) {
-                    attachThrottleRetryHandler(button as HTMLButtonElement);
-                    console.log('✅ INITIAL-ATTACH: Handler attached to existing button');
-                }
-            });
-
-            // Initial global scan
-            setTimeout(scanAndAttachHandlers, 100);
-            setTimeout(scanAndAttachHandlers, 500);
-            setTimeout(scanAndAttachHandlers, 1000);
+            // Single deferred scan instead of three overlapping timeouts
+            setTimeout(scanAndAttachHandlers, 200);
         }
 
         return () => {
             observer.disconnect();
+            if (observerTimer) clearTimeout(observerTimer);
             document.removeEventListener('throttlingError', handleThrottlingError as EventListener);
             document.removeEventListener('throttlingRecoveryData', handleThrottlingRecoveryData as EventListener);
             document.removeEventListener('throttleButtonRendered', handleThrottlingError as EventListener);
