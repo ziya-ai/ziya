@@ -72,6 +72,10 @@ class FileChangeHandler(FileSystemEventHandler):
             for part in abs_path.split(os.sep):
                 if part.startswith('.') and len(part) > 1:
                     return True
+                # Skip tmp directories — build artifacts, runtime farms, etc.
+                # generate massive churn that the file watcher should never track.
+                if part == 'tmp':
+                    return True
 
             self._ensure_ignore_patterns_loaded()
             if self.should_ignore_fn(abs_path):
