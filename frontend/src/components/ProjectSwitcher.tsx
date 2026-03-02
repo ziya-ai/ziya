@@ -186,7 +186,7 @@ export const ProjectSwitcher: React.FC = () => {
                   <div style={{ width: '8px', height: '8px', background: '#22c55e', borderRadius: '50%' }} />
                   <div style={{ flex: 1 }}>
                     <div>{project.name}</div>
-                    <div style={{ fontSize: '10px', color: isDarkMode ? '#666' : '#999' }}>{project.path}</div>
+                      <div style={{ fontSize: '10px', color: isDarkMode ? '#5eead4' : '#999' }}>{project.path}</div>
                   </div>
                   <SettingOutlined
                     style={{
@@ -319,7 +319,7 @@ export const ProjectSwitcher: React.FC = () => {
                 />
               </Tooltip>
             </div>
-            <div style={{ fontSize: '9px', color: isDarkMode ? '#666' : '#888', marginTop: '2px' }}>{currentProject.path}</div>
+            <div style={{ fontSize: '9px', color: isDarkMode ? '#5eead4' : '#888', marginTop: '2px' }}>{currentProject.path}</div>
           </div>
           <DownOutlined style={{ fontSize: '10px', color: isDarkMode ? '#666' : '#999' }} />
         </div>
