@@ -303,8 +303,18 @@ class ShellServer:
         
         # Apply default pattern to each allowed command
         for cmd in self.allowed_commands:
-            # Skip git commands as they're handled separately
+            # Git commands: if user explicitly added "git add", "git commit" etc.
+            # to the allowlist, honour them instead of blocking via safe git ops.
+            # Bare "git" means "allow all git subcommands".
             if cmd.startswith('git '):
+                # Explicit git subcommand — create a permissive pattern for it
+                git_subcmd = cmd[4:]  # e.g. "add", "commit -m", "push"
+                pattern_key = f'git_explicit_{git_subcmd.replace(" ", "_").replace("-", "_")}'
+                patterns[pattern_key] = r'^git\s+' + re.escape(git_subcmd) + r'(\s+.*)?$'
+                continue  # Don't also add the default pattern
+            if cmd == 'git':
+                # Bare "git" — allow ALL git subcommands
+                patterns['git_all'] = r'^git(\s+.*)?$'
                 continue
             if cmd in self.command_pattern_overrides:
                 patterns[cmd] = self.command_pattern_overrides[cmd]
