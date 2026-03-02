@@ -1285,6 +1285,7 @@ class CLI:
                  /shell yolo off    Disable YOLO mode
                  /shell reset       Reset to defaults
                  /shell timeout <s> Set command timeout (0=none)
+                 /shell git <op>    Allow a git operation (e.g. add, commit, push, all)
                  Append 'save' to persist: /shell add git save
   /clear         Clear conversation history
   /model <name>  Switch model
@@ -1479,6 +1480,50 @@ class CLI:
             await self._restart_shell_server()
             return
 
+        # /shell git <operation|all> [save]
+        if sub == 'git':
+            if not sub_args:
+                print("\033[1mGit access control:\033[0m")
+                print("  /shell git all          Allow ALL git operations")
+                print("  /shell git add          Allow 'git add'")
+                print("  /shell git commit       Allow 'git commit'")
+                print("  /shell git push         Allow 'git push'")
+                print("  /shell git safe         Reset to safe (read-only) git ops")
+                print("  Append 'save' to persist across sessions.")
+                return
+            op = sub_args[0]
+            commands = self._get_session_commands()
+            if op == 'all':
+                # Add bare 'git' which the shell server treats as "allow all"
+                if 'git' not in commands:
+                    commands.append('git')
+                self._session_shell_commands = commands
+                if persist:
+                    set_persisted_allowed_commands(commands)
+                print("\033[33m✓ All git operations enabled.\033[0m")
+            elif op == 'safe':
+                # Remove bare 'git' and any explicit git subcommands
+                commands = [c for c in commands if c != 'git' and not c.startswith('git ')]
+                self._session_shell_commands = commands
+                if persist:
+                    set_persisted_allowed_commands(commands)
+                print("\033[32m✓ Git reset to safe (read-only) operations.\033[0m")
+            else:
+                # Add specific git subcommand
+                entry = f"git {op}"
+                if entry not in commands:
+                    commands.append(entry)
+                self._session_shell_commands = commands
+                if persist:
+                    set_persisted_allowed_commands(commands)
+                print(f"\033[32m✓ 'git {op}' enabled.\033[0m")
+            if persist:
+                print("\033[90m  (saved permanently)\033[0m")
+            else:
+                print("\033[90m  (session only — add 'save' to persist)\033[0m")
+            await self._restart_shell_server()
+            return
+
         # /shell reset [save]
         if sub == 'reset':
             merged_config = get_default_shell_config()
@@ -1534,7 +1579,7 @@ class CLI:
             return
 
         print(f"\033[90mUnknown: /shell {sub}\033[0m")
-        print("Usage: /shell [list|add|rm|yolo|timeout|reset]")
+        print("Usage: /shell [list|add|rm|yolo|git|timeout|reset]")
         print("  Append 'save' to persist changes across sessions.")
 
     def _get_session_commands(self) -> list:
