@@ -1,4 +1,11 @@
+ne 1403:96:  'index' is defined but never used. Allowed unused args must match /^_/u                       @typescript-eslint/no-unused-vars
+  Line 1726:39:  'escapedQuote' is assigned a value but never used. Allowed unused vars must match /^_/u       @typescript-eslint/no-unused-vars
+    Line 1930:35:  'containsCodeBlock' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
+      Line 2143:5:   Unreachable code                                                                              no-unreachable
 
+      src/components/App.tsx
+        Line 1:46:    'useLayoutEffect' is defined but never used. Allowed unused vars must match /^_/u                                     @typescript-eslint/no-unused-vars
+          Line 13:5:    'Ex
 > frontend@0.3.13 build
 > craco build && npm run copy-to-templates
 
@@ -18,14 +25,7 @@ Module not found: Error: Can't resolve '../internal/mcpBuilderFormatter' in '/Us
 [eslint]
 src/apis/chatApi.ts
   Line 375:10:   'extractErrorFromNestedOps' is defined but never used. Allowed unused vars must match /^_/u   @typescript-eslint/no-unused-vars
-  Line 1403:96:  'index' is defined but never used. Allowed unused args must match /^_/u                       @typescript-eslint/no-unused-vars
-  Line 1726:39:  'escapedQuote' is assigned a value but never used. Allowed unused vars must match /^_/u       @typescript-eslint/no-unused-vars
-  Line 1930:35:  'containsCodeBlock' is assigned a value but never used. Allowed unused vars must match /^_/u  @typescript-eslint/no-unused-vars
-  Line 2143:5:   Unreachable code                                                                              no-unreachable
-
-src/components/App.tsx
-  Line 1:46:    'useLayoutEffect' is defined but never used. Allowed unused vars must match /^_/u                                     @typescript-eslint/no-unused-vars
-  Line 13:5:    'ExportOutlined' is defined but never used. Allowed unused vars must match /^_/u                                      @typescript-eslint/no-unused-vars
+  LiportOutlined' is defined but never used. Allowed unused vars must match /^_/u                                      @typescript-eslint/no-unused-vars
   Line 74:37:   'error' is defined but never used. Allowed unused args must match /^_/u                                               @typescript-eslint/no-unused-vars
   Line 102:93:  'recordManualScroll' is assigned a value but never used. Allowed unused vars must match /^_/u                         @typescript-eslint/no-unused-vars
   Line 133:9:   'isAtActiveEnd' is assigned a value but never used. Allowed unused vars must match /^_/u                              @typescript-eslint/no-unused-vars
@@ -543,3 +543,4 @@ src/utils/prismLoader.ts
 Search for the keywords to learn more about each warning.
 To ignore, add // eslint-disable-next-line to the line before.
 
+'
