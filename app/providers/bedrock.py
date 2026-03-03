@@ -13,6 +13,7 @@ orchestration logic.  This provider:
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import copy
 import os
@@ -24,6 +25,7 @@ from app.providers.base import (
     ErrorType,
     LLMProvider,
     ProviderConfig,
+    ProcessingEvent,
     StreamEnd,
     StreamEvent,
     TextDelta,
@@ -37,6 +39,19 @@ from app.utils.logging_utils import get_mode_aware_logger
 
 logger = get_mode_aware_logger(__name__)
 
+
+# Dedicated thread pool for Bedrock API calls.  Isolates blocking boto3
+# operations (connect + stream reads) from the default asyncio executor
+# so that tool execution, MCP communication, and health checks never
+# stall waiting for a free thread.
+#
+# Size: 8 is enough for typical concurrency (each request uses ~2 threads:
+# one for the initial connect, one for iterating the stream).  Override
+# via BEDROCK_THREAD_POOL_SIZE for high-concurrency deployments.
+_BEDROCK_POOL_SIZE = int(os.environ.get("BEDROCK_THREAD_POOL_SIZE", "8"))
+_bedrock_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=_BEDROCK_POOL_SIZE, thread_name_prefix="bedrock-io"
+)
 
 class BedrockProvider(LLMProvider):
     """Streams Claude responses via AWS Bedrock."""
@@ -66,8 +81,13 @@ class BedrockProvider(LLMProvider):
         except Exception as e:
             logger.warning(f"BedrockProvider: wrapped client failed ({e}), falling back to direct boto3")
             import boto3
+            from botocore.config import Config as BotoConfig
             session = boto3.Session(profile_name=aws_profile)
-            self.bedrock = session.client("bedrock-runtime", region_name=region)
+            self.bedrock = session.client(
+                "bedrock-runtime",
+                region_name=region,
+                config=BotoConfig(retries={'max_attempts': 2, 'mode': 'adaptive'}),
+            )
 
     # ------------------------------------------------------------------
     # LLMProvider interface
@@ -83,12 +103,20 @@ class BedrockProvider(LLMProvider):
         body = self._build_request_body(messages, system_content, tools, config)
 
         # Retry loop with exponential backoff
-        # Timeout for the initial API connection (not per-chunk).
-        # Extended context requests can take longer to start streaming.
+        # Since boto3 now handles transient retries (max_attempts: 2),
+        # the provider only needs a few retries for persistent issues.
+        # Keep this small to avoid compounding with the orchestrator's
+        # own retry loop in StreamingToolExecutor.
         connect_timeout = int(os.environ.get("BEDROCK_CONNECT_TIMEOUT", "180"))
-        max_retries = 4
+        max_retries = 2
         base_delay = 2
         response = None
+
+        # Scale connect timeout for large payloads.  Bedrock can take
+        # several minutes to begin streaming when ingesting >200K tokens.
+        body_size = len(json.dumps(body))
+        if body_size > 800_000:  # ~200K tokens at ~4 chars/token
+            connect_timeout = max(connect_timeout, 600)
 
         for retry_attempt in range(max_retries + 1):
             try:
@@ -100,7 +128,8 @@ class BedrockProvider(LLMProvider):
                 # block the event loop while waiting for the Bedrock API to
                 # start streaming (can be slow for extended-context requests).
                 response = await asyncio.wait_for(
-                    asyncio.to_thread(
+                    asyncio.get_event_loop().run_in_executor(
+                        _bedrock_executor,
                         self.bedrock.invoke_model_with_response_stream, **api_params
                     ),
                     timeout=connect_timeout,
@@ -124,7 +153,8 @@ class BedrockProvider(LLMProvider):
                         try:
                             api_params["body"] = json.dumps(body)
                             response = await asyncio.wait_for(
-                                asyncio.to_thread(
+                                asyncio.get_event_loop().run_in_executor(
+                                    _bedrock_executor,
                                     self.bedrock.invoke_model_with_response_stream,
                                     **api_params,
                                 ),
@@ -137,7 +167,7 @@ class BedrockProvider(LLMProvider):
                 retryable = classified in (ErrorType.THROTTLE, ErrorType.READ_TIMEOUT, ErrorType.OVERLOADED)
                 if retryable and retry_attempt < max_retries:
                     if classified == ErrorType.THROTTLE:
-                        delay = base_delay * (2 ** retry_attempt) + 4
+                        delay = base_delay * (2 ** retry_attempt)
                     else:
                         delay = 2 * (retry_attempt + 1)
                     logger.warning(
@@ -151,7 +181,7 @@ class BedrockProvider(LLMProvider):
                 yield ErrorEvent(
                     message=error_str,
                     error_type=classified,
-                    retryable=False,
+                    retryable=classified in (ErrorType.THROTTLE, ErrorType.READ_TIMEOUT, ErrorType.OVERLOADED),
                 )
                 return
 
@@ -329,34 +359,85 @@ class BedrockProvider(LLMProvider):
     ) -> AsyncGenerator[StreamEvent, None]:
         """Parse boto3 streaming response into normalized events."""
         stream_body = response["body"]
-        chunk_timeout = int(os.environ.get("STREAM_STALL_TIMEOUT", "120"))
+
+        # Adaptive timeout: when thinking is enabled, the model may go
+        # silent for minutes during extended computation.  Use a short
+        # poll interval so we can emit ProcessingEvent heartbeats, but
+        # allow a much longer total wait before declaring the stream dead.
+        thinking_enabled = (
+            config.thinking is not None
+            and (config.thinking.enabled or config.thinking.mode == "adaptive")
+        )
+        poll_interval = 15 if thinking_enabled else int(os.environ.get("STREAM_STALL_TIMEOUT", "120"))
+        max_silence = int(os.environ.get("BEDROCK_MAX_THINKING_WAIT", "900")) if thinking_enabled else poll_interval
+        silence_elapsed = 0.0
 
         # Active tool tracking within this single response
         active_tools: Dict[str, Dict[str, Any]] = {}  # tool_id -> {name, partial_json, index}
 
-        def _next_event(iterator):
-            try:
-                return next(iterator)
-            except StopIteration:
-                return None
-
         stream_iter = iter(stream_body)
+        in_thinking_block = False
+
+        # Pending read task — ensures we never call next(stream_iter) concurrently.
+        # When a timeout occurs we must NOT start a new to_thread call; instead we
+        # keep awaiting the same task until it completes or the total silence budget
+        # is exhausted.
+        pending_read: Optional[asyncio.Task] = None
+
         while True:
             try:
-                event = await asyncio.wait_for(
-                    asyncio.to_thread(_next_event, stream_iter),
-                    timeout=chunk_timeout,
-                )
+                # Start a new read only if we don't already have one in-flight
+                if pending_read is None:
+                    def _next_event(it=stream_iter):
+                        try:
+                            return next(it)
+                        except StopIteration:
+                            return None
+                    loop = asyncio.get_event_loop()
+                    pending_read = asyncio.ensure_future(
+                        loop.run_in_executor(_bedrock_executor, _next_event)
+                    )
+
+                try:
+                    event = await asyncio.wait_for(
+                        asyncio.shield(pending_read),
+                        timeout=poll_interval,
+                    )
+                except asyncio.TimeoutError:
+                    # The read is still in-flight in the thread pool — do NOT
+                    # cancel it or start another one.  Just update silence
+                    # tracking and emit a heartbeat.
+                    silence_elapsed += poll_interval
+
+                    if silence_elapsed >= max_silence:
+                        # Give up waiting — cancel the dangling read
+                        pending_read.cancel()
+                        pending_read = None
+                        yield ErrorEvent(
+                            message=f"Stream stalled — no data for {int(silence_elapsed)}s"
+                                  + (" (thinking enabled)" if thinking_enabled else ""),
+                            error_type=ErrorType.READ_TIMEOUT,
+                            retryable=thinking_enabled,
+                        )
+                        return
+
+                    phase = "thinking" if in_thinking_block else ("processing" if thinking_enabled else "stalled")
+                    yield ProcessingEvent(elapsed_seconds=silence_elapsed, phase=phase)
+                    continue  # retry awaiting the SAME pending_read
+
+                # Read completed successfully — clear the pending task
+                pending_read = None
+
             except asyncio.TimeoutError:
-                yield ErrorEvent(
-                    message=f"Stream stalled — no data for {chunk_timeout}s",
-                    error_type=ErrorType.READ_TIMEOUT,
-                    retryable=False,
-                )
-                return
+                # Outer safety net — should not be reached with the inner handling,
+                # but guard against edge cases.
+                continue
 
             if event is None:
                 break  # stream exhausted
+
+            # Got data — reset silence counter
+            silence_elapsed = 0.0
 
             if "chunk" not in event:
                 continue
@@ -380,7 +461,10 @@ class BedrockProvider(LLMProvider):
             if chunk_type == "content_block_start":
                 cb = chunk.get("content_block", {})
                 idx = chunk.get("index", 0)
-                if cb.get("type") == "tool_use":
+                block_type = cb.get("type", "")
+                if block_type == "thinking":
+                    in_thinking_block = True
+                elif block_type == "tool_use":
                     tool_id = cb.get("id", "")
                     tool_name = cb.get("name", "")
                     active_tools[tool_id] = {
@@ -412,6 +496,9 @@ class BedrockProvider(LLMProvider):
 
             elif chunk_type == "content_block_stop":
                 idx = chunk.get("index", 0)
+                # If a thinking block just finished, clear the flag
+                if in_thinking_block:
+                    in_thinking_block = False
                 # Find the tool that just finished
                 finished_id = None
                 for tid, tdata in active_tools.items():
