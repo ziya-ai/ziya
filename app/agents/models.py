@@ -529,16 +529,19 @@ class ModelManager:
         try:
             session = create_fresh_boto3_session(profile_name=aws_profile)
             
-            # CRITICAL: Define retry configuration BEFORE any try block that uses it
-            max_retries = 3
-            retry_delays = [0.1, 0.5, 1.0]
+            max_retries = 2
+            retry_delays = [0.5, 1.0]
             
             # Check AWS credentials using the same fresh session
             try:
-                sts = session.client('sts', region_name=region)
+                from botocore.config import Config as BotoConfig
+                sts = session.client(
+                    'sts',
+                    region_name=region,
+                    config=BotoConfig(connect_timeout=5, read_timeout=5),
+                )
                 
-                # Use retry with exponential backoff to handle credential loading race conditions  
-                # (max_retries and retry_delays now defined above)
+                logger.info(f"Checking AWS credentials via STS (timeout=5s)...")
                 
                 for attempt in range(max_retries):
                     try:
@@ -547,17 +550,18 @@ class ModelManager:
                         break  # Success - exit retry loop
                     except Exception as cred_error:
                         error_str = str(cred_error)
+                        logger.warning(f"STS attempt {attempt + 1}/{max_retries} failed: {error_str[:120]}")
                         
                         # Check if this is a truly transient credential loading issue
-                        # Permanent failures (invalid/expired creds) should fail fast
                         is_transient = any(indicator in error_str for indicator in [
                             'Unable to locate credentials',
                             'Credential provider not yet initialized',
                             'Could not connect to the endpoint',
-                            'Temporary failure in name resolution'
+                            'Temporary failure in name resolution',
+                            'timed out',
+                            'ConnectTimeoutError',
                         ])
                         
-                        # Check if this is a permanent credential failure
                         is_permanent = any(indicator in error_str for indicator in [
                             'InvalidClientTokenId',
                             'ExpiredToken',
@@ -572,7 +576,6 @@ class ModelManager:
                             logger.error(f"Permanent credential failure detected: {error_str}")
                             raise  # Fail fast for invalid/expired credentials
                         else:
-                            # Either not transient or we've exhausted retries
                             raise
                             
             except Exception as cred_error:
@@ -582,17 +585,15 @@ class ModelManager:
                 from app.utils.custom_exceptions import KnownCredentialException
                 raise KnownCredentialException(error_msg, is_server_startup=False)
             
-            # Configure read timeout high enough for extended-context requests
-            # (1M tokens can take 2-3 minutes for the API to start streaming).
-            # Disable boto3's own retries — retry logic lives in BedrockProvider
-            # and StreamingToolExecutor where it can use async sleep.
-            from botocore.config import Config as BotoConfig
+            # read_timeout high for extended-context (1M tokens can take minutes).
+            # Retries at 2 with adaptive mode let boto3 absorb transient 503s;
+            # BedrockProvider and StreamingToolExecutor handle longer backoff.
             bedrock_client = session.client(
                 'bedrock-runtime',
                 region_name=region,
                 config=BotoConfig(
                     read_timeout=300,
-                    retries={'max_attempts': 0},
+                    retries={'max_attempts': 2, 'mode': 'adaptive'},
                 ),
             )
             logger.info(f"Created fresh bedrock client with profile {aws_profile} and region {region}")
