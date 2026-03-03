@@ -937,9 +937,10 @@ export function initMermaidEnhancer(): void {
           // Replace all references to this node in connections, but NOT in subgraph declarations
           // This regex matches the node ID when it's used in connections but not in subgraph declarations
           const nodeRefRegex = new RegExp(`\\b${subgraphName}\\b(?!\\s*\\[|"\\s*$)`, 'g');
-          result = result.replace(nodeRefRegex, (match, offset) => {
+          const resultSnapshot = result;
+          result = resultSnapshot.replace(nodeRefRegex, (match, offset) => {
             // Don't replace if this is part of a subgraph declaration
-            const beforeMatch = result.substring(Math.max(0, offset - 20), offset);
+            const beforeMatch = resultSnapshot.substring(Math.max(0, offset - 20), offset);
             return beforeMatch.includes('subgraph') ? match : newNodeId;
           });
 
