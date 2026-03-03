@@ -1,0 +1,87 @@
+{
+  "timestamp": "2026-03-03T12:56:41",
+  "model_id": "us.anthropic.claude-opus-4-6-v1",
+  "region": "us-west-2",
+  "wrapper_analysis": {
+    "wrapper_chain": [
+      "boto3 (BotoConfig: max_attempts=2, mode=adaptive)",
+      "CustomBedrockClient (context limit retry + extended context retry)",
+      "ThrottleSafeBedrock (wraps for throttle detection)",
+      "BedrockProvider (max_retries=2 with exponential backoff)",
+      "StreamingToolExecutor (throttle_state max_retries=5, read timeout retry)"
+    ],
+    "retry_layers": 4,
+    "total_max_retries": 108,
+    "blocking_sleep_calls": [],
+    "timeout_layers": [
+      {
+        "layer": "boto3 BotoConfig",
+        "read_timeout": 300,
+        "connect_timeout": "default (~60s)"
+      },
+      {
+        "layer": "BedrockProvider.stream_response",
+        "connect_timeout": 180,
+        "configurable": "BEDROCK_CONNECT_TIMEOUT env"
+      },
+      {
+        "layer": "BedrockProvider._parse_stream",
+        "poll_interval": "15s (thinking) / 120s (normal)",
+        "max_silence": "900s (thinking) / 120s (normal)",
+        "configurable": "STREAM_STALL_TIMEOUT, BEDROCK_MAX_THINKING_WAIT env"
+      },
+      {
+        "layer": "StreamingToolExecutor",
+        "tool_timeout": 300,
+        "configurable": "TOOL_EXEC_TIMEOUT env"
+      }
+    ],
+    "diagnosis": [
+      "RETRY AMPLIFICATION: 4 retry layers can produce up to 108 total attempts for a single user request.",
+      "THREAD POOL RISK: Each asyncio.to_thread() call consumes a thread from the default pool (size=14). BedrockProvider uses to_thread for BOTH the initial API call AND every stream chunk read. With retries, a single request can consume 2+ threads for extended periods.",
+      "BLOCKING IN CustomBedrockClient: The _retry_with_extended_context method calls self.original_invoke() synchronously inside a to_thread wrapper. If extended context activation fails with a timeout, the thread is blocked for the full boto3 read_timeout (300s) while holding a pool slot.",
+      "DEADLOCK VECTOR: With N concurrent requests each consuming 2 threads (connect + stream read), the pool exhausts at N >= pool_size/2. New to_thread calls then block waiting for a free thread, which can't free because the event loop is blocked waiting for to_thread to return."
+    ]
+  },
+  "thread_pool_tests": {
+    "pool_size": 14,
+    "tests": [
+      {
+        "name": "fill_pool_14_tasks",
+        "duration_s": 2.0063529999897582,
+        "passed": true,
+        "note": "14 tasks x 2s block, pool_size=14"
+      },
+      {
+        "name": "overfill_pool_18_tasks",
+        "duration_s": 4.004258792003384,
+        "passed": true,
+        "note": "18 tasks x 2s block, pool_size=14. Expected ~4s for 2 batches."
+      },
+      {
+        "name": "nested_threads_14_tasks",
+        "duration_s": 0.5089807909971569,
+        "passed": true,
+        "note": "Simulates provider->client->boto3 nesting with 14 concurrent requests"
+      }
+    ]
+  },
+  "probe_results": [
+    {
+      "size_label": "1K",
+      "approx_tokens": 1000,
+      "outcome": "ERROR_OTHER",
+      "connect_time_s": 0.0,
+      "ttfb_s": 0.0,
+      "total_time_s": 0.0001432919962098822,
+      "stream_stalls": 0,
+      "max_stall_s": 0.0,
+      "chunks_received": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "error_message": "BaseEventLoop.run_in_executor() got an unexpected keyword argument 'modelId'",
+      "error_class": "UNKNOWN"
+    }
+  ],
+  "concurrency_results": []
+}
