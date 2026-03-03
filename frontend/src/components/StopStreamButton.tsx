@@ -18,25 +18,29 @@ const StopStreamButton: React.FC<StopStreamButtonProps> = ({
   const {
     streamingConversations,
     removeStreamingConversation,
-    setIsStreaming
+    setIsStreaming,
+    getProcessingState,
   } = useChatContext();
 
   const isStreaming = streamingConversations.has(conversationId);
+  const processingState = getProcessingState(conversationId);
+  const isThinking = processingState === 'model_thinking';
+  const isProcessingTools = processingState === 'processing_tools';
+  const isAwaitingResponse = processingState === 'awaiting_model_response';
 
   if (!isStreaming) {
     return null;
   }
 
   const handleStopStream = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
+    e?.stopPropagation();
+    e?.preventDefault();
 
     // Use direct stop function if provided
     if (onStop) {
       onStop();
       return;
     }
-
 
     // Abort the fetch request (this will be handled in the API layer)
     const abortEvent = new CustomEvent('abortStream', {
@@ -80,7 +84,20 @@ const StopStreamButton: React.FC<StopStreamButtonProps> = ({
     </svg>
   );
 
+  // Status label shown next to the stop button
+  const statusLabel = isThinking ? '🧠 Deep thinking…' :
+    isProcessingTools ? '⚙️ Running tools…' :
+    isAwaitingResponse ? '⏳ Waiting for response…' :
+    null;
+
   return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+      {statusLabel && (
+        <span style={{ fontSize: '0.85em', opacity: 0.8 }}>
+          {statusLabel}
+        </span>
+      )}
+
     <Tooltip title="Stop generating">
       <Button
         type="default"
@@ -100,7 +117,8 @@ const StopStreamButton: React.FC<StopStreamButtonProps> = ({
         aria-label="Stop generating"
       />
     </Tooltip>
-  );
+    </span>
+    );
 };
 
 export default StopStreamButton;

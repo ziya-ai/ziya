@@ -678,6 +678,8 @@ export const sendPayload = async (
     let hallucinationDetected = false;  // Failsafe: track if model is generating fake tool output
     const BROADCAST_INTERVAL_MS = 300;
     let toolInputsMap = new Map<string, any>(); // Store tool inputs by tool ID
+    // Batch streaming map updates to once per animation frame
+    let pendingMapUpdate = false;
 
     // Store original params but also track accumulated content for retry
     let originalRequestParams = {
@@ -718,6 +720,7 @@ export const sendPayload = async (
     // Set up abort event listener
     const abortListener = (event: CustomEvent) => {
         if (event.detail.conversationId === conversationId) {
+            const abortedContent = currentContent; // Capture before cleanup
             console.log('🔄 ABORT: Received abort event for conversation:', conversationId);
             console.log(`Aborting stream for conversation: ${conversationId}`);
             abortController.abort();
@@ -738,6 +741,19 @@ export const sendPayload = async (
             } catch (e) { }
 
             removeStreamingConversation(conversationId);
+
+            // Save any accumulated content as a message BEFORE clearing streaming state.
+            // This prevents the scroll from jumping: the streamed content div unmounts
+            // when removeStreamingConversation deletes the map entry, so we need the
+            // content preserved as a conversation message first.
+            if (abortedContent && abortedContent.trim()) {
+                const abortedMessage: Message = {
+                    role: 'assistant',
+                    content: abortedContent,
+                    _timestamp: Date.now()
+                };
+                addMessageToConversation(abortedMessage, conversationId);
+            }
             setIsStreaming(false);
 
             // Clean up feedback WebSocket on abort
@@ -888,6 +904,24 @@ export const sendPayload = async (
                 unwrappedData = jsonData;
                 if (jsonData.tool_start) {
                     unwrappedData = jsonData.tool_start;
+                } else if (jsonData.type === 'processing' || jsonData.type === 'processing_state') {
+                    // Handle processing/thinking events IMMEDIATELY before error detection
+                    // These must not fall through to the generic error handler
+                    if (jsonData.type === 'processing') {
+                        const phase = jsonData.phase || 'processing';
+                        const elapsed = jsonData.elapsed_seconds || 0;
+                        console.log(`🧠 PROCESSING: phase=${phase}, elapsed=${elapsed.toFixed(0)}s`);
+                        if (typeof setProcessingState === 'function') {
+                            setProcessingState('model_thinking');
+                        }
+                    } else {
+                        const state = jsonData.state || 'idle';
+                        console.log(`⚙️ PROCESSING_STATE: ${state}`, jsonData.tool_name || '');
+                        if (typeof setProcessingState === 'function') {
+                            setProcessingState(state);
+                        }
+                    }
+                    return;
                 } else if (jsonData.tool_result) {
                     unwrappedData = jsonData.tool_result;
                     unwrappedData.type = 'tool_display';
@@ -1200,8 +1234,31 @@ export const sendPayload = async (
                     return;
                 }
 
+                // Handle processing events (model is thinking/computing)
+                if (unwrappedData.type === 'processing') {
+                    const phase = unwrappedData.phase || 'processing';
+                    const elapsed = unwrappedData.elapsed_seconds || 0;
+                    console.log(`🧠 PROCESSING: phase=${phase}, elapsed=${elapsed.toFixed(0)}s`);
+                    if (typeof setProcessingState === 'function') {
+                        setProcessingState('model_thinking');
+                    }
+                    // Don't treat as content — this is a keep-alive signal
+                    return;
+                }
+
+                // Handle explicit processing state updates from backend
+                if (unwrappedData.type === 'processing_state') {
+                    const state = unwrappedData.state || 'idle';
+                    console.log(`⚙️ PROCESSING_STATE: ${state}`, unwrappedData.tool_name || '');
+                    if (typeof setProcessingState === 'function') {
+                        setProcessingState(state);
+                    }
+                    return;
+                }
+
                 // Handle done marker
                 if (unwrappedData.done) {
+
                     console.log("Received done marker in JSON data");
 
                     // If error was already displayed, just end cleanly
@@ -1634,13 +1691,23 @@ export const sendPayload = async (
                         });
                     }
 
-                    // Use functional update to prevent race conditions
-                    setStreamedContentMap((prev: Map<string, string>) => {
-                        const next = new Map(prev);
-                        // Always use the latest currentContent value
-                        next.set(conversationId, currentContent);
-                        return next;
-                    });
+                    // Batch map updates to once per animation frame to prevent
+                    // 20+ React re-renders per second during streaming
+                    if (!pendingMapUpdate) {
+                        pendingMapUpdate = true;
+                        requestAnimationFrame(() => {
+                            pendingMapUpdate = false;
+                            setStreamedContentMap((prev: Map<string, string>) => {
+                                // Guard: if the stream has already ended, the key will
+                                // have been deleted by removeStreamingConversation.
+                                // Returning prev unchanged prevents the bubble reappearing.
+                                if (!prev.has(conversationId)) return prev;
+                                const next = new Map(prev);
+                                next.set(conversationId, currentContent);
+                                return next;
+                            });
+                        });
+                    }
                 }
 
                 // Handle feedback readiness - consolidated handling
@@ -1980,6 +2047,10 @@ export const sendPayload = async (
                     });
                 } else if (unwrappedData.type === 'tool_start') {
                     console.log('🔧 TOOL_START received:', unwrappedData);
+
+                    if (typeof setProcessingState === 'function') {
+                        setProcessingState('processing_tools');
+                    }
 
                     // Check for specialized tool handlers first
                     const contentRef = { value: currentContent };

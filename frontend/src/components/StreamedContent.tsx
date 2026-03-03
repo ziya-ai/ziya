@@ -167,6 +167,8 @@ export const StreamedContent: React.FC<{}> = () => {
     // Add direct method to stop streaming
     const stopStreaming = useCallback(() => {
         if (streamingConversations.has(currentConversationId)) {
+            // Capture content before any cleanup that might clear the map
+            const contentToPreserve = streamedContentMap.get(currentConversationId) || '';
             console.log('StreamedContent: Stopping streaming for conversation:', currentConversationId, 'Current streaming conversations:', Array.from(streamingConversations));
 
             // 1. Dispatch custom event to abort the stream (for the fetch request)
@@ -182,6 +184,18 @@ export const StreamedContent: React.FC<{}> = () => {
             })
                 .then(response => console.log('Abort API response:', response.status))
                 .catch(e => console.warn('Error sending abort notification to server:', e));
+
+            // Save accumulated content as a conversation message BEFORE removing
+            // streaming state.  removeStreamingConversation deletes the entry from
+            // streamedContentMap, which unmounts the streamed-content div and causes
+            // a scroll jump.  Persisting first keeps the content in the DOM via
+            // Conversation's message list.
+            if (contentToPreserve.trim()) {
+                addMessageToConversation(
+                    { role: 'assistant', content: contentToPreserve, _timestamp: Date.now() },
+                    currentConversationId
+                );
+            }
 
             removeStreamingConversation(currentConversationId);
             setIsStreaming(false);
@@ -199,7 +213,7 @@ export const StreamedContent: React.FC<{}> = () => {
                 }, 100);
             }
         }
-    }, [currentConversationId, removeStreamingConversation, setIsStreaming, streamingConversations]);
+    }, [currentConversationId, removeStreamingConversation, setIsStreaming, streamingConversations, streamedContentMap, addMessageToConversation]);
 
     // Listen for streaming stopped events
     useEffect(() => {
@@ -245,7 +259,25 @@ export const StreamedContent: React.FC<{}> = () => {
     const LoadingIndicator = () => (
         <Space>
             {/* Enhanced loading states */}
-            {processingState === 'awaiting_tool_response' && (
+            {processingState === 'model_thinking' && (
+                <div style={{ color: '#722ed1', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <LoadingOutlined spin />
+                    <span>🧠 Deep thinking…</span>
+                </div>
+            )}
+            {processingState === 'awaiting_model_response' && (
+                <div style={{ color: '#1890ff', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <LoadingOutlined spin />
+                    <span>Waiting for model response…</span>
+                </div>
+            )}
+            {processingState === 'processing_tools' && (
+                <div style={{ color: '#faad14', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <LoadingOutlined spin />
+                    <span>Running tools…</span>
+                </div>
+            )}
+            {processingState === 'awaiting_tool_response' && processingState !== 'processing_tools' && (
                 <div style={{ color: '#faad14', display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <LoadingOutlined spin />
                     <span>Executing tool...</span>
@@ -258,10 +290,11 @@ export const StreamedContent: React.FC<{}> = () => {
                 </div>
             )}
             <div style={{
-                visibility: ['processing_tools', 'awaiting_tool_response', 'tool_throttling', 'tool_limit_reached'].includes(processingState) ||
-                    (!hasStreamedContent && streamingConversations.has(currentConversationId))
+                visibility: ['processing_tools', 'awaiting_tool_response', 'tool_throttling', 'tool_limit_reached', 'model_thinking', 'awaiting_model_response'].includes(processingState) ||
+                    (!hasStreamedContent && streamingConversations.has(currentConversationId)) ||
+                    (streamingConversations.has(currentConversationId) && processingState !== 'idle')
                     ? 'visible' : 'hidden',
-                opacity: ['processing_tools', 'awaiting_tool_response', 'tool_throttling', 'tool_limit_reached'].includes(processingState) ? 1 : 0.8,
+                opacity: ['processing_tools', 'awaiting_tool_response', 'tool_throttling', 'tool_limit_reached', 'model_thinking', 'awaiting_model_response'].includes(processingState) ? 1 : 0.8,
                 transition: 'opacity 0.3s ease',
                 padding: '10px 20px',
                 textAlign: 'left',
@@ -276,10 +309,12 @@ export const StreamedContent: React.FC<{}> = () => {
                     <LoadingOutlined
                         spin
                         style={{
-                            color: processingState === 'processing_tools' ? '#faad14' :
+                            color: processingState === 'model_thinking' ? '#722ed1' :
+                                processingState === 'processing_tools' ? '#faad14' :
                                 processingState === 'awaiting_tool_response' ? '#faad14' :
                                     processingState === 'tool_throttling' ? '#ff7a00' :
                                         processingState === 'tool_limit_reached' ? '#ff4d4f' :
+                                            processingState === 'awaiting_model_response' ? '#1890ff' :
                                             '#1890ff'
                         }}
                     />
@@ -288,14 +323,18 @@ export const StreamedContent: React.FC<{}> = () => {
                             processingState === 'awaiting_tool_response' ? '#faad14' :
                                 processingState === 'tool_throttling' ? '#ff7a00' :
                                     processingState === 'tool_limit_reached' ? '#ff4d4f' :
-                                        '#1890ff',
+                                        processingState === 'model_thinking' ? '#722ed1' :
+                                            processingState === 'awaiting_model_response' ? '#1890ff' :
+                                                '#1890ff',
                         animation: 'fadeInOut 2s infinite',
                         verticalAlign: 'middle',
                         marginLeft: '4px',
                         display: 'inline-block'
                     }}>
-                        {processingState === 'processing_tools' ? 'Processing tool results...' :
-                            processingState === 'awaiting_tool_response' ? 'Executing tool command...' :
+                        {processingState === 'model_thinking' ? '🧠 Deep thinking…' :
+                            processingState === 'awaiting_model_response' ? 'Waiting for model response…' :
+                                processingState === 'processing_tools' ? 'Running tools…' :
+                            processingState === 'awaiting_tool_response' ? 'Executing tool…' :
                                 processingState === 'tool_throttling' ? 'Waiting to prevent rate limiting...' :
                                     processingState === 'tool_limit_reached' ? 'Tool execution limit reached' :
                                         'Processing response...'}
@@ -698,12 +737,22 @@ return (
                 </Suspense>
             </div>
         )}
-        {/* Loading indicator - shown at bottom in top-down mode, top in bottom-up mode */}
+        {/* Loading indicator - shown during active processing states
+            Visible in two scenarios:
+            1. Before first content arrives (initial loading)
+            2. AFTER content exists, when in an active processing state
+               (tool execution, model thinking, waiting for response)
+            This ensures users always see activity feedback, not just
+            a static stop sign during long tool chains. */}
         {streamingConversations.has(currentConversationId) &&
-            !error && (isLoading || isPendingResponse) && // don't show loading if there's an error
-            // Only show loading indicator if we don't have any streamed content yet and haven't started rendering
-            (!streamedContentMap.has(currentConversationId) ||
-                streamedContentMap.get(currentConversationId) === '') && (
+            !error && (isLoading || isPendingResponse) &&
+            (
+                // Scenario 1: No content yet (initial loading)
+                (!streamedContentMap.has(currentConversationId) ||
+                    streamedContentMap.get(currentConversationId) === '') ||
+                // Scenario 2: Content exists but we're in an active processing state
+                (hasStreamedContent && processingState !== 'idle' && processingState !== 'sending')
+            ) && (
                 <LoadingIndicator />
             )}
     </div>
