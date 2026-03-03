@@ -2196,6 +2196,10 @@ def main():
     """CLI entry point."""
     parser = create_parser()
     
+    # Set terminal tab title (works in iTerm2, Terminal.app, etc.)
+    sys.stdout.write("\033]0;Ziya Chat\007")
+    sys.stdout.flush()
+    
     # Pre-process argv to support flags both before and after subcommand
     # e.g., "ziya --profile x chat" -> "ziya chat --profile x"
     argv = sys.argv[1:]
