@@ -1772,6 +1772,9 @@ async def stream_chunks(body):
                     elif chunk.get('type') == 'throttling_error':
                         # Pass through throttling errors to frontend for inline display
                         yield f"data: {json.dumps(chunk)}\n\n"
+                    elif chunk.get('type') in ('processing', 'processing_state'):
+                        # Forward processing/thinking heartbeats to frontend
+                        yield f"data: {json.dumps(chunk)}\n\n"
                     elif chunk.get('type') == 'iteration_continue':
                         # Send heartbeat to flush stream before next iteration
                         yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\n\n"
@@ -3742,6 +3745,7 @@ _folder_cache: dict[str, dict] = {}  # keyed by absolute directory path
 _cache_lock = threading.Lock()
 _explicit_external_paths: set = set()  # flat set of all explicitly added external paths
 _background_scan_thread = None
+_background_scan_dir = None  # which directory the background thread is scanning
 _last_cache_invalidation = 0
 _cache_invalidation_debounce = 2.0  # seconds
 
@@ -4970,6 +4974,8 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
     to avoid redundant scans.  Writes results to both caches so all endpoints
     (including /api/folders-cached) can find them.
     """
+    global _background_scan_thread, _background_scan_dir
+
     from app.utils.directory_util import get_folder_structure, get_scan_progress
     from app.utils.directory_util import get_basic_folder_structure
     import app.utils.directory_util as dir_util
@@ -4989,10 +4995,18 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
     scan_status = get_scan_progress()
     is_scanning = scan_status.get("active", False)
     
-    # If scan is active and healthy, return scanning indicator immediately (non-blocking)
-    if is_scanning:
-        logger.debug("Scan in progress, returning scanning indicator (non-blocking)")
+    # If scan is active for THIS directory, return scanning indicator (non-blocking)
+    if is_scanning and _background_scan_dir == directory:
+        logger.debug("Scan in progress for this directory, returning scanning indicator")
         return {"_scanning": True, "children": {}}
+    
+    # If scan is active for a DIFFERENT directory, cancel it so we can scan the new one
+    if is_scanning and _background_scan_dir != directory:
+        logger.info(f"📂 Cancelling scan for {_background_scan_dir}, switching to {directory}")
+        from app.utils.directory_util import cancel_scan
+        cancel_scan()
+        if _background_scan_thread and _background_scan_thread.is_alive():
+            _background_scan_thread.join(timeout=2.0)
     
     # Return cached results immediately if available (server.py cache)
     if cache_entry['data'] is not None:
@@ -5032,8 +5046,8 @@ def get_cached_folder_structure(directory: str, ignored_patterns: List[Tuple[str
             logger.error(f"📂 Synchronous scan failed: {e}")
             return {"error": str(e)}
 
-    global _background_scan_thread
     if _background_scan_thread is None or not _background_scan_thread.is_alive():
+        _background_scan_dir = directory
         def background_scan():
             scan_start = time.time()
             logger.info(f"📂 Background folder scan starting for {directory}")
