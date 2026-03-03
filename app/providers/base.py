@@ -78,6 +78,19 @@ class ThinkingDelta(StreamEvent):
     content: str
 
 
+@dataclass(frozen=True, slots=True)
+class ProcessingEvent(StreamEvent):
+    """The model is still processing but has not emitted data recently.
+
+    Providers emit this periodically during long silences (e.g. extended
+    thinking on Bedrock where no thinking_delta events arrive).  The
+    orchestrator forwards it to the frontend so the UI can show a
+    'thinking' spinner instead of treating the silence as a stall.
+    """
+    elapsed_seconds: float = 0.0
+    phase: str = "thinking"  # "thinking" | "processing" | "connecting"
+
+
 class ErrorType(Enum):
     """Categorised error types so the orchestrator can react appropriately."""
     THROTTLE = auto()        # Rate limit / "too many tokens"

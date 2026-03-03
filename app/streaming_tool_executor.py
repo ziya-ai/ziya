@@ -7,6 +7,7 @@ import re
 import os
 import threading
 import time
+from botocore.config import Config as BotoConfig
 from dataclasses import dataclass
 from typing import Dict, Any, List, AsyncGenerator, Optional
 from app.utils.conversation_filter import filter_conversation_for_model
@@ -201,7 +202,11 @@ class StreamingToolExecutor:
                 logger.warning(f"🔍 Could not get wrapped client, falling back to direct client: {e}")
                 # Fallback to direct client creation
                 session = boto3.Session(profile_name=profile_name)
-                self.bedrock = session.client('bedrock-runtime', region_name=region)
+                self.bedrock = session.client(
+                    'bedrock-runtime',
+                    region_name=region,
+                    config=BotoConfig(retries={'max_attempts': 3, 'mode': 'adaptive'})
+                )
         else:
             # Non-Bedrock endpoints don't need a bedrock client
             self.bedrock = None
@@ -904,6 +909,17 @@ class StreamingToolExecutor:
             'max_output_tokens_override': None,
         }
         
+        # Adaptive inter-tool delay — sliding window that collapses toward
+        # 0.1s when things are smooth and grows when throttling is detected.
+        inter_tool_delay = {
+            'current': 0.1,      # Starting delay (seconds) — minimal, grows on throttle
+            'min': 0.1,          # Floor — never go below this
+            'max': 3.0,          # Ceiling — cap even under heavy throttling
+            'decay_factor': 0.6, # Multiply by this on each success (shrinks fast)
+            'growth_factor': 2.5,# Multiply by this on each throttle (grows fast)
+            'last_was_throttled': False,
+        }
+
         # Track cumulative usage across all iterations
         cumulative_usage = IterationUsage()
         iteration_usages: List[IterationUsage] = []
@@ -1244,7 +1260,7 @@ class StreamingToolExecutor:
                 from app.providers.base import (
                     TextDelta, ToolUseStart, ToolUseInput, ToolUseEnd,
                     UsageEvent, ThinkingDelta, ErrorEvent, StreamEnd,
-                )
+                    ProcessingEvent)
                 async for stream_event in self.provider.stream_response(
                     conversation, system_content, bedrock_tools, provider_config
                 ):
@@ -1508,6 +1524,17 @@ class StreamingToolExecutor:
                         continue  # UsageEvent fully handled, next stream_event
 
                     # --- Convert StreamEvent to legacy chunk dict ---
+                    # Processing heartbeat — forward to frontend so it can
+                    # show a 'thinking' spinner instead of a stall error.
+                    if isinstance(stream_event, ProcessingEvent):
+                        yield track_yield({
+                            'type': 'processing',
+                            'phase': stream_event.phase,
+                            'elapsed_seconds': stream_event.elapsed_seconds,
+                            'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                        })
+                        continue
+
                     # Bridge: translate provider events into the chunk format
                     # the existing orchestration code expects.  This avoids
                     # rewriting 800 lines of battle-tested orchestration logic
@@ -1557,6 +1584,17 @@ class StreamingToolExecutor:
                                         'content': remaining,
                                         'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
                                     })
+                            # Flush block-opening buffer too — text ending
+                            # with backticks can get stuck here indefinitely
+                            if hasattr(self, '_block_opening_buffer') and self._block_opening_buffer:
+                                assistant_text += self._block_opening_buffer
+                                self._update_code_block_tracker(self._block_opening_buffer, code_block_tracker)
+                                yield track_yield({
+                                    'type': 'text',
+                                    'content': self._block_opening_buffer,
+                                    'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                                })
+                                self._block_opening_buffer = ""
                             if content_buffer.strip():
                                 yield track_yield({
                                     'type': 'text',
@@ -1789,6 +1827,19 @@ class StreamingToolExecutor:
                                     'content': optimized_chunk,
                                     'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
                                 })
+                            # After processing text, if the accumulated content
+                            # ends at a natural break, force-flush so the text
+                            # is visible before the next tool block arrives.
+                            stripped_tail = assistant_text.rstrip()
+                            if stripped_tail and stripped_tail[-1] in '.!?:\n':
+                                leftover = self._content_optimizer.flush_remaining()
+                                if leftover:
+                                    self._update_code_block_tracker(leftover, code_block_tracker)
+                                    yield track_yield({
+                                        'type': 'text',
+                                        'content': leftover,
+                                        'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                                    })
                         elif delta.get('type') == 'input_json_delta':
                             # Find tool by index
                             tool_id = None
@@ -2060,6 +2111,12 @@ Retry with the 'command' parameter included."""
                                 # Execute the tool (already checked for duplicates at collection)
                                 logger.debug(f"🔍 EXECUTING_TOOL: {actual_tool_name} with args {args}")
                                 
+                                # Notify frontend that tool execution is starting
+                                yield {
+                                    'type': 'processing_state',
+                                    'state': 'processing_tools',
+                                    'tool_name': actual_tool_name,
+                                }
                                 # Send tool_start event with complete arguments
                                 yield {
                                     'type': 'tool_start',
@@ -2303,8 +2360,15 @@ Please try again or proceed without this tool."""
                                    }
                                    # Note: Tool result is added to conversation below (line 1905-1924)
                                                     
-                                   # Immediate flush to reduce delay
-                                   await asyncio.sleep(0)
+                                   # Adaptive delay between consecutive tool calls within
+                                   # the same iteration.  Collapses toward 0.1s when no
+                                   # throttling is observed, grows when it is.
+                                   delay = inter_tool_delay['current']
+                                   await asyncio.sleep(delay)
+                                   inter_tool_delay['current'] = max(
+                                       inter_tool_delay['min'],
+                                       inter_tool_delay['current'] * inter_tool_delay['decay_factor'],
+                                   )
                                     
                                    # Check for feedback that arrived during tool execution
                                    for fb in _drain_pending_feedback():
@@ -2714,13 +2778,18 @@ Please retry the tool call with valid JSON. Ensure:
                     
                     logger.debug(f"🔍 CONTINUING_ROUND: Tool results added, model will continue in same stream (round {iteration + 1})")
                     # Yield heartbeat to flush stream before next iteration
+                    # Notify frontend that we're waiting for the next model response
+                    yield {
+                        'type': 'processing_state',
+                        'state': 'awaiting_model_response',
+                        'iteration': iteration + 1,
+                    }
                     yield {'type': 'iteration_continue', 'iteration': iteration + 1}
-                    await asyncio.sleep(0)
                     continue  # Immediately start next iteration
                 else:
-                    # CRITICAL: Check for pending feedback BEFORE deciding to end stream
-                    # Grace period: give the monitor 1.5s to capture any in-flight feedback
-                    await asyncio.sleep(1.5)
+                    # Check for pending feedback without blocking.
+                    # The feedback monitor runs continuously so any messages
+                    # already received are in _pending_feedback right now.
                     pending_feedback_before_end = [
                         fb.get('message', '') for fb in _drain_pending_feedback()
                         if fb['type'] == 'feedback'
@@ -2967,6 +3036,15 @@ Please retry the tool call with valid JSON. Ensure:
                 
                 if is_throttling:
                     # Update throttle state based on what we learned
+                    # Grow inter-tool delay on throttle to reduce pressure
+                    old_delay = inter_tool_delay['current']
+                    inter_tool_delay['current'] = min(
+                        inter_tool_delay['max'],
+                        inter_tool_delay['current'] * inter_tool_delay['growth_factor'],
+                    )
+                    inter_tool_delay['last_was_throttled'] = True
+                    logger.warning(f"⏱️  Throttle detected — inter-tool delay: {old_delay:.2f}s → {inter_tool_delay['current']:.2f}s")
+
                     if len(iteration_usages) > 0:
                         last_usage = iteration_usages[-1]
                         
@@ -2986,7 +3064,7 @@ Please retry the tool call with valid JSON. Ensure:
                     if is_read_timeout:
                         time_delay = min(throttle_state['base_delay'] * (2 ** (throttle_state['retry_count'] - 1)), 15)
                     else:
-                        time_delay = throttle_state['base_delay'] * (2 ** throttle_state['retry_count'])
+                        time_delay = min(throttle_state['base_delay'] * (2 ** throttle_state['retry_count']), 30)
                     
                     # CRITICAL: Reduce output tokens to decrease throttle pressure
                     # Per @animeshx: "more throttled with a higher output token limit"
@@ -3041,8 +3119,8 @@ Please retry the tool call with valid JSON. Ensure:
                         error_type = 'throttling_error'
                         retry_message = f"AWS rate limit exceeded after {len(tool_results)} tool execution(s). Please wait {suggested_wait} seconds before retrying."
                     
-                    # For read timeouts with remaining retries, retry internally instead of yielding to frontend
-                    if is_read_timeout and throttle_state['retry_count'] <= throttle_state['max_retries']:
+                    # For read timeouts and transient service errors, retry internally instead of yielding to frontend
+                    if (is_read_timeout or is_transient_error) and throttle_state['retry_count'] <= throttle_state['max_retries']:
                         logger.warning(f"🔄 READ_TIMEOUT_RETRY: Attempt {throttle_state['retry_count']}/{throttle_state['max_retries']}, "
                                       f"waiting {time_delay}s before retry")
                         
@@ -3058,7 +3136,9 @@ Please retry the tool call with valid JSON. Ensure:
                             logger.info(f"🔄 READ_TIMEOUT_RETRY: Preserving {len(assistant_text)} chars of partial text")
                             yield {
                                 'type': 'text',
-                                'content': '\n\n⏳ *Connection timed out, retrying...*\n\n',
+                                'content': '\n\n⏳ *' + (
+                                    'Service temporarily unavailable' if is_transient_error else 'Connection timed out'
+                                ) + ', retrying...*\n\n',
                                 'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
                             }
                         
