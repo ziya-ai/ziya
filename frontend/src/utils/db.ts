@@ -1,4 +1,5 @@
 import { Conversation, ConversationFolder, SearchResult, MessageMatch, SearchOptions } from './types';
+import { v4 as uuidv4 } from 'uuid';
 import { purgeExpiredConversations } from './retentionPurge';
 import { message } from 'antd';
 import { performEmergencyRecovery } from './emergencyRecovery';
@@ -37,7 +38,7 @@ interface DB {
     saveConversations(conversations: Conversation[]): Promise<void>;
     getConversations(): Promise<Conversation[]>;
     exportConversations(): Promise<string>;
-    importConversations(data: string): Promise<void>;
+    importConversations(data: string, importRootFolderId?: string): Promise<void>;
     getFolders(): Promise<ConversationFolder[]>;
     saveFolder(folder: ConversationFolder): Promise<void>;
     deleteFolder(id: string): Promise<void>;
@@ -690,13 +691,13 @@ class ConversationDB implements DB {
         }
     }
 
-    async importConversations(data: string): Promise<void> {
+    async importConversations(data: string, importRootFolderId?: string): Promise<void> {
         if (navigator.locks) {
             return navigator.locks.request('ziya-db-write', async _lock => {
-                return this._importConversations(data);
+                return this._importConversations(data, importRootFolderId);
             });
         }
-        return this._importConversations(data);
+        return this._importConversations(data, importRootFolderId);
     }
 
     private validateImportedConversation(conv: any): boolean {
@@ -713,7 +714,7 @@ class ConversationDB implements DB {
         );
     }
 
-    private async _importConversations(data: string): Promise<void> {
+    private async _importConversations(data: string, importRootFolderId?: string): Promise<void> {
         if (!this.db) {
             throw new Error('Database not initialized');
         }
@@ -781,11 +782,33 @@ class ConversationDB implements DB {
             }
 
             // Ensure all imported conversations are marked as active with explicit versions
+            // Build folder ID remapping when importing under a root folder.
+            // Every imported folder gets a fresh UUID so re-importing the same
+            // file twice doesn't collide.  Parent references are rewritten to
+            // preserve the original hierarchy underneath importRootFolderId.
+            const folderIdMap = new Map<string, string>();
+            if (importRootFolderId && importedFolders.length > 0) {
+                for (const folder of importedFolders) {
+                    folderIdMap.set(folder.id, uuidv4());
+                }
+            }
+
             const processedConversations = newConversations.map(conv => ({
                 ...conv,
                 isActive: true,
                 _version: conv._version || Date.now(),
-                lastAccessedAt: conv.lastAccessedAt || Date.now()
+                // Always stamp lastAccessedAt to now. The original value reflects
+                // when the conversation was last used before export — which may be
+                // months old. The server's retention policy uses lastActiveAt
+                // (derived from lastAccessedAt) to decide expiry, so an old
+                // timestamp causes the server to delete the conversation on its
+                // first sync. Stamping now correctly records "user just imported this".
+                lastAccessedAt: Date.now(),
+                folderId: importRootFolderId
+                    ? (conv.folderId && folderIdMap.has(conv.folderId)
+                        ? folderIdMap.get(conv.folderId)
+                        : importRootFolderId)
+                    : conv.folderId
             }));
 
             // Final validation
@@ -801,17 +824,37 @@ class ConversationDB implements DB {
             console.log(`📥 IMPORT: Validated ${validConversations.length} conversations for import`);
 
             // Import folders first (if any)
-            if (importedFolders.length > 0) {
-                // Get existing folders to avoid duplicates
+            if (importedFolders.length > 0 && importRootFolderId && folderIdMap.size > 0) {
+                // Remap folder IDs and reparent under the import root folder,
+                // preserving the original hierarchy as sub-folders.
+                console.log(`📁 IMPORT: Remapping ${importedFolders.length} folders under import root`);
+
+                for (const folder of importedFolders) {
+                    const newId = folderIdMap.get(folder.id);
+                    if (!newId) continue;
+
+                    const newParentId = folder.parentId && folderIdMap.has(folder.parentId)
+                        ? folderIdMap.get(folder.parentId)!
+                        : importRootFolderId;
+
+                    try {
+                        await this.saveFolder({
+                            ...folder,
+                            id: newId,
+                            parentId: newParentId,
+                            createdAt: folder.createdAt || Date.now(),
+                            updatedAt: Date.now()
+                        });
+                    } catch (error) {
+                        console.warn(`Failed to import folder ${folder.name}:`, error);
+                    }
+                }
+            } else if (importedFolders.length > 0) {
+                // No import root — legacy behaviour: import folders as-is, skip duplicates
                 const existingFolders = await this.getFolders();
                 const existingFolderIds = new Set(existingFolders.map(f => f.id));
-
-                // Only import folders that don't already exist
-                const newFolders = importedFolders.filter(folder => !existingFolderIds.has(folder.id));
-
-                console.log(`📁 IMPORT: Adding ${newFolders.length} new folders (${importedFolders.length - newFolders.length} already exist)`);
-
-                // Save new folders
+                const newFolders = importedFolders.filter(f => !existingFolderIds.has(f.id));
+                console.log(`📁 IMPORT: Adding ${newFolders.length} new folders (legacy mode)`);
                 for (const folder of newFolders) {
                     try {
                         await this.saveFolder({

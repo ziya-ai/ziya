@@ -1841,67 +1841,80 @@ const MUIChatHistory = () => {
           message.destroy(); // Clear any existing messages
           const content = e.target?.result as string;
 
-          // Parse and validate the content
-          const parsedContent = JSON.parse(content);
-          let conversationCount = 0;
-          let folderCount = 0;
-          let reconstructedFolderCount = 0;
+          let parsedContent: any;
+          try {
+            parsedContent = JSON.parse(content);
+          } catch (parseErr) {
+            message.error('Invalid JSON file');
+            return;
+          }
 
-          // Determine format and count items
-          if (Array.isArray(parsedContent)) {
-            conversationCount = parsedContent.length;
-            // Check if conversations have folder references that could be reconstructed
-            const conversationsWithFolders = parsedContent.filter(conv => conv.folderId);
-            if (conversationsWithFolders.length > 0) {
-              const uniqueFolderIds = new Set(conversationsWithFolders.map(conv => conv.folderId));
-              reconstructedFolderCount = uniqueFolderIds.size;
+          // Extract conversations list from either format
+          const importedConversations: any[] = Array.isArray(parsedContent)
+            ? parsedContent
+            : (parsedContent?.conversations || []);
+          const importedFolders: any[] = Array.isArray(parsedContent)
+            ? []
+            : (parsedContent?.folders || []);
+
+          if (importedConversations.length === 0) {
+            message.warning('No conversations found in file');
+            return;
+          }
+
+          // Pre-flight: check how many are actually new (not already in DB)
+          const existingConversations = await db.getConversations();
+          const existingIds = new Set(existingConversations.map(c => c.id));
+          const newCount = importedConversations.filter(c => c.id && !existingIds.has(c.id)).length;
+
+          if (newCount === 0) {
+            message.info('All conversations in this file already exist — nothing to import');
+            return;
+          }
+
+          // Create the import root folder (named after the file).
+          // Only created after we've confirmed there's something to import.
+          const folderName = file.name.replace(/\.json$/i, '');
+          let importFolderId: string;
+          try {
+            importFolderId = await createFolder(folderName, null);
+          } catch (folderErr) {
+            console.error('Failed to create import folder:', folderErr);
+            message.error('Failed to create import folder — import aborted');
+            return;
+          }
+
+          message.loading(`Importing ${newCount} conversation(s)...`, 0);
+
+          try {
+            await db.importConversations(content, importFolderId);
+
+            const newConversations = await db.getConversations();
+            const newFolders = await db.getFolders();
+            setConversations(newConversations);
+            setFolders(newFolders);
+
+            // Expand the new import folder so the user sees the result
+            setExpandedNodes(prev => prev.includes(importFolderId) ? prev : [...prev, importFolderId]);
+
+            message.destroy();
+            let successMsg = `Imported ${newCount} conversation(s) into "${folderName}"`;
+            if (importedFolders.length > 0) {
+              successMsg += ` with ${importedFolders.length} folder(s) preserved`;
             }
-          } else if (parsedContent && typeof parsedContent === 'object') {
-            conversationCount = parsedContent.conversations?.length || 0;
-            folderCount = parsedContent.folders?.length || 0;
-
-            // Check if we need to reconstruct folders even in new format
-            if (folderCount === 0 && parsedContent.conversations) {
-              const conversationsWithFolders = parsedContent.conversations.filter(conv => conv.folderId);
-              if (conversationsWithFolders.length > 0) {
-                const uniqueFolderIds = new Set(conversationsWithFolders.map(conv => conv.folderId));
-                reconstructedFolderCount = uniqueFolderIds.size;
-              }
-            }
+            message.success(successMsg);
+          } catch (importErr) {
+            console.error('Import failed:', importErr);
+            message.destroy();
+            message.error('Import failed — see console for details');
+            // Clean up the empty import folder on failure
+            try { await deleteFolder(importFolderId); } catch (_) { /* best effort */ }
           }
-
-          // Show progress message
-          let importMessage = `Importing ${conversationCount} conversations`;
-          if (folderCount > 0) {
-            importMessage += ` and ${folderCount} folders`;
-          } else if (reconstructedFolderCount > 0) {
-            importMessage += ` and reconstructing ${reconstructedFolderCount} folders from conversation references`;
-          }
-          importMessage += '...';
-          message.loading(importMessage, 0);
-
-          await db.importConversations(content);
-          const newConversations = await db.getConversations();
-          const newFolders = await db.getFolders();
-          setConversations(newConversations);
-          setFolders(newFolders);
-
-          message.destroy();
-          let successMessage = `Successfully imported ${conversationCount} conversations`;
-          if (folderCount > 0) {
-            successMessage += ` and ${folderCount} folders with hierarchy preserved`;
-          } else if (reconstructedFolderCount > 0) {
-            successMessage += ` and reconstructed ${reconstructedFolderCount} folders from conversation references`;
-          }
-          if (reconstructedFolderCount > 0) {
-            successMessage += '. Reconstructed folders are marked with "(Recovered)" and may need renaming.';
-          }
-          message.success(successMessage);
         };
         reader.readAsText(file);
       } catch (error) {
         message.destroy();
-        message.error('Failed to import conversations');
+        message.error('Failed to read import file');
       }
     };
     input.click();

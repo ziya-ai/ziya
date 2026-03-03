@@ -183,11 +183,6 @@ export const MUIFileExplorer = () => {
     const hasChildren = nodeHasChildren(node);
     const isExpanded = expandedKeys.includes(String(node.key));
 
-    // Debug log when checkedKeys changes for this node
-    if (process.env.NODE_ENV === 'development' && String(node.key).includes('test')) {
-      console.log(`TreeNode ${node.key}: isChecked=${isChecked}, checkedKeys.length=${checkedKeys.length}`);
-    }
-
     // Get accurate token count if available
     const accurateData = accurateTokenCounts[String(node.key)];
 
@@ -264,6 +259,16 @@ export const MUIFileExplorer = () => {
       // Check if all children are selected, which means parent should show as checked
       return areAllChildrenSelected(nodeForCheckCalculations, checkedKeys.map(String));
     }, [checkedKeys, node.key, hasChildren, node, areAllChildrenSelected]);
+
+    // Debug log when checkedKeys changes for this node
+    if (process.env.NODE_ENV === 'development' && String(node.key).includes('test')) {
+      console.log(`TreeNode ${node.key}: isChecked=${isChecked}, checkedKeys.length=${checkedKeys.length}`);
+    }
+
+    // Debug log when checkedKeys changes for this node
+    if (process.env.NODE_ENV === 'development' && String(node.key).includes('test')) {
+      console.log(`TreeNode ${node.key}: isChecked=${isChecked}, checkedKeys.length=${checkedKeys.length}`);
+    }
 
     // Check if this node is indeterminate (some but not all children selected)
     const isIndeterminate = useMemo(() => {
