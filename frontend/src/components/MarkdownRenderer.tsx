@@ -2286,24 +2286,10 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
         window.dispatchEvent(customEvent);
     };
 
-    // Check if we're in a streaming state
+    // Track streaming state from prop — no MutationObserver needed
     useEffect(() => {
-        const checkStreamingState = () => {
-            const streamingElements = document.querySelectorAll('.streaming-content');
-            isStreamingRef.current = streamingElements.length > 0;
-        };
-
-        // Check immediately
-        checkStreamingState();
-
-        // Set up a mutation observer to detect streaming state changes
-        const observer = new MutationObserver(checkStreamingState);
-        observer.observe(document.body, { childList: true, subtree: true });
-
-        return () => {
-            observer.disconnect();
-        };
-    }, []);
+        isStreamingRef.current = isStreaming;
+    }, [isStreaming]);
     const handleApplyClick = async (e: React.MouseEvent) => {
         if (isApplied && !e.shiftKey) return; // normal click on applied → no-op
 
@@ -5191,12 +5177,21 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
     // Update tokens state when the memoized tokens change
     useEffect(() => {
-        // Always update immediately for live streaming
         if (lexedTokens.length > 0) {
             previousTokensRef.current = lexedTokens;
-            setDisplayTokens(lexedTokens);
+
+            if (externalStreaming) {
+                // Throttle display updates during streaming to ~5fps
+                clearTimeout(parseTimeoutRef.current);
+                parseTimeoutRef.current = setTimeout(() => {
+                    setDisplayTokens(lexedTokens);
+                }, 200);
+            } else {
+                // Immediate update when not streaming (final render)
+                setDisplayTokens(lexedTokens);
+            }
         }
-    }, [lexedTokens]); // Remove streaming state dependency for immediate updates
+    }, [lexedTokens, externalStreaming]);
 
     // Only memoize the rendered content when not streaming or when streaming completes
     const renderedContent = useMemo(() => {
@@ -5314,9 +5309,10 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     // Helper to attach handlers to all buttons
     const scanAndAttachHandlers = useCallback(() => {
         const allButtons = document.querySelectorAll('.throttle-retry-button');
-        console.log(`🔍 GLOBAL-ATTACH: Found ${allButtons.length} throttle buttons`);
         allButtons.forEach(button => {
-            if (!attachedHandlersRef.current.has(button)) {
+            // Use dataset attribute as primary guard — survives React re-renders
+            // unlike the Set<Element> ref which loses track when DOM nodes are recreated
+            if (!(button as HTMLButtonElement).dataset.handlerAttached) {
                 attachThrottleRetryHandler(button as HTMLButtonElement);
                 attachedHandlersRef.current.add(button);
             }

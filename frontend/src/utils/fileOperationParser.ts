@@ -220,21 +220,22 @@ export class FileOperationParser {
             let match;
 
             while ((match = pattern.exec(this.content)) !== null) {
-                // Check if this tag is already part of a complete operation
+                const matchedRaw = match[0];
+                const matchedContent = match[1];
                 const isPartOfComplete = this.operations.some(op =>
-                    op.raw && op.raw.includes(match[0])
+                    op.raw && op.raw.includes(matchedRaw)
                 );
 
                 if (!isPartOfComplete) {
                     const operation: FileOperation = {
                         type: 'file_operation',
-                        raw: match[0],
+                        raw: matchedRaw,
                         isValid: false,
                         errors: [`Incomplete operation: found ${tag} tag without complete operation sequence`],
                         warnings: []
                     };
 
-                    operation[tag] = match[1].trim();
+                    operation[tag] = matchedContent.trim();
                     this.operations.push(operation);
                 }
             }

@@ -510,19 +510,19 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
         } catch (renderError) {
             console.error('Error rendering mermaid diagram:', renderError);
 
-            // Store the error for better error reporting
-            renderError = renderError instanceof Error ? renderError : new Error(String(renderError));
+            // Normalize for better error reporting
+            const normalizedError = renderError instanceof Error ? renderError : new Error(String(renderError));
 
             // Log the specific error details
-            if (renderError instanceof Error) {
-                console.error('Error name:', renderError.name);
-                console.error('Error message:', renderError.message);
-                console.error('Error stack:', renderError.stack);
+            if (normalizedError instanceof Error) {
+                console.error('Error name:', normalizedError.name);
+                console.error('Error message:', normalizedError.message);
+                console.error('Error stack:', normalizedError.stack);
             }
 
             console.error('Failed definition (first 500 chars):', rawDefinition.substring(0, 500));
             console.error('Raw definition that failed:', rawDefinition.substring(0, 500));
-            throw renderError;
+            throw normalizedError;
         }
 
         // Add the animation keyframes if they don't exist yet

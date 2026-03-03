@@ -411,7 +411,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                             markdown={msg.content}
                                             enableCodeApply={enableCodeApply}
                                             onOpenShellConfig={onOpenShellConfig}
-                                            isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
+                                            isStreaming={false}
                                         />
                                     </div>
                                 </>
@@ -429,7 +429,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                             markdown={msg.content}
                                             enableCodeApply={enableCodeApply}
                                             onOpenShellConfig={onOpenShellConfig}
-                                            isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
+                                            isStreaming={false}
                                         />
                                     </div>
                                 </>
@@ -716,7 +716,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                                     markdown={msg.content}
                                                     enableCodeApply={enableCodeApply}
                                                     onOpenShellConfig={onOpenShellConfig}
-                                                    isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
+                                                        isStreaming={false}
                                                 />
                                             </div>}
                                         </>
@@ -739,7 +739,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                                     markdown={msg.content}
                                                     enableCodeApply={enableCodeApply}
                                                     onOpenShellConfig={onOpenShellConfig}
-                                                    isStreaming={isStreaming || streamingConversations.has(currentConversationId)}
+                                                        isStreaming={false}
                                                 />
                                             </div>
                                         </>

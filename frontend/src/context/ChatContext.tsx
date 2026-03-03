@@ -14,7 +14,7 @@ import * as syncApi from '../api/conversationSyncApi';
 import { useServerStatus } from './ServerStatusContext';
 import * as folderSyncApi from '../api/folderSyncApi';
 
-export type ProcessingState = 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'awaiting_tool_response' | 'tool_throttling' | 'tool_limit_reached' | 'error';
+export type ProcessingState = 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'awaiting_tool_response' | 'tool_throttling' | 'tool_limit_reached' | 'model_thinking' | 'error';
 
 interface ConversationProcessingState {
     state: ProcessingState;
@@ -371,6 +371,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const removedStreamingIds = useRef<Set<string>>(new Set());
     // Track which project has been server-synced to avoid duplicate syncs
     const serverSyncedForProject = useRef<string | null>(null);
+    // Conversations confirmed present on the server (used to distinguish imports from server-deletions)
+    const knownServerConversationIds = useRef<Set<string>>(new Set());
     const dirtyConversationIds = useRef<Set<string>>(new Set());
     const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null);
     const lastManualScrollTime = useRef<number>(0);
@@ -476,8 +478,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
         chatContainer.scrollTop = targetScroll;
         scrollState.isAtEnd = true;
-    }, [streamingConversations, streamedContentMap, currentConversationId, isTopToBottom]);
-
+    }, [streamingConversations, currentConversationId, isTopToBottom]);
     // Function to record manual scroll events
     const recordManualScroll = useCallback(() => {
         // Update scroll state for CURRENT conversation only
@@ -1286,7 +1287,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 return next;
             });
         }
-    }, [currentConversationId, conversations, streamingConversations, streamedContentMap, queueSave, isTopToBottom]);
+    }, [currentConversationId, conversations, streamingConversations, queueSave, isTopToBottom]);
 
     // Load conversation and scroll to specific message
     const loadConversationAndScrollToMessage = useCallback(async (conversationId: string, messageIndex: number) => {
@@ -1793,6 +1794,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
                 const mergedProjectConvs = Array.from(mergedMap.values());
 
+                // Record all IDs the server currently knows about.
+                serverChats.forEach((sc: any) => knownServerConversationIds.current.add(sc.id));
+
                 // 3b. Detect locally-present conversations that the server no longer has.
                 // This means another instance deleted them — mark inactive locally.
                 // CRITICAL: Only consider conversations that are old enough to have been
@@ -1805,9 +1809,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 for (let i = mergedProjectConvs.length - 1; i >= 0; i--) {
                     const conv = mergedProjectConvs[i];
                     if (conv.isActive !== false && conv.messages?.length > 0 && !serverIdSet.has(conv.id)) {
-                        const convAge = now - (conv._version || conv.lastAccessedAt || now);
-                        if (convAge > SYNC_GRACE_PERIOD_MS) {
-                            console.log(`📡 SERVER_SYNC: "${conv.title}" (${conv.id.substring(0, 8)}) gone from server for >${SYNC_GRACE_PERIOD_MS / 1000}s — removing locally`);
+                        // Only remove if previously seen on server — never remove freshly imported conversations.
+                        if (knownServerConversationIds.current.has(conv.id)) {
+                            console.log(`📡 SERVER_SYNC: "${conv.title}" (${conv.id.substring(0, 8)}) removed from server — removing locally`);
                             deletedIds.push(conv.id);
                             mergedProjectConvs.splice(i, 1);
                         }
@@ -1956,7 +1960,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     useEffect(() => {
         currentConversationRef.current = currentConversationId;
         folderRef.current = currentFolderId;
-    }, [currentConversationId, conversations, currentFolderId, streamedContentMap, streamingConversations]);
+    }, [currentConversationId, conversations, currentFolderId]);
 
     const mergeConversations = useCallback((local: Conversation[], remote: Conversation[]) => {
         const merged = new Map<string, Conversation>();
@@ -2545,7 +2549,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 console.error('Error reading IndexedDB:', error);
             }
         };
-    }, [conversations, currentConversationId, streamedContentMap]);
+    }, [conversations, currentConversationId]);
 
     return <chatContext.Provider value={value}>{children}</chatContext.Provider>;
 }
