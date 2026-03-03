@@ -65,10 +65,10 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const [scanError, setScanError] = useState<string | null>(null);
   const scanTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const progressIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const [forceRefreshCounter, setForceRefreshCounter] = useState(0);
   const [accurateTokenCounts, setAccurateTokenCounts] = useState<Record<string, { count: number; timestamp: number }>>({});
   const accurateCountTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastProcessedSelectionRef = useRef<string>('');
+  const accurateTokenCountsRef = useRef(accurateTokenCounts);
   const fileTreeWsRef = useRef<WebSocket | null>(null);
 
   // Monitor FolderProvider render performance
@@ -79,6 +79,9 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   // Create ref to avoid stale closures in async callbacks
   const currentProjectRef = useRef(currentProject);
   currentProjectRef.current = currentProject;
+
+  // Keep ref in sync for stable closures
+  accurateTokenCountsRef.current = accurateTokenCounts;
 
   // CRITICAL: Clear persisted folder selections when ephemeral mode is detected
   useEffect(() => {
@@ -220,8 +223,9 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
     // Filter out files we already have recent accurate counts for (within 5 minutes)
     const now = Date.now() / 1000;
+    const currentCounts = accurateTokenCountsRef.current;
     const filesToUpdate = filePaths.filter(path => {
-      const existing = accurateTokenCounts[path];
+      const existing = currentCounts[path];
       return !existing || (now - existing.timestamp) > 300; // 5 minutes
     });
 
@@ -256,9 +260,6 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
             }
           });
           console.debug('Updated accurate counts:', counts);
-
-          // Force a refresh of components that depend on token counts
-          setForceRefreshCounter(prev => prev + 1);
 
           return updated;
         });
@@ -357,8 +358,9 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
     // Filter out files we already have accurate counts for
     const now = Date.now() / 1000;
+    const currentCounts = accurateTokenCountsRef.current;
     const filesToUpdate = filePaths.filter(path => {
-      const existing = accurateTokenCounts[path];
+      const existing = currentCounts[path];
       return !existing || (now - existing.timestamp) > 3600; // 1 hour cache
     });
 
@@ -385,7 +387,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         setTimeout(processTokens, 0);
       }
     }
-  }, 1000), [folders, debouncedGetAccurateCounts, accurateTokenCounts]);
+  }, 1000), [folders, debouncedGetAccurateCounts]);
 
   // Cleanup timeouts on unmount
   useEffect(() => {
@@ -585,12 +587,6 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const fetchFoldersRef = useRef<() => Promise<void>>();
 
   const fetchFolders = useCallback(async () => {
-    // Don't fetch if a scan is already in progress
-    if (isScanning) {
-      console.log('Scan already in progress, skipping fetch');
-      return;
-    }
-
     // Don't block the main thread - use MessageChannel for true async
     const channel = new MessageChannel();
     channel.port1.onmessage = async () => {
@@ -766,6 +762,24 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       const { projectPath } = event.detail;
       console.log('📂 PROJECT_SWITCH: Clearing selection and refreshing for:', projectPath);
 
+      // Stop progress polling for the old project
+      if (progressIntervalRef.current) {
+        clearInterval(progressIntervalRef.current);
+        progressIntervalRef.current = null;
+      }
+
+      // Cancel the server-side scan for the old project (fire and forget)
+      fetch('/api/cancel-scan', { method: 'POST' }).catch(() => {});
+
+      // Reset scanning state so the UI isn't stuck showing old project's scan
+      setIsScanning(false);
+      setScanProgress(null);
+      setScanError(null);
+
+      // Clear stale folder data from old project immediately
+      setFolders(undefined);
+      setTreeData([]);
+
       // Clear all selections
       setCheckedKeys([]);
       setExpandedKeys([]);
@@ -886,7 +900,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     addFilesToContext,
     // Remove forceRefreshCounter from dependencies to prevent unnecessary re-renders
   }), [folders, treeData, checkedKeys, searchValue, expandedKeys, isScanning,
-    scanProgress, scanError, accurateTokenCounts, forceRefreshCounter, addFilesToContext]);
+    scanProgress, scanError, accurateTokenCounts, addFilesToContext]);
 
   return (
     <FolderContext.Provider value={contextValue}>
