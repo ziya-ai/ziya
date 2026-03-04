@@ -66,7 +66,6 @@ class BedrockProvider(LLMProvider):
         self.model_id = model_id
         self.model_config = model_config
         self._region = region
-        self._use_extended_context = False
 
         from app.agents.models import ModelManager
 
@@ -82,11 +81,13 @@ class BedrockProvider(LLMProvider):
             logger.warning(f"BedrockProvider: wrapped client failed ({e}), falling back to direct boto3")
             import boto3
             from botocore.config import Config as BotoConfig
-            session = boto3.Session(profile_name=aws_profile)
             self.bedrock = session.client(
                 "bedrock-runtime",
                 region_name=region,
-                config=BotoConfig(retries={'max_attempts': 2, 'mode': 'adaptive'}),
+                config=BotoConfig(
+                    max_pool_connections=25,
+                    retries={'max_attempts': 2, 'mode': 'adaptive'},
+                ),
             )
 
     # ------------------------------------------------------------------
@@ -102,14 +103,11 @@ class BedrockProvider(LLMProvider):
     ) -> AsyncGenerator[StreamEvent, None]:
         body = self._build_request_body(messages, system_content, tools, config)
 
-        # Retry loop with exponential backoff
-        # Since boto3 now handles transient retries (max_attempts: 2),
-        # the provider only needs a few retries for persistent issues.
-        # Keep this small to avoid compounding with the orchestrator's
-        # own retry loop in StreamingToolExecutor.
+        # Single-attempt with extended-context escalation.
+        # Transient errors (throttle, timeout, overloaded) are surfaced as
+        # ErrorEvent for StreamingToolExecutor to handle with its own
+        # intelligent backoff — no retry here to avoid amplification.
         connect_timeout = int(os.environ.get("BEDROCK_CONNECT_TIMEOUT", "180"))
-        max_retries = 2
-        base_delay = 2
         response = None
 
         # Scale connect timeout for large payloads.  Bedrock can take
@@ -118,7 +116,7 @@ class BedrockProvider(LLMProvider):
         if body_size > 800_000:  # ~200K tokens at ~4 chars/token
             connect_timeout = max(connect_timeout, 600)
 
-        for retry_attempt in range(max_retries + 1):
+        for _attempt in range(1):  # Single attempt; loop kept for break-on-success
             try:
                 api_params = {
                     "modelId": self.model_id,
@@ -130,7 +128,7 @@ class BedrockProvider(LLMProvider):
                 response = await asyncio.wait_for(
                     asyncio.get_event_loop().run_in_executor(
                         _bedrock_executor,
-                        self.bedrock.invoke_model_with_response_stream, **api_params
+                        lambda: self.bedrock.invoke_model_with_response_stream(**api_params),
                     ),
                     timeout=connect_timeout,
                 )
@@ -139,45 +137,31 @@ class BedrockProvider(LLMProvider):
                 error_str = str(e)
                 classified = self._classify_error(error_str)
 
-                # Context limit → try extended context once
+                # Safety net: if CustomBedrockClient didn't handle context limit
+                # (e.g. no conversation_id available), try once with extended context.
+                # The primary escalation logic lives in CustomBedrockClient; this
+                # only fires when that path was skipped entirely.
                 if (
                     classified == ErrorType.CONTEXT_LIMIT
-                    and not self._use_extended_context
                     and self.model_config.get("supports_extended_context")
                 ):
                     header = self.model_config.get("extended_context_header")
-                    if header:
-                        logger.info(f"BedrockProvider: enabling extended context ({header})")
+                    if header and "anthropic_beta" not in json.dumps(body):
+                        logger.info(f"BedrockProvider: safety-net extended context attempt ({header})")
                         body["anthropic_beta"] = [header]
-                        self._use_extended_context = True
                         try:
                             api_params["body"] = json.dumps(body)
                             response = await asyncio.wait_for(
                                 asyncio.get_event_loop().run_in_executor(
                                     _bedrock_executor,
-                                    self.bedrock.invoke_model_with_response_stream,
-                                    **api_params,
+                                    lambda: self.bedrock.invoke_model_with_response_stream(**api_params),
                                 ),
                                 timeout=connect_timeout,
                             )
                             break
                         except Exception:
-                            pass  # fall through to normal retry / error
+                            pass  # fall through to ErrorEvent
 
-                retryable = classified in (ErrorType.THROTTLE, ErrorType.READ_TIMEOUT, ErrorType.OVERLOADED)
-                if retryable and retry_attempt < max_retries:
-                    if classified == ErrorType.THROTTLE:
-                        delay = base_delay * (2 ** retry_attempt)
-                    else:
-                        delay = 2 * (retry_attempt + 1)
-                    logger.warning(
-                        f"BedrockProvider: {classified.name} retry {retry_attempt + 1}/{max_retries + 1} "
-                        f"after {delay}s"
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-
-                # Non-retryable or retries exhausted
                 yield ErrorEvent(
                     message=error_str,
                     error_type=classified,
@@ -319,14 +303,6 @@ class BedrockProvider(LLMProvider):
         # Thinking configuration
         if config.thinking:
             self._apply_thinking(body, config.thinking)
-
-        # Extended context header (persists once enabled)
-        if self._use_extended_context:
-            header = self.model_config.get("extended_context_header")
-            if header:
-                body.setdefault("anthropic_beta", [])
-                if header not in body["anthropic_beta"]:
-                    body["anthropic_beta"].append(header)
 
         # Tools
         if tools and not config.suppress_tools:

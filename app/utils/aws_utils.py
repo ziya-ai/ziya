@@ -148,9 +148,25 @@ class ThrottleSafeBedrock(BaseClient):
     
     def __init__(self, client):
         self.client = client
-        # Copy attributes from the original client to make this class behave like BaseClient
-        self.__dict__.update(client.__dict__)
+
+    def __getattr__(self, name):
+        # Delegate attribute access to the wrapped client so callers see
+        # live state (throttled, last_error, etc.) instead of a stale
+        # snapshot taken at construction time.  __getattr__ is only called
+        # when normal lookup fails, so self.client itself is not affected.
+        return getattr(self.client, name)
         
+    def unwrap(self):
+        """Return the underlying boto3 client, bypassing all wrapper layers.
+
+        Useful for operations (like baseline token counting) that need to
+        call boto3 directly without triggering CustomBedrockClient logic.
+        """
+        raw = self.client
+        while hasattr(raw, 'client') and raw.client is not raw:
+            raw = raw.client
+        return raw
+
     def invoke_model(self, *args, **kwargs):
         """Invoke a Bedrock model with throttling handling."""
         try:

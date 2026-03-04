@@ -593,6 +593,7 @@ class ModelManager:
                 region_name=region,
                 config=BotoConfig(
                     read_timeout=300,
+                    max_pool_connections=25,
                     retries={'max_attempts': 2, 'mode': 'adaptive'},
                 ),
             )

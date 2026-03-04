@@ -205,7 +205,10 @@ class StreamingToolExecutor:
                 self.bedrock = session.client(
                     'bedrock-runtime',
                     region_name=region,
-                    config=BotoConfig(retries={'max_attempts': 3, 'mode': 'adaptive'})
+                    config=BotoConfig(
+                        max_pool_connections=25,
+                        retries={'max_attempts': 3, 'mode': 'adaptive'},
+                    )
                 )
         else:
             # Non-Bedrock endpoints don't need a bedrock client
@@ -1052,12 +1055,11 @@ class StreamingToolExecutor:
                         baseline_body["tools"] = bedrock_tools
                     
                     # Use existing client's underlying boto3 client directly to avoid wrapper recursion
-                    # Access the raw client to bypass CustomBedrockClient wrapper
-                    # Unwrap all layers: ThrottleSafeBedrock -> CustomBedrockClient -> boto3 client
-                    raw_client = self.bedrock
-                    while hasattr(raw_client, 'client') and raw_client.client != raw_client:
-                        logger.debug(f"📊 BASELINE: Unwrapping layer: {type(raw_client).__name__}")
-                        raw_client = raw_client.client
+                    # Unwrap all layers to reach the raw boto3 client
+                    if hasattr(self.bedrock, 'unwrap'):
+                        raw_client = self.bedrock.unwrap()
+                    else:
+                        raw_client = self.bedrock
                     
                     logger.info(f"📊 BASELINE: Using raw client type: {type(raw_client).__name__}")
                     
@@ -1562,8 +1564,14 @@ class StreamingToolExecutor:
                                  'delta': {'type': 'thinking_delta',
                                            'thinking': stream_event.content}}
                     elif isinstance(stream_event, ErrorEvent):
-                        yield {'type': 'error', 'content': stream_event.message}
-                        break
+                        if stream_event.retryable:
+                            # Raise so the outer except handler applies
+                            # intelligent throttle backoff and retry logic
+                            raise Exception(stream_event.message)
+                        else:
+                            # Non-retryable (e.g. CONTEXT_LIMIT) — surface to user
+                            yield {'type': 'error', 'content': stream_event.message}
+                            break
                     elif isinstance(stream_event, StreamEnd):
                         chunk = {'type': 'message_stop',
                                  'stop_reason': stream_event.stop_reason}
