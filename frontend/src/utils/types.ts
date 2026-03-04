@@ -1,4 +1,5 @@
 import { Key } from 'react';
+import type { DelegateMeta, TaskPlan } from '../types/delegate';
 
 export interface Folders {
     [key: string]: {
@@ -63,6 +64,7 @@ export interface Conversation {
     folderId?: string | null;
     _editInProgress?: boolean;
     displayMode?: 'raw' | 'pretty';
+    delegateMeta?: DelegateMeta | null;
 }
 
 export interface ConversationFolder {
@@ -75,6 +77,7 @@ export interface ConversationFolder {
     useGlobalModel?: boolean;
     createdAt: number;
     updatedAt: number;
+    taskPlan?: TaskPlan | null;
 }
 
 // Add _edited and _truncatedAfter to Message type

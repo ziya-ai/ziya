@@ -93,7 +93,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const { isEphemeralMode } = useConfig();
     const { currentProject } = useProject();
     const { isServerReachable } = useServerStatus();
-    const { checkedKeys } = useFolderContext();
+    const { checkedKeys: _checkedKeys } = useFolderContext();
+    const checkedKeysRef = useRef(_checkedKeys);
     const renderCount = useRef(0);
     const [isStreaming, setIsStreaming] = useState(false);
     const [streamedContentMap, setStreamedContentMap] = useState(() => new Map<string, string>());
@@ -384,14 +385,16 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
     // CRITICAL FIX: Preserve file selections per project across DB refreshes
     const projectFileSelections = useRef<Map<string, Set<string>>>(new Map());
+    // Keep checkedKeys ref current without causing re-renders
+    useEffect(() => {
+        checkedKeysRef.current = _checkedKeys;
+    }, [_checkedKeys]);
 
-    // Save current selections before project operations
-    const preserveCurrentFileSelections = useCallback(() => {
+    useEffect(() => {
         if (currentProject?.id) {
-            projectFileSelections.current.set(currentProject.id, new Set(checkedKeys));
+            projectFileSelections.current.set(currentProject.id, new Set(checkedKeysRef.current));
         }
-    }, [currentProject?.id, checkedKeys]);
-
+    }, [currentProject?.id]);
     const conversationScrollStates = useRef<Map<string, {
         userScrolledAway: boolean;
         lastManualScrollTime: number;
@@ -646,12 +649,29 @@ export function ChatProvider({ children }: ChatProviderProps) {
             const activeCount = validatedConversations.filter(c => c.isActive).length;
             console.debug(`Saving ${validatedConversations.length} conversations (${activeCount} active)`);
 
-            // MERGE STRATEGY: Read current DB state and merge, don't blindly overwrite.
-            // This prevents Tab A from clobbering Tab B's new conversations.
-            // Only the conversations listed in changedIds are taken from memory;
-            // everything else is preserved from the DB.
-            const allDbConversations = await db.getConversations();
             const changedIdSet = new Set(options.changedIds || []);
+
+            // Use cached other-project conversations when possible to avoid
+            // the 50-200ms full-DB read on every save.  The cache holds
+            // conversations from OTHER projects; we merge with this tab's
+            // in-memory state for the current project.
+            const CACHE_TTL_MS = 60_000;
+            let allDbConversations: Conversation[];
+            if (changedIdSet.size > 0 &&
+                otherProjectConvsCache.current.timestamp > 0 &&
+                Date.now() - otherProjectConvsCache.current.timestamp < CACHE_TTL_MS) {
+                allDbConversations = [...otherProjectConvsCache.current.convs, ...validatedConversations];
+                console.debug(`Save (fast path): reused ${otherProjectConvsCache.current.convs.length} cached other-project convos`);
+            } else {
+                allDbConversations = await db.getConversations();
+                const pid = currentProject?.id;
+                if (pid) {
+                    otherProjectConvsCache.current = {
+                        convs: allDbConversations.filter(c => c.projectId !== pid),
+                        timestamp: Date.now()
+                    };
+                }
+            }
             
             // Build merged list: start with DB as base, overlay our changes
             const mergedMap = new Map<string, Conversation>();
@@ -1761,6 +1781,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             mergedMap.set(sc.id, {
                                 ...full,
                                 projectId: full.projectId || projectId,
+                                folderId: full.groupId || full.folderId || null,
+                                delegateMeta: full.delegateMeta || null,
                                 lastAccessedAt: full.lastAccessedAt || full.lastActiveAt,
                                 isActive: full.isActive !== false,
                                 _version: full._version || Date.now(),
@@ -1775,6 +1797,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             mergedMap.set(sc.id, {
                                 ...full,
                                 projectId: full.projectId || projectId,
+                                folderId: full.groupId || full.folderId || null,
+                                delegateMeta: full.delegateMeta || null,
                                 lastAccessedAt: full.lastAccessedAt || full.lastActiveAt,
                                 isActive: full.isActive !== false,
                                 _version: full._version || Date.now(),
@@ -2044,10 +2068,20 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     pendingChunk = null;
 
                     if (c) {
-                        setStreamedContentMap(prev => new Map(prev).set(cid, c));
+                        setStreamedContentMap(prev => {
+                            if (prev.get(cid) === c) return prev; // no-op: same content
+                            const next = new Map(prev);
+                            next.set(cid, c);
+                            return next;
+                        });
                     }
                     if (r) {
-                        setReasoningContentMap(prev => new Map(prev).set(cid, r));
+                        setReasoningContentMap(prev => {
+                            if (prev.get(cid) === r) return prev;
+                            const next = new Map(prev);
+                            next.set(cid, r);
+                            return next;
+                        });
                     }
                 });
             }
@@ -2439,7 +2473,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
         toggleFolderGlobal,
         setChatContexts,
     }), [
-        streamedContentMap,
         currentMessages,
         editingMessageIndex,
         dynamicTitleLength,

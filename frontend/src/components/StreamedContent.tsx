@@ -52,6 +52,7 @@ export const StreamedContent: React.FC<{}> = () => {
     // Get the latest streamed content directly without memoization to avoid stale content
     const streamedContent = streamedContentMap.get(currentConversationId) ?? '';
     const streamedContentRef = useRef<string>(streamedContent);
+    const streamedContentMapRef = useRef(streamedContentMap);
     const currentConversationRef = useRef<string>(currentConversationId);
     const thinkingTimeoutRef = useRef<NodeJS.Timeout>();
 
@@ -159,6 +160,11 @@ export const StreamedContent: React.FC<{}> = () => {
     }, [hasStreamedContent, hasShownContent]);
 
 
+    // Keep map ref current without triggering effect re-runs
+    useEffect(() => {
+        streamedContentMapRef.current = streamedContentMap;
+    }, [streamedContentMap]);
+
     // Update the ref whenever streamed content changes
     useEffect(() => {
         streamedContentRef.current = streamedContent;
@@ -213,7 +219,7 @@ export const StreamedContent: React.FC<{}> = () => {
                 }, 100);
             }
         }
-    }, [currentConversationId, removeStreamingConversation, setIsStreaming, streamingConversations, streamedContentMap, addMessageToConversation]);
+    }, [currentConversationId, removeStreamingConversation, setIsStreaming, streamingConversations, addMessageToConversation]);
 
     // Listen for streaming stopped events
     useEffect(() => {
@@ -402,7 +408,7 @@ export const StreamedContent: React.FC<{}> = () => {
             if (preserved_content || existing_streamed_content || (successful_tool_results && successful_tool_results.length > 0) || (pre_streaming_work && pre_streaming_work.length > 0)) {
                 let preservedContent = preserved_content || '';
                 // Use the existing streamed content from the error data, or fall back to what's in the map
-                const actualExistingContent = existing_streamed_content || streamedContentMap.get(currentConversationId) || '';
+                const actualExistingContent = existing_streamed_content || streamedContentMapRef.current.get(currentConversationId) || '';
 
                 if (actualExistingContent && actualExistingContent.trim()) {
                     // If we have existing streamed content, preserve it at the top
@@ -600,7 +606,6 @@ return () => {
             currentMessages,
             checkedKeys,
             activeSkillPrompts,
-            streamedContentMap,
             setStreamedContentMap,
             setIsStreaming,
             removeStreamingConversation,
@@ -635,11 +640,6 @@ useEffect(() => {
         window.removeEventListener('error', handleStreamError);
     };
 }, [isTopToBottom, isStreaming, streamingConversations, currentConversationId]);
-
-// Add effect to handle conversation switches
-useEffect(() => {
-    // Remove scroll event dispatching that was causing layout changes
-}, [currentConversationId, streamedContentMap]);
 
 // Update loading state based on streaming status
 useEffect(() => {

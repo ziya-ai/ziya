@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 
 interface ScrollManagerOptions {
     containerRef: React.RefObject<HTMLElement>;
@@ -31,6 +31,7 @@ export function useScrollManager({
     const wasStreamingRef = useRef(isStreaming);
     const lastContentLengthRef = useRef(contentLength);
     const observerRef = useRef<IntersectionObserver | null>(null);
+    const scrollRafRef = useRef<number | null>(null);
 
     // Scroll to the active end (bottom for top-down, top for bottom-up)
     const scrollToActiveEnd = useCallback(() => {
@@ -38,18 +39,24 @@ export function useScrollManager({
         
         const container = containerRef.current;
         
-        if (isTopToBottom) {
-            // Scroll to bottom
-            container.scrollTop = container.scrollHeight - container.clientHeight;
-        } else {
-            // Scroll to top
-            container.scrollTop = 0;
+        // Coalesce into one scroll per frame to avoid layout thrashing
+        if (scrollRafRef.current !== null) {
+            cancelAnimationFrame(scrollRafRef.current);
         }
-        
-        // Clear indicators after scrolling
-        setHasNewContentWhileAway(false);
-        setStreamCompletedWhileAway(false);
-        setFollowMode(true);
+        scrollRafRef.current = requestAnimationFrame(() => {
+            scrollRafRef.current = null;
+            if (!containerRef.current) return;
+            
+            if (isTopToBottom) {
+                containerRef.current.scrollTop = containerRef.current.scrollHeight - containerRef.current.clientHeight;
+            } else {
+                containerRef.current.scrollTop = 0;
+            }
+            
+            setHasNewContentWhileAway(false);
+            setStreamCompletedWhileAway(false);
+            setFollowMode(true);
+        });
     }, [containerRef, isTopToBottom]);
 
     // Clear all indicators
