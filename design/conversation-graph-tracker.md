@@ -1,7 +1,7 @@
 # Design Document: Conversation Graph Tracker & Delegate Orchestration
 
 **Project ID:** `clarification_system_v1`
-**Status:** Phase 0-A — Ready to Implement; Phase 2 (Delegates) — Design Complete
+**Status:** Phase 0-A — Implemented; Phase 2 Layer 0+1 — Implemented; Layer 2+ — Design Complete
 **Author:** AI + User collaborative design session
 **Last Updated:** 2025-01-21 (refined after cross-document alignment review)
 
@@ -1163,18 +1163,101 @@ Backend and frontend can be developed in parallel after T1 is complete.
 
 ### Phase 2 Tasks (After Phase 0 Complete, detailed in newux-context.md)
 
+Priority reordering (2025-03-04): Sidebar-first strategy. Users need to see
+and interact with delegates from the existing chat list before the graph panel
+is polished. The graph panel (T36-T38) is deferred, not cancelled — it adds
+value once the sidebar workflow is solid.
+
+**Layer 0-1: Data + Compaction (Done)**
 ```
-T20: Define MemoryCrystal + DelegateSpec data models (Layer 0)
-T21: Extend Chat + ChatGroup models with delegate_meta + task_plan fields
-T22: Implement CompactionEngine (Layer 1) — the core technical moat
-T23: Wire compaction to stream_with_tools completion event
-T24: Implement DelegateManager (Layer 2) — launch_plan, dependency tracking
-T25: Add delegate WebSocket to push graph updates live
-T26: Add build_from_task_plan() to GraphBuilder
-T27: Add DelegateNode + CrystalNode custom components to GraphPanel
-T28: Implement task decomposition in orchestrator conversation
-T29: Add "Launch Delegates" button in chat (appears after decomposition message)
-T30: Add retroactive crystal review logic to orchestrator
+T20: ✅ Define MemoryCrystal + DelegateSpec data models (Layer 0)
+    └─ DONE: app/models/delegate.py — 7 models, backward-compat tested
+T21: ✅ Extend Chat + ChatGroup models with delegate_meta + task_plan fields
+    └─ DONE: app/models/chat.py (delegateMeta), app/models/group.py (taskPlan, systemInstructions, updatedAt)
+T22: ✅ Implement CompactionEngine (Layer 1) — the core technical moat
+    └─ DONE: app/agents/compaction_engine.py — Phase A deterministic + Phase B LLM with fallback
+    └─ KNOWN ISSUE: LLM summary needs RetryingChatBedrock unwrap fix (fallback works)
+T23: ✅ Wire compaction to stream_with_tools completion event
+    └─ DONE: Hook in streaming_tool_executor.py after iteration loop, before FINAL REPORT
+    └─ DONE: LLM wrapper fix in compaction_engine.py (_call_summary_model unwraps RetryingChatBedrock)
+    └─ DONE: 8 tests in tests/test_compaction_hook.py
+```
+
+**Layer 2: Orchestration Engine (Backend)**
+```
+T24: ✅ Implement DelegateManager (Layer 2) — launch_plan, dependency tracking
+    └─ DONE: app/agents/delegate_manager.py — launch_plan, crystal cascading,
+       concurrency semaphore, upstream crystal injection, progress callback
+    └─ DONE: 18 tests in tests/test_delegate_manager.py
+```
+
+**Layer 3: Sidebar-First UI (the user-facing surface)**
+
+Users click into delegates like any other chat. The sidebar IS the command
+center — no graph panel needed for the core workflow.
+
+```
+T25: Sidebar delegate status display (MUIChatHistory augmentation)
+    └─ Depends on: T24 (DelegateManager exists, Chat.delegateMeta populated)
+    └─ TaskPlan folders show ⚡ icon + "3/4" progress badge
+    └─ Delegate chats show status: 💎✓ crystal, 🔵⟳ running, ⏳ waiting
+    └─ Orchestrator chats show 🎯 marker
+    └─ All driven from Chat.delegateMeta — no new WebSocket needed
+    └─ Indigo left border on TaskPlan folders to distinguish from regular
+
+T26: Delegate API routes — launch, status, cancel
+    └─ Depends on: T24
+    └─ POST /api/v1/projects/{pid}/groups/{gid}/launch-delegates
+    └─ GET  /api/v1/projects/{pid}/groups/{gid}/delegate-status
+    └─ POST /api/v1/projects/{pid}/groups/{gid}/cancel-delegates
+    └─ Wires DelegateManager to HTTP layer
+
+T27: "Launch Delegates" button in chat
+    └─ Depends on: T25 (sidebar shows results), T26 (API exists)
+    └─ When model produces task decomposition (Mermaid graph block),
+       show "Launch Delegates" button below the message
+    └─ Button calls POST .../launch-delegates
+    └─ Sidebar updates via existing BroadcastChannel
+
+T28: Live status updates in sidebar via BroadcastChannel
+    └─ Depends on: T25, T26
+    └─ Crystal completion triggers 'conversations-changed' broadcast
+    └─ Sidebar re-renders with updated badge counts
+    └─ No new WebSocket — piggybacks on existing sync infrastructure
+
+T29: Implement task decomposition prompt in orchestrator
+    └─ Depends on: T27 (button exists to act on decomposition)
+    └─ Orchestrator skill prompt guides model to produce DelegateSpec list
+    └─ Model output includes Mermaid task graph for visual review
+    └─ User can edit scope before launching
+```
+
+**Layer 4: Graph Panel Integration (deferred, not cancelled)**
+
+These tasks add the botanical/river-delta graph visualization for TaskPlans.
+The sidebar workflow must be solid first. Graph panel is supplementary.
+
+```
+T36: Add build_from_task_plan() to GraphBuilder
+    └─ Depends on: T24 (DelegateManager), T25 (sidebar working)
+    └─ Converts TaskPlan delegate DAG into graph nodes/edges
+    └─ Reuses existing ConversationNode types with delegate status mapping
+
+T37: Add DelegateNode + CrystalNode custom components to GraphPanel
+    └─ Depends on: T36
+    └─ Pulsing blue nodes for running delegates
+    └─ Gem-glow green nodes for completed crystals
+    └─ Click delegate node → opens that delegate's chat
+
+T38: Add delegate WebSocket for live graph updates
+    └─ Depends on: T37
+    └─ WebSocket pushes node status changes to GraphPanel
+    └─ Graph panel auto-opens (or ⚡ badge on 🌳 toggle) when TaskPlan active
+
+T39: Retroactive crystal review logic
+    └─ Depends on: T28 (sidebar workflow complete)
+    └─ Late-arriving answers evaluated against completed crystals
+    └─ Returns: 'preserved' | 'extended' | 'discarded'
 ```
 
 ---
