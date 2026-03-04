@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-03-03T12:56:41",
+  "timestamp": "2026-03-03T13:01:32",
   "model_id": "us.anthropic.claude-opus-4-6-v1",
   "region": "us-west-2",
   "wrapper_analysis": {
@@ -48,19 +48,19 @@
     "tests": [
       {
         "name": "fill_pool_14_tasks",
-        "duration_s": 2.0063529999897582,
+        "duration_s": 2.0060294160066405,
         "passed": true,
         "note": "14 tasks x 2s block, pool_size=14"
       },
       {
         "name": "overfill_pool_18_tasks",
-        "duration_s": 4.004258792003384,
+        "duration_s": 4.005975124993711,
         "passed": true,
         "note": "18 tasks x 2s block, pool_size=14. Expected ~4s for 2 batches."
       },
       {
         "name": "nested_threads_14_tasks",
-        "duration_s": 0.5089807909971569,
+        "duration_s": 0.5069795419985894,
         "passed": true,
         "note": "Simulates provider->client->boto3 nesting with 14 concurrent requests"
       }
@@ -70,18 +70,32 @@
     {
       "size_label": "1K",
       "approx_tokens": 1000,
-      "outcome": "ERROR_OTHER",
-      "connect_time_s": 0.0,
-      "ttfb_s": 0.0,
-      "total_time_s": 0.0001432919962098822,
+      "outcome": "SUCCESS",
+      "connect_time_s": 1.7443708750070073,
+      "ttfb_s": 1.7443708750070073,
+      "total_time_s": 1.7483650000067428,
       "stream_stalls": 0,
       "max_stall_s": 0.0,
-      "chunks_received": 0,
-      "input_tokens": 0,
-      "output_tokens": 0,
-      "error_message": "BaseEventLoop.run_in_executor() got an unexpected keyword argument 'modelId'",
-      "error_class": "UNKNOWN"
+      "chunks_received": 1,
+      "input_tokens": 597,
+      "output_tokens": 4,
+      "error_message": "",
+      "error_class": ""
     }
   ],
-  "concurrency_results": []
+  "concurrency_results": [
+    {
+      "concurrency": 1,
+      "size_label": "1K",
+      "wall_clock_s": 3.453632707998622,
+      "deadlock_detected": false,
+      "thread_pool_exhaustion": true,
+      "results": [
+        {
+          "outcome": "SUCCESS",
+          "total_time_s": 3.452816791992518
+        }
+      ]
+    }
+  ]
 }

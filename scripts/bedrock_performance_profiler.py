@@ -438,6 +438,8 @@ async def run_concurrency_test(
     )
 
     t_start = time.monotonic()
+    first_content_time = None
+    last_chunk_time = t_start
 
     tasks = [
         probe_bedrock_provider(
@@ -503,26 +505,25 @@ def analyze_client_wrapper_depth() -> Dict[str, Any]:
     }
 
     # Layer 1: boto3 BotoConfig retries
-    analysis["wrapper_chain"].append("boto3 (BotoConfig: max_attempts=2, mode=adaptive)")
+    analysis["wrapper_chain"].append("boto3 (BotoConfig: max_attempts=2, mode=adaptive, max_pool_connections=25)")
     analysis["retry_layers"] += 1
     analysis["total_max_retries"] *= 3  # 2 retries + 1 initial = 3 attempts
 
     # Layer 2: CustomBedrockClient
-    analysis["wrapper_chain"].append("CustomBedrockClient (context limit retry + extended context retry)")
+    analysis["wrapper_chain"].append("CustomBedrockClient (extended context escalation, 120s failure TTL)")
     analysis["retry_layers"] += 1
     analysis["total_max_retries"] *= 2  # Can retry once for context limit
 
     # Layer 3: ThrottleSafeBedrock
-    analysis["wrapper_chain"].append("ThrottleSafeBedrock (wraps for throttle detection)")
-    # No additional retries, but adds a wrapper layer
+    analysis["wrapper_chain"].append("ThrottleSafeBedrock (__getattr__ delegation to CustomBedrockClient)")
+    # No additional retries, pure delegation wrapper
 
     # Layer 4: BedrockProvider.stream_response
-    analysis["wrapper_chain"].append("BedrockProvider (max_retries=2 with exponential backoff)")
-    analysis["retry_layers"] += 1
-    analysis["total_max_retries"] *= 3  # 2 retries + 1 initial
+    analysis["wrapper_chain"].append("BedrockProvider (single attempt + safety-net extended context)")
+    # No retry loop — errors surface as ErrorEvent for executor
 
     # Layer 5: StreamingToolExecutor
-    analysis["wrapper_chain"].append("StreamingToolExecutor (throttle_state max_retries=5, read timeout retry)")
+    analysis["wrapper_chain"].append("StreamingToolExecutor (throttle_state max_retries=5, retryable ErrorEvent routing)")
     analysis["retry_layers"] += 1
     analysis["total_max_retries"] *= 6  # 5 retries + 1 initial
 
