@@ -257,41 +257,11 @@ export const StreamedContent: React.FC<{}> = () => {
     }, [currentConversationId, streamingConversations, stopStreaming]);
 
     const LoadingIndicator = () => (
-        <Space>
-            {/* Enhanced loading states */}
-            {processingState === 'model_thinking' && (
-                <div style={{ color: '#722ed1', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <LoadingOutlined spin />
-                    <span>🧠 Deep thinking…</span>
-                </div>
-            )}
-            {processingState === 'awaiting_model_response' && (
-                <div style={{ color: '#1890ff', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <LoadingOutlined spin />
-                    <span>Waiting for model response…</span>
-                </div>
-            )}
-            {processingState === 'processing_tools' && (
-                <div style={{ color: '#faad14', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <LoadingOutlined spin />
-                    <span>Running tools…</span>
-                </div>
-            )}
-            {processingState === 'awaiting_tool_response' && processingState !== 'processing_tools' && (
-                <div style={{ color: '#faad14', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <LoadingOutlined spin />
-                    <span>Executing tool...</span>
-                </div>
-            )}
-            {processingState === 'tool_throttling' && (
-                <div style={{ color: '#ff7a00', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <LoadingOutlined spin />
-                    <span>Waiting for rate limit (preventing throttling)...</span>
-                </div>
-            )}
+        <Space direction="vertical" style={{ width: '100%' }}>
             <div style={{
                 visibility: ['processing_tools', 'awaiting_tool_response', 'tool_throttling', 'tool_limit_reached', 'model_thinking', 'awaiting_model_response'].includes(processingState) ||
                     (!hasStreamedContent && streamingConversations.has(currentConversationId)) ||
+
                     (streamingConversations.has(currentConversationId) && processingState !== 'idle')
                     ? 'visible' : 'hidden',
                 opacity: ['processing_tools', 'awaiting_tool_response', 'tool_throttling', 'tool_limit_reached', 'model_thinking', 'awaiting_model_response'].includes(processingState) ? 1 : 0.8,
