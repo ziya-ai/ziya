@@ -981,13 +981,19 @@ class CLI:
             
                 elif chunk_type == 'tool_execution':
                     tool_name = chunk.get('tool_name', 'unknown')
+                    if md_renderer:
+                        md_renderer.flush()
                     print(f"\n\033[90m⚡ {tool_name}\033[0m", flush=True)
             
                 elif chunk_type == 'tool_start':
                     tool_name = chunk.get('tool_name', 'unknown')
+                    if md_renderer:
+                        md_renderer.flush()
                     print(f"\n\033[36m⚙ Executing {tool_name}...\033[0m", flush=True)
             
                 elif chunk_type == 'tool_display':
+                    if md_renderer:
+                        md_renderer.flush()
                     # Show tool result with formatting
                     tool_name = chunk.get('tool_name', 'unknown')
                     result = chunk.get('result', '')
