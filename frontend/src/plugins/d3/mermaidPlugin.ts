@@ -760,10 +760,23 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                         // Make sure SVG is responsive
                         svg.setAttribute('width', '100%');
                         svg.setAttribute('height', '100%');
-                        svg.style.maxWidth = '100%');
+                        svg.style.maxWidth = '100%';
                         svg.style.maxHeight = '100%';
                         svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
                         ${getZoomScript()}
+                        function getOptimalTextColor(bgColor) {
+                            if (!bgColor || bgColor === 'none' || bgColor === 'transparent') return isDarkMode ? '#eceff4' : '#000000';
+                            var m = bgColor.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+                            if (!m) {
+                                m = bgColor.match(/^#([0-9a-f])([0-9a-f])([0-9a-f])$/i);
+                                if (m) m = [null, m[1]+m[1], m[2]+m[2], m[3]+m[3]];
+                            }
+                            if (!m) return isDarkMode ? '#eceff4' : '#000000';
+                            var r = parseInt(m[1], 16), g = parseInt(m[2], 16), b = parseInt(m[3], 16);
+                            var luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+                            return luminance > 0.35 ? '#000000' : '#ffffff';
+                        }
+
                         function toggleTheme() {
                             isDarkMode = !isDarkMode;
                             const body = document.body;
@@ -973,7 +986,15 @@ ${svgData}`;
                 cachedScale = svgElement.style.transform;
                 cachedWrapperHeight = wrapper.style.minHeight;
 
-                wrapper.innerHTML = `<pre style="
+                wrapper.innerHTML = `<div style="
+                        font-size: 12px;
+                        font-weight: 600;
+                        color: ${isDarkMode ? '#88c0d0' : '#6c757d'};
+                        padding: 8px 16px 0;
+                        letter-spacing: 0.5px;
+                        text-transform: uppercase;
+                    ">📝 Mermaid Source</div>
+                    <pre style="
                         background-color: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'};
                         padding: 16px;
                         border-radius: 4px;
