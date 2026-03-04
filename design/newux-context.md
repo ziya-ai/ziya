@@ -23,6 +23,15 @@ management, and the TaskPlan / MemoryCrystal system for parallel agentic tasks.
 - **Chat history**: Folders, drag-drop, search, cross-tab sync,
   global (cross-project) conversations
 
+### Implemented (Delegate Foundation)
+
+- **Delegate data models** (Layer 0): `DelegateMeta`, `DelegateSpec`,
+  `TaskPlan`, `MemoryCrystal`, `SwarmBudget` in `app/models/delegate.py`.
+  All backward-compatible optional fields on `Chat` and `ChatGroup`.
+- **CompactionEngine** (Layer 1): `app/agents/compaction_engine.py` —
+  Phase A deterministic extraction + Phase B LLM summary with fallback.
+  Known issue: LLM path needs RetryingChatBedrock unwrap (fallback works).
+
 ### Deferred
 
 - Per-chat context association (see Design Decisions)
