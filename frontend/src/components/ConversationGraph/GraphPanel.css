@@ -1,0 +1,69 @@
+/* Graph panel — blur-blend slide-out
+   Panel only mounts when open — no hidden-state styling needed. */
+
+.cgp-panel {
+  position: fixed; top: 0; right: 0; height: 100vh;
+  background: rgba(13,17,23,.98);
+  border-left: 1px solid rgba(255,255,255,.08);
+  box-shadow: -4px 0 24px rgba(0,0,0,.45);
+  z-index: 100; overflow: hidden;
+  animation: cgp-slide-in .3s cubic-bezier(.4,0,.2,1);
+}
+@keyframes cgp-slide-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
+.cgp-inner  { width: 100%; height: 100%; }
+
+/* Overlay — gradient blur, fades in */
+.cgp-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.2);
+  z-index: 99;
+  animation: cgp-fade-in .25s ease;
+}
+@keyframes cgp-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* Resize handle */
+.cgp-resize {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 5px;
+  cursor: ew-resize; z-index: 2;
+  transition: background .2s;
+}
+.cgp-resize:hover { background: rgba(88,166,255,.35); }
+
+/* Close button inside panel */
+.cgp-close-btn {
+  position: absolute; top: 12px; right: 14px; z-index: 3;
+  background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.12);
+  color: #8b949e; font-size: 16px; line-height: 1;
+  width: 30px; height: 30px; border-radius: 6px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; transition: all .15s ease;
+}
+.cgp-close-btn:hover { background: rgba(255,255,255,.15); color: #e6edf3; }
+
+/* Toggle button — lightweight, no backdrop-filter */
+.cgp-toggle {
+  position: fixed; top: 50%; right: 16px;
+  transform: translateY(-50%);
+  z-index: 98;
+  padding: 10px 14px; font-size: 18px; line-height: 1;
+  background: rgba(22,27,34,.9); color: #e6edf3;
+  border: 1px solid rgba(255,255,255,.1); border-radius: 10px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.25);
+  cursor: pointer;
+  transition: all .25s cubic-bezier(.4,0,.2,1);
+}
+.cgp-toggle:hover {
+  background: rgba(22,27,34,1);
+  border-color: rgba(88,166,255,.35);
+  box-shadow: 0 4px 16px rgba(0,0,0,.4);
+  transform: translateY(-50%) translateX(-3px);
+}
+
+/* Light theme overrides */
+@media (prefers-color-scheme: light) {
+  .cgp-panel { background: rgba(255,255,255,.97); border-left-color: rgba(0,0,0,.08); }
+  .cgp-toggle { background: rgba(255,255,255,.95); border-color: rgba(0,0,0,.12); color: #24292f; }
+  .cgp-close-btn { background: rgba(0,0,0,.05); border-color: rgba(0,0,0,.1); color: #57606a; }
+  .cgp-close-btn:hover { background: rgba(0,0,0,.1); color: #24292f; }
+  .cgp-overlay { background: rgba(0,0,0,.1); }
+}
