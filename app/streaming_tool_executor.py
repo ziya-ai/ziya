@@ -451,13 +451,117 @@ class StreamingToolExecutor:
             # No structured content found, return the entire text
             return text.strip()
 
+    # Patterns indicating the model is narrating tool execution in prose
+    # rather than using the tool_use API. Checked OUTSIDE code fences only.
+    _FABRICATION_PATTERNS = [
+        # Dollar-sign shell prompt followed by a command
+        re.compile(r'(?:^|\n)\$\s+\S+', re.MULTILINE),
+        # "Output:" or "Result:" followed by multi-line content
+        re.compile(r'(?:^|\n)(?:Output|Result|Results|Response):\s*\n', re.MULTILINE),
+        # Lines that look like shell command execution narrative
+        re.compile(r'(?:^|\n)```\s*\n\$\s+', re.MULTILINE),
+        # Exit code indicators not from a real tool
+        re.compile(r'\[Exit code: \d+\]'),
+    ]
+
+    def _sanitize_assistant_text(self, text: str) -> str:
+        """Remove hallucinated tool-call narratives from assistant text.
+
+        Scans text outside of code fences for patterns that indicate the
+        model was narrating command execution instead of using the tool API.
+        Truncates at the first fabrication boundary to prevent contamination
+        of conversation history.
+
+        Returns cleaned text (may be shorter than input).
+        """
+        if not text or len(text) < 20:
+            return text
+
+        # Split into fenced and unfenced regions
+        # We only check unfenced regions for fabrication
+        lines = text.split('\n')
+        in_fence = False
+        fence_pattern = re.compile(r'^`{3,4}')
+        first_contaminated_line = None
+
+        for i, line in enumerate(lines):
+            if fence_pattern.match(line.strip()):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
+
+            # Check this unfenced line against fabrication patterns
+            for pat in self._FABRICATION_PATTERNS:
+                if pat.search(line):
+                    first_contaminated_line = i
+                    logger.warning(
+                        f"\U0001f50d SANITIZE: Detected fabricated tool narrative at line {i}: "
+                        f"pattern={pat.pattern}, line={line[:80]}"
+                    )
+                    break
+            if first_contaminated_line is not None:
+                break
+
+        if first_contaminated_line is not None:
+            # Truncate at the paragraph boundary before contamination
+            clean_lines = lines[:first_contaminated_line]
+            # Strip trailing whitespace lines
+            while clean_lines and not clean_lines[-1].strip():
+                clean_lines.pop()
+            cleaned = '\n'.join(clean_lines)
+            removed_chars = len(text) - len(cleaned)
+            logger.warning(
+                f"\U0001f50d SANITIZE: Removed {removed_chars} chars of fabricated content "
+                f"from assistant text (kept {len(cleaned)}/{len(text)})"
+            )
+            return cleaned
+
+        return text
+
+    @staticmethod
+    def _build_tool_reinforcement_message() -> Dict[str, Any]:
+        """Build a corrective user message reminding the model to use tool APIs.
+
+        Injected into the conversation after hallucination detection to break
+        the self-reinforcing loop.
+        """
+        return {
+            "role": "user",
+            "content": (
+                "IMPORTANT: Your previous response contained text that described "
+                "running commands or viewing their output, but you did not actually "
+                "invoke any tools. You MUST use the tool calling API (tool_use blocks) "
+                "to execute commands \u2014 do not write prose describing what a command "
+                "would return. If you need to run a command, call the tool. If you "
+                "need to read a file, call the tool. Never fabricate or imagine "
+                "tool output."
+            ),
+        }
+
+    @staticmethod
+    def _build_tool_reminder_message() -> Dict[str, Any]:
+        """Build a neutral reminder about tool API usage for long conversations.
+
+        Unlike the corrective reinforcement message, this does not accuse the
+        model of hallucinating \u2014 it is a gentle nudge to maintain good habits.
+        """
+        return {
+            "role": "user",
+            "content": (
+                "Reminder: when you need to run commands, read files, or perform "
+                "actions, always use the provided tool calling API rather than "
+                "describing what the output would be."
+            ),
+        }
+
     async def _execute_fake_tool(self, tool_name, command, assistant_text, tool_results, mcp_manager):
-        """Execute a fake tool call detected in the text stream"""
+        """Execute a fake tool call detected in the text stream."""
         actual_tool_name = self._normalize_tool_name(tool_name)
         if actual_tool_name == 'run_shell_command':
             try:
                 result = await mcp_manager.call_tool('run_shell_command', {'command': command.strip()})
-                
+
                 if isinstance(result, dict) and 'content' in result:
                     content = result['content']
                     if isinstance(content, list) and len(content) > 0:
@@ -466,13 +570,13 @@ class StreamingToolExecutor:
                         result_text = str(result)
                 else:
                     result_text = str(result)
-                
+
                 tool_results.append({
                     'tool_id': f'fake_{len(tool_results)}',
                     'tool_name': tool_name,
                     'result': result_text
                 })
-                
+
                 return {
                     'type': 'tool_display',
                     'tool_id': f'fake_{len(tool_results)}',
@@ -1208,6 +1312,21 @@ class StreamingToolExecutor:
             # Build provider-agnostic config for this iteration
             provider_config = self._build_provider_config(iteration, consecutive_empty_tool_calls)
 
+            # Periodic tool-use reinforcement for long conversations.
+            # After many iterations the model can drift into narrating tool
+            # calls instead of invoking them.  A brief reminder every 15
+            # iterations keeps it on track without cluttering short sessions.
+            if iteration > 0 and iteration % 15 == 0 and tools:
+                # Only inject if the conversation doesn't already end with
+                # a reinforcement message (avoid stacking them)
+                last_content = conversation[-1].get('content', '') if conversation else ''
+                if isinstance(last_content, str) and 'always use the provided tool calling API' not in last_content:
+                    conversation.append(self._build_tool_reminder_message())
+                    logger.info(
+                        f"🔄 REINFORCEMENT: Injected periodic tool-use reminder "
+                        f"at iteration {iteration}"
+                    )
+
             # Apply throttle-driven token reduction if active
             if throttle_state.get('max_output_tokens_override'):
                 provider_config.max_output_tokens = throttle_state['max_output_tokens_override']
@@ -1700,6 +1819,9 @@ class StreamingToolExecutor:
                             # If the model is generating text that looks like a tool
                             # security block or fake tool output, stop streaming the
                             # contaminated text to the frontend immediately.
+
+                            # Skip detection inside code blocks — the model is allowed
+                            # to discuss/quote error messages in diffs and code examples.
                             import re as _re
                             _BACKEND_HALLUCINATION_PATTERNS = [
                                 _re.compile(r'SECURITY BLOCK:.{0,200}not allowed', _re.DOTALL),
@@ -1710,6 +1832,9 @@ class StreamingToolExecutor:
                             _hallucination_match = next(
                                 (p for p in _BACKEND_HALLUCINATION_PATTERNS if p.search(_tail)), None
                             )
+                            # Inside a code fence the model may legitimately quote error strings
+                            if code_block_tracker.get('in_block'):
+                                _hallucination_match = None
                             if _hallucination_match:
                                 logger.warning(
                                     f"🚨 HALLUCINATION_BACKEND: Model generating fake tool output! "
@@ -2690,6 +2815,10 @@ Please retry the tool call with valid JSON. Ensure:
                             "input": tool_args
                         })
                     
+                    # Sanitize assistant_text before it enters conversation history
+                    # to prevent hallucinated tool narratives from poisoning future iterations
+                    assistant_text = self._sanitize_assistant_text(assistant_text)
+
                     conversation.append(self.provider.build_assistant_message(assistant_text, tool_uses))
             
                 # Add tool results to conversation BEFORE filtering
@@ -2762,7 +2891,16 @@ Please retry the tool call with valid JSON. Ensure:
                                    "Continue your response normally without fabricating any tool output."
                     })
                     logger.info(f"🔄 HALLUCINATION_RETRY: Attempt {hallucination_retries}/3, added corrective message")
-                    yield {'type': 'iteration_continue', 'iteration': iteration + 1}
+
+                    # Inject corrective message so the model sees explicit
+                    # feedback that prose-based tool usage is not acceptable
+                    conversation.append(
+                        self._build_tool_reinforcement_message()
+                    )
+                    logger.info(
+                        "🔄 HALLUCINATION_RETRY: Injected tool-use reinforcement "
+                        "message into conversation"
+                    )
                     continue
 
                 # Continue to next iteration if tools were executed
@@ -3203,6 +3341,31 @@ Please retry the tool call with valid JSON. Ensure:
         if _feedback_monitor_task:
             _feedback_monitor_task.cancel()
         
+        # ------------------------------------------------------------------
+        # Autocompaction hook: if this conversation is a delegate, compress
+        # the full conversation into a MemoryCrystal.  The crystal is yielded
+        # as a 'crystal_ready' event so the caller (DelegateManager / server)
+        # can store it and unblock downstream delegates.
+        #
+        # This runs AFTER the stream is complete but BEFORE the usage report,
+        # so the crystal tokens are included in the final accounting.
+        # ------------------------------------------------------------------
+        if conversation_id and conversation:
+            try:
+                from app.agents.compaction_engine import get_compaction_engine, MIN_COMPACTION_TOKENS
+                engine = get_compaction_engine()
+                # Convert conversation to simple dicts for the engine
+                msgs_for_compaction = [
+                    m if isinstance(m, dict) else {"role": getattr(m, "role", ""), "content": getattr(m, "content", "")}
+                    for m in conversation
+                ]
+                crystal = await engine.compact(msgs_for_compaction, conversation_id, conversation_id)
+                if crystal:
+                    yield {'type': 'crystal_ready', 'crystal': crystal.model_dump(mode='json')}
+                    logger.info(f"💎 Autocompaction complete for {conversation_id}")
+            except Exception as exc:
+                logger.warning(f"💎 Autocompaction failed (non-fatal): {exc}")
+
         # FINAL REPORT: Log comprehensive usage summary
         if iteration_usages and conversation_id:
             logger.info("\n" + "=" * 80)
