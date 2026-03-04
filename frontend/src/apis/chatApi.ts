@@ -678,6 +678,45 @@ export const sendPayload = async (
     let hallucinationDetected = false;  // Failsafe: track if model is generating fake tool output
     const BROADCAST_INTERVAL_MS = 300;
     let toolInputsMap = new Map<string, any>(); // Store tool inputs by tool ID
+    // ── Batched streaming map update ──────────────────────────────────
+    // Instead of calling setStreamedContentMap(prev => new Map(prev).set(…))
+    // on every SSE chunk (which creates a new Map + triggers re-render each
+    // time), we coalesce updates into one setState per animation frame.
+    // `currentContent` is the source of truth; React only needs the latest
+    // snapshot once per frame.
+    let _streamRafId: number | null = null;
+    let _streamFallbackId: ReturnType<typeof setTimeout> | null = null;
+
+    const _doFlush = () => {
+        _streamRafId = null;
+        if (_streamFallbackId !== null) {
+            clearTimeout(_streamFallbackId);
+            _streamFallbackId = null;
+        }
+        const snapshot = currentContent;
+        setStreamedContentMap(prev => {
+            if (prev.get(conversationId) === snapshot) return prev; // no-op
+            const next = new Map(prev);
+            next.set(conversationId, snapshot);
+            return next;
+        });
+    };
+
+    const flushStreamedContent = () => {
+        if (_streamRafId !== null || _streamFallbackId !== null) return; // already scheduled
+        _streamRafId = requestAnimationFrame(() => {
+            _doFlush();
+        });
+        // Fallback: if rAF is throttled (tab not focused, browser deprioritized),
+        // ensure content still flushes within 250ms so the UI doesn't freeze
+        // during long tool chains even when the tab isn't fully active.
+        _streamFallbackId = setTimeout(() => {
+            if (_streamRafId !== null) {
+                cancelAnimationFrame(_streamRafId);
+            }
+            _doFlush();
+        });
+    };
 
     // Store original params but also track accumulated content for retry
     let originalRequestParams = {
@@ -1019,11 +1058,7 @@ export const sendPayload = async (
 
                 if (jsonData.partial_content && !currentContent.includes(jsonData.partial_content)) {
                     currentContent += jsonData.partial_content;
-                    setStreamedContentMap((prev: Map<string, string>) => {
-                        const next = new Map(prev);
-                        next.set(conversationId, currentContent);
-                        return next;
-                    });
+                    flushStreamedContent();
                 }
             }
 
@@ -1325,11 +1360,7 @@ export const sendPayload = async (
 
                     // Add the notification to the streamed content
                     currentContent += throttlingNotification;
-                    setStreamedContentMap((prev: Map<string, string>) => {
-                        const next = new Map(prev);
-                        next.set(conversationId, currentContent);
-                        return next;
-                    });
+                    flushStreamedContent();
 
                     // Mark that streaming has ended due to throttling
                     errorOccurred = false; // Not a fatal error - user can retry
@@ -1444,12 +1475,7 @@ export const sendPayload = async (
                                 currentContent = beforeRewind;
                             }
                             console.log(`🔄 REWIND: Reset content to before marker, length: ${currentContent.length}`);
-                            // Update the map immediately
-                            setStreamedContentMap((prev: Map<string, string>) => {
-                                const next = new Map(prev);
-                                next.set(conversationId, currentContent);
-                                return next;
-                            });
+                            flushStreamedContent();
                         }
                     }
                 }
@@ -1496,12 +1522,7 @@ export const sendPayload = async (
                         }
 
                         console.log(`🔄 REWIND: Rewound to line ${rewindLine}, stripped marker text`);
-                        // Update the map immediately to reflect the rewound content
-                        setStreamedContentMap((prev: Map<string, string>) => {
-                            const next = new Map(prev);
-                            next.set(conversationId, currentContent);
-                            return next;
-                        });
+                        flushStreamedContent();
 
                         // Continue processing this chunk in case there's actual content after the marker
                     }
@@ -1529,11 +1550,7 @@ export const sendPayload = async (
                             currentContent = currentContent.substring(0, markerIndex);
                             console.log(`✂️ MARKER_REWIND: Cut at marker position ${markerIndex}, preserved ${currentContent.length} chars`);
 
-                            setStreamedContentMap((prev: Map<string, string>) => {
-                                const next = new Map(prev);
-                                next.set(conversationId, currentContent);
-                                return next;
-                            });
+                            flushStreamedContent();
                         } else {
                             console.warn(`⚠️ MARKER_REWIND: Marker not found: ${marker}`);
                         }
@@ -1547,11 +1564,7 @@ export const sendPayload = async (
                         const beforeRewind = lines.slice(0, jsonData.rewind_line).join('\n');
                         currentContent = beforeRewind;
                         console.log(`🔄 REWIND: Trimmed content to line ${jsonData.rewind_line}, length: ${currentContent.length}`);
-                        setStreamedContentMap((prev: Map<string, string>) => {
-                            const next = new Map(prev);
-                            next.set(conversationId, currentContent);
-                            return next;
-                        });
+                        flushStreamedContent();
                     }
                     return;
                 }
@@ -1581,11 +1594,7 @@ export const sendPayload = async (
                         const tail = currentContent.substring(lastBreak);
                         if (/(\$ |ERROR:|SECURITY BLOCK|Allowed commands:|📋)/.test(tail)) {
                             currentContent = currentContent.substring(0, lastBreak).trimEnd();
-                            setStreamedContentMap((prev: Map<string, string>) => {
-                                const next = new Map(prev);
-                                next.set(conversationId, currentContent);
-                                return next;
-                            });
+                            flushStreamedContent();
                         }
                     }
                     return; // Backend will retry; stream continues
@@ -1608,6 +1617,17 @@ export const sendPayload = async (
                 // ============================================================
                 if (contentToAdd) {
                     // Only check the new chunk, not the full accumulation.
+                    // Check if we're currently inside an open code fence by
+                    // counting triple-backtick fences in the accumulated content.
+                    // An odd count means a fence is open — the model is writing
+                    // code/diff content and may legitimately reference error strings.
+                    const fenceMatches = currentContent.match(/^`{3,4}/gm);
+                    const fenceCount = fenceMatches ? fenceMatches.length : 0;
+                    const insideCodeFence = fenceCount % 2 === 1;
+
+                    // Skip hallucination detection inside code fences — the model
+                    // is allowed to discuss/quote error messages in diffs.
+                    if (!insideCodeFence) {
                     // currentContent already contains <!-- TOOL_BLOCK_START: -->
                     // markers from our own tool_display handler; checking the
                     // full string false-positives after every tool execution.
@@ -1654,13 +1674,10 @@ export const sendPayload = async (
                         }
 
                         // Silently drop contaminated chunks (first and subsequent)
-                        setStreamedContentMap((prev: Map<string, string>) => {
-                            const next = new Map(prev);
-                            next.set(conversationId, currentContent);
-                            return next;
-                        });
+                        flushStreamedContent();
                         return; // Backend will handle retry
                     }
+                    } // end if (!insideCodeFence)
 
                     // Handle feedback delivery acknowledgment from backend
                     if (unwrappedData.type === 'feedback_delivered') {
@@ -1697,11 +1714,7 @@ export const sendPayload = async (
                         });
                     }
 
-                    setStreamedContentMap((prev: Map<string, string>) => {
-                        const next = new Map(prev);
-                        next.set(conversationId, currentContent);
-                        return next;
-                    });
+                    flushStreamedContent();
                 }
 
                 // Handle feedback readiness - consolidated handling
@@ -2034,11 +2047,7 @@ export const sendPayload = async (
                         }
                     }
 
-                    setStreamedContentMap((prev: Map<string, string>) => {
-                        const next = new Map(prev);
-                        next.set(conversationId, currentContent);
-                        return next;
-                    });
+                    flushStreamedContent();
                 } else if (unwrappedData.type === 'tool_start') {
                     console.log('🔧 TOOL_START received:', unwrappedData);
 
@@ -2059,11 +2068,7 @@ export const sendPayload = async (
                         currentContent = contentRef.value;
 
                         // CRITICAL: Update the streamed content map so UI reflects the change
-                        setStreamedContentMap((prev: Map<string, string>) => {
-                            const next = new Map(prev);
-                            next.set(conversationId, currentContent);
-                            return next;
-                        });
+                        flushStreamedContent();
 
                         // Store tool input for later use in tool_display
                         if (unwrappedData.args && unwrappedData.tool_id) {
@@ -2130,11 +2135,7 @@ export const sendPayload = async (
 
                     console.log('🔧 TOOL_START formatted:', toolStartDisplay);
                     currentContent += toolStartDisplay;
-                    setStreamedContentMap((prev: Map<string, string>) => {
-                        const next = new Map(prev);
-                        next.set(conversationId, currentContent);
-                        return next;
-                    });
+                    flushStreamedContent();
                 }
 
                 // Process operations if present
@@ -2238,11 +2239,7 @@ export const sendPayload = async (
 
                         currentContent += newContent;
                         const contentSnapshot = currentContent;
-                        setStreamedContentMap((prev: Map<string, string>) => {
-                            const next = new Map(prev);
-                            next.set(conversationId, contentSnapshot);
-                            return next;
-                        });
+                        flushStreamedContent();
                     } else if (op.op === 'add' && op.path.includes('/streamed_output/-')) {
                         // Check for error in messages array - but be careful not to match code examples
                         if (op.value && op.value.messages && Array.isArray(op.value.messages)) {
@@ -2309,11 +2306,7 @@ export const sendPayload = async (
                     if (simpleJson.content) {
                         console.log('Processing fallback content:', simpleJson.content);
                         currentContent += simpleJson.content;
-                        setStreamedContentMap((prev: Map<string, string>) => {
-                            const next = new Map(prev);
-                            next.set(conversationId, currentContent);
-                            return next;
-                        });
+                        flushStreamedContent();
                     }
                 } catch (fallbackError) {
                     console.warn('Fallback JSON parse also failed:', fallbackError);
@@ -2568,11 +2561,7 @@ export const sendPayload = async (
                 const repairedContent = repairUnbalancedFences(currentContent);
                 if (repairedContent !== currentContent) {
                     currentContent = repairedContent;
-                    setStreamedContentMap((prev: Map<string, string>) => {
-                        const next = new Map(prev);
-                        next.set(conversationId, currentContent);
-                        return next;
-                    });
+                    flushStreamedContent();
                 }
 
                 const aiMessage: Message = {
@@ -2627,6 +2616,15 @@ export const sendPayload = async (
     } finally {
         if (eventSource && typeof eventSource.close === 'function') eventSource.close();
         document.removeEventListener('abortStream', abortListener as EventListener);
+        // Cancel any pending rAF to prevent setState after cleanup
+        if (_streamRafId !== null) {
+            cancelAnimationFrame(_streamRafId);
+            _streamRafId = null;
+        }
+        if (_streamFallbackId !== null) {
+            clearTimeout(_streamFallbackId);
+            _streamFallbackId = null;
+        }
         setIsStreaming(false);
         removeStreamingConversation(conversationId);
 
