@@ -4486,6 +4486,12 @@ async def api_add_explicit_paths(request: AddExplicitPathsRequest):
                     if request.add_to_context:
                         file_keys = _collect_leaf_file_keys(path, is_inside_workspace, user_codebase_dir)
                         context_keys.extend(file_keys)
+                    # Always auto-select AGENTS.md / README.md files found
+                    # in the imported hierarchy so the model sees project guidance.
+                    doc_keys = _collect_documentation_file_keys(path, is_inside_workspace, user_codebase_dir)
+                    for dk in doc_keys:
+                        if dk not in context_keys:
+                            context_keys.append(dk)
                     
         except Exception as e:
             logger.error(f"Error adding path {path}: {e}")
@@ -4524,6 +4530,41 @@ def _collect_leaf_file_keys(dir_path: str, is_inside_workspace: bool, user_codeb
                 # External paths use [external]/abs/path/to/file
                 key = "[external]" + full
             keys.append(key)
+    return keys
+
+
+def _collect_documentation_file_keys(
+    dir_path: str, is_inside_workspace: bool, user_codebase_dir: str, max_depth: int = 10
+) -> list:
+    """
+    Walk a directory and return tree keys for AGENTS.md and README.md files.
+
+    These documentation files are auto-selected in context whenever a
+    directory hierarchy is imported, so the model always sees the
+    project-level guidance they contain.
+    """
+    DOC_FILES = {'AGENTS.md', 'README.md'}
+    keys: list[str] = []
+    for root, dirs, files in os.walk(dir_path):
+        depth = root[len(dir_path):].count(os.sep)
+        if depth >= max_depth:
+            dirs[:] = []
+            continue
+        # Skip hidden directories
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        for fname in files:
+            if fname in DOC_FILES:
+                full = os.path.join(root, fname)
+                if is_inside_workspace:
+                    key = os.path.relpath(full, user_codebase_dir)
+                else:
+                    key = "[external]" + full
+                keys.append(key)
+    if keys:
+        logger.info(
+            f"📄 Auto-context: found {len(keys)} documentation file(s) "
+            f"(AGENTS.md / README.md) in {dir_path}"
+        )
     return keys
 
 
