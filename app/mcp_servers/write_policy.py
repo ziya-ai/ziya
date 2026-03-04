@@ -92,6 +92,9 @@ class ShellWriteChecker:
         return True, ""
 
     def _redirection(self, command: str) -> Tuple[bool, str]:
+        # Strip heredoc bodies — they aren't shell-level I/O but contain
+        # arbitrary code that may include >, >=, >> operators.
+        command = _strip_heredoc_bodies(command)
         i, ln = 0, len(command)
         sq = dq = False
         while i < ln:
@@ -123,6 +126,31 @@ class ShellWriteChecker:
                 continue
             i += 1
         return True, ""
+
+
+def _strip_heredoc_bodies(command: str) -> str:
+    """Remove heredoc bodies so their content isn't mistaken for redirection.
+
+    Handles:  cmd << DELIM ... DELIM
+              cmd << 'DELIM' ... DELIM
+              cmd << "DELIM" ... DELIM
+              cmd <<- DELIM ... DELIM   (dash variant)
+    """
+    pattern = re.compile(
+        r'<<-?\s*'
+        r"""(?:'([^']+)'|"([^"]+)"|(\S+))"""
+        r'\n',
+        re.MULTILINE,
+    )
+    result = command
+    for m in pattern.finditer(command):
+        delim = m.group(1) or m.group(2) or m.group(3)
+        body_start = m.end()
+        end_pattern = re.compile(r'^' + re.escape(delim) + r'\s*$', re.MULTILINE)
+        end_match = end_pattern.search(result, body_start)
+        if end_match:
+            result = result[:body_start] + result[end_match.end():]
+    return result
 
 
 def _tokenize(cmd: str) -> List[str]:

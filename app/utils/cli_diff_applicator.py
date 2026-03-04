@@ -200,8 +200,9 @@ class CLIDiffApplicator:
             print(f"\033[90m... ({total_lines - 15} more lines)\033[0m")
         
         print(f"\033[36m{'─' * 60}\033[0m")
+        return total_lines > 15
     
-    def _prompt_user_action(self) -> str:
+    def _prompt_user_action(self, show_view: bool = True) -> str:
         """
         Prompt user for action on current diff.
         
@@ -214,11 +215,13 @@ class CLIDiffApplicator:
                     "\n\033[1mAction:\033[0m "
                     "\033[32m[a]\033[0mpply / "
                     "\033[33m[s]\033[0mkip / "
-                    "\033[36m[v]\033[0miew full / "
+                    + ("\033[36m[v]\033[0miew full / " if show_view else "")
+                    +
                     "\033[31m[q]\033[0muit? "
                 ).strip().lower()
                 
-                if response in ['a', 's', 'v', 'q']:
+                valid = ['a', 's', 'q'] + (['v'] if show_view else [])
+                if response in valid:
                     return response
                 else:
                     print("\033[90mInvalid choice. Please enter a, s, v, or q.\033[0m")
@@ -339,11 +342,11 @@ class CLIDiffApplicator:
         
         # Process each diff one at a time
         for i, diff in enumerate(diffs, 1):
-            self._print_diff_preview(diff, i, len(diffs))
+            is_truncated = self._print_diff_preview(diff, i, len(diffs))
             
             # Prompt for action
             while True:
-                action = self._prompt_user_action()
+                action = self._prompt_user_action(show_view=is_truncated)
                 
                 if action == 'q':
                     print(f"\n\033[90mStopping. Processed {i-1}/{len(diffs)} diffs.\033[0m")

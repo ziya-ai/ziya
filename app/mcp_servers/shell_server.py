@@ -211,16 +211,23 @@ class ShellServer:
         
         return segments
     
-    def is_command_allowed(self, command: str) -> bool:
+    def is_command_allowed(self, command: str) -> tuple:
         """
         Check if a command matches any of the allowed patterns.
         Also validates all commands in chains (&&, ||, ;, |) and substitutions.
+        Returns (allowed: bool, denial_reason: str).
         """
         if not command or not command.strip():
-            return False
+            return False, "Empty command"
         
         command = command.strip()
-        command = command.split('\n')[0].strip()
+        # Skip leading shell comment lines so "# explanation\nsed ..."
+        # correctly identifies 'sed' as the command, not '#'.
+        lines = command.split('\n')
+        lines = [l for l in lines if not l.lstrip().startswith('#')]
+        command = lines[0].strip() if lines else ''
+        if not command:
+            return False, "Command is only comments"
 
         # YOLO mode — allow everything except always_blocked commands
         if self.yolo_mode:
@@ -229,16 +236,16 @@ class ShellServer:
                 first_word = token.strip().split()[0] if token.strip() else ''
                 if first_word in always_blocked:
                     print(f"YOLO mode: '{first_word}' is in always_blocked list", file=sys.stderr)
-                    return False
+                    return False, f"'{first_word}' is in the always-blocked list"
             print(f"YOLO mode: allowing '{command[:80]}'", file=sys.stderr)
-            return True
+            return True, ""
         
         # Split by shell operators and validate each segment
         segments = self._split_by_shell_operators(command)
         
         if not segments:
             print(f"Command parsing resulted in no segments", file=sys.stderr)
-            return False
+            return False, "Command parsing produced no segments"
         
         print(f"Command split into {len(segments)} segment(s)", file=sys.stderr)
         
@@ -256,13 +263,15 @@ class ShellServer:
                 substitutions = re.findall(r'\$\(([^)]+)\)', cmd_segment)
                 # Pattern for `...`
                 substitutions.extend(re.findall(r'`([^`]+)`', cmd_segment))
-                
                 for sub_cmd in substitutions:
                     print(f"Validating command substitution: '{sub_cmd}'", file=sys.stderr)
-                    # Recursively validate substituted commands
-                    if not self.is_command_allowed(sub_cmd):
+                    sub_ok, _sub_reason = self.is_command_allowed(sub_cmd)
+                    if not sub_ok:
                         print(f"Command substitution '{sub_cmd}' is not allowed", file=sys.stderr)
-                        return False
+                        first_word = sub_cmd.strip().split()[0] if sub_cmd.strip() else sub_cmd
+                        return False, f"'{first_word}' (in command substitution) is not allowed"
+            
+            # Validate the segment itself
             
             # Validate the segment itself
             segment_allowed = False
@@ -278,11 +287,13 @@ class ShellServer:
             
             if not segment_allowed:
                 print(f"Segment '{cmd_segment}' did not match any allowed patterns", file=sys.stderr)
-                return False
+                first_word = cmd_segment.strip().split()[0] if cmd_segment.strip() else cmd_segment
+                return False, f"'{first_word}' is not allowed"
         
         # All segments are valid
         print(f"All {len(segments)} segments validated successfully", file=sys.stderr)
-        return True
+        return True, ""
+        
     
     def _validate_single_command(self, cmd_segment: str) -> bool:
         """Validate a single command segment against allowed patterns."""
@@ -423,13 +434,14 @@ class ShellServer:
                     }
                 
                 # Check if command is allowed
-                if not self.is_command_allowed(command):
+                allowed, denial_reason = self.is_command_allowed(command)
+                if not allowed:
                     return {
                         "jsonrpc": "2.0",
                         "id": request_id,
                         "error": {
                             "code": -32602,
-                            "message": f"🚫 SECURITY BLOCK: Command '{command}' is not allowed.\n\n" +
+                            "message": f"🚫 BLOCKED: {denial_reason}\n\n" +
                                      f"📋 Allowed commands: {self.get_allowed_commands_description()}\n\n" +
                                      f"💡 Tip: You can configure allowed commands in the Shell Configuration settings."
                         }
