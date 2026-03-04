@@ -8,6 +8,7 @@ import { Conversation, ConversationFolder, SearchResult } from '../utils/types';
 import { useProject } from '../context/ProjectContext';
 import { db } from '../utils/db';
 import { v4 as uuidv4 } from 'uuid';
+import type { DelegateMeta, TaskPlan, DelegateStatus } from '../types/delegate';
 // MUI imports
 import { styled } from '@mui/material/styles';
 import { TreeView } from '@mui/x-tree-view/TreeView';
@@ -139,6 +140,9 @@ interface ChatTreeItemProps {
   nodeId: string;
   labelText: string;  // This property is used in the component
   isFolder?: boolean;
+  isTaskPlanFolder?: boolean;
+  taskPlanProgress?: string;   // e.g. "3/4"
+  delegateStatus?: DelegateStatus | 'orchestrator' | null;
   isPinned?: boolean;
   isCurrentItem?: boolean;
   isGlobalItem?: boolean;
@@ -179,6 +183,9 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     nodeId,
     labelText,
     isFolder = false,
+    isTaskPlanFolder = false,
+    taskPlanProgress,
+    delegateStatus,
     isPinned = false,
     isCurrentItem = false,
     isGlobalItem = false,
@@ -296,9 +303,30 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
             }}
           >
             {isFolder ? (
-              <FolderIcon color="primary" sx={{ mr: 1, fontSize: 20 }} />
+              isTaskPlanFolder ? (
+                <span style={{ marginRight: 8, fontSize: 16 }}>⚡</span>
+              ) : (
+                <FolderIcon color="primary" sx={{ mr: 1, fontSize: 20 }} />
+              )
             ) : (
-              <ChatIcon sx={{ mr: 1, fontSize: 20 }} />
+              delegateStatus ? (
+                <span style={{
+                  marginRight: 8,
+                  fontSize: 14,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                }}>
+                  {delegateStatus === 'orchestrator' && '🎯'}
+                  {delegateStatus === 'crystal' && '💎'}
+                  {delegateStatus === 'running' && <span style={{ animation: 'pulse 2s infinite' }}>🔵</span>}
+                  {delegateStatus === 'compacting' && <span style={{ animation: 'pulse 1.5s infinite' }}>🟢</span>}
+                  {delegateStatus === 'proposed' && '⏳'}
+                  {delegateStatus === 'ready' && '⏳'}
+                  {delegateStatus === 'failed' && '❌'}
+                </span>
+              ) : (
+                <ChatIcon sx={{ mr: 1, fontSize: 20 }} />
+              )
             )}
 
             {isEditing ? (
@@ -331,6 +359,16 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                 >
                   {labelText}
                 </Typography>
+                {/* Delegate status badge (after label text) */}
+                {delegateStatus === 'crystal' && (
+                  <Typography variant="caption" sx={{ ml: 0.5, color: '#52c41a', fontWeight: 500 }}>✓</Typography>
+                )}
+                {(delegateStatus === 'running' || delegateStatus === 'compacting') && (
+                  <Typography variant="caption" sx={{ ml: 0.5, color: '#1890ff', fontSize: 10 }}>⟳</Typography>
+                )}
+                {delegateStatus === 'failed' && (
+                  <Typography variant="caption" sx={{ ml: 0.5, color: '#ff4d4f', fontWeight: 500 }}>✗</Typography>
+                )}
                 {isPinned && (
                   <PushPinIcon fontSize="small" color="primary" sx={{ ml: 0.5, fontSize: 14 }} />
                 )}
@@ -339,6 +377,9 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                 )}
                 {isFolder && conversationCount > 0 && (
                   <Typography variant="caption" sx={{ ml: 0.5, color: 'text.secondary' }}>({conversationCount})</Typography>
+                )}
+                {isTaskPlanFolder && taskPlanProgress && (
+                  <Typography variant="caption" sx={{ ml: 0.5, px: 0.5, borderRadius: '8px', backgroundColor: '#52c41a', color: '#fff', fontWeight: 600, fontSize: 10 }}>{taskPlanProgress}</Typography>
                 )}
 
                 <Box sx={{
@@ -1929,7 +1970,7 @@ const MUIChatHistory = () => {
     // Create a stable hash of inputs to detect actual changes
     const inputHash = JSON.stringify({
       folders: folders.map(f => ({ id: f.id, name: f.name, parentId: f.parentId, isGlobal: f.isGlobal })),
-      conversations: conversations.map(c => ({ id: c.id, title: c.title, folderId: c.folderId, isActive: c.isActive, lastAccessedAt: c.lastAccessedAt, isGlobal: c.isGlobal })),
+      conversations: conversations.map(c => ({ id: c.id, title: c.title, folderId: c.folderId, isActive: c.isActive, lastAccessedAt: c.lastAccessedAt, isGlobal: c.isGlobal, ds: c.delegateMeta?.status })),
       pinnedFolders: Array.from(pinnedFolders)
     });
 
@@ -1947,6 +1988,7 @@ const MUIChatHistory = () => {
         children: [], // Initialize for sub-folders and conversations
         folder: folder, // Keep the original folder object
         conversationCount: 0,
+        taskPlan: folder.taskPlan || null,
         isPinned: pinnedFolders.has(folder.id),
         lastActivityTime: 0, // Will be calculated from conversations
         createdAt: folder.createdAt || 0 // Use creation time as fallback
@@ -1968,7 +2010,8 @@ const MUIChatHistory = () => {
         folderNode.children.push({ // Add conversation node directly
           id: `conv-${conv.id}`,
           name: conv.title,
-          conversation: conv // Keep the original conversation object
+          conversation: conv, // Keep the original conversation object
+          delegateMeta: conv.delegateMeta || null,
         });
         folderNode.conversationCount++;
 
@@ -2003,7 +2046,8 @@ const MUIChatHistory = () => {
         rootItems.push({
           id: `conv-${conv.id}`,
           name: conv.title,
-          conversation: conv
+        conversation: conv,
+        delegateMeta: conv.delegateMeta || null,
         });
       }
     });
@@ -2043,6 +2087,19 @@ const MUIChatHistory = () => {
         // Pinned folders come first
         if (a.isPinned && !b.isPinned) return -1;
         if (!a.isPinned && b.isPinned) return 1;
+
+        // Delegate conversations: orchestrator first, then delegates in creation order
+        const aDel = a.delegateMeta;
+        const bDel = b.delegateMeta;
+        if (aDel && bDel) {
+          // Orchestrator always first
+          if (aDel.role === 'orchestrator' && bDel.role !== 'orchestrator') return -1;
+          if (bDel.role === 'orchestrator' && aDel.role !== 'orchestrator') return 1;
+          // Both delegates — sort by createdAt (insertion order) ascending
+          const aTime = a.conversation?.lastAccessedAt ?? 0;
+          const bTime = b.conversation?.lastAccessedAt ?? 0;
+          return aTime - bTime;
+        }
 
         // Get activity times for both items
         const getActivityTime = (item: any) => {
@@ -2362,7 +2419,39 @@ const MUIChatHistory = () => {
     return nodes.map(node => {
       const isFolder = Boolean(node.folder);
       const nodeId = node.id;
-      const labelText = isFolder ? node.name : node.name;
+
+      // Delegate-aware display properties
+      const taskPlan = isFolder ? node.taskPlan : null;
+      const isTaskPlanFolder = Boolean(taskPlan);
+      let taskPlanProgress: string | undefined;
+      if (isTaskPlanFolder && node.children) {
+        const delegateChildren = node.children.filter(
+          (c: any) => c.delegateMeta?.role === 'delegate'
+        );
+        if (delegateChildren.length > 0) {
+          const crystalCount = delegateChildren.filter(
+            (c: any) => c.delegateMeta?.status === 'crystal'
+          ).length;
+          taskPlanProgress = `${crystalCount}/${delegateChildren.length}`;
+        }
+      }
+
+      // Delegate status for individual conversations
+      const delegateMeta = !isFolder ? node.delegateMeta : null;
+      let delegateStatus: DelegateStatus | 'orchestrator' | null = null;
+      if (delegateMeta) {
+        if (delegateMeta.role === 'orchestrator') {
+          delegateStatus = 'orchestrator';
+        } else {
+          delegateStatus = delegateMeta.status || null;
+        }
+      }
+
+      // Strip leading emoji from title when delegateMeta provides the icon
+      let labelText = node.name;
+      if (delegateStatus && !isFolder) {
+        labelText = labelText.replace(/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]\s*/u, '');
+      }
       const isPinned = isFolder && pinnedFolders.has(node.id);
       const isCurrentItem = isFolder
         ? node.id === currentFolderId
@@ -2430,6 +2519,9 @@ const MUIChatHistory = () => {
           nodeId={nodeId}
           labelText={labelText}
           isFolder={isFolder}
+          isTaskPlanFolder={isTaskPlanFolder}
+          taskPlanProgress={taskPlanProgress}
+          delegateStatus={delegateStatus}
           isPinned={isPinned}
           isCurrentItem={isCurrentItem}
           isGlobalItem={isGlobalItem}
@@ -2457,7 +2549,8 @@ const MUIChatHistory = () => {
           style={{
             cursor: customDragState.isDragging && customDragState.draggedNodeId === nodeId ? 'grabbing' : 'grab',
             opacity: customDragState.isDragging && customDragState.draggedNodeId === nodeId ? 0.6 : 1,
-            transition: 'opacity 0.2s ease'
+            transition: 'opacity 0.2s ease',
+            ...(isTaskPlanFolder ? { borderLeft: '3px solid #6366f1', borderRadius: '4px' } : {}),
           }}
         >
           {isFolder && node.children && node.children.length > 0 ? renderTree(node.children) : null}

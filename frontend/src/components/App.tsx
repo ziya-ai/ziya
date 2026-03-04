@@ -19,6 +19,7 @@ import { useTheme } from '../context/ThemeContext';
 import PanelResizer from './PanelResizer';
 import { useChatContext } from '../context/ChatContext';
 import { ProjectProvider } from '../context/ProjectContext';
+import { useProject } from '../context/ProjectContext';
 import { ProfilerWrapper } from './ProfilerWrapper';
 import { SafariWarning } from './SafariWarning';
 import { loadFormatters } from '../utils/mcpFormatterLoader';
@@ -33,6 +34,7 @@ const ExportConversationModal = React.lazy(() => import("./ExportConversationMod
 // Lazy load the Conversation component
 const Conversation = React.lazy(() => import("./Conversation"));
 const AstStatusIndicator = React.lazy(() => import("./AstStatusIndicator"));
+const GraphPanel = React.lazy(() => import("./ConversationGraph/GraphPanel"));
 
 // Error boundary component to catch extension context errors
 class ExtensionErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
@@ -45,8 +47,8 @@ class ExtensionErrorBoundary extends React.Component<{ children: React.ReactNode
         if (error.message.includes('Extension context invalidated')) {
             return { hasError: true };
         }
-        // Let other errors propagate normally
-        throw error;
+        // Don't handle non-extension errors — return null so React propagates to next boundary
+        return null;
     }
     componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
         // Log extension context errors silently
@@ -104,6 +106,8 @@ export const App: React.FC = () => {
         streamingConversations, currentConversationId, userHasScrolled, setUserHasScrolled, recordManualScroll
     } = useChatContext();
     const enableCodeApply = window.enableCodeApply === 'true';
+    const { currentProject } = useProject();
+    const [graphPanelOpen, setGraphPanelOpen] = useState(false);
     const [astEnabled, setAstEnabled] = useState(false);
     const [isPanelCollapsed, setIsPanelCollapsed] = useState(() => {
         const saved = localStorage.getItem(PANEL_COLLAPSED_KEY);
@@ -117,7 +121,6 @@ export const App: React.FC = () => {
         const minWidth = 200;
         return isNaN(width) || width <= 0 ? 300 : Math.max(minWidth, width);
     };
-    const lastScrollPositionRef = useRef<number>(0);
     const [panelWidth, setPanelWidth] = useState(() => {
         const saved = localStorage.getItem(PANEL_WIDTH_KEY);
         return saved ? parseInt(saved, 10) : 300; // Default width: 300px
@@ -201,25 +204,6 @@ export const App: React.FC = () => {
         checkASTStatus();
     }, []);
 
-    // Enhanced scroll event listener for proper bottom-follow behavior
-    useEffect(() => {
-        const chatContainer = chatContainerRef.current || document.querySelector('.chat-container') as HTMLElement;
-        if (!chatContainer) return;
-
-        const handleScroll = () => {
-            const scrollDelta = Math.abs(chatContainer.scrollTop - lastScrollPositionRef.current);
-
-            if (scrollDelta > 10) {
-                setUserHasScrolled(true);
-            }
-
-            lastScrollPositionRef.current = chatContainer.scrollTop;
-        };
-
-        chatContainer.addEventListener('scroll', handleScroll, { passive: true });
-        return () => chatContainer.removeEventListener('scroll', handleScroll);
-    }, [userHasScrolled, setUserHasScrolled]);
-
     // On new user message, scroll to active end
     useEffect(() => {
         const lastMessage = currentMessages.length > 0 ? currentMessages[currentMessages.length - 1] : null;
@@ -296,12 +280,15 @@ export const App: React.FC = () => {
     // Add keyboard shortcut handling
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.ctrlKey && e.key === 'r') {
+            if (e.ctrlKey && !e.shiftKey && e.key === 'r') {
                 e.preventDefault();
                 window.location.reload();
             }
+            if (e.ctrlKey && e.shiftKey && e.key === 'G') {
+                e.preventDefault();
+                setGraphPanelOpen(prev => !prev);
+            }
         };
-
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, []);
@@ -485,6 +472,21 @@ export const App: React.FC = () => {
                             </div>
                         </div>
                     </div>
+
+                    {currentConversationId && currentProject?.id && (
+                        <>
+                            <button className="cgp-toggle" onClick={() => setGraphPanelOpen(true)} title="Conversation graph (Ctrl+Shift+G)">🌳</button>
+                            {graphPanelOpen && (
+                                <Suspense fallback={null}>
+                                    <GraphPanel
+                                        projectId={currentProject.id}
+                                        chatId={currentConversationId}
+                                        onClose={() => setGraphPanelOpen(false)}
+                                    />
+                                </Suspense>
+                            )}
+                        </>
+                    )}
 
                     <ScrollIndicator
                         visible={hasNewContentWhileAway || streamCompletedWhileAway}
