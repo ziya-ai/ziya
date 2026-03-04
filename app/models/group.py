@@ -3,6 +3,7 @@ Chat group data models.
 """
 from pydantic import BaseModel
 from typing import List, Optional
+from typing import Any, Dict
 
 class ChatGroup(BaseModel):
     model_config = {"extra": "allow"}
@@ -14,6 +15,11 @@ class ChatGroup(BaseModel):
     collapsed: bool = False
     order: int = 0
     createdAt: int
+    updatedAt: Optional[int] = None
+    # Task description for folder-sticky context (was deferred; now used by TaskPlans)
+    systemInstructions: Optional[str] = None
+    # TaskPlan fields — None for regular folders. See design/newux-context.md.
+    taskPlan: Optional[Dict[str, Any]] = None
 
 class ChatGroupCreate(BaseModel):
     model_config = {"extra": "allow"}

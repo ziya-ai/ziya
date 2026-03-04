@@ -4,6 +4,7 @@ Chat data models.
 from pydantic import BaseModel
 from typing import List, Optional, Any, Dict
 from .group import ChatGroup
+from .delegate import DelegateMeta
 
 class Message(BaseModel):
     model_config = {"extra": "allow"}
@@ -35,6 +36,9 @@ class Chat(BaseModel):
     hasUnreadResponse: Optional[bool] = False
     displayMode: Optional[str] = None
     lastAccessedAt: Optional[int] = None
+    # Delegate fields — None for regular conversations.
+    # See design/newux-context.md for DelegateMeta schema.
+    delegateMeta: Optional[DelegateMeta] = None
 
 class ChatCreate(BaseModel):
     model_config = {"extra": "allow"}

@@ -94,6 +94,7 @@ from app.utils.conversation_exporter import export_conversation_for_paste
 
 # Session management API routers
 from app.api import projects, contexts, skills, chats, tokens
+from app.api import delegates as delegates_api
 from app.utils.paths import get_ziya_home
 from app.utils.logging_utils import logger as app_logger
 
@@ -922,9 +923,14 @@ app.include_router(contexts.router)
 app.include_router(skills.router)
 app.include_router(chats.router)
 app.include_router(tokens.router)
+app.include_router(delegates_api.router)
 app_logger.info("Session management API routes loaded")
 
 # Import and include model routes
+# Conversation graph visualization
+from app.routes.graph_routes import router as graph_router
+app.include_router(graph_router)
+
 # Disabled duplicate routers - server.py already defines all these routes
 # The route modules were attempting to forward to @app decorated functions which doesn't work
 # from app.routes.model_routes import router as model_router
