@@ -678,8 +678,6 @@ export const sendPayload = async (
     let hallucinationDetected = false;  // Failsafe: track if model is generating fake tool output
     const BROADCAST_INTERVAL_MS = 300;
     let toolInputsMap = new Map<string, any>(); // Store tool inputs by tool ID
-    // Batch streaming map updates to once per animation frame
-    let pendingMapUpdate = false;
 
     // Store original params but also track accumulated content for retry
     let originalRequestParams = {
@@ -1681,6 +1679,14 @@ export const sendPayload = async (
                     // No hallucination detected — safe to add content
                     currentContent += contentToAdd;
 
+                    // Reset processing state when actual text content arrives.
+                    // This clears 'awaiting_model_response', 'processing_tools',
+                    // and 'model_thinking' so the LoadingIndicator hides once
+                    // the model is actively streaming text to the user.
+                    if (typeof setProcessingState === 'function') {
+                        setProcessingState('idle');
+                    }
+
                     // Relay to other same-project tabs (throttled)
                     const now = Date.now();
                     if (now - lastBroadcastTime >= BROADCAST_INTERVAL_MS) {
@@ -1691,23 +1697,11 @@ export const sendPayload = async (
                         });
                     }
 
-                    // Batch map updates to once per animation frame to prevent
-                    // 20+ React re-renders per second during streaming
-                    if (!pendingMapUpdate) {
-                        pendingMapUpdate = true;
-                        requestAnimationFrame(() => {
-                            pendingMapUpdate = false;
-                            setStreamedContentMap((prev: Map<string, string>) => {
-                                // Guard: if the stream has already ended, the key will
-                                // have been deleted by removeStreamingConversation.
-                                // Returning prev unchanged prevents the bubble reappearing.
-                                if (!prev.has(conversationId)) return prev;
-                                const next = new Map(prev);
-                                next.set(conversationId, currentContent);
-                                return next;
-                            });
-                        });
-                    }
+                    setStreamedContentMap((prev: Map<string, string>) => {
+                        const next = new Map(prev);
+                        next.set(conversationId, currentContent);
+                        return next;
+                    });
                 }
 
                 // Handle feedback readiness - consolidated handling
