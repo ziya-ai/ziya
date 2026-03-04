@@ -5,6 +5,7 @@ Custom Bedrock client wrapper that ensures max_tokens is correctly passed to the
 import json
 import os
 import re
+import time
 import gc
 from app.utils.logging_utils import logger
 from app.utils.extended_context_manager import get_extended_context_manager
@@ -32,7 +33,8 @@ class CustomBedrockClient:
     # Constants for Claude models
     CLAUDE_CONTEXT_LIMIT = 204698  # Based on observed error messages
     CLAUDE_SAFETY_MARGIN = 1000    # Safety margin to avoid edge cases
-    _extended_context_failures = set()  # Track conversations that failed with extended context
+    _extended_context_failures: Dict[str, float] = {}  # conv_id -> failure timestamp
+    _EXTENDED_CONTEXT_FAILURE_TTL = 120  # seconds before a failure record expires
     
     def __init__(self, client, max_tokens=None, model_config=None):
         """Initialize the custom client."""
@@ -302,8 +304,10 @@ class CustomBedrockClient:
                         if (("input length and `max_tokens` exceed context limit" in error_message or
                             "Input is too long" in error_message or "prompt is too long" in error_message) and conversation_id):
                             
-                            # Check if we've already failed with extended context for this conversation
-                            if conversation_id in self._extended_context_failures:
+                            # Check if we've recently failed with extended context for this conversation
+                            failure_time = self._extended_context_failures.get(conversation_id)
+                            if (failure_time is not None
+                                    and time.time() - failure_time < self._EXTENDED_CONTEXT_FAILURE_TTL):
                                 logger.info(f"Already tried extended context for {conversation_id}, failing fast")
                                 raise
                             
@@ -312,7 +316,7 @@ class CustomBedrockClient:
                                 not self._should_use_extended_context(conversation_id)):
                                 
                                 logger.info(f"First context limit error for {conversation_id}, trying extended context")
-                                self._extended_context_failures.add(conversation_id)
+                                self._extended_context_failures[conversation_id] = time.time()
                                 
                                 return self._retry_with_extended_context(kwargs, error_message, conversation_id)
                         
