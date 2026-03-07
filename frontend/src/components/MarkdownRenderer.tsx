@@ -5157,6 +5157,46 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 });
             }
 
+            // Defensive fix: Reabsorb content that leaked outside a closing code fence.
+            // LLMs sometimes miscount braces and close the fence too early, producing:
+            //   ```           <-- fence close (premature)
+            //   });           <-- leaked content (code, or even a stray word)
+            //   ```diff       <-- next code block's opening fence
+            //
+            // If not caught, leaked content corrupts the fence-open/close tracker,
+            // causing ALL subsequent code fences to be escaped as &#96; entities.
+            //
+            // Two passes:
+            // 1. Mid-message: leaked content between a closing fence and the next opening fence
+            // 2. End-of-string: leaked content after the last closing fence
+
+            // Pass 1: Mid-message — short orphaned content between consecutive fences
+            processedMarkdown = processedMarkdown.replace(
+                /```([ \t]*\n)((?:[^\n]{0,80}\n){1,5})(```[a-zA-Z])/g,
+                (_match, _nl, leaked, nextFence) => {
+                    const trimmed = leaked.trim();
+                    if (!trimmed || trimmed.length > 120) return _match;
+                    // Legitimate prose between code blocks has blank-line separation;
+                    // leaks are directly abutting the fence with no blank line.
+                    if (leaked.includes('\n\n')) return _match;
+                    console.debug('🔧 Fence fix (mid): reabsorbed leaked content:', trimmed);
+                    return trimmed + '\n```\n\n' + nextFence;
+                }
+            );
+
+            // Pass 2: End-of-string — short orphaned content after last closing fence
+            processedMarkdown = processedMarkdown.replace(
+                /```([ \t]*\n)((?:[^\n]{0,80}\n?){1,5})$/,
+                (_match, newline, leaked) => {
+                    const trimmed = leaked.trim();
+                    if (!trimmed || trimmed.length > 120) {
+                        return _match; // Too long to be a leak — leave it alone
+                    }
+                    console.debug('🔧 Fence fix (tail): reabsorbed leaked content:', trimmed);
+                    return trimmed + '\n```';
+                }
+            );
+
             const lexedTokens = marked.lexer(processedMarkdown, markedOptions);
             return lexedTokens as (Tokens.Generic | TokenWithText)[] || [];
         } catch (error) {
@@ -5399,6 +5439,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         });
 
         // Start observing
+        let initialScanTimer: ReturnType<typeof setTimeout> | undefined;
         if (containerRef.current) {
             const container = containerRef.current!;
             observer.observe(container as Node, {
@@ -5407,18 +5448,19 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             });
 
             // Single deferred scan instead of three overlapping timeouts
-            setTimeout(scanAndAttachHandlers, 200);
+            initialScanTimer = setTimeout(scanAndAttachHandlers, 200);
         }
 
         return () => {
             observer.disconnect();
             if (observerTimer) clearTimeout(observerTimer);
+            if (initialScanTimer !== undefined) clearTimeout(initialScanTimer);
             document.removeEventListener('throttlingError', handleThrottlingError as EventListener);
             document.removeEventListener('throttlingRecoveryData', handleThrottlingRecoveryData as EventListener);
             document.removeEventListener('throttleButtonRendered', handleThrottlingError as EventListener);
             attachedHandlersRef.current.clear();
         };
-    }, [containerRef.current, currentConversationId, attachThrottleRetryHandler, scanAndAttachHandlers]);
+    }, [currentConversationId]);
 
     const isMultiFileDiff = markdown?.includes('diff --git') && markdown.split('diff --git').length > 2;
     return isMultiFileDiff && !isSubRender && displayTokens.length === 1 && displayTokens[0].type === 'code' && (displayTokens[0] as TokenWithText).lang === 'diff' ?

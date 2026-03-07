@@ -15,7 +15,6 @@ body {
   margin: 0;
   padding: 0;
   background-color: #ffffff;
-  transition: background-color 0.3s ease, color 0.3s ease;
   --model-display-height: 35px;
   overflow: hidden;
   height: 100vh;
@@ -179,10 +178,9 @@ body.dark a:active {
   bottom: 0;
   margin: 0;
   overflow: hidden !important;
-  transition: left 0.5s ease-in-out, width 0.5s ease-in-out;
+  transition: none;
   border: none;
   background-color: inherit;
-  will-change: transform;
   height: calc(100vh - var(--header-height));
   display: flex;
   flex-direction: row;
@@ -194,7 +192,6 @@ body.dark a:active {
 
 /* Chat Container */
 .chat-container {
-  contain: relative;
   height: calc(100vh - var(--header-height) - 30px);
   overflow-y: auto;
   overflow-x: hidden !important;
@@ -217,10 +214,8 @@ body.dark a:active {
  }
 
 .chat-content-stabilizer {
-  transform: translateZ(0);  /* Force GPU acceleration */
-  backface-visibility: hidden;
+  contain: layout style;
   min-height: 100%;
-  perspective: 1000px;
 }
 
 
@@ -268,7 +263,7 @@ body.dark a:active {
   top: calc(var(--header-height) + 50vh);
   z-index: 3;
   transform: translateY(-50%);
-  transition: left 0.5s ease-in-out, transform 0.5s ease-in-out;
+  transition: none;
   margin-left: 0;
   border-radius: 4px;
   background: none;
@@ -496,7 +491,6 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 /* Input Container */
 .input-container {
   position: sticky;
-  transform: translateZ(0);  /* Force GPU acceleration */
   bottom: 0;
   display: flex;
   flex: 1;
@@ -506,7 +500,7 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   margin-right: 20px;
   padding: 10px 0;
   box-sizing: border-box;
-  transition: left 0.3s ease, width 0.3s ease;
+  transition: none;
   column-gap: 10px;
   background-color: inherit;
   z-index: 2;
@@ -552,7 +546,7 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 .folder-tree-panel {
   position: fixed;
   left: 0;
-  top: 0;
+  top: var(--header-height);
   bottom: 0;
   width: var(--folder-panel-width);
   box-sizing: border-box;
@@ -564,9 +558,7 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   flex-direction: column;
   z-index: 2;
   margin-top: 1px;
-  transform: translateX(0);
   display: flex;
-  height: 100%;
   overflow-y: auto;
 }
 
@@ -597,8 +589,9 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 /* Add class to enable animations after initial load */
 .animations-enabled .folder-tree-panel,
 .animations-enabled .chat-container,
-.animations-enabled .panel-toggle {
-  transition: width 0.5s ease-in-out, opacity 0.5s ease-in-out, transform 0.5s ease-in-out, left 0.5s ease-in-out !important;
+.animations-enabled .panel-toggle,
+.animations-enabled .input-container {
+  transition: width 0.5s ease-in-out, opacity 0.5s ease-in-out, transform 0.5s ease-in-out, left 0.5s ease-in-out;
 }
 
 /* Token display responsive styles */
@@ -786,23 +779,14 @@ button[data-tooltip-delay="50"] {
 
 /* Ensure tree nodes are always visible */
 .ant-tree-treenode {
-  transform: translateZ(0);
-  backface-visibility: hidden;
-}
-
-.ant-tree .ant-tree-treenode {
   width: 100% !important;
   display: flex !important;
 }
 
 .ant-tree-node-content-wrapper {
-  transform: translateZ(0);
-  backface-visibility: hidden;
 }
 
 .ant-tree-title {
-  transform: translateZ(0);
-  backface-visibility: hidden;
 }
 
 /* Ensure the Tree component takes available space */
@@ -845,7 +829,7 @@ button[data-tooltip-delay="50"] {
 .dark .ant-tree .ant-tree-node-content-wrapper:hover {
   background-color: #1f1f1f;
   color: #1890ff;
-  transition: all 0.3s ease;
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 
@@ -874,7 +858,7 @@ button[data-tooltip-delay="50"] {
 
 .token-summary {
   border-color: #303030;
-  transition: all 0.3s ease;
+  transition: opacity 0.3s ease, border-color 0.3s ease;
   padding: 4px 4px 8px 4px !important;
 }
 
@@ -896,8 +880,6 @@ button[data-tooltip-delay="50"] {
   background-color: #f5f5f5;
   border-top: 1px solid #e8e8e8;
   box-sizing: border-box;
-  transform: translateZ(0);
-  will-change: transform;
   color: #666;
   font-size: 11px;
   text-align: center;
@@ -1165,16 +1147,9 @@ body:not(.dark) .token.attr-name {
     font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace;
     font-size: 12px;
     line-height: 20px;
-    min-width: 100% !important; /* force full width */
-    user-select: text;
-    -webkit-user-select: text;
-    -moz-user-select: text;
     table-layout: fixed !important;
-    transform: translateZ(0);
-    contain: layout style;
-    will-change: transform;
+    contain: layout style paint;
 }
-
 /* Ensure code content is selectable but line numbers aren't */
 .diff-code {
     position: relative;
@@ -1812,12 +1787,11 @@ body:not(.dark) .token.attr-name {
 }
 
 .diff-line {
-  contain: strict;
-  content-visibility: auto;
+  contain: layout style;
 }
 
 .diff-line-container {
-  contain: content;
+  contain: layout style;
   position: relative;
 }
 

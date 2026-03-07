@@ -20,7 +20,8 @@ export type SyncMessageType =
   | 'streaming-chunk'
   | 'streaming-state'
   | 'streaming-ended'
-  | 'folders-changed';
+  | 'folders-changed'
+  | 'delegate-status-changed';
 
 export interface SyncMessage {
   type: SyncMessageType;

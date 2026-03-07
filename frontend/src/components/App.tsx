@@ -268,6 +268,12 @@ export const App: React.FC = () => {
         setIsPanelCollapsed(newState);
         localStorage.setItem(PANEL_COLLAPSED_KEY, JSON.stringify(newState));
 
+        // Enable transitions only during panel toggle animation
+        document.documentElement.classList.add('animations-enabled');
+        setTimeout(() => {
+            document.documentElement.classList.remove('animations-enabled');
+        }, 600);
+
         const newWidth = newState ? 0 : panelWidth;
         document.documentElement.style.setProperty('--folder-panel-width', `${newWidth}px`);
     };

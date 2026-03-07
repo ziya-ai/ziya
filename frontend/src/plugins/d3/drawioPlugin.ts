@@ -5,7 +5,7 @@ import '@maxgraph/core/css/common.css';
 
 import { loadStencilsForShapes } from './drawioStencilLoader';
 import { iconRegistry } from './iconRegistry';
-import { enhanceSVGVisibility, isLightBackground, getOptimalTextColor, hexToRgb } from '../../utils/colorUtils';
+import { enhanceSVGVisibility, isLightBackground, getOptimalTextColor, hexToRgb, calculateContrastRatio } from '../../utils/colorUtils';
 import { DrawIOEnhancer } from './drawioEnhancer';
 import { runLayout, applyLayoutToMaxGraph, LayoutNode, LayoutEdge, LayoutContainer } from './layoutEngine';
 
@@ -210,11 +210,13 @@ const normalizeDrawIOXml = (xml: string): string => {
     // CRITICAL FIX: Clamp relative geometry values for edge labels
     // MaxGraph rejects x/y values outside [-1, 1] range for relative geometries
     // Edge labels with x="-0.1" etc need to be clamped to valid range
+    // ONLY apply to geometries with relative="1" — vertex geometries use absolute pixel coords
     normalized = normalized.replace(
         /<mxGeometry\s+([^>]*?)x="(-?\d+\.?\d*)"([^>]*?)>/g,
         (match, before, xValue, after) => {
+            // Only clamp if this geometry has relative="1" (edge labels)
+            if (!match.includes('relative="1"')) return match;
             const x = parseFloat(xValue);
-            // Clamp to [-1, 1] for relative geometries, or ensure valid number
             const clampedX = Math.max(-1, Math.min(1, isNaN(x) ? 0 : x));
             return `<mxGeometry ${before}x="${clampedX}"${after}>`;
         }
@@ -222,6 +224,8 @@ const normalizeDrawIOXml = (xml: string): string => {
     normalized = normalized.replace(
         /<mxGeometry\s+([^>]*?)y="(-?\d+\.?\d*)"([^>]*?)>/g,
         (match, before, yValue, after) => {
+            // Only clamp if this geometry has relative="1" (edge labels)
+            if (!match.includes('relative="1"')) return match;
             const y = parseFloat(yValue);
             const clampedY = Math.max(-1, Math.min(1, isNaN(y) ? 0 : y));
             return `<mxGeometry ${before}y="${clampedY}"${after}>`;
@@ -970,10 +974,12 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                                 // Calculate optimal text color for this background
                                 const optimalColor = getOptimalTextColor(fillColor);
                                 
-                                // If current font color doesn't exist OR has poor contrast, use optimal
-                                if (!fontColor || fontColor === fillColor || fontColor === styleObj['strokeColor']) {
+                                // ALWAYS verify contrast ratio - don't trust LLM-provided fontColor
+                                const contrast = fontColor ? calculateContrastRatio(fontColor, fillColor) : 0;
+                                const needsFix = !fontColor || contrast < 3.0;
+                                if (needsFix) {
                                     styleObj['fontColor'] = optimalColor;
-                                    console.log(`📐 CONTRAST-FIX: Cell ${cellId} - ${fillColor} background needs ${optimalColor} text (was ${fontColor || 'unset'})`);
+                                    console.log(`📐 CONTRAST-FIX: Cell ${cellId} - ${fillColor} bg, contrast ${contrast.toFixed(1)} < 3.0, ${fontColor || 'unset'} → ${optimalColor}`);
                                 }
                             } else if (!styleObj['fontColor']) {
                                 // No fill color - use theme-based default

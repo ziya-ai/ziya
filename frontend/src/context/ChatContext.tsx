@@ -13,6 +13,8 @@ import { getTabState, setTabState } from '../utils/tabState';
 import * as syncApi from '../api/conversationSyncApi';
 import { useServerStatus } from './ServerStatusContext';
 import * as folderSyncApi from '../api/folderSyncApi';
+import { useDelegatePolling } from '../hooks/useDelegatePolling';
+import { useDelegateStreaming } from '../hooks/useDelegateStreaming';
 
 export type ProcessingState = 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'awaiting_tool_response' | 'tool_throttling' | 'tool_limit_reached' | 'model_thinking' | 'error';
 
@@ -358,6 +360,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const processedModelChanges = useRef<Set<string>>(new Set());
     const saveQueue = useRef<Promise<void>>(Promise.resolve());
     const otherProjectConvsCache = useRef<{convs: any[], timestamp: number}>({convs: [], timestamp: 0});  // BUGFIX: Cache other-project convos to avoid reading ALL from DB on every save
+
     const [lastResponseIncomplete, setLastResponseIncomplete] = useState<boolean>(false);
     const isRecovering = useRef<boolean>(false);
     const lastRecoveryAttempt = useRef<number>(0);
@@ -907,6 +910,20 @@ export function ChatProvider({ children }: ChatProviderProps) {
         });
     }, [currentConversationId, currentFolderId, dynamicTitleLength, queueSave, currentProject?.id]);
 
+    // T28: Poll for delegate status changes when TaskPlan folders are active
+    useDelegatePolling(currentProject?.id, folders, setConversations, setFolders);
+
+    // T28b: Live WebSocket streaming for delegate conversations
+    useDelegateStreaming({
+        conversationId: currentConversationId,
+        conversations,
+        streamingConversations,
+        addStreamingConversation,
+        removeStreamingConversation,
+        setStreamedContentMap,
+        addMessageToConversation,
+    });
+
     // Add a function to handle model change notifications
     const handleModelChange = useCallback((event: CustomEvent) => {
         const { previousModel, newModel, modelId, previousModelId } = event.detail;
@@ -1029,7 +1046,14 @@ export function ChatProvider({ children }: ChatProviderProps) {
             const newId = uuidv4();
 
             // Use the provided folder ID if available, otherwise use the current folder ID
-            const targetFolderId = specificFolderId !== undefined ? specificFolderId : currentFolderId;
+            let targetFolderId = specificFolderId !== undefined ? specificFolderId : currentFolderId;
+
+            // Prevent creating regular conversations inside TaskPlan folders —
+            // those folders are managed exclusively by the delegate system.
+            if (targetFolderId) {
+                const folder = folders.find(f => f.id === targetFolderId);
+                if (folder?.taskPlan) targetFolderId = null;
+            }
 
             const newConversation: Conversation = {
                 id: newId,
@@ -1246,6 +1270,31 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 console.error('Failed to persist conversation ID during switch:', e);
             }
 
+            // Delegate conversations are created server-side. Their messages
+            // may not be in IndexedDB yet. Fetch fresh data on demand.
+            const conv = conversations.find(c => c.id === conversationId);
+            if (conv?.delegateMeta) {
+                try {
+                    const pid = conv.projectId || currentProject?.id;
+                    if (pid) {
+                        const serverChat = await syncApi.getChat(pid, conversationId);
+                        if (serverChat && serverChat.messages && serverChat.messages.length > 0) {
+                            const freshMessages = serverChat.messages;
+                            setConversations(prev => prev.map(c =>
+                                c.id === conversationId
+                                    ? { ...c, messages: freshMessages, delegateMeta: serverChat.delegateMeta ?? c.delegateMeta }
+                                    : c
+                            ));
+                            await db.saveConversations(conversations.map(c =>
+                                c.id === conversationId ? { ...c, messages: freshMessages } : c
+                            ));
+                        }
+                    }
+                } catch (err) {
+                    console.warn('Failed to fetch delegate conversation from server:', err);
+                }
+            }
+
             // Set the current folder ID based on the conversation's folder
             // This should not block conversation loading
             const conversation = conversations.find(c => c.id === conversationId);
@@ -1307,7 +1356,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 return next;
             });
         }
-    }, [currentConversationId, conversations, streamingConversations, queueSave, isTopToBottom]);
+    }, [currentConversationId, conversations, streamingConversations, queueSave, isTopToBottom, currentProject?.id]);
 
     // Load conversation and scroll to specific message
     const loadConversationAndScrollToMessage = useCallback(async (conversationId: string, messageIndex: number) => {
@@ -2102,6 +2151,26 @@ export function ChatProvider({ children }: ChatProviderProps) {
         projectSync.on('conversations-changed', handleConversationsChanged);
         projectSync.on('conversation-created', handleConversationsChanged);
         projectSync.on('conversation-deleted', handleConversationsChanged);
+
+        // T28: When another tab detects delegate status changes, update our
+        // conversation state directly from the broadcast payload.
+        // The polling tab includes { planId, delegates: { did: status } }
+        // so receiving tabs can merge without a server/IndexedDB round-trip.
+        const handleDelegateStatusChanged = async (msg: any) => {
+            if (!isInitialized) return;
+            const { planId, delegates } = msg;
+            if (!planId || !delegates) return;
+            setConversations(prev => prev.map(c => {
+                if (!c.delegateMeta || c.delegateMeta.plan_id !== planId) return c;
+                const did = c.delegateMeta.delegate_id;
+                if (!did || !delegates[did]) return c;
+                const newStatus = delegates[did];
+                if (c.delegateMeta.status === newStatus) return c;
+                return { ...c, delegateMeta: { ...c.delegateMeta, status: newStatus } };
+            }));
+        };
+        projectSync.on('delegate-status-changed', handleDelegateStatusChanged);
+
         projectSync.on('folders-changed', handleFoldersChanged);
         projectSync.on('streaming-chunk', handleStreamingChunk);
         projectSync.on('streaming-state', handleStreamingState);
@@ -2117,6 +2186,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             projectSync.off('conversations-changed', handleConversationsChanged);
             projectSync.off('conversation-created', handleConversationsChanged);
             projectSync.off('conversation-deleted', handleConversationsChanged);
+            projectSync.off('delegate-status-changed', handleDelegateStatusChanged);
             projectSync.off('folders-changed', handleFoldersChanged);
             projectSync.off('streaming-chunk', handleStreamingChunk);
             projectSync.off('streaming-state', handleStreamingState);
