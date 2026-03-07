@@ -18,7 +18,8 @@ class PrecisionPromptSystem:
                       model_info: Dict[str, Any],
                       files: List[str],
                       question: str,
-                      chat_history: List[Dict[str, Any]] = None) -> List:
+                      chat_history: List[Dict[str, Any]] = None,
+                      system_prompt_addition: str = "") -> List:
         """
         Drop-in replacement for the original build_messages function.
         
@@ -118,6 +119,11 @@ class PrecisionPromptSystem:
                         messages[0]["content"] += fileio_section
                 except Exception as e:
                     pass  # Non-fatal — fileio instructions are advisory
+
+            # Inject skill prompts and other per-request additions (e.g. from
+            # activeSkillPrompts on the frontend) into the system message.
+            if system_prompt_addition and messages and messages[0]["role"] == "system":
+                messages[0]["content"] += "\n\n" + system_prompt_addition
 
             # For OpenAI endpoints, override XML sentinel instructions so the
             # model uses the API's native function calling instead of narrating.
