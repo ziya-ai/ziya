@@ -11,7 +11,7 @@ Cross-document references:
 """
 
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 
 
 class FileChange(BaseModel):
@@ -96,8 +96,10 @@ class TaskPlan(BaseModel):
     name: str
     description: str = ""
     orchestrator_id: Optional[str] = None
+    source_conversation_id: Optional[str] = None
     delegate_specs: List[DelegateSpec] = []
     crystals: List[MemoryCrystal] = []
+    task_list: List["SwarmTask"] = []
     status: str = "planning"
     task_graph: Optional[Dict[str, Any]] = None
     created_at: float = 0.0
@@ -125,3 +127,18 @@ class SwarmBudget(BaseModel):
     total_active: int = 0
     total_freed: int = 0
     headroom: int = 0
+
+
+class SwarmTask(BaseModel):
+    """A task on the shared swarm task list, visible to all delegates."""
+    model_config = {"extra": "allow"}
+
+    task_id: str
+    title: str
+    status: str = "open"  # 'open' | 'claimed' | 'done' | 'blocked'
+    claimed_by: Optional[str] = None  # delegate_id
+    added_by: str = ""  # delegate_id that created it ("" = orchestrator)
+    summary: Optional[str] = None  # completion summary
+    created_at: float = 0.0
+    completed_at: Optional[float] = None
+    tags: List[str] = []

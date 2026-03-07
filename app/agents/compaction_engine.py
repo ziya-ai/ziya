@@ -130,6 +130,76 @@ class CompactionEngine:
         return crystal
 
     # ------------------------------------------------------------------
+    # T39: Retroactive crystal review
+    # ------------------------------------------------------------------
+
+    async def retroactive_review(
+        self,
+        late_crystal: MemoryCrystal,
+        downstream_crystals: List[MemoryCrystal],
+    ) -> str:
+        """
+        Evaluate a late-arriving crystal against downstream work.
+
+        When delegate A was a dependency of delegate B, but B started
+        before A's crystal was ready (e.g. stub promotion), this method
+        checks whether A's final crystal conflicts with B's output.
+
+        Returns:
+            'preserved'  — No file overlap; downstream unaffected.
+            'extended'   — Overlap exists but changes are additive.
+            'discarded'  — Conflicting modifications to same files.
+        """
+        if not downstream_crystals:
+            return "preserved"
+
+        late_files = {fc.path for fc in late_crystal.files_changed}
+        if not late_files:
+            return "preserved"
+
+        downstream_files: Dict[str, set] = {}
+        for dc in downstream_crystals:
+            for fc in dc.files_changed:
+                downstream_files.setdefault(fc.path, set()).add(fc.action)
+
+        overlapping = late_files & set(downstream_files.keys())
+
+        if not overlapping:
+            logger.info(
+                f"💎 Retroactive review: {late_crystal.delegate_id} — "
+                f"no file overlap → preserved"
+            )
+            return "preserved"
+
+        late_actions = {
+            fc.path: fc.action for fc in late_crystal.files_changed
+        }
+
+        for path in overlapping:
+            late_action = late_actions.get(path, "modified")
+            ds_actions = downstream_files.get(path, set())
+
+            if late_action == "deleted" or "deleted" in ds_actions:
+                logger.warning(
+                    f"💎 Retroactive review: {late_crystal.delegate_id} — "
+                    f"conflict on {path} (delete) → discarded"
+                )
+                return "discarded"
+
+            if late_action == "modified" and "modified" in ds_actions:
+                logger.warning(
+                    f"💎 Retroactive review: {late_crystal.delegate_id} — "
+                    f"conflict on {path} (both modified) → discarded"
+                )
+                return "discarded"
+
+        logger.info(
+            f"💎 Retroactive review: {late_crystal.delegate_id} — "
+            f"additive overlap on {overlapping} → extended"
+        )
+        return "extended"
+
+    # ------------------------------------------------------------------
     # Phase A: Deterministic extraction
     # ------------------------------------------------------------------
 
