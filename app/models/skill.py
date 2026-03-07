@@ -33,6 +33,16 @@ class Skill(BaseModel):
     # Discovery metadata
     source: Optional[str] = None  # 'builtin', 'custom', 'project', 'user'
     allowImplicitInvocation: bool = True
+    # agentskills.io spec fields
+    keywords: Optional[List[str]] = None
+    license: Optional[str] = None
+    compatibility: Optional[str] = None
+    skillMetadata: Optional[Dict[str, str]] = None
+    allowedTools: Optional[List[str]] = None
+    skillPath: Optional[str] = None  # Filesystem path for project-discovered skills
+    hasScripts: bool = False
+    hasReferences: bool = False
+    hasAssets: bool = False
 
 
 class SkillCreate(BaseModel):
