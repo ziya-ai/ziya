@@ -51,6 +51,7 @@ class CLIDiffApplicator:
         self.applied_count = 0
         self.skipped_count = 0
         self.failed_count = 0
+        self.diff_results = []  # List of (file_path, status, message) tuples
     
     def extract_diffs(self, markdown: str) -> List[DiffBlock]:
         """
@@ -130,6 +131,33 @@ class CLIDiffApplicator:
                         return True
         return False
     
+    @staticmethod
+    def _is_sequential_pair(earlier_diff: str, later_diff: str) -> bool:
+        """Check if two overlapping diffs are sequential (first prepares
+        for the second) rather than the later superseding the earlier.
+
+        Heuristic: if the earlier diff is predominantly subtractive in the
+        overlapping region (removing code to make way) and the later diff
+        adds new code, they're complementary steps, not revisions.
+        """
+        earlier_adds = 0
+        earlier_removes = 0
+        later_adds = 0
+        for line in earlier_diff.splitlines():
+            if line.startswith('@@') or line.startswith('diff ') or line.startswith('---') or line.startswith('+++'):
+                continue
+            if line.startswith('+'):
+                earlier_adds += 1
+            elif line.startswith('-'):
+                earlier_removes += 1
+        for line in later_diff.splitlines():
+            if line.startswith('@@') or line.startswith('diff ') or line.startswith('---') or line.startswith('+++'):
+                continue
+            if line.startswith('+'):
+                later_adds += 1
+        # Earlier is predominantly a deletion and later adds new content
+        return earlier_removes > 0 and earlier_adds <= 1 and later_adds > 0
+
     def _deduplicate_diffs(self, diffs: List[DiffBlock]) -> List[DiffBlock]:
         """
         When the model revises a diff, both the original and the corrected
@@ -148,6 +176,10 @@ class CLIDiffApplicator:
         # Pre-parse hunk ranges for every diff
         parsed_ranges = [self._parse_hunk_ranges(d.content) for d in diffs]
         
+        # Debug: show what dedup is comparing
+        for idx, d in enumerate(diffs):
+            print(f"\033[90m  [dedup] diff {idx}: file={d.file_path} ranges={parsed_ranges[idx]}\033[0m")
+
         # Walk backwards: for each diff, check if a *later* diff for the
         # same file has overlapping hunks.  If so, mark the earlier one
         # as superseded.
@@ -163,6 +195,8 @@ class CLIDiffApplicator:
                     superseded.add(i)
                     break
                 if self._ranges_overlap(parsed_ranges[i], parsed_ranges[j]):
+                    if self._is_sequential_pair(diffs[i].content, diffs[j].content):
+                        continue  # complementary, not superseding
                     superseded.add(i)
                     break
         
@@ -327,6 +361,7 @@ class CLIDiffApplicator:
         self.applied_count = 0
         self.skipped_count = 0
         self.failed_count = 0
+        self.diff_results = []
 
         # Extract all diffs
         diffs = self.extract_diffs(response)
@@ -374,9 +409,11 @@ class CLIDiffApplicator:
                     if success:
                         print(f"\033[32m✓ {message}\033[0m")
                         self.applied_count += 1
+                        self.diff_results.append((diff.file_path, "applied", message))
                     else:
                         print(f"\033[31m✗ {message}\033[0m")
                         self.failed_count += 1
+                        self.diff_results.append((diff.file_path, "failed", message))
                     break
         
         # Print final summary

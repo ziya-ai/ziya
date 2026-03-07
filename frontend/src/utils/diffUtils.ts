@@ -277,6 +277,29 @@ function rangesOverlap(a: [number, number][], b: [number, number][]): boolean {
 }
 
 /**
+ * Check if two overlapping diffs are sequential (first prepares for the
+ * second) rather than the later superseding the earlier.
+ *
+ * Heuristic: if the earlier diff is predominantly subtractive (removing
+ * code to make way) and the later adds new content, they're complementary.
+ */
+function isSequentialPair(earlierDiff: string, laterDiff: string): boolean {
+    let earlierAdds = 0, earlierRemoves = 0, laterAdds = 0;
+    for (const line of earlierDiff.split('\n')) {
+        if (line.startsWith('@@') || line.startsWith('diff ') ||
+            line.startsWith('---') || line.startsWith('+++')) continue;
+        if (line.startsWith('+')) earlierAdds++;
+        else if (line.startsWith('-')) earlierRemoves++;
+    }
+    for (const line of laterDiff.split('\n')) {
+        if (line.startsWith('@@') || line.startsWith('diff ') ||
+            line.startsWith('---') || line.startsWith('+++')) continue;
+        if (line.startsWith('+')) laterAdds++;
+    }
+    return earlierRemoves > 0 && earlierAdds <= 1 && laterAdds > 0;
+}
+
+/**
  * Given an ordered array of single-file diff strings, return the set of
  * indices that are superseded by a later diff for the same file with
  * overlapping hunk ranges.
@@ -303,6 +326,7 @@ export function findSupersededDiffIndices(diffs: string[]): Set<number> {
             }
 
             if (rangesOverlap(hunkRanges[i], hunkRanges[j])) {
+                if (isSequentialPair(diffs[i], diffs[j])) continue;
                 superseded.add(i);
                 break;
             }
