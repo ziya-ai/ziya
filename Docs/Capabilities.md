@@ -93,7 +93,52 @@ The model has access to tools it can call autonomously when they would help answ
 
 ### MCP Tools
 
-Connect any MCP-compatible server to give the model additional capabilities — shell access, internal APIs, databases, and more. See your server's documentation for setup.
+Connect any MCP-compatible server to give the model additional capabilities — shell access, internal APIs, databases, and more.
+
+MCP servers are configured in `mcp_config.json`. Ziya looks for this file in three locations (all are merged, later entries win):
+
+1. Current working directory (`./mcp_config.json`)
+2. Ziya project root
+3. User home (`~/.ziya/mcp_config.json`)
+
+```json
+{
+  "my_server": {
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+    "enabled": true
+  }
+}
+```
+
+#### Tool Enhancements (per-server)
+
+MCP tool descriptions are set by the server and can't always be changed upstream. If a tool has ambiguous parameters or the model keeps calling it incorrectly, add a `tool_enhancements` block to inject supplemental hints into the tool's description:
+
+```json
+{
+  "my_server": {
+    "command": "npx",
+    "args": ["-y", "some-mcp-server"],
+    "tool_enhancements": {
+      "search_tool": {
+        "description_suffix": "\n<Rule>The 'query' parameter must be a string, not an array.</Rule>"
+      },
+      "file_tool": {
+        "description_suffix": "\nAlways use absolute paths."
+      }
+    }
+  }
+}
+```
+
+The `description_suffix` is appended verbatim to the tool's description before it reaches the model. This is useful for correcting common model mistakes without waiting for the MCP server to update.
+
+Enhancement sources are merged in priority order (later overrides earlier for the same tool):
+
+1. **Enterprise plugin** — organization-wide defaults via `ToolEnhancementProvider` (see `Enterprise.md`)
+2. **MCP server config** — the `tool_enhancements` block shown above
+3. **User overrides** — `~/.ziya/tool_enhancements.json` (see below)
 
 The shell command allowlist can be extended by enterprise plugins via the `ShellConfigProvider` interface — see `Enterprise.md` for details. Users can also add commands per-session with `/shell add <cmd>` or persist them with `/shell add <cmd> save`.
 

@@ -204,6 +204,42 @@ class MyFormatterProvider(FormatterProvider):
 
 ---
 
+### ToolEnhancementProvider
+
+Supplies supplemental description text for MCP tools to reduce parameter errors from models. Enhancements are appended to tool descriptions before they reach the LLM.
+
+```python
+class MyToolEnhancementProvider:
+    provider_id = "my-org"
+
+    def get_tool_enhancements(self) -> dict:
+        """Return a dict mapping tool names to enhancement config."""
+        return {
+            "WorkspaceSearch": {
+                "description_suffix": "\n<Rule>Use 'searchQuery' not 'query'</Rule>"
+            },
+            "RunShellCommand": {
+                "description_suffix": "\nPrefer read-only commands."
+            }
+        }
+```
+
+Registration in `register()`:
+
+```python
+from app.plugins import register_tool_enhancement_provider
+from .my_tool_enhancements import MyToolEnhancementProvider
+register_tool_enhancement_provider(MyToolEnhancementProvider())
+```
+
+Enhancement priority (later overrides earlier for the same tool):
+
+1. **Plugin providers** — enterprise-wide defaults via `register_tool_enhancement_provider()`
+2. **MCP server config** — per-server `"tool_enhancements"` key in `mcp_config.json`
+3. **User overrides** — `~/.ziya/tool_enhancements.json`
+
+---
+
 ## Built-in Service Models
 
 ### Nova Web Grounding (`nova_grounding`)
