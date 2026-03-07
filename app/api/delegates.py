@@ -29,6 +29,21 @@ class LaunchDelegatesRequest(BaseModel):
     delegate_specs: List[DelegateSpec] = Field(
         ..., description="List of delegate specifications"
     )
+    source_conversation_id: Optional[str] = Field(
+        None, description="Conversation ID that initiated this task plan"
+    )
+
+
+class RetryDelegateRequest(BaseModel):
+    """Request body for retrying a failed/interrupted delegate."""
+    model_config = {"extra": "allow"}
+    delegate_id: str = Field(..., description="Delegate ID to retry")
+
+
+class PromoteStubRequest(BaseModel):
+    """Request body for promoting a failed delegate to stub crystal."""
+    model_config = {"extra": "allow"}
+    delegate_id: str = Field(..., description="Delegate ID to promote")
 
 
 class LaunchDelegatesResponse(BaseModel):
@@ -84,6 +99,7 @@ async def launch_delegates(
             name=data.name,
             description=data.description,
             delegate_specs=data.delegate_specs,
+            source_conversation_id=data.source_conversation_id,
         )
 
         logger.info(
@@ -120,10 +136,11 @@ async def get_delegate_status(project_id: str, group_id: str):
         project_dir = get_project_dir(project_id)
         manager = get_delegate_manager(project_id, project_dir)
 
-        # Find the plan by scanning (plans are keyed by plan_id, not group_id)
-        for plan_id in list(manager._plans.keys()):
+        # Look up the plan associated with this group.
+        plan_id = manager._group_to_plan.get(group_id)
+        if plan_id:
             status = manager.get_plan_status(plan_id)
-            if status:
+            if status is not None:
                 return status
 
         raise HTTPException(status_code=404, detail="No active TaskPlan found")
@@ -147,9 +164,12 @@ async def cancel_delegates(project_id: str, group_id: str):
 
         # Find and cancel the active plan
         cancelled = False
-        for plan_id in list(manager._plans.keys()):
+        plan_id = manager._group_to_plan.get(group_id)
+        if plan_id and plan_id in manager._plans:
             await manager.cancel_plan(plan_id)
             cancelled = True
+            # Clean up the group→plan mapping
+            manager._group_to_plan.pop(group_id, None)
 
         if not cancelled:
             raise HTTPException(
@@ -175,7 +195,8 @@ async def get_swarm_budget(project_id: str, group_id: str):
         project_dir = get_project_dir(project_id)
         manager = get_delegate_manager(project_id, project_dir)
 
-        for plan_id in list(manager._plans.keys()):
+        plan_id = manager._group_to_plan.get(group_id)
+        if plan_id:
             budget = manager.get_swarm_budget(plan_id)
             if budget:
                 return budget.model_dump()
@@ -185,4 +206,60 @@ async def get_swarm_budget(project_id: str, group_id: str):
         raise
     except Exception as e:
         logger.error(f"❌ API: Failed to get swarm budget: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/groups/{group_id}/retry-delegate",
+)
+async def retry_delegate(
+    project_id: str, group_id: str, data: RetryDelegateRequest,
+):
+    """Retry a failed or interrupted delegate."""
+    try:
+        from ..agents.delegate_manager import get_delegate_manager
+
+        project_dir = get_project_dir(project_id)
+        manager = get_delegate_manager(project_id, project_dir)
+
+        plan_id = manager._group_to_plan.get(group_id)
+        if not plan_id:
+            raise HTTPException(status_code=404, detail="No active TaskPlan found")
+
+        result = await manager.retry_delegate(plan_id, data.delegate_id)
+        return {"success": True, **result}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"❌ API: Failed to retry delegate: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/api/v1/projects/{project_id}/groups/{group_id}/promote-stub",
+)
+async def promote_to_stub(
+    project_id: str, group_id: str, data: PromoteStubRequest,
+):
+    """Promote a failed delegate to a stub crystal to unblock downstream."""
+    try:
+        from ..agents.delegate_manager import get_delegate_manager
+
+        project_dir = get_project_dir(project_id)
+        manager = get_delegate_manager(project_id, project_dir)
+
+        plan_id = manager._group_to_plan.get(group_id)
+        if not plan_id:
+            raise HTTPException(status_code=404, detail="No active TaskPlan found")
+
+        result = await manager.promote_to_stub_crystal(plan_id, data.delegate_id)
+        return {"success": True, **result}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"❌ API: Failed to promote delegate: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

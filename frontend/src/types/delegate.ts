@@ -39,7 +39,8 @@ export interface DelegateSpec {
 
 export type DelegateStatus =
   | 'proposed' | 'ready' | 'running'
-  | 'compacting' | 'crystal' | 'failed';
+  | 'compacting' | 'crystal' | 'failed'
+  | 'interrupted' | 'blocked';
 
 export interface DelegateMeta {
   role: 'orchestrator' | 'delegate';
@@ -56,12 +57,26 @@ export interface TaskPlan {
   name: string;
   description: string;
   orchestrator_id?: string | null;
+  source_conversation_id?: string | null;
   delegate_specs: DelegateSpec[];
   crystals: MemoryCrystal[];
   status: string;  // 'planning' | 'running' | 'completed' | 'cancelled'
   task_graph?: Record<string, any> | null;
+  task_list?: SwarmTask[];
   created_at: number;
   completed_at?: number | null;
+}
+
+export interface SwarmTask {
+  task_id: string;
+  title: string;
+  status: string;  // 'open' | 'claimed' | 'done' | 'blocked'
+  claimed_by?: string | null;
+  added_by: string;
+  summary?: string | null;
+  created_at: number;
+  completed_at?: number | null;
+  tags: string[];
 }
 
 /** Helper to check if a DelegateMeta represents a completed delegate */
