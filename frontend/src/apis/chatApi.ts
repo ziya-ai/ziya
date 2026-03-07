@@ -2395,8 +2395,10 @@ export const sendPayload = async (
                         console.error('Error stack:', (error as any)?.stack);
                         console.error('Last chunk before error:', chunk?.substring(0, 200));
 
-                        // Save partial content before aborting
-                        if (currentContent && currentContent.trim()) {
+                        // Save partial content before aborting — but only if the
+                        // abort listener hasn't already persisted it.  The listener
+                        // sets isAborted=true before calling addMessageToConversation.
+                        if (currentContent && currentContent.trim() && !isAborted) {
                             const partialMessage: Message = {
                                 role: 'assistant',
                                 content: currentContent + '\n\n[Stream interrupted - partial response saved]',
@@ -2966,7 +2968,7 @@ function handleSequentialThinkingDisplay(
 }
 */
 
-async function getApiResponse(messages: any[], question: string, checkedItems: string[], conversationId: string, signal?: AbortSignal, currentProject?: { id: string; name: string; path: string } | null, activeSkillPrompts?: string) {
+async function getApiResponse(messages: any[], question: string, checkedItems: string[], conversationId: string, signal?: AbortSignal, currentProject?: { id: string; name: string; path: string } | null, activeSkillPrompts?: string, modelOverrides?: Record<string, any>, preferredToolIds?: string[]) {
     const messageTuples: string[][] = [];
 
     // Messages are already filtered in SendChatContainer, no need to filter again
@@ -2994,6 +2996,8 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
         question,
         messages: messageTuples,
         systemPromptAddition,
+        modelOverrides: modelOverrides || {},
+        preferredToolIds: preferredToolIds || [],
         conversation_id: conversationId,
         files: checkedItems,
         project_root: currentProject?.path

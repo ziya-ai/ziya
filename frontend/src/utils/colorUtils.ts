@@ -217,6 +217,34 @@ export function calculateContrastRatio(color1: string, color2: string): number {
 export function findElementBackground(element: Element, defaultBg: string = '#ffffff'): string {
     let backgroundColor: string | null = null;
 
+    // Strategy 0: Handle HTML elements inside SVG foreignObject
+    // HTML elements (div, span) can't find SVG parent groups via closest('g')
+    // because closest() doesn't cross namespace boundaries.
+    // Walk up manually to find the foreignObject, then its SVG parent group.
+    let ancestor: Element | null = element;
+    while (ancestor && ancestor.tagName !== 'foreignObject') {
+        ancestor = ancestor.parentElement;
+    }
+    if (ancestor && ancestor.tagName === 'foreignObject') {
+        // Found foreignObject - look for sibling shapes in the SVG parent group
+        const svgParent = ancestor.parentElement;
+        // Walk up through parent groups (MaxGraph nests foreignObject inside
+        // label groups that may not contain the shape rect directly)
+        let searchParent = svgParent;
+        for (let depth = 0; searchParent && depth < 4; depth++) {
+            const bgShape = searchParent.querySelector(
+                'rect[fill]:not([fill="none"]), ellipse[fill]:not([fill="none"]), path[fill]:not([fill="none"])'
+            );
+            if (bgShape) {
+                const fill = bgShape.getAttribute('fill');
+                if (fill && fill !== 'none') {
+                    return fill;
+                }
+            }
+            searchParent = searchParent.parentElement;
+        }
+    }
+
     // Strategy 1: Check for fill attribute on parent elements (Graphviz nodes)
     // In Graphviz, text elements are inside <g> elements that have the fill color
     const parentGroup = element.closest('g');
@@ -329,15 +357,20 @@ export function enhanceSVGVisibility(
             const textContent = htmlEl.textContent?.trim();
             if (!textContent) return;
 
+            // Only fix the innermost text-bearing element, not wrapper divs.
+            // MaxGraph nests 3 divs inside foreignObject; fixing all of them
+            // causes font rendering artifacts. Skip if this div has child divs
+            // that also contain the same text (i.e., this is a wrapper).
+            const childDivs = htmlEl.querySelectorAll('div, span, p');
+            if (childDivs.length > 0) return;
+
             const backgroundColor = findElementBackground(htmlEl, pageBg);
             const optimalColor = getOptimalTextColor(backgroundColor);
             const currentStyle = window.getComputedStyle(htmlEl);
             const currentColor = currentStyle.color || defaultTextColor;
 
             const contrast = calculateContrastRatio(currentColor, backgroundColor);
-            const textInvisible = currentColor === backgroundColor ||
-                                 (isDarkMode && currentColor === '#000000') ||
-                                 (!isDarkMode && currentColor === '#ffffff');
+            const textInvisible = currentColor === backgroundColor;
 
             log(`🔍 HTML-TEXT: "${textContent.substring(0, 30)}" contrast=${contrast.toFixed(2)} current=${currentColor} bg=${backgroundColor}`);
 
@@ -381,10 +414,8 @@ export function enhanceSVGVisibility(
         // Check if current color has sufficient contrast
         const contrast = calculateContrastRatio(currentColor, backgroundColor);
         
-        // Also check if text is actually visible (not matching background exactly)
-        const textInvisible = currentColor === backgroundColor ||
-                             (isDarkMode && currentColor === '#000000') ||
-                             (!isDarkMode && currentColor === '#ffffff');
+        // Check if text exactly matches background (truly invisible)
+        const textInvisible = currentColor === backgroundColor;
         
         // CRITICAL DEBUG: Log contrast analysis before fix decision
         log(`🔍 CONTRAST-CHECK: "${textContent.substring(0, 30)}"`, {

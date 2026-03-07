@@ -15,6 +15,7 @@ import { useProject } from '../context/ProjectContext';
 
 // Lazy load the MarkdownRenderer
 import { MarkdownRenderer } from "./MarkdownRenderer";
+import DelegateLaunchButton from "./DelegateLaunchButton";
 
 interface ConversationProps {
     enableCodeApply: boolean;
@@ -58,7 +59,6 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     const { isCurrentlyStreaming, hasStreamedContent } = conversationStreamingState;
 
     const previousStreamingStateRef = useRef<boolean>(false);
-
 
     // Virtualized rendering for large conversations to improve performance
     // DISABLED: Virtualization causes rendering corruption with dynamic markdown content
@@ -432,6 +432,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                             isStreaming={false}
                                         />
                                     </div>
+                                    <DelegateLaunchButton messageContent={msg.content} conversationId={currentConversationId || undefined} />
                                 </>
                             ) : null}
                         </>
@@ -742,6 +743,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                                         isStreaming={false}
                                                 />
                                             </div>
+                                            <DelegateLaunchButton messageContent={msg.content} conversationId={currentConversationId || undefined} />
                                         </>
                                     ) : null}
                                 </>

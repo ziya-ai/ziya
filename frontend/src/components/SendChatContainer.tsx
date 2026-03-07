@@ -320,22 +320,101 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (supportsVision && e.dataTransfer.types.includes('Files')) {
+    if (e.dataTransfer.types.includes('Files')) {
       setIsDraggingOver(true);
     }
-  }, [supportsVision]);
+  }, []);
   
+  // Map file extensions to language identifiers for code blocks
+  const getLanguageFromFilename = useCallback((filename: string): string => {
+    const ext = filename.split('.').pop()?.toLowerCase() || '';
+    const langMap: Record<string, string> = {
+      js: 'javascript', jsx: 'jsx', ts: 'typescript', tsx: 'tsx',
+      py: 'python', rb: 'ruby', rs: 'rust', go: 'go', java: 'java',
+      kt: 'kotlin', swift: 'swift', c: 'c', cpp: 'cpp', h: 'c', hpp: 'cpp',
+      cs: 'csharp', php: 'php', scala: 'scala', sh: 'bash', bash: 'bash',
+      zsh: 'bash', fish: 'fish', ps1: 'powershell', bat: 'batch',
+      sql: 'sql', html: 'html', htm: 'html', css: 'css', scss: 'scss',
+      less: 'less', xml: 'xml', json: 'json', yaml: 'yaml', yml: 'yaml',
+      toml: 'toml', ini: 'ini', cfg: 'ini', conf: 'conf',
+      md: 'markdown', mdx: 'mdx', txt: '', log: '',
+      dockerfile: 'dockerfile', makefile: 'makefile',
+      gradle: 'gradle', groovy: 'groovy', lua: 'lua', r: 'r',
+      dart: 'dart', ex: 'elixir', exs: 'elixir', erl: 'erlang',
+      hs: 'haskell', ml: 'ocaml', clj: 'clojure', vim: 'vim',
+      tf: 'hcl', hcl: 'hcl', proto: 'protobuf', graphql: 'graphql',
+      vue: 'vue', svelte: 'svelte',
+    };
+    return langMap[ext] ?? '';
+  }, []);
+
+  const isTextFile = useCallback((file: File): boolean => {
+    if (file.type.startsWith('text/')) return true;
+    if (file.type === 'application/json' || file.type === 'application/xml') return true;
+    if (file.type === 'application/javascript' || file.type === 'application/typescript') return true;
+    // Many code files have empty MIME type — check extension
+    const ext = file.name.split('.').pop()?.toLowerCase() || '';
+    const codeExts = new Set([
+      'js','jsx','ts','tsx','py','rb','rs','go','java','kt','swift','c','cpp',
+      'h','hpp','cs','php','scala','sh','bash','zsh','sql','html','htm','css',
+      'scss','less','xml','json','yaml','yml','toml','ini','cfg','conf','md',
+      'mdx','txt','log','gradle','groovy','lua','r','dart','ex','exs','erl',
+      'hs','ml','clj','vim','tf','hcl','proto','graphql','vue','svelte',
+      'makefile','dockerfile','bat','ps1','fish',
+    ]);
+    if (codeExts.has(ext)) return true;
+    // Check for extensionless known filenames
+    const knownFiles = new Set(['Makefile','Dockerfile','Gemfile','Rakefile','.gitignore','.env']);
+    return knownFiles.has(file.name);
+  }, []);
+
   const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setIsDraggingOver(false);
     
-    if (!supportsVision) {
-      message.warning('Current model does not support image attachments');
-      return;
+    const files = e.dataTransfer.files;
+    if (!files.length) return;
+
+    const imageFiles: File[] = [];
+    const textFiles: File[] = [];
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (file.type.startsWith('image/')) {
+        imageFiles.push(file);
+      } else if (isTextFile(file)) {
+        textFiles.push(file);
+      }
     }
-    await processImageFiles(e.dataTransfer.files);
-  }, [supportsVision, processImageFiles]);
+
+    // Handle image files through existing flow
+    if (imageFiles.length > 0) {
+      if (!supportsVision) {
+        message.warning('Current model does not support image attachments');
+      } else {
+        const dt = new DataTransfer();
+        imageFiles.forEach(f => dt.items.add(f));
+        await processImageFiles(dt.files);
+      }
+    }
+
+    // Handle text/code files — read content and insert as code blocks
+    for (const file of textFiles) {
+      const content = await file.text();
+      const lang = getLanguageFromFilename(file.name);
+      const fence = '```';
+      const codeBlock = `\n**${file.name}:**\n${fence}${lang}\n${content}\n${fence}\n`;
+      if (editorRef.current) {
+        editorRef.current.focus();
+        document.execCommand('insertText', false, codeBlock);
+      }
+    }
+
+    if (imageFiles.length === 0 && textFiles.length === 0) {
+      message.warning(`Unsupported file type: ${files[0].name}`);
+    }
+  }, [supportsVision, processImageFiles, isTextFile, getLanguageFromFilename]);
   
   // Serialize editor content to text with image markers and extract image order
   const serializeEditorContent = useCallback((): { text: string; orderedImages: ImageAttachment[] } => {

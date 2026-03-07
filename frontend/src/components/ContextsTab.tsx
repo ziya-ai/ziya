@@ -6,6 +6,7 @@ import { useProject } from '../context/ProjectContext';
 import { Context } from '../types/context';
 import { Input, Button, Divider, message } from 'antd';
 import { SearchOutlined } from '@ant-design/icons';
+import { SkillsSection } from './SkillsSection';
 import { useFolderContext } from '../context/FolderContext';
 
 export const ContextsTab: React.FC = () => {
@@ -21,6 +22,7 @@ export const ContextsTab: React.FC = () => {
     removeSkillFromLens,
     createContext,
     createSkill,
+    deleteSkill,
     tokenInfo,
   } = useProject();
   
@@ -28,9 +30,7 @@ export const ContextsTab: React.FC = () => {
   
   const [searchQuery, setSearchQuery] = useState('');
   const [isCreatingContext, setIsCreatingContext] = useState(false);
-  const [isCreatingSkill, setIsCreatingSkill] = useState(false);
   const [newContextName, setNewContextName] = useState('');
-  const [newSkillData, setNewSkillData] = useState({ name: '', description: '', prompt: '' });
   
   // Filter by search
   const filteredContexts = useMemo(() => 
@@ -38,13 +38,6 @@ export const ContextsTab: React.FC = () => {
     [contexts, searchQuery]
   );
   
-  const filteredSkills = useMemo(() =>
-    skills.filter(s => 
-      s.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      s.description.toLowerCase().includes(searchQuery.toLowerCase())
-    ),
-    [skills, searchQuery]
-  );
   
   // Calculate what each inactive context would add
   const calculateAddedTokens = (ctx: Context): { added: number; total: number; overlap: number } => {
@@ -91,22 +84,6 @@ export const ContextsTab: React.FC = () => {
       setIsCreatingContext(false);
     } catch (error) {
       message.error('Failed to create context');
-    }
-  };
-  
-  const handleSaveSkill = async () => {
-    if (!newSkillData.name.trim() || !newSkillData.prompt.trim()) {
-      message.error('Please fill in name and prompt');
-      return;
-    }
-    
-    try {
-      await createSkill(newSkillData);
-      message.success(`Skill "${newSkillData.name}" created`);
-      setNewSkillData({ name: '', description: '', prompt: '' });
-      setIsCreatingSkill(false);
-    } catch (error) {
-      message.error('Failed to create skill');
     }
   };
   
@@ -205,97 +182,29 @@ export const ContextsTab: React.FC = () => {
           </div>
         )}
         
-        {/* SKILLS SECTION */}
+        
         <Divider style={{ margin: '16px 0', borderColor: '#333' }} />
         
-        <div style={{ 
-          fontSize: '10px', 
-          color: '#666', 
-          textTransform: 'uppercase', 
-          padding: '8px 4px 4px',
-          letterSpacing: '0.5px'
-        }}>
-          Skills & Prompts
-        </div>
-        
-        {filteredSkills.map(skill => {
-          const isActive = activeSkillIds.includes(skill.id);
-          
-          return (
-            <div
-              key={skill.id}
-              style={{
-                padding: '8px 10px',
-                background: isActive ? `${skill.color}20` : '#1f1f1f',
-                borderLeft: `3px solid ${isActive ? skill.color : '#333'}`,
-                borderRadius: '0 6px 6px 0',
-                marginBottom: '4px',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px'
-              }}
-              onClick={() => isActive ? removeSkillFromLens(skill.id) : addSkillToLens(skill.id)}
-            >
-              <input 
-                type="checkbox" 
-                checked={isActive} 
-                onChange={() => {}} 
-                onClick={e => {
-                  e.stopPropagation();
-                  isActive ? removeSkillFromLens(skill.id) : addSkillToLens(skill.id);
-                }}
-              />
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: '12px', fontWeight: isActive ? 500 : 400 }}>
-                  {skill.name}
-                  {skill.isBuiltIn && (
-                    <span style={{ 
-                      fontSize: '9px', 
-                      marginLeft: '6px', 
-                      padding: '1px 4px',
-                      background: '#333',
-                      borderRadius: '3px',
-                      color: '#888'
-                    }}>
-                      built-in
-                    </span>
-                  )}
-                </div>
-                <div style={{ fontSize: '10px', color: '#666' }}>
-                  {skill.description}
-                </div>
-              </div>
-              <div style={{ fontSize: '11px', color: isActive ? skill.color : '#888' }}>
-                {isActive ? skill.tokenCount.toLocaleString() : `+${skill.tokenCount.toLocaleString()}`}
-              </div>
-            </div>
-          );
-        })}
-        
-        {filteredSkills.length === 0 && !searchQuery && (
-          <div style={{ padding: '20px', textAlign: 'center', color: '#666', fontSize: '12px' }}>
-            No skills available
-          </div>
-        )}
+        <SkillsSection
+          skills={skills}
+          activeSkillIds={activeSkillIds}
+          addSkillToLens={addSkillToLens}
+          removeSkillFromLens={removeSkillFromLens}
+          createSkill={createSkill}
+          deleteSkill={deleteSkill}
+          searchQuery={searchQuery}
+        />
       </div>
       
       {/* Footer actions */}
-      <div style={{ padding: '8px', borderTop: '1px solid #333', background: '#0a0a0a', display: 'flex', gap: '6px' }}>
+      <div style={{ padding: '8px', borderTop: '1px solid #333', background: '#0a0a0a' }}>
         <Button
           size="small"
-          style={{ flex: 1 }}
+          style={{ width: '100%' }}
           disabled={checkedKeys.size === 0}
           onClick={() => setIsCreatingContext(true)}
         >
           Save files as context...
-        </Button>
-        <Button
-          size="small"
-          style={{ flex: 1 }}
-          onClick={() => setIsCreatingSkill(true)}
-        >
-          New skill...
         </Button>
       </div>
       
@@ -316,39 +225,6 @@ export const ContextsTab: React.FC = () => {
           <div style={{ display: 'flex', gap: '6px' }}>
             <Button size="small" onClick={() => setIsCreatingContext(false)}>Cancel</Button>
             <Button size="small" type="primary" onClick={handleSaveContext}>Save</Button>
-          </div>
-        </div>
-      )}
-      
-      {/* Inline skill creation */}
-      {isCreatingSkill && (
-        <div style={{ padding: '12px', background: '#1f1f1f', border: '1px solid #333', margin: '8px', borderRadius: '8px' }}>
-          <Input
-            placeholder="Skill name..."
-            value={newSkillData.name}
-            onChange={e => setNewSkillData(prev => ({ ...prev, name: e.target.value }))}
-            style={{ marginBottom: '8px' }}
-            autoFocus
-          />
-          <Input
-            placeholder="Short description..."
-            value={newSkillData.description}
-            onChange={e => setNewSkillData(prev => ({ ...prev, description: e.target.value }))}
-            style={{ marginBottom: '8px' }}
-          />
-          <Input.TextArea
-            placeholder="Prompt/instructions..."
-            value={newSkillData.prompt}
-            onChange={e => setNewSkillData(prev => ({ ...prev, prompt: e.target.value }))}
-            rows={4}
-            style={{ marginBottom: '8px' }}
-          />
-          <div style={{ display: 'flex', gap: '6px' }}>
-            <Button size="small" onClick={() => {
-              setIsCreatingSkill(false);
-              setNewSkillData({ name: '', description: '', prompt: '' });
-            }}>Cancel</Button>
-            <Button size="small" type="primary" onClick={handleSaveSkill}>Create</Button>
           </div>
         </div>
       )}
