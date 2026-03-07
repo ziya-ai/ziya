@@ -1,0 +1,6 @@
+{
+    "target_file": "Docs/UserConfigurationFiles.md",
+    "description": "Adding content to an empty existing file using new-file style diff (@@ -0,0 +1,N @@). Reproduces bug where old_block=[] is falsy and flagged as malformed hunk.",
+    "date_added": "2025-07-14",
+    "issue_reference": "new_file_diff_to_existing_empty_file"
+}
