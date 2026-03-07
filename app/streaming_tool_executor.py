@@ -812,13 +812,21 @@ class StreamingToolExecutor:
             if thinking_on:
                 budget = int(os.environ.get('ZIYA_THINKING_BUDGET', '16000'))
 
+        # Per-request overrides from active skill modelOverrides
+        temp_override = getattr(self, 'temperature_override', None)
+        max_tokens_override = getattr(self, 'max_tokens_override', None)
+
+        # Resolve max_output_tokens: skill override > env var > model config > default
+        if max_tokens_override:
+            effective_max_tokens = max_tokens_override
+        elif "ZIYA_MAX_OUTPUT_TOKENS" in os.environ:
+            effective_max_tokens = int(os.environ["ZIYA_MAX_OUTPUT_TOKENS"])
+        else:
+            effective_max_tokens = (self.model_config.get('max_output_tokens', 16384) if self.model_config else 16384)
+
         return ProviderConfig(
-            max_output_tokens=(
-                int(os.environ["ZIYA_MAX_OUTPUT_TOKENS"])
-                if "ZIYA_MAX_OUTPUT_TOKENS" in os.environ
-                else (self.model_config.get('max_output_tokens', 16384) if self.model_config else 16384)
-            ),
-            temperature=None,  # provider defaults or model default
+            max_output_tokens=effective_max_tokens,
+            temperature=temp_override,  # None = provider default
             thinking=thinking,
             enable_cache=True,
             use_extended_context=False,
@@ -827,7 +835,7 @@ class StreamingToolExecutor:
             iteration=iteration,
         )
 
-    async def stream_with_tools(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def stream_with_tools(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None) -> AsyncGenerator[Dict[str, Any], None]:
         # --- Concurrent feedback monitor ---
         # Instead of relying solely on discrete polling points, run a
         # background task that continuously drains the feedback queue and
@@ -942,6 +950,14 @@ class StreamingToolExecutor:
         all_tools = create_secure_mcp_tools()
         
         builtin_tool_names = {tool.name for tool in all_tools if isinstance(tool, DirectMCPTool)}
+
+        # Merge delegate-injected tools (e.g. swarm coordination tools)
+        if extra_tools:
+            for tool_instance in extra_tools:
+                direct_tool = DirectMCPTool(tool_instance)
+                all_tools.append(direct_tool)
+                builtin_tool_names.add(direct_tool.name)
+                logger.info(f"🔧 Injected extra tool: {direct_tool.name}")
         
         # Log at INFO so this is always visible in server output
         external_count = len(all_tools) - len(builtin_tool_names)
@@ -1536,24 +1552,24 @@ class StreamingToolExecutor:
                                 logger.debug(f"     └─ Fresh:     {fresh:>8,} tokens (billable)")
                                 logger.debug(f"     └─ Cached:    {cached:>8,} tokens (free but counts for throttle)")
                                 if cache_written > 0:
-                                    logger.info(f"     └─ Written:   {cache_written:>8,} tokens (cache creation)")
-                                    logger.info(f"   Note: Using fresh + written for comparison (first request)")
+                                    logger.debug(f"     └─ Written:   {cache_written:>8,} tokens (cache creation)")
+                                    logger.debug(f"   Note: Using fresh + written for comparison (first request)")
                                 
-                                logger.info(f"   Error:          {estimation_error:>8,} tokens (±{error_pct:.1f}%)")
+                                logger.debug(f"   Error:          {estimation_error:>8,} tokens (±{error_pct:.1f}%)")
                                 
                                 # Log comparison
                                 accuracy_status = "✅ Excellent" if error_pct < 5 else "⚠️ Fair" if error_pct < 15 else "❌ Poor"
                                 # Only log if accuracy is concerning
                                 if error_pct >= 15:
-                                    logger.warning(f"   Accuracy:       {accuracy_status}")
+                                    logger.debug(f"   Accuracy:       {accuracy_status}")
                                 
                                 if error_pct > 15:
-                                    logger.warning("   ⚠️  Estimation is significantly off!")
-                                    logger.warning("   💡 Calibration will improve this over time")
+                                    logger.debug("   ⚠️  Estimation is significantly off!")
+                                    logger.debug("   💡 Calibration will improve this over time")
                                 elif error_pct < 5:
-                                    logger.info("   ✅ Calibration is working well!")
+                                    logger.debug("   ✅ Calibration is working well!")
                                 
-                                logger.info("=" * 80 + "\n")
+                                logger.debug("=" * 80 + "\n")
                                 
                             except Exception as e:
                                 logger.debug(f"Error in accuracy tracking: {e}")
@@ -1781,8 +1797,10 @@ class StreamingToolExecutor:
                                 self._block_opening_buffer = ""
                             
                             # Check if text ends with incomplete code block opening
-                            if text.endswith('```') or (text.endswith('`') and text[-3:] != '```'):
-                                # Might be incomplete, buffer it
+                            # Only buffer when NOT inside a code block — if we're in a block,
+                            # ``` at the end of a chunk is a closing fence, not an incomplete opening.
+                            if not code_block_tracker.get('in_block') and (
+                                text.endswith('```') or (text.endswith('`') and text[-3:] != '```')):
                                 self._block_opening_buffer = text
                                 continue
                             elif '```' in text:
@@ -1790,9 +1808,10 @@ class StreamingToolExecutor:
                                 lines = text.split('\n')
                                 last_line = lines[-1]
                                 if last_line.strip().startswith('```') and not last_line.strip().endswith('```'):
-                                    # Incomplete opening line (e.g., "```vega-" without newline)
+                                    if code_block_tracker.get('in_block'):
+                                        pass  # Inside a block — don't buffer, let it through
                                     # Buffer the last line, process the rest
-                                    if len(lines) > 1:
+                                    elif len(lines) > 1:
                                         text = '\n'.join(lines[:-1]) + '\n'
                                         self._block_opening_buffer = last_line
                                     else:
@@ -3347,10 +3366,10 @@ Please retry the tool call with valid JSON. Ensure:
         # as a 'crystal_ready' event so the caller (DelegateManager / server)
         # can store it and unblock downstream delegates.
         #
-        # This runs AFTER the stream is complete but BEFORE the usage report,
+        # Only runs for delegate conversations (is_delegate=True).  Runs AFTER the stream is complete but BEFORE the usage report,
         # so the crystal tokens are included in the final accounting.
         # ------------------------------------------------------------------
-        if conversation_id and conversation:
+        if is_delegate and conversation_id and conversation:
             try:
                 from app.agents.compaction_engine import get_compaction_engine, MIN_COMPACTION_TOKENS
                 engine = get_compaction_engine()
