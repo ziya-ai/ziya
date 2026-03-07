@@ -22,7 +22,12 @@ def get_skill_storage(project_id: str) -> SkillStorage:
         raise HTTPException(status_code=404, detail="Project not found")
     
     token_service = TokenService()
-    storage = SkillStorage(get_project_dir(project_id), token_service)
+    # Pass workspace_path so SkillStorage can discover agentskills-format
+    # SKILL.md files from the project's working directory.
+    workspace_path = project.path if project.path else None
+    storage = SkillStorage(
+        get_project_dir(project_id), token_service, workspace_path=workspace_path
+    )
     return storage
 
 @router.get("", response_model=List[Skill])

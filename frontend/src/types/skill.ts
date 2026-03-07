@@ -27,6 +27,16 @@ export interface Skill {
   // Discovery metadata
   source?: 'builtin' | 'custom' | 'project' | 'user';
   allowImplicitInvocation?: boolean;
+  // agentskills.io spec fields
+  keywords?: string[];
+  license?: string;
+  compatibility?: string;
+  skillMetadata?: Record<string, string>;
+  allowedTools?: string[];
+  skillPath?: string;
+  hasScripts?: boolean;
+  hasReferences?: boolean;
+  hasAssets?: boolean;
 }
 
 /** True if this skill carries more than just a prompt. */
