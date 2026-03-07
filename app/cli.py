@@ -58,6 +58,7 @@ from prompt_toolkit.completion import PathCompleter, WordCompleter, Completer, C
 from prompt_toolkit.document import Document
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.filters import has_selection
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.application import Application
 from prompt_toolkit.layout import Layout, HSplit, VSplit, Window
 from prompt_toolkit.layout.containers import WindowAlign
@@ -84,9 +85,22 @@ def save_session(cli: 'CLI') -> str:
     session_id = datetime.now().strftime('%Y%m%d_%H%M%S')
     session_file = session_dir / f"{session_id}.json"
     
+    # Extract opening statement from first human message
+    opening_statement = ''
+    for msg in cli.history:
+        if msg.get('type') == 'human':
+            opening_statement = msg.get('content', '')[:120]
+            break
+
+    # Preserve start_time from a previously loaded session, otherwise use now
+    start_time = getattr(cli, '_session_start_time', None) or datetime.now().isoformat()
+
     session_data = {
         'id': session_id,
-        'timestamp': datetime.now().isoformat(),
+        'start_time': start_time,
+        'last_update_time': datetime.now().isoformat(),
+        'timestamp': datetime.now().isoformat(),  # kept for backward compat
+        'opening_statement': opening_statement,
         'files': cli.files,
         'history': cli.history
     }
@@ -121,7 +135,7 @@ def cleanup_old_sessions(keep_count: int = 10):
         old_session.unlink()
 
 
-def select_session() -> Optional[str]:
+async def select_session() -> Optional[str]:
     """Interactive session selector."""
     session_dir = get_session_dir()
     sessions = sorted(session_dir.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -138,7 +152,9 @@ def select_session() -> Optional[str]:
                 data = json.load(f)
                 session_list.append({
                     'id': data['id'],
-                    'timestamp': data['timestamp'],
+                    'start_time': data.get('start_time', data.get('timestamp', '')),
+                    'last_update_time': data.get('last_update_time', data.get('timestamp', '')),
+                    'opening_statement': data.get('opening_statement', ''),
                     'file_count': len(data.get('files', [])),
                     'message_count': len(data.get('history', []))
                 })
@@ -149,25 +165,87 @@ def select_session() -> Optional[str]:
         print("No valid sessions found.")
         return None
     
-    # Create selection prompt
-    print("\n\033[1;36mAvailable Sessions:\033[0m")
-    for idx, session in enumerate(session_list, 1):
-        timestamp = datetime.fromisoformat(session['timestamp']).strftime('%Y-%m-%d %H:%M:%S')
-        print(f"{idx}. {timestamp} - {session['message_count']} messages, {session['file_count']} files")
-    
-    print("\n0. Cancel (start new session)")
-    
-    while True:
-        choice = input("\nSelect session number: ").strip()
-        if choice == '0':
-            return None
+    # Build radio list values with formatted labels
+    radio_values = []
+    for session in session_list:
         try:
-            idx = int(choice) - 1
-            if 0 <= idx < len(session_list):
-                return session_list[idx]['id']
-        except ValueError:
-            pass
-        print("Invalid selection. Please try again.")
+            started = datetime.fromisoformat(session['start_time']).strftime('%b %d %H:%M')
+        except Exception:
+            started = '?'
+        try:
+            updated = datetime.fromisoformat(session['last_update_time']).strftime('%b %d %H:%M')
+        except Exception:
+            updated = started
+
+        opener = session.get('opening_statement', '') or ''
+        # Truncate and clean for display
+        opener = opener.replace('\n', ' ').strip()
+        if len(opener) > 80:
+            opener = opener[:77] + '...'
+
+        from prompt_toolkit.formatted_text import HTML
+
+        meta = f"{session['message_count']} msgs, {session['file_count']} files"
+        if started == updated:
+            time_info = f"  <style fg='ansibrightblack'>{started}</style>"
+        else:
+            time_info = f"  <style fg='ansibrightblack'>started {started} · updated {updated}</style>"
+
+        if opener:
+            label = HTML(f"<b>{opener}</b>\n    {meta}{time_info}")
+        else:
+            label = HTML(f"<b>(no opening message)</b>  {meta}{time_info}")
+
+        radio_values.append((session['id'], label))
+
+    radio_list = RadioList(values=radio_values, default=session_list[0]['id'])
+
+    # Key bindings
+    kb = KeyBindings()
+
+    @kb.add('enter')
+    def _(event):
+        event.app.exit(result=radio_list.current_value)
+
+    @kb.add('escape')
+    def _(event):
+        event.app.exit(result=None)
+
+    custom_kb = KeyBindings()
+
+    @custom_kb.add('up')
+    def _(event):
+        radio_list._selected_index = max(0, radio_list._selected_index - 1)
+        radio_list.current_value = radio_list.values[radio_list._selected_index][0]
+
+    @custom_kb.add('down')
+    def _(event):
+        radio_list._selected_index = min(len(radio_list.values) - 1, radio_list._selected_index + 1)
+        radio_list.current_value = radio_list.values[radio_list._selected_index][0]
+
+    @custom_kb.add('enter')
+    def _(event):
+        highlighted = radio_list.values[radio_list._selected_index][0]
+        radio_list.current_value = highlighted
+        event.app.exit(result=highlighted)
+
+    from prompt_toolkit.key_binding import merge_key_bindings
+    radio_list.control.key_bindings = merge_key_bindings([radio_list.control.key_bindings, custom_kb])
+
+    layout = Layout(HSplit([
+        Window(
+            content=FormattedTextControl(text='Resume Session — ↑/↓ navigate, Enter select, Esc cancel\n'),
+            height=2
+        ),
+        radio_list,
+    ]))
+
+    app = Application(layout=layout, key_bindings=kb, full_screen=False, mouse_support=True)
+
+    try:
+        return await app.run_async()
+    except (EOFError, KeyboardInterrupt):
+        return None
 
 
 def print_chat_startup_info(args):
@@ -319,12 +397,14 @@ class CLI:
     def __init__(self, files: List[str] = None):
         self.files = files or []
         self.history = []
+        self.conversation_id = f"cli_{os.getpid()}"
         self._model = None
         self._init_error = None
         self._active_task = None  # Track active streaming task for cancellation
         self._cancellation_requested = False
         self._diff_applicator = None  # Lazy-load diff applicator
-        self._last_ctrl_c_time = 0  # Track last Ctrl+C press for double-tap exit
+        self._last_ctrl_c_time = 0   # Track last Ctrl+C press for double-tap exit
+        self._last_keypress_time = 0  # Track last keypress for paste detection
         self._last_input_time = 0  # Track last input time for paste detection
         self._session_shell_commands = None  # Session-local shell command overrides
         self._session_yolo = False  # Session-local yolo mode (never persisted)
@@ -384,6 +464,7 @@ class CLI:
                     '/clear', '/c',
                     '/model', '/m',
                     '/quit', '/q', '/exit',
+                    '/suspend', '/resume',
                     '/help', '/h'
                 ], ignore_case=True, sentence=True, match_middle=True)
                 
@@ -448,6 +529,9 @@ class CLI:
         history_file = Path.home() / '.ziya' / 'history'
         history_file.parent.mkdir(parents=True, exist_ok=True)
 
+        # Paste detection threshold: keypresses arriving faster than this are likely pasted
+        PASTE_THRESHOLD_SEC = 0.05  # 50ms
+
         # Key bindings for ^C handling  
         bindings = KeyBindings()
         
@@ -477,10 +561,30 @@ class CLI:
             # Update last Ctrl+C time
             self._last_ctrl_c_time = current_time
         
+        @bindings.add(Keys.Any)
+        def _track_keypress(event):
+            """Track keypress timing for paste detection."""
+            self._last_keypress_time = time.time()
+            event.current_buffer.insert_text(event.data)
+
+        @bindings.add(Keys.BracketedPaste)
+        def _bracketed_paste(event):
+            """Handle bracketed paste: insert full pasted text without submitting."""
+            data = event.data
+            data = data.replace("\r\n", "\n")
+            data = data.replace("\r", "\n")
+            event.current_buffer.insert_text(data)
+
         @bindings.add('enter', filter=~has_selection)
         def _(event):
-            """Handle Enter - submit input."""
+            """Handle Enter - submit input, or insert newline if mid-paste."""
             buffer = event.current_buffer
+            now = time.time()
+            time_since_last_key = now - self._last_keypress_time
+            if time_since_last_key < PASTE_THRESHOLD_SEC:
+                # Rapid input detected (paste) — insert newline instead of submitting
+                buffer.insert_text("\n")
+                return
             buffer.validate_and_handle()
         
         self.session = PromptSession(
@@ -715,16 +819,37 @@ class CLI:
         applicator = self.diff_applicator
         # CLIDiffApplicator tracks counts internally during process_response
         # Check if it has these attributes, otherwise return generic message
-        if hasattr(applicator, 'applied_count'):
-            total = applicator.applied_count + applicator.skipped_count + applicator.failed_count
-            parts = []
-            if applicator.applied_count > 0:
-                parts.append(f"{applicator.applied_count} applied")
-            if applicator.skipped_count > 0:
-                parts.append(f"{applicator.skipped_count} skipped")
-            if applicator.failed_count > 0:
-                parts.append(f"{applicator.failed_count} failed")
-            return f"Diff processing complete: {', '.join(parts)}."
+        if hasattr(applicator, 'diff_results') and applicator.diff_results:
+            lines = ["Diff application results:"]
+            for file_path, status, message in applicator.diff_results:
+                if status == "applied":
+                    lines.append(f"  ✓ {file_path}: {message}")
+                elif status == "failed":
+                    lines.append(f"  ✗ {file_path}: FAILED - {message}")
+                elif status == "skipped":
+                    lines.append(f"  ⊘ {file_path}: skipped by user")
+            
+            # Add actionable context for failures
+            failed = [(fp, msg) for fp, st, msg in applicator.diff_results if st == "failed"]
+            if failed:
+                lines.append("")
+                lines.append("Failed diffs need to be regenerated. For each failure:")
+                for fp, msg in failed:
+                    lines.append(f"  - {fp}: {msg}")
+                lines.append("Please re-read the current file content and regenerate only the failed diffs.")
+            
+            return "\n".join(lines)
+        elif hasattr(applicator, 'applied_count'):
+            total = getattr(applicator, 'applied_count', 0) + getattr(applicator, 'skipped_count', 0) + getattr(applicator, 'failed_count', 0)
+            if total > 0:
+                parts = []
+                if applicator.applied_count > 0:
+                    parts.append(f"{applicator.applied_count} applied")
+                if applicator.skipped_count > 0:
+                    parts.append(f"{applicator.skipped_count} skipped")
+                if applicator.failed_count > 0:
+                    parts.append(f"{applicator.failed_count} failed")
+                return f"Diff processing complete: {', '.join(parts)}."
         return "Diff processing complete."
     
     async def _continue_conversation(self, message: str, messages: list) -> str:
@@ -804,7 +929,7 @@ class CLI:
         
         async def stream_task():
             """Streaming task that can be cancelled."""
-            async for chunk in executor.stream_with_tools(openai_messages, tools):
+            async for chunk in executor.stream_with_tools(openai_messages, tools, conversation_id=self.conversation_id):
                 # Check for cancellation
                 if self._cancellation_requested:
                     raise asyncio.CancelledError("User cancelled operation")
@@ -862,7 +987,7 @@ class CLI:
         openai_messages = self._convert_to_openai_format(messages)
         
         async def stream_task():
-            async for chunk in executor.stream_with_tools(openai_messages, tools):
+            async for chunk in executor.stream_with_tools(openai_messages, tools, conversation_id=self.conversation_id):
                 if self._cancellation_requested:
                     raise asyncio.CancelledError("User cancelled operation")
                 yield chunk
@@ -1254,6 +1379,7 @@ class CLI:
                 
                 # Regular message
                 print()
+                print("\033[90m⏳ Sending to model...\033[0m", file=sys.stderr)
                 try:
                     await self.ask(user_input)
                 except asyncio.CancelledError:
@@ -1284,6 +1410,8 @@ class CLI:
   /add <path>    Add file or directory to context
   /rm <path>     Remove from context  
   /files         List context files
+  /suspend       Save session and exit (resume later with /resume or --resume)
+  /resume        Restore a previous session's files and history
   /shell         Manage shell commands (session-local by default)
                  /shell add <cmd>   Add to allowlist
                  /shell rm <cmd>    Remove from allowlist
@@ -1332,6 +1460,33 @@ class CLI:
 
         elif command == '/shell':
             await self._handle_shell_command(arg)
+
+        elif command == '/suspend':
+            session_id = save_session(self)
+            print(f"\033[32m✓ Session suspended: {session_id}\033[0m")
+            print(f"\033[90m  Resume with: ziya chat --resume\033[0m")
+            print(f"\033[90m  Or use /resume in any session\033[0m")
+            return False
+
+        elif command == '/resume':
+            session_id = await select_session()
+            if session_id:
+                try:
+                    session_data = load_session(session_id)
+                    self.files = session_data.get('files', [])
+                    self.history = session_data.get('history', [])
+                    self._session_start_time = session_data.get('start_time', session_data.get('timestamp'))
+                    opener = session_data.get('opening_statement', '')
+                    print(f"\033[32m✓ Session resumed\033[0m")
+                    if opener:
+                        print(f"  \033[90m\"{opener[:80]}\"\033[0m")
+                    print(f"  Files: {len(self.files)}, Messages: {len(self.history)}")
+                except FileNotFoundError as e:
+                    print(f"\033[33m{e}\033[0m")
+                except Exception as e:
+                    print(f"\033[31mFailed to resume: {e}\033[0m")
+            else:
+                print("\033[90mResume cancelled\033[0m")
 
         elif command in ['/model', '/m']:
             await self._handle_model_selection_async(arg)
@@ -1913,7 +2068,7 @@ def cmd_chat(args):
     
     # Handle session resume
     if getattr(args, 'resume', False):
-        session_id = select_session()
+        session_id = asyncio.run(select_session())
         if session_id:
             try:
                 session_data = load_session(session_id)
@@ -1922,6 +2077,7 @@ def cmd_chat(args):
                 
                 cli = CLI(files=files)
                 cli.history = history
+                cli._session_start_time = session_data.get('start_time', session_data.get('timestamp'))
                 
                 print(f"\033[32m✓ Resumed session from {session_data.get('timestamp', 'unknown')}\033[0m")
                 print(f"  Files: {len(files)}, Messages: {len(history)}\n")
