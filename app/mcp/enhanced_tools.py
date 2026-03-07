@@ -19,6 +19,7 @@ import uuid
 from typing import Dict, Any, List, Optional, Union
 from enum import Enum
 from dataclasses import dataclass
+from pathlib import Path
 
 from langchain_classic.tools import BaseTool
 from app.utils.logging_utils import logger
@@ -35,6 +36,49 @@ DIFF_VALIDATION_CLOSE = "<</DIFF_VALIDATION>>"
 # Global counter for tool executions
 _execution_counter = 0
 _last_execution_time = {}
+
+# Tool enhancement cache
+_tool_enhancements: Optional[Dict[str, Any]] = None
+
+
+def _load_tool_enhancements() -> Dict[str, Any]:
+    """Load tool enhancements from config files.
+    
+    Sources (in order, later sources merge over earlier):
+    1. Internal plugin get_tool_enhancements() (enterprise/internal MCP fixes)
+    2. ~/.ziya/tool_enhancements.json (user-local overrides)
+    """
+    global _tool_enhancements
+    if _tool_enhancements is not None:
+        return _tool_enhancements
+    
+    merged: Dict[str, Any] = {}
+    
+    # Source 1: Registered plugin providers
+    try:
+        from app.plugins import get_tool_enhancements
+        plugin_enhancements = get_tool_enhancements()
+        if plugin_enhancements:
+            merged.update(plugin_enhancements)
+            logger.debug(f"Loaded {len(plugin_enhancements)} tool enhancements from plugin providers")
+    except Exception as e:
+        logger.debug(f"No plugin tool enhancements: {e}")
+    
+    # Source 2: User-local overrides
+    user_path = Path.home() / ".ziya" / "tool_enhancements.json"
+    if user_path.exists():
+        try:
+            with open(user_path) as f:
+                data = json.load(f)
+            user_enhancements = data.get("enhancements", {})
+            merged.update(user_enhancements)
+            logger.debug(f"Loaded {len(user_enhancements)} tool enhancements from {user_path}")
+        except Exception as e:
+            logger.warning(f"Failed to load tool enhancements from {user_path}: {e}")
+    
+    _tool_enhancements = merged
+    return merged
+
 
 class TriggerType(Enum):
     """Types of triggers that can be processed."""
@@ -313,10 +357,24 @@ class DirectMCPTool(BaseTool):
 class SecureMCPTool(BaseTool):
     """Secure wrapper around MCP tools."""
     
-    def __init__(self, name: str, description: str, mcp_tool_name: str, input_schema: Optional[Dict[str, Any]] = None, server_name: Optional[str] = None):
+    def __init__(self, name: str, description: str, mcp_tool_name: str, input_schema: Optional[Dict[str, Any]] = None, server_name: Optional[str] = None, config_enhancements: Optional[Dict[str, Any]] = None):
         """Initialize the secure MCP tool."""
-        # Use description as-is
+        # Apply tool enhancements: plugin-level first, then config-level overrides
+        enhancements = _load_tool_enhancements()
+        clean_name = mcp_tool_name if not mcp_tool_name.startswith("mcp_") else mcp_tool_name[4:]
+        enhancement = enhancements.get(clean_name) or enhancements.get(mcp_tool_name)
+        
         enhanced_description = description
+        if enhancement and enhancement.get("description_suffix"):
+            enhanced_description = description + enhancement["description_suffix"]
+
+        # Config-level enhancements override plugin-level
+        if config_enhancements and config_enhancements.get("description_suffix"):
+            if enhancement and enhancement.get("description_suffix"):
+                # Replace plugin suffix with config suffix
+                enhanced_description = description + config_enhancements["description_suffix"]
+            else:
+                enhanced_description = enhanced_description + config_enhancements["description_suffix"]
         
         # Store custom attributes in metadata
         metadata = {
@@ -827,7 +885,8 @@ def create_secure_mcp_tools() -> List[BaseTool]:
                 description=tool.description,
                 mcp_tool_name=tool.name,
                 input_schema=tool.inputSchema,
-                server_name=getattr(tool, "_server_name", None)
+                server_name=getattr(tool, "_server_name", None),
+                config_enhancements=server_config.get("tool_enhancements", {}).get(tool.name) if tool_server_name else None
             )
             
             secure_tools.append(secure_tool)

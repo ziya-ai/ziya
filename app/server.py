@@ -102,6 +102,7 @@ active_feedback_connections: dict[str, list[dict]] = {}  # conversation_id → l
 from fastapi.websockets import WebSocket, WebSocketDisconnect
  
 # Track active WebSocket connections for feedback
+# (Delegate streaming connections are managed by app.agents.delegate_stream_relay)
 
 # Global security stats tracker
 _security_stats = {
@@ -132,7 +133,7 @@ def record_verification_result(tool_name: str, is_valid: bool, error_message: st
             # Keep only last 100 attempts
             _security_stats['hallucination_attempts'] = _security_stats['hallucination_attempts'][-100:]
 
-def build_messages_for_streaming(question: str, chat_history: List, files: List, conversation_id: str, use_langchain_format: bool = False) -> List:
+def build_messages_for_streaming(question: str, chat_history: List, files: List, conversation_id: str, use_langchain_format: bool = False, system_prompt_addition: str = "") -> List:
     """
     Build messages for streaming using the extended prompt template.
     This centralizes message construction to avoid duplication.
@@ -228,7 +229,8 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
         model_info=model_info,
         files=files,
         question=question,
-        chat_history=processed_chat_history
+        chat_history=processed_chat_history,
+        system_prompt_addition=system_prompt_addition
     )
 
     logger.debug(f"🎯 PRECISION_SYSTEM: Built {len(messages)} messages with {len(files)} files preserved")
@@ -552,20 +554,26 @@ import logging as _logging
 
 class _PollingAccessFilter(_logging.Filter):
     """Filter routine polling GETs from uvicorn access log."""
-    _quiet = {'/chats?', '/chat-groups', '/skills', '/contexts', '/api/config',
-              '/folder-progress', '/model-capabilities', '/current-model', '/static/'}
+    _quiet = {'/chats?', '/chat-groups', '/skills', '/contexts', '/api/config', '/ws/',
+              '/folder-progress', '/model-capabilities', '/current-model', '/static/',}
     def filter(self, record: _logging.LogRecord) -> bool:
         msg = record.getMessage()
         return not any(q in msg for q in self._quiet)
 
 _logging.getLogger("uvicorn.access").addFilter(_PollingAccessFilter())
 
+class _WebSocketLifecycleFilter(_logging.Filter):
+    """Filter noisy WebSocket connection open/close messages from uvicorn."""
+    _noise = {'connection open', 'connection closed'}
+    def filter(self, record: _logging.LogRecord) -> bool:
+        return record.getMessage().strip() not in self._noise
+
+_logging.getLogger("uvicorn.error").addFilter(_WebSocketLifecycleFilter())
+
 @app.websocket("/ws/feedback/{conversation_id}")
 async def feedback_websocket(websocket: WebSocket, conversation_id: str):
-    """WebSocket endpoint for real-time streaming feedback."""
-    logger.info(f"🔄 FEEDBACK: WebSocket connection attempt for conversation {conversation_id}")
     await websocket.accept()
-    logger.info(f"🔄 FEEDBACK: WebSocket connected for conversation {conversation_id}")
+    logger.debug(f"🔄 FEEDBACK: WebSocket connected for conversation {conversation_id}")
     
     # Register this connection
     conn_entry = {
@@ -598,7 +606,7 @@ async def feedback_websocket(websocket: WebSocket, conversation_id: str):
                             await conn['feedback_queue'].put({'type': 'interrupt'})
                 
             except WebSocketDisconnect:
-                logger.info(f"🔄 FEEDBACK: WebSocket disconnected for {conversation_id}")
+                logger.debug(f"🔄 FEEDBACK: WebSocket disconnected for {conversation_id}")
                 break
     finally:
         # Clean up connection
@@ -615,9 +623,9 @@ async def feedback_websocket(websocket: WebSocket, conversation_id: str):
 @app.websocket("/ws/file-tree")
 async def file_tree_websocket(websocket: WebSocket):
     """WebSocket endpoint for real-time file tree update notifications."""
-    logger.info("🔄 FILE_TREE: WebSocket connection attempt")
+    logger.debug("🔄 FILE_TREE: WebSocket connection attempt")
     await websocket.accept()
-    logger.info("🔄 FILE_TREE: WebSocket connected")
+    logger.debug("🔄 FILE_TREE: WebSocket connected")
     
     # Register this connection
     active_file_tree_connections.add(websocket)
@@ -635,13 +643,38 @@ async def file_tree_websocket(websocket: WebSocket):
                 # Wait for any message (pings, etc.)
                 await websocket.receive_text()
             except WebSocketDisconnect:
-                logger.info("🔄 FILE_TREE: WebSocket disconnected")
+                logger.debug("🔄 FILE_TREE: WebSocket disconnected")
                 break
     finally:
         # Clean up connection
         if websocket in active_file_tree_connections:
             active_file_tree_connections.remove(websocket)
-            logger.info(f"🔄 FILE_TREE: Connection removed, {len(active_file_tree_connections)} remaining")
+            logger.debug(f"🔄 FILE_TREE: Connection removed, {len(active_file_tree_connections)} remaining")
+
+@app.websocket("/ws/delegate-stream/{conversation_id}")
+async def delegate_stream_websocket(websocket: WebSocket, conversation_id: str):
+    """WebSocket endpoint for live delegate conversation streaming.
+
+    When a user views a delegate conversation, the frontend connects here.
+    DelegateManager pushes chunks via delegate_stream_relay.push(), which
+    this endpoint relays to the connected client in real time.
+    """
+    await websocket.accept()
+    logger.debug(f"📡 DELEGATE_STREAM: WebSocket connected for {conversation_id[:8]}")
+
+    from app.agents.delegate_stream_relay import connect, disconnect
+    await connect(conversation_id, websocket)
+
+    try:
+        # Keep alive — wait for client disconnect
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        logger.debug(f"📡 DELEGATE_STREAM: WebSocket disconnected for {conversation_id[:8]}")
+    finally:
+        await disconnect(conversation_id, websocket)
+
+
 # PRIORITY ROUTE: /api/chat - MUST BE FIRST TO TAKE PRECEDENCE
 
 @app.post('/api/chat')
@@ -757,7 +790,9 @@ async def chat_endpoint(request: Request):
                     'conversation_id': conversation_id,
                     'files': files,
                     'systemPromptAddition': system_prompt_addition,
-                    'project_root': project_root  # Pass project root for MCP tools
+                    'project_root': project_root,
+                    'modelOverrides': body.get('modelOverrides', {}),
+                    'preferredToolIds': body.get('preferredToolIds', []),
                 }
             }
             
@@ -1592,6 +1627,9 @@ async def stream_chunks(body):
     files = body.get("config", {}).get("files", [])
     conversation_id = body.get("conversation_id")
     project_root = body.get("config", {}).get("project_root") or body.get("project_root")
+    system_prompt_addition = body.get("config", {}).get("systemPromptAddition", "")
+    model_overrides = body.get("config", {}).get("modelOverrides", {})
+    preferred_tool_ids = body.get("config", {}).get("preferredToolIds", [])
     
     # Use request-scoped context (set by ProjectContextMiddleware) if no explicit body param.
     # Fall back to body param for backwards compatibility with older frontends.
@@ -1666,7 +1704,7 @@ async def stream_chunks(body):
                 logger.debug(f"🔍 DIRECT_STREAMING_DEBUG: About to call build_messages_for_streaming with {len(files)} files")
                 # Build messages with full context using the same function as LangChain path - use langchain format like 0.3.0
                 logger.debug(f"🔍 CALLING_BUILD_MESSAGES: About to call build_messages_for_streaming")
-                messages = build_messages_for_streaming(question, chat_history, files, conversation_id, use_langchain_format=True)
+                messages = build_messages_for_streaming(question, chat_history, files, conversation_id, use_langchain_format=True, system_prompt_addition=system_prompt_addition)
                 logger.debug(f"🔍 DIRECT_STREAMING_PATH: Built {len(messages)} messages with full context")
                 
                 # Debug the system message content
@@ -1678,6 +1716,14 @@ async def stream_chunks(body):
                 executor = StreamingToolExecutor(profile_name=aws_profile, region=current_region)
                 logger.debug(f"🚀 DIRECT_STREAMING: Created StreamingToolExecutor with profile={aws_profile}, region={current_region}")
                 
+                # Apply per-request model overrides from active skills
+                if model_overrides:
+                    logger.info(f"🎯 SKILL_OVERRIDES: Applying model overrides: {model_overrides}")
+                    if 'temperature' in model_overrides:
+                        executor.temperature_override = float(model_overrides['temperature'])
+                    if 'maxOutputTokens' in model_overrides:
+                        executor.max_tokens_override = int(model_overrides['maxOutputTokens'])
+
                 # Send initial heartbeat
                 yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\n\n"
                 
@@ -1689,6 +1735,15 @@ async def stream_chunks(body):
                 except Exception as e:
                     logger.warning(f"Failed to get MCP tools: {e}")
                 
+                # Filter tools by skill preferences if specified
+                if preferred_tool_ids and mcp_tools:
+                    preferred_set = set(preferred_tool_ids)
+                    # Partition: preferred tools first, then the rest
+                    preferred = [t for t in mcp_tools if t.name in preferred_set]
+                    others = [t for t in mcp_tools if t.name not in preferred_set]
+                    mcp_tools = preferred + others
+                    logger.info(f"🎯 SKILL_TOOLS: Prioritized {len(preferred)} tools from active skills, {len(others)} others")
+
                 async for chunk in executor.stream_with_tools(messages, tools=mcp_tools, conversation_id=conversation_id, project_root=project_root):
                     chunk_count += 1
                     
@@ -1943,7 +1998,7 @@ async def stream_chunks(body):
     conversation_id = body.get("conversation_id")
 
     if question:
-        messages = build_messages_for_streaming(question, chat_history, files, conversation_id, use_langchain_format=True)
+        messages = build_messages_for_streaming(question, chat_history, files, conversation_id, use_langchain_format=True, system_prompt_addition=system_prompt_addition)
         logger.debug(f"🔍 LANGCHAIN_PATH: Built {len(messages)} messages for non-Bedrock model")
     else:
         
@@ -2167,7 +2222,8 @@ async def stream_chunks(body):
                 # Build messages using existing function - use langchain format for proper message handling
                 messages = build_messages_for_streaming(question, chat_history, files, 
                                                        body.get("conversation_id", f"direct_{int(time.time())}"),
-                                                       use_langchain_format=True)
+                                                       use_langchain_format=True,
+                                                       system_prompt_addition=system_prompt_addition)
                 
                 # Debug: Log the messages being sent
                 logger.debug(f"Built {len(messages)} messages for StreamingToolExecutor")
@@ -2306,7 +2362,8 @@ async def stream_chunks(body):
                         question=question,
                         chat_history=chat_history,
                         files=files,
-                        conversation_id=conversation_id
+                        conversation_id=conversation_id,
+                        system_prompt_addition=system_prompt_addition
                     )
                     
                     logger.debug(f"Built {len(messages)} messages for Nova StreamingToolExecutor")
@@ -2379,7 +2436,7 @@ async def stream_chunks(body):
         logger.debug(f"🔍 STREAM_CHUNKS: Using conversation_id: {conversation_id}")
 
         # Use centralized message construction to eliminate all duplication
-        messages = build_messages_for_streaming(question, chat_history, files, conversation_id, use_langchain_format=True)
+        messages = build_messages_for_streaming(question, chat_history, files, conversation_id, use_langchain_format=True, system_prompt_addition=system_prompt_addition)
     
     # COMPLETE CONTEXT OUTPUT - Log the entire context being sent to the model
     logger.info("=" * 100)
@@ -6486,7 +6543,7 @@ async def validate_files(request: Request):
         # Use provided project root if available, otherwise fall back to env var
         if project_root:
             user_codebase_dir = os.path.abspath(project_root)
-            logger.info(f"🔍 VALIDATE: Using provided project root: {user_codebase_dir}")
+            logger.debug(f"🔍 VALIDATE: Using provided project root: {user_codebase_dir}")
         else:
             user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
         

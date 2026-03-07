@@ -34,8 +34,8 @@ _ignored_patterns_cache_time: float = 0
 IGNORED_PATTERNS_CACHE_TTL = 3600  # 1 hour - gitignore files rarely change
 
 def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
-    global _ignored_patterns_cache, _ignored_patterns_cache_dir, _ignored_patterns_cache_time
-    
+    global _ignored_patterns_cache, _ignored_patterns_cache_dir, _ignored_patterns_cache_time, _included_symlink_names
+
     # Check cache first - avoid rescanning entirely
     current_time = time.time()
     if (_ignored_patterns_cache is not None and 
@@ -102,6 +102,14 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
             
             logger.info(f"Will override default exclusions for pattern: {include_path}")
     
+    # Track which included patterns are symlinks so other functions
+    # know to follow them (default policy: don't follow symlinks)
+    _included_symlink_names = set()
+    for pattern in include_patterns_override:
+        candidate = os.path.join(user_codebase_dir, pattern)
+        if os.path.islink(candidate):
+            _included_symlink_names.add(pattern)
+
     # Check if we're using include-only mode
     include_only_dirs = os.environ.get("ZIYA_INCLUDE_ONLY_DIRS", "")
     if include_only_dirs:
@@ -320,8 +328,12 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
         
         entry_count = 0
         for entry in entries:
-            # Skip non-directories
-            if not entry.is_dir(follow_symlinks=False):
+            # Follow symlinks only for explicitly --include'd directories
+            is_included_symlink = (
+                entry.is_symlink() and entry.name in include_patterns_override
+            )
+            follow = is_included_symlink
+            if not entry.is_dir(follow_symlinks=follow):
                 continue
 
             # Cap entries per directory to avoid blocking on huge flat dirs
@@ -505,8 +517,8 @@ def estimate_directory_count(directory: str, ignored_patterns: List[Tuple[str, s
             for entry in entries:
                 if not entry.is_dir(follow_symlinks=False):
                     continue
-                if entry.is_symlink():
-                    continue
+                if entry.is_symlink() and entry.name not in _included_symlink_names:
+                    continue  # skip symlinks unless explicitly included
                 entry_path = entry.path
                 
                 # Skip Library and other known slow directories
@@ -811,8 +823,33 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
                 
             logger.info(f"Including external path: {ext_path}")
             
+            # Resolve the real path so ignore patterns match resolved paths
+            # (scandir follows symlinks, producing real paths not symlink paths)
+            ext_real_path = os.path.realpath(ext_path)
+            original_should_ignore_fn = should_ignore_fn
+            if ext_real_path != os.path.realpath(directory):
+                ext_patterns = list(ignored_patterns)
+                # Duplicate all patterns scoped to the external dir's real path
+                for pat, _ in ignored_patterns:
+                    ext_patterns.append((pat, ext_real_path))
+                # Load .gitignore from the external directory
+                ext_gitignore = os.path.join(ext_real_path, '.gitignore')
+                if os.path.isfile(ext_gitignore):
+                    try:
+                        with open(ext_gitignore, 'r') as f:
+                            for line in f:
+                                line = line.rstrip('\n\r')
+                                if line and not line.startswith('#'):
+                                    ext_patterns.append((line, ext_real_path))
+                    except (IOError, OSError):
+                        pass
+                should_ignore_fn = parse_gitignore_patterns(ext_patterns)
+
             # Process the external directory
-            ext_result = process_dir_bfs(ext_path, 1)
+            ext_result = process_dir_bfs(ext_real_path, 1)
+
+            # Restore original ignore function for subsequent external paths
+            should_ignore_fn = original_should_ignore_fn
             
             # Add the external directory to the root result
             if ext_result['token_count'] > 0 or ext_result.get('children'):
@@ -1057,7 +1094,7 @@ def start_background_token_calculation(directory: str, ignored_patterns: List[Tu
                 dirs[:] = [d for d in dirs 
                           if not should_ignore_fn(os.path.join(root, d)) 
                           and not d.startswith('.') 
-                          and not os.path.islink(os.path.join(root, d))]
+                          and (not os.path.islink(os.path.join(root, d)) or d in _included_symlink_names)]
                 
                 for file in files:
                     file_path = os.path.join(root, file)

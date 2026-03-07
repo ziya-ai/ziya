@@ -30,7 +30,7 @@ async def validate_files(request: FileValidationRequest):
     # Use provided project root if available, otherwise fall back to environment
     if request.projectRoot:
         base_dir = request.projectRoot
-        logger.info(f"🔍 VALIDATE: Using provided project root: {base_dir}")
+        logger.debug(f"🔍 VALIDATE: Using provided project root: {base_dir}")
     else:
         base_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
         logger.info(f"🔍 VALIDATE: Using environment project root: {base_dir}")

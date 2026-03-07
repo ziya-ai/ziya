@@ -7,7 +7,7 @@ without modifying the core codebase.
 """
 
 import os
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import timedelta
 from app.utils.logging_utils import logger
 from app.plugins.interfaces import DataRetentionPolicy
@@ -21,6 +21,7 @@ _formatter_providers = []
 _shell_config_providers = []
 _tool_validator_providers = []
 _data_retention_providers = []
+_tool_enhancement_providers = []
 _initialized = False
 
 def register_auth_provider(provider):
@@ -90,8 +91,33 @@ def register_service_model_provider(provider):
 def get_all_config_providers() -> List:
     """Get all registered config providers (regardless of should_apply)."""
     return _config_providers.copy()
+def register_tool_enhancement_provider(provider):
+    """
+    Register a tool enhancement provider plugin.
+    
+    Providers supply supplemental description text for MCP tools
+    to reduce parameter errors from models.
+    """
+    _tool_enhancement_providers.append(provider)
+    logger.debug(f"Registered tool enhancement provider: {getattr(provider, 'provider_id', 'unknown')}")
 
 
+
+def get_tool_enhancements() -> Dict[str, Any]:
+    """Get merged tool enhancements from all registered providers.
+    
+    Returns a dict mapping tool names to enhancement config dicts.
+    Later providers override earlier ones for the same tool name.
+    """
+    merged = {}
+    for provider in _tool_enhancement_providers:
+        try:
+            enhancements = provider.get_tool_enhancements()
+            if enhancements:
+                merged.update(enhancements)
+        except Exception as e:
+            logger.warning(f"Failed to get tool enhancements from provider: {e}")
+    return merged
 def get_shell_config_providers() -> List:
     """Get all registered shell config providers."""
     return _shell_config_providers.copy()
