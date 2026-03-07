@@ -89,11 +89,16 @@ export const ActiveContextBar: React.FC = () => {
               fontSize: '11px',
               color: '#fff',
               fontWeight: 500,
-              border: '1px dashed rgba(255,255,255,0.3)'
+              border: skill.source === 'project'
+                ? '1px solid rgba(103,232,249,0.4)'
+                : '1px dashed rgba(255,255,255,0.3)'
             }}
           >
+            {skill.source === 'project' && (
+              <span style={{ fontSize: '8px', opacity: 0.7 }}>📁</span>
+            )}
             <span>{skill.name}</span>
-            <CloseOutlined 
+            <CloseOutlined
               style={{ fontSize: '9px', opacity: 0.7, cursor: 'pointer' }}
               onClick={() => removeSkillFromLens(skill.id)}
             />

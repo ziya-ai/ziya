@@ -64,6 +64,8 @@ interface ProjectContextType {
   // Computed values
   activeFiles: string[];
   activeSkillPrompts: string;
+  activeModelOverrides: Record<string, any>;
+  activeToolIds: string[];
   tokenInfo: TokenCalculationResponse | null;
   isCalculatingTokens: boolean;
 }
@@ -86,7 +88,19 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   
   // Active lens state
   const [activeContextIds, setActiveContextIds] = useState<string[]>([]);
-  const [activeSkillIds, setActiveSkillIds] = useState<string[]>([]);
+  const [activeSkillIds, _setActiveSkillIds] = useState<string[]>(() => {
+    try {
+      const saved = sessionStorage.getItem('ZIYA_ACTIVE_SKILL_IDS');
+      return saved ? JSON.parse(saved) : [];
+    } catch { return []; }
+  });
+  const setActiveSkillIds = useCallback((ids: string[] | ((prev: string[]) => string[])) => {
+    _setActiveSkillIds(prev => {
+      const next = typeof ids === 'function' ? ids(prev) : ids;
+      try { sessionStorage.setItem('ZIYA_ACTIVE_SKILL_IDS', JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }, []);
   const [additionalFiles, setAdditionalFiles] = useState<string[]>([]);
   const [additionalPrompt, setAdditionalPrompt] = useState<string | null>(null);
   
@@ -182,8 +196,16 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     // Add additional files
     additionalFiles.forEach(f => files.add(f));
     
+    // Add files from active skills
+    for (const skillId of activeSkillIds) {
+      const skill = skills.find(s => s.id === skillId);
+      if (skill?.files) {
+        skill.files.forEach(f => files.add(f));
+      }
+    }
+
     return Array.from(files);
-  }, [activeContextIds, additionalFiles, contexts]);
+  }, [activeContextIds, activeSkillIds, additionalFiles, contexts, skills]);
   
   // Combine active skill prompts
   const activeSkillPrompts = useMemo(() => {
@@ -192,7 +214,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     for (const skillId of activeSkillIds) {
       const skill = skills.find(s => s.id === skillId);
       if (skill) {
-        prompts.push(skill.prompt);
+        prompts.push(`[Active Skill: ${skill.name}]\n${skill.prompt}`);
       }
     }
     
@@ -204,6 +226,38 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   }, [activeSkillIds, additionalPrompt, skills]);
   
   // Recalculate tokens when selection changes
+  // Merge modelOverrides from all active skills (last-write-wins per key)
+  const activeModelOverrides = useMemo(() => {
+    const merged: Record<string, any> = {};
+    for (const skillId of activeSkillIds) {
+      const skill = skills.find(s => s.id === skillId);
+      if (skill?.modelOverrides) {
+        if (skill.modelOverrides.temperature !== undefined)
+          merged.temperature = skill.modelOverrides.temperature;
+        if (skill.modelOverrides.maxOutputTokens !== undefined)
+          merged.maxOutputTokens = skill.modelOverrides.maxOutputTokens;
+        if (skill.modelOverrides.thinkingMode !== undefined)
+          merged.thinkingMode = skill.modelOverrides.thinkingMode;
+      }
+    }
+    return merged;
+  }, [activeSkillIds, skills]);
+
+  // Collect toolIds from active skills for tool filtering
+  const activeToolIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const skillId of activeSkillIds) {
+      const skill = skills.find(s => s.id === skillId);
+      if (skill?.toolIds) {
+        skill.toolIds.forEach(t => ids.add(t));
+      }
+      if (skill?.allowedTools) {
+        skill.allowedTools.forEach(t => ids.add(t));
+      }
+    }
+    return Array.from(ids);
+  }, [activeSkillIds, skills]);
+
   useEffect(() => {
     if (!currentProject) {
       setTokenInfo(null);
@@ -437,8 +491,16 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setActiveSkillIds(prev => 
       prev.includes(skillId) ? prev : [...prev, skillId]
     );
-  }, []);
-  
+
+    // Auto-activate contexts referenced by this skill
+    const skill = skills.find(s => s.id === skillId);
+    if (skill?.contextIds && skill.contextIds.length > 0) {
+      setActiveContextIds(prev => {
+        const merged = new Set([...prev, ...skill.contextIds!]);
+        return Array.from(merged);
+      });
+    }
+  }, [skills]);  
   const removeSkillFromLens = useCallback((skillId: string) => {
     setActiveSkillIds(prev => prev.filter(id => id !== skillId));
   }, []);
@@ -494,6 +556,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     // Computed
     activeFiles,
     activeSkillPrompts,
+    activeModelOverrides,
+    activeToolIds,
     tokenInfo,
     isCalculatingTokens,
   }), [
@@ -527,6 +591,8 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     clearLens,
     activeFiles,
     activeSkillPrompts,
+    activeModelOverrides,
+    activeToolIds,
     tokenInfo,
     isCalculatingTokens,
   ]);

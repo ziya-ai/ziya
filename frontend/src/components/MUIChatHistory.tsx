@@ -263,34 +263,8 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
       nodeId={nodeId}
       label={
         <div
-          style={{ width: '100%', cursor: 'grab' }}
-          draggable={true}
+          style={{ width: '100%' }}
           onMouseDown={onMouseDown}
-          onDragStart={(e) => {
-            e.stopPropagation();
-            // Set drag data
-            const dragData = { nodeId, nodeType: isFolder ? 'folder' : 'conversation' };
-            e.dataTransfer.setData('application/ziya-node', JSON.stringify(dragData));
-            e.dataTransfer.effectAllowed = 'move';
-
-            // Create a custom drag image
-            e.dataTransfer.setDragImage(e.currentTarget, 10, 10);
-
-            // Add visual feedback
-            if (e.currentTarget instanceof HTMLElement) {
-              e.currentTarget.style.opacity = '0.4';
-            }
-          }}
-          onDragEnd={(e) => {
-            e.stopPropagation();
-            // Reset visual feedback
-            if (e.currentTarget instanceof HTMLElement) {
-              e.currentTarget.style.opacity = '1';
-            }
-          }}
-          onDragOver={onDragOver}
-          onDragLeave={onDragLeave}
-          onDrop={onDrop}
         >
           <Box // This Box is for the entire label content layout
             onMouseEnter={() => setIsHovered(true)}
@@ -1468,6 +1442,34 @@ const MUIChatHistory = () => {
     }
   }, [customDragState, endCustomDrag, folders, conversations, pinnedFolders]);
 
+  // Escape key cancels active drag
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && customDragState.isDragging) {
+        e.preventDefault();
+        console.log('⎋ ESC: Cancelling drag operation');
+
+        // Remove ghost element
+        if (customDragState.ghostElement) {
+          customDragState.ghostElement.remove();
+        }
+        // Clear all visual artifacts
+        document.querySelectorAll('.drop-insertion-line').forEach(line => line.remove());
+        document.querySelectorAll<HTMLElement>('.MuiTreeItem-content').forEach(item => {
+          item.style.backgroundColor = '';
+          item.style.border = '';
+          item.style.boxShadow = '';
+        });
+        setCustomDragState({
+          isDragging: false, draggedNodeId: null, draggedNodeType: null,
+          ghostElement: null, draggedText: ''
+        });
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [customDragState.isDragging, customDragState.ghostElement]);
+
   // Cleanup on component unmount - critical for preventing ghost element leaks
   useEffect(() => {
     return () => {
@@ -2452,6 +2454,9 @@ const MUIChatHistory = () => {
       if (delegateStatus && !isFolder) {
         labelText = labelText.replace(/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]\s*/u, '');
       }
+      if (isTaskPlanFolder) {
+        labelText = labelText.replace(/^⚡\s*/, '');
+      }
       const isPinned = isFolder && pinnedFolders.has(node.id);
       const isCurrentItem = isFolder
         ? node.id === currentFolderId
@@ -2464,7 +2469,8 @@ const MUIChatHistory = () => {
 
       // Fix streaming detection - ensure we're checking the actual conversation ID
       const conversationId = !isFolder && node.id.startsWith('conv-') ? node.id.substring(5) : null;
-      const isStreamingConv = conversationId && streamingConversations.has(conversationId);
+      const isStreamingConv = (conversationId && streamingConversations.has(conversationId))
+        || (delegateStatus === 'running' || delegateStatus === 'compacting');
 
       const conversationCount = isFolder ? node.conversationCount : 0;
       const isEditing = editingId === (isFolder ? node.id : node.id.substring(5));
@@ -2473,7 +2479,7 @@ const MUIChatHistory = () => {
       const handleCustomMouseDown = (e: React.MouseEvent) => {
         // Skip if clicking on editable elements
         const target = e.target as HTMLElement;
-        if (target.tagName === 'INPUT' ||
+        if (e.button !== 0 || target.tagName === 'INPUT' ||
           target.tagName === 'TEXTAREA' ||
           target.closest('input') ||
           target.closest('textarea') ||
@@ -2487,30 +2493,36 @@ const MUIChatHistory = () => {
           return; // Don't start drag if outside chat history
         }
 
-        // Only start drag detection after movement threshold
+        // Only start drag detection after significant movement threshold
         const startX = e.clientX;
         const startY = e.clientY;
 
+        // Track whether mouse is still held down
+        let mouseIsDown = true;
+
         const detectDrag = (moveEvent: MouseEvent) => {
+          // If mouse was released before we hit the threshold, bail out
+          if (!mouseIsDown) {
+            document.removeEventListener('mousemove', detectDrag);
+            return;
+          }
           const deltaX = Math.abs(moveEvent.clientX - startX);
           const deltaY = Math.abs(moveEvent.clientY - startY);
 
-          if (deltaX > 8 || deltaY > 8) {
+          if (deltaX > 12 || deltaY > 12) {
             startCustomDrag(nodeId, isFolder ? 'folder' : 'conversation', labelText);
-            document.removeEventListener('mousemove', detectDrag);
-            document.removeEventListener('mouseup', cleanup);
+            cleanup();
           }
         };
 
         const cleanup = () => {
+          mouseIsDown = false;
           document.removeEventListener('mousemove', detectDrag);
           document.removeEventListener('mouseup', cleanup);
         };
 
-        setTimeout(() => {
-          document.addEventListener('mousemove', detectDrag);
-          document.addEventListener('mouseup', cleanup);
-        }, 50);
+        document.addEventListener('mousemove', detectDrag);
+        document.addEventListener('mouseup', cleanup);
       };
 
       return (
@@ -2547,7 +2559,7 @@ const MUIChatHistory = () => {
           onEditSubmit={handleEditSubmit}
           onMouseDown={handleCustomMouseDown}
           style={{
-            cursor: customDragState.isDragging && customDragState.draggedNodeId === nodeId ? 'grabbing' : 'grab',
+            cursor: customDragState.isDragging && customDragState.draggedNodeId === nodeId ? 'grabbing' : 'default',
             opacity: customDragState.isDragging && customDragState.draggedNodeId === nodeId ? 0.6 : 1,
             transition: 'opacity 0.2s ease',
             ...(isTaskPlanFolder ? { borderLeft: '3px solid #6366f1', borderRadius: '4px' } : {}),

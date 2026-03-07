@@ -162,6 +162,15 @@ export function normalizeDiagramType(diagramType: string, mermaid: any): string 
     }
   }
 
+  // Case-insensitive fallback: find a supported type that matches ignoring case
+  const lowerInput = diagramType.toLowerCase();
+  for (const supported of Array.from(supportedTypes)) {
+    if ((supported as string).toLowerCase() === lowerInput) {
+      console.log('✅ TYPE-NORMALIZE: Case-insensitive match found:', supported);
+      return supported as string;
+    }
+  }
+
   // Return original if no alternative found
   console.warn('⚠️ TYPE-NORMALIZE: No normalization found, returning original:', diagramType);
   return diagramType;
@@ -1481,6 +1490,12 @@ export function initMermaidEnhancer(): void {
             return match;
           }
 
+          // Skip already-quoted content — it is valid and the inner content may
+          // contain brackets that would be mismatched by the outer regex.
+          if (content.startsWith('"') && content.endsWith('"')) {
+            return match;
+          }
+
           // Validate bracket matching
           const validPairs = { '[': ']', '(': ')', '{': '}' };
           if (validPairs[openBracket] !== closeBracket) {
@@ -2177,6 +2192,45 @@ export function initMermaidEnhancer(): void {
     diagramTypes: ['classdiagram']
   });
 
+  // Split Note lines that contain block keywords after <br/> tags.
+  // LLMs sometimes generate "Note over X: text<br/>rect rgb(...)" on a single line.
+  // Mermaid treats the entire thing as Note content, so the subsequent "end"
+  // has no matching block opener and causes a parse error.
+  registerPreprocessor(
+    (def: string, type: string) => {
+      if (!def.trim().startsWith('sequenceDiagram')) {
+        return def;
+      }
+
+      const blockKeywords = /^(rect|loop|alt|opt|par|critical|break)\b/;
+      const lines = def.split('\n');
+      const result: string[] = [];
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        // Only process Note lines that contain <br/> followed by a block keyword
+        if (/^Note\s/.test(trimmed) && /<br\/?>/i.test(trimmed)) {
+          const brParts = trimmed.split(/<br\/?>/i);
+          const lastPart = brParts[brParts.length - 1].trim();
+          if (blockKeywords.test(lastPart)) {
+            // Reconstruct the Note without the trailing block keyword
+            const notePart = brParts.slice(0, -1).join('<br/>');
+            const indent = line.match(/^\s*/)?.[0] || '';
+            result.push(`${indent}${notePart}`);
+            result.push(`${indent}${lastPart}`);
+            continue;
+          }
+        }
+        result.push(line);
+      }
+
+      return result.join('\n');
+    }, {
+    name: 'sequence-note-block-keyword-split',
+    priority: 610, // Run before CRITICAL-SEQUENCE-FIX (590) and note-formatter (300)
+    diagramTypes: ['sequencediagram']
+  });
+
   // Add a comprehensive sequence diagram alt/else block fixer
   registerPreprocessor(
     (def: string, type: string) => {
@@ -2191,6 +2245,7 @@ export function initMermaidEnhancer(): void {
       let inAltBlock = false;
       let inCriticalBlock = false;
       let inParBlock = false;
+      let inRectBlock = false;
       let blockDepth = 0;
       let hasElseInCurrentBlock = false;
       let hasBreakInCurrentBlock = false;
@@ -2242,6 +2297,19 @@ export function initMermaidEnhancer(): void {
           continue;
         }
 
+        // Track rect/loop/opt/break blocks (they use end but don't have else/option)
+        if (trimmed.startsWith('rect ') || trimmed === 'rect' ||
+            trimmed.startsWith('loop ') ||
+            trimmed.startsWith('opt ') ||
+            trimmed.startsWith('break ')) {
+          if (trimmed.startsWith('rect')) {
+            inRectBlock = true;
+          }
+          blockDepth++;
+          result.push(line);
+          continue;
+        }
+
         // Track block ends
         if (trimmed === 'end' && blockDepth > 0) {
           blockDepth--;
@@ -2249,6 +2317,7 @@ export function initMermaidEnhancer(): void {
             inAltBlock = false;
             inCriticalBlock = false;
             inParBlock = false;
+            inRectBlock = false;
             hasElseInCurrentBlock = false;
           }
           hasBreakInCurrentBlock = false;
@@ -2458,8 +2527,8 @@ export function initMermaidEnhancer(): void {
               const nextTrimmed = nextLine.trim();
 
               // Stop if we hit another Mermaid command or empty line followed by command
-              if (nextTrimmed.match(/^(participant|Note|activate|deactivate|\w+->>|\w+-->>|loop|alt|opt|par|and|else|end)/) ||
-                nextTrimmed === '' && j + 1 < lines.length && lines[j + 1].trim().match(/^(participant|Note|activate|deactivate|\w+->>|\w+-->>|loop|alt|opt|par|and|else|end)/)) {
+              if (nextTrimmed.match(/^(participant|Note|activate|deactivate|\w+->>|\w+-->>|loop|rect|alt|opt|par|critical|break|and|else|end)/) ||
+                nextTrimmed === '' && j + 1 < lines.length && lines[j + 1].trim().match(/^(participant|Note|activate|deactivate|\w+->>|\w+-->>|loop|rect|alt|opt|par|critical|break|and|else|end)/)) {
                 break;
               }
 
@@ -2492,8 +2561,8 @@ export function initMermaidEnhancer(): void {
                 .replace(/\}/g, ')')
                 // Handle numbered lists
                 .replace(/(\d+)\.\s*/g, '$1. ')
-                // Handle bullet points
-                .replace(/-\s*/g, '• ')
+                // Handle bullet points (only list-style dashes at start or after line breaks)
+                .replace(/(^|<br\/?>)\s*-\s+/g, '$1• ')
                 .trim();
             }
 
@@ -3159,7 +3228,7 @@ export function enhanceMermaid(mermaid: any): void {
         }
         typeLine = diagramDeclarationLine || typeLine;
       }
-      diagramType = typeLine.split(' ')[0].toLowerCase(); // Get the first word as type
+      diagramType = typeLine.split(' ')[0]; // Preserve original casing for type lookup
 
       // Debug logging for type normalization
       console.log('Mermaid preprocessing debug:', {
@@ -3330,6 +3399,39 @@ export default function initMermaidSupport(mermaidInstance?: any): void {
     name: 'class-consolidated-relationship-fix',
     priority: 520, // Highest priority
     diagramTypes: ['classdiagram', 'erdiagram']
+  });
+
+  // Fix unquoted attribute values in erDiagram entity blocks.
+  // Mermaid's erDiagram parser requires that the optional "value" token after
+  // the attribute name is a quoted string. Bare words and numbers are invalid
+  // and produce a parse error ("Expecting BLOCK_STOP, got ER_DIAGRAM").
+  registerPreprocessor((def: string, type: string) => {
+    if (!def.trim().startsWith('erDiagram')) {
+      return def;
+    }
+
+    console.log('🔍 ER-ATTR-FIX: Quoting unquoted attribute values in erDiagram');
+
+    // Match lines inside entity blocks: <type> <name> <unquoted-value>
+    // where unquoted-value is a word/number not already wrapped in quotes.
+    // Pattern: leading whitespace, datatype, identifier, then a token without quotes.
+    const result = def.replace(
+      /^(\s+)(\w+)\s+(\w+)\s+([^"\n][^\s\n]*)(\s*)$/gm,
+      (match, indent, datatype, attrName, value, trail) => {
+        // Skip relationship lines (they contain : or --)
+        if (value.includes(':') || value.includes('-') || value.includes('|')) {
+          return match;
+        }
+        console.log(`🔍 ER-ATTR-FIX: Quoting value "${value}" for attribute ${attrName}`);
+        return `${indent}${datatype} ${attrName} "${value}"${trail}`;
+      }
+    );
+
+    return result;
+  }, {
+    name: 'er-diagram-attribute-value-fix',
+    priority: 530,
+    diagramTypes: ['erdiagram']
   });
 
   // Remove the old duplicate preprocessors by commenting them out

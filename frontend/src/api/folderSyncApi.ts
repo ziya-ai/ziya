@@ -39,6 +39,7 @@ export async function listServerFolders(projectId: string): Promise<Conversation
     createdAt: g.createdAt,
     updatedAt: g.updatedAt || g.createdAt,
     isGlobal: g.isGlobal,
+    taskPlan: g.taskPlan ?? null,
   }));
 }
 
