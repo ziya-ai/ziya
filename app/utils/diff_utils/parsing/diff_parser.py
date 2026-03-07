@@ -287,10 +287,10 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
             hunk_num = int(match.group(5)) if match and match.group(5) else len(hunks) + 1
             if match:
                 old_start = int(match.group(1))
-                # Validate line numbers
-                if old_start < 1:
-                    logger.warning(f"Invalid hunk header - old_start ({old_start}) < 1")
-                    old_start = 1
+                # old_start=0 is valid for new file diffs (@@ -0,0 +1,N @@)
+                if old_start < 0:
+                    logger.warning(f"Invalid hunk header - old_start ({old_start}) < 0")
+                    old_start = 0
 
                 # Use default of 1 for count if not specified
                 old_count = int(match.group(2)) if match.group(2) else 1

@@ -777,7 +777,7 @@ def apply_diff_atomically(file_path: str, git_diff: str) -> Dict[str, Any]:
                 continue
         
         # Check if essential hunk data is missing
-        if not hunk.get('old_block') or not hunk.get('new_lines'):
+        if 'old_block' not in hunk or 'new_lines' not in hunk:
             logger.warning(f"Malformed hunk detected: missing old_block or new_lines")
             malformed_hunks.append(hunk_id)
             continue
