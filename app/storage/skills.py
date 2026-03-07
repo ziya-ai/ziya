@@ -1,6 +1,7 @@
 """
 Skill storage implementation.
 """
+import logging
 from pathlib import Path
 from typing import Optional, List
 import uuid
@@ -12,13 +13,16 @@ from ..services.token_service import TokenService
 from ..services.color_service import generate_color
 from ..data.built_in_skills import BUILT_IN_SKILLS
 
+logger = logging.getLogger(__name__)
+
+
 class SkillStorage(BaseStorage[Skill]):
     """Storage for skills within a project."""
     
-    def __init__(self, project_dir: Path, token_service: TokenService):
+    def __init__(self, project_dir: Path, token_service: TokenService, workspace_path: str | None = None):
         self.skills_dir = project_dir / "skills"
         self.project_dir = project_dir
-        self.workspace_path: Optional[str] = None
+        self.workspace_path = workspace_path
         self.token_service = token_service
         super().__init__(self.skills_dir)
         
@@ -49,23 +53,58 @@ class SkillStorage(BaseStorage[Skill]):
                     tokenCount=self.token_service.count_tokens(built_in_data['prompt']),
                     isBuiltIn=True,
                     createdAt=now,
-                    lastUsedAt=now
+                    lastUsedAt=now,
+                    keywords=built_in_data.get('keywords'),
                 )
                 
                 self._write_json(self._skill_file(skill_id), skill.model_dump())
     
     def get(self, skill_id: str) -> Optional[Skill]:
         data = self._read_json(self._skill_file(skill_id))
-        return Skill(**data) if data else None
+        if data:
+            return Skill(**data)
+
+        # Try project-discovered skills (with full body loaded)
+        if self.workspace_path:
+            try:
+                from ..services.skill_discovery import discover_project_skills
+                project_skills = discover_project_skills(
+                    self.workspace_path,
+                    self.token_service,
+                    load_body=True,
+                )
+                for ps in project_skills:
+                    if ps.id == skill_id:
+                        return ps
+            except Exception as e:
+                logger.warning("Project skill discovery failed during get: %s", e)
+
+        return None
     
     def list(self) -> List[Skill]:
         skills = []
-        if not self.skills_dir.exists():
-            return skills
-        for skill_file in self.skills_dir.glob("*.json"):
-            data = self._read_json(skill_file)
-            if data:
-                skills.append(Skill(**data))
+        if self.skills_dir.exists():
+            for skill_file in self.skills_dir.glob("*.json"):
+                data = self._read_json(skill_file)
+                if data:
+                    skills.append(Skill(**data))
+
+        # Discover agentskills-format skills from the project workspace
+        if self.workspace_path:
+            try:
+                from ..services.skill_discovery import discover_project_skills
+                project_skills = discover_project_skills(
+                    self.workspace_path,
+                    self.token_service,
+                    load_body=False,  # Progressive disclosure: metadata only for list
+                )
+                stored_ids = {s.id for s in skills}
+                for ps in project_skills:
+                    if ps.id not in stored_ids:
+                        skills.append(ps)
+            except Exception as e:
+                logger.warning("Project skill discovery failed: %s", e)
+
         return sorted(skills, key=lambda s: s.lastUsedAt, reverse=True)
     
     def create(self, data: SkillCreate) -> Skill:
@@ -85,7 +124,12 @@ class SkillStorage(BaseStorage[Skill]):
             isBuiltIn=False,
             source='custom',
             createdAt=now,
-            lastUsedAt=now
+            lastUsedAt=now,
+            toolIds=data.toolIds,
+            files=data.files,
+            contextIds=data.contextIds,
+            modelOverrides=data.modelOverrides,
+            allowImplicitInvocation=data.allowImplicitInvocation if data.allowImplicitInvocation is not None else True,
         )
         
         self._write_json(self._skill_file(skill_id), skill.model_dump())
@@ -100,6 +144,10 @@ class SkillStorage(BaseStorage[Skill]):
         if skill.isBuiltIn:
             raise ValueError("Cannot update built-in skills")
         
+        # Cannot update project-discovered skills (edit the SKILL.md file directly)
+        if skill.source == 'project':
+            raise ValueError("Cannot update project skills — edit the SKILL.md file directly")
+
         update_dict = data.model_dump(exclude_unset=True)
         
         # Recalculate tokens if prompt changed
@@ -126,6 +174,10 @@ class SkillStorage(BaseStorage[Skill]):
         if skill.isBuiltIn:
             raise ValueError("Cannot delete built-in skills")
         
+        # Cannot delete project-discovered skills
+        if skill.source == 'project':
+            raise ValueError("Cannot delete project skills — remove the skill directory instead")
+
         skill_file = self._skill_file(skill_id)
         if not skill_file.exists():
             return False
