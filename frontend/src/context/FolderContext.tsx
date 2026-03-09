@@ -441,8 +441,12 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
             // Only schedule another check if scanning is still active
             setTimeout(checkFolderProgress, 1000);
           } else {
-            // Scanning completed
+            // Scanning completed on the server — act as a fallback in case
+            // the WebSocket scan_complete message was missed.
+            setIsScanning(false);
             setScanProgress(null);
+            // Fetch the finished folder tree
+            if (fetchFoldersRef.current) fetchFoldersRef.current();
           }
         }
       } catch (error) {
@@ -482,6 +486,18 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
           const { type, path: filePath, token_count: tokenCount } = data;
           if (!filePath || !type) return;
+
+          // Scan complete — fetch the finished tree and clear progress state.
+          if (type === 'scan_complete') {
+            setIsScanning(false);
+            setScanProgress(null);
+            if (progressIntervalRef.current) {
+              clearInterval(progressIntervalRef.current);
+              progressIntervalRef.current = null;
+            }
+            if (fetchFoldersRef.current) fetchFoldersRef.current();
+            return;
+          }
 
           // Skip external paths
           if (filePath.startsWith('[external]')) return;
@@ -553,35 +569,10 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const startProgressPolling = useCallback(() => {
     if (progressIntervalRef.current) {
       clearInterval(progressIntervalRef.current);
+      progressIntervalRef.current = null;
     }
-
-    progressIntervalRef.current = setInterval(async () => {
-      try {
-        const response = await fetch('/folder-progress');
-        if (response.ok) {
-          const data = await response.json();
-          if (data.active) {
-            setScanProgress({
-              directories: data.progress?.directories || 0,
-              files: data.progress?.files || 0,
-              elapsed: data.progress?.elapsed || 0
-            });
-          } else {
-            if (progressIntervalRef.current) {
-              clearInterval(progressIntervalRef.current);
-              progressIntervalRef.current = null;
-            }
-            setScanProgress(null);
-            setIsScanning(false);
-            if (fetchFoldersRef.current) {
-              fetchFoldersRef.current();
-            }
-          }
-        }
-      } catch (error) {
-        console.debug('Progress check error:', error);
-      }
-    }, 1000); // Poll every second
+    // Scan completion is now signaled via the /ws/file-tree WebSocket (scan_complete event).
+    // This function is retained so fetchFolders call sites need no changes.
   }, []);
 
   const fetchFoldersRef = useRef<() => Promise<void>>();
@@ -862,11 +853,23 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   // Function to programmatically add files to context
   const addFilesToContext = useCallback(async (filePaths: string[]) => {
     try {
-      console.log('📁 CONTEXT: Adding files to context:', filePaths);
+      // Validate paths before adding — extractAllFilesFromDiff can produce garbage
+      // paths from malformed diff content (e.g. code fragments concatenated with filenames)
+      const validPaths = filePaths.filter(p => {
+        if (!p || p.length > 500) return false;
+        // Reject paths containing characters that don't belong in real file paths
+        if (/[)(;{}!@#$%^&*+=<>?\s]/.test(p)) return false;
+        return true;
+      });
+      if (validPaths.length === 0) return;
+      if (validPaths.length !== filePaths.length) {
+        console.warn('📁 CONTEXT: Rejected invalid paths:', filePaths.filter(p => !validPaths.includes(p)));
+      }
+      console.log('📁 CONTEXT: Adding files to context:', validPaths);
 
       // Add files to checked keys using the existing pattern
       setCheckedKeys(prev => {
-        const newKeys = [...prev, ...filePaths.filter(file => !prev.includes(file))];
+        const newKeys = [...prev, ...validPaths.filter(file => !prev.includes(file))];
         console.log('📁 CONTEXT: Updated checked keys:', newKeys);
 
         // Save to localStorage immediately to persist the change

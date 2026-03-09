@@ -79,3 +79,48 @@ export async function purgeExpiredConversations(db: any): Promise<void> {
         await db.saveConversations(kept);
     }
 }
+
+/**
+ * Garbage-collect empty "New Conversation" nodes that have sat idle
+ * for longer than `maxAgeMs` (default: 1 hour).
+ *
+ * A conversation is considered empty when:
+ *   - title is exactly "New Conversation"
+ *   - messages array is empty (length === 0)
+ *
+ * Protected conversations (never collected):
+ *   - The conversation currently selected in this tab
+ *   - Any conversation that is actively streaming
+ */
+
+const DEFAULT_EMPTY_CONV_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
+
+export interface GcResult {
+    kept: any[];
+    purgedIds: string[];
+}
+
+export function gcEmptyConversations(
+    conversations: any[],
+    protectedIds: Set<string>,
+    maxAgeMs: number = DEFAULT_EMPTY_CONV_MAX_AGE_MS,
+): GcResult {
+    const cutoff = Date.now() - maxAgeMs;
+    const kept: any[] = [];
+    const purgedIds: string[] = [];
+
+    for (const conv of conversations) {
+        const isEmpty = conv.title === 'New Conversation'
+            && (!conv.messages || conv.messages.length === 0);
+        const age = conv.lastAccessedAt || conv._version || 0;
+        const isStale = age > 0 && age < cutoff;
+
+        if (isEmpty && isStale && !protectedIds.has(conv.id)) {
+            purgedIds.push(conv.id);
+        } else {
+            kept.push(conv);
+        }
+    }
+
+    return { kept, purgedIds };
+}
