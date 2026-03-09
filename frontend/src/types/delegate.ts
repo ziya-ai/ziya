@@ -58,9 +58,11 @@ export interface TaskPlan {
   description: string;
   orchestrator_id?: string | null;
   source_conversation_id?: string | null;
+  parent_plan_id?: string | null;
+  parent_delegate_id?: string | null;
   delegate_specs: DelegateSpec[];
   crystals: MemoryCrystal[];
-  status: string;  // 'planning' | 'running' | 'completed' | 'cancelled'
+  status: string;  // 'planning' | 'running' | 'completed' | 'completed_partial' | 'cancelled'
   task_graph?: Record<string, any> | null;
   task_list?: SwarmTask[];
   created_at: number;

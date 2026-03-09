@@ -804,6 +804,19 @@ const MUIChatHistory = () => {
       if (missing.length === 0) return prev; // no-op, avoid re-render
       return [...prev, ...missing];
     });
+
+    // If this conversation is inside a TaskPlan folder that was reparented
+    // under a source conversation, also expand that source conversation node.
+    if (conversation.folderId) {
+      const folder = folders.find(f => f.id === conversation.folderId);
+      const sourceId = folder?.taskPlan?.source_conversation_id;
+      if (sourceId) {
+        const sourceNodeId = `conv-${sourceId}`;
+        setExpandedNodes(prev =>
+          prev.includes(sourceNodeId) ? prev : [...prev, sourceNodeId]
+        );
+      }
+    }
   }, [currentConversationId, conversations, folders]);
 
   // Add keyboard shortcut to open debug modal (Ctrl+Shift+D)
@@ -2000,6 +2013,9 @@ const MUIChatHistory = () => {
     // Add conversations to their respective folders in the map
     const activeConversations = conversations.filter(conv => conv.isActive !== false);
 
+    // Map conv.id → tree node, for reparenting TaskPlan folders under source conversation
+    const convNodeMap = new Map<string, any>();
+
     // Debug: Log if current conversation is missing from active list
     if (currentConversationId && !activeConversations.find(c => c.id === currentConversationId)) {
       console.error('🚨 HISTORY_CORRUPTION: Current conversation missing from active list:', currentConversationId);
@@ -2009,12 +2025,15 @@ const MUIChatHistory = () => {
     activeConversations.forEach(conv => {
       if (conv.folderId && folderMap.has(conv.folderId)) {
         const folderNode = folderMap.get(conv.folderId);
-        folderNode.children.push({ // Add conversation node directly
+        const convNode = {
           id: `conv-${conv.id}`,
           name: conv.title,
-          conversation: conv, // Keep the original conversation object
+          conversation: conv,
           delegateMeta: conv.delegateMeta || null,
-        });
+          children: [] as any[],  // May hold TaskPlan folders spawned from this conversation
+        };
+        folderNode.children.push(convNode);
+        convNodeMap.set(conv.id, convNode);
         folderNode.conversationCount++;
 
         // Only update folder's lastActivityTime if conversation has actual activity
@@ -2045,14 +2064,45 @@ const MUIChatHistory = () => {
     // the current view, e.g. a globally-shared conv whose folder isn't shared) to root
     activeConversations.forEach(conv => {
       if (!conv.folderId || !folderMap.has(conv.folderId)) {
-        rootItems.push({
+        const convNode = {
           id: `conv-${conv.id}`,
           name: conv.title,
-        conversation: conv,
-        delegateMeta: conv.delegateMeta || null,
-        });
+          conversation: conv,
+          delegateMeta: conv.delegateMeta || null,
+          children: [] as any[],
+        };
+        rootItems.push(convNode);
+        convNodeMap.set(conv.id, convNode);
       }
     });
+
+    // Reparent TaskPlan folders under their source conversation.
+    // This makes swarm folders appear as children of the chat that spawned them.
+    const reparentedFolderIds = new Set<string>();
+    folders.forEach(folder => {
+      const sourceConvId = folder.taskPlan?.source_conversation_id;
+      if (sourceConvId && convNodeMap.has(sourceConvId)) {
+        const folderNode = folderMap.get(folder.id);
+        if (folderNode) {
+          const sourceConvNode = convNodeMap.get(sourceConvId)!;
+          sourceConvNode.children.push(folderNode);
+          reparentedFolderIds.add(folder.id);
+        }
+      }
+    });
+    // Remove reparented folders from their original position (rootItems or parent folder)
+    if (reparentedFolderIds.size > 0) {
+      const removeReparented = (items: any[]) => {
+        for (let i = items.length - 1; i >= 0; i--) {
+          if (items[i].folder && reparentedFolderIds.has(items[i].id)) {
+            items.splice(i, 1);
+          } else if (items[i].children) {
+            removeReparented(items[i].children);
+          }
+        }
+      };
+      removeReparented(rootItems);
+    }
 
     // Roll up conversation counts from subfolders into parent folders.
     // After the tree is assembled, each folder's conversationCount only
@@ -2469,8 +2519,9 @@ const MUIChatHistory = () => {
 
       // Fix streaming detection - ensure we're checking the actual conversation ID
       const conversationId = !isFolder && node.id.startsWith('conv-') ? node.id.substring(5) : null;
-      const isStreamingConv = (conversationId && streamingConversations.has(conversationId))
-        || (delegateStatus === 'running' || delegateStatus === 'compacting');
+      // Only show streaming spinner when actually receiving data over a live
+      // connection.  Delegate sidebar status (🔵/⟳) handles the "running" state.
+      const isStreamingConv = !!(conversationId && streamingConversations.has(conversationId));
 
       const conversationCount = isFolder ? node.conversationCount : 0;
       const isEditing = editingId === (isFolder ? node.id : node.id.substring(5));
@@ -2565,7 +2616,7 @@ const MUIChatHistory = () => {
             ...(isTaskPlanFolder ? { borderLeft: '3px solid #6366f1', borderRadius: '4px' } : {}),
           }}
         >
-          {isFolder && node.children && node.children.length > 0 ? renderTree(node.children) : null}
+          {node.children && node.children.length > 0 ? renderTree(node.children) : null}
         </ChatTreeItem>
       );
     });
