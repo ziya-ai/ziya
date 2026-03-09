@@ -16,6 +16,7 @@ import * as folderSyncApi from '../api/folderSyncApi';
 import { useDelegatePolling } from '../hooks/useDelegatePolling';
 import { useDelegateStreaming } from '../hooks/useDelegateStreaming';
 
+import { gcEmptyConversations } from '../utils/retentionPurge';
 export type ProcessingState = 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'awaiting_tool_response' | 'tool_throttling' | 'tool_limit_reached' | 'model_thinking' | 'error';
 
 interface ConversationProcessingState {
@@ -155,7 +156,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 }
 
                 // 2. Load from IndexedDB (local cache)
-                let allConversations = await db.getConversations();
+                let allConversations: Conversation[];
+                try {
+                    allConversations = await db.getConversations();
+                } catch (dbErr) {
+                    console.warn('📡 PROJECT_SWITCH: IndexedDB unavailable, using server data only:', dbErr);
+                    allConversations = [];
+                }
 
                 // 3. Migrate untagged conversations (shared helper)
                 allConversations = await migrateUntaggedConversations(allConversations, projectId);
@@ -188,7 +195,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     }).catch(e => console.warn('📡 SYNC failed (non-fatal):', e));
                 }
 
-                const allFolders = await db.getFolders();
+                let allFolders: ConversationFolder[];
+                try {
+                    allFolders = await db.getFolders();
+                } catch (dbErr) {
+                    console.warn('📡 PROJECT_SWITCH: IndexedDB folders unavailable:', dbErr);
+                    allFolders = [];
+                }
                 const globalFolderIds = new Set(allFolders.filter(f => f.isGlobal).map(f => f.id));
                 const projectFolders = allFolders.filter(f => f.projectId === projectId || f.isGlobal);
 
@@ -1766,7 +1779,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 console.debug(`📡 SERVER_SYNC: Got ${serverChats.length} chat summaries from server`);
 
                 // 2. Load current IndexedDB state
-                let allConversations = await db.getConversations();
+                let allConversations: Conversation[];
+                try {
+                    allConversations = await db.getConversations();
+                } catch (dbErr) {
+                    console.warn('📡 SERVER_SYNC: IndexedDB unavailable, using server as sole source:', dbErr);
+                    // IDB is broken (stale connections, blocked upgrade, etc.)
+                    // Fall through with empty local state so server data still gets applied.
+                    allConversations = [];
+                }
 
                 // 2a. Migrate untagged conversations (only on first sync)
                 if (serverSyncedForProject.current !== projectId) {
@@ -1858,6 +1879,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                 ...local,
                                 title: sc.title || local.title,
                                 projectId: sc.projectId || local.projectId || projectId,
+                                folderId: sc.groupId || sc.folderId || local.folderId || null,
                                 lastActiveAt: sc.lastActiveAt || local.lastActiveAt,
                                 _version: serverVersion,
                             });
@@ -2018,6 +2040,32 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
         return () => clearInterval(intervalId);
     }, [isInitialized, currentProject?.id, isEphemeralMode, isServerReachable]);
+
+    // GC empty "New Conversation" nodes older than 1 hour
+    useEffect(() => {
+        if (!isInitialized || isEphemeralMode) return;
+
+        const GC_INTERVAL_MS = 5 * 60 * 1000; // every 5 minutes
+
+        const runGc = () => {
+            const protectedIds = new Set<string>(streamingConversations);
+            if (currentConversationId) protectedIds.add(currentConversationId);
+
+            const { kept, purgedIds } = gcEmptyConversations(
+                conversationsRef.current,
+                protectedIds,
+            );
+
+            if (purgedIds.length > 0) {
+                console.log(`🗑️ GC: removing ${purgedIds.length} empty conversation(s):`, purgedIds);
+                setConversations(kept);
+                queueSave(kept, { changedIds: purgedIds });
+            }
+        };
+
+        const intervalId = setInterval(runGc, GC_INTERVAL_MS);
+        return () => clearInterval(intervalId);
+    }, [isInitialized, isEphemeralMode, currentConversationId, streamingConversations, queueSave]);
 
     // Listen for model change events
     useEffect(() => {

@@ -1150,8 +1150,13 @@ export function initMermaidEnhancer(): void {
     let match;
     while ((match = nodeDefRegex.exec(def)) !== null) {
       const id = match[1].trim();
-      // Only add if it's not already quoted
-      if (!id.startsWith('"') && !id.endsWith('"')) {
+      // Only add if it's not already quoted and doesn't span across node boundaries.
+      // If the candidate ID contains '"', ']', or '-->', the regex has matched
+      // content inside an already-processed quoted label and must be skipped.
+      // Also skip if it contains '<br' — that means the match spans into a
+      // multiline node label that was already joined with <br/> tags.
+      if (!id.startsWith('"') && !id.endsWith('"') && !id.includes('<br') &&
+          !id.includes('"') && !id.includes(']') && !id.includes('-->')) {
         idsToQuote.add(id);
       }
     }
@@ -1684,9 +1689,24 @@ export function initMermaidEnhancer(): void {
     let finalDef = def;
 
     // CRITICAL: Skip double circles ((...)) and triple circles (((...))) with negative lookaheads
-    finalDef = finalDef.replace(/(\w+)([\[\(])(?!\[|\()([^\]\)]+)([\]\)])(?!\]|\))/g, (match, nodeId, open, content, close) => {
+    // The content class excludes `"` so that the regex cannot reach past a
+    // quoted label boundary.  Without this, `["text (7K LOC) more"]` gets
+    // split at the `)` inside the quotes, corrupting the definition.
+    finalDef = finalDef.replace(/(\w+)([\[\(])(?!\[|\()([^\]\)"]+)([\]\)])(?!\]|\))/g, (match, nodeId, open, content, close) => {
       // Skip subgraph display names
       const beforeMatch = finalDef.substring(Math.max(0, finalDef.indexOf(match) - 50), finalDef.indexOf(match));
+
+      // Skip matches that fall inside an already-quoted node label.
+      // e.g. D1["text server.py (7K LOC) more"] — the regex matches
+      // `py(7K LOC)` where `py` is the tail of `server.py`.  Detect by
+      // counting unmatched quotes before the match on the same line.
+      const matchPos = finalDef.indexOf(match);
+      const sol = finalDef.lastIndexOf('\n', matchPos) + 1;
+      const preceding = finalDef.substring(sol, matchPos);
+      if ((preceding.match(/"/g) || []).length % 2 === 1) {
+        return match; // Inside a quoted string, leave it alone
+      }
+
       if (beforeMatch.includes('subgraph')) {
         return match;
       }
@@ -2952,6 +2972,23 @@ export function initMermaidEnhancer(): void {
 
 
     // Handle style statements for individual nodes
+    // Handle classDef WITHOUT stroke-width (common shorthand: fill:#hex,stroke:#hex)
+    processedDef = processedDef.replace(
+      /classDef\s+(\w+)\s+fill:(#[a-fA-F0-9]{3,6}),stroke:(#[a-fA-F0-9]{3,6})(?!\s*,\s*(?:stroke-width|color):)/gm,
+      (match, className, fillColor, strokeColor) => {
+        const textColor = getOptimalTextColor(fillColor);
+        return `classDef ${className} fill:${fillColor},stroke:${strokeColor},color:${textColor}`;
+      }
+    );
+
+    // Handle style WITHOUT stroke-width (common shorthand: fill:#hex,stroke:#hex)
+    processedDef = processedDef.replace(
+      /style\s+(\w+)\s+fill:(#[a-fA-F0-9]{3,6}),stroke:(#[a-fA-F0-9]{3,6})(?!\s*,\s*(?:stroke-width|color):)/gm,
+      (match, nodeName, fillColor, strokeColor) => {
+        const textColor = getOptimalTextColor(fillColor);
+        return `style ${nodeName} fill:${fillColor},stroke:${strokeColor},color:${textColor}`;
+      }
+    );
     // Pattern: style NodeName fill:#color,stroke:#color,stroke-width:3px
     processedDef = processedDef.replace(
       /style\s+(\w+)\s+fill:(#[a-fA-F0-9]{3,6}),stroke:(#[a-fA-F0-9]{3,6}),stroke-width:(\d+px)(?!,color:)/g,
