@@ -206,7 +206,7 @@ class StreamingToolExecutor:
                     'bedrock-runtime',
                     region_name=region,
                     config=BotoConfig(
-                        max_pool_connections=25,
+                        max_pool_connections=50,
                         retries={'max_attempts': 3, 'mode': 'adaptive'},
                     )
                 )
@@ -1544,32 +1544,11 @@ class StreamingToolExecutor:
                                 estimation_error = abs(estimated_tokens - actual_tokens)
                                 error_pct = (estimation_error / actual_tokens * 100) if actual_tokens > 0 else 0
                                 
-                                logger.debug("=" * 80)
-                                logger.debug("📊 ESTIMATION ACCURACY CHECK")
-                                logger.debug("=" * 80)
-                                logger.debug(f"   Our Estimate:   {estimated_tokens:>8,} tokens ({estimation_method})")
-                                logger.debug(f"   Bedrock Total:  {actual_tokens:>8,} tokens (fresh + cached)")
-                                logger.debug(f"     └─ Fresh:     {fresh:>8,} tokens (billable)")
-                                logger.debug(f"     └─ Cached:    {cached:>8,} tokens (free but counts for throttle)")
-                                if cache_written > 0:
-                                    logger.debug(f"     └─ Written:   {cache_written:>8,} tokens (cache creation)")
-                                    logger.debug(f"   Note: Using fresh + written for comparison (first request)")
-                                
-                                logger.debug(f"   Error:          {estimation_error:>8,} tokens (±{error_pct:.1f}%)")
-                                
-                                # Log comparison
-                                accuracy_status = "✅ Excellent" if error_pct < 5 else "⚠️ Fair" if error_pct < 15 else "❌ Poor"
-                                # Only log if accuracy is concerning
-                                if error_pct >= 15:
-                                    logger.debug(f"   Accuracy:       {accuracy_status}")
-                                
-                                if error_pct > 15:
-                                    logger.debug("   ⚠️  Estimation is significantly off!")
-                                    logger.debug("   💡 Calibration will improve this over time")
-                                elif error_pct < 5:
-                                    logger.debug("   ✅ Calibration is working well!")
-                                
-                                logger.debug("=" * 80 + "\n")
+                                logger.debug(
+                                    f"📊 Calibration: estimated={estimated_tokens:,} "
+                                    f"actual={actual_tokens:,} error=±{error_pct:.1f}% "
+                                    f"({estimation_method}, fresh={fresh:,} cached={cached:,})"
+                                )
                                 
                             except Exception as e:
                                 logger.debug(f"Error in accuracy tracking: {e}")
