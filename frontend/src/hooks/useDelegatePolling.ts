@@ -34,11 +34,27 @@ interface DelegateStatusResponse {
   running_count: number;
   crystal_count: number;
   total_delegates: number;
+  needs_attention: string[];
+  task_list?: Array<{ task_id: string; title: string; status: string; claimed_by?: string; summary?: string }>;
 }
 
 function getActiveTaskPlanFolders(folders: ConversationFolder[]): ConversationFolder[] {
+  const TERMINAL = new Set(['completed', 'completed_partial', 'cancelled']);
   return folders.filter(
-    f => f.taskPlan && f.taskPlan.status !== 'completed' && f.taskPlan.status !== 'cancelled'
+    f => {
+      if (!f.taskPlan) return false;
+      if (TERMINAL.has(f.taskPlan.status)) return false;
+      // Also skip plans where all delegates are in terminal states
+      // (server may not have updated plan-level status yet)
+      const specs = f.taskPlan.delegate_specs;
+      if (specs && specs.length > 0) {
+        const allTerminal = specs.every(
+          (s: any) => ['crystal', 'failed', 'interrupted'].includes(s.status || '')
+        );
+        if (allTerminal) return false;
+      }
+      return true;
+    }
   );
 }
 
@@ -118,6 +134,7 @@ export function useDelegatePolling(
         };
 
         // Merge delegate status changes into conversations
+        const newlyCrystalConvIds: string[] = [];
         setConversations(prev => prev.map(c => {
           if (!c.delegateMeta || c.delegateMeta.plan_id !== data.plan_id) return c;
           const did = c.delegateMeta.delegate_id;
@@ -125,12 +142,31 @@ export function useDelegatePolling(
           const newStatus = data.delegates[did].status;
           if (c.delegateMeta.status === newStatus) return c;
           const updated: any = { ...c, delegateMeta: { ...c.delegateMeta, status: newStatus as any } };
-          // Surface interrupted/failed delegates so the user notices they need action
-          if (newStatus === 'interrupted' || newStatus === 'failed') {
+          // Surface terminal delegates so the user sees they have results
+          if (newStatus === 'crystal' || newStatus === 'interrupted' || newStatus === 'failed') {
             updated.hasUnreadResponse = true;
+          }
+          if (newStatus === 'crystal' && c.delegateMeta.status !== 'crystal') {
+            newlyCrystalConvIds.push(c.id);
           }
           return updated;
         }));
+
+        // Eagerly fetch messages for newly-completed delegates so content
+        // is ready when the user clicks them.
+        for (const convId of newlyCrystalConvIds) {
+          const pid = projectIdRef.current;
+          if (!pid) continue;
+          syncApi.getChat(pid, convId).then(freshChat => {
+            if (freshChat?.messages?.length) {
+              setConversations(prev => prev.map(c =>
+                c.id === convId && freshChat.messages.length > c.messages.length
+                  ? { ...c, messages: freshChat.messages, _version: Date.now() }
+                  : c
+              ));
+            }
+          }).catch(() => { /* retry next poll cycle */ });
+        }
 
         // Refresh source conversation whenever a new crystal arrives,
         // so the user sees per-delegate progress messages in the source chat.
@@ -152,7 +188,7 @@ export function useDelegatePolling(
         }
 
         // Update folder taskPlan status and do final refresh when plan completes
-        if (data.status === 'completed' || data.status === 'cancelled') {
+        if (data.status === 'completed' || data.status === 'completed_partial' || data.status === 'cancelled') {
           setFolders(prev => prev.map(f =>
             f.id === folder.id && f.taskPlan
               ? { ...f, taskPlan: { ...f.taskPlan, status: data.status } }

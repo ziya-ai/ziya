@@ -79,7 +79,9 @@ const DelegateLaunchButton: React.FC<DelegateLaunchButtonProps> = ({
   conversationId,
 }) => {
   const { currentProject } = useProject();
-  const { setConversations, setFolders } = useChatContext();
+  const { setConversations, setFolders, currentConversationId: contextConversationId } = useChatContext();
+  // Fall back to the active conversation when no explicit conversationId prop is supplied.
+  const effectiveConversationId = conversationId ?? contextConversationId ?? null;
   const { isDarkMode } = useTheme();
   const [launching, setLaunching] = useState(false);
   const [launched, setLaunched] = useState(false);
@@ -114,7 +116,7 @@ const DelegateLaunchButton: React.FC<DelegateLaunchButtonProps> = ({
             name: taskSpec.name,
             description: taskSpec.description,
             delegate_specs: delegateSpecs,
-            source_conversation_id: conversationId || null,
+            source_conversation_id: effectiveConversationId,
           }),
         }
       );
@@ -149,7 +151,7 @@ const DelegateLaunchButton: React.FC<DelegateLaunchButtonProps> = ({
             lastAccessedAt: sc.lastActiveAt || Date.now(),
             isActive: true,
             projectId: pid,
-            folderId: sc.groupId || null,
+            folderId: sc.groupId || sc.folderId || null,
             delegateMeta: sc.delegateMeta || null,
             hasUnreadResponse: false,
           }));

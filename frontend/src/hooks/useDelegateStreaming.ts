@@ -35,6 +35,7 @@ export function useDelegateStreaming({
   const wsRef = useRef<WebSocket | null>(null);
   const accumulatedRef = useRef<string>('');
   const connectedConvRef = useRef<string | null>(null);
+  const siblingWsRef = useRef<Map<string, WebSocket>>(new Map());
 
   useEffect(() => {
     // Only connect for delegate/orchestrator conversations
@@ -170,5 +171,96 @@ export function useDelegateStreaming({
       connectedConvRef.current = null;
     };
     // conversations dep handles terminal-status cleanup via delegateMeta.status changes
+  }, [conversationId, conversations]);
+
+  // ------------------------------------------------------------------
+  // Sibling delegate connections: when viewing the orchestrator (or any
+  // conversation in a plan), open background WebSockets for every
+  // running delegate so their chunks reach streamedContentMap.
+  // ------------------------------------------------------------------
+  useEffect(() => {
+    const conv = conversations.find(c => c.id === conversationId);
+    const planId = (conv?.delegateMeta as any)?.plan_id;
+    if (!planId) return;
+
+    // Find all running delegates in this plan that aren't the viewed conversation
+    const siblings = conversations.filter(c => {
+      const dm = c.delegateMeta as any;
+      return dm?.plan_id === planId
+        && dm?.role === 'delegate'
+        && c.id !== conversationId
+        && (dm?.status === 'running' || dm?.status === 'compacting');
+    });
+
+    const siblingMap = siblingWsRef.current;
+    const desiredIds = new Set(siblings.map(s => s.id));
+
+    // Close connections for delegates that are no longer running
+    for (const [id, ws] of siblingMap.entries()) {
+      if (!desiredIds.has(id)) {
+        ws.close();
+        siblingMap.delete(id);
+        removeStreamingConversation(id);
+      }
+    }
+
+    // Open connections for newly-running delegates
+    for (const sib of siblings) {
+      if (siblingMap.has(sib.id)) continue;
+
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}/ws/delegate-stream/${sib.id}`;
+      const ws = new WebSocket(wsUrl);
+      siblingMap.set(sib.id, ws);
+
+      const sibId = sib.id;
+      let sibAccum = '';
+      let receivedData = false;
+
+      ws.onopen = () => {
+        addStreamingConversation(sibId);
+        setTimeout(() => {
+          if (!receivedData) {
+            removeStreamingConversation(sibId);
+            ws.close();
+            siblingMap.delete(sibId);
+          }
+        }, 3000);
+      };
+
+      ws.onmessage = (event) => {
+        receivedData = true;
+        try {
+          const chunk = JSON.parse(event.data);
+          if (chunk.type === 'text') {
+            sibAccum += chunk.content || '';
+            const snapshot = sibAccum;
+            setStreamedContentMap(prev => {
+              if (prev.get(sibId) === snapshot) return prev;
+              const next = new Map(prev);
+              next.set(sibId, snapshot);
+              return next;
+            });
+          } else if (chunk.type === 'stream_end' || chunk.type === 'delegate_complete') {
+            removeStreamingConversation(sibId);
+            ws.close();
+            siblingMap.delete(sibId);
+          }
+        } catch { /* ignore parse errors */ }
+      };
+
+      ws.onclose = () => {
+        removeStreamingConversation(sibId);
+        siblingMap.delete(sibId);
+      };
+    }
+
+    return () => {
+      for (const [id, ws] of siblingMap.entries()) {
+        ws.close();
+        removeStreamingConversation(id);
+      }
+      siblingMap.clear();
+    };
   }, [conversationId, conversations]);
 }
