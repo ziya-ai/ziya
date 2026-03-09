@@ -20,6 +20,7 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 from app.mcp.tools.base import BaseMCPTool
+from app.models.delegate import DelegateSpec
 from app.utils.logging_utils import logger
 
 
@@ -280,6 +281,231 @@ class SwarmQueryCrystalTool(BaseMCPTool):
         return "\n".join(parts)
 
 
+class SwarmReadLogInput(BaseModel):
+    """Input for swarm_read_log."""
+    last_n: int = Field(
+        10, description="Number of recent orchestrator messages to read (default 10)."
+    )
+
+
+class SwarmReadLogTool(BaseMCPTool):
+    name = "swarm_read_log"
+    description = (
+        "Read recent messages from the orchestrator conversation log. "
+        "This includes notes from other delegates, orchestrator analysis "
+        "of completed crystals, and cross-cutting observations. Use this "
+        "to stay aware of what's happening across the plan."
+    )
+    InputSchema = SwarmReadLogInput
+
+    def __init__(self, swarm_ctx: dict):
+        self._ctx = swarm_ctx
+
+    async def execute(self, last_n: int = 10, **kw) -> str:
+        mgr = self._ctx["get_manager"]()
+        plan_id = self._ctx["plan_id"]
+        plan = mgr._plans.get(plan_id)
+        if not plan or not plan.orchestrator_id:
+            return "No orchestrator conversation found."
+
+        cs = mgr._get_chat_storage()
+        chat = cs.get(plan.orchestrator_id)
+        if not chat or not chat.messages:
+            return "Orchestrator log is empty."
+
+        recent = chat.messages[-last_n:]
+        lines = []
+        for msg in recent:
+            content = msg.content if hasattr(msg, 'content') else str(msg)
+            if len(content) > 300:
+                content = content[:300] + "..."
+            lines.append(content)
+        return "\n\n---\n\n".join(lines) if lines else "No messages found."
+
+
+class SwarmRequestDelegateInput(BaseModel):
+    """Input for swarm_request_delegate."""
+    name: str = Field(..., description="Short name for the new delegate task.")
+    scope: str = Field(..., description="What this delegate should do.")
+    files: str = Field("", description="Comma-separated file paths for the delegate's context.")
+    depends_on: str = Field("", description="Comma-separated delegate IDs this depends on.")
+
+
+class SwarmRequestDelegateTool(BaseMCPTool):
+    name = "swarm_request_delegate"
+    description = (
+        "Request that a NEW delegate be spawned for discovered work that "
+        "is too large or too different for you to handle. The orchestrator "
+        "will create and start the delegate. Use this for work that needs "
+        "a separate context (different files, different skill) rather than "
+        "swarm_add_task which just adds to the shared list."
+    )
+    InputSchema = SwarmRequestDelegateInput
+
+    def __init__(self, swarm_ctx: dict):
+        self._ctx = swarm_ctx
+
+    async def execute(self, name: str = "", scope: str = "",
+                      files: str = "", depends_on: str = "", **kw) -> str:
+        mgr = self._ctx["get_manager"]()
+        plan_id = self._ctx["plan_id"]
+        delegate_id = self._ctx["delegate_id"]
+        plan = mgr._plans.get(plan_id)
+        if not plan:
+            return "No active plan found."
+
+        existing_ids = {s.delegate_id for s in plan.delegate_specs}
+        n = len(existing_ids) + 1
+        new_id = f"D{n}"
+        while new_id in existing_ids:
+            n += 1
+            new_id = f"D{n}"
+
+        file_list = [f.strip() for f in files.split(",") if f.strip()]
+        dep_list = [d.strip() for d in depends_on.split(",") if d.strip()]
+
+        new_spec = DelegateSpec(
+            delegate_id=new_id,
+            name=name,
+            emoji="🆕",
+            scope=scope,
+            files=file_list,
+            dependencies=dep_list,
+        )
+
+        with mgr._persist_lock:
+            plan.delegate_specs.append(new_spec)
+            mgr._statuses[plan_id][new_id] = "proposed"
+
+            from app.models.delegate import SwarmTask
+            plan.task_list.append(SwarmTask(
+                task_id=f"st_{new_id}",
+                title=name,
+                status="open",
+                added_by=delegate_id,
+                created_at=time.time(),
+            ))
+            mgr._persist_plan(plan_id)
+
+        if plan.orchestrator_id:
+            label = (
+                f"**{delegate_id} → orchestrator:** Requested new delegate "
+                f"**{new_id}: {name}** — {scope}"
+            )
+            mgr._persist_delegate_message(plan.orchestrator_id, "assistant", label)
+
+        import asyncio
+        asyncio.create_task(
+            mgr._spawn_and_start_dynamic_delegate(plan_id, new_spec),
+            name=f"spawn-{new_id}",
+        )
+
+        return (
+            f"🆕 Requested new delegate {new_id}: {name}. "
+            f"The orchestrator will create and start it when dependencies are met."
+        )
+
+
+class SwarmLaunchSubplanInput(BaseModel):
+    """Input for swarm_launch_subplan."""
+    name: str = Field(..., description="Short name for the sub-plan (e.g. 'Database Migration Suite').")
+    description: str = Field(..., description="What this sub-plan should accomplish overall.")
+    delegates_json: str = Field(
+        ...,
+        description=(
+            'JSON array of delegate specs. Each entry: '
+            '{"name": "...", "scope": "...", "files": "comma,separated", "depends_on": "D1,D2"}. '
+            'delegate_id is auto-assigned (D1, D2, etc.).'
+        ),
+    )
+
+
+class SwarmLaunchSubplanTool(BaseMCPTool):
+    name = "swarm_launch_subplan"
+    description = (
+        "Launch a full sub-swarm with its own orchestrator and delegates. "
+        "Use this when you discover a chunk of work that is too complex "
+        "for a single delegate and needs its own decomposition. The "
+        "sub-plan runs asynchronously — you can continue your own work. "
+        "When the sub-plan completes, its results are posted back to "
+        "this plan's orchestrator and task list."
+    )
+    InputSchema = SwarmLaunchSubplanInput
+
+    def __init__(self, swarm_ctx: dict):
+        self._ctx = swarm_ctx
+
+    async def execute(self, name: str = "", description: str = "",
+                      delegates_json: str = "[]", **kw) -> str:
+        import json as _json
+
+        mgr = self._ctx["get_manager"]()
+        plan_id = self._ctx["plan_id"]
+        delegate_id = self._ctx["delegate_id"]
+        plan = mgr._plans.get(plan_id)
+        if not plan:
+            return "No active plan found."
+
+        # Parse delegate specs from JSON
+        try:
+            raw_specs = _json.loads(delegates_json)
+        except _json.JSONDecodeError as e:
+            return f"Invalid JSON for delegates_json: {e}"
+
+        if not isinstance(raw_specs, list) or len(raw_specs) == 0:
+            return "delegates_json must be a non-empty JSON array."
+
+        sub_specs = []
+        for i, raw in enumerate(raw_specs, 1):
+            did = f"D{i}"
+            files = [f.strip() for f in raw.get("files", "").split(",") if f.strip()]
+            deps = [d.strip() for d in raw.get("depends_on", "").split(",") if d.strip()]
+            sub_specs.append(DelegateSpec(
+                delegate_id=did,
+                name=raw.get("name", f"Sub-delegate {i}"),
+                emoji="🔹",
+                scope=raw.get("scope", ""),
+                files=files,
+                dependencies=deps,
+            ))
+
+        # Find the calling delegate's conversation_id for source_conversation_id
+        calling_spec = None
+        for s in plan.delegate_specs:
+            if s.delegate_id == delegate_id:
+                calling_spec = s
+                break
+        source_conv_id = calling_spec.conversation_id if calling_spec else None
+
+        # Note on orchestrator and parent plan
+        if plan.orchestrator_id:
+            label = (
+                f"**{delegate_id} → orchestrator:** Launching sub-plan "
+                f"**{name}** with {len(sub_specs)} delegates"
+            )
+            mgr._persist_delegate_message(plan.orchestrator_id, "assistant", label)
+
+        # Launch asynchronously
+        import asyncio
+        asyncio.create_task(
+            mgr.launch_subplan(
+                name=name,
+                description=description,
+                delegate_specs=sub_specs,
+                source_conversation_id=source_conv_id,
+                parent_plan_id=plan_id,
+                parent_delegate_id=delegate_id,
+            ),
+            name=f"subplan-{name[:20]}",
+        )
+
+        return (
+            f"🚀 Sub-plan '{name}' launching with {len(sub_specs)} delegates. "
+            f"It runs asynchronously — continue your own work. "
+            f"Results will appear on this plan's task list when complete."
+        )
+
+
 def create_swarm_tools(plan_id: str, delegate_id: str, get_manager) -> list:
     """Create the full set of swarm coordination tools for a delegate."""
     ctx = {
@@ -294,4 +520,7 @@ def create_swarm_tools(plan_id: str, delegate_id: str, get_manager) -> list:
         SwarmClaimTaskTool(ctx),
         SwarmNoteTool(ctx),
         SwarmQueryCrystalTool(ctx),
+        SwarmReadLogTool(ctx),
+        SwarmRequestDelegateTool(ctx),
+        SwarmLaunchSubplanTool(ctx),
     ]
