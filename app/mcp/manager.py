@@ -198,6 +198,14 @@ class MCPManager:
                 user_servers = user_config_data.get("mcpServers", {})
                 
                 for name, user_cfg in user_servers.items():
+                    if not isinstance(user_cfg, dict):
+                        logger.info(f"MCP server '{name}' skipped: config must be a JSON object, got {type(user_cfg).__name__}")
+                        continue
+
+                    if "command" not in user_cfg and "url" not in user_cfg:
+                        logger.info(f"MCP server '{name}' skipped: missing 'command' (or 'url') in config")
+                        continue
+
                     # RESILIENCE: Normalize command format
                     # MCP protocol expects: command = string, args = array
                     # But some configs incorrectly have: command = array
@@ -224,6 +232,12 @@ class MCPManager:
                     if "args" in user_cfg and not isinstance(user_cfg["args"], list):
                         logger.warning(f"Server '{name}' has non-array args, converting to list")
                         user_cfg["args"] = [str(user_cfg["args"])]
+
+                    # Compatibility: Q Developer / Claude Code use "disabled" instead of "enabled".
+                    # Normalize so the rest of the code only checks "enabled".
+                    if "disabled" in user_cfg and "enabled" not in user_cfg:
+                        user_cfg["enabled"] = not user_cfg.pop("disabled")
+                        logger.debug(f"Server '{name}': normalized 'disabled' to enabled={user_cfg['enabled']}")
                     
                     if name in server_configs and server_configs[name].get("builtin"):
                         logger.debug(f"User configuration for '{name}' overrides built-in server.")
@@ -282,6 +296,25 @@ class MCPManager:
                 command = server_config.get("command")
                 args = server_config.get("args", [])
                 
+                # Pre-validate command and script paths for clear diagnostics
+                if command and not server_config.get("builtin", False):
+                    import shutil
+                    skip = False
+                    if not os.path.isabs(command) and not shutil.which(command):
+                        logger.info(f"MCP server '{server_name}' skipped: command '{command}' not found in PATH")
+                        skip = True
+                    elif os.path.isabs(command) and not os.path.isfile(command):
+                        logger.info(f"MCP server '{server_name}' skipped: command not found at {command}")
+                        skip = True
+                    if not skip:
+                        for arg in args:
+                            if os.path.isabs(arg) and arg.endswith(('.py', '.js')) and not os.path.isfile(arg):
+                                logger.info(f"MCP server '{server_name}' skipped: script not found at {arg}")
+                                skip = True
+                                break
+                    if skip:
+                        continue
+
                 if command:
                     # For built-in servers, the command path is already absolute.
                     # For user-defined relative paths, MCPClient will resolve them.
@@ -338,13 +371,24 @@ class MCPManager:
             builtin_count = sum(1 for cfg in self.server_configs.values() if cfg.get("builtin", False))
             user_count = len(self.server_configs) - builtin_count
             
-            # Build summary of connected servers and their tools
+            # Count disabled servers (not attempted)
+            disabled_count = sum(
+                1 for cfg in self.server_configs.values()
+                if not cfg.get("enabled", True)
+            )
+
+            # Build summary of connected servers and total tool count
             server_summary = []
+            total_tools = 0
             for server_name, client in self.clients.items():
                 if client.is_connected:
-                    server_summary.append(f"{server_name} ({len(client.tools)} tools)")
+                    n = len(client.tools)
+                    total_tools += n
+                    server_summary.append(f"{server_name} ({n} tools)")
             
-            logger.debug(f"MCP servers connected: {', '.join(server_summary)}")
+            logger.info(f"MCP: {len(server_summary)} servers, {total_tools} tools active"
+                        + (f" ({disabled_count} servers disabled)" if disabled_count else ""))
+            logger.debug(f"MCP server details: {', '.join(server_summary)}")
             
             self.is_initialized = True
             return True
