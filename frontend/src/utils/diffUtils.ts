@@ -4,8 +4,25 @@
 
 /**
  * Extract all file paths referenced in a diff
+ *
+ * Uses a state machine to only extract from diff structural headers
+ * (the preamble between 'diff --git' and the first '@@' hunk header),
+ * preventing false matches from code content inside hunks that happens
+ * to resemble diff headers.
  */
 export function extractAllFilesFromDiff(diffContent: string): string[] {
+    // Quick validation: reject if the content doesn't contain any diff headers
+    if (!diffContent.includes('diff --git') && !diffContent.includes('--- a/')) {
+        return [];
+    }
+
+    // Path sanity check: reject paths with characters that don't belong in real file paths
+    const isValidPath = (p: string): boolean => {
+        if (!p || p.length > 500) return false;
+        if (/[)(;{}!@#$%^&*+=<>?\s]/.test(p)) return false;
+        return true;
+    };
+
     const files: string[] = [];
     const newFiles = new Set<string>(); // Track new file creations
     const lines = diffContent.split('\n');
@@ -27,7 +44,12 @@ export function extractAllFilesFromDiff(diffContent: string): string[] {
         }
     }
 
+    // State machine: only extract paths from diff preamble sections,
+    // not from hunk content where code lines may mimic diff headers.
+    let inPreamble = false;
+
     for (const line of lines) {
+        // Utility helpers
         const isDevNull = (p: string) => p === '/dev/null' || p === 'dev/null';
 
         // git diff strips the leading slash from absolute paths into the a/b/ prefix.
@@ -41,33 +63,41 @@ export function extractAllFilesFromDiff(diffContent: string): string[] {
 
         const gitMatch = line.match(/^diff --git (?:a\/)?([^\s]+) (?:b\/)?([^\s]+)$/);
         if (gitMatch) {
+            // Entering a new file section — preamble until first @@
+            inPreamble = true;
             const oldPath = restoreLeadingSlash(gitMatch[1]);
             const newPath = restoreLeadingSlash(gitMatch[2]);
-            if (!isDevNull(newPath)) files.push(newPath);
-            if (!isDevNull(oldPath) && oldPath !== newPath) files.push(oldPath);
+            if (!isDevNull(newPath) && isValidPath(newPath)) files.push(newPath);
+            if (!isDevNull(oldPath) && oldPath !== newPath && isValidPath(oldPath)) files.push(oldPath);
+            continue;
         }
 
-        const minusMatch = line.match(/^--- a\/(.+)$/);
-        if (minusMatch && !isDevNull(minusMatch[1])) {
-            files.push(restoreLeadingSlash(minusMatch[1]));
+        // Hunk header — switch from preamble to hunk content
+        if (line.startsWith('@@')) {
+            inPreamble = false;
+            continue;
         }
 
-        const plusMatch = line.match(/^\+\+\+ b\/(.+)$/);
-        if (plusMatch && !isDevNull(plusMatch[1])) {
-            files.push(restoreLeadingSlash(plusMatch[1]));
+        // Only extract from preamble lines (between 'diff --git' and first '@@')
+        if (inPreamble) {
+            const minusMatch = line.match(/^--- a\/(.+)$/);
+            if (minusMatch && !isDevNull(minusMatch[1])) {
+                const p = restoreLeadingSlash(minusMatch[1]);
+                if (isValidPath(p)) files.push(p);
+            }
+
+            const plusMatch = line.match(/^\+\+\+ b\/(.+)$/);
+            if (plusMatch && !isDevNull(plusMatch[1])) {
+                const p = restoreLeadingSlash(plusMatch[1]);
+                if (isValidPath(p)) files.push(p);
+            }
         }
     }
 
     // Remove duplicates and filter out new file creations
     const uniqueFiles = [...new Set(files)];
     const existingFiles = uniqueFiles.filter(file =>
-        !newFiles.has(file) &&
-        // Filter out regex patterns and invalid filenames
-        !file.includes('(?:') &&
-        !file.includes('$/)') &&
-        !file.includes('[^') &&
-        !file.endsWith(');') &&
-        !file.includes('\\')
+        !newFiles.has(file)
     );
 
     return existingFiles;
