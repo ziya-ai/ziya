@@ -440,7 +440,7 @@ class TestSingleton:
         )
         reset_delegate_manager()
         m1 = get_delegate_manager("test", tmp_project)
-        m2 = get_delegate_manager()
+        m2 = get_delegate_manager("test")
         assert m1 is m2
 
         reset_delegate_manager()
