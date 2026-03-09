@@ -349,9 +349,21 @@ class CompactionEngine:
         file_list = ", ".join(fc.path for fc in files_changed[:8])
         decision_list = "; ".join(decisions[:5])
 
+        # Analysis-type delegates (no code changes) need richer summaries
+        # to preserve their findings through compaction.
+        is_analysis = len(files_changed) == 0
+        if is_analysis:
+            token_limit = "500-800"
+            sentence_limit = "a detailed paragraph (8-12 sentences)"
+            last_assistant = last_assistant[:3000] if last_assistant else ""
+        else:
+            token_limit = "200"
+            sentence_limit = "2-3 sentences"
+
         try:
             summary = await self._call_summary_model(
-                task_name, file_list, decision_list, last_assistant
+                task_name, file_list, decision_list, last_assistant,
+                token_limit=token_limit, sentence_limit=sentence_limit,
             )
             if summary and len(summary) > 20:
                 return summary
@@ -363,7 +375,8 @@ class CompactionEngine:
         )
 
     async def _call_summary_model(
-        self, task: str, files: str, decisions: str, last_msg: str
+        self, task: str, files: str, decisions: str, last_msg: str,
+        token_limit: str = "200", sentence_limit: str = "2-3 sentences",
     ) -> str:
         """
         Call the current model for a constrained summary.
@@ -376,8 +389,8 @@ class CompactionEngine:
         from langchain_core.messages import HumanMessage, SystemMessage
 
         prompt = (
-            f"Summarize what was accomplished in this delegate task "
-            f"in 2-3 sentences (max 200 tokens).\n\n"
+            f"Summarize what was accomplished in this delegate task in "
+            f"{sentence_limit} (max {token_limit} tokens).\n\n"
             f"Task: {task}\n"
             f"Files changed: {files}\n"
             f"Key decisions: {decisions}\n"
@@ -399,7 +412,8 @@ class CompactionEngine:
 
         response = await raw_model.ainvoke([HumanMessage(content=prompt)])
         text = response.content if hasattr(response, "content") else str(response)
-        return text.strip()[:500]
+        max_chars = 3000 if int(token_limit.split("-")[0]) > 200 else 500
+        return text.strip()[:max_chars]
 
     @staticmethod
     def _build_fallback_summary(
