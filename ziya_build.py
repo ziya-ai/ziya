@@ -34,6 +34,13 @@ def should_rebuild_frontend():
     if not build_dir.exists() or not success_marker.exists():
         return True
     
+    # Verify templates directory has the expected static assets.
+    # A prior build may have failed during copy-to-templates, leaving
+    # a success marker but no usable output.
+    templates_static = Path("templates") / "static" / "js"
+    if not templates_static.exists() or not any(templates_static.glob("main.*.js")):
+        return True
+
     # Get build time
     try:
         build_mtime = os.path.getmtime(success_marker)
@@ -71,6 +78,11 @@ def main():
     frontend_project_dir = Path("frontend")
     if frontend_project_dir.exists():
         if should_rebuild_frontend():
+            # The npm "copy-to-templates" script copies CRA output from
+            # frontend/build/ to ../templates/. Ensure the target directory
+            # exists before npm run build, otherwise cp fails on fresh clones
+            # where templates/ is gitignored and absent.
+            Path("templates").mkdir(parents=True, exist_ok=True)
             print("Building frontend...")
             
             # Remove old success marker before attempting build
