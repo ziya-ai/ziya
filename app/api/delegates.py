@@ -70,6 +70,8 @@ class DelegateStatusResponse(BaseModel):
     running_count: int
     crystal_count: int
     total_delegates: int
+    needs_attention: List[str] = []
+    task_list: List[Any] = []
 
 
 # ── Routes ────────────────────────────────────────────────────────────

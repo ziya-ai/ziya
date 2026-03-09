@@ -119,12 +119,12 @@ class DelegateManager:
 
             try:
                 plan = TaskPlan(**tp_raw) if isinstance(tp_raw, dict) else tp_raw
-            except Exception as e:
-                logger.warning(f"rehydrate: skipping group {group.id}, bad taskPlan: {e}")
+            except Exception as exc:
+                logger.warning(f"♻️  Skipping group {group.id}: bad TaskPlan data: {exc}")
                 continue
 
-            # Skip terminal plans — nothing to track
-            if plan.status in ("completed", "cancelled"):
+            # Skip terminal plans — nothing to rehydrate
+            if plan.status in ("completed", "completed_partial", "cancelled"):
                 continue
 
             # Derive a stable plan_id from the orchestrator's DelegateMeta,
@@ -187,6 +187,49 @@ class DelegateManager:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    async def launch_subplan(
+        self,
+        name: str,
+        description: str,
+        delegate_specs: List[DelegateSpec],
+        *,
+        source_conversation_id: Optional[str] = None,
+        parent_plan_id: Optional[str] = None,
+        parent_delegate_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Launch a sub-plan from within a running delegate.
+
+        Wraps launch_plan with parent linkage. When the sub-plan completes,
+        _on_subplan_complete rolls the result up to the parent plan.
+        """
+        result = await self.launch_plan(
+            name=name,
+            description=description,
+            delegate_specs=delegate_specs,
+            source_conversation_id=source_conversation_id,
+        )
+
+        # Patch parent linkage onto the sub-plan's TaskPlan
+        sub_plan_id = result["plan_id"]
+        sub_plan = self._plans.get(sub_plan_id)
+        if sub_plan:
+            sub_plan.parent_plan_id = parent_plan_id
+            sub_plan.parent_delegate_id = parent_delegate_id
+            self._persist_plan(sub_plan_id)
+
+        # Register the sub-plan on the parent so _is_plan_complete
+        # waits for it before declaring the parent done.
+        if parent_plan_id:
+            parent = self._plans.get(parent_plan_id)
+            if parent:
+                if not hasattr(parent, 'pending_subplan_ids'):
+                    parent.pending_subplan_ids = set()
+                parent.pending_subplan_ids.add(sub_plan_id)
+                self._persist_plan(parent_plan_id)
+
+        return result
 
     async def launch_plan(
         self,
@@ -382,12 +425,10 @@ class DelegateManager:
         self._persist_plan(plan_id)
 
         # Post crystal arrival to orchestrator conversation (non-blocking).
-        # The LLM commentary is observational and must not delay scheduling.
+        # Must complete before we check plan completion so the orchestrator
+        # has all crystal context for final synthesis.
         if plan.orchestrator_id:
-            asyncio.create_task(
-                self._orchestrator_receive_crystal(plan_id, delegate_id, crystal),
-                name=f"orch-recv-{delegate_id[:8]}",
-            )
+            await self._orchestrator_receive_crystal(plan_id, delegate_id, crystal)
 
         # T39: Retroactive review (non-blocking background task)
         asyncio.create_task(
@@ -401,11 +442,14 @@ class DelegateManager:
         })
 
         if self._is_plan_complete(plan_id):
-            plan.status = "completed"
+            # Distinguish clean completion from partial failure
+            statuses = self._statuses[plan_id]
+            has_failures = any(s == "failed" for s in statuses.values())
+            plan.status = "completed_partial" if has_failures else "completed"
             plan.completed_at = time.time()
             self._persist_plan(plan_id)
-            await self._orchestrator_final_synthesis(plan_id)
-            self._post_completion_to_source(plan_id)
+            synthesis = await self._orchestrator_final_synthesis(plan_id)
+            self._post_completion_to_source(plan_id, synthesis)
             # Signal the orchestrator's WebSocket that the stream is done
             if plan.orchestrator_id:
                 await delegate_stream_relay.push(
@@ -416,6 +460,9 @@ class DelegateManager:
                 "total_crystals": len(self._crystals[plan_id]),
             })
             logger.info(f"✅ TaskPlan complete: {plan.name} ({plan_id[:8]})")
+
+            # If this is a sub-plan, roll results up to the parent
+            await self._on_subplan_complete(plan_id)
         else:
             await self._resolve_and_start(plan_id)
             self._post_progress_to_source(plan_id, delegate_id, crystal)
@@ -423,9 +470,7 @@ class DelegateManager:
     async def on_delegate_failed(
         self, plan_id: str, delegate_id: str, error: str,
     ) -> None:
-        """Handle a delegate that failed during execution."""
-        if plan_id not in self._plans:
-            return
+
         logger.error(f"❌ Delegate failed: {delegate_id} — {error}")
         self._statuses[plan_id][delegate_id] = "failed"
         self._running[plan_id].discard(delegate_id)
@@ -471,8 +516,36 @@ class DelegateManager:
         """Get current status of a TaskPlan and all delegates."""
         if plan_id not in self._plans:
             return None
+
         plan = self._plans[plan_id]
-        statuses = self._statuses[plan_id]
+
+        # Opportunistic stall detection: if a delegate has been 'running'
+        # with no checkpoint progress and no active sub-plans, flag it.
+        statuses = self._statuses.get(plan_id, {})
+        for did, st in statuses.items():
+            if st != "running":
+                continue
+            # Skip if delegate has active children
+            if self._has_active_subplans(plan_id, did):
+                continue
+            # Check last checkpoint or stream start time
+            cp = self._get_checkpoint(plan_id, did)
+            last_activity = cp["ts"] if cp else plan.created_at or 0
+            silent_secs = time.time() - last_activity
+            # Only flag if no progress for a very long time AND no children
+            if silent_secs > 600:  # 10 minutes, no sub-plans
+                logger.warning(
+                    f"⏰ Delegate {did[:8]} silent for {int(silent_secs)}s "
+                    f"with no active sub-plans — may be stalled"
+                )
+                statuses[did] = "stalled"
+                self._persist_plan(plan_id)
+
+        statuses = self._statuses.get(plan_id, {})
+        needs_attention = [
+            did for did, st in statuses.items()
+            if st in ("failed", "interrupted")
+        ]
         return {
             "plan_id": plan_id,
             "name": plan.name,
@@ -487,6 +560,7 @@ class DelegateManager:
             "running_count": len(self._running.get(plan_id, set())),
             "crystal_count": len(self._crystals.get(plan_id, {})),
             "total_delegates": len(plan.delegate_specs),
+            "needs_attention": needs_attention,
             "task_list": [t.model_dump() for t in plan.task_list],
         }
 
@@ -695,11 +769,15 @@ class DelegateManager:
                 spec.conversation_id, "human", messages[0].get("content", "")
             )
 
-        async with self._semaphore:
-            try:
-                accumulated = ""
-                crystal_from_stream: Optional[MemoryCrystal] = None
-                streaming_msg_id: Optional[str] = None
+        checkpoints: list = []
+        _CHECKPOINT_INTERVAL = 4000  # chars between interim snapshots
+        accumulated = ""
+        crystal_from_stream: Optional[MemoryCrystal] = None
+        streaming_msg_id: Optional[str] = None
+        stream_failed = False
+
+        try:
+            async with self._semaphore:
                 _last_flush_len = 0
                 _FLUSH_INTERVAL = 2000  # chars between disk flushes
 
@@ -709,11 +787,9 @@ class DelegateManager:
                     ctype = chunk.get("type")
                     if ctype == "text":
                         accumulated += chunk.get("content", "")
-                        # Push to WebSocket relay for live streaming
                         await delegate_stream_relay.push(
                             spec.conversation_id or did, chunk
                         )
-                        # Periodic disk flush for non-WS viewers
                         if len(accumulated) - _last_flush_len >= _FLUSH_INTERVAL:
                             _last_flush_len = len(accumulated)
                             streaming_msg_id = self._update_delegate_assistant_message(
@@ -721,6 +797,31 @@ class DelegateManager:
                                 accumulated,
                                 msg_id=streaming_msg_id,
                             )
+                        # Progressive checkpoint: snapshot findings at regular
+                        # content thresholds so partial work survives crashes.
+                        cp_threshold = (len(checkpoints) + 1) * _CHECKPOINT_INTERVAL
+                        if len(accumulated) >= cp_threshold:
+                            checkpoints.append({
+                                "chars": len(accumulated),
+                                "ts": time.time(),
+                                "snippet": accumulated[-500:],
+                            })
+                            self._persist_checkpoint(
+                                plan_id, did, accumulated, checkpoints
+                            )
+                    elif ctype == "tool_start":
+                        header = chunk.get("display_header", chunk.get("tool_name", "tool"))
+                        accumulated += f"\n\n🔧 **{header}**\n"
+                        await delegate_stream_relay.push(
+                            spec.conversation_id or did, chunk
+                        )
+                    elif ctype == "tool_display":
+                        result = chunk.get("result", "")
+                        if result:
+                            accumulated += f"\n```\n{result[:2000]}\n```\n"
+                        await delegate_stream_relay.push(
+                            spec.conversation_id or did, chunk
+                        )
                     elif ctype == "crystal_ready":
                         cd = chunk.get("crystal")
                         if cd:
@@ -729,54 +830,57 @@ class DelegateManager:
                         await self.on_delegate_failed(
                             plan_id, did, chunk.get("content", "Unknown")
                         )
-                        return
+                        stream_failed = True
+                        break
                     elif ctype == "stream_end":
-                        # Notify relay that stream is done
                         await delegate_stream_relay.push(
                             spec.conversation_id or did,
                             {"type": "stream_end"}
                         )
                         break
-                    elif ctype in ("tool_start", "tool_display", "processing"):
-                        # Forward tool events to relay so frontend can render them
+                    elif ctype in ("processing", "iteration_continue"):
                         await delegate_stream_relay.push(
                             spec.conversation_id or did, chunk
                         )
-                # Final persistence of complete response
-                if spec.conversation_id and accumulated.strip():
-                    self._update_delegate_assistant_message(
-                        spec.conversation_id,
-                        accumulated,
-                        msg_id=streaming_msg_id,
-                    )
-                    logger.info(f"💬 Final persist: {len(accumulated)} chars to delegate {did[:8]}")
+            # -- semaphore released here --
 
+            if stream_failed:
+                return
 
-                if crystal_from_stream:
-                    await self.on_crystal_ready(
-                        plan_id, did, crystal_from_stream
-                    )
-                else:
-                    # No crystal produced (below threshold or failure).
-                    # Create a stub so downstream delegates aren't blocked.
-                    stub = MemoryCrystal(
-                        delegate_id=did,
-                        task=spec.name,
-                        summary=f"Completed: {spec.name}. "
-                                f"{accumulated[:200]}",
-                        original_tokens=len(accumulated) // 4,
-                        crystal_tokens=50,
-                        created_at=time.time(),
-                    )
-                    await self.on_crystal_ready(plan_id, did, stub)
-
-            except asyncio.CancelledError:
-                logger.warning(f"🛑 Delegate cancelled: {spec.name}")
-                await self.on_delegate_failed(plan_id, did, "Cancelled by user")
-            except Exception as exc:
-                logger.error(
-                    f"❌ Delegate error: {spec.name} — {exc}", exc_info=True
+            # Phase 2: Post-stream work (no semaphore held)
+            if spec.conversation_id and accumulated.strip():
+                self._update_delegate_assistant_message(
+                    spec.conversation_id,
+                    accumulated,
+                    msg_id=streaming_msg_id,
                 )
+                logger.info(f"💬 Final persist: {len(accumulated)} chars to delegate {did[:8]}")
+
+            if crystal_from_stream:
+                await self.on_crystal_ready(
+                    plan_id, did, crystal_from_stream
+                )
+            else:
+                stub = MemoryCrystal(
+                    delegate_id=did,
+                    task=spec.name,
+                    summary=f"Completed: {spec.name}. "
+                            f"{accumulated[:200]}",
+                    original_tokens=len(accumulated) // 4,
+                    crystal_tokens=50,
+                    created_at=time.time(),
+                    )
+                await self.on_crystal_ready(plan_id, did, stub)
+
+        except asyncio.CancelledError:
+            logger.warning(f"🛑 Delegate cancelled: {spec.name}")
+            await self.on_delegate_failed(plan_id, did, "Cancelled by user")
+        except Exception as exc:  # Stream died — attempt rescue
+            logger.error(
+                f"❌ Delegate error: {spec.name} — {exc}", exc_info=True
+            )
+            rescued = await self._attempt_rescue(plan_id, spec, accumulated, checkpoints)
+            if not rescued:
                 await self.on_delegate_failed(plan_id, did, str(exc))
 
     def _build_delegate_messages(
@@ -819,7 +923,22 @@ class DelegateManager:
         parts.append(
             f"Your task: {spec.name}\n\n"
             f"Scope: {spec.scope}\n\n"
-            "Work within the files listed in your context. "
+            "Work within the files listed in your context.\n\n"
+            "## Coordination Tools\n"
+            "You have access to swarm coordination tools for working "
+            "with other delegates running in parallel:\n"
+            "- **swarm_task_list** — see what others are doing/have done\n"
+            "- **swarm_claim_task** — claim a task so others skip it\n"
+            "- **swarm_complete_task** — mark your task done with a summary\n"
+            "- **swarm_add_task** — register discovered work for others\n"
+            "- **swarm_note** — broadcast a note to the orchestrator and all delegates\n"
+            "- **swarm_query_crystal** — read completed results from other delegates\n"
+            "- **swarm_read_log** — read recent orchestrator messages and delegate notes\n"
+            "- **swarm_request_delegate** — request a new delegate for large discovered work\n\n"
+            "Before starting work, check swarm_task_list to see current state. "
+            "Claim your task with swarm_claim_task. When done, call "
+            "swarm_complete_task with a brief summary. If you discover work "
+            "outside your scope, use swarm_add_task so another delegate can handle it.\n\n"
             "Complete the task thoroughly and provide clear summaries "
             "of what you changed and why."
         )
@@ -1041,11 +1160,11 @@ class DelegateManager:
         except Exception as exc:
             logger.warning(f"🎯 Orchestrator analysis failed: {exc}")
 
-    async def _orchestrator_final_synthesis(self, plan_id: str) -> None:
+    async def _orchestrator_final_synthesis(self, plan_id: str) -> str:
         """Run the orchestrator's final synthesis when all delegates complete."""
         plan = self._plans.get(plan_id)
         if not plan or not plan.orchestrator_id:
-            return
+            return ""
 
         crystals = self._crystals.get(plan_id, {})
         statuses = self._statuses.get(plan_id, {})
@@ -1085,20 +1204,27 @@ class DelegateManager:
                     "type": "orchestrator_message",
                     "content": msg,
                 })
+                return synthesis
         except Exception as exc:
             logger.warning(f"🎯 Orchestrator synthesis failed: {exc}")
+        return ""
 
     async def _orchestrator_llm_call(self, prompt: str) -> str:
         """Make a lightweight LLM call for orchestrator analysis."""
-        from app.agents.compaction_engine import CompactionEngine
-        engine = CompactionEngine()
-        # Reuse the same model path as compaction summaries
-        return await engine._call_summary_model(
-            task="orchestrator analysis",
-            files="",
-            decisions="",
-            last_msg=prompt,
-        )
+        from app.agents.agent import model as lazy_model
+        from langchain_core.messages import HumanMessage
+
+        wrapper = lazy_model.get_model()
+        if wrapper is None:
+            raise RuntimeError("No model available for orchestrator call")
+
+        raw_model = getattr(wrapper, 'model', wrapper)
+        if hasattr(raw_model, 'model') and raw_model is not wrapper:
+            raw_model = getattr(raw_model, 'model', raw_model)
+
+        response = await raw_model.ainvoke([HumanMessage(content=prompt)])
+        text = response.content if hasattr(response, "content") else str(response)
+        return text.strip()[:4000]
 
     # ------------------------------------------------------------------
     # Incremental message persistence
@@ -1147,7 +1273,7 @@ class DelegateManager:
             cs._write_json(cs._chat_file(chat_id), chat.model_dump())
             return used_id
 
-    def _post_completion_to_source(self, plan_id: str) -> None:
+    def _post_completion_to_source(self, plan_id: str, synthesis: str = "") -> None:
         """Write a summary message to the conversation that launched this plan."""
         plan = self._plans.get(plan_id)
         if not plan or not plan.source_conversation_id:
@@ -1174,6 +1300,7 @@ class DelegateManager:
 
         crystal_count = len(crystals)
         total = len(plan.delegate_specs)
+        failed_count = sum(1 for s in statuses.values() if s == "failed")
 
         # Collect key decisions across all crystals
         all_decisions: list[str] = []
@@ -1198,15 +1325,26 @@ class DelegateManager:
                 f"{body}\n</details>"
             )
 
+        if failed_count:
+            header = f"## ⚠️ Task Plan Partial: {plan.name}"
+            count_line = f"**{crystal_count}/{total}** delegates completed successfully, **{failed_count}** failed."
+        else:
+            header = f"## ✅ Task Plan Complete: {plan.name}"
+            count_line = f"**{crystal_count}/{total}** delegates completed successfully."
+
         content = (
-            f"## ✅ Task Plan Complete: {plan.name}\n\n"
-            f"**{crystal_count}/{total}** delegates completed successfully.\n\n"
+            f"{header}\n\n"
+            f"{count_line}\n\n"
             f"| Delegate | Status | Files Changed |\n"
             f"|----------|--------|---------------|\n"
             f"{table}"
             f"{decisions_md}"
             f"{summaries_md}"
         )
+        if synthesis:
+            content += (
+                f"\n\n---\n\n**Orchestrator Synthesis:**\n\n{synthesis}"
+            )
 
         from app.models.chat import Message
         import uuid as _uuid
@@ -1298,6 +1436,266 @@ class DelegateManager:
     # Utilities
     # ------------------------------------------------------------------
 
+    async def _on_subplan_complete(self, sub_plan_id: str) -> None:
+        """Roll sub-plan results up to the parent plan."""
+        sub_plan = self._plans.get(sub_plan_id)
+        if not sub_plan or not sub_plan.parent_plan_id:
+            return  # Not a sub-plan
+
+        parent_plan_id = sub_plan.parent_plan_id
+        parent_delegate_id = sub_plan.parent_delegate_id
+        parent_plan = self._plans.get(parent_plan_id)
+        if not parent_plan:
+            logger.warning(
+                f"Sub-plan {sub_plan.name} completed but parent plan "
+                f"{parent_plan_id[:8]} not found"
+            )
+            return
+
+        # Clear this sub-plan from the parent's pending set so
+        # _is_plan_complete can proceed when all are done.
+        pending = getattr(parent_plan, 'pending_subplan_ids', set())
+        pending.discard(sub_plan_id)
+        parent_plan.pending_subplan_ids = pending
+        self._persist_plan(parent_plan_id)
+
+        # Build a rolled-up summary of all sub-plan crystals
+        sub_crystals = self._crystals.get(sub_plan_id, {})
+        crystal_summaries = []
+        all_files: List[str] = []
+        for did, crystal in sub_crystals.items():
+            crystal_summaries.append(f"- **{did}:** {crystal.summary}")
+            all_files.extend(fc.path for fc in crystal.files_changed)
+
+        summary_text = (
+            f"Sub-plan '{sub_plan.name}' completed "
+            f"({len(sub_crystals)}/{len(sub_plan.delegate_specs)} delegates). "
+        )
+        if crystal_summaries:
+            summary_text += "\n" + "\n".join(crystal_summaries)
+
+        # Add a task entry on the parent plan's task list
+        from app.models.delegate import SwarmTask
+        with self._persist_lock:
+            parent_plan.task_list.append(SwarmTask(
+                task_id=f"st_subplan_{sub_plan_id[:8]}",
+                title=f"Sub-plan: {sub_plan.name}",
+                status="done",
+                added_by=parent_delegate_id or "",
+                summary=f"{len(sub_crystals)}/{len(sub_plan.delegate_specs)} delegates completed",
+                created_at=sub_plan.created_at,
+                completed_at=sub_plan.completed_at or time.time(),
+                tags=["subplan"],
+            ))
+            self._persist_plan(parent_plan_id)
+
+        # Notify parent plan's orchestrator
+        if parent_plan.orchestrator_id:
+            label = (
+                f"**sub-plan → orchestrator:** ✅ Sub-plan **{sub_plan.name}** "
+                f"completed ({len(sub_crystals)}/{len(sub_plan.delegate_specs)} crystals)\n\n"
+                f"{summary_text}"
+            )
+            self._persist_delegate_message(
+                parent_plan.orchestrator_id, "assistant", label,
+            )
+
+        # Post results to spawning delegate's conversation
+        if parent_delegate_id:
+            for spec in parent_plan.delegate_specs:
+                if spec.delegate_id == parent_delegate_id and spec.conversation_id:
+                    msg = (
+                        f"**sub-plan complete:** {sub_plan.name}\n\n"
+                        f"{summary_text}"
+                    )
+                    self._persist_delegate_message(
+                        spec.conversation_id, "assistant", msg,
+                    )
+                    break
+
+        logger.info(
+            f"📤 Sub-plan '{sub_plan.name}' rolled up to parent plan "
+            f"'{parent_plan.name}' ({parent_plan_id[:8]})"
+        )
+
+        # Re-check parent plan completion now that sub-plan is done
+        if parent_plan.status not in ("completed", "completed_partial", "cancelled"):
+            if self._is_plan_complete(parent_plan_id):
+                statuses = self._statuses.get(parent_plan_id, {})
+                has_failures = any(s == "failed" for s in statuses.values())
+                parent_plan.status = "completed_partial" if has_failures else "completed"
+                parent_plan.completed_at = time.time()
+                self._persist_plan(parent_plan_id)
+                synthesis = await self._orchestrator_final_synthesis(parent_plan_id)
+                self._post_completion_to_source(parent_plan_id, synthesis)
+                if parent_plan.orchestrator_id:
+                    await delegate_stream_relay.push(
+                        parent_plan.orchestrator_id, {"type": "stream_end"}
+                    )
+                logger.info(f"✅ Parent plan finalized after sub-plan: {parent_plan.name}")
+                await self._on_subplan_complete(parent_plan_id)
+
+    def _persist_checkpoint(
+        self, plan_id: str, delegate_id: str, accumulated: str, checkpoints: list
+    ) -> None:
+        """Write an interim checkpoint for crash recovery."""
+        key = f"{plan_id}:{delegate_id}"
+        self._checkpoints[key] = {
+            "accumulated": accumulated,
+            "checkpoints": checkpoints,
+            "ts": time.time(),
+        }
+        logger.debug(
+            f"📌 Checkpoint #{len(checkpoints)} for {delegate_id[:8]}: "
+            f"{len(accumulated)} chars"
+        )
+
+    def _get_checkpoint(self, plan_id: str, delegate_id: str) -> Optional[dict]:
+        """Retrieve the latest checkpoint for a delegate, if any."""
+        return self._checkpoints.get(f"{plan_id}:{delegate_id}")
+
+    def _has_active_subplans(self, plan_id: str, delegate_id: str) -> bool:
+        """Check if a delegate has spawned sub-plans that are still running."""
+        for pid, plan in self._plans.items():
+            if (plan.parent_plan_id == plan_id
+                    and plan.parent_delegate_id == delegate_id
+                    and plan.status not in ("completed", "completed_partial",
+                                            "cancelled", "failed")):
+                return True
+        return False
+
+    async def _attempt_rescue(
+        self, plan_id: str, spec: DelegateSpec,
+        accumulated: str, checkpoints: list,
+    ) -> bool:
+        """Try to rescue a failed delegate by spawning a continuation.
+
+        Returns True if rescue was launched, False if not worth attempting.
+        """
+        did = spec.delegate_id
+        plan = self._plans.get(plan_id)
+        if not plan:
+            return False
+
+        # Don't rescue if the delegate has active sub-plans — they may
+        # still complete and the failure might just be the parent's
+        # stream wrapper, not the actual work.
+        if self._has_active_subplans(plan_id, did):
+            logger.info(
+                f"🛡️ Skipping rescue for {spec.name} — has active sub-plans"
+            )
+            return False
+
+        # Only rescue if there's meaningful partial work to continue from
+        checkpoint = self._get_checkpoint(plan_id, did)
+        prior_work = ""
+        if checkpoint and checkpoint["accumulated"]:
+            prior_work = checkpoint["accumulated"]
+        elif accumulated:
+            prior_work = accumulated
+
+        if len(prior_work) < 200:
+            logger.info(f"🛡️ Skipping rescue for {spec.name} — insufficient prior work")
+            return False
+
+        # Don't retry more than once
+        retry_key = f"{plan_id}:{did}:rescued"
+        if self._checkpoints.get(retry_key):
+            logger.info(f"🛡️ Skipping rescue for {spec.name} — already rescued once")
+            return False
+        self._checkpoints[retry_key] = True
+
+        logger.info(f"🚑 Attempting rescue for {spec.name} ({len(prior_work)} chars of prior work)")
+
+        # Build a continuation spec reusing the same conversation
+        rescue_scope = (
+            f"CONTINUATION — the previous attempt crashed after producing "
+            f"{len(prior_work)} characters of work. Here is what was "
+            f"accomplished so far:\n\n"
+            f"---\n{prior_work[-3000:]}\n---\n\n"
+            f"Continue from where this left off. Do NOT repeat work already "
+            f"done. Complete the remaining tasks from the original scope:\n\n"
+            f"{spec.scope}"
+        )
+        rescue_spec = DelegateSpec(
+            delegate_id=did,
+            name=f"{spec.name} (rescue)",
+            scope=rescue_scope,
+            files=spec.files,
+            dependencies=spec.dependencies,
+            emoji=spec.emoji,
+            conversation_id=spec.conversation_id,
+        )
+
+        # Reset delegate status so the pipeline re-runs it
+        statuses = self._statuses.get(plan_id, {})
+        statuses[did] = "running"
+        self._persist_plan(plan_id)
+
+        # Launch directly — don't go through the full plan dispatch
+        asyncio.create_task(
+            self._run_delegate(plan_id, rescue_spec),
+            name=f"rescue-{did[:8]}",
+        )
+        return True
+
+    async def _spawn_and_start_dynamic_delegate(
+        self, plan_id: str, spec: DelegateSpec,
+    ) -> None:
+        """Create conversation infrastructure for a dynamically-requested
+        delegate and start it when its dependencies are met."""
+        plan = self._plans.get(plan_id)
+        if not plan:
+            return
+
+        try:
+            chat_storage = self._get_chat_storage()
+
+            group_id = None
+            for gid, pid in self._group_to_plan.items():
+                if pid == plan_id:
+                    group_id = gid
+                    break
+            if not group_id:
+                logger.warning(
+                    f"Cannot spawn dynamic delegate: no group for plan {plan_id[:8]}"
+                )
+                return
+
+            # Create scoped Context for the delegate's files
+            ctx_id = None
+            if spec.files:
+                from app.models.context import ContextCreate
+                ctx = self._get_context_storage().create(ContextCreate(
+                    name=f"[D] {spec.name}",
+                    files=spec.files,
+                ))
+                ctx_id = ctx.id
+
+            # Create delegate Chat in the plan's folder
+            from app.models.chat import ChatCreate
+            d_chat = chat_storage.create(ChatCreate(
+                groupId=group_id,
+                title=f"{spec.emoji} {spec.name}",
+                contextIds=[ctx_id] if ctx_id else [],
+            ))
+            spec.conversation_id = d_chat.id
+
+            self._patch_chat_delegate_meta(d_chat.id, DelegateMeta(
+                role="delegate",
+                plan_id=plan_id,
+                delegate_id=spec.delegate_id,
+                delegate_spec=spec,
+                status="proposed",
+                context_id=ctx_id,
+            ))
+
+            self._persist_plan(plan_id)
+            await self._resolve_and_start(plan_id)
+            logger.info(f"🆕 Dynamic delegate spawned: {spec.name} ({spec.delegate_id})")
+        except Exception as exc:
+            logger.error(f"Failed to spawn dynamic delegate {spec.name}: {exc}", exc_info=True)
+
     @staticmethod
     def _find_spec(plan: TaskPlan, delegate_id: str) -> Optional[DelegateSpec]:
         for s in plan.delegate_specs:
@@ -1306,6 +1704,16 @@ class DelegateManager:
         return None
 
     def _is_plan_complete(self, plan_id: str) -> bool:
+        plan = self._plans.get(plan_id)
+        if not plan:
+            return False
+
+        # Don't complete while sub-plans are still running
+        pending = getattr(plan, 'pending_subplan_ids', set())
+        if pending:
+            logger.debug(f"Plan {plan_id[:8]} has {len(pending)} pending sub-plan(s)")
+            return False
+
         # 'interrupted' is NOT terminal — it means a delegate was mid-flight
         # when the server restarted and needs retry/promote to proceed.
         terminal = {"crystal", "failed"}
