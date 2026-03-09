@@ -8,6 +8,18 @@ import json
 import fcntl
 from contextlib import contextmanager
 
+
+def _sanitize_surrogates(obj):
+    """Replace unpaired Unicode surrogates that can't be encoded to UTF-8."""
+    if isinstance(obj, str):
+        return obj.encode('utf-8', errors='replace').decode('utf-8')
+    if isinstance(obj, dict):
+        return {k: _sanitize_surrogates(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_surrogates(i) for i in obj]
+    return obj
+
+
 T = TypeVar('T')
 
 class BaseStorage(ABC, Generic[T]):
@@ -54,7 +66,7 @@ class BaseStorage(ABC, Generic[T]):
         temp_path = filepath.with_suffix('.tmp')
         try:
             with open(temp_path, 'w') as f:
-                json.dump(data, f, indent=2)
+                json.dump(_sanitize_surrogates(data), f, indent=2, ensure_ascii=False)
             temp_path.rename(filepath)
         except Exception as e:
             # Clean up temp file on error
