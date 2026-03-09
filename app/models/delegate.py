@@ -97,6 +97,8 @@ class TaskPlan(BaseModel):
     description: str = ""
     orchestrator_id: Optional[str] = None
     source_conversation_id: Optional[str] = None
+    parent_plan_id: Optional[str] = None      # If spawned by a delegate in another plan
+    parent_delegate_id: Optional[str] = None   # Which delegate in the parent plan spawned this
     delegate_specs: List[DelegateSpec] = []
     crystals: List[MemoryCrystal] = []
     task_list: List["SwarmTask"] = []
