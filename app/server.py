@@ -264,6 +264,12 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
 active_streams = {}
 active_streams_lock = threading.Lock()
 
+# MCP tool objects (LangChain StructuredTool wrappers) are stateless config — cache them.
+# Invalidated automatically after 30 s so tool additions/removals are picked up quickly.
+_mcp_tools_cache: list = []
+_mcp_tools_cache_ts: float = 0.0
+_MCP_TOOLS_CACHE_TTL: float = 30.0
+
 # Event loop reference for cross-thread async scheduling (set during lifespan startup)
 _main_event_loop = None
 
@@ -372,6 +378,21 @@ async def lifespan(app: FastAPI):
     yield
     
     # Shutdown - cleanup
+    logger.info("🛑 Shutting down gracefully...")
+
+    # Persist delegate orchestration state so plans survive restart
+    try:
+        from app.agents.delegate_manager import get_delegate_manager
+        project_id = os.environ.get("ZIYA_PROJECT_ID")
+        if project_id:
+            mgr = get_delegate_manager(project_id)
+            for plan_id in list(mgr._plans.keys()):
+                mgr._persist_plan(plan_id)
+            active_count = sum(1 for s in mgr._running.values() for _ in s)
+            logger.info(f"💾 Persisted {len(mgr._plans)} plan(s), {active_count} running delegate(s)")
+    except Exception as e:
+        logger.warning(f"Delegate state persistence during shutdown: {e}")
+
     # Cancel any ongoing folder scans
     try:
         from app.utils.directory_util import cancel_scan
@@ -484,6 +505,8 @@ def _mark_folder_scan_complete():
     """Called by directory_util when folder scan completes."""
     global _folder_ready
     _folder_ready = True
+    # Notify connected frontend clients so they can stop polling and fetch the tree.
+    _schedule_broadcast('scan_complete', '', 0)
     _check_and_print_completion_banner()
 
 
@@ -555,7 +578,8 @@ import logging as _logging
 class _PollingAccessFilter(_logging.Filter):
     """Filter routine polling GETs from uvicorn access log."""
     _quiet = {'/chats?', '/chat-groups', '/skills', '/contexts', '/api/config', '/ws/',
-              '/folder-progress', '/model-capabilities', '/current-model', '/static/',}
+              '/folder-progress', '/model-capabilities', '/current-model', '/static/',
+              '/delegate-status',}
     def filter(self, record: _logging.LogRecord) -> bool:
         msg = record.getMessage()
         return not any(q in msg for q in self._quiet)
@@ -569,6 +593,9 @@ class _WebSocketLifecycleFilter(_logging.Filter):
         return record.getMessage().strip() not in self._noise
 
 _logging.getLogger("uvicorn.error").addFilter(_WebSocketLifecycleFilter())
+
+# Suppress noisy urllib3 connection pool warnings (expected under delegate concurrency)
+_logging.getLogger("urllib3.connectionpool").setLevel(_logging.ERROR)
 
 @app.websocket("/ws/feedback/{conversation_id}")
 async def feedback_websocket(websocket: WebSocket, conversation_id: str):
@@ -1616,9 +1643,7 @@ async def stream_continuation(messages: List, continuation_state: Dict[str, Any]
 
 async def stream_chunks(body):
     """Stream chunks from the agent executor."""
-    logger.debug("🔍 STREAM_CHUNKS: FUNCTION CALLED - ENTRY POINT")
-    logger.error("🔍 EXECUTION_TRACE: stream_chunks() called - ENTRY POINT")
-    logger.debug("🔍 STREAM_CHUNKS: Function called")
+    logger.debug("stream_chunks: called")
     
     # Initialize diff validation hook
     from app.utils.diff_validation_hook import DiffValidationHook
@@ -1654,23 +1679,16 @@ async def stream_chunks(body):
     # Restore 0.3.0 direct streaming behavior
     use_direct_streaming = True
     
-    logger.debug(f"🔍 STREAM_CHUNKS: use_direct_streaming = {use_direct_streaming}")
-    
-    logger.debug(f"🚀 DIRECT_STREAMING: Environment check = {use_direct_streaming}")
-    logger.debug(f"🚀 DIRECT_STREAMING: ZIYA_USE_DIRECT_STREAMING env var = '{os.getenv('ZIYA_USE_DIRECT_STREAMING', 'NOT_SET')}'")
-    
     # Check if we should use direct streaming
     if use_direct_streaming:
-        logger.info("🚀 DIRECT_STREAMING: Using StreamingToolExecutor for direct streaming")
-        
+        logger.debug("stream_chunks: using StreamingToolExecutor")
+
         # Extract data from body for StreamingToolExecutor
         question = body.get("question", "")
         chat_history = body.get("chat_history", [])
         files = body.get("config", {}).get("files", [])
         conversation_id = body.get("conversation_id")
         project_root = body.get("config", {}).get("project_root") or body.get("project_root")
-        
-        logger.debug(f"🔍 DIRECT_STREAMING_DEBUG: question='{question}', chat_history={len(chat_history)}, files={len(files)}")
         
         if question:
             # Check for common connectivity-related errors early
@@ -1727,13 +1745,17 @@ async def stream_chunks(body):
                 # Send initial heartbeat
                 yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\n\n"
                 
-                # Get MCP tools to pass to executor
-                mcp_tools = []
-                try:
-                    from app.mcp.enhanced_tools import create_secure_mcp_tools
-                    mcp_tools = create_secure_mcp_tools()
-                except Exception as e:
-                    logger.warning(f"Failed to get MCP tools: {e}")
+                # Get MCP tools — use process-level cache to avoid rebuilding wrappers each request
+                global _mcp_tools_cache, _mcp_tools_cache_ts
+                if time.time() - _mcp_tools_cache_ts > _MCP_TOOLS_CACHE_TTL:
+                    try:
+                        from app.mcp.enhanced_tools import create_secure_mcp_tools
+                        _mcp_tools_cache = create_secure_mcp_tools()
+                        _mcp_tools_cache_ts = time.time()
+                    except Exception as e:
+                        logger.warning("Failed to refresh MCP tools cache: %s", e)
+                        _mcp_tools_cache = []
+                mcp_tools = list(_mcp_tools_cache)
                 
                 # Filter tools by skill preferences if specified
                 if preferred_tool_ids and mcp_tools:
@@ -2602,18 +2624,6 @@ async def stream_chunks(body):
         # Context overflow detection state
         overflow_checked = False
         continuation_triggered = False
-        
-        # Get MCP tools for the iteration
-        mcp_tools = []
-
-        # Get MCP tools for the iteration
-        mcp_tools = []
-        try:
-            from app.mcp.enhanced_tools import create_secure_mcp_tools
-            mcp_tools = create_secure_mcp_tools()
-            logger.debug(f"🔍 STREAM_CHUNKS: Created {len(mcp_tools)} MCP tools for iteration")
-        except Exception as e:
-            logger.warning(f"Failed to get MCP tools for iteration: {e}")
         
         # Allow tool calls to complete - only stop at the END of tool calls
         try:
@@ -4404,7 +4414,16 @@ if __name__ == "__main__":
         setproctitle(f"Ziya : {port}")
         logger.info(f"Set process title to: Ziya : {port}")
     
-    uvicorn.run(app, host=args.host, port=args.port)
+    uvicorn_log_level = os.environ.get("ZIYA_LOG_LEVEL", "INFO").lower()
+    try:
+        uvicorn.run(app, host=args.host, port=args.port, log_level=uvicorn_log_level)
+    except (KeyboardInterrupt, SystemExit):
+        # Uvicorn re-raises KeyboardInterrupt after its own shutdown.
+        # The lifespan handler has already persisted delegate state
+        # and cleaned up MCP connections. Suppress the stack trace.
+        print("\n✅ Ziya stopped.")
+    except Exception:
+        logger.exception("Server exited with error")
 
 @app.get('/api/default-included-folders')
 async def get_default_included_folders():

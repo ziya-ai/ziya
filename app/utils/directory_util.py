@@ -811,6 +811,18 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
             if not ext_path:
                 continue
                 
+            # Resolve the path relative to the project root if not absolute.
+            # Paths inside the project root are already handled by the
+            # pattern-override mechanism in get_ignored_patterns() — they
+            # just need their default exclusion removed, not a second tree
+            # entry.  Only truly external paths (outside the project root)
+            # should be grafted onto the tree here.
+            resolved = os.path.realpath(os.path.join(directory, ext_path)) if not os.path.isabs(ext_path) else os.path.realpath(ext_path)
+            project_real = os.path.realpath(directory)
+            if resolved == project_real or resolved.startswith(project_real + os.sep):
+                logger.debug(f"Skipping --include path '{ext_path}' — it is inside the project root and already handled by pattern overrides")
+                continue
+
             # Skip if path doesn't exist
             if not os.path.exists(ext_path):
                 logger.warning(f"External path does not exist: {ext_path}")
