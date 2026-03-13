@@ -33,18 +33,24 @@ class SkillStorage(BaseStorage[Skill]):
         return self.skills_dir / f"{skill_id}.json"
     
     def _ensure_built_in_skills(self) -> None:
-        """Ensure built-in skills exist for this project."""
+        """Ensure built-in skills exist and stay in sync for this project.
+
+        Creates missing built-in skills and updates existing ones with any
+        new fields (visibility, source, keywords, id) that were added after
+        the skill was first persisted.
+        """
         existing_skills = self.list()
-        existing_names = {s.name for s in existing_skills if s.isBuiltIn}
+        existing_by_name = {s.name: s for s in existing_skills if s.isBuiltIn}
         
         for built_in_data in BUILT_IN_SKILLS:
-            if built_in_data['name'] not in existing_names:
-                # Create built-in skill
-                skill_id = f"builtin-{built_in_data['name'].lower().replace(' ', '-')}"
+            canonical_id = f"builtin-{built_in_data['name'].lower().replace(' ', '-')}"
+            existing = existing_by_name.get(built_in_data['name'])
+
+            if existing is None:
+                # Brand-new built-in skill
                 now = int(time.time() * 1000)
-                
                 skill = Skill(
-                    id=skill_id,
+                    id=canonical_id,
                     name=built_in_data['name'],
                     description=built_in_data['description'],
                     prompt=built_in_data['prompt'],
@@ -55,9 +61,31 @@ class SkillStorage(BaseStorage[Skill]):
                     createdAt=now,
                     lastUsedAt=now,
                     keywords=built_in_data.get('keywords'),
+                    visibility=built_in_data.get('visibility'),
                 )
-                
-                self._write_json(self._skill_file(skill_id), skill.model_dump())
+                self._write_json(self._skill_file(canonical_id), skill.model_dump())
+            else:
+                # Existing built-in skill — sync fields that may have been
+                # added since it was first persisted (visibility, source,
+                # keywords, catalog_description, id normalization).
+                dirty = False
+                if existing.visibility != built_in_data.get('visibility'):
+                    existing.visibility = built_in_data.get('visibility')
+                    dirty = True
+                if existing.source != 'builtin':
+                    existing.source = 'builtin'
+                    dirty = True
+                if existing.keywords != built_in_data.get('keywords'):
+                    existing.keywords = built_in_data.get('keywords')
+                    dirty = True
+                if existing.description != built_in_data['description']:
+                    existing.description = built_in_data['description']
+                    dirty = True
+                if existing.prompt != built_in_data['prompt']:
+                    existing.prompt = built_in_data['prompt']
+                    dirty = True
+                if dirty:
+                    self._write_json(self._skill_file(existing.id), existing.model_dump())
     
     def get(self, skill_id: str) -> Optional[Skill]:
         data = self._read_json(self._skill_file(skill_id))

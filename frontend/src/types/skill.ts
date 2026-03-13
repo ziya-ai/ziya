@@ -27,6 +27,8 @@ export interface Skill {
   // Discovery metadata
   source?: 'builtin' | 'custom' | 'project' | 'user';
   allowImplicitInvocation?: boolean;
+  // Visibility: 'model_discoverable' | 'user_selectable' | undefined
+  visibility?: 'model_discoverable' | 'user_selectable';
   // agentskills.io spec fields
   keywords?: string[];
   license?: string;
