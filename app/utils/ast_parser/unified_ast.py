@@ -193,6 +193,25 @@ class UnifiedAST:
         """
         self.metadata[key] = value
     
+    def to_dict(self) -> dict:
+        """Serialize to a plain dict (for embedding in cache files)."""
+        return {
+            'metadata': self.metadata,
+            'nodes': {nid: n.to_dict() for nid, n in self.nodes.items()},
+            'edges': [e.to_dict() for e in self.edges],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'UnifiedAST':
+        """Reconstruct from a plain dict (inverse of to_dict)."""
+        ast = cls()
+        ast.metadata = data.get('metadata', {})
+        for nid, nd in data.get('nodes', {}).items():
+            ast.nodes[nid] = Node.from_dict(nd)
+        for ed in data.get('edges', []):
+            ast.edges.append(Edge.from_dict(ed))
+        return ast
+
     def to_json(self) -> str:
         """
         Serialize to JSON format.

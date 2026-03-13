@@ -8,15 +8,16 @@ import os
 import json
 import logging
 import importlib.util
-from typing import Dict, List, Optional, Any, Tuple
+import threading
+from typing import Dict, List, Optional, Any, Tuple, Set
 from app.utils.logging_utils import logger
 
-# Global enhancer instance
-_enhancer = None
-_ast_context = ""
-_ast_token_count = 0
-_ast_initialized = False
-_resolution_estimates = {}
+# Project-keyed enhancer instances: project_root -> enhancer
+_enhancers: Dict[str, Any] = {}
+_enhancer_lock = threading.Lock()
+# Track which projects are currently being indexed (prevent double-start)
+_indexing_in_progress: Set[str] = set()
+_initialized_projects: Set[str] = set()
 
 # Local copy of AST indexing status to avoid circular import
 _ast_indexing_status = {
@@ -29,6 +30,31 @@ _ast_indexing_status = {
     'error': None,
     'enabled': False
 }
+
+
+def _get_project_root() -> str:
+    """Get the current project root, from request context or environment."""
+    try:
+        from app.context import get_project_root
+        return os.path.abspath(get_project_root())
+    except Exception:
+        return os.path.abspath(os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd()))
+
+
+def get_enhancer_for_project(project_root: Optional[str] = None):
+    """Get the AST enhancer for a specific project root (or current project)."""
+    root = os.path.abspath(project_root) if project_root else _get_project_root()
+    return _enhancers.get(root)
+
+
+# Legacy accessor — used by ast_tools.py and other callers that import _enhancer
+# NOTE: _enhancer is no longer a module-level variable. Use get_current_enhancer() instead.
+
+
+def get_current_enhancer():
+    """Get the AST enhancer for the current request's project."""
+    return get_enhancer_for_project()
+
 
 def check_dependencies() -> bool:
     """
@@ -47,11 +73,14 @@ def check_dependencies() -> bool:
     return True
 
 
-def initialize_ast_capabilities(codebase_path: str, exclude_patterns: Optional[List[Tuple[str, str]]] = None, 
+def initialize_ast_capabilities(codebase_path: str, exclude_patterns: Optional[List[Tuple[str, str]]] = None,
                               max_depth: int = 15) -> Dict[str, Any]:
     """
     Initialize AST capabilities for the given codebase.
-    
+
+    Safe to call multiple times — subsequent calls for the same project_root
+    return immediately.  Different project roots get separate enhancer instances.
+
     Args:
         codebase_path: Path to the codebase
         exclude_patterns: Patterns to exclude
@@ -60,10 +89,30 @@ def initialize_ast_capabilities(codebase_path: str, exclude_patterns: Optional[L
     Returns:
         Dict containing initialization results
     """
-    global _enhancer, _ast_context, _ast_token_count, _ast_initialized, _resolution_estimates
+    abs_path = os.path.abspath(codebase_path)
+
+    # Already indexed for this project?
+    if abs_path in _indexing_in_progress:
+        logger.debug(f"AST indexing already in progress for {abs_path}, skipping")
+        return {
+            "initialized": False,
+            "files_processed": 0,
+            "token_count": 0,
+            "ast_context": "",
+        }
+
+    if abs_path in _initialized_projects:
+        logger.debug(f"AST already initialized for {abs_path}, skipping")
+        enhancer = _enhancers.get(abs_path)
+        return {
+            "initialized": True,
+            "files_processed": len(enhancer.ast_cache) if enhancer else 0,
+            "token_count": 0,
+            "ast_context": "",
+        }
     
-    logger.info(f"initialize_ast_capabilities called with codebase_path={codebase_path}, max_depth={max_depth}")
-    
+    _indexing_in_progress.add(abs_path)
+
     # Check dependencies
     if not check_dependencies():
         logger.warning("AST dependencies not installed. AST capabilities will not be available.")
@@ -79,32 +128,20 @@ def initialize_ast_capabilities(codebase_path: str, exclude_patterns: Optional[L
         from .ziya_ast_enhancer import ZiyaASTEnhancer
         
         # Create enhancer if not already created
-        # Create the enhancer
         ast_resolution = os.environ.get("ZIYA_AST_RESOLUTION", "medium")
         enhancer = ZiyaASTEnhancer(ast_resolution=ast_resolution)
         
-        # Set the global enhancer variable
-        _enhancer = enhancer
+        # Store keyed by project root
+        with _enhancer_lock:
+            _enhancers[abs_path] = enhancer
         
         # Process the codebase
-        result = _enhancer.process_codebase(codebase_path, exclude_patterns or [], max_depth)
+        result = enhancer.process_codebase(codebase_path, exclude_patterns or [], max_depth)
         
-        # Calculate resolution estimates
-        logger.info("Calculating AST resolution estimates...")
-        _resolution_estimates = _enhancer.calculate_resolution_estimates()
+        # Mark this project as initialized
+        _initialized_projects.add(abs_path)
         
-        # Store context and token count
-        if "ast_context" in result:
-            _ast_context = result["ast_context"]
-            # Calculate token count if not provided
-            if "token_count" not in result and _ast_context:
-                result["token_count"] = len(_ast_context) // 4  # Rough estimate
-        if "token_count" in result:
-            _ast_token_count = result["token_count"]
-        
-        # Mark as initialized
-        _ast_initialized = True
-        
+        _indexing_in_progress.discard(abs_path)
         # Return a properly formatted result dictionary
         return {
             "initialized": True,
@@ -113,8 +150,8 @@ def initialize_ast_capabilities(codebase_path: str, exclude_patterns: Optional[L
             "ast_context": result.get("ast_context", "")
         }
         
-        logger.info(f"AST initialization returning: files_processed={result.get('files_processed', 0)}, token_count={result.get('token_count', 0)}")
     except Exception as e:
+        _indexing_in_progress.discard(abs_path)
         logger.error(f"Error initializing AST capabilities: {str(e)}")
         import traceback
         logger.error(f"AST initialization traceback: {traceback.format_exc()}")
@@ -133,7 +170,7 @@ def is_ast_available() -> bool:
     Returns:
         True if AST capabilities are available, False otherwise
     """
-    return _ast_initialized and _enhancer is not None
+    return len(_initialized_projects) > 0
 
 
 def get_ast_context() -> str:
@@ -143,7 +180,10 @@ def get_ast_context() -> str:
     Returns:
         AST context as a string
     """
-    return _ast_context
+    enhancer = get_current_enhancer()
+    if enhancer is None:
+        return ""
+    return enhancer.generate_ast_context()
 
 
 def get_ast_token_count() -> int:
@@ -153,29 +193,27 @@ def get_ast_token_count() -> int:
     Returns:
         AST context token count
     """
-    return _ast_token_count
+    ctx = get_ast_context()
+    return len(ctx) // 4 if ctx else 0
 
 
 def get_resolution_estimates() -> Dict[str, Dict[str, Any]]:
     """
-    Get the AST resolution estimates.
-    
-    Returns:
-        Dictionary mapping resolution levels to their estimated sizes
+    Get the AST resolution estimates for the current project.
     """
-    return _resolution_estimates
+    enhancer = get_current_enhancer()
+    if enhancer is None:
+        return {}
+    return enhancer.calculate_resolution_estimates()
 
 
 def change_ast_resolution(new_resolution: str) -> None:
     """
     Change the AST resolution and re-index the codebase.
-    
-    Args:
-        new_resolution: New resolution level
     """
-    global _enhancer, _ast_context, _ast_token_count, _resolution_estimates
+    enhancer = get_current_enhancer()
     
-    if not _enhancer:
+    if not enhancer:
         logger.error("AST enhancer not initialized")
         return
     
@@ -198,15 +236,10 @@ def change_ast_resolution(new_resolution: str) -> None:
         if new_resolution == 'disabled':
             # Set environment variable for persistence
             os.environ['ZIYA_AST_RESOLUTION'] = new_resolution
-            _enhancer.ast_resolution = new_resolution
-            
-            # Clear context and token count
-            _ast_context = ""
-            _ast_token_count = 0
-            
+            enhancer.ast_resolution = new_resolution
+        
             # Update status to complete immediately
             _ast_indexing_status.update({
-                'is_indexing': False,
                 'completion_percentage': 100,
                 'is_complete': True
             })
@@ -218,12 +251,12 @@ def change_ast_resolution(new_resolution: str) -> None:
         os.environ['ZIYA_AST_RESOLUTION'] = new_resolution
         
         # Update the enhancer's resolution
-        _enhancer.ast_resolution = new_resolution
+        enhancer.ast_resolution = new_resolution
         
         # Clear existing AST cache to force re-processing
-        _enhancer.ast_cache.clear()
-        _enhancer.query_engines.clear()
-        _enhancer.project_ast = _enhancer.UnifiedAST() if hasattr(_enhancer, 'UnifiedAST') else None
+        enhancer.ast_cache.clear()
+        enhancer.query_engines.clear()
+        enhancer.project_ast = enhancer.UnifiedAST() if hasattr(enhancer, 'UnifiedAST') else None
         
         # Re-process the codebase with new resolution
         codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
@@ -236,19 +269,7 @@ def change_ast_resolution(new_resolution: str) -> None:
         gitignore_patterns = get_ignored_patterns(codebase_dir)
         
         # Re-process the codebase
-        result = _enhancer.process_codebase(codebase_dir, gitignore_patterns, max_depth)
-        
-        # Update context and token count from the re-processing result
-        new_context = result.get("ast_context", "")
-        new_token_count = result.get("token_count", 0)
-        
-        # Update global variables
-        _ast_context = new_context
-        _ast_token_count = new_token_count
-        
-        # Recalculate resolution estimates
-        logger.info("Recalculating AST resolution estimates...")
-        _resolution_estimates = _enhancer.calculate_resolution_estimates()
+        result = enhancer.process_codebase(codebase_dir, gitignore_patterns, max_depth)
         
         # Update status to complete
         _ast_indexing_status.update({
@@ -259,7 +280,6 @@ def change_ast_resolution(new_resolution: str) -> None:
         
         logger.info(f"AST resolution changed successfully to {new_resolution}")
         logger.info(f"Files processed: {result.get('files_processed', 0)}")
-        logger.info(f"New token count: {new_token_count}")
         
     except Exception as e:
         logger.error(f"Error changing AST resolution: {e}")
@@ -277,7 +297,7 @@ def enhance_query_context(query: str, file_context: Optional[str] = None) -> Dic
     Returns:
         Enhanced context
     """
-    if _enhancer is None:
+    enhancer = get_current_enhancer()
+    if enhancer is None:
         return {}
-    
-    return _enhancer.enhance_query_context(query, file_context)
+    return enhancer.enhance_query_context(query, file_context)
