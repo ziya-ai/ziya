@@ -604,38 +604,38 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
       // Fix 3.8: Detect manual log calculations with numeric domains and convert to proper log scale
       // This handles specs that calculate log values but use them with inappropriate domains
-      if (spec.transform && spec.transform.some((t: any) => 
-          t.calculate && t.calculate.includes('log(') && t.as)) {
-        
-        const logCalculation = spec.transform.find((t: any) => 
+      if (spec.transform && spec.transform.some((t: any) =>
+        t.calculate && t.calculate.includes('log(') && t.as)) {
+
+        const logCalculation = spec.transform.find((t: any) =>
           t.calculate && t.calculate.includes('log(') && t.as);
         const logFieldName = logCalculation?.as;
-        
+
         if (logFieldName) {
           console.log(`🔧 LOG-SCALE-FIX: Detected manual log calculation creating field "${logFieldName}"`);
-          
+
           // Check if y-axis uses this log field with a numeric domain
           ['x', 'y'].forEach(axis => {
             const axisSpec = spec.encoding?.[axis];
             if (axisSpec?.field === logFieldName && axisSpec.type === 'quantitative') {
               const domain = axisSpec.scale?.domain;
-              
+
               // If domain is small numbers (0-20), these are likely log₁₀ values
               // meaning the actual data range is 10^domain[0] to 10^domain[1]
-              if (Array.isArray(domain) && domain.length === 2 && 
-                  domain[0] < 20 && domain[1] < 20 && domain[1] > domain[0]) {
-                
+              if (Array.isArray(domain) && domain.length === 2 &&
+                domain[0] < 20 && domain[1] < 20 && domain[1] > domain[0]) {
+
                 console.log(`🔧 LOG-SCALE-FIX: Domain ${JSON.stringify(domain)} looks like log₁₀ exponents`);
                 console.log(`🔧 LOG-SCALE-FIX: Represents actual range [${Math.pow(10, domain[0])}, ${Math.pow(10, domain[1])}]`);
-                
+
                 // Find the original field being logged (parse from calculate expression)
                 const calcExpr = logCalculation.calculate;
                 const fieldMatch = calcExpr.match(/log\(datum\.(\w+)\)/);
-                
+
                 if (fieldMatch) {
                   const originalField = fieldMatch[1];
                   console.log(`🔧 LOG-SCALE-FIX: Original field being logged: "${originalField}"`);
-                  
+
                   // SOLUTION: Use the original field with proper log scale instead
                   axisSpec.field = originalField;
                   axisSpec.scale = axisSpec.scale || {};
@@ -644,7 +644,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
                     Math.pow(10, domain[0]),
                     Math.pow(10, domain[1])
                   ];
-                  
+
                   console.log(`🔧 LOG-SCALE-FIX: Converted to use original field "${originalField}" with log scale`);
                   console.log(`🔧 LOG-SCALE-FIX: New domain: ${JSON.stringify(axisSpec.scale.domain)}`);
                 }
@@ -738,9 +738,9 @@ export const vegaLitePlugin: D3RenderPlugin = {
             const referencedField = channelSpec.field;
 
             // If the field doesn't exist in original data AND doesn't match fold output names
-            if (!originalDataFields.has(referencedField) && 
-                referencedField !== foldKeyField && 
-                referencedField !== foldValueField) {
+            if (!originalDataFields.has(referencedField) &&
+              referencedField !== foldKeyField &&
+              referencedField !== foldValueField) {
               console.log(`🔧 FOLD-FIELD-MAP-FIX: Channel "${channel}" references non-existent field "${referencedField}"`);
 
               // Determine if this should map to key or value field
@@ -749,10 +749,10 @@ export const vegaLitePlugin: D3RenderPlugin = {
               const categoryPatterns = ['gender', 'type', 'category', 'key', 'group', 'series', 'class'];
               const valuePatterns = ['population', 'value', 'amount', 'count', 'total', 'sum', 'size'];
 
-              const looksLikeCategory = categoryPatterns.some(pattern => 
+              const looksLikeCategory = categoryPatterns.some(pattern =>
                 referencedField.toLowerCase().includes(pattern)
               );
-              const looksLikeValue = valuePatterns.some(pattern => 
+              const looksLikeValue = valuePatterns.some(pattern =>
                 referencedField.toLowerCase().includes(pattern)
               );
 
@@ -1260,7 +1260,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // Fix 2: Validate all encoding field references
       if (spec.encoding && spec.data?.values && Array.isArray(spec.data.values) && spec.data.values.length > 0) {
         const availableFields = Object.keys(spec.data.values[0]);
-        
+
         // Track whether we can fully determine available fields from transforms.
         // If there are transforms whose output fields we can't predict, skip
         // field validation — removing encodings based on incomplete info is worse
@@ -1303,7 +1303,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
             }
           });
         }
-        
+
         console.log('🔧 VEGA-PREPROCESS: Available fields:', availableFields);
 
         if (hasUnknownTransformOutputs) {
@@ -1391,60 +1391,72 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
     // Fix 16: Adjust axis domains to prevent line extrapolation beyond data range
     // This fixes cases where domain starts at 0 but data starts at 1, causing lines to extend below visible area
-    const fixAxisDomainExtrapolation = (spec: any): any => {{
-      // Only apply to line and area charts that interpolate between points
-      const markType = spec.mark?.type || spec.mark;
-      if (!['line', 'area'].includes(markType)) {{
+    const fixAxisDomainExtrapolation = (spec: any): any => {
+      {
+        // Only apply to line and area charts that interpolate between points
+        const markType = spec.mark?.type || spec.mark;
+        if (!['line', 'area'].includes(markType)) {
+          {
+            return spec;
+          }
+        }
+
+        // Need data to check against
+        if (!spec.data?.values || !Array.isArray(spec.data.values) || spec.data.values.length === 0) {
+          {
+            return spec;
+          }
+        }
+
+        console.log('🔧 AXIS-DOMAIN-FIX: Checking for axis domain extrapolation issues');
+
+        ['x', 'y'].forEach(axis => {
+          {
+            const axisSpec = spec.encoding?.[axis];
+            if (!axisSpec || axisSpec.type !== 'quantitative') return;
+            if (!axisSpec.scale?.domain || !Array.isArray(axisSpec.scale.domain)) return;
+            if (axisSpec.scale.type === 'log') return; // Don't mess with log scales
+
+            const field = axisSpec.field;
+            if (!field) return;
+
+            // Get actual data range
+            const dataValues = spec.data.values
+              .map((d: any) => d[field])
+              .filter((v: any) => typeof v === 'number' && !isNaN(v) && isFinite(v));
+
+            if (dataValues.length === 0) return;
+
+            const dataMin = Math.min(...dataValues);
+            const dataMax = Math.max(...dataValues);
+            const [domainMin, domainMax] = axisSpec.scale.domain;
+
+            let adjusted = false;
+
+            // If domain extends below data range, clip it to data minimum
+            if (domainMin < dataMin) {
+              {
+                axisSpec.scale.domain[0] = dataMin;
+                console.log(`🔧 AXIS-DOMAIN-FIX: Adjusted ${axis}-axis domain minimum from ${domainMin} to ${dataMin} (data range starts here)`);
+                adjusted = true;
+              }
+            }
+
+            // If domain extends above data range, clip it to data maximum (with small padding)
+            if (domainMax > dataMax * 1.1) {
+              { // Allow 10% padding
+                const newMax = dataMax * 1.05; // Use 5% padding
+                axisSpec.scale.domain[1] = newMax;
+                console.log(`🔧 AXIS-DOMAIN-FIX: Adjusted ${axis}-axis domain maximum from ${domainMax} to ${newMax} (data range ends at ${dataMax})`);
+                adjusted = true;
+              }
+            }
+          }
+        });
+
         return spec;
-      }}
-
-      // Need data to check against
-      if (!spec.data?.values || !Array.isArray(spec.data.values) || spec.data.values.length === 0) {{
-        return spec;
-      }}
-
-      console.log('🔧 AXIS-DOMAIN-FIX: Checking for axis domain extrapolation issues');
-
-      ['x', 'y'].forEach(axis => {{
-        const axisSpec = spec.encoding?.[axis];
-        if (!axisSpec || axisSpec.type !== 'quantitative') return;
-        if (!axisSpec.scale?.domain || !Array.isArray(axisSpec.scale.domain)) return;
-        if (axisSpec.scale.type === 'log') return; // Don't mess with log scales
-
-        const field = axisSpec.field;
-        if (!field) return;
-
-        // Get actual data range
-        const dataValues = spec.data.values
-          .map((d: any) => d[field])
-          .filter((v: any) => typeof v === 'number' && !isNaN(v) && isFinite(v));
-
-        if (dataValues.length === 0) return;
-
-        const dataMin = Math.min(...dataValues);
-        const dataMax = Math.max(...dataValues);
-        const [domainMin, domainMax] = axisSpec.scale.domain;
-
-        let adjusted = false;
-
-        // If domain extends below data range, clip it to data minimum
-        if (domainMin < dataMin) {{
-          axisSpec.scale.domain[0] = dataMin;
-          console.log(`🔧 AXIS-DOMAIN-FIX: Adjusted ${axis}-axis domain minimum from ${domainMin} to ${dataMin} (data range starts here)`);
-          adjusted = true;
-        }}
-
-        // If domain extends above data range, clip it to data maximum (with small padding)
-        if (domainMax > dataMax * 1.1) {{ // Allow 10% padding
-          const newMax = dataMax * 1.05; // Use 5% padding
-          axisSpec.scale.domain[1] = newMax;
-          console.log(`🔧 AXIS-DOMAIN-FIX: Adjusted ${axis}-axis domain maximum from ${domainMax} to ${newMax} (data range ends at ${dataMax})`);
-          adjusted = true;
-        }}
-      }});
-
-      return spec;
-    }};
+      }
+    };
     // Fix 6: Handle rect charts with fixed y values that render as single rectangles
     const fixRectChartsWithFixedY = (spec: any): any => {
       if (!spec.mark || (spec.mark !== 'rect' && spec.mark.type !== 'rect')) {
@@ -2215,57 +2227,57 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
         // Check if any layer already has a proper color legend
         const hasExistingColorLegend = vegaSpec.layer.some(layer =>
-          layer.encoding?.color?.field && 
+          layer.encoding?.color?.field &&
           layer.encoding.color.legend !== null &&
           layer.encoding.color.legend !== false
         );
 
         if (hasExistingColorLegend) {
           console.log('🔧 VEGA-POST-PROCESS: Skipping legend fix - layer already has proper color legend');
-          return vegaSpec;
-        }
+        } else {
 
-        const layersWithHardcodedColors = vegaSpec.layer.filter(layer =>
-          layer.encoding?.color?.value || layer.mark?.color
-        );
+          const layersWithHardcodedColors = vegaSpec.layer.filter(layer =>
+            layer.encoding?.color?.value || layer.mark?.color
+          );
 
-        if (layersWithHardcodedColors.length > 0) {
-          // Create a synthetic dataset for the legend
-          const legendData: { series: string; color: string }[] = [];
-          vegaSpec.layer.forEach((layer, index) => {
-            const color = layer.encoding?.color?.value || layer.mark?.color;
-            const yField = layer.encoding?.y?.field;
+          if (layersWithHardcodedColors.length > 0) {
+            // Create a synthetic dataset for the legend
+            const legendData: { series: string; color: string }[] = [];
+            vegaSpec.layer.forEach((layer, index) => {
+              const color = layer.encoding?.color?.value || layer.mark?.color;
+              const yField = layer.encoding?.y?.field;
 
-            if (color && yField) {
-              legendData.push({
-                series: yField.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase()),
-                color: color
-              });
-            }
-          });
-
-          if (legendData.length > 0) {
-            // Add a legend layer
-            vegaSpec.layer.push({
-              data: { values: legendData },
-              mark: { type: 'point', size: 0, opacity: 0 },
-              encoding: {
-                color: {
-                  field: 'series',
-                  type: 'nominal',
-                  scale: {
-                    domain: legendData.map(d => d.series),
-                    range: legendData.map(d => d.color)
-                  },
-                  legend: { title: 'Metrics' }
-                }
+              if (color && yField) {
+                legendData.push({
+                  series: yField.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase()),
+                  color: color
+                });
               }
             });
+
+            if (legendData.length > 0) {
+              // Add a legend layer
+              vegaSpec.layer.push({
+                data: { values: legendData },
+                mark: { type: 'point', size: 0, opacity: 0 },
+                encoding: {
+                  color: {
+                    field: 'series',
+                    type: 'nominal',
+                    scale: {
+                      domain: legendData.map(d => d.series),
+                      range: legendData.map(d => d.color)
+                    },
+                    legend: { title: 'Metrics' }
+                  }
+                }
+              });
+            }
           }
         }
       }
 
-      // Fix invalid color names like "#green" 
+      // Fix invalid color names like "#green"
       try {
         let specStringForColorFix = JSON.stringify(vegaSpec);
         // Fix colors with # prefix that should be plain color names
@@ -2286,7 +2298,8 @@ export const vegaLitePlugin: D3RenderPlugin = {
       }
 
       // Ensure required properties exist
-      if (!vegaSpec.data && !vegaSpec.datasets) {
+      const layersHaveData = Array.isArray(vegaSpec.layer) && vegaSpec.layer.some((l: any) => l.data);
+      if (!vegaSpec.data && !vegaSpec.datasets && !layersHaveData) {
         throw new Error('Invalid Vega-Lite specification: missing data or datasets');
       }
 
@@ -3607,9 +3620,9 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
           if (isNumericField && !isParentRef) {
             vegaSpec.encoding.theta = {
-            field: calculatedField,
-            type: 'quantitative',
-            title: calculatedField.charAt(0).toUpperCase() + calculatedField.slice(1).replace('_', ' ')
+              field: calculatedField,
+              type: 'quantitative',
+              title: calculatedField.charAt(0).toUpperCase() + calculatedField.slice(1).replace('_', ' ')
             };
             console.log(`Added theta encoding with calculated field: "${calculatedField}"`);
           } else {
@@ -4016,14 +4029,14 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
       // Add timeout to detect hanging renders
       const embedPromise = vegaEmbed(renderContainer, embedSpec, embedOptions);
-      const timeoutPromise = new Promise((_, reject) => 
+      const timeoutPromise = new Promise((_, reject) =>
         setTimeout(() => reject(new Error('Vega-Lite render timeout after 15 seconds')), 15000)
       );
 
       console.log('🎯 VEGA-EMBED-CALL: Awaiting vegaEmbed...');
       const result = await Promise.race([embedPromise, timeoutPromise]);
       console.log('🎯 VEGA-EMBED-CALL: vegaEmbed completed successfully');
-      
+
       if (!result) {
         throw new Error('vegaEmbed returned null/undefined result');
       }
@@ -4768,13 +4781,13 @@ ${svgData}`;
           console.log('SVG content dimensions:', { svgWidth, svgHeight, viewBox });
 
           // Only apply responsive sizing if chart doesn't have explicit dimensions
-          
+
           // CRITICAL FIX: Signal completion one more time after all sizing is done
           const finalRenderCompleteEvent = new CustomEvent('vega-render-complete', {
             detail: { success: true, container: renderContainer, phase: 'sizing-complete' }
           });
           container.dispatchEvent(finalRenderCompleteEvent);
-          
+
           const hasExplicitWidth = vegaSpec.width && vegaSpec.width > 0;
           const hasExplicitHeight = vegaSpec.height && vegaSpec.height > 0;
 
