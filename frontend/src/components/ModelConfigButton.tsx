@@ -118,6 +118,7 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
     }, [currentModelId, capabilities, isPolling]);
 
     // CONSOLIDATED: Single effect for fetching model info
+    // Reset capabilitiesLoadedRef when modal closes so re-opens refetch
     useEffect(() => {
         // Debounce all fetches to prevent cascade
         const now = Date.now();
@@ -140,6 +141,9 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
                 }
             };
             fetchData();
+        } else if (!modalVisible) {
+            // Reset so the next modal open triggers a fresh fetch
+            capabilitiesLoadedRef.current = false;
         }
     }, [modalVisible, isPolling]);
 
@@ -170,8 +174,10 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
   // Fetch model capabilities
   const fetchModelCapabilities = async (specificModelId?: string, isModelChange: boolean = false) => {
     try {
-      const url = modelId ?
-        `/api/model-capabilities?model=${encodeURIComponent(modelId)}` :
+      // Use specificModelId if provided, then currentModelId state, then prop as fallback
+      const effectiveModelId = specificModelId || currentModelId || modelId;
+      const url = effectiveModelId ?
+        `/api/model-capabilities?model=${encodeURIComponent(effectiveModelId)}` :
         '/api/model-capabilities';
 
       const response = await fetch(url, { cache: 'no-cache' });
