@@ -72,6 +72,8 @@ class ChatSummary(BaseModel):
     messageCount: int
     createdAt: int
     lastActiveAt: int
+    delegateMeta: Optional[DelegateMeta] = None
+    _version: Optional[int] = None
 
 
 class ChatBulkSync(BaseModel):

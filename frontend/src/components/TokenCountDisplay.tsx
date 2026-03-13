@@ -946,6 +946,7 @@ export const TokenCountDisplay = memo(() => {
                     display: 'flex',
                     gap: '8px',
                     flexWrap: 'wrap',
+                    alignItems: 'center',
                     fontSize: '10px'
                 }}>
                     {breakdownItems}

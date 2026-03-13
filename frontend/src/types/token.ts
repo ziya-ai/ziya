@@ -15,5 +15,6 @@ export interface TokenCalculationResponse {
   skillTokens: Record<string, number>;
   additionalPromptTokens: number;
   overlappingFiles: string[];
+  astTokens: number;
   deduplicatedTokens: number;
 }

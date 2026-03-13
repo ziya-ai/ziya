@@ -523,7 +523,7 @@ const MoveToFolderMenu = ({
 
   // Recursive function to render folder menu items
   const renderFolderItems = (parentId = null, level = 0) => {
-    const foldersInLevel = foldersByParent.get(parentId) || [];
+    const foldersInLevel = (foldersByParent.get(parentId) || []).slice().sort((a, b) => a.name.localeCompare(b.name));
 
     return foldersInLevel.map(folder => (
       <React.Fragment key={folder.id}>
@@ -805,20 +805,20 @@ const MUIChatHistory = () => {
       return [...prev, ...missing];
     });
 
-    // If this conversation is inside a TaskPlan folder that was reparented
-    // under a source conversation, also expand that source conversation node.
-    if (conversation.folderId) {
-      const folder = folders.find(f => f.id === conversation.folderId);
-      const sourceId = folder?.taskPlan?.source_conversation_id;
-      if (sourceId) {
-        const sourceNodeId = `conv-${sourceId}`;
-        setExpandedNodes(prev =>
-          prev.includes(sourceNodeId) ? prev : [...prev, sourceNodeId]
-        );
-      }
-    }
   }, [currentConversationId, conversations, folders]);
 
+  // Auto-expand newly appeared TaskPlan folders and their source conversations
+  useEffect(() => {
+    folders.forEach(folder => {
+      const sourceId = folder.taskPlan?.source_conversation_id;
+      if (!sourceId) return;
+      setExpandedNodes(prev => {
+        const needsFolder = !prev.includes(folder.id);
+        if (!needsFolder) return prev;
+        return [...prev, folder.id];
+      });
+    });
+  }, [folders]);
   // Add keyboard shortcut to open debug modal (Ctrl+Shift+D)
   useEffect(() => {
     const handleKeyPress = (e: KeyboardEvent) => {
@@ -1544,18 +1544,11 @@ const MUIChatHistory = () => {
       setCurrentFolderId(nodeId);
     }
   };
-
   // Add handler for node expansion
   const handleNodeToggle = (event: React.SyntheticEvent, nodeIds: string[]) => {
-    console.log('Node toggle:', {
-      event: event.type,
-      nodeIds,
-      current: expandedNodes
-    });
-
     setExpandedNodes(nodeIds);
-    console.log('Updated expanded nodes:', nodeIds);
   };
+
 
 
   // Handle adding a new chat to a folder
@@ -1746,6 +1739,23 @@ const MUIChatHistory = () => {
       content: `Are you sure you want to delete this folder? All ${conversationsInFolder.length} conversation(s) within the folder will also be deleted.`,
       onOk: async () => {
         try {
+          // Collect this folder and all descendant folder IDs
+          const allFolderIds = new Set<string>();
+          const collectFolderIds = (folderId: string) => {
+            allFolderIds.add(folderId);
+            folders
+              .filter(f => f.parentId === folderId)
+              .forEach(child => collectFolderIds(child.id));
+          };
+          collectFolderIds(nodeId);
+
+          // Remove all conversations belonging to these folders
+          const updatedConversations = conversations.filter(
+            c => !c.folderId || !allFolderIds.has(c.folderId)
+          );
+          await db.saveConversations(updatedConversations);
+          setConversations(updatedConversations);
+
           await deleteFolder(nodeId);
           message.success('Folder deleted successfully');
         } catch (error) {
@@ -1984,7 +1994,7 @@ const MUIChatHistory = () => {
   const treeData = useMemo(() => {
     // Create a stable hash of inputs to detect actual changes
     const inputHash = JSON.stringify({
-      folders: folders.map(f => ({ id: f.id, name: f.name, parentId: f.parentId, isGlobal: f.isGlobal })),
+      folders: folders.map(f => ({ id: f.id, name: f.name, parentId: f.parentId, isGlobal: f.isGlobal, tpSrc: f.taskPlan?.source_conversation_id })),
       conversations: conversations.map(c => ({ id: c.id, title: c.title, folderId: c.folderId, isActive: c.isActive, lastAccessedAt: c.lastAccessedAt, isGlobal: c.isGlobal, ds: c.delegateMeta?.status })),
       pinnedFolders: Array.from(pinnedFolders)
     });
@@ -2076,32 +2086,52 @@ const MUIChatHistory = () => {
       }
     });
 
-    // Reparent TaskPlan folders under their source conversation.
-    // This makes swarm folders appear as children of the chat that spawned them.
-    const reparentedFolderIds = new Set<string>();
+    // Anchor TaskPlan folders as siblings immediately after their source
+    // conversation.  MUI TreeView can't expand conversation nodes, so we
+    // place swarm folders adjacent to their parent chat instead.
+    const anchoredFolderIds = new Set<string>();
+    const anchorFolder = (items: any[], folder: any, sourceConvId: string): boolean => {
+      const srcIdx = items.findIndex(n => n.id === `conv-${sourceConvId}`);
+      if (srcIdx !== -1) {
+        // Remove folder from wherever it currently sits in this list
+        const curIdx = items.indexOf(folder);
+        if (curIdx !== -1) items.splice(curIdx, 1);
+        // Re-find source index after possible splice shift
+        const newSrcIdx = items.findIndex(n => n.id === `conv-${sourceConvId}`);
+        items.splice(newSrcIdx + 1, 0, folder);
+        return true;
+      }
+      for (const item of items) {
+        if (item.children && anchorFolder(item.children, folder, sourceConvId)) return true;
+      }
+      return false;
+    };
     folders.forEach(folder => {
       const sourceConvId = folder.taskPlan?.source_conversation_id;
-      if (sourceConvId && convNodeMap.has(sourceConvId)) {
-        const folderNode = folderMap.get(folder.id);
-        if (folderNode) {
-          const sourceConvNode = convNodeMap.get(sourceConvId)!;
-          sourceConvNode.children.push(folderNode);
-          reparentedFolderIds.add(folder.id);
-        }
+      if (!sourceConvId) return;
+      const folderNode = folderMap.get(folder.id);
+      if (!folderNode) return;
+      if (anchorFolder(rootItems, folderNode, sourceConvId)) {
+        anchoredFolderIds.add(folder.id);
       }
     });
-    // Remove reparented folders from their original position (rootItems or parent folder)
-    if (reparentedFolderIds.size > 0) {
-      const removeReparented = (items: any[]) => {
+    // Deduplicate: anchored folders may appear twice (once from folder tree
+    // building, once from anchoring).  Keep only the anchored position.
+    if (anchoredFolderIds.size > 0) {
+      const removeDupes = (items: any[]) => {
+        const seen = new Set<string>();
         for (let i = items.length - 1; i >= 0; i--) {
-          if (items[i].folder && reparentedFolderIds.has(items[i].id)) {
-            items.splice(i, 1);
-          } else if (items[i].children) {
-            removeReparented(items[i].children);
+          if (items[i].folder && anchoredFolderIds.has(items[i].id)) {
+            if (seen.has(items[i].id)) {
+              items.splice(i, 1);
+            } else {
+              seen.add(items[i].id);
+            }
           }
+          if (items[i]?.children) removeDupes(items[i].children);
         }
       };
-      removeReparented(rootItems);
+      removeDupes(rootItems);
     }
 
     // Roll up conversation counts from subfolders into parent folders.
@@ -2220,7 +2250,29 @@ const MUIChatHistory = () => {
       return sorted;
     };
 
-    const result = sortRecursive(rootItems);
+    let result = sortRecursive(rootItems);
+
+    // Post-sort: re-anchor TaskPlan folders immediately after their source
+    // conversation. Sorting may have separated them. No recursion — anchored
+    // folders are always siblings of source convs, never nested deeper.
+    if (anchoredFolderIds.size > 0) {
+      const reanchor = (items: any[]) => {
+        for (const fid of anchoredFolderIds) {
+          const folderNode = folderMap.get(fid);
+          const sourceConvId = folderNode?.taskPlan?.source_conversation_id;
+          if (!sourceConvId) continue;
+          const srcIdx = items.findIndex(n => n.id === `conv-${sourceConvId}`);
+          const curIdx = items.findIndex(n => n.id === fid);
+          if (srcIdx !== -1 && curIdx !== -1 && curIdx !== srcIdx + 1) {
+            items.splice(curIdx, 1);
+            const newSrcIdx = items.findIndex(n => n.id === `conv-${sourceConvId}`);
+            items.splice(newSrcIdx + 1, 0, folderNode);
+          }
+        }
+      };
+      reanchor(result);
+    }
+
     lastTreeDataRef.current = result;
     return result;
   }, [conversations, folders, pinnedFolders]);

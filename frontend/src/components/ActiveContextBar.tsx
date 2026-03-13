@@ -3,9 +3,20 @@
  */
 import React from 'react';
 import { useProject } from '../context/ProjectContext';
+import { useTheme } from '../context/ThemeContext';
 import { CloseOutlined } from '@ant-design/icons';
 
 export const ActiveContextBar: React.FC = () => {
+  const { isDarkMode } = useTheme();
+
+  const t = {
+    barBg:     isDarkMode ? '#0d0d0d' : '#f9fafb',
+    barBorder: isDarkMode ? '#333'    : '#e5e7eb',
+    emptyText: isDarkMode ? '#666'    : '#9ca3af',
+    tokenText: isDarkMode ? '#888'    : '#6b7280',
+    trackBg:   isDarkMode ? '#333'    : '#e5e7eb',
+  };
+
   const {
     contexts,
     skills,
@@ -27,10 +38,10 @@ export const ActiveContextBar: React.FC = () => {
     return (
       <div style={{ 
         padding: '10px 12px', 
-        borderBottom: '1px solid #333', 
-        background: '#0d0d0d',
+        borderBottom: `1px solid ${t.barBorder}`,
+        background: t.barBg,
         fontSize: '12px',
-        color: '#666',
+        color: t.emptyText,
         fontStyle: 'italic'
       }}>
         No context selected
@@ -46,8 +57,8 @@ export const ActiveContextBar: React.FC = () => {
   return (
     <div style={{ 
       padding: '10px 12px', 
-      borderBottom: '1px solid #333', 
-      background: '#0d0d0d' 
+      borderBottom: `1px solid ${t.barBorder}`,
+      background: t.barBg,
     }}>
       
       {/* Context pills */}
@@ -119,12 +130,15 @@ export const ActiveContextBar: React.FC = () => {
       </div>
       
       {/* Token count and bar */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#888', marginBottom: '6px' }}>
-        <span>{tokenInfo ? Object.keys(tokenInfo.fileTokens).length : 0} files total</span>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: t.tokenText, marginBottom: '6px' }}>
+        <span>
+          {tokenInfo ? Object.keys(tokenInfo.fileTokens).length : 0} files
+          {tokenInfo?.astTokens ? ` · AST ${tokenInfo.astTokens.toLocaleString()}t` : ''}
+        </span>
         <span>{isCalculatingTokens ? 'calculating...' : `${totalTokens.toLocaleString()} tokens`}</span>
       </div>
       
-      <div style={{ height: '3px', background: '#333', borderRadius: '2px', overflow: 'hidden' }}>
+      <div style={{ height: '3px', background: t.trackBg, borderRadius: '2px', overflow: 'hidden' }}>
         <div style={{ 
           height: '100%', 
           width: `${percentage}%`, 

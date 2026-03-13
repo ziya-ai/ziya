@@ -485,6 +485,14 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
           if (data.type === 'connected') return;
 
           const { type, path: filePath, token_count: tokenCount } = data;
+
+          // AST indexing finished — notify ProjectContext to recalculate tokens
+          if (type === 'ast_indexing_complete') {
+            console.log(`📂 FILE_TREE_WS: AST indexing complete (${tokenCount} files)`);
+            window.dispatchEvent(new CustomEvent('astIndexingComplete', { detail: { filesProcessed: tokenCount } }));
+            return;
+          }
+
           if (!filePath || !type) return;
 
           // Scan complete — fetch the finished tree and clear progress state.

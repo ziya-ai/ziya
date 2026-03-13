@@ -447,7 +447,6 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     // Keep track of rendered messages for performance monitoring
     const renderedCountRef = useRef(0);
     const renderedSystemMessagesRef = useRef<Set<string>>(new Set());
-    const processedModelChangesRef = useRef<Set<string>>(new Set());
 
     // Track which conversations have received streaming content
     const conversationHasStreamedContent = useCallback((conversationId: string) => {
@@ -511,45 +510,6 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
             }
         }
     }, [isCurrentlyStreaming, streamingConversations, currentConversationId, recordManualScroll]);
-
-    // Update active streaming conversations reference
-    useEffect(() => {
-        // Create the handler function
-        const handleModelChange = (event: CustomEvent) => {
-            const { previousModel, newModel } = event.detail;
-
-            // Create a unique key for this model change to prevent duplicates
-            const changeKey = `${previousModel}->${newModel}`;
-
-            // Skip if we've already processed this exact change
-            if (processedModelChangesRef.current.has(changeKey)) {
-                return;
-            }
-            processedModelChangesRef.current.add(changeKey);
-
-            // Add system message about model change
-            if (previousModel && newModel) {
-                addMessageToConversation({
-                    role: 'system',
-                    content: `Model changed from ${previousModel} to ${newModel}`,
-                    modelChange: {
-                        from: previousModel,
-                        to: newModel,
-                        changeKey: changeKey
-                    }
-                }, currentConversationId);
-            }
-        };
-
-        // Add and remove event listener
-        window.addEventListener('modelChanged', handleModelChange as EventListener);
-        return () => {
-            // Reset processed changes when component unmounts
-            processedModelChangesRef.current.clear();
-            renderedSystemMessagesRef.current.clear();
-            window.removeEventListener('modelChanged', handleModelChange as EventListener);
-        };
-    }, [currentConversationId, addMessageToConversation]);
 
     // Loading indicator text based on progress
     const loadingText = isLoadingConversation

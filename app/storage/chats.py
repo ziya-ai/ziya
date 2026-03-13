@@ -104,6 +104,7 @@ class ChatStorage(BaseStorage[Chat]):
             # Extract _version from extra fields for polling comparisons
             chat_extra = chat.model_dump()
             version = chat_extra.get('_version')
+            version = version or chat.lastActiveAt
             summaries.append(ChatSummary(
                 id=chat.id,
                 title=chat.title,
@@ -114,6 +115,7 @@ class ChatStorage(BaseStorage[Chat]):
                 messageCount=len(chat.messages),
                 createdAt=chat.createdAt,
                 lastActiveAt=chat.lastActiveAt,
+                delegateMeta=chat.delegateMeta,
                 **({'_version': version} if version else {})
             ))
         return summaries
@@ -139,7 +141,9 @@ class ChatStorage(BaseStorage[Chat]):
             lastActiveAt=now
         )
         
-        self._write_json(self._chat_file(chat_id), chat.model_dump())
+        d = chat.model_dump()
+        d["_version"] = now
+        self._write_json(self._chat_file(chat_id), d)
         return chat
     
     def update(self, chat_id: str, data: ChatUpdate) -> Optional[Chat]:
@@ -150,11 +154,12 @@ class ChatStorage(BaseStorage[Chat]):
         update_dict = data.model_dump(exclude_unset=True)
         for key, value in update_dict.items():
             setattr(chat, key, value)
-        
         chat.lastActiveAt = int(time.time() * 1000)
-        self._write_json(self._chat_file(chat_id), chat.model_dump())
+        d = chat.model_dump()
+        d["_version"] = int(time.time() * 1000)
+        self._write_json(self._chat_file(chat_id), d)
         return chat
-    
+
     def delete(self, chat_id: str) -> bool:
         chat_file = self._chat_file(chat_id)
         if not chat_file.exists():
@@ -170,7 +175,9 @@ class ChatStorage(BaseStorage[Chat]):
         
         chat.messages.append(message)
         chat.lastActiveAt = int(time.time() * 1000)
-        self._write_json(self._chat_file(chat_id), chat.model_dump())
+        d = chat.model_dump()
+        d["_version"] = int(time.time() * 1000)
+        self._write_json(self._chat_file(chat_id), d)
         return chat
     
     def remove_context_from_all_chats(self, context_id: str) -> None:
