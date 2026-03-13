@@ -541,25 +541,26 @@ class CLI:
             current_time = time.time()
             time_since_last = current_time - self._last_ctrl_c_time
             
-            # Double tap within 1 second = exit
-            if time_since_last < 1.0:
-                event.app.exit(result='__exit__')
-                return
-            
             if self._active_task:
                 # Cancel the active streaming task
                 self._cancellation_requested = True
                 print("\n\033[33m^C - Cancelling operation...\033[0m")
+                # Reset double-tap timer so this doesn't count toward exit
+                self._last_ctrl_c_time = 0
                 event.app.exit(result='')
             elif event.app.current_buffer.text:
                 # Clear current input
                 event.app.current_buffer.reset()
+                # Reset double-tap timer so clearing text doesn't count toward exit
+                self._last_ctrl_c_time = 0
             else:
-                # Empty input - show exit hint
-                print("\033[90m(Press ^D or type /quit to exit)\033[0m")
-            
-            # Update last Ctrl+C time
-            self._last_ctrl_c_time = current_time
+                # Empty input - double tap within 1 second = exit
+                if time_since_last < 1.0:
+                    event.app.exit(result='__exit__')
+                    return
+                # First tap on empty prompt - show exit hint and start timer
+                print("\033[90m(Press ^C again to exit, or ^D / /quit)\033[0m")
+                self._last_ctrl_c_time = current_time
         
         @bindings.add(Keys.Any)
         def _track_keypress(event):
@@ -1112,9 +1113,10 @@ class CLI:
             
                 elif chunk_type == 'tool_start':
                     tool_name = chunk.get('tool_name', 'unknown')
+                    display_header = chunk.get('display_header', tool_name)
                     if md_renderer:
                         md_renderer.flush()
-                    print(f"\n\033[36m⚙ Executing {tool_name}...\033[0m", flush=True)
+                    print(f"\n\033[36m⚙ Executing {display_header}...\033[0m", flush=True)
             
                 elif chunk_type == 'tool_display':
                     if md_renderer:
@@ -1125,7 +1127,17 @@ class CLI:
                     args = chunk.get('args', {})
                 
                     # Build header with any available metadata
-                    header_parts = [tool_name]
+                    display_header = chunk.get('display_header')
+                    if not display_header:
+                        # Derive header from args for file tools
+                        normalized = tool_name.split('_', 1)[-1] if 'mcp_' in tool_name else tool_name
+                        if normalized in ('file_read', 'file_write', 'file_list'):
+                            path = args.get('path', '')
+                            label = normalized.replace('_', ' ')
+                            display_header = f"{label}: {path}" if path else label
+                        else:
+                            display_header = tool_name
+                    header_parts = [display_header]
                     metadata = []
                 
                     # Extract common metadata patterns from args

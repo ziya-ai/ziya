@@ -40,6 +40,7 @@ def get_fileio_prompt_section() -> str:
 
     safe_paths = policy.get("safe_write_paths", [])
     write_patterns = policy.get("allowed_write_patterns", [])
+    direct_write_mode = policy.get("direct_write_mode", "none")
 
     # Build human-readable list of writable targets
     writable_targets = []
@@ -74,6 +75,23 @@ def get_fileio_prompt_section() -> str:
             f"for design documents and state-tracking files."
         )
 
+    if direct_write_mode == "new_files":
+        lines.append(
+            "This project allows creating NEW files anywhere in the project "
+            "using `file_write`. You can create new files directly without "
+            "using git diffs. However, to modify EXISTING files you must "
+            "still use the git diff format."
+        )
+    elif direct_write_mode == "all_files":
+        lines.append(
+            "This project allows writing ANY file within the project scope "
+            "using `file_write`. You can create and overwrite files directly "
+            "without using git diffs. Use `file_read` to read a file, then "
+            "`file_write` to write back your changes (or use the `patch` "
+            "parameter for targeted edits). This replaces git diffs for all "
+            "project files."
+        )
+
     safe_list = ", ".join(f"`{p}`" for p in writable_targets)
     lines.append(
         f"Paths under {safe_list} are always writable. Use `.ziya/` for "
@@ -81,10 +99,15 @@ def get_fileio_prompt_section() -> str:
         f"logs, or any working files you need across tool iterations."
     )
 
-    lines.append(
-        "All other project source files require the standard git diff "
-        "format for modifications."
-    )
+    if direct_write_mode == "all_files":
+        lines.append(
+            "All project files are writable via `file_write`."
+        )
+    elif direct_write_mode != "new_files":
+        lines.append(
+            "All other project source files require the standard git diff "
+            "format for modifications."
+        )
 
     # Remind the model about the tools available
     lines.append(
