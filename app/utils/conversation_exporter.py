@@ -12,6 +12,26 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 
+def _viz_fingerprint(source: str) -> str:
+    """Content fingerprint for matching captured diagrams to code blocks.
+
+    Must stay in sync with the data-viz-source-hash attribute set by
+    D3Renderer.tsx.
+    """
+    normalized = source.strip()
+    return f"{len(normalized)}:{normalized[:64]}"
+
+
+# All visualization code-fence languages recognised by the exporter.
+# Mirror of frontend/src/constants/visualizationTypes.ts — the single
+# source of truth.  Update both when adding a new visualization type.
+_VIZ_TYPES = (
+    'graphviz', 'mermaid', 'vega-lite', 'd3', 'joint',
+    'circuitikz', 'packet', 'drawio', 'designinspector',
+)
+_VIZ_TYPES_RE = '|'.join(_VIZ_TYPES)
+
+
 def export_conversation_for_paste(
     messages: List[Dict[str, Any]],
     format_type: str = 'markdown',
@@ -36,17 +56,20 @@ def export_conversation_for_paste(
     Returns:
         Dictionary with exported content and metadata
     """
-    # Create diagram lookup for easy access
-    diagram_by_index = {}
+    # Create diagram lookup keyed by content fingerprint.
+    # Falls back to sourceHash sent from the frontend capture utility.
+    diagram_by_hash = {}
     if captured_diagrams:
         for diagram in captured_diagrams:
-            diagram_by_index[diagram.get('index', -1)] = diagram
+            h = diagram.get('sourceHash')
+            if h:
+                diagram_by_hash[h] = diagram
     
     if format_type == 'html':
-        content = _export_as_html(messages, target, version, model, provider, diagram_by_index)
+        content = _export_as_html(messages, target, version, model, provider, diagram_by_hash)
         filename = f"ziya_conversation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
     else:
-        content = _export_as_markdown(messages, target, version, model, provider, diagram_by_index)
+        content = _export_as_markdown(messages, target, version, model, provider, diagram_by_hash)
         filename = f"ziya_conversation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
     
     return {
@@ -56,7 +79,7 @@ def export_conversation_for_paste(
         "target": target,
         "size": len(content),
         "message_count": len(messages),
-        "diagrams_count": len(captured_diagrams) if captured_diagrams else 0
+        "diagrams_count": len(diagram_by_hash)
     }
 
 def _clean_tool_blocks(content: str) -> str:
@@ -178,7 +201,7 @@ def _export_as_markdown(
     version: str,
     model: str,
     provider: str,
-    diagram_by_index: Dict[int, Dict[str, Any]]
+    diagram_by_hash: Dict[str, Dict[str, Any]]
 ) -> str:
     """Export conversation as Markdown with embedded visualizations."""
     lines = []
@@ -187,14 +210,13 @@ def _export_as_markdown(
     lines.append("# Ziya Conversation Export")
     lines.append("")
     lines.append(f"**Exported:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    if diagram_by_index:
-        lines.append(f"**Visualizations:** {len(diagram_by_index)} diagram(s) embedded")
+    if diagram_by_hash:
+        lines.append(f"**Visualizations:** {len(diagram_by_hash)} diagram(s) embedded")
     lines.append("")
     lines.append("---")
     lines.append("")
     
     # Process each message
-    diagram_counter = 0
     for i, msg in enumerate(messages):
         role = msg.get('role', 'unknown')
         content = msg.get('content', '')
@@ -220,12 +242,10 @@ def _export_as_markdown(
         content = _process_content_for_export(content)
         
         # Process content to handle and embed visualizations
-        processed_content, diagrams_used = _embed_diagrams_in_markdown(
+        processed_content = _embed_diagrams_in_markdown(
             content, 
-            diagram_by_index,
-            diagram_counter
+            diagram_by_hash
         )
-        diagram_counter += diagrams_used
         
         lines.append(processed_content)
         
@@ -241,62 +261,38 @@ def _export_as_markdown(
 
 def _embed_diagrams_in_markdown(
     content: str,
-    diagram_by_index: Dict[int, Dict[str, Any]],
-    start_index: int
-) -> tuple[str, int]:
+    diagram_by_hash: Dict[str, Dict[str, Any]]
+) -> str:
     """
     Embed captured diagrams in markdown content.
-    
-    Returns:
-        Tuple of (processed_content, number_of_diagrams_used)
     """
-    diagrams_used = 0
-    
     # Find visualization code blocks and replace with embedded versions
-    viz_pattern = r'```(graphviz|mermaid|vega-lite|d3|joint|circuitikz)\n(.*?)```'
+    viz_pattern = r'\`\`\`(' + _VIZ_TYPES_RE + r')\n(.*?)\`\`\`'
     
     def embed_diagram(match):
-        nonlocal diagrams_used
         viz_type = match.group(1)
         source_code = match.group(2)
         
-        # Get the corresponding captured diagram
-        diagram_idx = start_index + diagrams_used
-        diagram = diagram_by_index.get(diagram_idx)
-        
-        diagrams_used += 1
-        
+        # Match to captured diagram by content fingerprint
+        fp = _viz_fingerprint(source_code)
+        diagram = diagram_by_hash.get(fp)
         if diagram and diagram.get('dataUri'):
-            # Create markdown with embedded image AND source code
             data_uri = diagram['dataUri']
-            
-            return f"""### 📊 {viz_type.title()} Visualization
-
-![{viz_type} diagram](data:image/svg+xml;base64,{data_uri.split(',')[1] if ',' in data_uri else data_uri})
-
-<details>
-<summary>View {viz_type} Source Code</summary>
-
-```{viz_type}
-{source_code}
-```
-
-</details>
-
-"""
+            b64 = data_uri.split(',')[1] if ',' in data_uri else data_uri
+            return f"![{viz_type} diagram](data:image/svg+xml;base64,{b64})\n"
         else:
             # No captured diagram available, keep original code block with note
             return f"""```{viz_type}
 {source_code}
 ```
 
-> ⚠️ *Visualization not captured. This is the source code - paste into a {viz_type} renderer to view.*
+> *Visualization not captured. This is the source code - paste into a {viz_type} renderer to view.*
 
 """
     
     processed = re.sub(viz_pattern, embed_diagram, content, flags=re.DOTALL)
     
-    return processed, diagrams_used
+    return processed
 
 
 def _export_as_html(
@@ -305,7 +301,7 @@ def _export_as_html(
     version: str,
     model: str,
     provider: str,
-    diagram_by_index: Dict[int, Dict[str, Any]]
+    diagram_by_hash: Dict[str, Dict[str, Any]]
 ) -> str:
     """Export conversation as standalone HTML with embedded styles and visualizations."""
     
@@ -432,7 +428,6 @@ def _export_as_html(
 """)
     
     # Process each message
-    diagram_counter = 0
     for msg in messages:
         role = msg.get('role', 'unknown')
         content = msg.get('content', '')
@@ -452,12 +447,10 @@ def _export_as_html(
 ''')
         
         # Process content (convert markdown to HTML, embed visualizations)
-        processed_content, diagrams_used = _embed_diagrams_in_html(
+        processed_content = _embed_diagrams_in_html(
             content,
-            diagram_by_index,
-            diagram_counter
+            diagram_by_hash
         )
-        diagram_counter += diagrams_used
         
         html_parts.append(processed_content)
         
@@ -480,33 +473,24 @@ def _export_as_html(
 
 def _embed_diagrams_in_html(
     content: str,
-    diagram_by_index: Dict[int, Dict[str, Any]],
-    start_index: int
-) -> tuple[str, int]:
+    diagram_by_hash: Dict[str, Dict[str, Any]]
+) -> str:
     """
     Embed captured diagrams directly in HTML content.
-    
-    Returns:
-        Tuple of (processed_content, number_of_diagrams_used)
     """
-    diagrams_used = 0
-    
     # Convert basic markdown to HTML first
     html = _markdown_to_html_basic(content)
     
     # Find visualization code blocks and replace with embedded diagrams
-    viz_pattern = r'<pre><code class="language-(graphviz|mermaid|vega-lite|d3|joint|circuitikz)">(.*?)</code></pre>'
+    viz_pattern = r'<pre><code class="language-(' + _VIZ_TYPES_RE + r')">(.*?)</code></pre>'
     
     def embed_diagram(match):
-        nonlocal diagrams_used
         viz_type = match.group(1)
         source_code = match.group(2)
         
-        # Get the corresponding captured diagram
-        diagram_idx = start_index + diagrams_used
-        diagram = diagram_by_index.get(diagram_idx)
-        
-        diagrams_used += 1
+        # Match to captured diagram by content fingerprint
+        fp = _viz_fingerprint(source_code)
+        diagram = diagram_by_hash.get(fp)
         
         if diagram and diagram.get('dataUri'):
             data_uri = diagram['dataUri']
@@ -515,49 +499,22 @@ def _embed_diagrams_in_html(
             
             # For SVG, we can embed inline for better quality
             if diagram.get('type') == 'svg' and ',' in data_uri:
-                # Extract base64 data and decode
                 try:
                     svg_base64 = data_uri.split(',')[1]
                     svg_content = base64.b64decode(svg_base64).decode('utf-8')
-                    
-                    return f'''
-<div class="visualization">
-    <div class="viz-caption">📊 {viz_type.title()} Visualization</div>
-    {svg_content}
-    <details>
-        <summary>View {viz_type} Source Code</summary>
-        <pre><code class="language-{viz_type}">{source_code}</code></pre>
-    </details>
-</div>
-'''
+                    return f'<div class="visualization">{svg_content}</div>'
                 except Exception as e:
-                    # Fallback to image tag if inline fails
                     pass
             
             # Fallback: use img tag with data URI
-            return f'''
-<div class="visualization">
-    <div class="viz-caption">📊 {viz_type.title()} Visualization</div>
-    <img src="{data_uri}" alt="{viz_type} diagram" width="{width}" height="{height}"/>
-    <details>
-        <summary>View {viz_type} Source Code</summary>
-        <pre><code class="language-{viz_type}">{source_code}</code></pre>
-    </details>
-</div>
-'''
+            return f'<div class="visualization"><img src="{data_uri}" alt="{viz_type} diagram" width="{width}" height="{height}"/></div>'
         else:
             # No captured diagram, show source with warning
-            return f'''
-<div class="visualization">
-    <div class="viz-caption">⚠️ {viz_type.title()} Visualization (not captured)</div>
-    <pre><code class="language-{viz_type}">{source_code}</code></pre>
-    <p style="font-size: 12px; color: #57606a;">Paste this code into a {viz_type} renderer to view.</p>
-</div>
-'''
+            return f'<pre><code class="language-{viz_type}">{source_code}</code></pre>'
     
     html = re.sub(viz_pattern, embed_diagram, html, flags=re.DOTALL)
     
-    return html, diagrams_used
+    return html
 
 
 def _markdown_to_html_basic(markdown: str) -> str:
@@ -744,7 +701,7 @@ def _create_footer(
         <p><strong>Generated by Ziya v{version}</strong></p>
         <p>Model: <code>{model}</code> | Provider: <code>{provider}</code></p>
         <p>Learn more: <a href="{ziya_url}">{ziya_url}</a></p>
-        <p><em>This conversation was exported from Ziya, an AI-powered code assistant.</em></p>
+        <p><em>This conversation was exported from Ziya — an AI client and orchestration harness for software engineering, system architecture, operations, and technical visualization.</em></p>
     </div>
 '''
     else:  # markdown
@@ -760,7 +717,7 @@ def _create_footer(
 
 **Learn more about Ziya:** [{ziya_url}]({ziya_url})
 
-*This conversation was exported from Ziya, an AI-powered code assistant that helps developers write, understand, and modify code with context-aware intelligence.*
+*This conversation was exported from Ziya — an AI client and orchestration harness for software engineering, system architecture, operations, and technical visualization. Ziya combines context-aware code intelligence with live system introspection, multi-model orchestration, and rich diagramming to support the full lifecycle from design through deployment.*
 """
 
 

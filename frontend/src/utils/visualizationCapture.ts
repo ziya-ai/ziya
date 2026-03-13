@@ -5,6 +5,8 @@
  * for embedding in exported conversations.
  */
 
+import { VISUALIZATION_TYPES } from '../constants/visualizationTypes';
+
 export interface CapturedVisualization {
     type: 'svg' | 'canvas' | 'image';
     dataUri: string;
@@ -12,7 +14,7 @@ export interface CapturedVisualization {
     width?: number;
     height?: number;
     vizType?: string; // 'mermaid', 'graphviz', 'd3', 'joint', etc.
-    index: number; // Position in conversation
+    sourceHash?: string; // Content fingerprint for matching to code blocks
 }
 
 /**
@@ -21,8 +23,10 @@ export interface CapturedVisualization {
 export async function captureAllVisualizations(): Promise<CapturedVisualization[]> {
     const captured: CapturedVisualization[] = [];
 
-    // Find all D3 renderer containers
-    const d3Containers = document.querySelectorAll('.d3-container, .vega-lite-container');
+    // Find only top-level D3 renderer containers.  D3Renderer nests two
+    // .d3-container divs; selecting only outermost avoids capturing each
+    // diagram twice.
+    const d3Containers = document.querySelectorAll('.d3-container:not(.d3-container .d3-container)');
 
     for (let i = 0; i < d3Containers.length; i++) {
         const container = d3Containers[i] as HTMLElement;
@@ -34,8 +38,12 @@ export async function captureAllVisualizations(): Promise<CapturedVisualization[
             // Try to find the source code (usually in a sibling or parent element)
             const sourceCode = findSourceCode(container);
 
-            // Capture the rendered output
-            const viz = await captureVisualization(container, vizType, sourceCode, i);
+            // Read the content fingerprint stamped by D3Renderer so the
+            // backend can match this capture to the right code block
+            // regardless of message filtering / round trimming.
+            const sourceHash = container.getAttribute('data-viz-source-hash') || undefined;
+
+            const viz = await captureVisualization(container, vizType, sourceCode, sourceHash);
 
             if (viz) {
                 captured.push(viz);
@@ -56,18 +64,18 @@ async function captureVisualization(
     container: HTMLElement,
     vizType: string,
     sourceCode: string | null,
-    index: number
+    sourceHash: string | undefined
 ): Promise<CapturedVisualization | null> {
     // Try to find SVG first (most common for D3/Mermaid/Graphviz)
     const svg = container.querySelector('svg');
     if (svg) {
-        return captureSVG(svg, vizType, sourceCode, index);
+        return captureSVG(svg, vizType, sourceCode, sourceHash);
     }
 
     // Try canvas (less common but possible)
     const canvas = container.querySelector('canvas');
     if (canvas) {
-        return captureCanvas(canvas as HTMLCanvasElement, vizType, sourceCode, index);
+        return captureCanvas(canvas as HTMLCanvasElement, vizType, sourceCode, sourceHash);
     }
 
     // No renderable content found
@@ -81,7 +89,7 @@ function captureSVG(
     svg: SVGElement,
     vizType: string,
     sourceCode: string | null,
-    index: number
+    sourceHash: string | undefined
 ): CapturedVisualization {
     // Clone the SVG to avoid modifying the original
     const clone = svg.cloneNode(true) as SVGElement;
@@ -128,7 +136,7 @@ function captureSVG(
         width,
         height,
         vizType,
-        index
+        sourceHash
     };
 }
 
@@ -139,7 +147,7 @@ function captureCanvas(
     canvas: HTMLCanvasElement,
     vizType: string,
     sourceCode: string | null,
-    index: number
+    sourceHash: string | undefined
 ): CapturedVisualization {
     // Convert canvas to PNG data URI
     const dataUri = canvas.toDataURL('image/png');
@@ -151,7 +159,7 @@ function captureCanvas(
         width: canvas.width,
         height: canvas.height,
         vizType,
-        index
+        sourceHash
     };
 }
 
@@ -163,18 +171,16 @@ function determineVizType(container: HTMLElement): string {
     const vizType = container.getAttribute('data-visualization-type');
     if (vizType) return vizType;
 
-    // Check class names
     const classList = container.className;
-    if (classList.includes('mermaid')) return 'mermaid';
-    if (classList.includes('graphviz')) return 'graphviz';
-    if (classList.includes('vega-lite')) return 'vega-lite';
-    if (classList.includes('joint')) return 'joint';
-    if (classList.includes('d2')) return 'd2';
 
-    // Check for plugin-specific containers
-    if (classList.includes('mermaid-renderer-container')) return 'mermaid';
-    if (classList.includes('graphviz-renderer-container')) return 'graphviz';
-    if (classList.includes('joint-renderer-container')) return 'joint';
+    // Match against the canonical visualization type list — checks both
+    // bare class names (e.g. "mermaid") and renderer-container suffixed
+    // names (e.g. "mermaid-renderer-container").
+    for (const vt of VISUALIZATION_TYPES) {
+        if (classList.includes(vt) || classList.includes(`${vt}-renderer-container`)) {
+            return vt;
+        }
+    }
 
     return 'd3'; // Default fallback
 }

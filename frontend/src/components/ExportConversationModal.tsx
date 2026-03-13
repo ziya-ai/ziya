@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { Modal, Radio, Button, message, Space, Typography, Divider, Progress, Switch, Segmented } from 'antd';
-import { CopyOutlined, DownloadOutlined, GithubOutlined, CloudOutlined, FileTextOutlined, LinkOutlined, PictureOutlined, CheckCircleOutlined } from '@ant-design/icons';
+import { Modal, Radio, Button, message, Space, Typography, Divider, Progress, Switch, Segmented, InputNumber, Select } from 'antd';
+import { CopyOutlined, DownloadOutlined, GithubOutlined, CloudOutlined, FileTextOutlined, LinkOutlined, PictureOutlined, CheckCircleOutlined, FilePdfOutlined, MessageOutlined, FilterOutlined, EyeOutlined } from '@ant-design/icons';
 import { useChatContext } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
 import { captureAllVisualizations } from '../utils/visualizationCapture';
+import { exportConversationAsPdf } from '../utils/pdfExport';
 
 const { Text, Paragraph } = Typography;
 
-type ExportMode = 'copy' | 'download' | 'paste';
+type ExportMode = 'copy' | 'download' | 'pdf' | 'paste';
 
 interface ExportConversationModalProps {
     visible: boolean;
@@ -21,9 +22,13 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
     const [target, setTarget] = useState<'public' | 'internal'>('public');
     const [isExporting, setIsExporting] = useState(false);
     const [exportedContent, setExportedContent] = useState<string | null>(null);
+    const [isPdfExporting, setIsPdfExporting] = useState(false);
     const [pasteUrl, setPasteUrl] = useState<string | null>(null);
     const [captureProgress, setCaptureProgress] = useState<number>(0);
     const [captureStatus, setCaptureStatus] = useState<string>('');
+    const [roundLimit, setRoundLimit] = useState<number | null>(null); // null = all rounds
+    const [includeHuman, setIncludeHuman] = useState(true);
+    const [includeCollapsed, setIncludeCollapsed] = useState(true);
     const [availableTargets, setAvailableTargets] = useState<any[]>([
         {
             id: 'public',
@@ -45,12 +50,94 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
             setCaptureStatus('');
             setExportMode('copy');
             setFormat('markdown');
+            setIsPdfExporting(false);
             setEmbedImages(false);
             setTarget('public');
+            setRoundLimit(null);
+            setIncludeHuman(true);
+            setIncludeCollapsed(true);
         } else {
             loadExportTargets();
         }
     }, [visible]);
+
+    /**
+     * Compute the total number of conversation rounds (human→assistant pairs).
+     */
+    const totalRounds = React.useMemo(() => {
+        let rounds = 0;
+        for (const m of currentMessages) {
+            if (m.role === 'human') rounds++;
+        }
+        return rounds;
+    }, [currentMessages]);
+
+    /**
+     * Apply scope & content filters to the raw message list.
+     *
+     *  - roundLimit: keep only the last N human→assistant exchanges
+     *  - includeHuman: when false, strip the user's prompts (keep AI only)
+     *  - includeCollapsed: when false, remove content inside
+     *    <details>…</details> blocks (tool output, reasoning steps, etc.)
+     */
+    const filteredMessages = React.useMemo(() => {
+        let msgs = [...currentMessages];
+
+        // Scope to last N rounds (a "round" = one human + following assistant msgs)
+        if (roundLimit !== null && roundLimit > 0) {
+            const humanIndices = msgs.reduce<number[]>((acc, m, i) => {
+                if (m.role === 'human') acc.push(i);
+                return acc;
+            }, []);
+            const startFrom = humanIndices[Math.max(0, humanIndices.length - roundLimit)];
+            if (startFrom !== undefined) {
+                msgs = msgs.slice(startFrom);
+            }
+        }
+
+        // Optionally exclude human messages
+        if (!includeHuman) {
+            msgs = msgs.filter(m => m.role !== 'human');
+        }
+
+        // Optionally strip collapsed / details content
+        if (!includeCollapsed) {
+            msgs = msgs.map(m => ({
+                ...m,
+                content: m.content
+                    ? m.content.replace(/<details[\s\S]*?<\/details>/gi, '')
+                             .replace(/```thinking:step-\d+\n[\s\S]*?```/g, '')
+                    : m.content
+            }));
+        }
+
+        return msgs;
+    }, [currentMessages, roundLimit, includeHuman, includeCollapsed]);
+
+    const handlePdfExport = async () => {
+        setIsPdfExporting(true);
+        setCaptureProgress(0);
+        setCaptureStatus('Preparing PDF…');
+        try {
+            await exportConversationAsPdf({
+                title: 'Ziya Session Transcript',
+                includeFooter: true,
+                roundLimit,
+                includeHuman,
+                includeCollapsed,
+                onProgress: (pct, status) => {
+                    setCaptureProgress(pct);
+                    setCaptureStatus(status);
+                },
+            });
+            message.success('PDF print dialog opened — choose "Save as PDF" to save.');
+        } catch (err: any) {
+            message.error(err?.message || 'PDF export failed');
+        } finally {
+            setIsPdfExporting(false);
+            setTimeout(() => { setCaptureProgress(0); setCaptureStatus(''); }, 2000);
+        }
+    };
 
     const loadExportTargets = async () => {
         try {
@@ -88,7 +175,7 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     conversation_id: currentConversationId,
-                    messages: currentMessages,
+                    messages: filteredMessages,
                     format: effectiveFormat,
                     target,
                     captured_diagrams: capturedDiagrams
@@ -204,6 +291,13 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
                     </Button>
                 );
             }
+        } else if (exportMode === 'pdf') {
+            buttons.push(
+                <Button key="pdf" type="primary" icon={<FilePdfOutlined />}
+                    onClick={handlePdfExport} disabled={currentMessages.length === 0} loading={isPdfExporting}>
+                    Export as PDF
+                </Button>
+            );
         } else if (exportMode === 'download') {
             if (exportedContent) {
                 buttons.push(
@@ -269,10 +363,72 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
     useEffect(() => {
         setExportedContent(null);
         setPasteUrl(null);
-    }, [exportMode, format, embedImages, target]);
+    }, [exportMode, format, embedImages, target, roundLimit, includeHuman, includeCollapsed]);
 
     const renderOptions = () => (
         <Space direction="vertical" style={{ width: '100%' }} size="middle">
+            {/* ── Scope & Content ────────────────────────────── */}
+            <div style={{
+                padding: '10px 14px',
+                background: isDarkMode ? '#1f1f1f' : '#f6f8fa',
+                borderRadius: 6,
+                border: `1px solid ${isDarkMode ? '#30363d' : '#d0d7de'}`
+            }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                    <FilterOutlined style={{ fontSize: 16, color: '#8c8c8c' }} />
+                    <Text strong>Scope & Content</Text>
+                </div>
+
+                {/* Round limit */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+                    <MessageOutlined style={{ fontSize: 14, color: '#8c8c8c' }} />
+                    <div style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 13 }}>Conversation range</Text>
+                    </div>
+                    <Select
+                        size="small"
+                        value={roundLimit === null ? 'all' : String(roundLimit)}
+                        onChange={(val) => setRoundLimit(val === 'all' ? null : Number(val))}
+                        style={{ width: 160 }}
+                        options={[
+                            { label: `All ${totalRounds} round${totalRounds !== 1 ? 's' : ''}`, value: 'all' },
+                            ...[1, 3, 5, 10, 20].filter(n => n < totalRounds).map(n => ({
+                                label: `Last ${n} round${n !== 1 ? 's' : ''}`,
+                                value: String(n)
+                            }))
+                        ]}
+                    />
+                </div>
+
+                {/* Include human messages */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+                    <span style={{ fontSize: 14, width: 14, textAlign: 'center' }}>👤</span>
+                    <div style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 13 }}>Include your prompts</Text>
+                        <div style={{ fontSize: 11, color: '#8c8c8c' }}>
+                            {includeHuman
+                                ? 'Full conversation — both your messages and AI responses'
+                                : 'AI responses only — your prompts will be omitted'}
+                        </div>
+                    </div>
+                    <Switch size="small" checked={includeHuman} onChange={setIncludeHuman} />
+                </div>
+
+                {/* Include collapsed content */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <EyeOutlined style={{ fontSize: 14, color: '#8c8c8c' }} />
+                    <div style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 13 }}>Include collapsed sections</Text>
+                        <div style={{ fontSize: 11, color: '#8c8c8c' }}>
+                            {includeCollapsed
+                                ? 'Everything exported — tool output, reasoning steps, and all details'
+                                : 'Collapsed content stripped — only what\'s visible on screen'}
+                        </div>
+                    </div>
+                    <Switch size="small" checked={includeCollapsed} onChange={setIncludeCollapsed} />
+                </div>
+            </div>
+
             {/* Image embedding toggle — shown for all modes */}
             <div style={{
                 display: 'flex',
@@ -300,6 +456,22 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
                 <Paragraph style={{ fontSize: 12, color: '#8c8c8c', margin: 0 }}>
                     Generates raw Markdown and copies it to your clipboard. Paste into any editor, README, wiki, or document.
                 </Paragraph>
+            )}
+
+            {exportMode === 'pdf' && (
+                <div style={{
+                    padding: '12px 14px',
+                    background: isDarkMode ? '#1f1f1f' : '#f6f8fa',
+                    borderRadius: 6,
+                    border: `1px solid ${isDarkMode ? '#30363d' : '#d0d7de'}`
+                }}>
+                    <Text strong>📄 PDF Export</Text>
+                    <Paragraph style={{ fontSize: 12, color: '#8c8c8c', margin: '8px 0 0' }}>
+                        Captures the conversation exactly as rendered on screen — including syntax highlighting,
+                        diagrams, images, math, and diffs — and opens your browser's print dialog.
+                        Choose <strong>"Save as PDF"</strong> as the destination to get a PDF file.
+                    </Paragraph>
+                </div>
             )}
 
             {exportMode === 'download' && (
@@ -428,12 +600,13 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
                 options={[
                     { label: '📋 Copy to Clipboard', value: 'copy' },
                     { label: '💾 Download File', value: 'download' },
+                    { label: '📄 Export as PDF', value: 'pdf' },
                     { label: '🔗 Paste Service', value: 'paste' },
                 ]}
                 style={{ marginBottom: 20 }}
             />
 
-            {isExporting
+            {isExporting || isPdfExporting
                 ? renderProgress()
                 : exportedContent
                     ? renderExportedPreview()
@@ -445,8 +618,12 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
                 <>
                     <Divider style={{ margin: '16px 0 12px' }} />
                     <Paragraph style={{ fontSize: 12, color: '#8c8c8c', margin: 0 }}>
-                        <strong>Includes:</strong> all conversation messages with formatting, code blocks, diffs,
+                        <strong>Includes:</strong>{' '}
+                        {roundLimit !== null ? `last ${roundLimit} round${roundLimit !== 1 ? 's' : ''}` : 'all rounds'}
+                        {!includeHuman && ' (AI responses only)'}
+                        {' '}with formatting, code blocks, diffs,
                         {embedImages ? ' embedded rendered visualizations,' : ' visualization source code,'}
+                        {!includeCollapsed && ' excluding collapsed sections,'}
                         {' '}and metadata footer.
                     </Paragraph>
                 </>
