@@ -1013,6 +1013,7 @@ class MCPClient:
         conversation_id = arguments.get('conversation_id', 'default')
         
         try:
+            unwrapped_tool_input = False
             # CRITICAL: Unwrap tool_input if present
             # Some models wrap parameters in {'tool_input': {...}}
             # while the MCP server expects unwrapped parameters
@@ -1032,6 +1033,7 @@ class MCPClient:
                 else:
                     arguments = tool_input
                 logger.debug(f"Unwrapped arguments: {arguments}")
+                unwrapped_tool_input = True
             
             # Validate arguments against tool schema before sending
             tool_schema = None
@@ -1040,8 +1042,9 @@ class MCPClient:
                     tool_schema = tool.inputSchema
                     break
             
-            
-            if tool_schema:
+            # Skip validation if we unwrapped tool_input — the inner content
+            # won't match the outer wrapper schema
+            if tool_schema and not unwrapped_tool_input:
                 validated_args = self._validate_and_convert_arguments(arguments, tool_schema)
                 
                 # Check if validation returned an error
@@ -1150,6 +1153,31 @@ class MCPClient:
         validated = {}
         properties = schema["properties"]
         required = schema.get("required", [])
+
+        # Auto-nest stray parameters into 'input' sub-object for action+input schemas.
+        # This catches cases where the manager's normalize didn't restructure
+        # (e.g., workspace-scoped routing that bypasses normalize).
+        if (isinstance(arguments, dict) and
+            "action" in properties and
+            "input" in properties and
+            isinstance(properties["input"], dict) and
+            properties["input"].get("type") == "object" and
+            "action" in arguments):
+            
+            schema_keys = set(properties.keys())
+            stray_keys = set(arguments.keys()) - schema_keys
+            if stray_keys:
+                restructured = {}
+                nested = {}
+                for k, v in arguments.items():
+                    if k in schema_keys:
+                        restructured[k] = v
+                    else:
+                        nested[k] = v
+                if nested:
+                    restructured.setdefault("input", {}).update(nested)
+                    logger.info(f"Auto-nested {list(stray_keys)} into 'input' during validation")
+                    arguments = restructured
         
         # Check required fields
         for field in required:
@@ -1184,6 +1212,19 @@ class MCPClient:
                     validated[key] = value
                 else:
                     logger.warning(f"Unexpected type for array field {key}: {type(value)}")
+                    validated[key] = value
+                continue
+            
+            # Handle object type - parse JSON strings into dicts
+            if expected_type == "object" and isinstance(value, str):
+                try:
+                    parsed = json.loads(value)
+                    if isinstance(parsed, dict):
+                        logger.debug(f"Parsed JSON string to object for {key}")
+                        validated[key] = parsed
+                    else:
+                        validated[key] = value
+                except (json.JSONDecodeError, TypeError):
                     validated[key] = value
                 continue
             

@@ -35,9 +35,23 @@ BUILTIN_TOOL_CATEGORIES: Dict[str, Dict[str, any]] = {
         "requires_dependencies": [],
         "tools": [],
     },
+    "ast": {
+        "name": "AST Code Intelligence",
+        "description": "Search and inspect the AST-indexed codebase — symbols, references, dependencies, file structure",
+        "enabled_by_default": True,
+        "requires_dependencies": [],
+        "tools": [],
+    },
     "nova_grounding": {
         "name": "Nova Web Search",
         "description": "Web search via Amazon Nova grounding — no external MCP server needed",
+        "enabled_by_default": True,
+        "requires_dependencies": [],
+        "tools": [],
+    },
+    "skills": {
+        "name": "Skill Discovery",
+        "description": "Model-driven skill discovery — load specialized instructions on demand",
         "enabled_by_default": True,
         "requires_dependencies": [],
         "tools": [],
@@ -92,6 +106,18 @@ def get_fileio_tools() -> List[Type[BaseMCPTool]]:
         return []
 
 
+def get_ast_tools() -> List[Type[BaseMCPTool]]:
+    """Get AST code intelligence tools."""
+    try:
+        from app.mcp.tools.ast_tools import (
+            ASTGetTreeTool, ASTSearchTool, ASTReferencesTool
+        )
+        return [ASTGetTreeTool, ASTSearchTool, ASTReferencesTool]
+    except ImportError as e:
+        logger.warning(f"Could not import AST tools: {e}")
+        return []
+
+
 def get_nova_grounding_tools() -> List[Type[BaseMCPTool]]:
     """Get Nova Web Search grounding tools."""
     try:
@@ -102,13 +128,25 @@ def get_nova_grounding_tools() -> List[Type[BaseMCPTool]]:
         return []
 
 
+def get_skill_tools() -> List[Type[BaseMCPTool]]:
+    """Get skill discovery tools."""
+    try:
+        from app.mcp.tools.skill_tools import GetSkillDetailsTool
+        return [GetSkillDetailsTool]
+    except ImportError as e:
+        logger.warning(f"Could not import skill tools: {e}")
+        return []
+
+
 def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
     """Get builtin tools for a specific category."""
     tool_getters = {
         "pcap_analysis": get_pcap_analysis_tools,
         "architecture_shapes": get_architecture_shapes_tools,
         "fileio": get_fileio_tools,
+        "ast": get_ast_tools,
         "nova_grounding": get_nova_grounding_tools,
+        "skills": get_skill_tools,
     }
 
     getter = tool_getters.get(category)

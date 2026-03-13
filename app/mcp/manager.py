@@ -5,8 +5,8 @@ MCP Manager for handling multiple MCP servers and integrating with Ziya.
 import asyncio
 import os
 import sys
+import re
 import json
-import time
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 
@@ -797,6 +797,36 @@ class MCPManager:
                 elif expected_type == 'boolean' and isinstance(value, str):
                     coerced[key] = value.lower() in ('true', '1', 'yes')
                 else:
+                    # Parse JSON strings into objects when schema expects object
+                    if expected_type == 'object' and isinstance(value, str):
+                        try:
+                            parsed = json.loads(value)
+                            if isinstance(parsed, dict):
+                                logger.debug(f"Coercing JSON string to object for {key}")
+                                coerced[key] = parsed
+                                continue
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                    # Parse JSON strings into arrays when schema expects array
+                    if expected_type == 'array' and isinstance(value, str):
+                        try:
+                            parsed = json.loads(value)
+                            if isinstance(parsed, list):
+                                logger.info(f"Coercing JSON string to array for {key}")
+                                coerced[key] = parsed
+                                continue
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                    # Parse JSON strings into arrays when schema expects array
+                    if expected_type == 'array' and isinstance(value, str):
+                        try:
+                            parsed = json.loads(value)
+                            if isinstance(parsed, list):
+                                logger.info(f"Coercing JSON-encoded string to array for {key}")
+                                coerced[key] = parsed
+                                continue
+                        except (json.JSONDecodeError, TypeError):
+                            pass
                     # Coerce non-string values to string when schema expects string
                     # Models frequently pass numeric IDs as bare numbers
                     if expected_type == 'string' and not isinstance(value, str):
@@ -807,6 +837,59 @@ class MCPManager:
                 coerced[key] = value
         
         return coerced
+
+    # Parameter names that represent a workspace/directory root override.
+    # When the user's project root is known and the caller hasn't set one
+    # of these, we auto-inject so tools search the right directory.
+    _WORKSPACE_PATH_PARAMS = frozenset({
+        'searchRoot',       # WorkspaceSearch
+    })
+
+    def _inject_workspace_defaults(self, tool_name: str, arguments: Dict[str, Any], workspace_path: str) -> Dict[str, Any]:
+        """Inject workspace path into tool args for non-workspace-scoped servers.
+
+        For tools hosted on servers that are NOT workspace-scoped (and
+        therefore share a single process across all projects), the tool
+        may have an optional directory-override parameter that should
+        default to the user's currently-selected project root rather
+        than the server's startup cwd.
+
+        Only injects when:
+        - The parameter exists in the tool's schema
+        - The parameter is NOT already set by the caller
+        - The parameter is NOT required (we don't clobber explicit user intent)
+        """
+        if not workspace_path or not isinstance(arguments, dict):
+            return arguments
+
+        # Find the tool schema
+        tool_schema = None
+        for client in self.clients.values():
+            if client.is_connected:
+                for tool in client.tools:
+                    if tool.name == tool_name:
+                        tool_schema = tool.inputSchema
+                        break
+                if tool_schema:
+                    break
+
+        if not tool_schema or 'properties' not in tool_schema:
+            return arguments
+
+        properties = tool_schema['properties']
+        required = set(tool_schema.get('required', []))
+
+        for param_name in self._WORKSPACE_PATH_PARAMS:
+            if (param_name in properties
+                    and param_name not in required
+                    and param_name not in arguments):
+                arguments[param_name] = workspace_path
+                logger.info(f"Injected workspace path into {tool_name}.{param_name}: {workspace_path}")
+
+        return arguments
+
+    # Patterns that indicate a JSON array was stringified and then wrapped
+    _JSON_ARRAY_STRING_RE = re.compile(r'^\[.*\]$')
 
     def _normalize_tool_parameters(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -825,6 +908,31 @@ class MCPManager:
         if not isinstance(arguments, dict):
             return arguments
         
+        # Fix double-wrapped array arguments.
+        # Models sometimes produce ['["**/src/**"]'] instead of ['**/src/**']
+        # when the schema declares an array-of-strings.  Detect and unwrap.
+        for key, value in list(arguments.items()):
+            if not isinstance(value, list) or not value:
+                continue
+            # Check if every element is a string that looks like a JSON array
+            if all(isinstance(v, str) and self._JSON_ARRAY_STRING_RE.match(v.strip()) for v in value):
+                try:
+                    unwrapped = []
+                    for v in value:
+                        parsed = json.loads(v.strip())
+                        if isinstance(parsed, list):
+                            unwrapped.extend(parsed)
+                        else:
+                            unwrapped.append(v)  # Keep original if not an array
+                    if unwrapped != value:
+                        logger.info(
+                            f"🔧 PARAM_FIX: Unwrapped double-encoded array "
+                            f"for {tool_name}.{key}: {value} → {unwrapped}"
+                        )
+                        arguments[key] = unwrapped
+                except (json.JSONDecodeError, TypeError):
+                    pass  # Leave as-is if parsing fails
+
         # CRITICAL: Handle JSON string arguments at the top level
         # Models sometimes pass the entire arguments as a JSON string
         # This can happen with native function calling when serialization is involved
@@ -867,11 +975,18 @@ class MCPManager:
             properties = tool_schema['properties']
             
             # Check if schema expects tool_input wrapper
+            # Detect wrapper schemas even when:
+            # - Additional metadata props like conversation_id are present
+            # - tool_input uses anyOf/additionalProperties instead of nested properties
             schema_uses_wrapper = (
-                len(properties) == 1 and 
                 "tool_input" in properties and
-                isinstance(properties["tool_input"], dict) and
-                "properties" in properties["tool_input"]
+                isinstance(properties["tool_input"], dict) and (
+                    "properties" in properties["tool_input"] or
+                    "anyOf" in properties["tool_input"] or
+                    "oneOf" in properties["tool_input"] or
+                    "additionalProperties" in properties["tool_input"] or
+                    properties["tool_input"].get("type") == "object"
+                )
             )
             
             # Check if parameters are wrapped
@@ -889,7 +1004,34 @@ class MCPManager:
                 logger.info(f"Auto-unwrapping tool_input for {tool_name}")
                 return arguments["tool_input"]
             
-            # Case 3: Both match - return as-is
+            # Case 3: Auto-nest stray parameters into 'input' sub-object
+            # Some MCP servers (e.g., builder-mcp TicketingReadActions) use an
+            # {action, input: {params...}} pattern. Models frequently flatten
+            # the params to root level. Detect and restructure.
+            if (isinstance(arguments, dict) and
+                "action" in properties and
+                "input" in properties and
+                isinstance(properties["input"], dict) and
+                properties["input"].get("type") == "object"):
+                
+                schema_keys = set(properties.keys())
+                arg_keys = set(arguments.keys())
+                stray_keys = arg_keys - schema_keys
+                
+                if stray_keys and "action" in arguments:
+                    restructured = {}
+                    nested = {}
+                    for k, v in arguments.items():
+                        if k in schema_keys:
+                            restructured[k] = v
+                        else:
+                            nested[k] = v
+                    if nested:
+                        restructured.setdefault("input", {}).update(nested)
+                        logger.info(f"Auto-nested {list(stray_keys)} into 'input' for {tool_name}")
+                        return restructured
+            
+            # Case 4: No transformation needed - return as-is
             return arguments
             
         except Exception as e:
@@ -1064,6 +1206,13 @@ class MCPManager:
                 
                 return result
         
+        # For non-workspace-scoped servers, inject workspace_path into
+        # known path-override parameters (e.g. WorkspaceSearch.searchRoot)
+        # so tools default to the user's project rather than the server's
+        # startup cwd.
+        if workspace_path and isinstance(arguments, dict):
+            arguments = self._inject_workspace_defaults(internal_tool_name, arguments, workspace_path)
+
         if self._is_repetitive_call(tool_name, arguments, conversation_id):
             logger.warning(f"🔍 MCP_MANAGER: Blocking repetitive tool call: {tool_name} with {arguments}")
             return {
