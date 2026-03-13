@@ -127,12 +127,11 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
   const [selectedModelCapabilities, setSelectedModelCapabilities] = useState<ModelCapabilities | null>(capabilities);
   const capabilitiesCheckedRef = useRef<boolean>(false);
 
-  // Debug logging for props and state changes - only when visible and only once
+  // Debug logging for props and state changes
   const propsLoggedRef = useRef(false);
 
   useEffect(() => {
     if (visible && !propsLoggedRef.current) {
-      // Use a one-time log to avoid spamming
       console.log('ModelConfigModal props:', {
         modelId: typeof modelId === 'object' ? JSON.stringify(modelId) : modelId,
         displayModelId,
@@ -147,14 +146,16 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
     }
   }, [visible, modelId, displayModelId, capabilities, currentSettings]);
 
-  // Log capabilities when they change
+  // Sync selectedModelCapabilities from capabilities prop whenever it changes.
+  // Reset the ref on close so we always pick up fresh capabilities on re-open.
   useEffect(() => {
-    if (capabilities && !capabilitiesCheckedRef.current) {
-      console.log('ModelConfigModal received capabilities:', capabilities);
+    if (!visible) {
+      capabilitiesCheckedRef.current = false;
+    } else if (capabilities) {
       setSelectedModelCapabilities(capabilities);
       capabilitiesCheckedRef.current = true;
     }
-  }, [capabilities]);
+  }, [visible, capabilities]);
 
   // Debug logging for form values - only log once when form changes
   const formLoggedRef = useRef(false);
