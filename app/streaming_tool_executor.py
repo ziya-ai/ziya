@@ -288,13 +288,18 @@ class StreamingToolExecutor:
             name = getattr(tool, 'name', 'unknown')
             description = getattr(tool, 'description', 'No description')
             
-            # Try multiple ways to get the schema
-            input_schema = getattr(tool, 'input_schema', None)
+            # Check metadata FIRST — it holds the real MCP server schema.
+            # getattr(tool, 'input_schema') returns a Pydantic model auto-generated
+            # from _run()'s signature, which shadows the real schema with a generic
+            # tool_input wrapper. The real schema has actual parameter names, enums,
+            # descriptions, and usage warnings that the LLM needs to see.
+            input_schema = None
+            if hasattr(tool, 'metadata') and isinstance(getattr(tool, 'metadata', None), dict):
+                input_schema = tool.metadata.get('input_schema')
+            if input_schema is None:
+                input_schema = getattr(tool, 'input_schema', None)
             if input_schema is None:
                 input_schema = getattr(tool, 'inputSchema', None)
-            # For SecureMCPTool, check metadata
-            if input_schema is None and hasattr(tool, 'metadata'):
-                input_schema = tool.metadata.get('input_schema', {})
             if input_schema is None:
                 input_schema = {}
             
@@ -950,6 +955,12 @@ class StreamingToolExecutor:
         all_tools = create_secure_mcp_tools()
         
         builtin_tool_names = {tool.name for tool in all_tools if isinstance(tool, DirectMCPTool)}
+        # Pre-compute set of internal tool names so tool_start/tool_display
+        # events can carry the flag for frontend display suppression.
+        internal_tool_names = {
+            tool.name for tool in all_tools
+            if hasattr(tool, 'metadata') and tool.metadata and tool.metadata.get('is_internal')
+        }
 
         # Merge delegate-injected tools (e.g. swarm coordination tools)
         if extra_tools:
@@ -968,6 +979,18 @@ class StreamingToolExecutor:
         logger.debug(f"🔍 BUILTIN_TOOLS: {sorted(builtin_tool_names)}")
         
         # Convert ALL tools to JSON-serializable format and deduplicate by name
+        # Build set of tool names where every input param is optional (empty {} is a valid call)
+        optional_only_tools: set = set()
+        for _t in all_tools:
+            _schema = getattr(_t, 'InputSchema', None)
+            if _schema is not None:
+                _fields = getattr(_schema, 'model_fields', {})
+                if _fields and all(not f.is_required() for f in _fields.values()):
+                    optional_only_tools.add(getattr(_t, 'name', ''))
+            elif not hasattr(_t, 'InputSchema'):
+                # No schema at all — can't tell, leave it out of the safe set
+                pass
+
         converted_tools = [self._convert_tool_schema(tool) for tool in all_tools]
         
         # Deduplicate tools by name (keep first occurrence)
@@ -1811,6 +1834,10 @@ class StreamingToolExecutor:
                                         })
                                 continue
 
+                            # Normalize fence spacing so opening fences always
+                            # have a preceding blank line for markdown rendering.
+                            text = self._normalize_fence_spacing(text, code_block_tracker)
+
                             assistant_text += text
                             
                             # HALLUCINATION DETECTION (backend defense-in-depth)
@@ -2127,8 +2154,8 @@ Please retry the tool call with complete, valid JSON parameters."""
                                         continue
                                 
                                 # Check for empty args dict - provide self-correcting feedback
-                                if not args or len(args) == 0:
-                                    logger.error(f"🔍 EMPTY_ARGS: {tool_name} called with no arguments")
+                                if (not args or len(args) == 0) and actual_tool_name not in optional_only_tools:
+                                    logger.debug(f"🔍 EMPTY_ARGS: {tool_name} called with no arguments")
                                     consecutive_empty_tool_calls += 1
                                     
                                     # Build tool-specific correction guidance
@@ -2256,7 +2283,8 @@ Retry with the 'command' parameter included."""
                                     'display_header': self._get_tool_header(tool_name, args),
                                     'args': args,
                                     'syntax': self._infer_syntax_hint(tool_name, args),
-                                    'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                                    'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms",
+                                    'is_internal': actual_tool_name in internal_tool_names,
                                 }
                                 
                                 # Check for user feedback before executing tool
@@ -2477,7 +2505,8 @@ Please try again or proceed without this tool."""
                                            'syntax': self._infer_syntax_hint(tool_name, args),
                                            'verified': is_verified,
                                            'verification_error': verification_error,
-                                           'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                                           'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms",
+                                           'is_internal': actual_tool_name in internal_tool_names,
                                        }
                                    else:
                                        # Security failure - suppress from user display but log
@@ -3440,6 +3469,44 @@ Please retry the tool call with valid JSON. Ensure:
         if was_in_block != tracker.get('in_block') or was_block_type != tracker.get('block_type'):
             logger.debug(f"🔍 TRACKER_STATE_CHANGE: {was_block_type or 'none'}[{was_in_block}] → {tracker.get('block_type') or 'none'}[{tracker.get('in_block')}]")
             logger.debug(f"🔍 TRACKER_TEXT: Processing text: {repr(text[:100])}")
+
+    # Pre-compiled pattern for fence normalization.
+    # Matches 3+ backticks followed by a language identifier (letter then word chars/hyphens)
+    # that are preceded by a non-newline character.
+    _FENCE_GLUED_RE = re.compile(r'([^\n])(`{3,}[a-zA-Z][\w-]*)')
+    # Matches a fence opening preceded by exactly one newline (needs a second).
+    _FENCE_SINGLE_NL_RE = re.compile(r'(?<!\n)\n(`{3,}[a-zA-Z][\w-]*)')
+
+    def _normalize_fence_spacing(self, text: str, code_block_tracker: dict) -> str:
+        """Ensure fenced code block openings are preceded by a blank line.
+
+        Markdown renderers require a blank line before a fenced code block
+        for it to be recognised as a block-level element.  Models sometimes
+        omit this, producing output like::
+
+            The failure spans four layers:```mermaid
+
+        This method normalizes such cases to::
+
+            The failure spans four layers:
+
+            ```mermaid
+
+        Only *opening* fences (those carrying a language tag) are touched.
+        Text inside an already-open code block is never modified.
+        """
+        if '`' not in text or code_block_tracker.get('in_block'):
+            return text
+
+        # Case 1: non-newline character directly before fence opening
+        normalized = self._FENCE_GLUED_RE.sub(r'\1\n\n\2', text)
+        # Case 2: single newline before fence opening (promote to blank line)
+        normalized = self._FENCE_SINGLE_NL_RE.sub(r'\n\n\1', normalized)
+
+        if normalized != text:
+            logger.debug(f"🔍 FENCE_NORMALIZE: Inserted blank line before code fence")
+
+        return normalized
 
     async def _continue_incomplete_code_block(
         self,

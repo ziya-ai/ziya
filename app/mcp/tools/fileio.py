@@ -78,16 +78,17 @@ def _get_project_root(kwargs: Dict[str, Any]) -> str:
     return get_project_root()
 
 
-def _check_write_allowed(relative_path: str, project_root: str) -> str:
+def _check_write_allowed(relative_path: str, project_root: str, file_exists: bool = True) -> str:
     """
     Check whether a write to *relative_path* is allowed.
 
-    Returns an empty string when allowed, or a human-readable rejection
+    Delegates to ``WritePolicyManager.is_direct_write_allowed`` which
+    honours the project's ``direct_write_mode``.  Returns an empty string when allowed, or a human-readable rejection
     message that includes the approved paths (so the model can adjust).
     """
     from app.config.write_policy import get_write_policy_manager
     pm = get_write_policy_manager()
-    allowed, reason = pm.check_write(relative_path, project_root)
+    allowed, reason = pm.is_direct_write_allowed(relative_path, project_root, file_exists=file_exists)
     return "" if allowed else reason
 
 
@@ -227,8 +228,10 @@ class FileWriteTool(BaseMCPTool):
         except ValueError as e:
             return {"error": True, "message": str(e)}
 
+        exists_before = resolved.exists()
+
         # Gate writes through the policy
-        rejection = _check_write_allowed(path_str, project_root)
+        rejection = _check_write_allowed(path_str, project_root, file_exists=exists_before)
         if rejection:
             return {"error": True, "message": rejection}
 
@@ -274,7 +277,6 @@ class FileWriteTool(BaseMCPTool):
             }
 
         # -- Full write / create -----------------------------------------
-        exists_before = resolved.exists()
 
         if create_only and exists_before:
             return {
