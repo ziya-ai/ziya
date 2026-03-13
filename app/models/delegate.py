@@ -63,6 +63,7 @@ class DelegateSpec(BaseModel):
     dependencies: List[str] = []
     skill_id: Optional[str] = None
     color: str = ""
+    project_root: Optional[str] = None  # Captured at request time; used in background task
 
 
 class DelegateMeta(BaseModel):

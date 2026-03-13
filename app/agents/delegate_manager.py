@@ -98,6 +98,7 @@ class DelegateManager:
 
         self._group_to_plan: Dict[str, str] = {}
         self.compaction_engine = CompactionEngine()
+        self._checkpoints: Dict[str, Any] = {}
 
     def rehydrate(self) -> int:
         """Rebuild in-memory state from persisted ChatGroup/Chat data.
@@ -125,6 +126,18 @@ class DelegateManager:
 
             # Skip terminal plans — nothing to rehydrate
             if plan.status in ("completed", "completed_partial", "cancelled"):
+                continue
+
+            # Plans that were "running" at shutdown are now stale.
+            # Mark them completed_partial so the frontend stops polling
+            # and the user can see they need attention.
+            if plan.status == "running":
+                plan.status = "completed_partial"
+                self._patch_group_task_plan(group.id, plan)
+                logger.info(
+                    f"♻️  Marked stale plan {plan.name!r} ({group.id[:8]}) "
+                    f"as completed_partial (was running at shutdown)"
+                )
                 continue
 
             # Derive a stable plan_id from the orchestrator's DelegateMeta,
@@ -251,7 +264,10 @@ class DelegateManager:
 
         # 1. Create folder (ChatGroup) with TaskPlan metadata
         group_storage = self._get_group_storage()
-        group = group_storage.create(ChatGroupCreate(name=f"⚡ {name}"))
+        group = group_storage.create(ChatGroupCreate(
+            name=f"⚡ {name}",
+            projectId=self.project_id,
+        ))
         group_id = group.id
 
         task_plan = TaskPlan(
@@ -294,11 +310,18 @@ class DelegateManager:
         context_ids: Dict[str, str] = {}
 
         for spec in delegate_specs:
+            ctx_id = None
             # 3a. Scoped Context for the delegate's files
-            ctx_id: Optional[str] = None
             if spec.files:
-                ctx = self._get_context_storage().create(ContextCreate(
-                    name=f"[D] {spec.name}",
+                # Reuse existing delegate context with same name to avoid duplicates
+                ctx_storage = self._get_context_storage(spec.project_root)
+                ctx_name = f"[D] {spec.name}"
+                existing = next(
+                    (c for c in ctx_storage.list() if c.name == ctx_name),
+                    None,
+                )
+                ctx = existing or ctx_storage.create(ContextCreate(
+                    name=ctx_name,
                     files=spec.files,
                 ))
                 ctx_id = ctx.id
@@ -811,13 +834,16 @@ class DelegateManager:
                             )
                     elif ctype == "tool_start":
                         header = chunk.get("display_header", chunk.get("tool_name", "tool"))
-                        accumulated += f"\n\n🔧 **{header}**\n"
+                        tool_nm = chunk.get("tool_name", "")
+                        if not tool_nm.startswith("swarm_"):
+                            accumulated += f"\n\n🔧 **{header}**\n"
                         await delegate_stream_relay.push(
                             spec.conversation_id or did, chunk
                         )
                     elif ctype == "tool_display":
                         result = chunk.get("result", "")
-                        if result:
+                        tool_nm = chunk.get("tool_name", "")
+                        if result and not tool_nm.startswith("swarm_"):
                             accumulated += f"\n```\n{result[:2000]}\n```\n"
                         await delegate_stream_relay.push(
                             spec.conversation_id or did, chunk
@@ -952,6 +978,13 @@ class DelegateManager:
         from app.streaming_tool_executor import StreamingToolExecutor
         from app.agents.models import ModelManager
         from app.server import build_messages_for_streaming
+        from app.context import get_project_root
+        from app.context import set_project_root
+
+        project_root = spec.project_root or get_project_root()
+        # Set the ContextVar so all downstream calls (extract_codebase, etc.)
+        # resolve files against the correct user project, not Ziya's own root.
+        set_project_root(project_root)
 
         endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
         if endpoint != "bedrock":
@@ -995,7 +1028,6 @@ class DelegateManager:
             get_manager=lambda: self,
         )
 
-        project_root = os.environ.get("ZIYA_USER_CODEBASE_DIR")
         async for chunk in executor.stream_with_tools(
             lc_messages, conversation_id=conv_id, project_root=project_root,
             is_delegate=True, extra_tools=swarm_tools,
@@ -1014,12 +1046,12 @@ class DelegateManager:
         from app.storage.groups import ChatGroupStorage
         return ChatGroupStorage(self.project_dir)
 
-    def _get_context_storage(self):
+    def _get_context_storage(self, project_root: Optional[str] = None):
         from app.storage.contexts import ContextStorage
         from app.services.token_service import TokenService
         import os
         storage = ContextStorage(self.project_dir, TokenService())
-        pp = os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
+        pp = project_root or os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
         if pp:
             storage.set_project_path(pp)
         return storage
@@ -1036,6 +1068,7 @@ class DelegateManager:
                     d = g.model_dump()
                     d["taskPlan"] = task_plan.model_dump()
                     d["systemInstructions"] = task_plan.description
+                    d["updatedAt"] = int(time.time() * 1000)
                     gf.groups[i] = ChatGroup(**d)
                     break
             gs._write_groups_file(gf)
@@ -1050,6 +1083,8 @@ class DelegateManager:
                 return
             d = chat.model_dump()
             d["delegateMeta"] = meta.model_dump()
+            d["lastActiveAt"] = int(time.time() * 1000)
+            d["_version"] = int(time.time() * 1000)
             cs._write_json(cs._chat_file(chat_id), d)
 
     def _patch_chat_crystal(
@@ -1065,6 +1100,8 @@ class DelegateManager:
             dm["crystal"] = crystal.model_dump()
             dm["status"] = "crystal"
             d["delegateMeta"] = dm
+            d["lastActiveAt"] = int(time.time() * 1000)
+            d["_version"] = int(time.time() * 1000)
             cs._write_json(cs._chat_file(chat_id), d)
 
     def _patch_chat_status(self, chat_id: str, status: str) -> None:
@@ -1077,6 +1114,8 @@ class DelegateManager:
             dm = d.get("delegateMeta", {})
             dm["status"] = status
             d["delegateMeta"] = dm
+            d["lastActiveAt"] = int(time.time() * 1000)
+            d["_version"] = int(time.time() * 1000)
             cs._write_json(cs._chat_file(chat_id), d)
 
     # ------------------------------------------------------------------
@@ -1666,8 +1705,15 @@ class DelegateManager:
             ctx_id = None
             if spec.files:
                 from app.models.context import ContextCreate
-                ctx = self._get_context_storage().create(ContextCreate(
-                    name=f"[D] {spec.name}",
+                # Reuse existing delegate context with same name to avoid duplicates
+                ctx_storage = self._get_context_storage(spec.project_root)
+                ctx_name = f"[D] {spec.name}"
+                existing = next(
+                    (c for c in ctx_storage.list() if c.name == ctx_name),
+                    None,
+                )
+                ctx = existing or ctx_storage.create(ContextCreate(
+                    name=ctx_name,
                     files=spec.files,
                 ))
                 ctx_id = ctx.id
