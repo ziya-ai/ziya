@@ -111,7 +111,10 @@ const DelegateLaunchButton: React.FC<DelegateLaunchButtonProps> = ({
         `/api/v1/projects/${currentProject.id}/groups/new/launch-delegates`,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(currentProject?.path ? { 'X-Project-Root': currentProject.path } : {}),
+          },
           body: JSON.stringify({
             name: taskSpec.name,
             description: taskSpec.description,
