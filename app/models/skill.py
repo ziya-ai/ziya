@@ -33,6 +33,8 @@ class Skill(BaseModel):
     # Discovery metadata
     source: Optional[str] = None  # 'builtin', 'custom', 'project', 'user'
     allowImplicitInvocation: bool = True
+    # Visibility: 'model_discoverable' or 'user_selectable'
+    visibility: Optional[str] = None
     # agentskills.io spec fields
     keywords: Optional[List[str]] = None
     license: Optional[str] = None
