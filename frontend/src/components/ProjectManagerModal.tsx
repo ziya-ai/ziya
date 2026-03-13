@@ -205,6 +205,7 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     project_id: settingsId,
+                    direct_write_mode: writePolicy.direct_write_mode || 'none',
                     allowed_write_patterns: writePolicy.allowed_write_patterns,
                     safe_write_paths: writePolicy.safe_write_paths,
                 })
@@ -257,6 +258,44 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
                         type="info"
                         showIcon
                     />
+
+                    <div>
+                        <strong>Direct File Write Mode</strong>
+                        <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+                            Controls whether the AI can write files directly within this project using <code>file_write</code>,
+                            beyond the safe paths and patterns above. Shell write restrictions are unaffected.
+                        </div>
+                        <div style={{ display: 'flex', gap: 8, marginBottom: 4 }}>
+                            {([
+                                { value: 'none', label: 'No files', desc: 'Only safe paths + patterns (default)' },
+                                { value: 'new_files', label: 'New files', desc: 'Can create new files anywhere in project' },
+                                { value: 'all_files', label: 'All files', desc: 'Can create and overwrite any project file' },
+                            ] as const).map(opt => {
+                                const isActive = (writePolicy.direct_write_mode || 'none') === opt.value;
+                                return (
+                                    <div
+                                        key={opt.value}
+                                        onClick={() => setWritePolicy(prev => ({ ...prev, direct_write_mode: opt.value }))}
+                                        style={{
+                                            flex: 1,
+                                            padding: '8px 12px',
+                                            borderRadius: 6,
+                                            border: `1.5px solid ${isActive ? '#1890ff' : (isDarkMode ? '#303030' : '#d9d9d9')}`,
+                                            backgroundColor: isActive ? (isDarkMode ? '#111d2c' : '#e6f7ff') : 'transparent',
+                                            cursor: 'pointer',
+                                            textAlign: 'center',
+                                            transition: 'all 0.2s',
+                                        }}
+                                    >
+                                        <div style={{ fontWeight: isActive ? 600 : 400, fontSize: 13 }}>{opt.label}</div>
+                                        <div style={{ fontSize: 11, color: '#888', marginTop: 2 }}>{opt.desc}</div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+
+                    <Divider style={{ margin: '8px 0' }} />
 
                     <div>
                         <strong>Allowed Write Patterns</strong>
