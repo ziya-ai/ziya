@@ -19,6 +19,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 DEFAULT_WRITE_POLICY = {
+    # Controls whether file_write can operate beyond safe paths + patterns.
+    # "none" = only safe paths and patterns (default)
+    # "new_files" = also allow creating new files anywhere in project
+    # "all_files" = allow writing any file within the project
+    "direct_write_mode": "none",
     "safe_write_paths": [
         ".ziya/",
         "/tmp/",
@@ -164,6 +169,46 @@ class WritePolicyManager:
         self._ensure_loaded_for_root(root)
         return self._check_path(target_path, root)
 
+    def is_direct_write_allowed(
+        self,
+        target_path: str,
+        project_root: str = "",
+        file_exists: bool = True,
+    ) -> Tuple[bool, str]:
+        """Check if a direct file_write is allowed, considering direct_write_mode.
+
+        Unlike ``is_write_allowed`` (used by the shell server), this method
+        also honours the ``direct_write_mode`` setting so the file_write
+        tool can create/overwrite files within the project when the user
+        has opted in.
+
+        Returns (allowed, reason) — *reason* is empty when allowed.
+        """
+        root = (
+            project_root
+            or self._project_root
+            or os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
+        )
+        self._ensure_loaded_for_root(root)
+
+        # Always allow if the base policy already permits it
+        if self._check_path(target_path, root):
+            return True, ""
+
+        mode = self._policy.get("direct_write_mode", "none")
+        if mode == "none":
+            return self.check_write(target_path, root)
+
+        # Resolve and ensure the target is inside the project root
+        if root and self._is_within_project(target_path, root):
+            if mode == "all_files":
+                return True, ""
+            if mode == "new_files" and not file_exists:
+                return True, ""
+
+        # Fall back to the standard policy check
+        return self.check_write(target_path, root)
+
     def check_write(self, target_path: str, project_root: str = "") -> Tuple[bool, str]:
         root = project_root or self._project_root or os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
         self._ensure_loaded_for_root(root)
@@ -192,6 +237,19 @@ class WritePolicyManager:
             self.load_for_project(project_id, self._project_root or "")
 
     # -- Internal --------------------------------------------------------
+
+    def _is_within_project(self, target_path: str, project_root: str) -> bool:
+        """Return True if *target_path* resolves to somewhere inside *project_root*."""
+        if not project_root:
+            return False
+        raw = target_path.strip().strip("'\"")
+        expanded = os.path.expanduser(raw)
+        resolved = (
+            os.path.join(project_root, expanded)
+            if not os.path.isabs(expanded)
+            else expanded
+        )
+        return os.path.normpath(resolved).startswith(os.path.normpath(project_root))
 
     def _check_path(self, target_path: str, project_root: str) -> bool:
         if not target_path:
