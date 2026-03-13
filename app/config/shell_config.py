@@ -28,7 +28,14 @@ DEFAULT_SHELL_CONFIG = {
         # Compressed file viewing
         "zcat", "zgrep", "zless",
         # Network diagnostics
-        "dig", "host", "nslookup"
+        "dig", "host", "nslookup",
+        # Shell flow-control keywords (needed for compound commands split on ; && ||)
+        "for", "while", "until", "select",
+        "if", "then", "else", "elif", "fi",
+        "do", "done",
+        "case", "esac", "in",
+        "function", "return", "break", "continue",
+        "true", "false", "test", "[", "[[", "]", "]]"
     ],
     "gitOperationsEnabled": True,
     "safeGitOperations": [
