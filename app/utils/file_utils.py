@@ -118,6 +118,11 @@ def read_file_content(file_path: str) -> Optional[str]:
             logger.info(f"File {file_path} has specialized tool support - adding context note")
             return get_tool_backed_file_context(file_path)
         
+        # File doesn't exist yet (e.g. a delegate output target not yet created)
+        if not os.path.exists(file_path):
+            logger.debug(f"File not found (may be a future output target): {file_path}")
+            return None
+
         # Check if it's a document file first
         from app.utils.document_extractor import is_document_file, extract_document_text
         if is_document_file(file_path):
