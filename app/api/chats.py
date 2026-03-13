@@ -198,10 +198,20 @@ async def bulk_sync_chats(project_id: str, data: ChatBulkSync):
                 existing_ver = existing_extra.get('_version') or existing.lastActiveAt or 0
 
                 if incoming_ver >= existing_ver:
-                    # Overwrite with incoming data
+                    merged = chat_data.model_dump()
+                    if merged.get('delegateMeta') is None and existing.delegateMeta is not None:
+                        merged['delegateMeta'] = existing.delegateMeta.model_dump() \
+                            if hasattr(existing.delegateMeta, 'model_dump') \
+                            else existing.delegateMeta
+                    # Preserve groupId when frontend sends folderId instead
+                    if merged.get('groupId') is None and existing.groupId is not None:
+                        merged['groupId'] = existing.groupId
+                    # Map frontend's folderId to server's groupId if present
+                    if merged.get('folderId') and not merged.get('groupId'):
+                        merged['groupId'] = merged['folderId']
                     storage._write_json(
                         storage._chat_file(chat_data.id),
-                        chat_data.model_dump()
+                        merged
                     )
                     results["updated"] += 1
                 else:

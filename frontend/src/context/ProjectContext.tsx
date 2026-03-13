@@ -107,6 +107,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // Token calculation
   const [tokenInfo, setTokenInfo] = useState<TokenCalculationResponse | null>(null);
   const [isCalculatingTokens, setIsCalculatingTokens] = useState(false);
+  const [astRevision, setAstRevision] = useState(0);
   
   // Initialize - load current project
   useEffect(() => {
@@ -258,6 +259,15 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     return Array.from(ids);
   }, [activeSkillIds, skills]);
 
+  // Bump astRevision when background AST indexing completes.
+  // This is fired by FolderContext when the ws/file-tree WebSocket
+  // delivers an ast_indexing_complete event from the backend.
+  useEffect(() => {
+    const handler = () => setAstRevision(r => r + 1);
+    window.addEventListener('astIndexingComplete', handler);
+    return () => window.removeEventListener('astIndexingComplete', handler);
+  }, []);
+
   useEffect(() => {
     if (!currentProject) {
       setTokenInfo(null);
@@ -290,7 +300,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     // Debounce calculation
     const timeout = setTimeout(calculateTokens, 300);
     return () => clearTimeout(timeout);
-  }, [currentProject?.id, activeFiles, activeContextIds, activeSkillIds, additionalFiles, additionalPrompt]);
+  }, [currentProject?.id, activeFiles, activeContextIds, activeSkillIds, additionalFiles, additionalPrompt, astRevision]);
   
   // Project actions
   const switchProject = useCallback(async (projectId: string) => {

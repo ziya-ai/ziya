@@ -563,37 +563,6 @@ ${errorDetail}
             _timestamp: Date.now()
         };
         addMessageToConversation(errorMessage, conversationId);
-
-        // Attach click handler to the retry button after React renders it
-        if (isAuthError) {
-            setTimeout(() => {
-                const retryButton = document.querySelector('.auth-error-retry-button') as HTMLButtonElement;
-                if (retryButton && !retryButton.dataset.handlerAttached) {
-                    retryButton.dataset.handlerAttached = 'true';
-                    retryButton.addEventListener('click', async () => {
-                        console.log('Auth error retry button clicked for conversation:', conversationId);
-
-                        // Trigger a new request with the same conversation
-                        // This will pick up fresh credentials if mwinit was run
-                        try {
-                            // Dispatch an event to trigger retry from the main UI
-                            window.dispatchEvent(new CustomEvent('retryAuthError', {
-                                detail: { conversationId }
-                            }));
-
-                            // Show feedback that retry is happening
-                            retryButton.textContent = '🔄 Retrying...';
-                            retryButton.disabled = true;
-                            retryButton.style.opacity = '0.6';
-                            retryButton.style.cursor = 'not-allowed';
-                        } catch (error) {
-                            console.error('Failed to trigger retry:', error);
-                            retryButton.textContent = '❌ Retry Failed';
-                        }
-                    });
-                }
-            }, 100);
-        }
     } else {
         // Show as popup for short messages
         if (messageType === 'error') {
@@ -670,6 +639,7 @@ export const sendPayload = async (
 ): Promise<string> => {
     let eventSource: any = null;
     let currentContent = '';
+    let readerRef: ReadableStreamDefaultReader<Uint8Array> | null = null;
     let containsDiff = false;
     let errorOccurred = false;
     let errorAlreadyDisplayed = false;  // Track if we've shown an error to prevent duplicates
@@ -703,6 +673,9 @@ export const sendPayload = async (
     };
 
     const flushStreamedContent = () => {
+        // Guard against post-abort flushes — once aborted, no more React state updates
+        if (isAborted) return;
+
         if (_streamRafId !== null || _streamFallbackId !== null) return; // already scheduled
         _streamRafId = requestAnimationFrame(() => {
             _doFlush();
@@ -762,6 +735,12 @@ export const sendPayload = async (
             console.log(`Aborting stream for conversation: ${conversationId}`);
             abortController.abort();
             isAborted = true;
+
+            // Forcefully close the stream reader so reader.read() rejects immediately.
+            // This doesn't depend on browser AbortSignal propagation through ReadableStream,
+            // which can be delayed — especially when no data is flowing (deep thinking).
+            try { readerRef?.cancel(); } catch (_) { /* stream may already be closed */ }
+
 
             console.log('Sending abort notification to server');
             // Also notify the server about the abort
@@ -860,6 +839,7 @@ export const sendPayload = async (
 
         // Use ReadableStream API for more reliable streaming
         const reader = response.body.getReader();
+        readerRef = reader;
         const decoder = new TextDecoder();
         let buffer = ''; // Buffer for incomplete SSE messages
 
@@ -1628,55 +1608,55 @@ export const sendPayload = async (
                     // Skip hallucination detection inside code fences — the model
                     // is allowed to discuss/quote error messages in diffs.
                     if (!insideCodeFence) {
-                    // currentContent already contains <!-- TOOL_BLOCK_START: -->
-                    // markers from our own tool_display handler; checking the
-                    // full string false-positives after every tool execution.
-                    // Strip inline code and fenced code blocks so the model can
-                    // *discuss* sentinel formats without triggering the detector.
-                    const candidateContent = contentToAdd
-                        .replace(/```[\s\S]*?```/g, '')
-                        .replace(/`[^`]+`/g, '');
+                        // currentContent already contains <!-- TOOL_BLOCK_START: -->
+                        // markers from our own tool_display handler; checking the
+                        // full string false-positives after every tool execution.
+                        // Strip inline code and fenced code blocks so the model can
+                        // *discuss* sentinel formats without triggering the detector.
+                        const candidateContent = contentToAdd
+                            .replace(/```[\s\S]*?```/g, '')
+                            .replace(/`[^`]+`/g, '');
 
-                    // Patterns that should NEVER appear in the content stream.
-                    // These formats are only produced by the frontend when
-                    // processing real tool_result/tool_start SSE events.
-                    const HALLUCINATION_PATTERNS = [
-                        /`{3,4}tool:mcp_/,                 // Tool fence format (3 or 4 backtick)
-                        /<TOOL_SENTINEL>/,                 // Sentinel markers
-                        /<\/TOOL_SENTINEL>/,
-                        /<!-- TOOL_BLOCK_START:/,           // Tool block HTML comments
-                        /<!-- TOOL_MARKER:/,
-                        /<!-- TOOL_BLOCK_END:/,
-                        /<name>mcp_[a-zA-Z]/,              // XML tool call format
-                        /<n>mcp_[a-zA-Z]/,
-                        /<arguments>\s*\{/,                 // Argument blocks
-                        /SECURITY BLOCK:[\s\S]{0,200}not allowed/,  // Hallucinated shell security output
-                    ];
+                        // Patterns that should NEVER appear in the content stream.
+                        // These formats are only produced by the frontend when
+                        // processing real tool_result/tool_start SSE events.
+                        const HALLUCINATION_PATTERNS = [
+                            /`{3,4}tool:mcp_/,                 // Tool fence format (3 or 4 backtick)
+                            /<TOOL_SENTINEL>/,                 // Sentinel markers
+                            /<\/TOOL_SENTINEL>/,
+                            /<!-- TOOL_BLOCK_START:/,           // Tool block HTML comments
+                            /<!-- TOOL_MARKER:/,
+                            /<!-- TOOL_BLOCK_END:/,
+                            /<name>mcp_[a-zA-Z]/,              // XML tool call format
+                            /<n>mcp_[a-zA-Z]/,
+                            /<arguments>\s*\{/,                 // Argument blocks
+                            /SECURITY BLOCK:[\s\S]{0,200}not allowed/,  // Hallucinated shell security output
+                        ];
 
-                    const matchedPattern = HALLUCINATION_PATTERNS.find(p => p.test(candidateContent));
+                        const matchedPattern = HALLUCINATION_PATTERNS.find(p => p.test(candidateContent));
 
-                    if (matchedPattern) {
-                        if (!hallucinationDetected) {
-                            hallucinationDetected = true;
-                            console.warn('⚠️ HALLUCINATION FAILSAFE: Detected fake tool output in content stream', {
-                                pattern: matchedPattern.toString(),
-                                chunkPreview: contentToAdd.substring(0, 200),
-                            });
+                        if (matchedPattern) {
+                            if (!hallucinationDetected) {
+                                hallucinationDetected = true;
+                                console.warn('⚠️ HALLUCINATION FAILSAFE: Detected fake tool output in content stream', {
+                                    pattern: matchedPattern.toString(),
+                                    chunkPreview: contentToAdd.substring(0, 200),
+                                });
 
-                            // Strip contaminated content but DON'T abort — backend handles retry
-                            const lastBreak = currentContent.lastIndexOf('\n\n');
-                            if (lastBreak > 0) {
-                                const tail = currentContent.substring(lastBreak);
-                                if (/(\$ |ERROR:|SECURITY BLOCK|Allowed commands:|📋)/.test(tail)) {
-                                    currentContent = currentContent.substring(0, lastBreak).trimEnd();
+                                // Strip contaminated content but DON'T abort — backend handles retry
+                                const lastBreak = currentContent.lastIndexOf('\n\n');
+                                if (lastBreak > 0) {
+                                    const tail = currentContent.substring(lastBreak);
+                                    if (/(\$ |ERROR:|SECURITY BLOCK|Allowed commands:|📋)/.test(tail)) {
+                                        currentContent = currentContent.substring(0, lastBreak).trimEnd();
+                                    }
                                 }
                             }
-                        }
 
-                        // Silently drop contaminated chunks (first and subsequent)
-                        flushStreamedContent();
-                        return; // Backend will handle retry
-                    }
+                            // Silently drop contaminated chunks (first and subsequent)
+                            flushStreamedContent();
+                            return; // Backend will handle retry
+                        }
                     } // end if (!insideCodeFence)
 
                     // Handle feedback delivery acknowledgment from backend
@@ -2324,6 +2304,14 @@ export const sendPayload = async (
                 start_time: Date.now()
             };
 
+            // Create a one-shot abort promise that rejects when the signal fires.
+            // Racing every reader.read() against this guarantees immediate exit
+            // regardless of browser ReadableStream abort-propagation timing.
+            const abortPromise = new Promise<never>((_, reject) => {
+                if (signal.aborted) return reject(new DOMException('Aborted', 'AbortError'));
+                signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+            });
+
             try {
                 while (true) {
                     let chunk = '';
@@ -2334,7 +2322,14 @@ export const sendPayload = async (
                             removeStreamingConversation(conversationId);
                             return 'Response generation stopped by user.';
                         }
-                        const { done, value } = await reader.read();
+                        // Race the read against the abort signal so we exit
+                        // immediately on Stop — even if the browser's stream
+                        // abort propagation is delayed (common during deep
+                        // thinking when no data is flowing).
+                        const { done, value } = await Promise.race([
+                            reader.read(),
+                            abortPromise
+                        ]);
                         if (done) {
                             console.log("Stream read complete (done=true)");
                             // If the stream was aborted, don't process the final content
@@ -2660,7 +2655,7 @@ function extractAndCleanDiff(diff: string, filePath: string): string {
     }
 
     // Otherwise extract diff from markdown code block
-    const diffMatch = diff.match(/```diff\n([\s\S]*?)```(?:\s|$)/);
+    const diffMatch = diff.match(/```diff\n([\s\S]*?)\n```(?:\s|$)/);
     console.log('Diff match result:', {
         found: Boolean(diffMatch),
         groups: diffMatch ? diffMatch.length : 0

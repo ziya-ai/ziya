@@ -14,9 +14,21 @@ import * as syncApi from '../api/conversationSyncApi';
 import { useServerStatus } from './ServerStatusContext';
 import * as folderSyncApi from '../api/folderSyncApi';
 import { useDelegatePolling } from '../hooks/useDelegatePolling';
+import { gcEmptyConversations } from '../utils/retentionPurge';
 import { useDelegateStreaming } from '../hooks/useDelegateStreaming';
 
-import { gcEmptyConversations } from '../utils/retentionPurge';
+const TERMINAL_PLAN_STATUSES = new Set(['completed', 'completed_partial', 'cancelled']);
+
+/** Return true when the server folder should replace the local copy. */
+function serverFolderWins(local: ConversationFolder | undefined, server: ConversationFolder): boolean {
+    if (!local) return true;
+    if ((server.updatedAt || 0) > (local.updatedAt || 0)) return true;
+    // Server says terminal but local still says active → server wins (status can't regress)
+    if (server.taskPlan && TERMINAL_PLAN_STATUSES.has(server.taskPlan.status)
+        && local.taskPlan && !TERMINAL_PLAN_STATUSES.has(local.taskPlan.status)) return true;
+    return false;
+}
+
 export type ProcessingState = 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'awaiting_tool_response' | 'tool_throttling' | 'tool_limit_reached' | 'model_thinking' | 'error';
 
 interface ConversationProcessingState {
@@ -178,6 +190,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 const serverAsConversations = serverChats.map((sc: any) => ({
                     ...sc,
                     projectId: sc.projectId || projectId,
+                    folderId: sc.groupId || sc.folderId || null,
+                    delegateMeta: sc.delegateMeta || null,
                     lastAccessedAt: sc.lastAccessedAt || sc.lastActiveAt,
                     isActive: sc.isActive !== false,
                     _version: sc._version || Date.now(),
@@ -202,8 +216,34 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     console.warn('📡 PROJECT_SWITCH: IndexedDB folders unavailable:', dbErr);
                     allFolders = [];
                 }
-                const globalFolderIds = new Set(allFolders.filter(f => f.isGlobal).map(f => f.id));
-                const projectFolders = allFolders.filter(f => f.projectId === projectId || f.isGlobal);
+                // Merge server folders so TaskPlan folders appear immediately
+                // (they may not be in IndexedDB yet if the page was refreshed)
+                let serverFolders: ConversationFolder[] = [];
+                try {
+                    const { listServerFolders } = await import('../api/folderSyncApi');
+                    serverFolders = await listServerFolders(projectId);
+                } catch (e) {
+                    console.warn('📡 PROJECT_SWITCH: Server folders unavailable:', e);
+                }
+
+                const folderMap = new Map<string, ConversationFolder>();
+                allFolders.forEach(f => folderMap.set(f.id, f));
+                serverFolders.forEach(sf => {
+                    const local = folderMap.get(sf.id);
+                    if (serverFolderWins(local, sf)) {
+                        folderMap.set(sf.id, { ...sf, projectId: sf.projectId || projectId });
+                    }
+                });
+                const mergedAllFolders = Array.from(folderMap.values());
+                const projectFolders = mergedAllFolders.filter(f => f.projectId === projectId || f.isGlobal);
+
+                // Persist any new server folders to IndexedDB
+                const newServerFolders = serverFolders.filter(sf => !allFolders.some(f => f.id === sf.id));
+                if (newServerFolders.length > 0) {
+                    Promise.all(newServerFolders.map(f => db.saveFolder({ ...f, projectId: f.projectId || projectId }))).catch(
+                        e => console.warn('📡 PROJECT_SWITCH: Failed to persist server folders:', e)
+                    );
+                }
 
                 console.log(`📊 PROJECT_SWITCH: ${mergedConversations.length} conversations (${serverChats.length} server, ${localOnly.length} local-only), ${projectFolders.length} folders`);
 
@@ -1536,7 +1576,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             setConversations(prev => {
                 const updated = prev.map(conv =>
                     conv.id === conversationId
-                        ? { ...conv, folderId, _version: newVersion }
+                        ? { ...conv, folderId, _version: newVersion, lastAccessedAt: newVersion }
                         : conv
                 );
                 queueSave(updated, { changedIds: [conversationId] }).catch(console.error);
@@ -1731,6 +1771,31 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     console.log('✅ MIGRATION: All folders now have projectId');
                 }
 
+                // Merge with server folders to pick up TaskPlan folders that
+                // may not be in IndexedDB yet (e.g. after page refresh)
+                try {
+                    const { listServerFolders } = await import('../api/folderSyncApi');
+                    const serverFolders = await listServerFolders(projectId);
+                    const localMap = new Map(folders.map(f => [f.id, f]));
+                    let changed = false;
+                    for (const sf of serverFolders) {
+                        const local = localMap.get(sf.id);
+                        if (serverFolderWins(local, sf)) {
+                            localMap.set(sf.id, { ...sf, projectId: sf.projectId || projectId });
+                            changed = true;
+                        }
+                    }
+                    if (changed) {
+                        folders = Array.from(localMap.values());
+                        // Persist to IndexedDB (non-blocking)
+                        Promise.all(folders.map(f => db.saveFolder(f))).catch(e =>
+                            console.warn('📡 INIT_FOLDERS: Failed to persist server folders:', e)
+                        );
+                    }
+                } catch (e) {
+                    console.warn('📡 INIT_FOLDERS: Server folder fetch failed:', e);
+                }
+
                 // Filter to current project only
                 const projectFolders = projectId
                     ? folders.filter(f => f.projectId === projectId || f.isGlobal)
@@ -1808,6 +1873,14 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     if (!local) {
                         needFullFetch.push(sc.id);
                     } else {
+                        // Always fetch full data if server has delegate metadata
+                        // or folder assignment that local is missing
+                        const serverHasDelegateMeta = sc.delegateMeta && !local.delegateMeta;
+                        const serverHasFolder = (sc.groupId || sc.folderId) && !local.folderId;
+                        if (serverHasDelegateMeta || serverHasFolder) {
+                            needFullFetch.push(sc.id);
+                            continue;
+                        }
                         const serverVer = (sc as any)._version || sc.lastActiveAt || 0;
                         const localVer = (local as any)._version || local.lastAccessedAt || 0;
                         if (serverVer > localVer) {
@@ -1989,9 +2062,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         if (fullLocalEntry && fullLocalEntry.projectId && fullLocalEntry.projectId !== projectId && !fullLocalEntry.isGlobal) {
                             return; // stale server entry for a moved folder — skip
                         }
-
                         const local = folderMap.get(sf.id);
-                        if (!local || (sf.updatedAt || 0) > (local.updatedAt || 0)) {
+                        if (serverFolderWins(local, sf)) {
                             folderMap.set(sf.id, { ...sf, projectId: effectiveProjectId });
                         }
                     });
@@ -2133,7 +2205,29 @@ export function ChatProvider({ children }: ChatProviderProps) {
             if (!isInitialized) return;
             try {
                 const allFolders = await db.getFolders();
-                const projectFolders = allFolders.filter(
+                const folderMap = new Map(allFolders.map(f => [f.id, f]));
+                // Merge server folders so TaskPlan folders that haven't
+                // been persisted to IndexedDB yet aren't lost, and
+                // stale IndexedDB entries get updated with server status.
+                try {
+                    const serverFolders = await folderSyncApi.listServerFolders(currentProject?.id);
+                    let changed = false;
+                    for (const sf of serverFolders) {
+                        const local = folderMap.get(sf.id);
+                        if (serverFolderWins(local, sf)) {
+                            folderMap.set(sf.id, { ...sf, projectId: sf.projectId || currentProject?.id });
+                            changed = true;
+                        }
+                    }
+                    if (changed) {
+                        const merged = Array.from(folderMap.values());
+                        Promise.all(merged.map(f => db.saveFolder(f))).catch(
+                            e => console.warn('📡 handleFoldersChanged: Failed to persist folders:', e));
+                    }
+                } catch (e) {
+                    // Server unavailable — use IndexedDB only
+                }
+                const projectFolders = Array.from(folderMap.values()).filter(
                     f => f.projectId === currentProject?.id || f.isGlobal
                 );
                 setFolders(projectFolders);
