@@ -41,6 +41,19 @@ def should_rebuild_frontend():
     if not templates_static.exists() or not any(templates_static.glob("main.*.js")):
         return True
 
+    # Verify index.html references JS/CSS files that actually exist on disk.
+    # A stale index.html with mismatched content hashes causes blank screens.
+    try:
+        index_html = Path("templates") / "index.html"
+        if index_html.exists():
+            content = index_html.read_text()
+            for ref in re.findall(r'/static/(?:js|css)/(main\.[a-f0-9]+\.(?:js|css))', content):
+                parent = "js" if ref.endswith(".js") else "css"
+                if not (Path("templates") / "static" / parent / ref).exists():
+                    return True
+    except Exception:
+        return True
+
     # Get build time
     try:
         build_mtime = os.path.getmtime(success_marker)
