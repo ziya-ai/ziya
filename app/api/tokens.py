@@ -25,6 +25,7 @@ class TokenCalculationResponse(BaseModel):
     skillTokens: Dict[str, int]
     additionalPromptTokens: int
     overlappingFiles: List[str]
+    astTokens: int
     deduplicatedTokens: int
 
 @router.post("/calculate", response_model=TokenCalculationResponse)
@@ -82,7 +83,18 @@ async def calculate_tokens(project_id: str, request: TokenCalculationRequest):
     if request.additionalPrompt:
         additional_prompt_tokens = token_service.count_tokens(request.additionalPrompt)
     
-    total = file_total + skill_total + additional_prompt_tokens
+    # Include AST context token count if AST indexing has completed
+    ast_tokens = 0
+    try:
+        from ..utils.context_enhancer import get_ast_indexing_status
+        ast_status = get_ast_indexing_status()
+        if ast_status.get('is_complete'):
+            from ..utils.ast_parser import get_ast_token_count
+            ast_tokens = get_ast_token_count() or 0
+    except Exception:
+        pass
+    
+    total = file_total + skill_total + additional_prompt_tokens + ast_tokens
     
     return TokenCalculationResponse(
         totalTokens=total,
@@ -90,5 +102,6 @@ async def calculate_tokens(project_id: str, request: TokenCalculationRequest):
         skillTokens=skill_tokens,
         additionalPromptTokens=additional_prompt_tokens,
         overlappingFiles=overlapping,
+        astTokens=ast_tokens,
         deduplicatedTokens=total
     )

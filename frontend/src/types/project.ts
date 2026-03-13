@@ -3,6 +3,8 @@
  */
 
 export interface WritePolicy {
+  /** "none" = safe paths + patterns only, "new_files" = also create new files anywhere, "all_files" = write any project file */
+  direct_write_mode?: 'none' | 'new_files' | 'all_files';
   safe_write_paths?: string[];
   allowed_write_patterns?: string[];
   allowed_interpreters?: string[];
