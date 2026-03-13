@@ -17,11 +17,13 @@ import {
   CodeOutlined,
   BookOutlined,
   FolderOutlined,
-  DownOutlined,
+   DownOutlined,
   RightOutlined,
   DeleteOutlined,
+  RobotOutlined,
 } from '@ant-design/icons';
 import { Skill, SkillCreate } from '../types/skill';
+import { useTheme } from '../context/ThemeContext';
 
 /* ------------------------------------------------------------------ */
 /*  Helper: parse a SKILL.md string into name / description / prompt  */
@@ -51,19 +53,71 @@ function parseSkillMd(text: string): { name: string; description: string; prompt
 /* ------------------------------------------------------------------ */
 /*  Source badge                                                      */
 /* ------------------------------------------------------------------ */
-const sourceBadge = (source?: string) => {
-  const styles: Record<string, { bg: string; fg: string; label: string }> = {
-    builtin:  { bg: '#333',    fg: '#888', label: 'built-in' },
-    project:  { bg: '#164e63', fg: '#67e8f9', label: 'project' },
-    custom:   { bg: '#3b2f1a', fg: '#fbbf24', label: 'custom' },
+const sourceBadge = (source?: string, isDarkMode: boolean = true) => {
+  const styles: Record<string, { bg: [string, string]; fg: [string, string]; label: string }> = {
+    builtin:  { bg: ['#e5e7eb', '#2a2a2a'], fg: ['#6b7280', '#aaa'], label: 'built-in' },
+    model_discoverable: { bg: ['#dcfce7', '#1a2e1a'], fg: ['#16a34a', '#4ade80'], label: 'AI-available' },
+    project:  { bg: ['#cffafe', '#164e63'], fg: ['#0891b2', '#67e8f9'], label: 'project' },
+    custom:   { bg: ['#fef3c7', '#3b2f1a'], fg: ['#d97706', '#fbbf24'], label: 'custom' },
   };
   const s = styles[source || ''] || styles.custom;
+  const bg = isDarkMode ? s.bg[1] : s.bg[0];
+  const fg = isDarkMode ? s.fg[1] : s.fg[0];
   return (
     <span style={{
-      fontSize: '9px', marginLeft: '6px', padding: '1px 5px',
-      background: s.bg, borderRadius: '3px', color: s.fg,
+      fontSize: '9px', marginLeft: '6px', padding: '1px 5px', 
+      background: bg, borderRadius: '3px', color: fg,
     }}>
       {s.label}
+    </span>
+  );
+};
+
+/* ------------------------------------------------------------------ */
+/*  Activation level helpers                                          */
+/* ------------------------------------------------------------------ */
+type ActivationLevel = 'active' | 'on-demand' | 'off';
+
+/** Determine the effective activation level for a skill. */
+function getLevel(skill: Skill, activeSkillIds: string[]): ActivationLevel {
+  const inActive = activeSkillIds.includes(skill.id);
+  if (skill.visibility === 'model_discoverable') {
+    // Model-discoverable: on-demand by default, user toggles into activeIds to disable
+    return inActive ? 'off' : 'on-demand';
+  }
+  // Everything else: off by default, user toggles into activeIds to enable
+  return inActive ? 'active' : 'off';
+}
+
+const levelDot = (level: ActivationLevel, isDarkMode: boolean) => {
+  const colors: Record<ActivationLevel, { bg: [string, string]; glow?: string }> = {
+    'active':    { bg: ['#16a34a', '#4ade80'], glow: isDarkMode ? '#4ade8066' : '#16a34a44' },
+    'on-demand': { bg: ['#2563eb', '#60a5fa'] },
+    'off':       { bg: ['#e5e7eb', '#333'] },
+  };
+  const c = colors[level];
+  const bg = isDarkMode ? c.bg[1] : c.bg[0];
+  const size = level === 'off' ? '5px' : '7px';
+  return (
+    <span style={{
+      width: size, height: size, borderRadius: '50%', flexShrink: 0,
+      background: bg, display: 'inline-block',
+      border: level === 'off' ? `1px solid ${isDarkMode ? '#555' : '#d1d5db'}` : 'none',
+      boxShadow: c.glow ? `0 0 4px ${c.glow}` : 'none',
+    }} />
+  );
+};
+
+const levelLabel = (level: ActivationLevel, isDarkMode: boolean) => {
+  const labels: Record<ActivationLevel, { text: string; color: [string, string] }> = {
+    'active':    { text: 'always on',  color: ['#16a34a', '#4ade80'] },
+    'on-demand': { text: 'on-demand',  color: ['#2563eb', '#60a5fa'] },
+    'off':       { text: 'off',        color: ['#9ca3af', '#555'] },
+  };
+  const l = labels[level];
+  return (
+    <span style={{ fontSize: '9px', color: isDarkMode ? l.color[1] : l.color[0], whiteSpace: 'nowrap' }}>
+      {l.text}
     </span>
   );
 };
@@ -85,6 +139,7 @@ export const SkillsSection: React.FC<Props> = ({
   skills, activeSkillIds, addSkillToLens, removeSkillFromLens,
   createSkill, deleteSkill, searchQuery,
 }) => {
+  const { isDarkMode } = useTheme();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [newSkill, setNewSkill] = useState({ name: '', description: '', prompt: '' });
@@ -100,14 +155,57 @@ export const SkillsSection: React.FC<Props> = ({
     [skills, searchQuery]
   );
 
-  /* ---- group by source ---- */
-  const projectSkills = filtered.filter(s => s.source === 'project');
-  const builtinSkills = filtered.filter(s => s.source === 'builtin');
-  const customSkills  = filtered.filter(s => s.source !== 'project' && s.source !== 'builtin');
+  /* ---- group by source: user stuff first, then built-in ---- */
+  const userSkills   = filtered.filter(s => s.source === 'custom' || s.source === 'project' || (!s.source && !s.isBuiltIn));
+  const builtinSkills = filtered.filter(s => s.source === 'builtin' || s.isBuiltIn);
+
+  /* ---- sort within groups: active first, then on-demand, then off ---- */
+  const levelOrder: Record<ActivationLevel, number> = { 'active': 0, 'on-demand': 1, 'off': 2 };
+  const sortByLevel = (a: Skill, b: Skill) =>
+    levelOrder[getLevel(a, activeSkillIds)] - levelOrder[getLevel(b, activeSkillIds)];
+  const sortedUser = [...userSkills].sort(sortByLevel);
+  const sortedBuiltin = [...builtinSkills].sort(sortByLevel);
 
   /* ---- handlers ---- */
-  const toggle = (id: string) => {
-    activeSkillIds.includes(id) ? removeSkillFromLens(id) : addSkillToLens(id);
+  const cycleLevel = (skill: Skill) => {
+    const current = getLevel(skill, activeSkillIds);
+    if (skill.visibility === 'model_discoverable') {
+      // on-demand (default) → active → off → on-demand
+      if (current === 'on-demand') addSkillToLens(skill.id);     // → marks as "active override"
+      else if (current === 'off') removeSkillFromLens(skill.id); // → back to on-demand default
+      else addSkillToLens(skill.id);                             // active → off (toggle)
+    } else {
+      // off (default) → active → off
+      activeSkillIds.includes(skill.id) ? removeSkillFromLens(skill.id) : addSkillToLens(skill.id);
+    }
+  };
+
+  const setLevel = (skill: Skill, target: ActivationLevel) => {
+    const current = getLevel(skill, activeSkillIds);
+    if (current === target) return;
+
+    if (skill.visibility === 'model_discoverable') {
+      // Default state is on-demand (NOT in activeSkillIds)
+      // In activeSkillIds means user overrode it
+      if (target === 'on-demand') {
+        // Return to default — remove from activeSkillIds
+        if (activeSkillIds.includes(skill.id)) removeSkillFromLens(skill.id);
+      } else if (target === 'off') {
+        // Disable — add to activeSkillIds as disable marker
+        if (!activeSkillIds.includes(skill.id)) addSkillToLens(skill.id);
+      } else {
+        // 'active' — for now treat same as on-demand (always loaded)
+        // Future: track separately for full prompt injection
+        if (activeSkillIds.includes(skill.id)) removeSkillFromLens(skill.id);
+      }
+    } else {
+      // Non-discoverable: in activeSkillIds = active, not in = off
+      if (target === 'active' || target === 'on-demand') {
+        if (!activeSkillIds.includes(skill.id)) addSkillToLens(skill.id);
+      } else {
+        if (activeSkillIds.includes(skill.id)) removeSkillFromLens(skill.id);
+      }
+    }
   };
 
   const handleCreate = async () => {
@@ -138,7 +236,7 @@ export const SkillsSection: React.FC<Props> = ({
     } catch {
       message.error('Failed to import skill');
     } finally {
-      e.target.value = '';          // reset so same file can be re-imported
+      e.target.value = '';
     }
   };
 
@@ -151,87 +249,152 @@ export const SkillsSection: React.FC<Props> = ({
     }
   };
 
+  /* ---- theme ---- */
+  const t = {
+    cardBg:        isDarkMode ? '#1a1a1a' : '#ffffff',
+    cardBorder:    isDarkMode ? '#1a1a1a' : '#f3f4f6',
+    cardHover:     isDarkMode ? '#222'    : '#f9fafb',
+    textPrimary:   isDarkMode ? '#e5e7eb' : '#1f2937',
+    textSecondary: isDarkMode ? '#777'    : '#6b7280',
+    textMuted:     isDarkMode ? '#555'    : '#9ca3af',
+    textFaint:     isDarkMode ? '#666'    : '#d1d5db',
+    keywordBg:     isDarkMode ? '#2a2a2a' : '#f3f4f6',
+    keywordFg:     isDarkMode ? '#888'    : '#6b7280',
+    expandBg:      isDarkMode ? '#151515' : '#fafafa',
+    expandBorder:  isDarkMode ? '#252525' : '#f3f4f6',
+    expandText:    isDarkMode ? '#aaa'    : '#6b7280',
+    promptBg:      isDarkMode ? '#0d0d0d' : '#f3f4f6',
+    promptFg:      isDarkMode ? '#888'    : '#4b5563',
+    headerColor:   isDarkMode ? '#666'    : '#6b7280',
+    sectionBg:     isDarkMode ? '#111'    : '#f9fafb',
+    sectionBorder: isDarkMode ? '#333'    : '#e5e7eb',
+    sectionText:   isDarkMode ? '#666'    : '#6b7280',
+    accentCyan:    isDarkMode ? '#67e8f9' : '#0891b2',
+    accentCyanBg:  isDarkMode ? '#1a2e3a' : '#cffafe',
+    formBg:        isDarkMode ? '#1a1a1a' : '#ffffff',
+    formBorder:    isDarkMode ? '#333'    : '#d1d5db',
+    // Level selector
+    segBg:         isDarkMode ? '#111'    : '#ffffff',
+    segBorder:     isDarkMode ? '#333'    : '#e5e7eb',
+    segText:       isDarkMode ? '#999'    : '#9ca3af',
+    segActiveBg:   isDarkMode ? '#1a2e1a' : '#f0fdf4',
+    segActiveFg:   isDarkMode ? '#4ade80' : '#16a34a',
+    segDemandBg:   isDarkMode ? '#1a2636' : '#eff6ff',
+    segDemandFg:   isDarkMode ? '#60a5fa' : '#2563eb',
+    segOffBg:      isDarkMode ? '#1a1a1a' : '#ffffff',
+    segOffFg:      isDarkMode ? '#666'    : '#6b7280',
+  };
+
   /* ---- render a single skill card ---- */
   const renderCard = (skill: Skill) => {
-    const isActive = activeSkillIds.includes(skill.id);
+    const level = getLevel(skill, activeSkillIds);
     const isExpanded = expandedId === skill.id;
+    const isOff = level === 'off';
 
     return (
       <div
         key={skill.id}
         style={{
-          background: isActive ? `${skill.color}15` : '#1a1a1a',
-          borderLeft: `3px solid ${isActive ? skill.color : '#333'}`,
-          borderRadius: '0 6px 6px 0',
-          marginBottom: '4px',
+          background: t.cardBg, borderRadius: '6px', marginBottom: '3px',
           overflow: 'hidden',
+          border: isExpanded ? `1px solid ${t.expandBorder}` : `1px solid ${t.cardBorder}`,
         }}
       >
-        {/* Main row */}
+        {/* Compact row */}
         <div
           style={{
-            padding: '8px 10px',
-            display: 'flex', alignItems: 'center', gap: '8px',
-            cursor: 'pointer',
+            padding: '7px 10px', display: 'flex', alignItems: 'center', gap: '8px',
+            cursor: 'pointer', opacity: isOff ? 0.55 : 1,
           }}
-          onClick={() => toggle(skill.id)}
+          onClick={() => setExpandedId(isExpanded ? null : skill.id)}
         >
-          <input
-            type="checkbox" checked={isActive} readOnly
-            onClick={e => { e.stopPropagation(); toggle(skill.id); }}
-            style={{ accentColor: skill.color }}
-          />
+          {levelDot(level, isDarkMode)}
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', fontSize: '12px', fontWeight: isActive ? 500 : 400 }}>
+            <div style={{ display: 'flex', alignItems: 'center', fontSize: '12px', color: t.textPrimary }}>
               <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {skill.name}
               </span>
-              {sourceBadge(skill.source)}
+              {sourceBadge(skill.source, isDarkMode)}
             </div>
-            <div style={{ fontSize: '10px', color: '#777', marginTop: '2px' }}>
+            <div style={{ fontSize: '10px', color: t.textSecondary, marginTop: '1px' }}>
               {skill.description}
             </div>
+          </div>
+          {levelLabel(level, isDarkMode)}
+          <span style={{
+            fontSize: '9px', color: t.textFaint, transition: 'transform 0.15s',
+            transform: isExpanded ? 'rotate(90deg)' : 'none', display: 'inline-block',
+          }}>›</span>
+        </div>
+
+        {/* Expanded detail */}
+        {isExpanded && (
+          <div style={{
+            padding: '10px 12px 12px',
+            borderTop: `1px solid ${t.expandBorder}`,
+            background: t.expandBg,
+          }}>
+            {/* Segmented level selector */}
+            <div style={{
+              display: 'flex', borderRadius: '6px', overflow: 'hidden',
+              border: `1px solid ${t.segBorder}`, marginBottom: '10px',
+            }}>
+              {(skill.visibility === 'model_discoverable'
+                ? [
+                    { key: 'off' as ActivationLevel,       label: 'Off',        hint: 'disabled',
+                      selBg: t.segOffBg,    selFg: t.segOffFg },
+                    { key: 'on-demand' as ActivationLevel, label: 'On-demand',  hint: 'AI loads when needed',
+                      selBg: t.segDemandBg, selFg: t.segDemandFg },
+                    { key: 'active' as ActivationLevel,    label: 'Always on',  hint: 'every message',
+                      selBg: t.segActiveBg, selFg: t.segActiveFg },
+                  ]
+                : [
+                    { key: 'off' as ActivationLevel,    label: 'Off',       hint: 'disabled',
+                      selBg: t.segOffBg,    selFg: t.segOffFg },
+                    { key: 'active' as ActivationLevel, label: 'Always on', hint: 'every message',
+                      selBg: t.segActiveBg, selFg: t.segActiveFg },
+                  ]
+              ).map((opt, i, arr) => {
+                const isSel = level === opt.key;
+                return (
+                  <button
+                    key={opt.key}
+                    onClick={() => setLevel(skill, opt.key)}
+                    style={{
+                      flex: 1, padding: '6px 4px', textAlign: 'center', cursor: 'pointer',
+                      fontSize: '10px', border: 'none', display: 'flex', flexDirection: 'column',
+                      alignItems: 'center', gap: '1px',
+                      background: isSel ? opt.selBg : t.segBg,
+                      color: isSel ? opt.selFg : t.segText,
+                      borderRight: i < arr.length - 1 ? `1px solid ${t.segBorder}` : 'none',
+                    }}
+                  >
+                    <span style={{ fontSize: '9px', fontWeight: 600 }}>{opt.label}</span>
+                    <span style={{ fontSize: '8px', opacity: 0.6 }}>{opt.hint}</span>
+                  </button>
+                );
+              })}
+            </div>
+
             {/* Keywords */}
             {skill.keywords && skill.keywords.length > 0 && (
-              <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', marginTop: '3px' }}>
-                {skill.keywords.slice(0, 5).map(kw => (
+              <div style={{ display: 'flex', gap: '3px', flexWrap: 'wrap', marginBottom: '6px' }}>
+                {skill.keywords.slice(0, 6).map(kw => (
                   <span key={kw} style={{
-                    fontSize: '9px', padding: '0 4px', borderRadius: '3px',
-                    background: '#252525', color: '#666',
+                    fontSize: '8px', padding: '0 4px', borderRadius: '2px',
+                    background: t.keywordBg, color: t.keywordFg,
                   }}>
                     {kw}
                   </span>
                 ))}
               </div>
             )}
-          </div>
 
-          {/* Right side: tokens + expand */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
-            <span style={{ fontSize: '11px', color: isActive ? skill.color : '#666' }}>
-              {isActive ? skill.tokenCount.toLocaleString() : `+${skill.tokenCount.toLocaleString()}`}
-            </span>
-            <span
-              style={{ fontSize: '10px', color: '#555', cursor: 'pointer', padding: '2px' }}
-              onClick={e => { e.stopPropagation(); setExpandedId(isExpanded ? null : skill.id); }}
-            >
-              {isExpanded ? <DownOutlined /> : <RightOutlined />}
-            </span>
-          </div>
-        </div>
-
-        {/* Expanded detail */}
-        {isExpanded && (
-          <div style={{
-            padding: '8px 12px 10px 28px',
-            borderTop: '1px solid #252525',
-            fontSize: '11px', color: '#999',
-          }}>
             {/* Metadata row */}
-            <div style={{ display: 'flex', gap: '10px', marginBottom: '6px', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: '10px', marginBottom: '6px', flexWrap: 'wrap', fontSize: '11px', color: t.expandText }}>
               {skill.source === 'project' && skill.skillPath && (
                 <Tooltip title={skill.skillPath}>
-                  <span style={{ color: '#67e8f9' }}><FolderOutlined /> {skill.skillPath.split('/').slice(-2).join('/')}</span>
+                  <span style={{ color: t.accentCyan }}><FolderOutlined /> {skill.skillPath.split('/').slice(-2).join('/')}</span>
                 </Tooltip>
               )}
               {skill.hasScripts && <span><CodeOutlined /> scripts</span>}
@@ -241,119 +404,97 @@ export const SkillsSection: React.FC<Props> = ({
 
             {/* Prompt preview */}
             <div style={{
-              background: '#111', borderRadius: '4px', padding: '8px',
-              maxHeight: '200px', overflowY: 'auto',
-              fontFamily: 'monospace', fontSize: '11px', lineHeight: '1.4',
-              whiteSpace: 'pre-wrap', color: '#aaa',
+              background: t.promptBg, borderRadius: '4px', padding: '8px',
+              maxHeight: '100px', overflowY: 'auto',
+              fontFamily: 'monospace', fontSize: '10px', lineHeight: '1.4',
+              whiteSpace: 'pre-wrap', color: t.promptFg,
             }}>
               {skill.prompt || '(prompt loaded on activation)'}
             </div>
 
-            {/* Actions */}
-            {skill.source === 'custom' && (
-              <div style={{ marginTop: '6px', textAlign: 'right' }}>
+            {/* Footer meta + actions */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px' }}>
+              <span style={{ fontSize: '9px', color: t.textMuted }}>
+                {skill.tokenCount.toLocaleString()} tokens · {skill.source || 'custom'}
+              </span>
+              {skill.source === 'custom' && (
                 <Button
                   type="text" size="small" danger
                   icon={<DeleteOutlined />}
                   onClick={() => handleDelete(skill.id, skill.name)}
+                  style={{ fontSize: '11px' }}
                 >
                   Delete
                 </Button>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         )}
       </div>
     );
   };
 
-  /* ---- render a group header ---- */
-  const groupHeader = (label: string, count: number) => (
-    <div style={{
-      fontSize: '9px', color: '#555', textTransform: 'uppercase',
-      letterSpacing: '0.5px', padding: '8px 4px 4px', marginTop: '4px',
-    }}>
-      {label} ({count})
-    </div>
-  );
-
   /* ================================================================ */
   return (
     <>
-      {/* Section header */}
+      {/* Explanatory hint */}
       <div style={{
-        fontSize: '10px', color: '#666', textTransform: 'uppercase',
-        padding: '8px 4px 2px', letterSpacing: '0.5px',
-      }}>
-        Skills
-      </div>
-      <div style={{
-        fontSize: '10px', color: '#555', padding: '0 4px 8px',
+        fontSize: '10px', color: t.textMuted, padding: '0 4px 8px',
         lineHeight: '1.4',
       }}>
         Skills add instructions to every message when active.
         Toggle a skill to shape how the AI responds.
       </div>
 
-      {/* Project skills */}
-      {projectSkills.length > 0 && (
-        <>
-          {groupHeader('Project', projectSkills.length)}
-          {projectSkills.map(renderCard)}
-        </>
+      {/* Custom + project skills */}
+      {sortedUser.length > 0 && sortedUser.map(renderCard)}
+
+      {/* Project skills status — always shown so user knows the feature exists */}
+      {!filtered.some(s => s.source === 'project') && !searchQuery && (
+        <div style={{
+          margin: '8px 0', padding: '10px 12px', borderRadius: '6px', 
+          background: t.sectionBg, border: `1px dashed ${t.sectionBorder}`,
+          fontSize: '11px', color: t.sectionText, lineHeight: '1.5',
+        }}>
+          <strong style={{ color: t.textSecondary }}>Project skills</strong><br />
+          No <code style={{ color: t.accentCyan, background: t.accentCyanBg, padding: '1px 4px', borderRadius: '3px' }}>
+            SKILL.md
+          </code> files found. Place them in your project to auto-discover:
+          <pre style={{
+            margin: '6px 0 0', padding: '6px 8px', borderRadius: '4px', 
+            background: isDarkMode ? '#0a0a0a' : '#f3f4f6', color: t.textSecondary, fontSize: '10px',
+            lineHeight: '1.4', overflow: 'auto',
+          }}>{`.agents/skills/my-skill/SKILL.md`}</pre>
+          <div style={{ marginTop: '4px', color: t.textMuted }}>
+            <a
+              href="https://agentskills.io/specification"
+              target="_blank" rel="noopener noreferrer"
+              style={{ color: t.accentCyan, textDecoration: 'none' }}
+            >agentskills.io spec</a>
+          </div>
+        </div>
       )}
 
       {/* Built-in skills */}
-      {builtinSkills.length > 0 && (
+      {sortedBuiltin.length > 0 && (
         <>
-          {groupHeader('Built-in', builtinSkills.length)}
-          {builtinSkills.map(renderCard)}
-        </>
-      )}
-
-      {/* Custom skills */}
-      {customSkills.length > 0 && (
-        <>
-          {groupHeader('Custom', customSkills.length)}
-          {customSkills.map(renderCard)}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: '8px',
+            padding: '8px 0 4px',
+          }}>
+            <span style={{ fontSize: '9px', color: t.headerColor, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+              Built-in
+            </span>
+            <div style={{ flex: 1, height: '1px', background: t.expandBorder }} />
+          </div>
+          {sortedBuiltin.map(renderCard)}
         </>
       )}
 
       {/* Empty state */}
       {filtered.length === 0 && !searchQuery && (
-        <div style={{ padding: '16px', textAlign: 'center', color: '#555', fontSize: '11px' }}>
+        <div style={{ padding: '16px', textAlign: 'center', color: t.textMuted, fontSize: '11px' }}>
           No skills available
-        </div>
-      )}
-
-      {/* Project skills onboarding */}
-      {projectSkills.length === 0 && !searchQuery && (
-        <div style={{
-          margin: '8px 0', padding: '10px 12px', borderRadius: '6px',
-          background: '#111', border: '1px dashed #333',
-          fontSize: '11px', color: '#666', lineHeight: '1.5',
-        }}>
-          <strong style={{ color: '#888' }}>Project skills</strong><br />
-          Place <code style={{ color: '#67e8f9', background: '#1a2e3a', padding: '1px 4px', borderRadius: '3px' }}>
-            SKILL.md
-          </code> files in your project to auto-discover them:
-          <pre style={{
-            margin: '6px 0 0', padding: '6px 8px', borderRadius: '4px',
-            background: '#0a0a0a', color: '#888', fontSize: '10px',
-            lineHeight: '1.4', overflow: 'auto',
-          }}>{`.agents/skills/
-  my-skill/
-    SKILL.md      ← YAML frontmatter + markdown
-    scripts/      ← optional executables
-    references/   ← optional docs
-    assets/       ← optional templates`}</pre>
-          <div style={{ marginTop: '4px', color: '#555' }}>
-            Format: <a
-              href="https://agentskills.io/specification"
-              target="_blank" rel="noopener noreferrer"
-              style={{ color: '#67e8f9', textDecoration: 'none' }}
-            >agentskills.io/specification</a>
-          </div>
         </div>
       )}
 
@@ -383,7 +524,7 @@ export const SkillsSection: React.FC<Props> = ({
       {/* Inline creation form */}
       {isCreating && (
         <div style={{
-          padding: '12px', background: '#1a1a1a', border: '1px solid #333',
+          padding: '12px', background: t.formBg, border: `1px solid ${t.formBorder}`,
           borderRadius: '8px', marginTop: '6px',
         }}>
           <Input
