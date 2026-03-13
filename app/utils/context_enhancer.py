@@ -93,15 +93,16 @@ except ImportError as e:
 # Track AST initialization status
 def is_ast_enabled() -> bool:
     """
-    Check if AST capabilities are enabled in the current environment.
+    Check if AST capabilities are available.
     
-    Returns:
-        bool: True if AST capabilities are enabled, False otherwise
-    """
-    env_enabled = os.environ.get("ZIYA_ENABLE_AST", "false").lower() in ("true", "1", "yes", "on")
-    logger.debug(f"AST enablement check: ZIYA_ENABLE_AST={os.environ.get('ZIYA_ENABLE_AST', 'not set')}, env_enabled={env_enabled}, AST_AVAILABLE={AST_AVAILABLE}")
-    return env_enabled and AST_AVAILABLE
+    AST is now always enabled when dependencies are present (it runs as
+    a background index and is queried on-demand via tools).
 
+    Returns:
+        bool: True if AST dependencies are importable
+    """
+    logger.debug(f"AST enablement check: AST_AVAILABLE={AST_AVAILABLE}")
+    return AST_AVAILABLE
 def initialize_ast_if_enabled():
     """Initialize AST capabilities if enabled via environment variable."""
     global _ast_indexing_status
@@ -113,7 +114,16 @@ def initialize_ast_if_enabled():
     logger.info("AST capabilities enabled, starting initialization...")
     
     # Update status to indicate indexing has started
-    global _ast_indexing_status
+    codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+
+    # Guard: don't start a second indexing run for the same project
+    from app.utils.ast_parser.integration import _indexing_in_progress, _initialized_projects
+    abs_dir = os.path.abspath(codebase_dir)
+    if abs_dir in _indexing_in_progress or abs_dir in _initialized_projects:
+        logger.debug(f"AST init already in progress or complete for {abs_dir}, skipping")
+        return
+    _indexing_in_progress.add(abs_dir)
+
     _ast_indexing_status.update({
         'is_indexing': True,
         'enabled': True,
@@ -125,8 +135,6 @@ def initialize_ast_if_enabled():
     def _initialize_ast():
         """Background thread function to initialize AST."""
         try:
-            global _ast_indexing_status
-            codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
             max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
             
             # Get exclude patterns
@@ -165,6 +173,8 @@ def initialize_ast_if_enabled():
                     'error': None
                 })
                 logger.info(f"AST initialization complete: {result.get('files_processed', 0)} files processed")
+
+                _broadcast_ast_complete(result.get("files_processed", 0))
             else:
                 error_msg = result.get("error", "No files processed") if result else "Unknown error during AST initialization"
                 logger.error(f"AST initialization failed: {error_msg}")
@@ -179,11 +189,36 @@ def initialize_ast_if_enabled():
                 'is_complete': False,
                 'error': str(e)
             })
+        finally:
+            _indexing_in_progress.discard(abs_dir)
     
     # Start AST initialization in background thread
     ast_thread = threading.Thread(target=_initialize_ast, daemon=True)
     ast_thread.start()
     logger.info("AST initialization started in background thread")
+
+
+def _broadcast_ast_complete(files_processed: int) -> None:
+    """Push an ast_indexing_complete event to all ws/file-tree clients."""
+    try:
+        import asyncio
+        from app.server import broadcast_file_tree_update
+
+        loop = None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+
+        if loop and loop.is_running():
+            loop.create_task(broadcast_file_tree_update("ast_indexing_complete", "", files_processed))
+        else:
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(broadcast_file_tree_update("ast_indexing_complete", "", files_processed))
+            loop.close()
+    except Exception as e:
+        logger.debug(f"Could not broadcast AST completion event: {e}")
+
 
 
 def get_ast_indexing_status() -> Dict[str, Any]:
@@ -309,8 +344,9 @@ def enhance_context_with_ast(query: str, context: Dict[str, Any]) -> Dict[str, A
     
     return context
 
-# Initialize AST capabilities on module load if enabled
-initialize_ast_if_enabled()
+# Removed: module-level initialization caused double-indexing because
+# server.py also calls initialize_ast_if_enabled() explicitly.
+# The server controls when initialization happens.
 
 # Add token counting cache with LRU eviction
 import functools

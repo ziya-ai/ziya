@@ -176,6 +176,8 @@ You can generate inline visualizations and mockups using special code blocks:
 
 **Diagrams**: Use ```graphviz```, ```mermaid```, or ```vega-lite``` code blocks.
 
+**Packet Frame Diagrams**: Use ```packet``` code blocks with a JSON spec to render bit-level protocol frame layouts with colored fields, bit rulers, and bracket annotations. Activate the "Packet Diagrams" skill for full schema reference.
+
 **HTML Mockups** (for collaborative UX design): Use ```html-mockup``` code blocks to create interactive UI previews:
 - Renders in an isolated iframe with complete CSS isolation
 - Scripts and dangerous event handlers are automatically removed for security
@@ -206,6 +208,7 @@ or mockups when they would provide clearer understanding, especially for:
 - Timelines (Gantt charts)
 - Complex structures or processes
 - UI/UX design mockups and prototypes
+- Protocol and packet frame layouts
 
 **DrawIO Diagrams**: Use \`\`\`drawio\`\`\` or \`\`\`designinspector\`\`\` code blocks:
 - Local rendering in Ziya using diagrams.net viewer
@@ -233,7 +236,7 @@ or mockups when they would provide clearer understanding, especially for:
 
 Use the format that best suits the visualization needed (e.g., Graphviz for complex graphs/networks, 
 Mermaid for flowcharts/sequence diagrams, Vega-Lite for data analysis, html-mockup for UI designs,
-drawio for technical architecture and system diagrams).
+drawio for technical architecture and system diagrams, packet for protocol frame/header layouts).
 Mathematical expressions in KaTeX: (use `$$...$$` for display math, `$...$` for inline LaTeX)
 
 ## Architecture Diagram Generation

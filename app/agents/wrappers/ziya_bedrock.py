@@ -13,8 +13,6 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.outputs import ChatResult
 from langchain_core.runnables import Runnable, RunnableConfig
 from app.utils.logging_utils import logger
-from app.utils.custom_bedrock import CustomBedrockClient
-import os
 from app.utils.context_cache import get_context_cache_manager
 from app.utils.conversation_context import conversation_context
 
@@ -463,7 +461,6 @@ class ZiyaBedrock(Runnable):
             if 'supported_parameters' in model_config and 'top_k' in model_config.get('supported_parameters', []):
                 self.ziya_top_k = kwargs["top_k"]
                 logger.debug(f"Updated ziya_top_k to {self.ziya_top_k} in bind")
-            logger.debug(f"Updated ziya_top_k to {self.ziya_top_k} in bind")
         
         if "top_p" in kwargs:
             self.ziya_top_p = kwargs["top_p"]
