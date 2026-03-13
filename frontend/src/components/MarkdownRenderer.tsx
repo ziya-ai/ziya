@@ -3449,7 +3449,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
 type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' |
     'd3' | 'mermaid' | 'file-operation' | 'tool' |
     'joint' | 'jointjs' | 'code' | 'html' | 'text' | 'list' | 'table' | 'escape' | 'math' |
-    'paragraph' | 'heading' | 'hr' | 'blockquote' | 'space' |
+    'paragraph' | 'heading' | 'hr' | 'blockquote' | 'space' | 'packet' |
     'circuitikz' | 'html-mockup' | 'delegate-tasks' |
     'codespan' | 'strong' | 'em' | 'del' | 'link' | 'image' |
     'br' | 'list_item' | 'circuitikz' | 'latex' |
@@ -3553,6 +3553,10 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
             return 'circuitikz';
         }
         if (lang === 'd3') return 'd3';
+
+        if (lang === 'packet' || lang === 'packet-diagram' || lang === 'bytefield') {
+            return 'packet';
+        }
 
         // Only log when debug logging is enabled and only for debugging specific issues
         if (isDebugLoggingEnabled() && false) {
@@ -3937,6 +3941,22 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     };
                     console.log(`🎯 CALLING D3RENDERER WITH MERMAID SPEC:`, mermaidSpec);
                     return <LazyD3Renderer key={index} spec={mermaidSpec} type="d3" isStreaming={isStreaming} />;
+
+                case 'packet':
+                    if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
+                    return (
+                        <LazyD3Renderer
+                            key={index}
+                            spec={{
+                                type: 'packet',
+                                definition: tokenWithText.text,
+                                isStreaming: isStreaming,
+                                forceRender: true,
+                            }}
+                            type="d3"
+                            isStreaming={isStreaming}
+                        />
+                    );
 
                 case 'drawio':
                     if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
@@ -4381,6 +4401,10 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     // These contain interactive retry buttons that must not be escaped
                     const isThrottlingMessage = htmlContent.includes('throttle-retry-button') ||
                         (htmlContent.includes('Rate Limit') && htmlContent.includes('<button'));
+                    const isAuthRetryMessage = htmlContent.includes('auth-error-retry-button');
+                    if (isAuthRetryMessage) {
+                        return <div key={index} dangerouslySetInnerHTML={{ __html: sanitizeInlineHtml(htmlContent) }} />;
+                    }
                     if (isThrottlingMessage) {
                         return <div key={index} dangerouslySetInnerHTML={{ __html: sanitizeInlineHtml(htmlContent) }} />;
                     }
@@ -4705,7 +4729,22 @@ const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, 
     }
 
     try {
-        const html = katex.renderToString(math, {
+        // KaTeX treats bare underscores inside \text{} as subscript operators,
+        // which causes a parse error.  Escape them so identifiers like
+        // \text{ct_id_field} render correctly.
+        let sanitized = math.replace(
+            /\\(text|texttt|textbf|textit|textrm|textsf|textmd|mathrm|operatorname)\{([^}]*)\}/g,
+            (_match, cmd, content) => {
+                const escaped = content.replace(/(?<!\\)_/g, '\\_');
+                return `\\${cmd}{${escaped}}`;
+            }
+        );
+        // LLMs sometimes write '; \command' (literal semicolons as visual spacing)
+        // instead of '\; \command' (LaTeX thick space).  Correct bare semicolons
+        // that immediately precede a backslash command.
+        sanitized = sanitized.replace(/(?<!\\);\s*(\\[a-zA-Z])/g, (_m, cmd) => `\\; ${cmd}`);
+
+        const html = katex.renderToString(sanitized, {
             displayMode,
             throwOnError: false,
             strict: false,
@@ -4944,6 +4983,8 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             );
 
             // Fix 0b: Code fence after any markdown formatting without blank line
+            // Fix 3: Code fence glued directly to preceding text with NO newline at all
+            // e.g., "curve:
             processedMarkdown = processedMarkdown.replace(/(\*\*)\n(```)/g, '$1\n\n$2');
 
             // Fix 1: Code fence on same line as heading (e.g., "### Title ```language")
@@ -5384,21 +5425,52 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         addMessageToConversation, streamingConversations, updateProcessingState,
         addStreamingConversation, setThrottlingRecoveryData, currentProject]);
 
+    // Attach handler to auth-error retry buttons
+    const attachAuthRetryHandler = useCallback((button: HTMLButtonElement) => {
+        const conversationId = button.getAttribute('data-conversation-id');
+        if (!conversationId) return;
+
+        console.log(`✅ Attaching auth retry handler to button for conversation: ${conversationId}`);
+        button.dataset.handlerAttached = 'true';
+        attachedHandlersRef.current.add(button);
+
+        const handleClick = () => {
+            console.log('🔄 Auth error retry button clicked for conversation:', conversationId);
+            button.textContent = '🔄 Retrying...';
+            button.disabled = true;
+            button.style.opacity = '0.6';
+            button.style.cursor = 'not-allowed';
+
+            window.dispatchEvent(new CustomEvent('retryAuthError', {
+                detail: { conversationId }
+            }));
+        };
+
+        button.addEventListener('click', handleClick);
+    }, []);
+
     // Helper to attach handlers to all buttons
     const scanAndAttachHandlers = useCallback(() => {
         const allButtons = document.querySelectorAll('.throttle-retry-button');
         allButtons.forEach(button => {
-            // Use dataset attribute as primary guard — survives React re-renders
-            // unlike the Set<Element> ref which loses track when DOM nodes are recreated
             if (!(button as HTMLButtonElement).dataset.handlerAttached) {
                 attachThrottleRetryHandler(button as HTMLButtonElement);
                 attachedHandlersRef.current.add(button);
             }
         });
 
+        // Also scan for auth-error retry buttons
+        const authButtons = document.querySelectorAll('.auth-error-retry-button');
+        authButtons.forEach(button => {
+            if (!(button as HTMLButtonElement).dataset.handlerAttached) {
+                attachAuthRetryHandler(button as HTMLButtonElement);
+                attachedHandlersRef.current.add(button);
+            }
+        });
+
         // Mark that we've done at least one scan
         hasScannedInitiallyRef.current = true;
-    }, [attachThrottleRetryHandler]);
+    }, [attachThrottleRetryHandler, attachAuthRetryHandler]);
 
     // Setup MutationObserver to watch for dynamically added throttle buttons
     useLayoutEffect(() => {

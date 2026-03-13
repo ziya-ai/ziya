@@ -1,313 +1,299 @@
 /**
- * Packet/Bytefield diagram renderer for protocol specifications.
- * Renders beautiful packet layout diagrams from simple JSON specifications.
+ * General-purpose packet / byte-field / protocol frame diagram renderer.
+ *
+ * NOT tied to any specific protocol.  Everything about the diagram —
+ * field names, widths, colors, grouping brackets — comes from the
+ * JSON spec the caller provides.
+ *
+ * Supports:
+ *   - Configurable bit-width per row (8, 16, 32, …)
+ *   - Named color themes OR explicit hex per field/section
+ *   - Left and right nestable bracket annotations
+ *   - Auto-generated deterministic colors when none are specified
+ *   - Dark-mode aware rendering via colorUtils
  */
 
-interface PacketField {
-    name: string;
-    bits: number;
-    color?: string;
-    value?: string;
-    style?: 'solid' | 'dotted' | 'hatched';
-    tooltip?: string;
+import {
+  getOptimalTextColor,
+  hexToRgb,
+  luminance,
+} from '../colorUtils';
+
+// ── Built-in semantic color themes ──────────────────────────────────────────
+// Users can reference these by name OR supply arbitrary hex.
+// Each theme has light and dark variants; the renderer picks the right one.
+
+export interface ColorTriple {
+  bg: string;
+  border: string;
+  text: string;
 }
 
-interface PacketRow {
-    fields: PacketField[];
-    group?: string;
-    brace?: 'left' | 'right' | 'both';
-}
-
-interface PacketSpec {
-    type: 'packet';
-    name?: string;
-    bitWidth?: number;
-    rows: PacketRow[];
-    showBitNumbers?: boolean;
-    cellHeight?: number;
-    cellWidth?: number;
-}
-
-const DEFAULT_COLORS = {
-    lightcyan: '#84ffff',
-    lightgreen: '#a3ffa3',
-    lightred: '#ffb3b3',
-    lightblue: '#83b5c9',
-    darkblue: '#2e5d6b',
-    pink: '#de9999',
-    gray: '#cccccc'
+const THEMES_LIGHT: Record<string, ColorTriple> = {
+  header:    { bg: '#E5E7EB', border: '#9CA3AF', text: '#374151' },
+  transport: { bg: '#B2E0F0', border: '#4BA3C7', text: '#1A5276' },
+  security:  { bg: '#F9E79F', border: '#D4AC0D', text: '#7D6608' },
+  control:   { bg: '#D5F5E3', border: '#82E0AA', text: '#1E8449' },
+  payload:   { bg: '#F2F3F4', border: '#BDC3C7', text: '#5D6D7E' },
+  metadata:  { bg: '#D6EAF8', border: '#5DADE2', text: '#1B4F72' },
+  reserved:  { bg: '#D4A5C7', border: '#9B59B6', text: '#4A235A' },
+  error:     { bg: '#FADBD8', border: '#E74C3C', text: '#922B21' },
+  network:   { bg: '#D1F2EB', border: '#48C9B0', text: '#0E6655' },
+  highlight: { bg: '#7EC8E3', border: '#2E86AB', text: '#1A5276' },
+  accent:    { bg: '#FDEBD0', border: '#F0B27A', text: '#935116' },
+  purple:    { bg: '#E8DAEF', border: '#AF7AC5', text: '#6C3483' },
+  dark:      { bg: '#2E86AB', border: '#1A5276', text: '#FFFFFF' },
 };
 
-export class PacketDiagramRenderer {
-    private spec: PacketSpec;
-    private bitWidth: number;
-    private cellWidth: number;
-    private cellHeight: number;
-    private fontSize: number;
-    private padding: number;
-    
-    constructor(spec: PacketSpec) {
-        this.spec = spec;
-        this.bitWidth = spec.bitWidth || 8;
-        this.cellWidth = spec.cellWidth || 60;
-        this.cellHeight = spec.cellHeight || 40;
-        this.fontSize = 12;
-        this.padding = 40;
-    }
-    
-    private getColor(color?: string): string {
-        if (!color) return '#ffffff';
-        
-        // Check if it's a named color
-        if (color in DEFAULT_COLORS) {
-            return DEFAULT_COLORS[color as keyof typeof DEFAULT_COLORS];
-        }
-        
-        // Otherwise use as-is (should be hex)
-        return color;
-    }
-    
-    private createPattern(svg: SVGSVGElement, id: string, color: string): void {
-        const defs = svg.querySelector('defs') || svg.appendChild(document.createElementNS('http://www.w3.org/2000/svg', 'defs'));
-        
-        const pattern = document.createElementNS('http://www.w3.org/2000/svg', 'pattern');
-        pattern.setAttribute('id', id);
-        pattern.setAttribute('patternUnits', 'userSpaceOnUse');
-        pattern.setAttribute('width', '4');
-        pattern.setAttribute('height', '4');
-        
-        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-        line.setAttribute('x1', '0');
-        line.setAttribute('y1', '0');
-        line.setAttribute('x2', '4');
-        line.setAttribute('y2', '4');
-        line.setAttribute('stroke', color);
-        line.setAttribute('stroke-width', '1');
-        
-        pattern.appendChild(line);
-        defs.appendChild(pattern);
-    }
-    
-    private renderBitHeader(svg: SVGSVGElement, y: number): void {
-        const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-        g.setAttribute('class', 'bit-header');
-        
-        for (let i = 0; i < this.bitWidth; i++) {
-            const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-            text.setAttribute('x', (this.padding + i * this.cellWidth + this.cellWidth / 2).toString());
-            text.setAttribute('y', y.toString());
-            text.setAttribute('text-anchor', 'middle');
-            text.setAttribute('font-size', (this.fontSize - 2).toString());
-            text.setAttribute('font-family', 'monospace');
-            text.setAttribute('fill', '#666');
-            text.textContent = i.toString();
-            g.appendChild(text);
-        }
-        
-        svg.appendChild(g);
-    }
-    
-    private renderRow(svg: SVGSVGElement, row: PacketRow, y: number, rowIndex: number): number {
-        const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-        g.setAttribute('class', `packet-row-${rowIndex}`);
-        
-        let currentBit = 0;
-        
-        row.fields.forEach((field, fieldIndex) => {
-            const fieldWidth = (field.bits / this.bitWidth) * (this.cellWidth * this.bitWidth);
-            const x = this.padding + currentBit * this.cellWidth;
-            
-            // Create field rectangle
-            const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-            rect.setAttribute('x', x.toString());
-            rect.setAttribute('y', y.toString());
-            rect.setAttribute('width', fieldWidth.toString());
-            rect.setAttribute('height', this.cellHeight.toString());
-            rect.setAttribute('stroke', '#000');
-            rect.setAttribute('stroke-width', '1.5');
-            
-            const color = this.getColor(field.color);
-            
-            // Handle different styles
-            if (field.style === 'hatched') {
-                const patternId = `hatch-${rowIndex}-${fieldIndex}`;
-                this.createPattern(svg, patternId, color);
-                rect.setAttribute('fill', `url(#${patternId})`);
-            } else {
-                rect.setAttribute('fill', color);
-            }
-            
-            // Add tooltip if provided
-            if (field.tooltip) {
-                const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-                title.textContent = field.tooltip;
-                rect.appendChild(title);
-            }
-            
-            g.appendChild(rect);
-            
-            // Add field name text
-            const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-            text.setAttribute('x', (x + fieldWidth / 2).toString());
-            text.setAttribute('y', (y + this.cellHeight / 2 + 4).toString());
-            text.setAttribute('text-anchor', 'middle');
-            text.setAttribute('font-size', this.fontSize.toString());
-            text.setAttribute('font-weight', field.value ? 'bold' : 'normal');
-            text.setAttribute('font-family', 'Arial, sans-serif');
-            
-            // Choose text color based on background
-            const isDark = this.isColorDark(color);
-            text.setAttribute('fill', isDark ? '#ffffff' : '#000000');
-            
-            // Add field name (with value if present)
-            const displayText = field.value ? `${field.name}: ${field.value}` : field.name;
-            
-            // Handle dotted style for field names
-            if (field.style === 'dotted' && field.name) {
-                // Create dotted line effect with text
-                const textNode = document.createElementNS('http://www.w3.org/2000/svg', 'tspan');
-                textNode.textContent = `· · · ${displayText} · · ·`;
-                text.appendChild(textNode);
-            } else {
-                text.textContent = displayText;
-            }
-            
-            g.appendChild(text);
-            
-            currentBit += field.bits;
-        });
-        
-        // Add group brace if specified
-        if (row.group) {
-            this.renderGroupBrace(svg, row, y, rowIndex);
-        }
-        
-        svg.appendChild(g);
-        return y + this.cellHeight;
-    }
-    
-    private renderGroupBrace(svg: SVGSVGElement, row: PacketRow, y: number, rowIndex: number): void {
-        if (!row.brace || !row.group) return;
-        
-        const totalWidth = this.cellWidth * this.bitWidth;
-        const braceWidth = 15;
-        
-        if (row.brace === 'left' || row.brace === 'both') {
-            const x = this.padding - braceWidth - 5;
-            this.drawBrace(svg, x, y, this.cellHeight, 'left');
-            
-            // Add group label
-            const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-            text.setAttribute('x', (x - 5).toString());
-            text.setAttribute('y', (y + this.cellHeight / 2).toString());
-            text.setAttribute('text-anchor', 'end');
-            text.setAttribute('font-size', (this.fontSize - 1).toString());
-            text.setAttribute('fill', '#0066cc');
-            text.textContent = row.group;
-            svg.appendChild(text);
-        }
-        
-        if (row.brace === 'right' || row.brace === 'both') {
-            const x = this.padding + totalWidth + 5;
-            this.drawBrace(svg, x, y, this.cellHeight, 'right');
-            
-            // Add group label
-            const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-            text.setAttribute('x', (x + braceWidth + 5).toString());
-            text.setAttribute('y', (y + this.cellHeight / 2).toString());
-            text.setAttribute('text-anchor', 'start');
-            text.setAttribute('font-size', (this.fontSize - 1).toString());
-            text.setAttribute('fill', '#0066cc');
-            text.textContent = row.group;
-            svg.appendChild(text);
-        }
-    }
-    
-    private drawBrace(svg: SVGSVGElement, x: number, y: number, height: number, side: 'left' | 'right'): void {
-        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-        const width = 10;
-        
-        // Create curly brace path
-        const mid = y + height / 2;
-        const dir = side === 'left' ? -1 : 1;
-        
-        const d = [
-            `M ${x} ${y}`,
-            `Q ${x + dir * width} ${y} ${x + dir * width} ${y + 5}`,
-            `L ${x + dir * width} ${mid - 5}`,
-            `Q ${x + dir * width} ${mid} ${x + dir * width * 1.5} ${mid}`,
-            `Q ${x + dir * width} ${mid} ${x + dir * width} ${mid + 5}`,
-            `L ${x + dir * width} ${y + height - 5}`,
-            `Q ${x + dir * width} ${y + height} ${x} ${y + height}`
-        ].join(' ');
-        
-        path.setAttribute('d', d);
-        path.setAttribute('fill', 'none');
-        path.setAttribute('stroke', '#0066cc');
-        path.setAttribute('stroke-width', '1.5');
-        
-        svg.appendChild(path);
-    }
-    
-    private isColorDark(color: string): boolean {
-        // Simple brightness calculation
-        const hex = color.replace('#', '');
-        const r = parseInt(hex.substr(0, 2), 16);
-        const g = parseInt(hex.substr(2, 2), 16);
-        const b = parseInt(hex.substr(4, 2), 16);
-        const brightness = (r * 299 + g * 587 + b * 114) / 1000;
-        return brightness < 128;
-    }
-    
-    public render(container: HTMLElement): void {
-        const totalWidth = this.cellWidth * this.bitWidth + this.padding * 2;
-        const headerHeight = this.spec.showBitNumbers !== false ? 25 : 5;
-        const titleHeight = this.spec.name ? 30 : 0;
-        const totalHeight = titleHeight + headerHeight + (this.spec.rows.length * this.cellHeight) + this.padding;
-        
-        // Create SVG
-        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        svg.setAttribute('width', totalWidth.toString());
-        svg.setAttribute('height', totalHeight.toString());
-        svg.setAttribute('viewBox', `0 0 ${totalWidth} ${totalHeight}`);
-        svg.style.maxWidth = '100%';
-        svg.style.height = 'auto';
-        
-        let currentY = this.padding / 2;
-        
-        // Render title if present
-        if (this.spec.name) {
-            const title = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-            title.setAttribute('x', (totalWidth / 2).toString());
-            title.setAttribute('y', currentY.toString());
-            title.setAttribute('text-anchor', 'middle');
-            title.setAttribute('font-size', (this.fontSize + 4).toString());
-            title.setAttribute('font-weight', 'bold');
-            title.setAttribute('font-family', 'Arial, sans-serif');
-            title.textContent = this.spec.name;
-            svg.appendChild(title);
-            currentY += titleHeight;
-        }
-        
-        // Render bit number header
-        if (this.spec.showBitNumbers !== false) {
-            this.renderBitHeader(svg, currentY + 15);
-            currentY += headerHeight;
-        }
-        
-        // Render each row
-        this.spec.rows.forEach((row, index) => {
-            currentY = this.renderRow(svg, row, currentY, index);
-        });
-        
-        // Clear container and add SVG
-        container.innerHTML = '';
-        container.appendChild(svg);
-    }
+const THEMES_DARK: Record<string, ColorTriple> = {
+  header:    { bg: '#374151', border: '#6B7280', text: '#E5E7EB' },
+  transport: { bg: '#1A5276', border: '#4BA3C7', text: '#D6EAF8' },
+  security:  { bg: '#7D6608', border: '#D4AC0D', text: '#FEF9E7' },
+  control:   { bg: '#1E8449', border: '#82E0AA', text: '#D5F5E3' },
+  payload:   { bg: '#2C3E50', border: '#5D6D7E', text: '#D5D8DC' },
+  metadata:  { bg: '#1B4F72', border: '#5DADE2', text: '#D6EAF8' },
+  reserved:  { bg: '#4A235A', border: '#9B59B6', text: '#E8DAEF' },
+  error:     { bg: '#922B21', border: '#E74C3C', text: '#FADBD8' },
+  network:   { bg: '#0E6655', border: '#48C9B0', text: '#D1F2EB' },
+  highlight: { bg: '#2E86AB', border: '#7EC8E3', text: '#D6EAF8' },
+  accent:    { bg: '#935116', border: '#F0B27A', text: '#FDEBD0' },
+  purple:    { bg: '#6C3483', border: '#AF7AC5', text: '#E8DAEF' },
+  dark:      { bg: '#1A5276', border: '#2E86AB', text: '#D6EAF8' },
+};
+
+// Deterministic palette for auto-assignment when no color is specified.
+// Spread across hue space so adjacent sections don't clash.
+const AUTO_PALETTE_LIGHT: ColorTriple[] = [
+  { bg: '#B2E0F0', border: '#4BA3C7', text: '#1A5276' },
+  { bg: '#F9E79F', border: '#D4AC0D', text: '#7D6608' },
+  { bg: '#D5F5E3', border: '#82E0AA', text: '#1E8449' },
+  { bg: '#FADBD8', border: '#E74C3C', text: '#922B21' },
+  { bg: '#E8DAEF', border: '#AF7AC5', text: '#6C3483' },
+  { bg: '#D1F2EB', border: '#48C9B0', text: '#0E6655' },
+  { bg: '#FDEBD0', border: '#F0B27A', text: '#935116' },
+  { bg: '#D6EAF8', border: '#5DADE2', text: '#1B4F72' },
+  { bg: '#D4A5C7', border: '#9B59B6', text: '#4A235A' },
+  { bg: '#A9DFBF', border: '#27AE60', text: '#1E8449' },
+];
+
+const AUTO_PALETTE_DARK: ColorTriple[] = [
+  { bg: '#1A5276', border: '#4BA3C7', text: '#D6EAF8' },
+  { bg: '#7D6608', border: '#D4AC0D', text: '#FEF9E7' },
+  { bg: '#1E8449', border: '#82E0AA', text: '#D5F5E3' },
+  { bg: '#922B21', border: '#E74C3C', text: '#FADBD8' },
+  { bg: '#6C3483', border: '#AF7AC5', text: '#E8DAEF' },
+  { bg: '#0E6655', border: '#48C9B0', text: '#D1F2EB' },
+  { bg: '#935116', border: '#F0B27A', text: '#FDEBD0' },
+  { bg: '#1B4F72', border: '#5DADE2', text: '#D6EAF8' },
+  { bg: '#4A235A', border: '#9B59B6', text: '#E8DAEF' },
+  { bg: '#196F3D', border: '#27AE60', text: '#A9DFBF' },
+];
+
+// ── Public types ────────────────────────────────────────────────────────────
+
+export interface PacketBracket {
+  /** 0-based row index within this section where the bracket starts */
+  start_row: number;
+  /** 0-based row index within this section where the bracket ends (inclusive) */
+  end_row: number;
+  /** Short label displayed alongside the bracket */
+  label: string;
+  /** Which side of the grid: 'left' or 'right' (default 'right') */
+  side?: 'left' | 'right';
+  /** Nesting depth (0 = closest to grid).  Auto-computed when omitted. */
+  depth?: number;
 }
 
-// Export for D3Renderer integration
-export const renderPacketDiagram = (container: HTMLElement, spec: PacketSpec): void => {
-    const renderer = new PacketDiagramRenderer(spec);
-    renderer.render(container);
-};
+export interface PacketSection {
+  /** Label shown to the left of this section.  Supports \n for 2-line labels. */
+  label: string;
+  /** Named theme key OR explicit {bg, border, text} triple */
+  color?: string | ColorTriple;
+  /** Rows of fields.  Each field: [name, bitWidth] or [name, bitWidth, colorOverride] */
+  rows: Array<Array<[string, number] | [string, number, string | ColorTriple]>>;
+  /** Optional bracket annotations */
+  brackets?: PacketBracket[];
+}
+
+export interface PacketSpec {
+  type: 'packet';
+  /** Diagram title */
+  title: string;
+  /** Subtitle / description line */
+  subtitle?: string;
+  /** Bits per row.  Default 8.  Use 32 for classic RFC style. */
+  bitWidth?: number;
+  /** Ordered list of protocol layer sections */
+  sections: PacketSection[];
+}
+
+// ── Layout constants (all in px, overridable via spec in future) ────────────
+
+export interface LayoutConfig {
+  BIT_W: number;
+  ROW_H: number;
+  LABEL_W: number;
+  BRACKET_W: number;
+  HEADER_H: number;
+  SECTION_GAP: number;
+  LEFT_PAD: number;
+  TOP_PAD: number;
+  TITLE_H: number;
+  SUBTITLE_H: number;
+}
+
+export function defaultLayout(bitWidth: number): LayoutConfig {
+  // Scale bit cell width so total grid stays reasonable
+  const BIT_W = bitWidth <= 8 ? 56 : bitWidth <= 16 ? 36 : bitWidth <= 32 ? 24 : 16;
+  return {
+    BIT_W,
+    ROW_H: 34,
+    LABEL_W: 180,
+    BRACKET_W: 44,
+    HEADER_H: 22,
+    SECTION_GAP: 3,
+    LEFT_PAD: 10,
+    TOP_PAD: 10,
+    TITLE_H: 26,
+    SUBTITLE_H: 16,
+  };
+}
+
+// ── Color resolution ────────────────────────────────────────────────────────
+
+/** Resolve a color spec to a concrete triple for the current theme. */
+export function resolveColor(
+  color: string | ColorTriple | undefined,
+  isDarkMode: boolean,
+  autoIndex: number,
+): ColorTriple {
+  if (!color) {
+    // Auto-assign from rotating palette
+    const palette = isDarkMode ? AUTO_PALETTE_DARK : AUTO_PALETTE_LIGHT;
+    return palette[autoIndex % palette.length];
+  }
+  if (typeof color === 'object') {
+    // Explicit triple — adapt text color if needed for contrast
+    return {
+      bg: color.bg,
+      border: color.border,
+      text: color.text || getOptimalTextColor(color.bg),
+    };
+  }
+  // Named theme
+  const themes = isDarkMode ? THEMES_DARK : THEMES_LIGHT;
+  if (themes[color]) return themes[color];
+  // Treat as a hex background color, derive the rest
+  if (color.startsWith('#')) {
+    return {
+      bg: color,
+      border: darkenHex(color, 0.3),
+      text: getOptimalTextColor(color),
+    };
+  }
+  // Unknown string → fall back to auto
+  const palette = isDarkMode ? AUTO_PALETTE_DARK : AUTO_PALETTE_LIGHT;
+  return palette[autoIndex % palette.length];
+}
+
+/** Darken a hex color by a factor (0–1). */
+function darkenHex(hex: string, factor: number): string {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return hex;
+  const r = Math.round(rgb.r * (1 - factor));
+  const g = Math.round(rgb.g * (1 - factor));
+  const b = Math.round(rgb.b * (1 - factor));
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+}
+
+// ── Dimension calculation ───────────────────────────────────────────────────
+
+export function computeDimensions(spec: PacketSpec): { width: number; height: number; layout: LayoutConfig } {
+  const bits = spec.bitWidth ?? 8;
+  const L = defaultLayout(bits);
+
+  const totalRows = spec.sections.reduce((n, s) => n + s.rows.length, 0);
+  const numSections = spec.sections.length;
+
+  // Compute max bracket nesting depth on each side to allocate space.
+  // Must run the same auto-depth assignment that the renderer uses,
+  // because input specs typically omit explicit depth values.
+  let maxLeftDepth = 0;
+  let maxRightDepth = 0;
+  for (const sec of spec.sections) {
+    const allBrackets = sec.brackets ?? [];
+    const rightAssigned = assignBracketDepths(allBrackets, 'right');
+    const leftAssigned  = assignBracketDepths(allBrackets, 'left');
+    for (const br of rightAssigned) {
+      maxRightDepth = Math.max(maxRightDepth, (br.depth ?? 0) + 1);
+    }
+    for (const br of leftAssigned) {
+      maxLeftDepth = Math.max(maxLeftDepth, (br.depth ?? 0) + 1);
+    }
+  }
+  // Add 14px padding per side to accommodate label overlap shifts.
+  // The renderer shifts colliding labels outward by 14px each.
+  const bracketLeftW = maxLeftDepth * L.BRACKET_W + (maxLeftDepth > 0 ? 14 : 0);
+  const bracketRightW = Math.max(maxRightDepth, 1) * L.BRACKET_W + 14;
+
+  const GRID_W = bits * L.BIT_W;
+  const width = L.LEFT_PAD + bracketLeftW + L.LABEL_W + GRID_W + bracketRightW + L.LEFT_PAD;
+  const subtitleH = spec.subtitle ? L.SUBTITLE_H + 6 : 6;
+  const height =
+    L.TOP_PAD + L.TITLE_H + subtitleH +
+    L.HEADER_H +
+    totalRows * L.ROW_H +
+    Math.max(0, numSections - 1) * L.SECTION_GAP +
+    L.HEADER_H + L.TOP_PAD;
+
+  return { width, height, layout: L };
+}
+
+// ── Bracket depth auto-computation ──────────────────────────────────────────
+
+/**
+ * Assign nesting depths to brackets on one side so overlapping ranges
+ * don't collide.  Innermost brackets get depth 0 (closest to grid).
+ */
+export function assignBracketDepths(brackets: PacketBracket[], side: 'left' | 'right'): PacketBracket[] {
+  const sideBrackets = brackets
+    .filter(b => (b.side ?? 'right') === side)
+    .sort((a, b) => {
+      // Sort by span size ascending — smaller spans are innermost
+      const spanA = a.end_row - a.start_row;
+      const spanB = b.end_row - b.start_row;
+      return spanA - spanB || a.start_row - b.start_row;
+    });
+
+  const assigned: Array<PacketBracket & { depth: number }> = [];
+
+  for (const br of sideBrackets) {
+    // Find the minimum depth that doesn't overlap any already-assigned bracket
+    let depth = 0;
+    while (true) {
+      const conflict = assigned.some(
+        a => a.depth === depth &&
+          a.start_row <= br.end_row &&
+          a.end_row >= br.start_row
+      );
+      if (!conflict) break;
+      depth++;
+    }
+    assigned.push({ ...br, depth, side });
+  }
+
+  return assigned;
+}
+
+// ── XML escaping ────────────────────────────────────────────────────────────
+
+export function escapeXml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// Re-export the theme maps so the plugin can use them
+export { THEMES_LIGHT, THEMES_DARK, AUTO_PALETTE_LIGHT, AUTO_PALETTE_DARK };
