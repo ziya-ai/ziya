@@ -257,7 +257,7 @@ class CustomBedrockClient:
             already_using_extended = conversation_id and self._should_use_extended_context(conversation_id)
             
             if already_using_extended:
-                logger.info(f"🔍 EXTENDED_CONTEXT: Conversation {conversation_id} already extended, starting with headers")
+                logger.debug(f"🔍 EXTENDED_CONTEXT: Conversation {conversation_id} already extended, starting with headers")
                 kwargs = self._add_extended_context_headers(kwargs, conversation_id)
             else:
                 # First time - headers will be None, we'll activate on error if needed

@@ -3851,6 +3851,14 @@ def invalidate_folder_cache():
         logger.debug(f"📂 Cache invalidated for {len(_folder_cache)} project(s)")
         _last_cache_invalidation = current_time
 
+    # Also clear directory_util's cache to prevent stale data from being
+    # promoted back into server.py's cache by get_cached_folder_structure.
+    try:
+        import app.utils.directory_util as dir_util
+        dir_util._folder_cache.clear()
+    except Exception:
+        pass
+
 
 def is_path_explicitly_allowed(resolved_path: str, user_codebase_dir: str) -> bool:
     """
@@ -5246,6 +5254,12 @@ async def api_get_folders(refresh: bool = False, project_path: str = Query(None)
         dir_util._ignored_patterns_cache_dir = None
         dir_util._ignored_patterns_cache_time = 0
         logger.info("🔄 Invalidated gitignore patterns cache")
+
+        # Clear directory_util's folder cache too — otherwise
+        # get_cached_folder_structure will find stale data there and
+        # promote it back, bypassing the synchronous rescan entirely.
+        dir_util._folder_cache.clear()
+        logger.info("🔄 Invalidated directory_util folder cache")
     
     from fastapi import Response
     response = Response()

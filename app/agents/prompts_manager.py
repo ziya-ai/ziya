@@ -82,8 +82,10 @@ def get_extended_prompt(model_name: Optional[str] = None,
     ]
     
     # Only add AST context system message if AST is enabled
-    if os.environ.get("ZIYA_ENABLE_AST", "false").lower() in ("true", "1", "yes"):
-        messages.append(("system", "{ast_context}"))
+    # AST context blob injection is now opt-in (ZIYA_AST_INJECT_CONTEXT=true).
+    # The default path is on-demand querying via ast_get_tree / ast_search tools.
+    if os.environ.get("ZIYA_AST_INJECT_CONTEXT", "false").lower() in ("true", "1", "yes"):
+         messages.append(("system", "{ast_context}"))
     
     messages.append(MessagesPlaceholder(variable_name="agent_scratchpad", optional=True))
     

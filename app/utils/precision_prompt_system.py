@@ -120,6 +120,17 @@ class PrecisionPromptSystem:
                 except Exception as e:
                     pass  # Non-fatal — fileio instructions are advisory
 
+            # Inject model-discoverable skill catalog so the model knows
+            # which specialized skills it can activate on-demand.
+            if messages and messages[0]["role"] == "system":
+                try:
+                    from app.utils.skill_catalog_prompt import get_skill_catalog_section
+                    catalog_section = get_skill_catalog_section()
+                    if catalog_section:
+                        messages[0]["content"] += catalog_section
+                except Exception as e:
+                    pass  # Non-fatal — skill catalog is advisory
+
             # Inject skill prompts and other per-request additions (e.g. from
             # activeSkillPrompts on the frontend) into the system message.
             if system_prompt_addition and messages and messages[0]["role"] == "system":
