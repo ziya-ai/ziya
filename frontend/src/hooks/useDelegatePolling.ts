@@ -17,10 +17,6 @@ import * as syncApi from '../api/conversationSyncApi';
 
 const POLL_INTERVAL_MS = 3_000;
 
-// After this many consecutive 404s from delegate-status, treat the plan as
-// gone and mark the folder completed so we stop polling it.
-const MAX_CONSECUTIVE_404 = 3;
-
 interface DelegateStatusEntry {
   status: string;
   has_crystal: boolean;
@@ -73,9 +69,6 @@ export function useDelegatePolling(
   const foldersRef = useRef(folders);
   foldersRef.current = folders;
   
-  // Track consecutive 404 responses per folder id for GC.
-  const notFoundCountRef = useRef<Record<string, number>>({});
-
   const projectIdRef = useRef(projectId);
   projectIdRef.current = projectId;
 
@@ -92,26 +85,8 @@ export function useDelegatePolling(
           `/api/v1/projects/${pid}/groups/${folder.id}/delegate-status`
         );
         if (!res.ok) {
-          if (res.status === 404) {
-            const count = (notFoundCountRef.current[folder.id] || 0) + 1;
-            notFoundCountRef.current[folder.id] = count;
-            if (count >= MAX_CONSECUTIVE_404) {
-              // Server no longer knows about this plan — GC the folder locally.
-              console.warn(
-                `Delegate plan for folder ${folder.id} returned 404 ${count}x — marking completed (GC).`
-              );
-              setFolders(prev => prev.map(f =>
-                f.id === folder.id && f.taskPlan
-                  ? { ...f, taskPlan: { ...f.taskPlan, status: 'completed' } }
-                  : f
-              ));
-              delete notFoundCountRef.current[folder.id];
-            }
-          }
           continue;
         }
-        // Successful response — reset the 404 counter for this folder.
-        notFoundCountRef.current[folder.id] = 0;
         const data: DelegateStatusResponse = await res.json();
 
         // Diff against previous snapshot

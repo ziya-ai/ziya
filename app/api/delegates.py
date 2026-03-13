@@ -93,6 +93,14 @@ async def launch_delegates(
     """
     try:
         from ..agents.delegate_manager import get_delegate_manager
+        from ..context import get_project_root
+        # Capture the project root now, while the request ContextVar is set.
+        # Background tasks have no request context and fall back to the wrong root.
+        resolved_root = get_project_root()
+        for spec in data.delegate_specs:
+            if not spec.project_root:
+                spec.project_root = resolved_root
+
 
         project_dir = get_project_dir(project_id)
         manager = get_delegate_manager(project_id, project_dir)
