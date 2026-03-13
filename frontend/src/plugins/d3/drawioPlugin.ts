@@ -754,6 +754,24 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
             // Store for debugging
             window.__lastDrawIOGraph = graph;
 
+            // Override removeCells so that deleting a container also deletes all
+            // of its descendants. Without this, maxGraph reparents children to the
+            // container's parent (root) instead of removing them.
+            const _origRemoveCells = graph.removeCells.bind(graph);
+            graph.removeCells = function(cells: any[] = [], includeEdges: boolean = true) {
+                const allCells = [...cells];
+                const collectDescendants = (cell: any) => {
+                    if (cell.children && cell.children.length > 0) {
+                        cell.children.forEach((child: any) => {
+                            allCells.push(child);
+                            collectDescendants(child);
+                        });
+                    }
+                };
+                cells.forEach(collectDescendants);
+                return _origRemoveCells(allCells, includeEdges);
+            };
+
             // Disable tree images to avoid 404s - use CSS styling instead
             if (maxGraphModule.Constants) {
                 maxGraphModule.Constants.STYLE_IMAGE = null;

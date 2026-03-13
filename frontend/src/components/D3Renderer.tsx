@@ -583,6 +583,13 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                     container.style.overflow = 'visible';
                 }
 
+                // Content-driven plugins manage their own sizing via viewBox
+                if (currentPlugin?.sizingConfig?.sizingStrategy === 'content-driven') {
+                    container.style.width = '100%';
+                    container.style.height = 'auto';
+                    container.style.overflow = 'visible';
+                }
+
                 // Create temporary container for safe rendering
                 const tempContainer = document.createElement('div');
                 tempContainer.style.width = '100%';
@@ -880,7 +887,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
         margin: '1em 0',
         padding: 0,
         boxSizing: 'border-box',
-        minWidth: '100%',
+        minWidth: plugin?.sizingConfig?.sizingStrategy === 'content-driven' ? 'unset' : '100%',
         // Reserve space based on estimated size to prevent layout shifts
         ...(reservedSize && !hasSuccessfulRenderRef.current ? {
             minHeight: `${reservedSize.height}px`,
@@ -1088,6 +1095,13 @@ ${svgData}`;
             className={`d3-container ${isStreaming ? 'streaming' : ''}`}
             data-render-id={renderIdRef.current}
             data-visualization-type={typeof spec === 'object' && spec?.type ? spec.type : 'unknown'}
+            data-viz-source-hash={(() => {
+                // Fingerprint for content-based diagram matching during export.
+                // Must stay in sync with _viz_fingerprint() in conversation_exporter.py.
+                const src = (typeof spec === 'string' ? spec
+                    : spec?.definition ?? JSON.stringify(spec)).trim();
+                return `${src.length}:${src.substring(0, 64)}`;
+            })()}
         >
             {/* Show raw content during streaming */}
             {showRawContent && rawContent ? (
@@ -1141,7 +1155,7 @@ ${svgData}`;
                         style={{
                             width: plugin?.name === 'drawio-renderer' ? '100%' : (containerStyles.width || '100%'),
                             height: containerStyles.height || 'auto',
-                            display: 'flex',
+                            display: showRawContent ? 'none' : 'flex',
                             flexDirection: 'column',
                             alignItems: 'center',
                             position: 'relative',

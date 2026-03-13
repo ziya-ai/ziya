@@ -53,6 +53,11 @@ const pluginMetadata: PluginMetadata[] = [
     name: 'drawio-renderer',
     priority: 7,
     loader: async () => (await import('./drawioPlugin')).drawioPlugin
+  },
+  {
+    name: 'packet-renderer',
+    priority: 6,
+    loader: async () => (await import('./packetPlugin')).packetPlugin
   }
 ];
 

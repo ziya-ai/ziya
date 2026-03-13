@@ -7,6 +7,7 @@ import StopStreamButton from './StopStreamButton';
 import { RobotOutlined, LoadingOutlined } from '@ant-design/icons';
 import { useQuestionContext } from '../context/QuestionContext';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
+import type { ConversationFolder } from '../utils/types';
 import ReasoningDisplay from './ReasoningDisplay';
 import { useProject } from '../context/ProjectContext';
 import { sendPayload } from '../apis/chatApi';
@@ -43,6 +44,7 @@ export const StreamedContent: React.FC<{}> = () => {
         setReasoningContentMap,
         getProcessingState,
         updateProcessingState,
+        folders,
         conversations
     } = useChatContext();
 
@@ -58,6 +60,50 @@ export const StreamedContent: React.FC<{}> = () => {
 
     // Get processing state for current conversation
     const processingState = getProcessingState(currentConversationId);
+
+    // Detect active swarms spawned from the current conversation
+    const activeSwarmInfo = useMemo(() => {
+        if (!folders || !currentConversationId) return null;
+        if (folders.length === 0) return null;
+        const TERMINAL = new Set(['completed', 'completed_partial', 'cancelled']);
+        for (const folder of folders) {
+            const tp = folder.taskPlan;
+            if (!tp) continue;
+            if (tp.source_conversation_id !== currentConversationId) continue;
+            if (TERMINAL.has(tp.status)) continue;
+            // Found an active swarm originating from this conversation
+            const total = tp.delegate_specs?.length ?? 0;
+            const crystalCount = (tp.crystals?.length) ?? 0;
+            // Derive running count from delegate_specs statuses if available
+            // (useDelegatePolling patches delegateMeta on conversations, but
+            // folder.taskPlan.delegate_specs are the canonical list)
+            let runningCount = 0;
+            if (tp.delegate_specs) {
+                // Count delegates that are running based on conversation delegateMeta
+                // (set by useDelegatePolling).  Delegate conversations stream
+                // server-side and are never in the frontend streamingConversations set.
+                for (const spec of tp.delegate_specs) {
+                    const convId = (spec as any).conversation_id;
+                    if (convId) {
+                        const conv = conversations.find(c => c.id === convId);
+                        const status = conv?.delegateMeta?.status;
+                        if (status === 'running' || status === 'compacting') {
+                            runningCount++;
+                        }
+                    }
+                }
+            }
+            return {
+                name: tp.name,
+                total,
+                crystalCount,
+                runningCount,
+                status: tp.status,
+                folderId: folder.id,
+            };
+        }
+        return null;
+    }, [folders, currentConversationId, conversations]);
 
     // Track if we have any streamed content to show
     const hasStreamedContent = streamedContentMap.has(currentConversationId) &&
@@ -725,6 +771,66 @@ return (
             ) && (
                 <LoadingIndicator />
             )}
+        {/* Active swarm indicator — shown when this conversation spawned delegates */}
+        {activeSwarmInfo && (
+            <div style={{
+                margin: '12px 20px',
+                padding: '12px 16px',
+                background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.08) 0%, rgba(139, 92, 246, 0.08) 100%)',
+                border: '1px solid rgba(99, 102, 241, 0.25)',
+                borderRadius: '10px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px',
+                order: isTopToBottom ? 0 : -1,
+            }}>
+                <span style={{
+                    fontSize: '22px',
+                    animation: activeSwarmInfo.runningCount > 0 ? 'pulse 2s infinite' : undefined,
+                }}>⚡</span>
+                <div style={{ flex: 1 }}>
+                    <div style={{
+                        fontWeight: 600,
+                        fontSize: '13px',
+                        color: 'var(--text-color, #333)',
+                        marginBottom: '2px',
+                    }}>
+                        {activeSwarmInfo.name}
+                    </div>
+                    <div style={{
+                        fontSize: '12px',
+                        color: 'var(--text-secondary, #888)',
+                        display: 'flex',
+                        gap: '10px',
+                        alignItems: 'center',
+                    }}>
+                        {activeSwarmInfo.runningCount > 0 && (
+                            <span style={{ color: '#6366f1' }}>
+                                <LoadingOutlined spin style={{ marginRight: 4, fontSize: 11 }} />
+                                {activeSwarmInfo.runningCount} running
+                            </span>
+                        )}
+                        {activeSwarmInfo.crystalCount > 0 && (
+                            <span style={{ color: '#52c41a' }}>💎 {activeSwarmInfo.crystalCount}/{activeSwarmInfo.total} done</span>
+                        )}
+                        {activeSwarmInfo.crystalCount === 0 && activeSwarmInfo.runningCount === 0 && (
+                            <span>
+                                <LoadingOutlined spin style={{ marginRight: 4, fontSize: 11 }} />
+                                {activeSwarmInfo.total} delegate{activeSwarmInfo.total !== 1 ? 's' : ''} queued
+                            </span>
+                        )}
+                    </div>
+                </div>
+                <span style={{
+                    fontSize: '11px',
+                    padding: '2px 8px',
+                    borderRadius: '10px',
+                    background: 'rgba(99, 102, 241, 0.15)',
+                    color: '#6366f1',
+                    fontWeight: 500,
+                }}>swarm</span>
+            </div>
+        )}
     </div>
 );
     };

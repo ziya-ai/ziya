@@ -310,7 +310,8 @@ export function preprocessDefinition(definition: string, diagramType?: string, m
 
   // Apply each preprocessor in order
   for (const processor of preprocessors) {
-    if (processor.diagramTypes.includes('*') || processor.diagramTypes.includes(normalizedType)) {
+    const lowerType = normalizedType.toLowerCase();
+    if (processor.diagramTypes.includes('*') || processor.diagramTypes.some(t => t.toLowerCase() === lowerType)) {
       try {
         const before = processedDef.substring(0, 100);
         const result = processor.process(processedDef, normalizedType);
@@ -2225,6 +2226,8 @@ export function initMermaidEnhancer(): void {
       const blockKeywords = /^(rect|loop|alt|opt|par|critical|break)\b/;
       const lines = def.split('\n');
       const result: string[] = [];
+      // Matches standalone block keywords anywhere in text (for inline neutralization)
+      const inlineBlockKeywords = /\b(break|loop|alt|opt|par|critical|rect)\b/g;
 
       for (const line of lines) {
         const trimmed = line.trim();
@@ -2239,6 +2242,27 @@ export function initMermaidEnhancer(): void {
             result.push(`${indent}${notePart}`);
             result.push(`${indent}${lastPart}`);
             continue;
+          }
+        }
+
+        // Neutralize block keywords that appear inline within Note text content.
+        // Mermaid's sequence diagram lexer does not accept semicolons or certain
+        // keywords in Note text — they produce INVALID tokens and parse errors
+        // (e.g. "default: break;" triggers INVALID on the semicolon).
+        // Sanitize by stripping semicolons and neutralizing block keywords.
+        if (/^Note\s/.test(trimmed)) {
+          const colonIdx = line.indexOf(':');
+          if (colonIdx !== -1) {
+            const prefix = line.substring(0, colonIdx + 1);
+            let safeText = line.substring(colonIdx + 1);
+            // Strip semicolons — INVALID tokens in sequence diagram lexer
+            safeText = safeText.replace(/;/g, ',');
+            // Neutralize block keywords with zero-width space
+            safeText = safeText.replace(inlineBlockKeywords, (m) => m[0] + '\u200B' + m.slice(1));
+            if (safeText !== line.substring(colonIdx + 1)) {
+              result.push(prefix + safeText);
+              continue;
+            }
           }
         }
         result.push(line);
