@@ -867,6 +867,7 @@ class WritePolicyUpdate(BaseModel):
     model_config = {"extra": "allow"}
     project_id: str
     safe_write_paths: Optional[List[str]] = None
+    direct_write_mode: Optional[str] = None
     allowed_write_patterns: Optional[List[str]] = None
     allowed_interpreters: Optional[List[str]] = None
     always_blocked: Optional[List[str]] = None
@@ -895,6 +896,13 @@ async def update_project_write_policy(request: WritePolicyUpdate):
     """Update per-project write policy overrides."""
     try:
         overrides = {}
+        if request.direct_write_mode is not None:
+            if request.direct_write_mode not in ("none", "new_files", "all_files"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid direct_write_mode: '{request.direct_write_mode}'. Must be 'none', 'new_files', or 'all_files'.",
+                )
+            overrides["direct_write_mode"] = request.direct_write_mode
         if request.safe_write_paths is not None:
             overrides["safe_write_paths"] = request.safe_write_paths
         if request.allowed_write_patterns is not None:
