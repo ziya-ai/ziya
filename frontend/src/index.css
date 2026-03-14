@@ -349,6 +349,10 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 .message {
   padding: 5px 0;
   border-radius: 6px;
+  /* Skip layout/paint for off-screen messages — the browser only renders
+     messages near the viewport and uses the intrinsic size estimate for the rest. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 300px;
   transition: background-color 0.3s ease, border-color 0.3s ease;
   overflow: visible;
 }

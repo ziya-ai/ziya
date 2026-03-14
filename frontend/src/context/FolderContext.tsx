@@ -457,8 +457,9 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     // Only check progress if scanning is active
     console.log('isScanning changed:', isScanning);
     if (isScanning) {
-      checkFolderProgress();
-    };
+      // Delay progress polling to avoid blocking initial render
+      setTimeout(() => checkFolderProgress(), 2000);
+    }
   }, [isScanning]);
 
   // ─── File-tree WebSocket: incremental updates without full rescan ───
