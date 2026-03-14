@@ -1,0 +1,8 @@
+/* Virtualization placeholders for off-screen messages */
+.message-placeholder {
+  box-sizing: border-box;
+  transition: height 0.1s;
+}
+.message-placeholder.assistant {
+  border-left: 2px solid transparent;
+}
