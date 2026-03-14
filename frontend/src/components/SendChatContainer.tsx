@@ -616,7 +616,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   
   // Handle keyboard events - must be after sendToolFeedback and handleSend
   const handleKeyDown = useCallback((e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
       e.preventDefault();
       if (shouldSendAsFeedback) {
         sendToolFeedback();
