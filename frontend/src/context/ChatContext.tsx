@@ -670,6 +670,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
             return Promise.resolve();
         }
 
+        // Skip saves during the first 5 seconds after init to let all data settle.
+        // Shells → server sync → lazy-load → folders all trigger setConversations
+        // in rapid succession; saving each intermediate state is wasted I/O.
+        const initTime = (window as any).__ziyaInitTime || 0;
+        if (initTime > 0 && Date.now() - initTime < 5000) {
+            console.debug('📝 INIT_GUARD: Skipping save during startup settle window');
+            return Promise.resolve();
+        }
+
         // CRITICAL FIX: Filter out corrupted conversations before any processing
         const validConversations = conversations.filter(conv => {
             const isValid = conv &&
@@ -1665,13 +1674,14 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
         try {
             await db.init();
-            const savedConversations = await db.getConversations();
-            console.log('✅ Setting conversations immediately:', savedConversations.length);
+            // Fast path: load shells (metadata only, no message bodies)
+            // Messages for the active conversation are loaded below.
+            const savedConversations = await db.getConversationShells();
+            console.log('✅ Setting conversation shells immediately:', savedConversations.length);
             setConversations(savedConversations);
 
-            // CRITICAL FIX: If IndexedDB has conversations but state is empty, force load
             if (savedConversations.length > 0 && conversations.length === 0) {
-                console.log('🔄 FORCE LOAD: IndexedDB has data but state is empty, forcing load');
+                console.log('🔄 FORCE LOAD: shells loaded, state was empty');
                 setConversations(savedConversations);
             }
 
@@ -1692,6 +1702,24 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             // Always mark as initialized to allow app to function
             setIsInitialized(true);
+            (window as any).__ziyaInitTime = Date.now();
+
+            // Lazy-load full messages for the active conversation
+            const activeId = getTabState('ZIYA_CURRENT_CONVERSATION_ID') || savedConversations[0]?.id;
+            if (activeId) {
+                try {
+                    const allFull = await db.getConversations();
+                    const fullConv = allFull.find(c => c.id === activeId);
+                    if (fullConv && fullConv.messages.length > 0) {
+                        setConversations(prev => prev.map(c =>
+                            c.id === activeId ? { ...c, messages: fullConv.messages } : c
+                        ));
+                        console.log(`✅ Lazy-loaded ${fullConv.messages.length} messages for active conversation`);
+                    }
+                } catch (err) {
+                    console.warn('⚠️ Failed to lazy-load active conversation messages:', err);
+                }
+            }
 
         } catch (error) {
             console.error('❌ INIT: Database initialization failed:', error);
