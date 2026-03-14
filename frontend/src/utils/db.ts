@@ -37,6 +37,7 @@ interface DB {
     init(): Promise<void>;
     saveConversations(conversations: Conversation[]): Promise<void>;
     getConversations(): Promise<Conversation[]>;
+    getConversationShells(): Promise<Conversation[]>;
     exportConversations(): Promise<string>;
     importConversations(data: string, importRootFolderId?: string): Promise<void>;
     getFolders(): Promise<ConversationFolder[]>;
@@ -52,7 +53,6 @@ interface DB {
 class ConversationDB implements DB {
     private saveInProgress = false;
     private lastBackupTime = 0;  // BUGFIX: Throttle localStorage backups
-    private lastSavedData: string | null = null;
     private lastKnownVersion: number = 0;
     private connectionAttempts = 0;
     private _pendingMigrationData: Conversation[] | null = null;
@@ -477,7 +477,6 @@ class ConversationDB implements DB {
                         savedCount: conversationsToSave.length,
                         savedIds: conversationsToSave.map(c => c.id)
                     });
-                    this.lastSavedData = JSON.stringify(conversationsToSave);
                     saveCompleted = true;
                 };
 
@@ -611,6 +610,44 @@ class ConversationDB implements DB {
                 reject(request.error);
             };
         });
+    }
+
+    /**
+     * Load conversations without message content — only metadata needed for
+     * the sidebar, folder tree, and routing.  Messages for the active
+     * conversation are loaded on-demand by the full getConversations() path
+     * or by the server sync that fetches individual chats.
+     */
+    async getConversationShells(): Promise<Conversation[]> {
+        if (!this.db || !this.db.objectStoreNames.contains(STORE_NAME)) {
+            try { await this.init(); } catch { return []; }
+            if (!this.db) return [];
+        }
+
+        const readFn = async (): Promise<Conversation[]> => {
+            const tx = this.db!.transaction([STORE_NAME], 'readonly');
+            const store = tx.objectStore(STORE_NAME);
+            return new Promise<Conversation[]>((resolve) => {
+                const request = store.get('current');
+                request.onsuccess = () => {
+                    const conversations: Conversation[] = Array.isArray(request.result) ? request.result : [];
+                    // Strip messages — keep only the first and last for preview/timestamp
+                    const shells = conversations.map(conv => ({
+                        ...conv,
+                        messages: conv.messages?.length > 0
+                            ? [conv.messages[0], ...(conv.messages.length > 1 ? [conv.messages[conv.messages.length - 1]] : [])]
+                            : [],
+                    }));
+                    resolve(shells);
+                };
+                request.onerror = () => resolve([]);
+            });
+        };
+
+        if (navigator.locks) {
+            return navigator.locks.request('ziya-db-read', () => readFn());
+        }
+        return readFn();
     }
 
     private async handleMissingStore(): Promise<boolean> {
@@ -1069,8 +1106,6 @@ class ConversationDB implements DB {
 
             clearRequest.onsuccess = () => {
                 console.debug('Database cleared successfully');
-                this.lastSavedData = null;
-                this.lastKnownVersion = 0;
                 resolve();
             };
 
