@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect, memo, useRef, useMemo } from 'react';
+import { FixedSizeList } from 'react-window';
 import { message, Modal, Form, Spin, Input, Switch, Dropdown, Menu as AntMenu } from 'antd';
 import { ConversationHealthDebugModal } from './ConversationHealthDebug';
 import ExportConversationModal from './ExportConversationModal';
@@ -11,8 +12,6 @@ import { v4 as uuidv4 } from 'uuid';
 import type { DelegateMeta, TaskPlan, DelegateStatus } from '../types/delegate';
 // MUI imports
 import { styled } from '@mui/material/styles';
-import { TreeView } from '@mui/x-tree-view/TreeView';
-import { TreeItem, TreeItemProps } from '@mui/x-tree-view/TreeItem';
 import Typography from '@mui/material/Typography';
 import TextField from '@mui/material/TextField';
 import Button from '@mui/material/Button';
@@ -71,70 +70,6 @@ const SpinningSync = styled(SyncIcon)(({ theme }) => ({
   },
 }));
 
-// Completely rewritten StyledTreeItem with proper syntax
-const StyledTreeItem = styled((props: TreeItemProps) => (
-  <TreeItem {...props} />
-))(({ theme }) => ({
-  '& .MuiTreeItem-iconContainer': {
-    marginLeft: '-24px', // Move chevron into the left padding
-    marginRight: '6px',   // Add space between chevron and icon
-    width: '16px',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    '& .MuiSvgIcon-root': {
-      fontSize: '16px',
-      opacity: 0.7,
-    },
-  },
-
-  // Root level items should align properly
-  '&.MuiTreeItem-root > .MuiTreeItem-content': {
-    paddingLeft: '24px',
-  },
-
-  '& .MuiTreeItem-group': {
-    marginLeft: 15,
-    paddingLeft: 18,
-    borderLeft: `1px dashed ${theme.palette.mode === 'light' ? '#d9d9d9' : '#606060'}`
-  },
-
-  '& .MuiTreeItem-content': {
-    display: 'flex',
-    padding: '4px 8px',
-    paddingLeft: '24px', // Provide space for the chevron
-    alignItems: 'center',
-    borderRadius: '4px',
-    transition: 'background-color 0.2s',
-    '&:hover': {
-      backgroundColor: theme.palette.mode === 'light' ? 'rgba(0, 0, 0, 0.04)' : 'rgba(255, 255, 255, 0.04)'
-    },
-    '&.Mui-selected': {
-      backgroundColor: theme.palette.mode === 'light' ? '#e6f7ff' : '#177ddc',
-      color: theme.palette.mode === 'light' ? 'inherit' : '#ffffff',
-      '&:hover': {
-        backgroundColor: theme.palette.mode === 'light' ? '#e6f7ff' : '#177ddc'
-      }
-    }
-  },
-
-  '& .MuiTreeItem-root': {
-    margin: 0,
-    padding: 0,
-    minHeight: 'auto'
-  },
-
-  '&.drag-over > .MuiTreeItem-content': {
-    backgroundColor: theme.palette.mode === 'light' ? 'rgba(24, 144, 255, 0.2)' : 'rgba(24, 144, 255, 0.3)',
-    border: `1px dashed ${theme.palette.mode === 'light' ? '#1890ff' : '#177ddc'}`,
-    borderRadius: '4px',
-  },
-
-  '&.dragging > .MuiTreeItem-content': {
-    opacity: 0.4
-  }
-}));
-
 // Custom TreeItem component for chat items
 interface ChatTreeItemProps {
   nodeId: string;
@@ -168,6 +103,10 @@ interface ChatTreeItemProps {
   isEditing?: boolean;
   editValue?: string;
   onEditChange?: (value: string) => void;
+  depth?: number;
+  isExpanded?: boolean;
+  hasChildren?: boolean;
+  onToggleExpand?: (nodeId: string) => void;
   children?: React.ReactNode;
   isDragOver?: boolean;
   className?: string;
@@ -217,6 +156,10 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     onDragOver,
     onDragLeave,
     onDrop,
+    depth,
+    isExpanded,
+    hasChildren,
+    onToggleExpand,
     ...other
   } = props;
 
@@ -255,13 +198,40 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
   let itemClassName = className || '';
 
   return (
-    <StyledTreeItem
-      className={itemClassName.trim()}
-      // Store the nodeId as a data attribute for drag/drop target identification
+    <div
+      className={`virtual-tree-row ${itemClassName.trim()}`}
       data-node-id={nodeId}
-      style={style}
-      nodeId={nodeId}
-      label={
+      style={{
+        ...style,
+        display: 'flex',
+        alignItems: 'center',
+        height: VIRTUAL_ROW_HEIGHT,
+        boxSizing: 'border-box',
+        cursor: 'default',
+        borderRadius: 4,
+        padding: `4px 8px 4px ${12 + (depth || 0) * 20}px`,
+        transition: 'background-color 0.15s',
+        backgroundColor: props.isCurrentItem
+          ? (isDarkMode ? '#177ddc' : '#e6f7ff')
+          : undefined,
+        color: props.isCurrentItem && isDarkMode ? '#fff' : undefined,
+      }}
+      onClick={(e) => {
+        // If folder with children, toggle expand on the chevron area or the whole row
+        if (isFolder && hasChildren) {
+          onToggleExpand?.(nodeId);
+        }
+      }}
+    >
+      {/* Expand/collapse chevron for folders */}
+      <span
+        style={{ width: 20, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.7, cursor: isFolder && hasChildren ? 'pointer' : 'default' }}
+      >
+        {isFolder && hasChildren ? (
+          isExpanded ? <ArrowDropDownIcon sx={{ fontSize: 18 }} /> : <ArrowRightIcon sx={{ fontSize: 18 }} />
+        ) : <span style={{ width: 18 }} />}
+      </span>
+      <div style={{ flex: 1, minWidth: 0 }}>
         <div
           style={{ width: '100%' }}
           onMouseDown={onMouseDown}
@@ -407,15 +377,11 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                 </Typography>
               </Box>
             )}</Box>
-        </div>}
-      {...other} // Spread any other props like children  
-    >
-      {/* Menu is always rendered but its 'open' state and 'key' control its behavior */}
-      {props.children}
-    </StyledTreeItem>
+        </div>
+      </div>
+    </div>
   );
 });
-
 const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress, onExport, onOpenMoveMenu, onToggleGlobal, onMoveToProject, isGlobalItem, onConfigure, onPin, isPinned, onCreateSubfolder }) => {
   const handleAntAction = (actionCallback: (id: string) => void, originalEvent?: React.MouseEvent | Event) => {
     originalEvent?.stopPropagation();
@@ -478,6 +444,52 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
 
   return <AntMenu items={items} />;
 };
+
+// Virtualization: flattened node for react-window rendering
+interface FlatNode {
+  id: string;
+  name: string;
+  depth: number;
+  isFolder: boolean;
+  isExpanded: boolean;
+  hasChildren: boolean;
+  node: any; // original tree node
+}
+
+/** Walk the tree and return only visible (expanded-ancestor) nodes with depth. */
+function flattenVisibleNodes(
+  nodes: any[],
+  expandedSet: Set<string>,
+  depth: number = 0
+): FlatNode[] {
+  const result: FlatNode[] = [];
+  for (const node of nodes) {
+    // Only real folders (with node.folder or node.taskPlan) are collapsible.
+    // Conversations may have children (e.g. delegate swarm anchoring) but
+    // should always render their children inline, not require expansion.
+    const isFolder = Boolean(node.folder) || Boolean(node.taskPlan);
+    const hasChildren = Boolean(node.children?.length);
+    const isExpanded = isFolder && expandedSet.has(node.id);
+    result.push({
+      id: node.id,
+      name: node.name,
+      depth,
+      isFolder,
+      isExpanded,
+      hasChildren,
+      node,
+    });
+    // Only recurse into children if this node is expanded
+    // For non-folder nodes with children (e.g. conversations with delegates),
+    // always show children inline.
+    if (hasChildren && (!isFolder || isExpanded)) {
+      result.push(...flattenVisibleNodes(node.children, expandedSet, depth + 1));
+    }
+  }
+  return result;
+}
+
+const VIRTUAL_ROW_HEIGHT = 36;
 
 const MoveToFolderMenu = ({
   anchorEl,
@@ -1531,24 +1543,6 @@ const MUIChatHistory = () => {
     }
   };
 
-  // Add a separate handler specifically for TreeView's onNodeSelect
-  const handleTreeNodeSelect = (event: React.SyntheticEvent<Element, Event>, nodeIds: string) => {
-    if (!nodeIds) {
-      return;
-    }
-
-    const nodeId = nodeIds; // Use the selected node ID directly
-    if (nodeId.startsWith('conv-')) {
-      handleConversationClick(nodeId.substring(5));
-    } else {
-      setCurrentFolderId(nodeId);
-    }
-  };
-  // Add handler for node expansion
-  const handleNodeToggle = (event: React.SyntheticEvent, nodeIds: string[]) => {
-    setExpandedNodes(nodeIds);
-  };
-
 
 
   // Handle adding a new chat to a folder
@@ -1991,7 +1985,7 @@ const MUIChatHistory = () => {
   const lastTreeDataInputsRef = useRef<string>('');
   const lastTreeDataRef = useRef<any[]>([]);
 
-  const treeData = useMemo(() => {
+  const treeDataRaw = useMemo(() => {
     // Create a stable hash of inputs to detect actual changes
     const inputHash = JSON.stringify({
       folders: folders.map(f => ({ id: f.id, name: f.name, parentId: f.parentId, isGlobal: f.isGlobal, tpSrc: f.taskPlan?.source_conversation_id })),
@@ -2277,7 +2271,40 @@ const MUIChatHistory = () => {
     return result;
   }, [conversations, folders, pinnedFolders]);
 
-  // Create a unified folder configuration dialog that works for both creation and editing
+  // Debounce treeData updates: during startup, conversations change 4+ times
+  // in rapid succession. Only rebuild the flattened tree once things settle.
+  const [treeData, setTreeData] = useState<any[]>([]);
+  const treeDataTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => {
+    if (treeDataTimerRef.current) clearTimeout(treeDataTimerRef.current);
+    // If tree is empty, update immediately (first paint). Otherwise debounce.
+    if (treeData.length === 0) {
+      setTreeData(treeDataRaw);
+    } else {
+      treeDataTimerRef.current = setTimeout(() => setTreeData(treeDataRaw), 300);
+    }
+  }, [treeDataRaw]);
+
+  // Virtualization: flatten visible tree nodes
+  const expandedSet = useMemo(() => new Set(expandedNodes.map(String)), [expandedNodes]);
+  const flatNodes = useMemo(() => flattenVisibleNodes(treeData, expandedSet), [treeData, expandedSet]);
+
+  // Measure available height for the virtual list
+  const treeContainerRef = useRef<HTMLDivElement>(null);
+  const [treeContainerHeight, setTreeContainerHeight] = useState(600);
+  useEffect(() => {
+    const el = treeContainerRef.current;
+    if (!el) return;
+    // Set initial height immediately
+    setTreeContainerHeight(el.clientHeight || 600);
+    const ro = new ResizeObserver(([entry]) => {
+      const h = entry.contentRect.height;
+      if (h > 0) setTreeContainerHeight(h);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   const showFolderConfigDialog = (folderId?: string) => {
     const isEditing = !!folderId;
 
@@ -2518,161 +2545,7 @@ const MUIChatHistory = () => {
     });
   };
 
-  // Render the tree recursively
-  const renderTree = (nodes: any[]): React.ReactNode[] => {
-    return nodes.map(node => {
-      const isFolder = Boolean(node.folder);
-      const nodeId = node.id;
-
-      // Delegate-aware display properties
-      const taskPlan = isFolder ? node.taskPlan : null;
-      const isTaskPlanFolder = Boolean(taskPlan);
-      let taskPlanProgress: string | undefined;
-      if (isTaskPlanFolder && node.children) {
-        const delegateChildren = node.children.filter(
-          (c: any) => c.delegateMeta?.role === 'delegate'
-        );
-        if (delegateChildren.length > 0) {
-          const crystalCount = delegateChildren.filter(
-            (c: any) => c.delegateMeta?.status === 'crystal'
-          ).length;
-          taskPlanProgress = `${crystalCount}/${delegateChildren.length}`;
-        }
-      }
-
-      // Delegate status for individual conversations
-      const delegateMeta = !isFolder ? node.delegateMeta : null;
-      let delegateStatus: DelegateStatus | 'orchestrator' | null = null;
-      if (delegateMeta) {
-        if (delegateMeta.role === 'orchestrator') {
-          delegateStatus = 'orchestrator';
-        } else {
-          delegateStatus = delegateMeta.status || null;
-        }
-      }
-
-      // Strip leading emoji from title when delegateMeta provides the icon
-      let labelText = node.name;
-      if (delegateStatus && !isFolder) {
-        labelText = labelText.replace(/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]\s*/u, '');
-      }
-      if (isTaskPlanFolder) {
-        labelText = labelText.replace(/^⚡\s*/, '');
-      }
-      const isPinned = isFolder && pinnedFolders.has(node.id);
-      const isCurrentItem = isFolder
-        ? node.id === currentFolderId
-        : node.id.startsWith('conv-') && node.id.substring(5) === currentConversationId;
-      const isGlobalItem = isFolder
-        ? node.folder?.isGlobal === true
-        : node.conversation?.isGlobal === true;
-      const hasUnreadResponse = !isFolder && node.id.startsWith('conv-') &&
-        node.conversation?.hasUnreadResponse && node.id.substring(5) !== currentConversationId;
-
-      // Fix streaming detection - ensure we're checking the actual conversation ID
-      const conversationId = !isFolder && node.id.startsWith('conv-') ? node.id.substring(5) : null;
-      // Only show streaming spinner when actually receiving data over a live
-      // connection.  Delegate sidebar status (🔵/⟳) handles the "running" state.
-      const isStreamingConv = !!(conversationId && streamingConversations.has(conversationId));
-
-      const conversationCount = isFolder ? node.conversationCount : 0;
-      const isEditing = editingId === (isFolder ? node.id : node.id.substring(5));
-
-      // Custom drag handler that doesn't interfere with text editing
-      const handleCustomMouseDown = (e: React.MouseEvent) => {
-        // Skip if clicking on editable elements
-        const target = e.target as HTMLElement;
-        if (e.button !== 0 || target.tagName === 'INPUT' ||
-          target.tagName === 'TEXTAREA' ||
-          target.closest('input') ||
-          target.closest('textarea') ||
-          target.closest('.MuiTextField-root')) {
-          return; // Allow normal text editing
-        }
-
-        // Only initiate drag if we're within the chat history area
-        const chatHistoryContainer = chatHistoryRef.current;
-        if (!chatHistoryContainer || !chatHistoryContainer.contains(target)) {
-          return; // Don't start drag if outside chat history
-        }
-
-        // Only start drag detection after significant movement threshold
-        const startX = e.clientX;
-        const startY = e.clientY;
-
-        // Track whether mouse is still held down
-        let mouseIsDown = true;
-
-        const detectDrag = (moveEvent: MouseEvent) => {
-          // If mouse was released before we hit the threshold, bail out
-          if (!mouseIsDown) {
-            document.removeEventListener('mousemove', detectDrag);
-            return;
-          }
-          const deltaX = Math.abs(moveEvent.clientX - startX);
-          const deltaY = Math.abs(moveEvent.clientY - startY);
-
-          if (deltaX > 12 || deltaY > 12) {
-            startCustomDrag(nodeId, isFolder ? 'folder' : 'conversation', labelText);
-            cleanup();
-          }
-        };
-
-        const cleanup = () => {
-          mouseIsDown = false;
-          document.removeEventListener('mousemove', detectDrag);
-          document.removeEventListener('mouseup', cleanup);
-        };
-
-        document.addEventListener('mousemove', detectDrag);
-        document.addEventListener('mouseup', cleanup);
-      };
-
-      return (
-        <ChatTreeItem
-          key={nodeId}
-          nodeId={nodeId}
-          labelText={labelText}
-          isFolder={isFolder}
-          isTaskPlanFolder={isTaskPlanFolder}
-          taskPlanProgress={taskPlanProgress}
-          delegateStatus={delegateStatus}
-          isPinned={isPinned}
-          isCurrentItem={isCurrentItem}
-          isGlobalItem={isGlobalItem}
-          isStreaming={isStreamingConv}
-          hasUnreadResponse={hasUnreadResponse}
-          conversationCount={conversationCount}
-          onEdit={handleEdit}
-          onDelete={handleDelete}
-          onAddChat={handleAddChat}
-          onExport={handleExportConversation}
-          onPin={togglePinFolder}
-          onConfigure={handleConfigureFolder}
-          onFork={handleForkConversation}
-          onCompress={handleCompressConversation}
-          onMove={handleMoveConversation}
-          onOpenMoveMenu={handleOpenMoveMenu}
-          onToggleGlobal={handleToggleGlobal}
-          onMoveToProject={handleOpenMoveToProjectMenu}
-          onCreateSubfolder={handleCreateSubfolder}
-          isEditing={isEditing}
-          editValue={editValue}
-          onEditChange={handleEditChange}
-          onEditSubmit={handleEditSubmit}
-          onMouseDown={handleCustomMouseDown}
-          style={{
-            cursor: customDragState.isDragging && customDragState.draggedNodeId === nodeId ? 'grabbing' : 'default',
-            opacity: customDragState.isDragging && customDragState.draggedNodeId === nodeId ? 0.6 : 1,
-            transition: 'opacity 0.2s ease',
-            ...(isTaskPlanFolder ? { borderLeft: '3px solid #6366f1', borderRadius: '4px' } : {}),
-          }}
-        >
-          {node.children && node.children.length > 0 ? renderTree(node.children) : null}
-        </ChatTreeItem>
-      );
-    });
-  };
+  // renderVirtualRow is defined inline in the FixedSizeList below
 
   return isLoading && !currentConversationId ? (
     <Box sx={{
@@ -2837,48 +2710,113 @@ const MUIChatHistory = () => {
             </Typography>
           </Box>
         ) : (
-          <Box sx={{ flexGrow: 1, overflow: 'auto', pt: 1 }}>
-            {(() => {
-              const treeViewStyles = {
-                height: '100%',
-                overflowY: 'auto' as const,
-                '& .MuiTreeItem-root': {
-                  '&.Mui-selected > .MuiTreeItem-content': {
-                    bgcolor: isDarkMode ? '#177ddc' : '#e6f7ff',
-                    color: isDarkMode ? '#ffffff' : 'inherit',
-                  },
-                  '&.drag-over > .MuiTreeItem-content': {
-                    backgroundColor: isDarkMode ? 'rgba(24, 144, 255, 0.2)' : 'rgba(24, 144, 255, 0.1)',
-                    border: isDarkMode ? '1px dashed #177ddc' : '1px dashed #1890ff'
+          <div ref={treeContainerRef} style={{ flexGrow: 1, overflow: 'hidden', paddingTop: 8, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            <FixedSizeList
+              height={treeContainerHeight}
+              width="100%"
+              itemCount={flatNodes.length}
+              itemSize={VIRTUAL_ROW_HEIGHT}
+              overscanCount={8}
+              className="chat-history-tree"
+              itemKey={(index) => flatNodes[index].id}
+            >
+              {({ index, style: rowStyle }) => {
+                const flat = flatNodes[index];
+                const node = flat.node;
+                const isFolder = flat.isFolder;
+                const nodeId = flat.id;
+
+                const taskPlan = isFolder ? node.taskPlan : null;
+                const isTaskPlanFolder = Boolean(taskPlan);
+                let taskPlanProgress: string | undefined;
+                if (isTaskPlanFolder && node.children) {
+                  const dels = node.children.filter((c: any) => c.delegateMeta?.role === 'delegate');
+                  if (dels.length > 0) {
+                    const done = dels.filter((c: any) => c.delegateMeta?.status === 'crystal').length;
+                    taskPlanProgress = `${done}/${dels.length}`;
                   }
-                },
-                '& .MuiTreeItem-content': {
-                  padding: '0px 8px',
-                  minHeight: '20px'
                 }
-              };
 
-              return (
-                <TreeView
-                  aria-label="chat history"
-                  sx={treeViewStyles}
-                  defaultCollapseIcon={<ArrowDropDownIcon />}
-                  defaultExpandIcon={<ArrowRightIcon />}
-                  defaultEndIcon={<div style={{ width: 24 }} />}
-                  expanded={expandedNodes.map(String)}
-                  selected={currentConversationId ? 'conv-' + currentConversationId : currentFolderId || ''}
-                  onNodeToggle={handleNodeToggle}
-                  onNodeSelect={handleTreeNodeSelect}
-                  disableSelection={false}
-                  className="chat-history-tree"
-                >
-                  {renderTree(treeData)}
-                </TreeView>
-              );
-            })()}
-          </Box>
+                const delegateMeta = !isFolder ? node.delegateMeta : null;
+                let delegateStatus: DelegateStatus | 'orchestrator' | null = null;
+                if (delegateMeta) {
+                  delegateStatus = delegateMeta.role === 'orchestrator' ? 'orchestrator' : (delegateMeta.status || null);
+                }
+
+                let labelText = node.name;
+                if (delegateStatus && !isFolder) labelText = labelText.replace(/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]\s*/u, '');
+                if (isTaskPlanFolder) labelText = labelText.replace(/^⚡\s*/, '');
+
+                const isPinned = isFolder && pinnedFolders.has(nodeId);
+                const isCurrentItem = isFolder
+                  ? nodeId === currentFolderId
+                  : nodeId.startsWith('conv-') && nodeId.substring(5) === currentConversationId;
+                const isGlobalItem = isFolder ? node.folder?.isGlobal === true : node.conversation?.isGlobal === true;
+                const hasUnreadResponse = !isFolder && nodeId.startsWith('conv-') &&
+                  node.conversation?.hasUnreadResponse && nodeId.substring(5) !== currentConversationId;
+                const convId = !isFolder && nodeId.startsWith('conv-') ? nodeId.substring(5) : null;
+                const isStreamingConv = !!(convId && streamingConversations.has(convId));
+                const conversationCount = isFolder ? node.conversationCount : 0;
+                const isEditingNode = editingId === (isFolder ? nodeId : nodeId.substring(5));
+
+                const handleCustomMouseDown = (e: React.MouseEvent) => {
+                  const target = e.target as HTMLElement;
+                  if (e.button !== 0 || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.closest('input') || target.closest('.MuiTextField-root')) return;
+                  const container = chatHistoryRef.current;
+                  if (!container || !container.contains(target)) return;
+                  const startX = e.clientX, startY = e.clientY;
+                  let down = true;
+                  const detect = (me: MouseEvent) => { if (!down) { document.removeEventListener('mousemove', detect); return; } if (Math.abs(me.clientX - startX) > 12 || Math.abs(me.clientY - startY) > 12) { startCustomDrag(nodeId, isFolder ? 'folder' : 'conversation', labelText); cleanup(); } };
+                  const cleanup = () => { down = false; document.removeEventListener('mousemove', detect); document.removeEventListener('mouseup', cleanup); };
+                  document.addEventListener('mousemove', detect);
+                  document.addEventListener('mouseup', cleanup);
+                };
+
+                return (
+                  <div style={rowStyle} onClick={(e) => {
+                    // Don't navigate on icon button clicks
+                    if ((e.target as HTMLElement).closest('button') || (e.target as HTMLElement).closest('.MuiIconButton-root')) return;
+                    if (nodeId.startsWith('conv-')) handleConversationClick(nodeId.substring(5));
+                    else setCurrentFolderId(nodeId);
+                  }}>
+                    <ChatTreeItem
+                      nodeId={nodeId} labelText={labelText} isFolder={isFolder}
+                      isTaskPlanFolder={isTaskPlanFolder} taskPlanProgress={taskPlanProgress}
+                      delegateStatus={delegateStatus} isPinned={isPinned}
+                      isCurrentItem={isCurrentItem} isGlobalItem={isGlobalItem}
+                      isStreaming={isStreamingConv} hasUnreadResponse={hasUnreadResponse}
+                      conversationCount={conversationCount}
+                      onEdit={handleEdit} onDelete={handleDelete} onAddChat={handleAddChat}
+                      onExport={handleExportConversation} onPin={togglePinFolder}
+                      onConfigure={handleConfigureFolder} onFork={handleForkConversation}
+                      onCompress={handleCompressConversation} onMove={handleMoveConversation}
+                      onOpenMoveMenu={handleOpenMoveMenu} onToggleGlobal={handleToggleGlobal}
+                      onMoveToProject={handleOpenMoveToProjectMenu}
+                      onCreateSubfolder={handleCreateSubfolder}
+                      isEditing={isEditingNode} editValue={editValue}
+                      onEditChange={handleEditChange} onEditSubmit={handleEditSubmit}
+                      onMouseDown={handleCustomMouseDown}
+                      depth={flat.depth} isExpanded={flat.isExpanded}
+                      hasChildren={flat.hasChildren}
+                      onToggleExpand={(id) => {
+                        setExpandedNodes(prev => {
+                          const s = new Set(prev.map(String));
+                          if (s.has(id)) { s.delete(id); } else { s.add(id); }
+                          return Array.from(s);
+                        });
+                      }}
+                      style={{
+                        cursor: customDragState.isDragging && customDragState.draggedNodeId === nodeId ? 'grabbing' : 'default',
+                        opacity: customDragState.isDragging && customDragState.draggedNodeId === nodeId ? 0.6 : 1,
+                        ...(isTaskPlanFolder ? { borderLeft: '3px solid #6366f1' } : {}),
+                      }}
+                    />
+                  </div>
+                );
+              }}
+            </FixedSizeList>
+          </div>
         )}
-
         {/* Export/Import buttons */}
         <Box sx={{
           mt: 'auto',
