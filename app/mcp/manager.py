@@ -1135,7 +1135,17 @@ class MCPManager:
             logger.info(f"Executing dynamic tool: {internal_tool_name}")
             try:
                 result = await dynamic_tool.execute(**arguments)
-                return {"content": [{"type": "text", "text": str(result)}]}
+                # Normalize result to standard content format
+                if isinstance(result, dict) and "content" in result:
+                    normalized = result
+                elif isinstance(result, dict) and result.get("error"):
+                    return {"error": True, "message": result.get("message", "Unknown error")}
+                else:
+                    normalized = {"content": [{"type": "text", "text": str(result)}]}
+                # Sign the result so it passes verification in the executor
+                from app.mcp.signing import sign_tool_result
+                conversation_id = arguments.get('conversation_id', 'default') if isinstance(arguments, dict) else 'default'
+                return sign_tool_result(internal_tool_name, arguments, normalized, conversation_id)
             except Exception as e:
                 logger.error(f"Dynamic tool execution failed: {e}", exc_info=True)
                 return {"error": True, "message": str(e)}
