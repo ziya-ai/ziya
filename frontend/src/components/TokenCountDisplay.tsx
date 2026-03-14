@@ -700,7 +700,12 @@ export const TokenCountDisplay = memo(() => {
         // Only update tokens if we have messages
         if (hasMessagesChanged(currentMessages)) {
             console.debug('Updating chat tokens for conversation:', currentConversationId);
+        // Debounce token updates to avoid blocking UI during conversation switch
+        const timeoutId = setTimeout(() => {
             updateChatTokens();
+        }, 1500);
+
+        return () => clearTimeout(timeoutId);
         }
     }, [currentMessages, updateChatTokens, currentConversationId, hasMessagesChanged, isStreaming]);
 
