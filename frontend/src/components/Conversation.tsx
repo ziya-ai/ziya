@@ -1,5 +1,4 @@
-import React, { useEffect, useRef, Suspense, memo, useCallback, useMemo, useState } from "react";
-import { VariableSizeList as List } from 'react-window';
+import React, { useEffect, useRef, memo, useCallback, useMemo, useState } from "react";
 import { useChatContext } from '../context/ChatContext';
 import { EditSection } from "./EditSection";
 import { Spin, Button, Tooltip, Image as AntImage } from 'antd';
@@ -15,7 +14,6 @@ import { useProject } from '../context/ProjectContext';
 
 // Lazy load the MarkdownRenderer
 import { MarkdownRenderer } from "./MarkdownRenderer";
-
 interface ConversationProps {
     enableCodeApply: boolean;
     onOpenShellConfig?: () => void;
@@ -57,73 +55,40 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     // Extract for use in component
     const { isCurrentlyStreaming, hasStreamedContent } = conversationStreamingState;
 
-    const previousStreamingStateRef = useRef<boolean>(false);
+    // Conversation switch overlay: show a spinner immediately when the user
+    // switches conversations.  The heavy MarkdownRenderer work blocks the
+    // main thread so the browser never gets a chance to paint a spinner set
+    // via React state.  We use direct DOM manipulation to guarantee the
+    // overlay is visible before React starts its synchronous render pass.
+    const switchOverlayRef = useRef<HTMLDivElement>(null);
+    const prevConversationRef = useRef(currentConversationId);
 
-    // Virtualized rendering for large conversations to improve performance
-    // DISABLED: Virtualization causes rendering corruption with dynamic markdown content
-    // TODO: Implement proper virtualization with accurate height measurement
-    const shouldVirtualize = false;
-
-    // Refs for virtualization
-
-    // Refs for virtualization
-    const listRef = useRef<List>(null);
-    const rowHeightsRef = useRef<{ [index: number]: number }>({});
-
-    // Reset height cache when messages change significantly
+    // Show overlay synchronously via DOM when conversation changes
     useEffect(() => {
-        rowHeightsRef.current = {};
-        listRef.current?.resetAfterIndex(0);
-    }, [currentMessages.length]);
-
-    // Function to get estimated/measured item size
-    const getItemSize = useCallback((index: number): number => {
-        // Return cached height if available
-        if (rowHeightsRef.current[index]) {
-            return rowHeightsRef.current[index];
+        if (prevConversationRef.current !== currentConversationId) {
+            prevConversationRef.current = currentConversationId;
+            // Show overlay immediately via DOM (bypasses React render batching)
+            if (switchOverlayRef.current) {
+                switchOverlayRef.current.style.display = 'flex';
+            }
         }
+    }, [currentConversationId]);
 
-        // Estimate based on message type and content length
-        const actualIndex = isTopToBottom ? index : currentMessages.length - 1 - index;
-        const msg = currentMessages[actualIndex];
-
-        if (!msg) return 100;
-
-        const contentLength = msg.content?.length || 0;
-
-        // Estimate height based on content characteristics
-        if (msg.role === 'system') return 60;
-
-        // More accurate estimates for different content types
-        if (msg.content?.includes('```diff') || msg.content?.includes('diff --git')) {
-            // Diffs: larger base size + more per line
-            const lines = msg.content.split('\n').length;
-            return Math.min(5000, 200 + lines * 22);
+    // Hide overlay after messages have rendered
+    useEffect(() => {
+        if (switchOverlayRef.current && currentMessages.length > 0) {
+            // Use rAF to ensure at least one paint occurred with the new content
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    if (switchOverlayRef.current) {
+                        switchOverlayRef.current.style.display = 'none';
+                    }
+                });
+            });
         }
+    }, [currentMessages]);
 
-        if (msg.content?.includes('```')) {
-            // Code blocks: more generous estimate
-            const lines = msg.content.split('\n').length;
-            return Math.min(3000, 180 + lines * 20);
-        }
-
-        if (msg.content?.includes('<!-- TOOL_BLOCK')) {
-            // Tool blocks: moderate size
-            return Math.min(2000, 150 + Math.floor(contentLength / 100) * 15);
-        }
-
-        // Regular text: estimate 20px per 100 chars + 80px base
-        // Increase estimates for safety
-        return Math.min(2000, 100 + Math.floor(contentLength / 80) * 22);
-    }, [currentMessages, isTopToBottom]);
-
-    // Set measured height after render
-    const setItemHeight = useCallback((index: number, size: number) => {
-        if (rowHeightsRef.current[index] !== size) {
-            rowHeightsRef.current[index] = size;
-            listRef.current?.resetAfterIndex(index);
-        }
-    }, []);
+    const previousStreamingStateRef = useRef<boolean>(false);
 
     // Check if we should show retry button for a message
     const shouldShowRetry = useCallback((index: number) => {
@@ -304,147 +269,9 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
         );
     }, [editingMessageIndex, currentMessages, shouldShowRetry, isCurrentlyStreaming, setStreamedContentMap, setConversations, currentConversationId, addStreamingConversation, checkedKeys, streamedContentMap, setIsStreaming, removeStreamingConversation, addMessageToConversation, streamingConversations, updateProcessingState, setQuestion]);
 
-    // Render message for both virtualized and non-virtualized views
-    // Measure height after render for virtualization
-    const measuredRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+    const displayMessages = isTopToBottom ? currentMessages : [...currentMessages].reverse();
 
-    useEffect(() => {
-        measuredRefs.current.forEach((el, index) => {
-            if (el) {
-                const height = el.getBoundingClientRect().height;
-                if (height > 0) setItemHeight(index, height);
-            }
-        });
-    });
-
-    const renderMessage = useCallback(({ index, style }: { index: number; style: React.CSSProperties }) => {
-        const actualIndex = isTopToBottom ? index : currentMessages.length - 1 - index;
-        const msg = currentMessages[actualIndex];
-        const nextActualIndex = actualIndex + 1;
-        const hasNextMessage = nextActualIndex < currentMessages.length;
-        const nextMessage = hasNextMessage ? currentMessages[nextActualIndex] : null;
-
-        if (!msg) return <div style={style} />;
-
-        const needsResponse = msg.role === 'human' &&
-            !isCurrentlyStreaming &&
-            !hasStreamedContent &&
-            (actualIndex === currentMessages.length - 1 ||
-                (hasNextMessage && nextMessage?.role !== 'assistant'));
-
-        const systemMessageKey = msg.role === 'system' && msg.modelChange ?
-            `${msg.modelChange.from}->${msg.modelChange.to}` :
-            msg.content;
-
-        return (
-            <div
-                ref={(el) => {
-                    if (el) measuredRefs.current.set(index, el);
-                }}
-                style={{ ...style, overflow: 'visible' }}
-                key={`message-${msg.id || actualIndex}`}
-                className={`message ${msg.role || ''}${msg.muted ? ' muted' : ''}${needsResponse ? ' needs-response' : ''}`}
-            >
-                {msg.role === 'system' && msg.modelChange ? (
-                    <ModelChangeNotification
-                        previousModel={msg.modelChange.from}
-                        changeKey={msg.modelChange.changeKey}
-                        newModel={msg.modelChange.to}
-                    />
-                ) : (
-                    msg.content ? (
-                        <>
-                            {msg.role === 'human' && (
-                                <div style={{ display: editingMessageIndex === actualIndex ? 'none' : 'flex', justifyContent: 'space-between' }}>
-                                    <div className="message-sender">
-                                        You{msg._isFeedback && msg._feedbackStatus === 'pending' && (
-                                            <span style={{
-                                                color: '#faad14',
-                                                fontSize: '12px',
-                                                marginLeft: '4px',
-                                                fontStyle: 'italic'
-                                            }}>(pending feedback)</span>
-                                        )}:
-                                    </div>
-                                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginRight: '8px' }}>
-                                        {renderMuteButton(actualIndex)}
-                                        {renderResubmitButton(actualIndex)}
-                                        {needsResponse && renderRetryButton(actualIndex)}
-                                        <EditSection index={actualIndex} isInline={true} />
-                                    </div>
-                                </div>
-                            )}
-
-                            {msg.role === 'human' && editingMessageIndex === actualIndex ? (
-                                <EditSection index={actualIndex} isInline={false} />
-                            ) : msg.role === 'human' && msg.content ? (
-                                <>
-                                    {/* Display attached images if present */}
-                                    {msg.images && msg.images.length > 0 && (
-                                        <div style={{
-                                            marginBottom: '12px',
-                                            display: 'flex',
-                                            gap: '8px',
-                                            flexWrap: 'wrap'
-                                        }}>
-                                            {msg.images.map((img, imgIndex) => (
-                                                <div key={imgIndex} style={{
-                                                    position: 'relative',
-                                                    display: 'inline-block'
-                                                }}>
-                                                    <AntImage
-                                                        src={`data:${img.mediaType};base64,${img.data}`}
-                                                        alt={img.filename || 'Attached image'}
-                                                        width={120}
-                                                        height={120}
-                                                        style={{ objectFit: 'cover', borderRadius: '4px', border: '1px solid #d9d9d9' }}
-                                                        preview={{ mask: <PictureOutlined /> }}
-                                                    />
-                                                    {img.filename && <div style={{ fontSize: '11px', textAlign: 'center', marginTop: '4px', maxWidth: '120px', overflow: 'hidden', textOverflow: 'ellipsis' }}>{img.filename}</div>}
-                                                </div>
-                                            ))}
-                                        </div>
-                                    )}
-                                    <div className="message-content">
-                                        <MarkdownRenderer
-                                            markdown={msg.content}
-                                            enableCodeApply={enableCodeApply}
-                                            onOpenShellConfig={onOpenShellConfig}
-                                            isStreaming={false}
-                                        />
-                                    </div>
-                                </>
-                            ) : msg.role === 'assistant' && msg.content ? (
-                                <>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                                        <div className="message-sender">AI:</div>
-                                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginRight: '8px' }}>
-                                            {renderMuteButton(actualIndex)}
-                                        </div>
-                                        {renderRetryButton(actualIndex)}
-                                    </div>
-                                    <div className="message-content">
-                                        <MarkdownRenderer
-                                            markdown={msg.content}
-                                            enableCodeApply={enableCodeApply}
-                                            onOpenShellConfig={onOpenShellConfig}
-                                            isStreaming={false}
-                                        />
-                                    </div>
-                                </>
-                            ) : null}
-                        </>
-                    ) : null
-                )}
-            </div>
-        );
-    }, [currentMessages, isTopToBottom, isCurrentlyStreaming, hasStreamedContent, editingMessageIndex,
-        renderMuteButton, renderResubmitButton, renderRetryButton, enableCodeApply, isStreaming,
-        streamingConversations, currentConversationId, setItemHeight]);
-
-    const displayMessages = shouldVirtualize ? null : (isTopToBottom ? currentMessages : [...currentMessages].reverse());
-
-    // Keep track of rendered messages for performance monitoring
+    // Keep track of rendered messages for performance monitoring  
     const renderedCountRef = useRef(0);
     const renderedSystemMessagesRef = useRef<Set<string>>(new Set());
 
@@ -511,37 +338,27 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
         }
     }, [isCurrentlyStreaming, streamingConversations, currentConversationId, recordManualScroll]);
 
-    // Loading indicator text based on progress
-    const loadingText = isLoadingConversation
-        ? currentMessages.length > 0
-            ? `Loading messages (${currentMessages.length} loaded)...`
-            : 'Loading conversation...'
-        : '';
-
-    // Progressive loading indicator
-    const showProgressiveLoading = isLoadingConversation && currentMessages.length > 0;
-
-    // Track whether we're in the initial loading state
-    const isInitialLoading = isLoadingConversation && currentMessages.length === 0;
 
     return (
         <div style={{ position: 'relative' }}>
-            {isInitialLoading && (
-                <div style={{
-                    position: 'fixed',
-                    top: 'var(--header-height)',
-                    left: 'var(--folder-panel-width)',
+            {/* Always-mounted overlay — shown/hidden via direct DOM manipulation
+                to guarantee visibility before React's synchronous render blocks the thread */}
+            <div
+                ref={switchOverlayRef}
+                style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
                     right: 0,
                     bottom: 0,
                     backgroundColor: 'rgba(0, 0, 0, 0.5)',
-                    display: 'flex',
+                    display: 'none',
                     justifyContent: 'center',
                     alignItems: 'center',
                     zIndex: 1000
                 }}>
-                    <Spin size="large" tip={loadingText} />
-                </div>
-            )}
+                <Spin size="large" tip="Loading conversation..." />
+            </div>
             <div
                 style={{
                     opacity: isLoadingConversation ? 0.5 : 1,
@@ -549,31 +366,12 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                 }}
                 className="conversation-messages-container"
             >
-                {showProgressiveLoading && (
-                    <div style={{
-                        position: 'sticky',
-                        top: 0,
-                        backgroundColor: 'rgba(0, 0, 0, 0.7)',
-                        color: '#fff',
-                        padding: '8px 16px',
-                        borderRadius: '4px',
-                        margin: '8px 0',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        zIndex: 1000
-                    }}>
-                        <Spin size="small" />
-                        <span>{loadingText}</span>
-                    </div>
-                )}
                 {displayMessages?.map((msg, index) => {
                     // Convert display index to actual index for bottom-up mode
                     const actualIndex = isTopToBottom ? index : currentMessages.length - 1 - index;
                     const nextActualIndex = actualIndex + 1;
                     const hasNextMessage = nextActualIndex < currentMessages.length;
                     const nextMessage = hasNextMessage ? currentMessages[nextActualIndex] : null;
-
                     const needsResponse = msg.role === 'human' &&
                         !isCurrentlyStreaming &&
                         !hasStreamedContent &&
@@ -596,8 +394,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                         // Use message ID as key instead of index
                         key={`message-${msg.id || index}`}
                         className={`message ${msg.role || ''}${msg.muted ? ' muted' : ''}${needsResponse
-                            ? ' needs-response'
-                            : ''
+                            ? ' needs-response' : ''
                             }`}
                     >
                         {/* Handle system messages with model changes first */}
@@ -707,24 +504,10 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                             ) : null
                         )}
                     </div>;
-                }) || (shouldVirtualize ? (
-                    <div style={{ height: '100%', width: '100%' }}>
-                        <List
-                            ref={listRef}
-                            height={window.innerHeight - 200}
-                            itemCount={currentMessages.length}
-                            itemSize={getItemSize}
-                            estimatedItemSize={200}
-                            width="100%"
-                            overscanCount={5}
-                        >
-                            {renderMessage}
-                        </List>
-                    </div>
-                ) : null)}
+                })}
 
                 {/* Fallback for when no messages to display */}
-                {(!displayMessages || displayMessages.length === 0) && !shouldVirtualize && (
+                {(!displayMessages || displayMessages.length === 0) && (
                     <div style={{
                         textAlign: 'center',
                         padding: '2rem',
