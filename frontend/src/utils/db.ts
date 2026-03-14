@@ -142,31 +142,31 @@ class ConversationDB implements DB {
                     };
 
                     dbRequest.onblocked = () => {
-                        console.warn('Database opening blocked. Waiting up to 5s for connections to close...');
-                        setTimeout(() => {
-                            // If we still don't have a valid db after 5s, reject
+                        console.warn('Database opening blocked by another tab. Will retry...');
+                        const retryInit = () => {
                             if (!this.db || !this.db.objectStoreNames.contains(STORE_NAME)) {
-                                console.error('Database upgrade blocked for 5s, rejecting init');
                                 this.initPromise = null;
                                 this.initializing = false;
-                                reject(new Error('Database upgrade blocked by stale connections'));
+                                console.warn('Database still blocked, retrying init in 2s...');
+                                setTimeout(() => {
+                                    this._initWithLock().then(resolve).catch(reject);
+                                }, 2000);
                             }
-                        }, 5000);
+                        };
+                        // Give the other tab 5s to complete its upgrade, then retry
+                        setTimeout(retryInit, 5000);
                     };
 
                     dbRequest.onsuccess = () => {
                         this.db = dbRequest.result;
 
                         this.db.onversionchange = () => {
-                            console.warn('Database version change detected, will reinitialize on next operation');
-                            // Don't immediately close - let current operations complete
-                            setTimeout(() => {
-                                if (this.db && !this.saveInProgress) {
-                                    this.db.close();
-                                    this.db = null;
-                                    this.initPromise = null;
-                                }
-                            }, 1000);
+                            console.warn('Database version change detected, closing connection to unblock other tabs');
+                            if (this.db) {
+                                this.db.close();
+                                this.db = null;
+                                this.initPromise = null;
+                            }
                         };
 
                         this.db.onclose = () => {
