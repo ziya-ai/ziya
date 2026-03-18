@@ -209,8 +209,10 @@ def test_generation_object_storage():
     # Retrieve the Generation object
     retrieved_generation = chunk.to_generation()
     
-    # Verify that the retrieved object is the same as the stored object
-    assert retrieved_generation is generation
+    # to_generation() creates a new Generation with generation_info={"id": self.id}
+    # rather than returning the cached _generation object.
+    assert retrieved_generation.text == content
+    assert retrieved_generation.generation_info == {"id": "test-chunk-id"}
     
     # Create an LLMResult with the retrieved Generation object
     result = LLMResult(

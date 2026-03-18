@@ -10,11 +10,13 @@ import os
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
-from app.utils.diff_utils.core.escape_handling_improved import (
+from app.utils.diff_utils.core.escape_handling import (
     normalize_escape_sequences,
-    is_escape_sequence_line,
+    contains_escape_sequences as is_escape_sequence_line,
+)
+from app.utils.diff_utils.application.escape_handling_improved import (
     handle_escape_sequence_line,
-    clean_escape_sequences_in_diff
+    clean_escape_sequences_in_diff,
 )
 
 class TestEscapeHandling(unittest.TestCase):
