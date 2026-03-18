@@ -18,7 +18,7 @@ def get_project_storage() -> ProjectStorage:
 async def list_projects():
     """List all known projects."""
     storage = get_project_storage()
-    projects = storage.list()
+    projects = storage.list_deduped()
     cwd = os.getcwd()
     
     # Add flag for current working directory
