@@ -281,3 +281,107 @@ class ServiceModelProvider(ABC):
     def should_apply(self) -> bool:
         """Return True if this provider should be applied."""
         return True
+
+
+@dataclass
+class EncryptionPolicy:
+    """
+    Encryption-at-rest policy for stored data.
+
+    Controls whether Application Level Encryption (ALE) is required,
+    which key source to use, and rotation schedules.
+
+    When multiple providers register policies, the most restrictive
+    settings win (encryption enabled beats disabled, shortest rotation
+    interval wins).
+    """
+
+    # Master switch.  When False, no ALE is applied.
+    enabled: bool = False
+
+    # Where the Key Encryption Key comes from.
+    # "none"       — encryption disabled (default for community)
+    # "midway"     — derive from Midway certificate
+    # "kms"        — AWS KMS GenerateDataKey
+    # "passphrase" — PBKDF2 from ZIYA_ENCRYPTION_KEY env var
+    # "env"        — raw 32-byte key from ZIYA_ENCRYPTION_KEY_RAW (hex)
+    kek_source: str = "none"
+
+    # Source-specific config (e.g. KMS key ARN, HKDF salt, etc.)
+    kek_config: Dict[str, Any] = field(default_factory=dict)
+
+    # Symmetric cipher for Data Encryption Keys
+    dek_algorithm: str = "AES-256-GCM"
+
+    # How often DEKs should be rotated.  None = no automatic rotation.
+    dek_rotation_interval: Optional[timedelta] = None
+
+    # Expected KEK rotation interval, used for audit logging.
+    kek_rotation_interval: Optional[timedelta] = None
+
+    # Which data categories MUST be encrypted.  Storage layers check
+    # membership before deciding whether to call the encryptor.
+    categories_requiring_encryption: Set[str] = field(default_factory=lambda: set())
+
+    # Human-readable explanation (appears in audit logs / ASR docs).
+    policy_reason: str = ""
+
+    def requires_encryption(self, category: str) -> bool:
+        """Check if a specific data category requires encryption."""
+        if not self.enabled:
+            return False
+        # Empty set means "encrypt everything"
+        if not self.categories_requiring_encryption:
+            return True
+        return category in self.categories_requiring_encryption
+
+
+class EncryptionProvider(ABC):
+    """
+    Encryption provider interface.
+
+    Enterprise plugins implement this to declare encryption requirements
+    and supply the Key Encryption Key (KEK).  The KEK is used to wrap
+    per-project Data Encryption Keys (DEKs) — an envelope encryption
+    model that allows KEK rotation without re-encrypting all data.
+
+    Community users who want encryption can either:
+    1. Set ``ZIYA_ENCRYPTION_KEY`` env var (passphrase-based, no plugin needed)
+    2. Implement a minimal EncryptionProvider
+
+    When no provider is registered and no env var is set, encryption is
+    OFF — community users are never forced into it.
+    """
+
+    provider_id: str = "default"
+    priority: int = 0
+
+    @abstractmethod
+    def get_encryption_policy(self) -> EncryptionPolicy:
+        """Return the encryption policy for this provider."""
+        pass
+
+    @abstractmethod
+    def derive_kek(self) -> Optional[bytes]:
+        """
+        Derive or retrieve the 32-byte Key Encryption Key.
+
+        Returns None if the KEK source is temporarily unavailable
+        (e.g. expired Midway cookie).  In that case the framework
+        logs a warning and falls back to plaintext for that session.
+        """
+        pass
+
+    def get_kek_identifier(self) -> str:
+        """
+        Return a stable identifier for the *current* KEK material.
+
+        Used to detect when the KEK has rotated (e.g. Midway cert
+        fingerprint, KMS key version ARN).  When this value changes
+        between sessions, the framework re-wraps all DEKs.
+        """
+        return "default"
+
+    def should_apply(self) -> bool:
+        """Return True if this encryption policy should be applied."""
+        return True

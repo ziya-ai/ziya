@@ -10,7 +10,7 @@ import os
 from typing import Any, Dict, List, Optional
 from datetime import timedelta
 from app.utils.logging_utils import logger
-from app.plugins.interfaces import DataRetentionPolicy
+from app.plugins.interfaces import DataRetentionPolicy, EncryptionPolicy
 
 # Global plugin registries
 _auth_providers = []
@@ -22,6 +22,7 @@ _shell_config_providers = []
 _tool_validator_providers = []
 _data_retention_providers = []
 _tool_enhancement_providers = []
+_encryption_providers = []
 _initialized = False
 
 def register_auth_provider(provider):
@@ -91,6 +92,18 @@ def register_service_model_provider(provider):
 def get_all_config_providers() -> List:
     """Get all registered config providers (regardless of should_apply)."""
     return _config_providers.copy()
+
+def register_encryption_provider(provider):
+    """
+    Register an encryption provider plugin.
+
+    When multiple providers register, the most restrictive policy wins
+    (enabled beats disabled, shortest rotation interval wins).
+    """
+    _encryption_providers.append(provider)
+    _encryption_providers.sort(key=lambda p: getattr(p, 'priority', 0), reverse=True)
+    logger.info(f"Registered encryption provider: {getattr(provider, 'provider_id', 'unknown')}")
+
 def register_tool_enhancement_provider(provider):
     """
     Register a tool enhancement provider plugin.
@@ -318,6 +331,85 @@ def get_effective_retention_policy() -> DataRetentionPolicy:
         custom_ttls=merged_custom,
         policy_reason="; ".join(reasons) if reasons else "merged from providers",
     )
+
+
+def get_encryption_providers() -> List:
+    """Return all registered encryption providers."""
+    return list(_encryption_providers)
+
+
+def get_effective_encryption_policy() -> EncryptionPolicy:
+    """
+    Resolve the effective encryption policy from all registered providers.
+
+    Merge rules (most restrictive wins):
+    - enabled: True if ANY provider requires it
+    - kek_source: highest-priority provider's source
+    - dek_rotation_interval: shortest non-None interval
+    - kek_rotation_interval: shortest non-None interval
+    - categories_requiring_encryption: union of all providers' sets
+
+    If no provider is registered, checks ZIYA_ENCRYPTION_KEY env var
+    for community passphrase-based encryption.
+
+    Returns:
+        EncryptionPolicy with the effective merged settings.
+    """
+    import os
+
+    active_policies = []
+    reasons = []
+
+    for provider in _encryption_providers:
+        try:
+            if hasattr(provider, 'should_apply') and not provider.should_apply():
+                continue
+            policy = provider.get_encryption_policy()
+            active_policies.append((provider, policy))
+            if policy.policy_reason:
+                reasons.append(f"{getattr(provider, 'provider_id', '?')}: {policy.policy_reason}")
+        except Exception as e:
+            logger.warning(f"Error getting encryption policy from {getattr(provider, 'provider_id', '?')}: {e}")
+
+    # Fallback: check env var for community passphrase-based encryption
+    if not active_policies and os.environ.get('ZIYA_ENCRYPTION_KEY'):
+        return EncryptionPolicy(
+            enabled=True,
+            kek_source="passphrase",
+            dek_rotation_interval=timedelta(days=90),
+            policy_reason="user-configured via ZIYA_ENCRYPTION_KEY",
+        )
+
+    if not active_policies:
+        return EncryptionPolicy(policy_reason="system default (encryption disabled)")
+
+    # Merge: most restrictive wins
+    enabled = any(p.enabled for _, p in active_policies)
+    # KEK source from highest-priority provider that has encryption enabled
+    kek_source = "none"
+    kek_config: Dict[str, Any] = {}
+    for provider, policy in active_policies:
+        if policy.enabled and policy.kek_source != "none":
+            kek_source = policy.kek_source
+            kek_config = policy.kek_config
+            break
+
+    dek_intervals = [p.dek_rotation_interval for _, p in active_policies if p.dek_rotation_interval is not None]
+    kek_intervals = [p.kek_rotation_interval for _, p in active_policies if p.kek_rotation_interval is not None]
+    all_categories: set = set()
+    for _, p in active_policies:
+        all_categories.update(p.categories_requiring_encryption)
+
+    return EncryptionPolicy(
+        enabled=enabled,
+        kek_source=kek_source,
+        kek_config=kek_config,
+        dek_rotation_interval=min(dek_intervals) if dek_intervals else None,
+        kek_rotation_interval=min(kek_intervals) if kek_intervals else None,
+        categories_requiring_encryption=all_categories,
+        policy_reason="; ".join(reasons) if reasons else "merged from providers",
+    )
+
 
 def initialize():
     """Initialize plugin system and load available plugins."""
