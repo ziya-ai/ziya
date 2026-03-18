@@ -30,13 +30,36 @@ Defines MCP servers available to all projects. Merged with any project-level `mc
 
 ### Server config keys
 
+**stdio servers (local subprocess):**
+
 | Key | Type | Description |
 |---|---|---|
 | `command` | string | Executable to run |
 | `args` | string[] | Command-line arguments |
 | `env` | object | Additional environment variables |
 | `enabled` | bool | Set `false` to disable without removing (default: `true`) |
+| `disabled` | bool | Alternate form (Q Developer / Claude Code compat); normalized to `enabled` internally |
+| `workspace_scoped` | bool | If `true`, a separate server instance is spawned per project directory |
 | `tool_enhancements` | object | Per-tool description hints (see below) |
+
+**Remote HTTPS servers:**
+
+| Key | Type | Description |
+|---|---|---|
+| `url` | string | HTTPS endpoint URL (triggers remote mode instead of subprocess) |
+| `transport` | string | `"streamable-http"` (default) or `"sse"` (legacy Server-Sent Events) |
+| `auth` | object | Authentication config (see below) |
+| `headers` | object | Additional HTTP headers (e.g., API keys) |
+| `enabled` | bool | Set `false` to disable without removing (default: `true`) |
+| `tool_enhancements` | object | Per-tool description hints (same as stdio servers) |
+
+**Authentication (`auth` block):**
+
+| Key | Type | Description |
+|---|---|---|
+| `type` | string | Currently only `"bearer"` is supported |
+| `token` | string | Inline bearer token value |
+| `token_env` | string | Name of environment variable containing the bearer token (preferred over inline) |
 
 ### `tool_enhancements`
 
