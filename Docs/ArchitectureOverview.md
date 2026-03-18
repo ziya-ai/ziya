@@ -15,8 +15,9 @@ FastAPI Server  (app/server.py)
     ├─ StreamingToolExecutor  ─────────────────► AWS Bedrock (Claude, Nova, etc.)
     │   (app/streaming_tool_executor.py)          via invoke_model_with_response_stream
     │
-    ├─ MCP Manager  ───────────────────────────► External MCP Servers (stdio / SSE)
+    ├─ MCP Manager  ───────────────────────────► External MCP Servers (stdio subprocess)
     │   (app/mcp/manager.py)
+    │                  └───────────────────────► Remote MCP Servers (StreamableHTTP / SSE)
     │
     ├─ Builtin Tools  (app/mcp/tools/)
     │   ├─ file_read / file_write / file_list
@@ -98,11 +99,28 @@ This is a general pattern — future service models could provide code execution
 
 ## MCP Tool Execution
 
-External tools are managed by `MCPManager` (`app/mcp/manager.py`), which maintains persistent subprocess connections to MCP servers.
+External tools are managed by `MCPManager` (`app/mcp/manager.py`), which maintains connections to MCP servers via two transport modes:
+
+- **stdio** — Local servers are spawned as subprocesses. MCPClient manages JSON-RPC over stdin/stdout directly.
+- **Remote HTTPS** — Servers with a `"url"` config use the official MCP SDK (`mcp.client.session.ClientSession`) over StreamableHTTP or SSE transports. The SDK session is kept alive via an `AsyncExitStack` for the lifetime of the connection.
+
+For remote servers, authentication is handled via OAuth bearer tokens (`Authorization: Bearer <token>` header) configured in `mcp_config.json`.
 
 Builtin tools (`app/mcp/tools/`) run directly in the server process without subprocesses. They follow the same `BaseMCPTool` interface and are registered via `builtin_tools.py`.
 
-Tool result security: every tool result is cryptographically signed by `MCPClient` before being returned. The streaming executor verifies the signature before displaying the result to the user or feeding it back to the model. Unverified results are rejected with a corrective error message.
+### Tool Result Security
+
+Every tool result is cryptographically signed (HMAC-SHA256) by `MCPClient` before being returned. The streaming executor verifies the signature before displaying the result to the user or feeding it back to the model. Unverified results are rejected with a corrective error message.
+
+### Tool Guard (ATC Mitigations)
+
+`app/mcp/tool_guard.py` provides three security layers for external MCP servers:
+
+1. **Tool poisoning scanner** — Scans tool descriptions for prompt-injection patterns (13 regex patterns covering instruction override, system tag injection, bypass attempts, hidden comments). Runs at connect time for all non-builtin servers.
+
+2. **Tool shadowing prevention** — During tool enumeration, built-in tool names are registered first. External tools that collide with built-in names are silently dropped (with a warning log). Built-in implementations always win.
+
+3. **Rug-pull fingerprinting** — Tool definitions are hashed (SHA-256) on each connection. On reconnection, changes to the fingerprint trigger a security warning, detecting possible post-install tool definition mutations.
 
 ---
 

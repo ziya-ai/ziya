@@ -47,8 +47,9 @@
 |---|---|
 | **Codebase context injection** | Full project file tree loaded into model context; token counts shown per file |
 | **AST-based code analysis** | `--ast` flag enables semantic indexing; 5 resolution levels: `disabled`, `minimal`, `medium`, `detailed`, `comprehensive` |
-| **Semantic code search** | `ast_search` — find symbols (functions, classes, methods, variables, imports) by name across the codebase |
-| **AST reference tracing** | `ast_references` — definitions, callers, dependencies, file summaries |
+| **Semantic code search** | `ast_search` — find symbols by name or regex pattern (`regex=true`); filter by type and file path; cross-file coverage |
+| **AST reference tracing** | `ast_references` — definitions, callers (cross-file via name fallback), dependencies (import-attribute resolution), file summaries, cursor-position context (`action=context` with `file:line:col`) |
+| **React/TS hook detection** | Arrow functions, `useCallback`, `useMemo`, and other hook-wrapped variables are indexed as callable functions, not plain variables |
 | **Structured diff generation** | Model produces standard git diff format; rendered inline with Apply/Undo controls |
 | **Multi-strategy diff application** | Patch pipeline tries `patch`, `git apply`, difflib, and LLM resolver in sequence (4 stages); handles imperfect/inexact diffs gracefully |
 | **Per-hunk diff status** | Each hunk shows individual success/fail; partial application is fine |
@@ -136,9 +137,14 @@ Ziya's visualization suite is the most comprehensive of any AI coding assistant.
 
 | Feature | Detail |
 |---|---|
-| **MCP server support** | stdio transport (subprocess spawning); no HTTP/SSE transport |
+| **MCP server support** | stdio transport (subprocess spawning) and remote HTTPS (StreamableHTTP, SSE) via the official MCP SDK |
 | **Multi-source config merge** | `mcp_config.json` loaded from CWD, project root, and `~/.ziya/`; later entries win |
+| **Remote MCP servers** | Connect to hosted MCP endpoints via `"url"` config key; supports StreamableHTTP (default) and SSE transports |
+| **OAuth / bearer token auth** | `"auth": {"type": "bearer", "token_env": "..."}` for remote MCP servers; inline tokens or env-var references |
 | **Built-in Amazon internal MCPs** | AmazonInternalMCPServer, BuilderMCP — available via enterprise plugin |
+| **Tool poisoning detection** | External tool descriptions scanned for 13 prompt-injection patterns at connect time |
+| **Tool shadowing prevention** | External tools that collide with built-in tool names are blocked; built-ins always take precedence |
+| **Rug-pull detection** | Tool definitions fingerprinted (SHA-256) at connect time; changes on reconnect trigger security warnings |
 | **MCP registry browser** | Browse and install MCPs from within the Ziya UI |
 | **Tool enhancement / description injection** | `tool_enhancements` block in `mcp_config.json` appends custom guidance to any tool's description before it reaches the model — corrects model misbehavior without touching the MCP server |
 | **User-level tool overrides** | `~/.ziya/tool_enhancements.json` for per-user corrections |
@@ -249,7 +255,7 @@ Format per row: the gap, who has it, and notes for context.
 | **Microsoft Office automation (write)** | Aki (Gandalf MCP for Word/Excel, built-in PowerPoint MCP, Outlook MCP) | Ziya reads DOCX/XLSX/PPTX; it cannot write to or automate Office apps |
 | **Runtime MCP hot-reload** | Aki (connect/disconnect without restart) | MCP config changes require a Ziya server restart |
 | **Figma / design import** | Augment Code Design Mode, Cursor | No design-to-code path |
-| **OAuth for MCP** | Claude Code (full OAuth 2.0), Codex, Cline | No OAuth flow for MCP server authentication; only env-var credentials |
+| ~~**OAuth for MCP**~~ | Claude Code (full OAuth 2.0), Codex, Cline | ✅ **CLOSED** (v0.6.0) — Bearer token auth via `"auth"` config block; supports inline tokens and env-var references |
 | **GitHub Actions / CI integration** | Claude Code (`claude-code-action@v1`), Codex (@codex on PRs), Kiro (autonomous agent) | No published GitHub Action or CI pipeline integration |
 
 ### 12e. Security & Compliance
