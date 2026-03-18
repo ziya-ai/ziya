@@ -221,21 +221,29 @@ class TestPlanCompletion:
 
     def test_all_crystals_means_complete(self, manager):
         plan_id = "p1"
+        manager._plans[plan_id] = TaskPlan(
+            name="Test", delegate_specs=[], status="running", created_at=time.time())
         manager._statuses[plan_id] = {"d1": "crystal", "d2": "crystal"}
         assert manager._is_plan_complete(plan_id) is True
 
     def test_mixed_terminal_means_complete(self, manager):
         plan_id = "p1"
+        manager._plans[plan_id] = TaskPlan(
+            name="Test", delegate_specs=[], status="running", created_at=time.time())
         manager._statuses[plan_id] = {"d1": "crystal", "d2": "failed"}
         assert manager._is_plan_complete(plan_id) is True
 
     def test_running_means_not_complete(self, manager):
         plan_id = "p1"
+        manager._plans[plan_id] = TaskPlan(
+            name="Test", delegate_specs=[], status="running", created_at=time.time())
         manager._statuses[plan_id] = {"d1": "crystal", "d2": "running"}
         assert manager._is_plan_complete(plan_id) is False
 
     def test_proposed_means_not_complete(self, manager):
         plan_id = "p1"
+        manager._plans[plan_id] = TaskPlan(
+            name="Test", delegate_specs=[], status="running", created_at=time.time())
         manager._statuses[plan_id] = {"d1": "crystal", "d2": "proposed"}
         assert manager._is_plan_complete(plan_id) is False
 

@@ -1,6 +1,6 @@
 # Delegate System — Implementation Status
 
-**Last updated:** Round 8 — swarm stability pass (stall prevention, resilience, fidelity)
+**Last updated:** Round 9 — swarm recovery UI + legacy plan rehydration fix
 
 ## Architecture
 
@@ -142,6 +142,9 @@ reuses the same conversation/delegate ID, and launches via `_run_delegate`.
 | Eager message fetch on crystal | ✅ `syncApi.getChat()` on status transition |
 | `completed_partial` in polling | ✅ triggers source refresh + stops polling |
 | Synthesis in source rollup | ✅ orchestrator synthesis appended to completion message |
+| Swarm Recovery Panel | ✅ retry, skip, cancel controls via sidebar ⋮ menu on TaskPlan folders |
+| Compact recovery controls | ✅ inline retry/cancel in StreamedContent active-swarm indicator |
+| Terminal delegate fast load | ✅ skip blocking server fetch for crystal/failed/interrupted delegates |
 
 ## Test Coverage
 
@@ -156,8 +159,12 @@ reuses the same conversation/delegate ID, and launches via `_run_delegate`.
 | `test_compaction_engine.py` | 32 | Phase A/B extraction, LLM fallback |
 | `test_compaction_hook.py` | 8 | Auto-compaction hook in streaming |
 | `test_delegate_comprehensive.py` | 18 | Rehydration, cascade, dynamic delegates, concurrency stress |
+| `test_swarm_recovery_api.py` | 12 | Retry, promote-stub, cancel, needs_attention, completed_partial |
+| `test_swarm_recovery_rehydration.py` | 8 | Legacy plan rehydration, group→plan mapping, cross-restart recovery |
+| `test_delegate_stream_inactive.py` | 21 | Terminal delegate detection, key derivation, fast-path loading |
 | `test_recursive_swarms.py` | 14 | Parent linkage, crystal rollup, 3-level nesting |
-| **Total** | **185** | All passing |
+| `test_delegate_stream_inactive.py` | 21 | Terminal detection, key derivation, blocking fetch skip |
+| **Total** | **245** | All passing |
 
 ## Swarm Stability Fixes (Round 8)
 
@@ -179,3 +186,16 @@ Changes made in the stability pass, listed by root cause:
 | Nested swarm results dropped | Parent finalized before sub-plans completed | `pending_subplan_ids` blocks `_is_plan_complete` |
 | No crash recovery | Stream death = permanent failure | Progressive checkpointing + self-rescue continuation |
 | Swarm hangs indefinitely | No stall detection | Watchdog flags silence >10min with no children |
+
+## Swarm Recovery UI (Round 9)
+
+| Symptom | Root Cause | Fix |
+|---------|------------|-----|
+| No way to restart broken swarm | Backend had retry/promote/cancel APIs but no frontend controls | SwarmRecoveryPanel component: per-delegate retry, skip, bulk retry-all, cancel-all |
+| Legacy swarms unrecoverable after restart | `rehydrate()` skipped `completed_partial` plans — `_group_to_plan` empty, all recovery APIs returned 404 | Removed `completed_partial` from terminal-skip set; running→completed_partial plans fall through to full rehydration |
+| Retrying delegate on stale plan stays stale | Plan status remained `completed_partial` after retry — frontend polling stopped | `retry_delegate` transitions plan back to `running` when retrying from `completed_partial` |
+| Clicking inactive delegate freezes UX for minutes | `loadConversation` did blocking `syncApi.getChat()` for terminal delegates | Skip server fetch when status is crystal/failed/interrupted — messages already in IndexedDB |
+| WebSocket opened for dead delegates | `useDelegateStreaming` connected before terminal check could fire | Added 5s connection timeout; stabilized effect dependencies with useMemo-derived keys |
+| Both useEffect hooks re-fired on every conversation change | `[conversationId, conversations]` dependency | Replaced with `delegateKey` and `siblingKey` (useMemo) that only change on delegate status transitions |
+| Clicking inactive delegate locks UX | `loadConversation` blocked on server fetch + WebSocket opened + effects re-ran on every `conversations` change | Skip fetch for terminal delegates; derive stable `delegateKey`/`siblingKey` via `useMemo`; add 5s connection timeout |
+| Clicking **running** delegate freezes UX | Server fetch was `await`ed, holding `setIsLoadingConversation(true)` for seconds; completion cascaded through `conversations`→effects→`streamingConversations`→recreate `loadConversation` | Made fetch fire-and-forget (`.then()` instead of `await`); removed `streamingConversations` from `loadConversation` dependency array (use ref instead) |

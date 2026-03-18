@@ -99,6 +99,7 @@ class DelegateManager:
         self._group_to_plan: Dict[str, str] = {}
         self.compaction_engine = CompactionEngine()
         self._checkpoints: Dict[str, Any] = {}
+        self._last_scratch_gc: float = 0.0
 
     def rehydrate(self) -> int:
         """Rebuild in-memory state from persisted ChatGroup/Chat data.
@@ -124,21 +125,16 @@ class DelegateManager:
                 logger.warning(f"♻️  Skipping group {group.id}: bad TaskPlan data: {exc}")
                 continue
 
-            # Skip terminal plans — nothing to rehydrate
-            if plan.status in ("completed", "completed_partial", "cancelled"):
+            # Skip fully terminal plans — nothing to rehydrate or recover
+            if plan.status in ("completed", "cancelled"):
                 continue
 
-            # Plans that were "running" at shutdown are now stale.
-            # Mark them completed_partial so the frontend stops polling
-            # and the user can see they need attention.
+            # Plans that were "running" at shutdown are now stale — mark
+            # them completed_partial.  Fall through to rehydrate them
+            # into memory so the recovery API can retry/skip/cancel.
             if plan.status == "running":
                 plan.status = "completed_partial"
                 self._patch_group_task_plan(group.id, plan)
-                logger.info(
-                    f"♻️  Marked stale plan {plan.name!r} ({group.id[:8]}) "
-                    f"as completed_partial (was running at shutdown)"
-                )
-                continue
 
             # Derive a stable plan_id from the orchestrator's DelegateMeta,
             # falling back to the group id.
@@ -425,7 +421,7 @@ class DelegateManager:
         for t in plan.task_list:
             if t.task_id == f"st_{delegate_id}" and t.status != "done":
                 t.status = "done"
-                t.summary = crystal.summary[:120] if crystal.summary else "Completed"
+                t.summary = crystal.summary[:300] if crystal.summary else "Completed"
                 t.completed_at = time.time()
                 break
 
@@ -483,6 +479,27 @@ class DelegateManager:
                 "total_crystals": len(self._crystals[plan_id]),
             })
             logger.info(f"✅ TaskPlan complete: {plan.name} ({plan_id[:8]})")
+
+            # Auto-cleanup scratch files for fully successful plans
+            if plan.status == "completed":
+                try:
+                    from app.agents.swarm_scratch import get_scratch_manager
+                    scratch = get_scratch_manager(str(self.project_dir.parent))
+                    scratch.cleanup_task(plan_id)
+                    logger.info(f"🗑️ Auto-cleaned scratch for completed plan {plan_id[:8]}")
+                except Exception as exc:
+                    logger.warning(f"🗑️ Scratch auto-cleanup failed: {exc}")
+
+            # Periodic GC: check for stale scratch dirs every 30 minutes
+            now = time.time()
+            if now - self._last_scratch_gc > 1800:
+                self._last_scratch_gc = now
+                try:
+                    from app.agents.swarm_scratch import get_scratch_manager
+                    scratch = get_scratch_manager(str(self.project_dir.parent))
+                    scratch.gc_stale_tasks(max_age_hours=48)
+                except Exception as exc:
+                    logger.debug(f"Periodic scratch GC: {exc}")
 
             # If this is a sub-plan, roll results up to the parent
             await self._on_subplan_complete(plan_id)
@@ -640,6 +657,13 @@ class DelegateManager:
         spec = self._find_spec(self._plans[plan_id], delegate_id)
         if spec and spec.conversation_id:
             self._patch_chat_status(spec.conversation_id, "proposed")
+
+        # Transition plan back to running so polling resumes and
+        # _resolve_and_start can launch the re-queued delegate.
+        plan = self._plans[plan_id]
+        if plan.status in ("completed_partial",):
+            plan.status = "running"
+            logger.info(f"♻️  Plan {plan.name!r} transitioned back to 'running' for retry")
 
         # Also reset any downstream delegates that cascade-failed
         plan = self._plans[plan_id]
@@ -887,15 +911,59 @@ class DelegateManager:
                     plan_id, did, crystal_from_stream
                 )
             else:
+                # Build a substantive stub crystal from the accumulated
+                # text so downstream coordinators/verifiers get enough
+                # context to understand what was accomplished.
+                import re as _re
+                from app.models.delegate import FileChange
+
+                _file_paths = list(dict.fromkeys(
+                    _re.findall(
+                        r'(?:diff --git a/\S+ b/|file write: |file read: )(\S+)',
+                        accumulated,
+                    )
+                ))[:20]
+                _files_changed = [
+                    FileChange(path=p, action="modified")
+                    for p in _file_paths
+                ]
+
+                _decisions: list[str] = []
+                for _pat in [
+                    r'(?:I (?:decided|chose|opted) to .+?)(?:\.\s)',
+                    r'(?:Key (?:decision|change|finding): .+?)(?:\.\s)',
+                ]:
+                    _decisions.extend(
+                        _re.findall(_pat, accumulated, _re.IGNORECASE)[:3]
+                    )
+                _decisions = _decisions[:5]
+
+                _summary_limit = min(len(accumulated), 2000)
+                _stub_summary = f"Completed: {spec.name}.\n\n"
+                _stub_summary += accumulated[:_summary_limit]
+                if len(accumulated) > _summary_limit:
+                    _stub_summary += (
+                        f"\n\n[...truncated, {len(accumulated) - _summary_limit}"
+                        f" chars omitted]"
+                    )
+
                 stub = MemoryCrystal(
                     delegate_id=did,
                     task=spec.name,
-                    summary=f"Completed: {spec.name}. "
-                            f"{accumulated[:200]}",
+                    summary=_stub_summary,
+                    files_changed=_files_changed,
+                    decisions=_decisions,
                     original_tokens=len(accumulated) // 4,
-                    crystal_tokens=50,
+                    crystal_tokens=max(50, len(_stub_summary) // 4),
                     created_at=time.time(),
                     )
+                logger.warning(
+                    f"⚠️ Stub crystal for {spec.name} ({did[:8]}): "
+                    f"{len(_stub_summary):,} char summary, "
+                    f"{len(_files_changed)} files, "
+                    f"{len(_decisions)} decisions "
+                    f"(autocompaction did not produce a crystal)"
+                )
                 await self.on_crystal_ready(plan_id, did, stub)
 
         except asyncio.CancelledError:
@@ -914,6 +982,12 @@ class DelegateManager:
     ) -> List[Dict[str, Any]]:
         """Build initial messages including upstream crystal context."""
         parts: List[str] = []
+
+        # Provide a dedicated scratch directory for this delegate
+        from app.agents.swarm_scratch import get_scratch_manager
+        scratch = get_scratch_manager(str(self.project_dir.parent))
+        scratch_path = scratch.get_relative_delegate_path(plan_id, spec.delegate_id)
+        scratch.get_delegate_dir(plan_id, spec.delegate_id)  # ensure it exists
 
         upstream = self.get_upstream_crystals(plan_id, spec.delegate_id)
         if upstream:
@@ -950,6 +1024,11 @@ class DelegateManager:
             f"Your task: {spec.name}\n\n"
             f"Scope: {spec.scope}\n\n"
             "Work within the files listed in your context.\n\n"
+            "## Scratch Directory\n"
+            f"Your dedicated scratch space is `{scratch_path}/`. "
+            "Use file_write to save notes, intermediate results, or state "
+            "tracking files there. This directory is automatically cleaned "
+            "up when the task plan completes.\n\n"
             "## Coordination Tools\n"
             "You have access to swarm coordination tools for working "
             "with other delegates running in parallel:\n"
@@ -1796,12 +1875,24 @@ class DelegateManager:
         await self._emit(plan_id, None, "plan_cancelled", {})
 
     def cleanup_plan(self, plan_id: str) -> None:
-        """Remove in-memory state for a completed/cancelled plan."""
+        """Remove in-memory state and scratch files for a completed/cancelled plan."""
+        # Clean up disk scratch directory first (while we still know the plan_id)
+        try:
+            from app.agents.swarm_scratch import get_scratch_manager
+            scratch = get_scratch_manager(str(self.project_dir.parent))
+            scratch.cleanup_task(plan_id)
+        except Exception as exc:
+            logger.warning(f"🗑️ Scratch cleanup failed for plan {plan_id[:8]}: {exc}")
+
         for attr in (
             self._plans, self._statuses, self._crystals,
             self._running, self._tasks, self._callbacks,
         ):
             attr.pop(plan_id, None)
+        # Also clear checkpoints for this plan
+        stale_keys = [k for k in self._checkpoints if k.startswith(f"{plan_id}:")]
+        for k in stale_keys:
+            del self._checkpoints[k]
 
 
 # ---------------------------------------------------------------------------

@@ -244,7 +244,7 @@ class TestStallWatchdog:
         manager._crystals["p1"] = {}
         manager._running["p1"] = {"D1"}
 
-        status = manager.get_delegate_status("p1")
+        status = manager.get_plan_status("p1")
         assert status is not None
         assert status["delegates"]["D1"]["status"] == "stalled"
 
@@ -262,7 +262,7 @@ class TestStallWatchdog:
             parent_delegate_id="D1", status="running",
         )
 
-        status = manager.get_delegate_status("p1")
+        status = manager.get_plan_status("p1")
         assert status["delegates"]["D1"]["status"] == "running"
 
     def test_no_stall_with_recent_checkpoint(self, manager):
@@ -278,7 +278,7 @@ class TestStallWatchdog:
             {"chars": 4000, "ts": time.time()}
         ])
 
-        status = manager.get_delegate_status("p1")
+        status = manager.get_plan_status("p1")
         assert status["delegates"]["D1"]["status"] == "running"
 
 
@@ -344,7 +344,7 @@ class TestOrchestratorLLMCall:
     @pytest.mark.asyncio
     async def test_direct_llm_call_not_compaction(self, manager):
         """Orchestrator should call the model directly, not CompactionEngine."""
-        with patch("app.agents.delegate_manager.lazy_model") as mock_lazy:
+        with patch("app.agents.agent.model") as mock_lazy:
             mock_model = AsyncMock()
             mock_model.ainvoke.return_value = MagicMock(content="Analysis result here")
             mock_wrapper = MagicMock()
@@ -358,7 +358,7 @@ class TestOrchestratorLLMCall:
 
     @pytest.mark.asyncio
     async def test_llm_call_truncates_at_4000(self, manager):
-        with patch("app.agents.delegate_manager.lazy_model") as mock_lazy:
+        with patch("app.agents.agent.model") as mock_lazy:
             mock_model = AsyncMock()
             mock_model.ainvoke.return_value = MagicMock(content="x" * 5000)
             mock_wrapper = MagicMock()

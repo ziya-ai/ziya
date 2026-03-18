@@ -85,6 +85,7 @@ from app.utils.file_utils import read_file_content
 from app.middleware import RequestSizeMiddleware, ModelSettingsMiddleware, ErrorHandlingMiddleware, HunkStatusMiddleware, StreamingMiddleware
 from app.middleware.project_context import ProjectContextMiddleware
 from app.utils.context_enhancer import initialize_ast_if_enabled
+from app.middleware.security_headers import SecurityHeadersMiddleware
 from fastapi.websockets import WebSocketState
 from app.middleware.continuation import ContinuationMiddleware
 
@@ -346,6 +347,9 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("MCP integration is disabled.")
     
+    # Start encryption key rotation monitor in background
+    asyncio.create_task(_monitor_key_rotation())
+    
     # Start folder cache warming in background - don't block server startup
     # REMOVED: The startup scan was wasted work — the frontend triggers a
     # project-specific scan when it connects, and the two caches were
@@ -377,6 +381,16 @@ async def lifespan(app: FastAPI):
     
     yield
     
+    # Shutdown: run swarm scratch GC for all known project roots
+    try:
+        from app.agents.swarm_scratch import _instances as scratch_instances
+        for scratch_mgr in scratch_instances.values():
+            cleaned = scratch_mgr.gc_stale_tasks(max_age_hours=48)
+            if cleaned:
+                logger.info(f"🗑️ Shutdown GC: cleaned {len(cleaned)} stale task dir(s)")
+    except Exception as e:
+        logger.warning(f"Swarm scratch GC during shutdown: {e}")
+
     # Shutdown - cleanup
     logger.info("🛑 Shutting down gracefully...")
 
@@ -503,6 +517,38 @@ async def _warm_folder_cache_background():
 
 def _mark_folder_scan_complete():
     """Called by directory_util when folder scan completes."""
+
+async def _monitor_key_rotation():
+    """Background task that checks for DEK rotation on a schedule."""
+    # Wait for startup to complete
+    await asyncio.sleep(5)
+
+    while True:
+        try:
+            from app.utils.encryption import get_encryptor
+            encryptor = get_encryptor()
+
+            if encryptor.is_enabled():
+                # The encryptor checks rotation needs during _initialize(),
+                # but we also check periodically for long-running servers.
+                if (encryptor._policy and encryptor._policy.dek_rotation_interval
+                        and encryptor._keyring):
+                    active = encryptor._keyring.get_active_dek()
+                    if active:
+                        import time as _time
+                        age = _time.time() - active.created_at
+                        max_age = encryptor._policy.dek_rotation_interval.total_seconds()
+                        if age > max_age:
+                            logger.info(f"🔑 KEY_ROTATION: DEK expired (age: {age/86400:.1f}d, max: {max_age/86400:.1f}d), rotating")
+                            encryptor._generate_dek()
+                            logger.info("🔑 KEY_ROTATION: DEK rotation completed")
+        except Exception as e:
+            logger.debug(f"Key rotation check failed (non-fatal): {e}")
+
+        # Check every hour
+        await asyncio.sleep(3600)
+
+
     global _folder_ready
     _folder_ready = True
     # Notify connected frontend clients so they can stop polling and fetch the tree.
@@ -580,9 +626,15 @@ class _PollingAccessFilter(_logging.Filter):
     _quiet = {'/chats?', '/chat-groups', '/skills', '/contexts', '/api/config', '/ws/',
               '/folder-progress', '/model-capabilities', '/current-model', '/static/',
               '/delegate-status',}
+    # UUID pattern for individual chat GETs: /chats/<uuid>
+    _chat_get_re = __import__('re').compile(r'/chats/[0-9a-f]{8}-[0-9a-f]{4}-.*" [23]')
     def filter(self, record: _logging.LogRecord) -> bool:
         msg = record.getMessage()
-        return not any(q in msg for q in self._quiet)
+        if any(q in msg for q in self._quiet):
+            return False
+        if 'GET' in msg and self._chat_get_re.search(msg):
+            return False
+        return True
 
 _logging.getLogger("uvicorn.access").addFilter(_PollingAccessFilter())
 
@@ -935,6 +987,9 @@ app.add_middleware(ContinuationMiddleware)
 # Project context middleware — outermost so all handlers see the correct project root.
 # Reads X-Project-Root header and sets request-scoped ContextVar.
 app.add_middleware(ProjectContextMiddleware)
+
+# Security headers — XSS protection, CSP, clickjacking prevention.
+app.add_middleware(SecurityHeadersMiddleware)
 
 # Import and include AST routes
 from app.routes.ast_routes import router as ast_router
@@ -2602,6 +2657,7 @@ async def stream_chunks(body):
         full_context = {"body": body, "files": files, "chat_history": chat_history}
         # Initialize variables for agent iteration loop
         processed_tool_calls = set()
+        mcp_tools = []
         max_iterations = 20
         iteration = 0
         messages_for_model = messages  # Use the correctly built messages from build_messages_for_streaming()
