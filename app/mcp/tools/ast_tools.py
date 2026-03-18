@@ -34,6 +34,33 @@ def _get_query_engine(file_path: Optional[str] = None):
     return enhancer.query_engines.get(key)
 
 
+def _format_symbol(node) -> str:
+    """Format a node as a compact one-line symbol with type signature."""
+    attrs = node.attributes or {}
+    name = node.name
+    ntype = node.node_type
+
+    if ntype == "class":
+        bases = attrs.get("bases") or attrs.get("extends") or []
+        base_str = f"({', '.join(bases)})" if bases else ""
+        return f"class {name}{base_str}"
+    elif ntype in ("function", "method"):
+        params = attrs.get("params") or attrs.get("parameters") or []
+        if isinstance(params, list) and params and isinstance(params[0], dict):
+            param_strs = [p.get("name", "?") for p in params]
+        else:
+            param_strs = [str(p) for p in params] if params else []
+        ret = attrs.get("return_type") or attrs.get("returnType") or ""
+        prefix = "async " if attrs.get("is_async") else ""
+        ret_str = f" -> {ret}" if ret else ""
+        return f"{prefix}def {name}({', '.join(param_strs)}){ret_str}"
+    elif ntype == "interface":
+        return f"interface {name}"
+    else:
+        vtype = attrs.get("type") or attrs.get("variableType") or ""
+        return f"{ntype} {name}{': ' + vtype if vtype else ''}"
+
+
 def _not_ready_message() -> Dict[str, Any]:
     """Standard response when the AST index is not yet available."""
     from app.utils.context_enhancer import get_ast_indexing_status
@@ -143,7 +170,7 @@ class ASTGetTreeTool(BaseMCPTool):
             lines.append(f"**Matched**: {len(matching)} indexed files")
             for fp in matching:
                 ast = enhancer.ast_cache[fp]
-                syms = enhancer._extract_key_symbols(ast)[:5]
+                syms = [_format_symbol(n) for n in ast.nodes.values() if n.node_type in ("class", "function", "method")][:5]
                 sym_str = ", ".join(syms) if syms else "(none)"
                 lines.append(f"- `{_rel(fp)}`: {sym_str}")
             return {"content": "\n".join(lines)}
@@ -164,7 +191,8 @@ class ASTGetTreeTool(BaseMCPTool):
         lines.append(f"**Nodes**: {len(ast.nodes)}  |  **Edges**: {len(ast.edges)}")
 
         # Symbols
-        symbols = enhancer._extract_key_symbols(ast)[:inp.max_symbols]
+        symbols = [_format_symbol(n) for n in ast.nodes.values()
+                   if n.node_type in ("class", "function", "method", "interface", "variable")][:inp.max_symbols]
         if symbols:
             lines.append("\n## Defined symbols")
             for s in symbols:
@@ -195,6 +223,13 @@ class ASTSearchInput(BaseModel):
     query: str = Field(
         description="Symbol name or substring to search for.",
     )
+    regex: bool = Field(
+        default=False,
+        description=(
+            "If true, treat query as a regex pattern "
+            "(e.g. 'handle.*Click' or 'use[A-Z].*')."
+        ),
+    )
     node_type: Optional[str] = Field(
         default=None,
         description=(
@@ -209,6 +244,21 @@ class ASTSearchInput(BaseModel):
     max_results: int = Field(
         default=30,
         description="Maximum results to return.",
+    )
+    has_decorator: Optional[str] = Field(
+        default=None,
+        description=(
+            "Filter to symbols with this decorator (e.g. 'pytest.mark.asyncio', "
+            "'staticmethod'). Substring match on decorator list."
+        ),
+    )
+    is_async: Optional[bool] = Field(
+        default=None,
+        description="If true, only async functions. If false, only sync.",
+    )
+    base_class: Optional[str] = Field(
+        default=None,
+        description="Filter classes that extend this base (substring match).",
     )
 
 
@@ -225,6 +275,10 @@ class ASTSearchTool(BaseMCPTool):
         '- `query="sendPayload"` → find where sendPayload is defined\n'
         '- `query="render", node_type="function"` → all render functions\n'
         '- `query="Router", file_path="routes"` → Router symbols in routes/\n'
+        '- `query="handle.*Click", regex=true` → regex pattern search\n'
+        '- `query="test_", has_decorator="pytest.mark.asyncio"` → decorated tests\n'
+        '- `query="", node_type="function", is_async=true` → all async functions\n'
+        '- `query="", node_type="class", base_class="BaseMCPTool"` → subclasses\n'
     )
 
     InputSchema = ASTSearchInput
@@ -240,23 +294,52 @@ class ASTSearchTool(BaseMCPTool):
         if enhancer is None or not enhancer.project_ast:
             return _not_ready_message()
 
-        query_lower = inp.query.lower()
+        import re as re_module
+
+        use_regex = inp.regex
+        if use_regex:
+            try:
+                pattern = re_module.compile(inp.query, re_module.IGNORECASE)
+            except re_module.error as e:
+                return {"error": True, "message": f"Invalid regex: {e}"}
+        else:
+            query_lower = inp.query.lower()
         results: List[Dict[str, Any]] = []
 
         for node in enhancer.project_ast.nodes.values():
-            # Name match (substring, case-insensitive)
-            if query_lower not in node.name.lower():
-                continue
+            # Name match
+            if use_regex:
+                if not pattern.search(node.name):
+                    continue
+            else:
+                if query_lower and query_lower not in node.name.lower():
+                    continue
             # Type filter
             if inp.node_type and node.node_type != inp.node_type:
                 continue
             # File filter
             if inp.file_path and inp.file_path not in node.source_location.file_path:
                 continue
+            # Decorator filter
+            if inp.has_decorator:
+                decorators = (node.attributes or {}).get("decorators", [])
+                if not any(inp.has_decorator in d for d in decorators):
+                    continue
+            # Async filter
+            if inp.is_async is not None:
+                node_is_async = (node.attributes or {}).get("is_async", False)
+                if node_is_async != inp.is_async:
+                    continue
+            # Base class filter
+            if inp.base_class:
+                bases = (node.attributes or {}).get("bases", []) or (node.attributes or {}).get("extends", [])
+                if not any(inp.base_class in (b or '') for b in bases):
+                    continue
 
             results.append({
                 "name": node.name,
                 "type": node.node_type,
+                "formatted": _format_symbol(node),
                 "file": _rel(node.source_location.file_path),
                 "line": node.source_location.start_line,
                 "end_line": node.source_location.end_line,
@@ -272,13 +355,9 @@ class ASTSearchTool(BaseMCPTool):
         lines.append(f"**Results**: {len(results)}")
 
         for r in results:
-            attrs = ""
-            if r["attributes"]:
-                attr_parts = [f"{k}={v}" for k, v in list(r["attributes"].items())[:3]]
-                attrs = f"  [{', '.join(attr_parts)}]" if attr_parts else ""
             lines.append(
-                f"- **{r['type']}** `{r['name']}` "
-                f"in `{r['file']}` L{r['line']}-{r['end_line']}{attrs}"
+                f"- `{r['formatted']}` "
+                f"in `{r['file']}` L{r['line']}-{r['end_line']}"
             )
 
         return {"content": "\n".join(lines)}
@@ -293,14 +372,18 @@ class ASTReferencesInput(BaseModel):
     name: str = Field(
         description="Symbol name to look up.",
     )
-    action: Literal["definitions", "dependencies", "callers", "summary"] = Field(
+    action: Literal["definitions", "dependencies", "importers", "callers", "summary", "context"] = Field(
         default="definitions",
         description=(
             "What to retrieve:\n"
             "- definitions: where this symbol is defined\n"
             "- dependencies: what files a given file depends on\n"
+            "- importers: which files import this file (reverse deps; "
+            "pass a file path as `name`)\n"
             "- callers: what calls this function\n"
-            "- summary: full file summary (pass a file path as `name`)"
+            "- summary: full file summary (pass a file path as `name`)\n"
+            "- context: semantic context at a location "
+            "(pass `name` as `file:line` or `file:line:col`)"
         ),
     )
     file_path: Optional[str] = Field(
@@ -318,9 +401,13 @@ class ASTReferencesTool(BaseMCPTool):
         "Actions:\n"
         "- **definitions**: find where a symbol is defined\n"
         "- **dependencies**: list files that a given file imports from\n"
+        "- **importers**: which files import a given file (reverse dependencies; "
+        "pass the file path as `name`)\n"
         "- **callers**: find call sites for a function\n"
         "- **summary**: get a structured summary of a file "
         "(pass the file path as `name`)\n"
+        "- **context**: get semantic context at a location "
+        "(pass `name` as `file:line` or `file:line:col`)\n"
     )
 
     InputSchema = ASTReferencesInput
@@ -364,6 +451,16 @@ class ASTReferencesTool(BaseMCPTool):
             for d in deps:
                 lines.append(f"- `{_rel(d)}`")
 
+        elif inp.action == "importers":
+            resolved = self._resolve_file(enhancer, inp.name)
+            if resolved is None:
+                return {"error": True, "message": f"File not in index: {inp.name}"}
+            importers = qe.get_reverse_dependencies(resolved)
+            lines.append(f"# Importers of `{_rel(resolved)}`")
+            lines.append(f"**Count**: {len(importers)}")
+            for imp in importers:
+                lines.append(f"- `{_rel(imp)}`")
+
         elif inp.action == "callers":
             calls = qe.get_function_calls(inp.name)
             lines.append(f"# Callers of `{inp.name}`")
@@ -387,6 +484,50 @@ class ASTReferencesTool(BaseMCPTool):
                 lines.append("\n**Dependencies**:")
                 for d in summary["dependencies"]:
                     lines.append(f"- `{_rel(d)}`")
+
+        elif inp.action == "context":
+            # Parse "file:line" or "file:line:col" from inp.name
+            parts = inp.name.rsplit(":", 2)
+            if len(parts) < 2:
+                return {
+                    "error": True,
+                    "message": (
+                        "For the 'context' action, pass `name` as "
+                        "`file_path:line` or `file_path:line:col`."
+                    ),
+                }
+            # Reconstruct file path (may contain colons on Windows)
+            if len(parts) == 3 and parts[-1].isdigit() and parts[-2].isdigit():
+                file_part = parts[0]
+                line = int(parts[-2])
+                col = int(parts[-1])
+            elif len(parts) >= 2 and parts[-1].isdigit():
+                file_part = ":".join(parts[:-1])
+                line = int(parts[-1])
+                col = 1
+            else:
+                return {"error": True, "message": f"Cannot parse location from: {inp.name}"}
+
+            resolved = self._resolve_file(enhancer, file_part)
+            if resolved is None:
+                return {"error": True, "message": f"File not in index: {file_part}"}
+
+            ctx = qe.get_context_for_location(resolved, line, col)
+            lines.append(f"# Context at `{_rel(resolved)}:{line}:{col}`")
+            if ctx.get("type") == "unknown":
+                lines.append("No AST node found at this location.")
+            else:
+                lines.append(f"**Symbol**: `{ctx.get('name')}` ({ctx.get('type')})")
+                loc = ctx.get("location", {})
+                lines.append(
+                    f"**Span**: L{loc.get('start_line')}-{loc.get('end_line')}"
+                )
+                if ctx.get("scopes"):
+                    lines.append("**Containing scopes**:")
+                    for scope in ctx["scopes"]:
+                        lines.append(f"- {scope['type']} `{scope['name']}`")
+                if ctx.get("attributes"):
+                    lines.append(f"**Attributes**: {ctx['attributes']}")
 
         return {"content": "\n".join(lines)}
 

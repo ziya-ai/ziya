@@ -210,6 +210,10 @@ class PythonASTConverter:
                 decorators.append(decorator.id)
             elif isinstance(decorator, ast.Call) and isinstance(decorator.func, ast.Name):
                 decorators.append(decorator.func.id)
+            elif isinstance(decorator, ast.Attribute):
+                decorators.append(self._get_attribute_name(decorator))
+            elif isinstance(decorator, ast.Call) and isinstance(decorator.func, ast.Attribute):
+                decorators.append(self._get_attribute_name(decorator.func))
         
         node_id = self.unified_ast.add_node(
             node_type="class",
@@ -299,6 +303,10 @@ class PythonASTConverter:
                 decorators.append(decorator.id)
             elif isinstance(decorator, ast.Call) and isinstance(decorator.func, ast.Name):
                 decorators.append(decorator.func.id)
+            elif isinstance(decorator, ast.Attribute):
+                decorators.append(self._get_attribute_name(decorator))
+            elif isinstance(decorator, ast.Call) and isinstance(decorator.func, ast.Attribute):
+                decorators.append(self._get_attribute_name(decorator.func))
         
         node_id = self.unified_ast.add_node(
             node_type="function",

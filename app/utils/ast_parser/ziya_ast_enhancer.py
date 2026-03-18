@@ -50,8 +50,25 @@ class ZiyaASTEnhancer:
     
     def _register_parsers(self):
         """Register available parsers."""
-        # Register HTML/CSS parser
+        # Register all language parsers
+        self.parser_registry.register_parser(PythonASTParser)
+        self.parser_registry.register_parser(TypeScriptASTParser)
         self.parser_registry.register_parser(HTMLCSSParser)
+
+        # Register tree-sitter parsers for C/C++, Rust, Go, Java
+        try:
+            from .treesitter_parser import TreeSitterParser, _LANG_CONFIGS, _TS_AVAILABLE
+            if _TS_AVAILABLE:
+                for lang_key, cfg in _LANG_CONFIGS.items():
+                    parser_instance_class = type(
+                        f"TreeSitter_{lang_key}", (TreeSitterParser,),
+                        {"_lang_key_default": lang_key,
+                         "__init__": lambda self, lk=lang_key: TreeSitterParser.__init__(self, lk),
+                         "get_file_extensions": classmethod(lambda cls, c=cfg: c["extensions"])})
+                    self.parser_registry.register_parser(parser_instance_class)
+                logger.info(f"Registered tree-sitter parsers for: {', '.join(_LANG_CONFIGS.keys())}")
+        except Exception as e:
+            logger.debug(f"Tree-sitter parsers not available: {e}")
         
     # Directories to always skip — test fixtures contain intentionally
     # broken syntax, and .ziya/ is scratch state.
@@ -342,87 +359,72 @@ class ZiyaASTEnhancer:
     
     def generate_ast_context(self) -> str:
         """
-        Generate a textual context from the AST.
-        
-        Returns:
-            String representation of the AST context 
-        """
+        Generate a compact textual summary of the codebase AST.
 
-        # Return empty context if disabled
+        Produces one-line-per-symbol output with type signatures,
+        grouped by file.  Omits verbose metadata (node/edge counts,
+        node-type breakdowns) that waste tokens without helping the model.
+        """
         if self.ast_resolution == 'disabled':
             return ""
-
         if not self.ast_cache:
-            logger.info("No AST cache available, returning empty context")
-            return "# AST Analysis\n\nNo files have been processed for AST analysis."
-            
-        if not self.project_ast:
             return ""
-            
-        context_parts = []
-        
-        # Add file structure information
-        context_parts.append("# Code Structure Summary")
-        
-        # Add statistics about file types processed
+        if not self.project_ast or not self.project_ast.nodes:
+            return ""
+
+        lines: list[str] = []
+        lines.append("# Code Structure Summary")
+
+        # File-type breakdown (one line)
         file_types = {}
         for file_path in self.ast_cache.keys():
             ext = os.path.splitext(file_path)[1]
             file_types[ext] = file_types.get(ext, 0) + 1
-        
-        context_parts.append(f"\n## Files Processed by Type: {dict(sorted(file_types.items()))}")
-        
-        # Add key files and their relationships
-        context_parts.append(f"\n## Total AST Statistics")
-        context_parts.append(f"- Total nodes in project AST: {len(self.project_ast.nodes)}")
-        context_parts.append(f"- Total edges in project AST: {len(self.project_ast.edges)}")
-        context_parts.append("\n## Key Files and Dependencies")
-        
-        # For each file in the ast_cache
+        lines.append(f"Files: {len(self.ast_cache)} | Types: {dict(sorted(file_types.items()))}")
+
         settings = self.resolution_settings[self.ast_resolution]
+
         for file_path, ast in list(self.ast_cache.items()):
-            # Get relative path for display
             rel_path = os.path.relpath(file_path)
-            
-            # Add file summary
-            context_parts.append(f"\n### {rel_path}")
-            context_parts.append(f"Nodes: {len(ast.nodes)}, Edges: {len(ast.edges)}")
-            
-            # Show node types in this file
-            node_types = {}
-            for node in list(ast.nodes.values()):
-                node_types[node.node_type] = node_types.get(node.node_type, 0) + 1
-            context_parts.append(f"Node types: {dict(sorted(node_types.items()))}")
-            
-            # Add key symbols defined in this file
             symbols = self._extract_key_symbols(ast)
-            if symbols:
-                context_parts.append("\nDefines:")
-                # Limit symbols based on resolution settings
-                symbol_list = list(symbols)[:settings['symbols_per_file']]
-                for symbol in symbol_list:
-                    context_parts.append(f"- {symbol}")
-            
-            # Add dependencies
             deps = self._extract_dependencies(ast)
-            if deps:
-                context_parts.append("\nDependencies:")
-                # Limit dependencies based on resolution settings
-                dep_list = list(deps)[:settings['deps_per_file']]
-                for dep in dep_list:
-                    context_parts.append(f"- {dep}")
-        
-        return "\n".join(context_parts)
+            if not symbols and not deps:
+                continue
+
+            lines.append(f"\n## {rel_path}")
+            for s in symbols[:settings['symbols_per_file']]:
+                lines.append(f"  {s}")
+            for d in deps[:settings['deps_per_file']]:
+                lines.append(f"  {d}")
+
+        return "\n".join(lines)
     
     def _extract_key_symbols(self, ast: UnifiedAST) -> List[str]:
-        """Extract key symbols defined in the AST."""
+        """Extract key symbols with type signatures from the AST."""
         symbols = []
-        
-        # Extract classes, functions, and variables
         for node in list(ast.nodes.values()):
-            if node.node_type in ["class", "function", "method", "variable"]:
-                symbols.append(f"{node.node_type} {node.name}")
-        
+            attrs = node.attributes or {}
+            if node.node_type == "class":
+                bases = attrs.get("bases") or attrs.get("extends") or []
+                base_str = f"({', '.join(b for b in bases if b)})" if bases else ""
+                symbols.append(f"class {node.name}{base_str}")
+            elif node.node_type in ("function", "method"):
+                params = attrs.get("params") or attrs.get("parameters") or []
+                if isinstance(params, list) and params and isinstance(params[0], dict):
+                    param_strs = [p.get("name", "?") for p in params]
+                else:
+                    param_strs = [str(p) for p in params] if params else []
+                ret = attrs.get("return_type") or attrs.get("returnType") or ""
+                sig = f"({', '.join(param_strs)})"
+                ret_str = f" -> {ret}" if ret else ""
+                prefix = "async " if attrs.get("is_async") else ""
+                symbols.append(f"{prefix}def {node.name}{sig}{ret_str}")
+            elif node.node_type == "interface":
+                symbols.append(f"interface {node.name}")
+            elif node.node_type == "variable":
+                vtype = attrs.get("type") or attrs.get("variableType") or ""
+                type_str = f": {vtype}" if vtype else ""
+                symbols.append(f"var {node.name}{type_str}")
         return symbols
     
     def _extract_dependencies(self, ast: UnifiedAST) -> List[str]:
