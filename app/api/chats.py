@@ -10,6 +10,7 @@ from ..models.chat import Chat, ChatCreate, ChatUpdate, ChatSummary, Message, Ch
 from ..models.group import ChatGroup, ChatGroupCreate, ChatGroupUpdate
 from ..storage.projects import ProjectStorage
 from ..storage.chats import ChatStorage
+from ..storage.global_items import collect_global_chats, collect_global_groups
 from ..storage.groups import ChatGroupStorage
 from ..utils.paths import get_ziya_home, get_project_dir
 
@@ -37,11 +38,41 @@ def get_group_storage(project_id: str) -> ChatGroupStorage:
 
 # Chat Groups
 
+def _chat_to_summary(chat: Chat) -> ChatSummary:
+    """Convert a full Chat to a ChatSummary for list endpoints."""
+    chat_extra = chat.model_dump()
+    version = chat_extra.get('_version') or chat.lastActiveAt
+    return ChatSummary(
+        id=chat.id,
+        title=chat.title,
+        groupId=chat.groupId,
+        contextIds=chat.contextIds,
+        skillIds=chat.skillIds,
+        additionalFiles=chat.additionalFiles,
+        messageCount=len(chat.messages),
+        createdAt=chat.createdAt,
+        lastActiveAt=chat.lastActiveAt,
+        delegateMeta=chat.delegateMeta,
+        **({'_version': version} if version else {}),
+        **({'isGlobal': True}),
+    )
+
+
 @router.get("/api/v1/projects/{project_id}/chat-groups", response_model=List[ChatGroup])
 async def list_chat_groups(project_id: str):
-    """List all chat groups."""
+    """List all chat groups, including global groups from other projects."""
     storage = get_group_storage(project_id)
-    return storage.list()
+    groups = storage.list()
+
+    # Include global groups from other projects
+    existing_ids = {g.id for g in groups}
+    ziya_home = get_ziya_home()
+    for global_group in collect_global_groups(ziya_home, exclude_project_id=project_id):
+        if global_group.id not in existing_ids:
+            groups.append(global_group)
+            existing_ids.add(global_group.id)
+
+    return sorted(groups, key=lambda g: g.order)
 
 @router.post("/api/v1/projects/{project_id}/chat-groups", response_model=ChatGroup)
 async def create_chat_group(project_id: str, data: ChatGroupCreate):
@@ -136,11 +167,26 @@ async def list_chats(
     
     if include_messages:
         chats = storage.list(group_id=group_id)
+        # Include global chats from other projects
+        existing_ids = {c.id for c in chats}
+        ziya_home = get_ziya_home()
+        for global_chat in collect_global_chats(ziya_home, exclude_project_id=project_id):
+            if global_chat.id not in existing_ids:
+                chats.append(global_chat)
+                existing_ids.add(global_chat.id)
         if limit:
             chats = chats[offset:offset + limit]
         return chats
     
     summaries = storage.list_summaries(group_id=group_id)
+
+    # Include global chat summaries from other projects
+    existing_ids = {s.id for s in summaries}
+    ziya_home = get_ziya_home()
+    for global_chat in collect_global_chats(ziya_home, exclude_project_id=project_id):
+        if global_chat.id not in existing_ids:
+            summaries.append(_chat_to_summary(global_chat))
+            existing_ids.add(global_chat.id)
     
     # Apply pagination
     if limit:
@@ -234,11 +280,17 @@ async def get_chat(project_id: str, chat_id: str):
     storage = get_chat_storage(project_id)
     chat = storage.get(chat_id)
     
-    if not chat:
-        raise HTTPException(status_code=404, detail="Chat not found")
-    
-    storage.touch(chat_id)
-    return chat
+    if chat:
+        storage.touch(chat_id)
+        return chat
+
+    # Chat not in this project — check if it's a global chat in another project
+    ziya_home = get_ziya_home()
+    for global_chat in collect_global_chats(ziya_home, exclude_project_id=project_id):
+        if global_chat.id == chat_id:
+            return global_chat
+
+    raise HTTPException(status_code=404, detail="Chat not found")
 
 @router.put("/api/v1/projects/{project_id}/chats/{chat_id}", response_model=Chat)
 async def update_chat(project_id: str, chat_id: str, data: ChatUpdate):

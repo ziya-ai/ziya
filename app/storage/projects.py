@@ -9,6 +9,12 @@ import time
 from .base import BaseStorage
 from ..models.project import Project, ProjectCreate, ProjectUpdate, ProjectSettings
 
+def _normalize_path(path: str) -> str:
+    """Normalize a filesystem path for consistent comparison."""
+    if not path:
+        return path
+    return str(Path(path).resolve())
+
 class ProjectStorage(BaseStorage[Project]):
     """Storage for projects."""
     
@@ -34,8 +40,9 @@ class ProjectStorage(BaseStorage[Project]):
     
     def get_by_path(self, path: str) -> Optional[Project]:
         """Find project by working directory path."""
+        normalized = _normalize_path(path)
         for project in self.list():
-            if project.path == path:
+            if _normalize_path(project.path) == normalized:
                 return project
         return None
     
@@ -55,6 +62,17 @@ class ProjectStorage(BaseStorage[Project]):
                         projects.append(Project(**data))
         return sorted(projects, key=lambda p: p.lastAccessedAt, reverse=True)
     
+    def list_deduped(self) -> List[Project]:
+        """List projects, collapsing duplicates that share the same path.
+
+        Keeps the most recently accessed entry for each normalized path."""
+        seen: dict[str, Project] = {}
+        for project in self.list():
+            key = _normalize_path(project.path) or project.id
+            if key not in seen or project.lastAccessedAt > seen[key].lastAccessedAt:
+                seen[key] = project
+        return sorted(seen.values(), key=lambda p: p.lastAccessedAt, reverse=True)
+
     def create(self, data: ProjectCreate) -> Project:
         """Create a new project or return existing one for the path."""
         # Check if project already exists for this path (only if path is provided)
@@ -64,6 +82,10 @@ class ProjectStorage(BaseStorage[Project]):
                 # Update lastAccessedAt
                 self.touch(existing.id)
                 return existing
+        
+        # Normalize the path before persisting
+        if data.path:
+            data.path = _normalize_path(data.path)
         
         project_id = str(uuid.uuid4())
         now = int(time.time() * 1000)
