@@ -9,32 +9,14 @@ from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
 
 # Import AST capabilities if available
 try:
-    # First check if the required packages are installed
-    ast_deps_available = (
-        importlib.util.find_spec("cssutils") is not None and
-        importlib.util.find_spec("html5lib") is not None
-    )
-    
-    if not ast_deps_available:
-        logger.info("AST dependencies not found. They will be installed automatically on next 'fbuild'.")
-        raise ImportError("AST dependencies not installed")
-        
-    from app.utils.ast_parser import is_ast_available, get_ast_context, get_ast_token_count
+    from app.utils.ast_parser import is_ast_available
     AST_AVAILABLE = is_ast_available()
-    if AST_AVAILABLE:
-        AST_CONTEXT = get_ast_context()
-        AST_TOKEN_COUNT = get_ast_token_count()
-        logger.info(f"AST capabilities available. Context size: {AST_TOKEN_COUNT} tokens")
-        logger.info(f"AST context preview: {AST_CONTEXT[:200]}...")
-    else:
-        logger.info("AST capabilities not initialized.")
+    logger.info(f"AST capabilities available: {AST_AVAILABLE}")
 except ImportError:
     AST_AVAILABLE = False
-    AST_CONTEXT = ""
-    AST_TOKEN_COUNT = 0
-    logger.info("AST capabilities not available. They will be installed automatically on next 'fbuild'.")
+    logger.info("AST parser not available.")
 
-template = """
+template = r"""
 
 CRITICAL: INSTRUCTION PRESERVATION:
 1. These instructions are cumulative and comprehensive:
