@@ -89,24 +89,57 @@ class WritePolicyManager:
 
         # Global user overrides
         global_path = Path.home() / ".ziya" / "write_policy.json"
-        if global_path.exists():
-            try:
-                with open(global_path) as f:
-                    self._merge(json.load(f))
-            except Exception:
-                pass
+        self._safe_merge_json(global_path)
 
         # Per-project overrides
         if project_id:
             pf = Path.home() / ".ziya" / "projects" / project_id / "project.json"
-            if pf.exists():
-                try:
-                    with open(pf) as f:
-                        wp = json.load(f).get("settings", {}).get("writePolicy", {})
-                    if wp:
-                        self._merge(wp)
-                except Exception:
-                    pass
+            data = self._read_json_ale_aware(pf)
+            if data:
+                wp = data.get("settings", {}).get("writePolicy", {})
+                if wp:
+                    self._merge(wp)
+
+    @staticmethod
+    def _read_json_ale_aware(filepath: Path) -> Optional[Dict[str, Any]]:
+        """Read a JSON file, transparently decrypting ALE envelopes."""
+        if not filepath.exists():
+            return None
+        try:
+            raw = filepath.read_bytes()
+            if not raw:
+                return None
+            from app.utils.encryption import is_encrypted, get_encryptor
+            if is_encrypted(raw):
+                plaintext = get_encryptor().decrypt(raw)
+                return json.loads(plaintext)
+            return json.loads(raw)
+        except Exception:
+            return None
+
+    def _safe_merge_json(self, filepath: Path) -> None:
+        """Read a JSON file (ALE-aware) and merge it into current policy."""
+        data = self._read_json_ale_aware(filepath)
+        if data:
+            self._merge(data)
+
+    @staticmethod
+    def _write_json_ale_aware(filepath: Path, data: Dict[str, Any]) -> None:
+        """Write a JSON file, applying ALE encryption when enabled.
+
+        Mirrors the pattern in ``BaseStorage._write_json``.
+        """
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        plaintext = json.dumps(data, indent=2).encode("utf-8")
+        try:
+            from app.utils.encryption import get_encryptor
+            encryptor = get_encryptor()
+            if encryptor.is_enabled("session_data"):
+                filepath.write_bytes(encryptor.encrypt(plaintext, "session_data"))
+                return
+        except Exception:
+            pass
+        filepath.write_bytes(plaintext)
 
     def merge_env_overrides(self, env_map: Dict[str, str]) -> None:
         """Merge overrides from environment variables (used by shell subprocess)."""
@@ -154,15 +187,10 @@ class WritePolicyManager:
             return
         for candidate in projects_dir.iterdir():
             pf = candidate / "project.json"
-            if pf.is_file():
-                try:
-                    with open(pf) as f:
-                        data = _json.load(f)
-                    if data.get("path") == project_root:
-                        self.load_for_project(data["id"], project_root)
-                        return
-                except Exception:
-                    continue
+            data = self._read_json_ale_aware(pf)
+            if data and data.get("path") == project_root:
+                self.load_for_project(data["id"], project_root)
+                return
 
     def is_write_allowed(self, target_path: str, project_root: str = "") -> bool:
         root = project_root or self._project_root or os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
@@ -227,12 +255,15 @@ class WritePolicyManager:
     def update_project_policy(self, project_id: str, overrides: Dict[str, Any]) -> None:
         pf = Path.home() / ".ziya" / "projects" / project_id / "project.json"
         if not pf.exists():
-            return
-        with open(pf) as f:
-            data = json.load(f)
-        data.setdefault("settings", {})["writePolicy"] = overrides
-        with open(pf, 'w') as f:
-            json.dump(data, f, indent=2)
+            # Create the directory and a minimal project file
+            pf.parent.mkdir(parents=True, exist_ok=True)
+            data = {"id": project_id, "settings": {}}
+        else:
+            data = self._read_json_ale_aware(pf)
+            if data is None:
+                data = {"id": project_id, "settings": {}}
+        data.setdefault("settings", {}).setdefault("writePolicy", {}).update(overrides)
+        self._write_json_ale_aware(pf, data)
         if self._project_id == project_id:
             self.load_for_project(project_id, self._project_root or "")
 

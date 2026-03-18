@@ -7,6 +7,7 @@ from pathlib import Path
 import json
 import fcntl
 from contextlib import contextmanager
+from app.utils.logging_utils import logger
 
 
 def _sanitize_surrogates(obj):
@@ -51,28 +52,86 @@ class BaseStorage(ABC, Generic[T]):
         if not filepath.exists():
             return None
         try:
-            with self._file_lock(filepath, 'r') as f:
-                return json.load(f)
+            raw = filepath.read_bytes()
+            if not raw:
+                return None
+
+            # Auto-detect encrypted vs plaintext
+            from app.utils.encryption import is_encrypted, get_encryptor
+            if is_encrypted(raw):
+                encryptor = get_encryptor()
+                plaintext = encryptor.decrypt(raw)
+                return json.loads(plaintext)
+            else:
+                return json.loads(raw)
         except (json.JSONDecodeError, IOError) as e:
-            from app.utils.logging_utils import logger
             logger.error(f"Error reading {filepath}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Error reading/decrypting {filepath}: {e}")
             return None
     
     def _write_json(self, filepath: Path, data: dict) -> None:
-        """Write JSON file with locking and atomic write."""
+        """Write JSON file with optional ALE encryption and atomic write."""
         filepath.parent.mkdir(parents=True, exist_ok=True)
+
+        # Guard: never overwrite an encrypted file we can't decrypt.
+        # If the existing file has ALE magic bytes but the encryptor
+        # can't read it (KEK missing/changed), refuse the write to
+        # prevent silent data loss.
+        if filepath.exists():
+            from app.utils.encryption import is_encrypted, get_encryptor
+            try:
+                existing = filepath.read_bytes()
+                if is_encrypted(existing):
+                    enc = get_encryptor()
+                    enc.decrypt(existing)  # Will raise if KEK is wrong
+            except Exception as e:
+                logger.error(f"🔐 REFUSING write to {filepath}: existing file is encrypted "
+                             f"but cannot be decrypted ({e}). Fix your KEK or restore from "
+                             f"~/.ziya/keyring_backups/ before this file can be updated.")
+                return  # Silently skip — protecting the encrypted file
         
+        # Determine data category from filepath for encryption policy
+        category = self._infer_category(filepath)
+
         # Write to temp file first, then rename for atomicity
         temp_path = filepath.with_suffix('.tmp')
         try:
-            with open(temp_path, 'w') as f:
-                json.dump(_sanitize_surrogates(data), f, indent=2, ensure_ascii=False)
+            from app.utils.encryption import get_encryptor
+            encryptor = get_encryptor()
+
+            plaintext = json.dumps(
+                _sanitize_surrogates(data), indent=2, ensure_ascii=False
+            ).encode("utf-8")
+
+            if encryptor.is_enabled(category):
+                encrypted = encryptor.encrypt(plaintext, category)
+                temp_path.write_bytes(encrypted)
+            else:
+                temp_path.write_bytes(plaintext)
+
             temp_path.rename(filepath)
         except Exception as e:
             # Clean up temp file on error
             if temp_path.exists():
                 temp_path.unlink()
             raise
+
+    @staticmethod
+    def _infer_category(filepath: Path) -> str:
+        """Infer the encryption category from the file path."""
+        name = filepath.name.lower()
+        parent = filepath.parent.name.lower()
+        if parent == "chats" or name.endswith("chat.json"):
+            return "conversation_data"
+        if "skill" in name or parent == "skills":
+            return "session_data"
+        if "context" in name or parent == "contexts":
+            return "session_data"
+        if "project" in name:
+            return "session_data"
+        return "session_data"
     
     @abstractmethod
     def get(self, id: str) -> Optional[T]:

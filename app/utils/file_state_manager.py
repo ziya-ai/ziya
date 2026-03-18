@@ -47,36 +47,42 @@ class FileStateManager:
                         self.conversation_states = {}
                         return
                     
-                    with open(self.state_file, 'r') as f:
-                        try:
-                            data = json.load(f)
-                        except json.JSONDecodeError as e:
-                            logger.warning(f"File state JSON corrupted: {e}. Resetting.")
-                            backup_file = self.state_file + f".backup.{int(time.time())}"
-                            shutil.move(self.state_file, backup_file)
-                            self.conversation_states = {}
-                            return
-                            
-                        for conv_id, files in data.items():
-                            self.conversation_states[conv_id] = {}
-                            for file_path, state_data in files.items():
-                                # Skip special keys that aren't file states
-                                if file_path == '_diff_history':
-                                    if conv_id not in self.conversation_diffs:
-                                        self.conversation_diffs[conv_id] = []
-                                    self.conversation_diffs[conv_id] = state_data
-                                    continue
-                                self.conversation_states[conv_id][file_path] = FileState(
-                                    path=state_data['path'],
-                                    content_hash=state_data['content_hash'],
-                                    line_states={int(k): v for k, v in state_data['line_states'].items()},
-                                    original_content=state_data['original_content'],
-                                    current_content=state_data['current_content'],
-                                    last_seen_content=state_data['last_seen_content'],
-                                    last_context_submission_content=state_data.get('last_context_submission_content', state_data['current_content'])
-                                )
-                        if self.conversation_states:
-                            logger.info(f"Loaded file states for {len(self.conversation_states)} conversations")
+                    raw = open(self.state_file, 'rb').read()
+                    try:
+                        from app.utils.encryption import is_encrypted, get_encryptor
+                        if is_encrypted(raw):
+                            encryptor = get_encryptor()
+                            plaintext = encryptor.decrypt(raw)
+                            data = json.loads(plaintext)
+                        else:
+                            data = json.loads(raw)
+                    except (json.JSONDecodeError, ValueError) as e:
+                        logger.warning(f"File state JSON corrupted: {e}. Resetting.")
+                        backup_file = self.state_file + f".backup.{int(time.time())}"
+                        shutil.move(self.state_file, backup_file)
+                        self.conversation_states = {}
+                        return
+
+                    for conv_id, files in data.items():
+                        self.conversation_states[conv_id] = {}
+                        for file_path, state_data in files.items():
+                            # Skip special keys that aren't file states
+                            if file_path == '_diff_history':
+                                if conv_id not in self.conversation_diffs:
+                                    self.conversation_diffs[conv_id] = []
+                                self.conversation_diffs[conv_id] = state_data
+                                continue
+                            self.conversation_states[conv_id][file_path] = FileState(
+                                path=state_data['path'],
+                                content_hash=state_data['content_hash'],
+                                line_states={int(k): v for k, v in state_data['line_states'].items()},
+                                original_content=state_data['original_content'],
+                                current_content=state_data['current_content'],
+                                last_seen_content=state_data['last_seen_content'],
+                                last_context_submission_content=state_data.get('last_context_submission_content', state_data['current_content'])
+                            )
+                    if self.conversation_states:
+                        logger.info(f"Loaded file states for {len(self.conversation_states)} conversations")
             except Exception as e:
                 logger.warning(f"Failed to load file states: {e}")
                 self.conversation_states = {}
@@ -86,6 +92,8 @@ class FileStateManager:
         try:
             os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
             data = {}
+
+            # Build the data dict (existing logic unchanged)
             for conv_id, files in self.conversation_states.items():
                 # Skip temporary precision_ conversations
                 if conv_id.startswith('precision_'):
@@ -111,8 +119,18 @@ class FileStateManager:
                     data[conv_id]['_diff_history'] = diffs
             
             with self._lock:
-                with open(self.state_file, 'w') as f:
-                    json.dump(data, f, indent=2)
+                from app.utils.encryption import get_encryptor
+                encryptor = get_encryptor()
+                plaintext = json.dumps(data, indent=2).encode("utf-8")
+
+                if encryptor.is_enabled("file_state"):
+                    encrypted = encryptor.encrypt(plaintext, "file_state")
+                    with open(self.state_file, 'wb') as f:
+                        f.write(encrypted)
+                else:
+                    with open(self.state_file, 'w') as f:
+                        f.write(plaintext.decode("utf-8"))
+
             logger.debug(f"Saved file states for {len(data)} conversations")
         except Exception as e:
             logger.warning(f"Failed to save file states: {e}")
