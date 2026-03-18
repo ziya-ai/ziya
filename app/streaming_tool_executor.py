@@ -2343,6 +2343,8 @@ Retry with the 'command' parameter included."""
                                    # Timeout for tool execution to prevent server hangs
                                    TOOL_EXEC_TIMEOUT = int(os.environ.get('TOOL_EXEC_TIMEOUT', '300'))  # 5 min default
 
+                                   from app.utils.tool_audit_log import log_tool_execution
+                                   _tool_start_time = time.time()
                                    # Import signing and verification functions
                                    from app.mcp.signing import verify_tool_result, strip_signature_metadata, sign_tool_result
                                    
@@ -2451,6 +2453,18 @@ Please try again or proceed without this tool."""
                                             # Strip signature metadata before processing
                                             # (keep verification status separate)
                                             result = strip_signature_metadata(result)
+
+                                   # Audit log the tool execution
+                                   _tool_elapsed = (time.time() - _tool_start_time) * 1000
+                                   log_tool_execution(
+                                       tool_name=actual_tool_name,
+                                       args={k: v for k, v in args.items() if not k.startswith('_')},
+                                       result_status="error" if (isinstance(result, dict) and result.get('error')) else "ok",
+                                       conversation_id=conversation_id or "",
+                                       verified=is_verified,
+                                       error_message=str(result.get('message', ''))[:200] if isinstance(result, dict) and result.get('error') else "",
+                                       duration_ms=_tool_elapsed,
+                                   )
                                     
                                     # Add successfully executed command to recent commands for deduplication
                                    if actual_tool_name == 'run_shell_command' and args.get('command'):
