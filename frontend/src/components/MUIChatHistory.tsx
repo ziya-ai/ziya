@@ -5,8 +5,9 @@ import { ConversationHealthDebugModal } from './ConversationHealthDebug';
 import ExportConversationModal from './ExportConversationModal';
 import { useChatContext } from '../context/ChatContext';
 import { useTheme } from '../context/ThemeContext';
-import { Conversation, ConversationFolder, SearchResult } from '../utils/types';
 import { useProject } from '../context/ProjectContext';
+import { Conversation, ConversationFolder, SearchResult } from '../utils/types';
+import SwarmRecoveryPanel from './SwarmRecoveryPanel';
 import { db } from '../utils/db';
 import { v4 as uuidv4 } from 'uuid';
 import type { DelegateMeta, TaskPlan, DelegateStatus } from '../types/delegate';
@@ -77,7 +78,10 @@ interface ChatTreeItemProps {
   isFolder?: boolean;
   isTaskPlanFolder?: boolean;
   taskPlanProgress?: string;   // e.g. "3/4"
+  onSwarmRecovery?: (folderId: string) => void;
   delegateStatus?: DelegateStatus | 'orchestrator' | null;
+  onDelegateRetry?: (nodeId: string) => void;
+  onDelegateSkip?: (nodeId: string) => void;
   isPinned?: boolean;
   isCurrentItem?: boolean;
   isGlobalItem?: boolean;
@@ -127,6 +131,8 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     delegateStatus,
     isPinned = false,
     isCurrentItem = false,
+    onDelegateRetry,
+    onDelegateSkip,
     isGlobalItem = false,
     isStreaming = false,
     hasUnreadResponse = false,
@@ -225,7 +231,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     >
       {/* Expand/collapse chevron for folders */}
       <span
-        style={{ width: 20, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.7, cursor: isFolder && hasChildren ? 'pointer' : 'default' }}
+        style={{ width: 20, flexShrink: 0, display: isFolder ? 'flex' : 'none', alignItems: 'center', justifyContent: 'center', opacity: 0.7, cursor: isFolder && hasChildren ? 'pointer' : 'default' }}
       >
         {isFolder && hasChildren ? (
           isExpanded ? <ArrowDropDownIcon sx={{ fontSize: 18 }} /> : <ArrowRightIcon sx={{ fontSize: 18 }} />
@@ -334,7 +340,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                   opacity: isHovered ? 1 : 0,
                   transition: 'opacity 0.2s ease-in-out'
                 }}>
-                  {isFolder && (
+                  {isFolder && !isTaskPlanFolder && (
                     <Tooltip title="New chat in this folder">
                       <IconButton
                         size="small"
@@ -348,7 +354,9 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                   <Dropdown
                     dropdownRender={() => <AntActionMenu
                       isFolder={isFolder}
-                      nodeId={nodeId}
+                      nodeId={nodeId} isTaskPlanFolder={isTaskPlanFolder} 
+                      delegateStatus={delegateStatus} onDelegateRetry={props.onDelegateRetry} onDelegateSkip={props.onDelegateSkip}
+                      onSwarmRecovery={props.onSwarmRecovery}
                       onEdit={onEdit} onDelete={onDelete} onFork={onFork} onCompress={onCompress} onExport={onExport}
                       onOpenMoveMenu={onOpenMoveMenu}
                       onToggleGlobal={onToggleGlobal} onMoveToProject={onMoveToProject} isGlobalItem={isGlobalItem}
@@ -373,7 +381,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
               }}>
                 <SpinningSync sx={{ fontSize: '12px', mr: 0.5 }} />
                 <Typography variant="caption" sx={{ fontSize: '11px' }}>
-                  Receiving response...
+                  Processing…
                 </Typography>
               </Box>
             )}</Box>
@@ -382,7 +390,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     </div>
   );
 });
-const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress, onExport, onOpenMoveMenu, onToggleGlobal, onMoveToProject, isGlobalItem, onConfigure, onPin, isPinned, onCreateSubfolder }) => {
+const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress, onExport, onOpenMoveMenu, onToggleGlobal, onMoveToProject, isGlobalItem, onConfigure, onPin, isPinned, onCreateSubfolder, isTaskPlanFolder, onSwarmRecovery, delegateStatus, onDelegateRetry, onDelegateSkip }) => {
   const handleAntAction = (actionCallback: (id: string) => void, originalEvent?: React.MouseEvent | Event) => {
     originalEvent?.stopPropagation();
     actionCallback(nodeId);
@@ -391,6 +399,16 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
   const items: any[] = [];
 
   if (!isFolder) {
+    // Delegate recovery actions for failed/interrupted delegates
+    const isFailedDelegate = delegateStatus === 'failed' || delegateStatus === 'interrupted';
+    if (isFailedDelegate && onDelegateRetry) {
+      items.push(
+        { key: 'delegate-retry', label: '🔄 Retry delegate', onClick: (e) => { e.domEvent.stopPropagation(); onDelegateRetry(nodeId); } },
+        { key: 'delegate-skip', label: '⏭️ Skip & unblock downstream', onClick: (e) => { e.domEvent.stopPropagation(); onDelegateSkip?.(nodeId); } },
+        { type: 'divider' as const },
+      );
+    }
+
     items.push(
       { key: 'edit', label: 'Rename', icon: <EditOutlined />, onClick: (e) => handleAntAction(onEdit, e.domEvent) },
       { key: 'fork', label: 'Fork', icon: <AntCopyOutlined />, onClick: (e) => handleAntAction(onFork, e.domEvent) },
@@ -418,7 +436,16 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
   } else { // isFolder
     items.push(
       { key: 'edit', label: 'Rename', icon: <EditOutlined />, onClick: (e) => handleAntAction(onEdit, e.domEvent) },
-      { key: 'new-subfolder', label: 'New Subfolder', icon: <CreateNewFolderIcon />, onClick: (e) => handleAntAction(onCreateSubfolder, e.domEvent) },
+    );
+    if (isTaskPlanFolder && onSwarmRecovery) {
+      items.push({ key: 'swarm-recovery', label: '🔧 Swarm Recovery', onClick: (e) => { e.domEvent.stopPropagation(); onSwarmRecovery(nodeId); } });
+    }
+    if (!isTaskPlanFolder) {
+      items.push(
+        { key: 'new-subfolder', label: 'New Subfolder', icon: <CreateNewFolderIcon />, onClick: (e) => handleAntAction(onCreateSubfolder, e.domEvent) },
+      );
+    }
+    items.push(
       { key: 'configure', label: 'Configuration', icon: <AntSettingOutlined />, onClick: (e) => handleAntAction(onConfigure, e.domEvent) },
       { key: 'pin', label: isPinned ? 'Unpin' : 'Pin to Top', icon: <AntPushpinOutlined />, onClick: (e) => handleAntAction(onPin, e.domEvent) },
       {
@@ -519,6 +546,10 @@ const MoveToFolderMenu = ({
 
     folders.forEach(folder => {
       // Skip the folder being moved and its descendants when moving a folder
+      if (folder.taskPlan) {
+        return;
+      }
+
       if (isMovingFolder && (folder.id === nodeId || isDescendantFolder(folder.id, nodeId))) {
         return;
       }
@@ -650,6 +681,7 @@ const MUIChatHistory = () => {
   const {
     conversations,
     currentConversationId,
+    isProjectSwitching,
     setDynamicTitleLength,
     setConversations,
     isLoadingConversation,
@@ -672,7 +704,7 @@ const MUIChatHistory = () => {
   } = useChatContext();
 
   const { isDarkMode } = useTheme();
-  const { projects, currentProject } = useProject();
+  const { projects, currentProject, switchProject } = useProject();
   const [expandedNodes, setExpandedNodes] = useState<React.Key[]>([]);
   const chatHistoryRef = useRef<HTMLDivElement>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -697,11 +729,14 @@ const MUIChatHistory = () => {
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportConversationId, setExportConversationId] = useState<string | null>(null);
   const [showHealthDebug, setShowHealthDebug] = useState(false);
+  const [swarmRecoveryFolderId, setSwarmRecoveryFolderId] = useState<string | null>(null);
+  const [showSwarmRecovery, setShowSwarmRecovery] = useState(false);
 
   // Search state
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [searchAllProjects, setSearchAllProjects] = useState(false);
 
   // Custom drag state to replace HTML5 drag and drop
   const [customDragState, setCustomDragState] = useState<{
@@ -732,9 +767,15 @@ const MUIChatHistory = () => {
     try {
       const results = await db.searchConversations(query, {
         caseSensitive: false,
-        maxSnippetLength: 150
+        maxSnippetLength: 150,
+        projectId: searchAllProjects ? undefined : currentProject?.id
       });
-      setSearchResults(results);
+      // Enrich results with project names for display
+      const enriched = results.map(r => ({
+        ...r,
+        projectName: r.projectId ? projects.find(p => p.id === r.projectId)?.name : undefined
+      }));
+      setSearchResults(enriched);
       console.log(`🔍 Search for "${query}" found ${results.length} conversations`);
     } catch (error) {
       console.error('Search error:', error);
@@ -743,7 +784,7 @@ const MUIChatHistory = () => {
     } finally {
       setIsSearching(false);
     }
-  }, []);
+  }, [searchAllProjects, currentProject?.id, projects]);
 
   // Handle search input with debouncing
   const handleSearchChange = useCallback((value: string) => {
@@ -770,7 +811,15 @@ const MUIChatHistory = () => {
     } catch (error) {
       console.error('Error loading pinned folders:', error);
     }
-  }, []);
+  }, [searchAllProjects, currentProject?.id, projects]);
+
+  // Re-run search when scope changes
+  useEffect(() => {
+    if (searchQuery.trim()) {
+      performSearch(searchQuery);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchAllProjects]);
 
   // Initialize expanded nodes with folder IDs on first render
   useEffect(() => {
@@ -1121,12 +1170,15 @@ const MUIChatHistory = () => {
       ghostElement,
       draggedText: text
     });
+
+    // Suppress native text selection while dragging
+    document.body.style.userSelect = 'none';
   }, [createDragGhost]);
 
   const endCustomDrag = useCallback(async (dropTargetId?: string | undefined, insertionContext?: { type: string; targetNodeId?: string }) => {
     if (!customDragState.isDragging || !customDragState.draggedNodeId) return;
     // Clear all visual feedback
-    document.querySelectorAll<HTMLElement>('.MuiTreeItem-content').forEach((item) => {
+    document.querySelectorAll<HTMLElement>('[data-node-id]').forEach((item) => {
       if (item instanceof HTMLElement) {
         item.style.backgroundColor = '';
         item.style.border = '';
@@ -1171,12 +1223,12 @@ const MUIChatHistory = () => {
     }
 
     // Cleanup (always runs, regardless of success or failure)
-    if (customDragState.ghostElement) {
+    if (customDragState.ghostElement && customDragState.ghostElement.parentNode) {
       customDragState.ghostElement.remove();
     }
 
     // Final cleanup of any remaining visual artifacts
-    document.querySelectorAll<HTMLElement>('.MuiTreeItem-content').forEach((item) => {
+    document.querySelectorAll<HTMLElement>('[data-node-id]').forEach((item) => {
       if (item instanceof HTMLElement) {
         item.style.backgroundColor = '';
         item.style.border = '';
@@ -1187,6 +1239,9 @@ const MUIChatHistory = () => {
     document.querySelectorAll('.drop-insertion-line').forEach(line => {
       line.remove();
     });
+
+    // Restore native text selection
+    document.body.style.userSelect = '';
 
     setCustomDragState({
       isDragging: false,
@@ -1233,7 +1288,7 @@ const MUIChatHistory = () => {
       customDragState.ghostElement.style.top = (e.clientY + 10) + 'px';
 
       // Clear all highlighting first
-      document.querySelectorAll<HTMLElement>('.MuiTreeItem-content').forEach((item) => {
+      document.querySelectorAll<HTMLElement>('[data-node-id]').forEach((item) => {
         if (item instanceof HTMLElement) {
           item.style.backgroundColor = '';
           item.style.border = '';
@@ -1246,61 +1301,47 @@ const MUIChatHistory = () => {
         line.remove();
       });
 
+      // Check for root drop zone hover
+      const rootDropZone = document.elementFromPoint(e.clientX, e.clientY)?.closest('[data-root-drop-zone]') as HTMLElement | null;
+      if (rootDropZone) {
+        rootDropZone.style.borderBottom = '2px solid #1890ff';
+        rootDropZone.style.boxShadow = '0 2px 4px rgba(24, 144, 255, 0.3)';
+        return; // Don't process tree item highlighting
+      }
+
+      // Clear root drop zone styling when not hovering over it
+      document.querySelectorAll<HTMLElement>('[data-root-drop-zone]').forEach(el => {
+        el.style.borderBottom = '';
+        el.style.boxShadow = '';
+      });
+
       // Enhanced drop zone detection with hierarchical insertion
       const elementBelow = document.elementFromPoint(e.clientX, e.clientY);
-      const treeItemBelow = elementBelow?.closest('.MuiTreeItem-content');
-
-      // Get the target node ID from the tree item
-      let targetNodeId: string | undefined;
-      if (treeItemBelow) {
-        const treeItem = treeItemBelow.closest('[data-node-id]');
-        targetNodeId = treeItem?.getAttribute('data-node-id') || undefined;
-      }
+      const treeItemBelow = elementBelow?.closest('[data-node-id]');
+      let targetNodeId: string | undefined = treeItemBelow?.getAttribute('data-node-id') || undefined;
 
       if (treeItemBelow && treeItemBelow instanceof HTMLElement) {
         const dropTargetText = treeItemBelow.textContent?.trim();
 
-        // Better folder detection - check multiple indicators
-        const isFolder = (
-          dropTargetText?.includes('(') || // Has conversation count
-          treeItemBelow.querySelector('.MuiSvgIcon-root[data-testid*="Folder"]') || // Has folder icon
-          dropTargetText?.toLowerCase().includes('folder') || // Name contains "folder"
-          treeItemBelow.closest('.MuiTreeItem-root')?.querySelector('.MuiTreeItem-group') || // Has children
-          // Check if this item has the folder icon (MUI uses FolderIcon for folders)
-          treeItemBelow.querySelector('svg[data-testid="FolderIcon"]')
-        );
+        // Folder detection: folder node IDs are raw UUIDs; conversation IDs start with "conv-"
+        const isFolder = targetNodeId ? !targetNodeId.startsWith('conv-') : false;
 
-        const treeItemRoot = treeItemBelow.closest('.MuiTreeItem-root');
-        const treeContainer = treeItemBelow.closest('.MuiTreeView-root');
-
-        // Get mouse position relative to the item for insertion logic
+        const treeContainer = treeItemBelow.closest('.chat-history-tree');
         const rect = treeItemBelow.getBoundingClientRect();
-        const mouseY = e.clientY;
-        const itemTop = rect.top;
-        const itemBottom = rect.bottom;
         const itemHeight = rect.height;
-        const relativeY = mouseY - itemTop;
+        const relativeY = e.clientY - rect.top;
 
         // Determine insertion position and target
         let insertionType: 'above' | 'below' | 'inside' = 'below';
-        let targetLevel = 0;
+        const targetLevel = 0;
 
-        // Calculate current item's nesting level
-        if (treeItemRoot) {
-          const parentGroups: Element[] = [];
-          let current = treeItemRoot.parentElement;
-          while (current && current !== treeContainer) {
-            if (current.classList.contains('MuiTreeItem-group')) {
-              parentGroups.push(current);
-            }
-            current = current.parentElement;
-          }
-          targetLevel = parentGroups.length;
-        }
+        // When dragging a conversation over a folder, always show as "inside"
+        // since the drop handler treats it as "move into folder" regardless.
+        const draggingConversation = customDragState.draggedNodeType === 'conversation';
 
-        // Determine insertion type based on mouse position and target type
-        if (isFolder && relativeY > itemHeight * 0.3 && relativeY < itemHeight * 0.7) {
-          // Middle of folder - insert INSIDE the folder
+        if (isFolder && (draggingConversation || (relativeY > itemHeight * 0.3 && relativeY < itemHeight * 0.7))) {
+          // Folder target: always "inside" for conversations,
+          // center zone "inside" for folder-on-folder reordering
           insertionType = 'inside';
         } else if (relativeY < itemHeight * 0.5) {
           // Top half - insert ABOVE
@@ -1348,7 +1389,7 @@ const MUIChatHistory = () => {
           `;
         }
 
-        const containerRect = treeItemBelow.closest('.MuiTreeView-root')?.getBoundingClientRect();
+        const containerRect = treeContainer?.getBoundingClientRect();
 
         if (containerRect) {
           const lineY = insertionType === 'above' ?
@@ -1388,7 +1429,7 @@ const MUIChatHistory = () => {
         console.log('📍 Insertion context captured:', insertionContext);
 
         // Clear all visual feedback immediately
-        document.querySelectorAll<HTMLElement>('.MuiTreeItem-content').forEach((item) => {
+        document.querySelectorAll<HTMLElement>('[data-node-id]').forEach((item) => {
           if (item instanceof HTMLElement) {
             item.style.backgroundColor = '';
             item.style.border = '';
@@ -1402,43 +1443,57 @@ const MUIChatHistory = () => {
           line.remove();
         });
 
-        const elementBelow = document.elementFromPoint(e.clientX, e.clientY);
-        const dropTarget = elementBelow?.closest('.MuiTreeItem-content');
+        // Remove ghost element BEFORE elementFromPoint so it can't intercept
+        if (customDragState.ghostElement) {
+          customDragState.ghostElement.remove();
+        }
+        // Clear root drop zone styling
+        document.querySelectorAll<HTMLElement>('[data-root-drop-zone]').forEach(el => {
+          el.style.borderBottom = '';
+          el.style.boxShadow = '';
+        });
 
-        // Better drop target detection using stored nodeId data attribute
+        const elementBelow = document.elementFromPoint(e.clientX, e.clientY);
+        // Check for root drop zone first
+        const rootDropZone = elementBelow?.closest('[data-root-drop-zone]');
+        const dropTarget = rootDropZone ? null : elementBelow?.closest('[data-node-id]');
+
         let targetNodeId: string | undefined;
         let insertionType = insertionContext?.type || 'below'; // Use captured context
 
-        // Get the actual nodeId from the TreeItem's data attribute
         if (dropTarget) {
-          const treeItem = dropTarget.closest('[data-node-id]');
-          if (treeItem) {
-            targetNodeId = treeItem.getAttribute('data-node-id') || undefined;
-            console.log('🎯 Found exact target nodeId from DOM:', targetNodeId);
-          }
+          targetNodeId = dropTarget.getAttribute('data-node-id') || undefined;
+          console.log('🎯 Found exact target nodeId from DOM:', targetNodeId);
+        }
+
+        // Root drop zone → move to root level
+        if (rootDropZone) {
+          targetNodeId = undefined;
+          console.log('🎯 Dropped on root drop zone - moving to root level');
         }
 
         if (dropTarget) {
           console.log('📍 Using captured insertion context:', insertionType);
           console.log('🔍 Target nodeId from data attribute:', targetNodeId);
 
-          // Determine target based on insertion type
-          if (insertionType === 'inside') {
-            // Dropping INSIDE a folder - targetNodeId is already correct from data attribute
-          } else {
-            // Dropping above/below - adjust target based on what we're dropping relative to
+          // When dragging a CONVERSATION onto a FOLDER row, always treat as
+          // "move into folder" regardless of insertion position.
+          const targetIsFolder = targetNodeId && !targetNodeId.startsWith('conv-');
+          const draggingConversation = customDragState.draggedNodeType === 'conversation';
+
+          if (draggingConversation && targetIsFolder) {
+            // Keep targetNodeId as the folder ID — drop INTO the folder
+          } else if (insertionType !== 'inside') {
+            // For other cases (folder reorder, conv-to-conv), resolve to parent level
             if (targetNodeId?.startsWith('conv-')) {
-              // Dropping relative to a conversation - move to same folder as that conversation
-              const conversationId = targetNodeId.substring(5);
-              const conversation = conversations.find(c => c.id === conversationId);
-              targetNodeId = conversation?.folderId || undefined;
+              const convId = targetNodeId.substring(5);
+              const conv = conversations.find(c => c.id === convId);
+              targetNodeId = conv?.folderId || undefined;
             } else {
-              // Dropping above/below a folder - move to same level as that folder  
               const folder = folders.find(f => f.id === targetNodeId);
               targetNodeId = folder?.parentId || undefined;
             }
           }
-
         }
 
         // Handle the case where no target was found - this should be a root level drop
@@ -1480,11 +1535,12 @@ const MUIChatHistory = () => {
         }
         // Clear all visual artifacts
         document.querySelectorAll('.drop-insertion-line').forEach(line => line.remove());
-        document.querySelectorAll<HTMLElement>('.MuiTreeItem-content').forEach(item => {
+        document.querySelectorAll<HTMLElement>('[data-node-id]').forEach(item => {
           item.style.backgroundColor = '';
           item.style.border = '';
           item.style.boxShadow = '';
         });
+        document.body.style.userSelect = '';
         setCustomDragState({
           isDragging: false, draggedNodeId: null, draggedNodeType: null,
           ghostElement: null, draggedText: ''
@@ -1822,6 +1878,92 @@ const MUIChatHistory = () => {
   // Handle configuring a folder
   const handleConfigureFolder = (folderId: string) => showFolderConfigDialog(folderId);
 
+  // Handle swarm recovery panel
+  const handleSwarmRecovery = useCallback((folderId: string) => {
+    setSwarmRecoveryFolderId(folderId);
+    setShowSwarmRecovery(true);
+  }, []);
+
+  // Delegate-level recovery actions (retry / skip) directly from context menu
+  const handleDelegateRetry = useCallback(async (nodeId: string) => {
+    const convId = nodeId.startsWith('conv-') ? nodeId.substring(5) : nodeId;
+    const conv = conversations.find(c => c.id === convId);
+    if (!conv?.delegateMeta) return;
+
+    const delegateId = conv.delegateMeta.delegate_id;
+    const groupId = conv.folderId;
+    const projectId = currentProject?.id;
+    if (!delegateId || !groupId || !projectId) {
+      message.error('Missing delegate or project information');
+      return;
+    }
+
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const projectPath = (window as any).__ZIYA_CURRENT_PROJECT_PATH__;
+      if (projectPath) headers['X-Project-Root'] = projectPath;
+
+      const res = await fetch(
+        `/api/v1/projects/${projectId}/groups/${groupId}/retry-delegate`,
+        { method: 'POST', headers, body: JSON.stringify({ delegate_id: delegateId }) }
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
+        throw new Error(err.detail || `Retry failed: ${res.status}`);
+      }
+      message.success(`🔄 Retrying "${conv.title.replace(/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]\s*/u, '')}"`);
+    } catch (err: any) {
+      message.error(`Retry failed: ${err.message}`);
+    }
+  }, [conversations, currentProject?.id]);
+
+  const handleDelegateSkip = useCallback(async (nodeId: string) => {
+    const convId = nodeId.startsWith('conv-') ? nodeId.substring(5) : nodeId;
+    const conv = conversations.find(c => c.id === convId);
+    if (!conv?.delegateMeta) return;
+
+    const delegateId = conv.delegateMeta.delegate_id;
+    const delegateName = conv.title.replace(/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]\s*/u, '');
+    const groupId = conv.folderId;
+    const projectId = currentProject?.id;
+    if (!delegateId || !groupId || !projectId) {
+      message.error('Missing delegate or project information');
+      return;
+    }
+
+    Modal.confirm({
+      title: 'Skip delegate?',
+      content: (
+        <div>
+          <p>Creates a stub crystal for <strong>{delegateName}</strong> so downstream delegates can proceed.</p>
+          <p style={{ color: '#faad14' }}>The delegate's work will be marked as incomplete.</p>
+        </div>
+      ),
+      okText: 'Skip & Unblock',
+      onOk: async () => {
+        try {
+          const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+          const projectPath = (window as any).__ZIYA_CURRENT_PROJECT_PATH__;
+          if (projectPath) headers['X-Project-Root'] = projectPath;
+
+          const res = await fetch(
+            `/api/v1/projects/${projectId}/groups/${groupId}/promote-stub`,
+            { method: 'POST', headers, body: JSON.stringify({ delegate_id: delegateId }) }
+          );
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
+            throw new Error(err.detail || `Skip failed: ${res.status}`);
+          }
+          message.success(`⏭️ Skipped "${delegateName}" — downstream unblocked`);
+        } catch (err: any) {
+          message.error(`Skip failed: ${err.message}`);
+        }
+      },
+    });
+  }, [conversations, currentProject?.id]);
+
+  const swarmRecoveryFolder = swarmRecoveryFolderId ? folders.find(f => f.id === swarmRecoveryFolderId) : null;
+
   // Handle creating a subfolder
   const handleCreateSubfolder = async (parentFolderId: string) => {
     try {
@@ -2084,12 +2226,20 @@ const MUIChatHistory = () => {
     // conversation.  MUI TreeView can't expand conversation nodes, so we
     // place swarm folders adjacent to their parent chat instead.
     const anchoredFolderIds = new Set<string>();
+    // Remove a node from anywhere in the tree (cross-level).
+    const removeNodeFromTree = (tree: any[], node: any): boolean => {
+      const idx = tree.indexOf(node);
+      if (idx !== -1) { tree.splice(idx, 1); return true; }
+      for (const item of tree) {
+        if (item.children && removeNodeFromTree(item.children, node)) return true;
+      }
+      return false;
+    };
     const anchorFolder = (items: any[], folder: any, sourceConvId: string): boolean => {
       const srcIdx = items.findIndex(n => n.id === `conv-${sourceConvId}`);
       if (srcIdx !== -1) {
-        // Remove folder from wherever it currently sits in this list
-        const curIdx = items.indexOf(folder);
-        if (curIdx !== -1) items.splice(curIdx, 1);
+        // Remove folder from wherever it currently sits in the whole tree
+        removeNodeFromTree(rootItems, folder);
         // Re-find source index after possible splice shift
         const newSrcIdx = items.findIndex(n => n.id === `conv-${sourceConvId}`);
         items.splice(newSrcIdx + 1, 0, folder);
@@ -2112,9 +2262,11 @@ const MUIChatHistory = () => {
     // Deduplicate: anchored folders may appear twice (once from folder tree
     // building, once from anchoring).  Keep only the anchored position.
     if (anchoredFolderIds.size > 0) {
-      const removeDupes = (items: any[]) => {
-        const seen = new Set<string>();
+      const removeDupes = (items: any[], seen: Set<string>) => {
         for (let i = items.length - 1; i >= 0; i--) {
+          if (!items[i]) continue;
+          // Process children first so the deeper (anchored) copy is found first
+          if (items[i].children) removeDupes(items[i].children, seen);
           if (items[i].folder && anchoredFolderIds.has(items[i].id)) {
             if (seen.has(items[i].id)) {
               items.splice(i, 1);
@@ -2122,10 +2274,23 @@ const MUIChatHistory = () => {
               seen.add(items[i].id);
             }
           }
-          if (items[i]?.children) removeDupes(items[i].children);
         }
       };
-      removeDupes(rootItems);
+      removeDupes(rootItems, new Set<string>());
+    }
+
+    // Build a map of source-conversation → max activity time across all
+    // anchored TaskPlan folders.  This lets the parent conversation sort
+    // by the newest change in *either* itself or its TaskPlan members.
+    const taskPlanBoost = new Map<string, number>();
+    for (const fid of anchoredFolderIds) {
+      const fn = folderMap.get(fid);
+      const srcId = fn?.taskPlan?.source_conversation_id;
+      if (!srcId) continue;
+      const activity = fn.lastActivityTime || 0;
+      if (activity > (taskPlanBoost.get(srcId) || 0)) {
+        taskPlanBoost.set(srcId, activity);
+      }
     }
 
     // Roll up conversation counts from subfolders into parent folders.
@@ -2180,11 +2345,14 @@ const MUIChatHistory = () => {
         // Get activity times for both items
         const getActivityTime = (item: any) => {
           if (item.folder) {
-            // For folders, use lastActivityTime if > 0, otherwise use createdAt
             return item.lastActivityTime > 0 ? item.lastActivityTime : item.createdAt;
           } else {
-            // For conversations, use lastAccessedAt if available
-            return item.conversation?.lastAccessedAt ?? 0;
+            const convTime = item.conversation?.lastAccessedAt ?? 0;
+            // Boost source conversations so the parent + TaskPlan group
+            // sorts by the newest activity across all members.
+            const convId = item.conversation?.id;
+            const boost = convId ? (taskPlanBoost.get(convId) || 0) : 0;
+            return Math.max(convTime, boost);
           }
         };
 
@@ -2247,8 +2415,8 @@ const MUIChatHistory = () => {
     let result = sortRecursive(rootItems);
 
     // Post-sort: re-anchor TaskPlan folders immediately after their source
-    // conversation. Sorting may have separated them. No recursion — anchored
-    // folders are always siblings of source convs, never nested deeper.
+    // conversation. Sorting may have separated them.  Recurse so anchoring
+    // works when the source conversation lives inside a folder.
     if (anchoredFolderIds.size > 0) {
       const reanchor = (items: any[]) => {
         for (const fid of anchoredFolderIds) {
@@ -2262,6 +2430,9 @@ const MUIChatHistory = () => {
             const newSrcIdx = items.findIndex(n => n.id === `conv-${sourceConvId}`);
             items.splice(newSrcIdx + 1, 0, folderNode);
           }
+        }
+        for (const item of items) {
+          if (item.children?.length) reanchor(item.children);
         }
       };
       reanchor(result);
@@ -2288,6 +2459,26 @@ const MUIChatHistory = () => {
   // Virtualization: flatten visible tree nodes
   const expandedSet = useMemo(() => new Set(expandedNodes.map(String)), [expandedNodes]);
   const flatNodes = useMemo(() => flattenVisibleNodes(treeData, expandedSet), [treeData, expandedSet]);
+
+  // Precompute indent guide continuation flags for each visible row.
+  // guides[i][d] === true means "a sibling at depth d exists below row i",
+  // so a vertical guide line should be drawn at that indent level.
+  const indentGuides = useMemo(() => {
+    const n = flatNodes.length;
+    if (n === 0) return [] as boolean[][];
+    const maxDepth = flatNodes.reduce((m, f) => Math.max(m, f.depth), 0);
+    const hasNext: boolean[] = new Array(maxDepth + 1).fill(false);
+    const guides: boolean[][] = new Array(n);
+    for (let i = n - 1; i >= 0; i--) {
+      const depth = flatNodes[i].depth;
+      const flags: boolean[] = [];
+      for (let d = 0; d < depth; d++) flags.push(hasNext[d]);
+      guides[i] = flags;
+      hasNext[depth] = true;
+      for (let d = depth + 1; d <= maxDepth; d++) hasNext[d] = false;
+    }
+    return guides;
+  }, [flatNodes]);
 
   // Measure available height for the virtual list
   const treeContainerRef = useRef<HTMLDivElement>(null);
@@ -2587,6 +2778,24 @@ const MUIChatHistory = () => {
             }}
             sx={{ flex: 1, minWidth: 0 }}
           />
+          {/* Search scope toggle — only visible when search is active */}
+          {searchQuery && (
+            <Tooltip title={searchAllProjects ? 'Searching all projects' : 'Searching this project only'}>
+              <IconButton
+                size="small"
+                onClick={() => setSearchAllProjects(prev => !prev)}
+                sx={{
+                  color: searchAllProjects ? '#1890ff' : (isDarkMode ? '#888' : '#999'),
+                  border: searchAllProjects ? '1px solid #1890ff' : `1px solid ${isDarkMode ? '#555' : '#ccc'}`,
+                  width: 32,
+                  height: 32,
+                  flexShrink: 0
+                }}
+              >
+                <PublicIcon sx={{ fontSize: 18 }} />
+              </IconButton>
+            </Tooltip>
+          )}
           <Tooltip title="New folder">
             <IconButton
               size="small"
@@ -2627,12 +2836,33 @@ const MUIChatHistory = () => {
           <Box sx={{ flexGrow: 1, overflow: 'auto', pt: 1 }}>
             <Box sx={{ p: 2, borderBottom: isDarkMode ? '1px solid #303030' : '1px solid #e8e8e8' }}>
               <Typography variant="caption" sx={{ color: isDarkMode ? '#888' : '#666' }}>
-                Found {searchResults.reduce((acc, r) => acc + r.totalMatches, 0)} matches in {searchResults.length} conversations
+                Found {searchResults.reduce((acc, r) => acc + r.totalMatches, 0)} matches in {searchResults.length} conversation{searchResults.length !== 1 ? 's' : ''}
+                {searchAllProjects
+                  ? ' across all projects'
+                  : ` in ${currentProject?.name || 'this project'}`}
               </Typography>
             </Box>
             {searchResults.map((result) => (
               <Box
                 key={result.conversationId}
+                onClick={async () => {
+                  try {
+                    const firstMatchIndex = result.matches.length > 0 ? result.matches[0].messageIndex : undefined;
+                    // If the conversation belongs to a different project, switch first
+                    if (result.projectId && result.projectId !== currentProject?.id) {
+                      await switchProject(result.projectId);
+                      // Small delay to let project switch settle before loading conversation
+                      await new Promise(resolve => setTimeout(resolve, 300));
+                    }
+                    await loadConversationAndScrollToMessage(
+                      result.conversationId, firstMatchIndex);
+                    setSearchQuery('');
+                    setSearchResults([]);
+                  } catch (error) {
+                    console.error('Error navigating to conversation:', error);
+                    message.error('Failed to load conversation');
+                  }
+                }}
                 sx={{
                   p: 2,
                   borderBottom: isDarkMode ? '1px solid #303030' : '1px solid #e8e8e8',
@@ -2648,10 +2878,20 @@ const MUIChatHistory = () => {
                 >
                   <ChatIcon fontSize="small" />
                   {result.conversationTitle}
-                  <Typography variant="caption" sx={{ color: isDarkMode ? '#888' : '#666', ml: 'auto' }}>
+                  <Typography variant="caption" sx={{ color: isDarkMode ? '#888' : '#666', ml: 'auto', whiteSpace: 'nowrap' }}>
                     ({result.totalMatches} match{result.totalMatches > 1 ? 'es' : ''})
                   </Typography>
                 </Typography>
+                {/* Show project badge for cross-project results */}
+                {result.projectId && result.projectId !== currentProject?.id && result.projectName && (
+                  <Typography variant="caption" sx={{
+                    color: isDarkMode ? '#b89aff' : '#7c3aed',
+                    fontSize: '11px', fontWeight: 500,
+                    display: 'flex', alignItems: 'center', gap: '4px', mt: 0.25
+                  }}>
+                    📁 {result.projectName}
+                </Typography>
+                )}
                 {result.matches.slice(0, 3).map((match, idx) => (
                   <Box
                     key={idx}
@@ -2665,7 +2905,14 @@ const MUIChatHistory = () => {
                     }}
                     onClick={async () => {
                       try {
-                        await loadConversationAndScrollToMessage(result.conversationId, match.messageIndex);
+                        // If the conversation belongs to a different project, switch first
+                        if (result.projectId && result.projectId !== currentProject?.id) {
+                          await switchProject(result.projectId);
+                          // Small delay to let project switch settle before loading conversation
+                          await new Promise(resolve => setTimeout(resolve, 300));
+                        }
+                        await loadConversationAndScrollToMessage(
+                          result.conversationId, match.messageIndex);
                         setSearchQuery('');
                         setSearchResults([]);
                       } catch (error) {
@@ -2711,6 +2958,23 @@ const MUIChatHistory = () => {
           </Box>
         ) : (
           <div ref={treeContainerRef} style={{ flexGrow: 1, overflow: 'hidden', paddingTop: 8, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+            {/* Root-level drop zone: visible only during drag when first item is a folder */}
+            {customDragState.isDragging && flatNodes.length > 0 && flatNodes[0].isFolder && (
+              <div
+                data-root-drop-zone="true"
+                style={{
+                  height: 8,
+                  flexShrink: 0,
+                  marginLeft: 12,
+                  marginRight: 12,
+                  marginBottom: 2,
+                  borderBottom: '2px solid transparent',
+                  transition: 'border-color 0.15s, box-shadow 0.15s',
+                  borderRadius: 1,
+                  cursor: 'default',
+                }}
+              />
+            )}
             <FixedSizeList
               height={treeContainerHeight}
               width="100%"
@@ -2749,8 +3013,7 @@ const MUIChatHistory = () => {
 
                 const isPinned = isFolder && pinnedFolders.has(nodeId);
                 const isCurrentItem = isFolder
-                  ? nodeId === currentFolderId
-                  : nodeId.startsWith('conv-') && nodeId.substring(5) === currentConversationId;
+                  ? false : nodeId.startsWith('conv-') && nodeId.substring(5) === currentConversationId;
                 const isGlobalItem = isFolder ? node.folder?.isGlobal === true : node.conversation?.isGlobal === true;
                 const hasUnreadResponse = !isFolder && nodeId.startsWith('conv-') &&
                   node.conversation?.hasUnreadResponse && nodeId.substring(5) !== currentConversationId;
@@ -2766,7 +3029,14 @@ const MUIChatHistory = () => {
                   if (!container || !container.contains(target)) return;
                   const startX = e.clientX, startY = e.clientY;
                   let down = true;
-                  const detect = (me: MouseEvent) => { if (!down) { document.removeEventListener('mousemove', detect); return; } if (Math.abs(me.clientX - startX) > 12 || Math.abs(me.clientY - startY) > 12) { startCustomDrag(nodeId, isFolder ? 'folder' : 'conversation', labelText); cleanup(); } };
+                  const detect = (me: MouseEvent) => {
+                    if (!down) { document.removeEventListener('mousemove', detect); return; }
+                    if (Math.abs(me.clientX - startX) > 12 || Math.abs(me.clientY - startY) > 12) {
+                      me.preventDefault();
+                      startCustomDrag(nodeId, isFolder ? 'folder' : 'conversation', labelText);
+                      cleanup();
+                    }
+                  };
                   const cleanup = () => { down = false; document.removeEventListener('mousemove', detect); document.removeEventListener('mouseup', cleanup); };
                   document.addEventListener('mousemove', detect);
                   document.addEventListener('mouseup', cleanup);
@@ -2779,6 +3049,21 @@ const MUIChatHistory = () => {
                     if (nodeId.startsWith('conv-')) handleConversationClick(nodeId.substring(5));
                     else setCurrentFolderId(nodeId);
                   }}>
+                    {/* Indent guide lines aligned with parent chevrons */}
+                    {indentGuides[index]?.map((show, d) => show && (
+                      <div
+                        key={`guide-${d}`}
+                        style={{
+                          position: 'absolute',
+                          left: 22 + d * 20,
+                          top: 0,
+                          bottom: 0,
+                          width: 1,
+                          backgroundColor: isDarkMode ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.12)',
+                          pointerEvents: 'none',
+                        }}
+                      />
+                    ))}
                     <ChatTreeItem
                       nodeId={nodeId} labelText={labelText} isFolder={isFolder}
                       isTaskPlanFolder={isTaskPlanFolder} taskPlanProgress={taskPlanProgress}
@@ -2790,6 +3075,9 @@ const MUIChatHistory = () => {
                       onExport={handleExportConversation} onPin={togglePinFolder}
                       onConfigure={handleConfigureFolder} onFork={handleForkConversation}
                       onCompress={handleCompressConversation} onMove={handleMoveConversation}
+                      onDelegateRetry={delegateStatus === 'failed' || delegateStatus === 'interrupted' ? handleDelegateRetry : undefined}
+                      onDelegateSkip={delegateStatus === 'failed' || delegateStatus === 'interrupted' ? handleDelegateSkip : undefined}
+                      onSwarmRecovery={isTaskPlanFolder ? handleSwarmRecovery : undefined}
                       onOpenMoveMenu={handleOpenMoveMenu} onToggleGlobal={handleToggleGlobal}
                       onMoveToProject={handleOpenMoveToProjectMenu}
                       onCreateSubfolder={handleCreateSubfolder}
@@ -2815,35 +3103,30 @@ const MUIChatHistory = () => {
                 );
               }}
             </FixedSizeList>
+            {/* Export/Import — below the list, scrolls with content */}
+            <Box sx={{
+              display: 'flex',
+              justifyContent: 'flex-end',
+              p: 1,
+              flexShrink: 0,
+            }}>
+              <Box sx={{ display: 'flex', gap: 1 }}>
+                <Button
+                  variant="outlined"
+                  startIcon={<DownloadIcon />}
+                  onClick={handleExportConversations}
+                  size="small"
+                >Export</Button>
+                <Button
+                  variant="outlined"
+                  startIcon={<UploadIcon />}
+                  onClick={handleImportConversations}
+                  size="small"
+                >Import</Button>
+              </Box>
+            </Box>
           </div>
         )}
-        {/* Export/Import buttons */}
-        <Box sx={{
-          mt: 'auto',
-          display: 'flex',
-          justifyContent: 'flex-end',
-          p: 2,
-          borderTop: isDarkMode ? '1px solid #303030' : '1px solid #e8e8e8'
-        }}>
-          <Box sx={{ display: 'flex', gap: 1 }}>
-            <Button
-              variant="outlined"
-              startIcon={<DownloadIcon />}
-              onClick={handleExportConversations}
-              size="small"
-            >
-              Export
-            </Button>
-            <Button
-              variant="outlined"
-              startIcon={<UploadIcon />}
-              onClick={handleImportConversations}
-              size="small"
-            >
-              Import
-            </Button>
-          </Box>
-        </Box>
 
         {/* Render the move menu */}
         <MoveToFolderMenu
@@ -2871,6 +3154,46 @@ const MUIChatHistory = () => {
       {/* Export modal - only for conversations, not folders */}
       {exportConversationId && (
         <ExportConversationModal visible={showExportModal} onClose={() => { setShowExportModal(false); setExportConversationId(null); }} />
+      )}
+
+      {/* Swarm Recovery Modal */}
+      {swarmRecoveryFolder && (
+        <Modal
+          title={`🔧 Swarm Recovery: ${swarmRecoveryFolder.name?.replace(/^⚡\s*/, '')}`}
+          open={showSwarmRecovery}
+          onCancel={() => { setShowSwarmRecovery(false); setSwarmRecoveryFolderId(null); }}
+          footer={null}
+          width={480}
+        >
+          <SwarmRecoveryPanel
+            groupId={swarmRecoveryFolder.id}
+            planStatus={swarmRecoveryFolder.taskPlan?.status || 'unknown'}
+            planName={swarmRecoveryFolder.taskPlan?.name || swarmRecoveryFolder.name || ''}
+            delegates={(() => {
+              // Build delegate info from conversations in this folder
+              const folderConvs = conversations.filter(c => c.folderId === swarmRecoveryFolder.id);
+              return folderConvs
+                .filter(c => c.delegateMeta?.role === 'delegate')
+                .map(c => ({
+                  id: c.delegateMeta!.delegate_id || c.id,
+                  name: c.title.replace(/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]\s*/u, ''),
+                  emoji: (() => {
+                    const match = c.title.match(/^([\p{Emoji_Presentation}\p{Extended_Pictographic}])/u);
+                    return match ? match[1] : '🔵';
+                  })(),
+                  status: c.delegateMeta!.status,
+                  hasCrystal: c.delegateMeta!.status === 'crystal',
+                }));
+            })()}
+            onActionComplete={() => {
+              // Trigger a polling cycle to pick up the status change
+              setTimeout(() => {
+                setShowSwarmRecovery(false);
+                setSwarmRecoveryFolderId(null);
+              }, 1000);
+            }}
+          />
+        </Modal>
       )}
 
       {/* Health Debug Modal */}

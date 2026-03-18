@@ -636,6 +636,17 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   width: 100% !important;
 }
 
+.folder-tree-panel .ant-tabs-content-holder {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.folder-tree-panel .ant-tabs-tabpane {
+  height: 100%;
+}
+
 /* Ensure the tree takes up the full width */
 .folder-tree-panel .ant-tree {
   width: 100% !important;
@@ -651,10 +662,10 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
 
 .folder-tree-panel .ant-tabs-content {
   flex: 1;
-  height: calc(100% - var(--model-display-height));
+  height: 100%;
   position: relative;
   overflow: auto;
-  width: 100% important;
+  width: 100% !important;
 }
 
 .folder-tree-panel .ant-tabs-nav {

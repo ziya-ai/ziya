@@ -11,6 +11,7 @@ import {
     DatabaseOutlined,
     FileTextOutlined,
     CloudServerOutlined,
+    CloudOutlined,
     ExperimentOutlined,
     WarningOutlined,
     SettingOutlined,
@@ -901,6 +902,11 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                 </Tag>
                                                 <span>{getServerDisplayName(name)}</span>
                                                 {server.builtin && <Tag color="blue">built-in</Tag>}
+                                                {status.server_configs?.[name]?.url && (
+                                                    <Tag color="geekblue" icon={<CloudOutlined />}>
+                                                        {status.server_configs[name]?.transport === 'sse' ? 'Remote (SSE)' : 'Remote'}
+                                                    </Tag>
+                                                )}
                                             </Space>
                                             <Space>
                                                 <Tag icon={<ToolOutlined />}>

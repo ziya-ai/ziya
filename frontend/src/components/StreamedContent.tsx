@@ -11,6 +11,7 @@ import type { ConversationFolder } from '../utils/types';
 import ReasoningDisplay from './ReasoningDisplay';
 import { useProject } from '../context/ProjectContext';
 import { sendPayload } from '../apis/chatApi';
+import SwarmRecoveryPanel from './SwarmRecoveryPanel';
 import { convertKeysToStrings } from '../utils/types';
 const MarkdownRenderer = React.lazy(() => import("./MarkdownRenderer"));
 
@@ -61,6 +62,22 @@ export const StreamedContent: React.FC<{}> = () => {
     // Get processing state for current conversation
     const processingState = getProcessingState(currentConversationId);
 
+    // Ref to conversations — allows activeSwarmInfo to read current data
+    // without depending on the array reference (which changes on every
+    // setConversations call: polling, read-marking, background fetches).
+    const conversationsRef = useRef(conversations);
+    conversationsRef.current = conversations;
+
+    // Stable key that changes ONLY when a delegate's status changes.
+    // This decouples swarm display from unrelated conversation mutations
+    // (message changes, read status, timestamps, etc.)
+    const delegateStatusKey = useMemo(() => {
+        return conversations
+            .filter(c => c.delegateMeta)
+            .map(c => `${c.id}:${(c.delegateMeta as any).status}`)
+            .join(',');
+    }, [conversations]);
+
     // Detect active swarms spawned from the current conversation
     const activeSwarmInfo = useMemo(() => {
         if (!folders || !currentConversationId) return null;
@@ -85,8 +102,8 @@ export const StreamedContent: React.FC<{}> = () => {
                 for (const spec of tp.delegate_specs) {
                     const convId = (spec as any).conversation_id;
                     if (convId) {
-                        const conv = conversations.find(c => c.id === convId);
-                        const status = conv?.delegateMeta?.status;
+                        const conv = conversationsRef.current.find(c => c.id === convId);
+                        const status = (conv?.delegateMeta as any)?.status;
                         if (status === 'running' || status === 'compacting') {
                             runningCount++;
                         }
@@ -96,6 +113,7 @@ export const StreamedContent: React.FC<{}> = () => {
             return {
                 name: tp.name,
                 total,
+                folderId: folder.id,
                 crystalCount,
                 runningCount,
                 status: tp.status,
@@ -103,7 +121,25 @@ export const StreamedContent: React.FC<{}> = () => {
             };
         }
         return null;
-    }, [folders, currentConversationId, conversations]);
+    }, [folders, currentConversationId, delegateStatusKey]);
+
+    // Memoize the delegates list for SwarmRecoveryPanel so it doesn't get
+    // a fresh array reference on every unrelated conversations change.
+    const swarmDelegates = useMemo(() => {
+        if (!activeSwarmInfo) return [];
+        return conversationsRef.current
+            .filter(c => c.folderId === activeSwarmInfo.folderId && (c.delegateMeta as any)?.role === 'delegate')
+            .map(c => ({
+                id: (c.delegateMeta as any)!.delegate_id || c.id,
+                name: c.title.replace(/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]\s*/u, ''),
+                emoji: (() => {
+                    const match = c.title.match(/^([\p{Emoji_Presentation}\p{Extended_Pictographic}])/u);
+                    return match ? match[1] : '🔵';
+                })(),
+                status: (c.delegateMeta as any)!.status,
+                hasCrystal: (c.delegateMeta as any)!.status === 'crystal',
+            }));
+    }, [activeSwarmInfo, delegateStatusKey]);
 
     // Track if we have any streamed content to show
     const hasStreamedContent = streamedContentMap.has(currentConversationId) &&
@@ -354,12 +390,13 @@ export const StreamedContent: React.FC<{}> = () => {
                         display: 'inline-block'
                     }}>
                         {processingState === 'model_thinking' ? '🧠 Deep thinking…' :
-                            processingState === 'awaiting_model_response' ? 'Waiting for model response…' :
+                            processingState === 'awaiting_model_response' ? '⏳ Waiting for model response…' :
                                 processingState === 'processing_tools' ? 'Running tools…' :
                             processingState === 'awaiting_tool_response' ? 'Executing tool…' :
-                                processingState === 'tool_throttling' ? 'Waiting to prevent rate limiting...' :
+                                processingState === 'tool_throttling' ? 'Waiting to prevent rate limiting…' :
                                     processingState === 'tool_limit_reached' ? 'Tool execution limit reached' :
-                                        'Processing response...'}
+                                        processingState === 'sending' ? 'Sending request…' :
+                                            'Processing request…'}
                     </span>
 
                 </Space>
@@ -773,7 +810,7 @@ return (
             )}
         {/* Active swarm indicator — shown when this conversation spawned delegates */}
         {activeSwarmInfo && (
-            <div style={{
+            <><div style={{
                 margin: '12px 20px',
                 padding: '12px 16px',
                 background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.08) 0%, rgba(139, 92, 246, 0.08) 100%)',
@@ -830,7 +867,22 @@ return (
                     fontWeight: 500,
                 }}>swarm</span>
             </div>
-        )}
+            {/* Compact recovery controls when swarm has failures */}
+            {(activeSwarmInfo.status === 'completed_partial' || activeSwarmInfo.status === 'running') && (
+                <div style={{ margin: '0 20px 12px', paddingLeft: 46 }}>
+                    <SwarmRecoveryPanel
+                        compact
+                        groupId={activeSwarmInfo.folderId}
+                        planStatus={activeSwarmInfo.status}
+                        planName={activeSwarmInfo.name}
+                        delegates={swarmDelegates}
+                        onActionComplete={() => {
+                            // Polling will pick up the change within 3 seconds
+                        }}
+                    />
+                </div>
+            )}
+        </>)}
     </div>
 );
     };

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, memo, useCallback, useMemo, useState } from "react";
+import React, { useEffect, useRef, memo, useCallback, useMemo, useState, useTransition } from "react";
 import { useChatContext } from '../context/ChatContext';
 import { EditSection } from "./EditSection";
 import { Spin, Button, Tooltip, Image as AntImage } from 'antd';
@@ -24,6 +24,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
         editingMessageIndex,
         isTopToBottom,
         isLoadingConversation,
+        isProjectSwitching,
         addStreamingConversation,
         streamingConversations,
         currentConversationId,
@@ -55,14 +56,35 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     // Extract for use in component
     const { isCurrentlyStreaming, hasStreamedContent } = conversationStreamingState;
 
+    // Progressive rendering: on conversation switch, render only the last
+    // INITIAL_WINDOW messages immediately.  Once the browser paints, expand
+    // to the full list inside a transition so the main thread stays free.
+    const INITIAL_WINDOW = 8;
+    const [messageWindow, setMessageWindow] = useState<number>(INITIAL_WINDOW);
+    const [, startTransition] = useTransition();
+    const windowConvRef = useRef(currentConversationId);
+
+    useEffect(() => {
+        if (windowConvRef.current !== currentConversationId) {
+            windowConvRef.current = currentConversationId;
+            // Reset to small window on conversation switch
+            setMessageWindow(INITIAL_WINDOW);
+            // Expand after first paint via low-priority transition
+            requestAnimationFrame(() => {
+                startTransition(() => setMessageWindow(Infinity));
+            });
+        }
+    }, [currentConversationId]);
+
+    // Refs for conversation switch overlay (direct DOM manipulation)
+    const switchOverlayRef = useRef<HTMLDivElement>(null);
+    const prevConversationRef = useRef(currentConversationId);
+
     // Conversation switch overlay: show a spinner immediately when the user
     // switches conversations.  The heavy MarkdownRenderer work blocks the
     // main thread so the browser never gets a chance to paint a spinner set
     // via React state.  We use direct DOM manipulation to guarantee the
     // overlay is visible before React starts its synchronous render pass.
-    const switchOverlayRef = useRef<HTMLDivElement>(null);
-    const prevConversationRef = useRef(currentConversationId);
-
     // Show overlay synchronously via DOM when conversation changes
     useEffect(() => {
         if (prevConversationRef.current !== currentConversationId) {
@@ -72,11 +94,24 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                 switchOverlayRef.current.style.display = 'flex';
             }
         }
-    }, [currentConversationId]);
+    }, [currentConversationId, isProjectSwitching]);
+
+    // Hide overlay when project switch completes (for global conversations that don't change)
+    useEffect(() => {
+        if (!isProjectSwitching && switchOverlayRef.current) {
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    if (switchOverlayRef.current) {
+                        switchOverlayRef.current.style.display = 'none';
+                    }
+                });
+            });
+        }
+    }, [isProjectSwitching]);
 
     // Hide overlay after messages have rendered
     useEffect(() => {
-        if (switchOverlayRef.current && currentMessages.length > 0) {
+        if (switchOverlayRef.current) {
             // Use rAF to ensure at least one paint occurred with the new content
             requestAnimationFrame(() => {
                 requestAnimationFrame(() => {
@@ -269,7 +304,15 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
         );
     }, [editingMessageIndex, currentMessages, shouldShowRetry, isCurrentlyStreaming, setStreamedContentMap, setConversations, currentConversationId, addStreamingConversation, checkedKeys, streamedContentMap, setIsStreaming, removeStreamingConversation, addMessageToConversation, streamingConversations, updateProcessingState, setQuestion]);
 
-    const displayMessages = isTopToBottom ? currentMessages : [...currentMessages].reverse();
+    // Apply progressive window: show only the tail during initial render,
+    // then the full list once the transition completes.
+    const windowedMessages = useMemo(() => {
+        if (messageWindow >= currentMessages.length) return currentMessages;
+        // Keep the last N messages so the user sees the most recent content first
+        return currentMessages.slice(-messageWindow);
+    }, [currentMessages, messageWindow]);
+
+    const displayMessages = isTopToBottom ? windowedMessages : [...windowedMessages].reverse();
 
     // Keep track of rendered messages for performance monitoring  
     const renderedCountRef = useRef(0);

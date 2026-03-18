@@ -1215,39 +1215,6 @@ ${svgData}`;
                     backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
                     padding: '16px',
                     borderRadius: '4px',
-                    overflow: 'auto',
-                    maxHeight: '60vh',
-                    color: isDarkMode ? '#e6e6e6' : '#24292e'
-                }}>
-                    <div style={{
-                        fontWeight: 'bold',
-                        color: isDarkMode ? '#58a6ff' : '#0366d6',
-                        marginBottom: '12px',
-                        fontSize: '14px'
-                    }}>
-                        {(() => {
-                            if (typeof spec === 'object' && spec?.type === 'mermaid') return '🧩 Mermaid Diagram Source:';
-                            if (typeof spec === 'object' && (spec?.$schema?.includes('vega-lite') || spec?.mark)) return '📊 Vega-Lite Specification:';
-                            if (typeof spec === 'object' && spec?.type === 'graphviz') return '🔗 Graphviz Source:';
-                            if (typeof spec === 'string' && spec.includes('graph') && spec.includes('->')) return '🔗 Graphviz Source:';
-                            if (typeof spec === 'string' && (spec.includes('flowchart') || spec.includes('sequenceDiagram'))) return '🧩 Mermaid Diagram Source:';
-                            return '📄 Diagram Source:';
-                        })()}
-                    </div>
-                    <code>{typeof spec === 'string' ? spec : JSON.stringify(spec, null, 2)}</code>
-                </pre>
-            </Modal>
-            <Modal
-                title="Visualization Source"
-                open={isSourceModalVisible}
-                onCancel={() => setIsSourceModalVisible(false)}
-                footer={null}
-                width={800}
-            >
-                <pre style={{
-                    backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
-                    padding: '16px',
-                    borderRadius: '4px',
                     overflowX: 'auto',
                     overflowY: 'auto',
                     maxHeight: '60vh',

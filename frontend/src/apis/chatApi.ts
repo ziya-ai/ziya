@@ -6,6 +6,7 @@ import { formatMCPOutput, enhanceToolDisplayHeader } from '../utils/mcpFormatter
 import { handleToolStart, handleToolDisplay, ToolEventContext } from '../utils/mcpToolHandlers';
 import { Project } from '../types/project';
 import { projectSync } from '../utils/projectSync';
+import { escapeHtml } from '../utils/htmlSanitize';
 
 import { extractSingleFileDiff } from '../utils/diffUtils';
 // WebSocket for real-time feedback
@@ -147,8 +148,7 @@ const feedbackWebSocket = new FeedbackWebSocket();
 // Make WebSocket available globally for components
 (window as any).feedbackWebSocket = feedbackWebSocket;
 
-type ProcessingState = 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'error';
-
+type ProcessingState = 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'awaiting_tool_response' | 'tool_throttling' | 'tool_limit_reached' | 'model_thinking' | 'error';
 interface ErrorResponse {
     error: string;
     detail: string;
@@ -536,6 +536,8 @@ async function handleStreamError(response: Response): Promise<Error> {
 function showError(errorDetail: string, conversationId: string, addMessageToConversation: (message: Message, conversationId: string, isNonCurrentConversation?: boolean) => void, messageType: 'error' | 'warning' = 'error', errorType?: string) {
 
     if (errorDetail.length > 100) {
+        // Sanitize server-supplied error text to prevent XSS
+        const safeDetail = escapeHtml(errorDetail);
         // Check if this is an authentication error that should have a retry button
         const isAuthError = errorType === 'authentication_error' || errorDetail.includes('credential') || errorDetail.includes('mwinit') || errorDetail.includes('AWS credentials');
 
@@ -549,7 +551,7 @@ function showError(errorDetail: string, conversationId: string, addMessageToConv
 <span style="font-weight: normal; opacity: 0.7;">(Click to expand)</span>
 </summary>
 <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid ${messageType === 'error' ? '#ffd6cc' : '#fff1b8'}; white-space: pre-wrap; font-family: monospace; font-size: 13px; color: ${messageType === 'error' ? '#8c1f1f' : '#8c5f00'};">
-${errorDetail}
+${safeDetail}
 </div>${isAuthError ? `
 <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid ${messageType === 'error' ? '#ffd6cc' : '#fff1b8'}; text-align: center;">
 <button 
@@ -739,7 +741,7 @@ export const sendPayload = async (
             // Forcefully close the stream reader so reader.read() rejects immediately.
             // This doesn't depend on browser AbortSignal propagation through ReadableStream,
             // which can be delayed — especially when no data is flowing (deep thinking).
-            try { readerRef?.cancel(); } catch (_) { /* stream may already be closed */ }
+            try { readerRef?.cancel().catch(() => {}); } catch (_) { /* stream may already be closed */ }
 
 
             console.log('Sending abort notification to server');
@@ -1328,10 +1330,11 @@ export const sendPayload = async (
                 if (unwrappedData.type === 'throttling_error') {
                     console.log('🔄 THROTTLING_ERROR: Received throttling error chunk:', unwrappedData);
 
+                    const safeRetryMessage = escapeHtml(unwrappedData.retry_message || unwrappedData.detail || '');
                     // Create an inline throttling notification after the last tool
                     const throttlingNotification = `\n\n---\n\n` +
                         `⚠️ **Rate Limit Reached**\n` +
-                        `${unwrappedData.retry_message || unwrappedData.detail}\n\n` +
+                        `${safeRetryMessage}\n\n` +
                         `**Tools executed before throttling:** ${unwrappedData.tools_executed || 0}\n\n` +
                         `<div style="margin-top: 12px; padding: 12px; background-color: rgba(250, 173, 20, 0.1); border-left: 3px solid #faad14; border-radius: 4px;">` +
                         `<button class="throttle-retry-button" data-conversation-id="${conversationId}" data-throttle-wait="${unwrappedData.suggested_wait || 60}" style="padding: 8px 16px; background-color: #1890ff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: 500; margin-right: 8px;">🔄 Retry Now</button>` +

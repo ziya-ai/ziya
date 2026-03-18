@@ -118,6 +118,8 @@ export interface SearchResult {
     conversationId: string;
     conversationTitle: string;
     folderId?: string | null;
+    projectId?: string;
+    projectName?: string;
     matches: MessageMatch[];
     totalMatches: number;
     lastAccessedAt: number;
@@ -126,6 +128,7 @@ export interface SearchResult {
 export interface SearchOptions {
     caseSensitive?: boolean;
     maxSnippetLength?: number;
+    projectId?: string;  // When set, only return results from this project
 }
 
 // D3 Visualization Types

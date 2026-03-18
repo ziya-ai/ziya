@@ -28,6 +28,7 @@ import {
 import { extractAllFilesFromDiff, checkFilesInContext, findSupersededDiffIndices } from '../utils/diffUtils';
 import { formatMCPOutput } from '../utils/mcpFormatter';
 import { useProject } from '../context/ProjectContext';
+import { useStreamingContext } from '../context/StreamingContext';
 
 // Lazy-load heavy diagram and mockup renderers.
 // mermaid + vega + d3 + graphviz + drawio together account for ~4 MB of JS that most
@@ -2672,9 +2673,11 @@ interface DiffTokenProps {
 }
 
 const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode, superseded = false }: DiffTokenProps): JSX.Element => {
-    const { isStreaming, streamingConversations, currentConversationId,
-        currentMessages, addMessageToConversation, setStreamedContentMap,
-        removeStreamingConversation, setIsStreaming } = useChatContext();
+    const { isStreaming, streamingConversations, currentConversationId } = useStreamingContext();
+    // Lazy ref to ChatContext — only accessed when the user clicks "Apply".
+    // Avoids subscribing DiffToken to conversations changes (which caused
+    // 80+ re-renders per setConversations call in delegate conversations).
+    const chatContextRef = useRef<any>(null);
     const { checkedKeys, addFilesToContext } = useFolderContext();
     // Generate a unique ID once when the component mounts
     const [diffId] = useState(() => stableDiffId(token.text));

@@ -26,6 +26,8 @@ const StopStreamButton: React.FC<StopStreamButtonProps> = ({
   const processingState = getProcessingState(conversationId);
   const isThinking = processingState === 'model_thinking';
   const isProcessingTools = processingState === 'processing_tools';
+  const isAwaitingToolResponse = processingState === 'awaiting_tool_response';
+  const isSending = processingState === 'sending';
   const isAwaitingResponse = processingState === 'awaiting_model_response';
 
   if (!isStreaming) {
@@ -87,8 +89,10 @@ const StopStreamButton: React.FC<StopStreamButtonProps> = ({
   // Status label shown next to the stop button
   const statusLabel = isThinking ? '🧠 Deep thinking…' :
     isProcessingTools ? '⚙️ Running tools…' :
-    isAwaitingResponse ? '⏳ Waiting for response…' :
-    null;
+    isAwaitingToolResponse ? '⚙️ Executing tool…' :
+    isAwaitingResponse ? '⏳ Waiting for model response…' :
+    isSending ? 'Sending request…' :
+    '⏳ Processing request…';
 
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>

@@ -63,6 +63,9 @@ export function useDelegatePolling(
   // Track previous delegate statuses to detect changes.
   // Keyed by plan_id → delegate_id → status string.
   const prevStatusRef = useRef<Record<string, Record<string, string>>>({});
+  
+  // Guard against re-entrant poll calls (previous poll still in-flight)
+  const pollInFlightRef = useRef(false);
 
   // Snapshot folders into a ref so the interval callback doesn't
   // create a new closure (and new interval) every time folders change.
@@ -75,9 +78,15 @@ export function useDelegatePolling(
   const poll = useCallback(async () => {
     const pid = projectIdRef.current;
     if (!pid) return;
+    
+    // Prevent re-entrant polls — if the previous cycle is still fetching
+    // (e.g. slow getChat for large conversations), skip this tick entirely.
+    if (pollInFlightRef.current) return;
+    pollInFlightRef.current = true;
 
+    try {
     const activeFolders = getActiveTaskPlanFolders(foldersRef.current);
-    if (activeFolders.length === 0) return;
+    if (activeFolders.length === 0) return; // finally block still clears flag
 
     for (const folder of activeFolders) {
       try {
@@ -127,29 +136,13 @@ export function useDelegatePolling(
           return updated;
         }));
 
-        // Eagerly fetch messages for newly-completed delegates so content
-        // is ready when the user clicks them.
-        for (const convId of newlyCrystalConvIds) {
-          const pid = projectIdRef.current;
-          if (!pid) continue;
-          syncApi.getChat(pid, convId).then(freshChat => {
-            if (freshChat?.messages?.length) {
-              setConversations(prev => prev.map(c =>
-                c.id === convId && freshChat.messages.length > c.messages.length
-                  ? { ...c, messages: freshChat.messages, _version: Date.now() }
-                  : c
-              ));
-            }
-          }).catch(() => { /* retry next poll cycle */ });
-        }
-
-        // Refresh source conversation whenever a new crystal arrives,
-        // so the user sees per-delegate progress messages in the source chat.
-        const anyNewCrystal = Object.values(data.delegates).some(
+        // Refresh source conversation only when a NEW crystal arrives
+        // (not on every poll where crystals exist).
+        const anyNewCrystal = newlyCrystalConvIds.length > 0 || Object.values(data.delegates).some(
           (info: any) => info.status === 'crystal'
-        );
+        ) && !prevStatuses._hadCrystals;
         const sourceId = folder.taskPlan?.source_conversation_id;
-        if (anyNewCrystal && sourceId && pid) {
+        if (newlyCrystalConvIds.length > 0 && sourceId && pid) {
           try {
             const freshChat = await syncApi.getChat(pid, sourceId);
             if (freshChat?.messages) {
@@ -169,6 +162,10 @@ export function useDelegatePolling(
               ? { ...f, taskPlan: { ...f.taskPlan, status: data.status } }
               : f
           ));
+          
+          // Clean up previous status tracking for completed plans
+          // to prevent stale data from accumulating
+          delete prevStatusRef.current[data.plan_id];
 
           // Refresh the source conversation to pick up the completion message
           // that DelegateManager._post_completion_to_source() wrote server-side.
@@ -205,6 +202,9 @@ export function useDelegatePolling(
       } catch {
         // Network error — skip this cycle, retry next poll
       }
+    }
+    } finally {
+      pollInFlightRef.current = false;
     }
   }, [setConversations, setFolders]);
 
