@@ -46,6 +46,9 @@ class ShellServer:
         self.git_operations_enabled = os.environ.get('GIT_OPERATIONS_ENABLED', 'true').lower() in ('true', '1', 'yes')
         self.command_timeout = int(os.environ.get('COMMAND_TIMEOUT', '30'))  # Increased from 10 to 30 seconds
         
+        # Hard ceiling for model-requested timeouts (matches TOOL_EXEC_TIMEOUT in streaming_tool_executor)
+        self.max_timeout = int(os.environ.get('MAX_COMMAND_TIMEOUT', '300'))
+        
         # Default pattern for commands: command name followed by optional arguments
         self.default_command_pattern = r"^{cmd}(\s+.*)?$"
         
@@ -120,7 +123,7 @@ class ShellServer:
         First tuple has empty operator string.
         
         Handles: &&, ||, ;, | (pipe), and command substitution $(...)
-        Respects backslash escaping (e.g., \; in find -exec)
+        Respects backslash escaping (e.g., \\; in find -exec)
         """
         segments = []
         current_segment = ""
@@ -397,8 +400,8 @@ class ShellServer:
                                     },
                                     "timeout": {
                                         "type": "number",
-                                        "description": "Timeout in seconds (default: 10)",
-                                        "default": 10
+                                        "description": f"Timeout in seconds (default: {self.command_timeout}, max: {self.max_timeout}). Increase for long-running operations like large builds, recursive searches over big trees, or network requests to slow endpoints.",
+                                        "default": self.command_timeout
                                     }
                                 },
                                 "required": ["command"]
@@ -416,12 +419,11 @@ class ShellServer:
                 # Handle timeout parameter - convert string to number if needed
                 timeout_param = arguments.get("timeout", self.command_timeout)
                 try:
-                    timeout = float(timeout_param) if timeout_param is not None else 10
-                    timeout = None if timeout == 0 else timeout
+                    timeout = float(timeout_param) if timeout_param is not None else self.command_timeout
+                    timeout = max(1, min(timeout, self.max_timeout))  # Clamp to [1, max]
                 except (ValueError, TypeError):
-                    # If conversion fails, use default timeout
                     timeout = self.command_timeout
-                    print(f"Warning: Invalid timeout value '{timeout_param}', using default 10 seconds", file=sys.stderr)
+                    print(f"Warning: Invalid timeout value '{timeout_param}', using default {self.command_timeout}s", file=sys.stderr)
                 
                 if not command:
                     return {

@@ -34,7 +34,7 @@ def cli_mode_optimizations(prompt: str, context: dict) -> str:
     
     logger.debug("Applying CLI mode optimizations to prompt")
     
-    cli_instructions = """
+    cli_instructions = r"""
 
 ## CLI MODE OPTIMIZATIONS
 

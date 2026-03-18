@@ -21,7 +21,7 @@ DEFAULT_SHELL_CONFIG = {
         "tee", "base64", "md5sum", "sha1sum", "sha256sum", "bc", "expr", "seq", 
         "paste", "join", "fold", "expand", "cd", "tree", "less", "xargs", "curl", 
         "ping", "du", "file",
-        # Additional text/binary inspection
+        # Additional text/binary inspection and process control
         "strings", "diff", "stat", "readlink", "realpath", "basename", "dirname",
         # System information
         "uname", "hostname", "whoami", "id", "uptime", "free",
@@ -29,6 +29,8 @@ DEFAULT_SHELL_CONFIG = {
         "zcat", "zgrep", "zless",
         # Network diagnostics
         "dig", "host", "nslookup",
+        # Process execution control
+        "timeout",
         # Shell flow-control keywords (needed for compound commands split on ; && ||)
         "for", "while", "until", "select",
         "if", "then", "else", "elif", "fi",
