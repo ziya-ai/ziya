@@ -82,32 +82,44 @@ def make_crystal(did, task="task"):
 class TestPlanCompletion:
     def test_all_crystal_is_complete(self, manager):
         pid = "p1"
+        manager._plans[pid] = TaskPlan(
+            name="Test", delegate_specs=[], status="running")
         manager._statuses[pid] = {"D1": "crystal", "D2": "crystal"}
         assert manager._is_plan_complete(pid) is True
 
     def test_crystal_plus_failed_is_complete(self, manager):
         pid = "p1"
+        manager._plans[pid] = TaskPlan(
+            name="Test", delegate_specs=[], status="running")
         manager._statuses[pid] = {"D1": "crystal", "D2": "failed"}
         assert manager._is_plan_complete(pid) is True
 
     def test_running_is_not_complete(self, manager):
         pid = "p1"
+        manager._plans[pid] = TaskPlan(
+            name="Test", delegate_specs=[], status="running")
         manager._statuses[pid] = {"D1": "crystal", "D2": "running"}
         assert manager._is_plan_complete(pid) is False
 
     def test_proposed_is_not_complete(self, manager):
         pid = "p1"
+        manager._plans[pid] = TaskPlan(
+            name="Test", delegate_specs=[], status="running")
         manager._statuses[pid] = {"D1": "crystal", "D2": "proposed"}
         assert manager._is_plan_complete(pid) is False
 
     def test_interrupted_is_not_complete(self, manager):
         """Interrupted delegates keep the plan open for retry."""
         pid = "p1"
+        manager._plans[pid] = TaskPlan(
+            name="Test", delegate_specs=[], status="running")
         manager._statuses[pid] = {"D1": "crystal", "D2": "interrupted"}
         assert manager._is_plan_complete(pid) is False
 
     def test_all_failed_is_complete(self, manager):
         pid = "p1"
+        manager._plans[pid] = TaskPlan(
+            name="Test", delegate_specs=[], status="running")
         manager._statuses[pid] = {"D1": "failed", "D2": "failed"}
         assert manager._is_plan_complete(pid) is True
 
