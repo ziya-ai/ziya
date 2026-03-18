@@ -549,8 +549,13 @@ class TypeScriptASTConverter:
                 'variableType': node.get('variableType')
             }
             
+            # Detect callable variables (arrow functions, useCallback, useMemo)
+            callable_info = self._detect_callable_variable(node)
+            if callable_info:
+                attributes.update(callable_info)
+
             node_id = self.unified_ast.add_node(
-                node_type='variable',
+                node_type='function' if callable_info else 'variable',
                 name=name,
                 source_location=source_location,
                 attributes=attributes
@@ -672,8 +677,13 @@ class TypeScriptASTConverter:
                 'kind': node.get('kind', 'var')
             }
             
+            # Detect callable variables (arrow functions, useCallback, useMemo)
+            callable_info = self._detect_callable_variable(node)
+            if callable_info:
+                attributes.update(callable_info)
+
             node_id = self.unified_ast.add_node(
-                node_type='variable',
+                node_type='function' if callable_info else 'variable',
                 name=var_name,
                 source_location=source_location,
                 attributes=attributes
@@ -857,3 +867,71 @@ class TypeScriptASTConverter:
                     if attr_child.get('kind') == 'JsxAttribute' and 'name' in attr_child:
                         attributes.append(attr_child['name'])
         return attributes
+
+    def _detect_callable_variable(self, node: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Detect if a variable declaration is actually a callable (arrow function,
+        useCallback, useMemo, or other React hook wrapping a function).
+
+        Returns attributes dict to merge if callable, or None.
+        """
+        children = node.get('children', [])
+
+        # React hook names whose first argument is a function
+        CALLABLE_HOOKS = {'useCallback', 'useMemo', 'useEffect', 'useLayoutEffect', 'useRef'}
+
+        for child in children:
+            kind = child.get('kind', child.get('type', ''))
+
+            # Direct arrow function: const foo = () => { ... }
+            if kind == 'ArrowFunction':
+                return {
+                    'callable': True,
+                    'is_arrow': True,
+                    'parameters': child.get('parameters', []),
+                    'returnType': child.get('returnType'),
+                }
+
+            # Direct function expression: const foo = function() { ... }
+            if kind == 'FunctionExpression':
+                return {
+                    'callable': True,
+                    'parameters': child.get('parameters', []),
+                    'returnType': child.get('returnType'),
+                }
+
+            # Hook wrapper: const foo = useCallback(() => { ... }, [deps])
+            if kind == 'CallExpression':
+                callee_name = self._extract_call_expression_name(child)
+                if callee_name in CALLABLE_HOOKS:
+                    # The first argument is the actual function
+                    call_children = child.get('children', [])
+                    for arg in call_children:
+                        arg_kind = arg.get('kind', arg.get('type', ''))
+                        if arg_kind in ('ArrowFunction', 'FunctionExpression'):
+                            return {
+                                'callable': True,
+                                'is_hook': True,
+                                'hook_name': callee_name,
+                                'parameters': arg.get('parameters', []),
+                                'returnType': arg.get('returnType'),
+                            }
+                    # Hook call but couldn't extract inner function — still callable
+                    return {'callable': True, 'is_hook': True, 'hook_name': callee_name}
+
+        return None
+
+    def _extract_call_expression_name(self, node: Dict[str, Any]) -> str:
+        """Extract the function name from a CallExpression node."""
+        for child in node.get('children', []):
+            kind = child.get('kind', child.get('type', ''))
+            if kind == 'Identifier':
+                return child.get('name', '')
+            if kind == 'PropertyAccessExpression':
+                # e.g. React.useCallback — return the last part
+                parts = []
+                for sub in child.get('children', []):
+                    if sub.get('kind') == 'Identifier' and sub.get('name'):
+                        parts.append(sub['name'])
+                return parts[-1] if parts else ''
+        return ''

@@ -117,12 +117,11 @@ def initialize_ast_if_enabled():
     codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
 
     # Guard: don't start a second indexing run for the same project
-    from app.utils.ast_parser.integration import _indexing_in_progress, _initialized_projects
+    from app.utils.ast_parser.integration import _indexing_in_progress as _ast_in_progress, _initialized_projects
     abs_dir = os.path.abspath(codebase_dir)
-    if abs_dir in _indexing_in_progress or abs_dir in _initialized_projects:
+    if abs_dir in _ast_in_progress or abs_dir in _initialized_projects:
         logger.debug(f"AST init already in progress or complete for {abs_dir}, skipping")
         return
-    _indexing_in_progress.add(abs_dir)
 
     _ast_indexing_status.update({
         'is_indexing': True,
@@ -190,7 +189,7 @@ def initialize_ast_if_enabled():
                 'error': str(e)
             })
         finally:
-            _indexing_in_progress.discard(abs_dir)
+            _ast_in_progress.discard(abs_dir)
     
     # Start AST initialization in background thread
     ast_thread = threading.Thread(target=_initialize_ast, daemon=True)

@@ -1464,7 +1464,7 @@ file_state_manager = FileStateManager()
 
 def escape_backticks_for_llm(text: str) -> str:
     """Escape backticks to prevent LLM confusion when generating diffs."""
-    return text.replace('`', '\`')
+    return text.replace('`', '\\`')
 
 def is_file_allowed_by_filters(file_path: str) -> bool:
     """Check if a file is allowed by the include-only and exclude filters."""
@@ -1647,20 +1647,11 @@ def log_codebase_wrapper_with_cache(x):
     # Generate the codebase context
     codebase = extract_codebase(x)
     
-    # Get AST context if available
-    ast_context = ""
-    if os.environ.get("ZIYA_ENABLE_AST") == "true":
-        from app.utils.context_enhancer import get_ast_context
-        if get_ast_context:
-            ast_context = get_ast_context() or ""
-    
-    # Check for cached version
-    full_context = codebase + ast_context
+    full_context = codebase
     cached_context = prompt_cache.get_cached_prompt(
         conversation_id=conversation_id,
         full_prompt=full_context,
-        file_paths=file_paths,
-        ast_context=ast_context
+        file_paths=file_paths
     )
     
     if cached_context:
@@ -1673,8 +1664,7 @@ def log_codebase_wrapper_with_cache(x):
         conversation_id=conversation_id,
         full_prompt=full_context,
         file_paths=file_paths,
-        token_count=token_count,
-        ast_context=ast_context
+        token_count=token_count
     )
     
     logger.info(f"Cached new context for conversation {conversation_id} ({token_count} tokens)")
@@ -1917,22 +1907,9 @@ def create_agent_chain(chat_model: BaseChatModel):
         ]
     }
     
-    # Add AST context enhancement if enabled
-    if ast_enabled:
-        logger.debug("Adding AST context to agent chain input mapping")
-        def get_ast_context_for_prompt(x):
-            from app.utils.context_enhancer import get_ast_context
-            if get_ast_context:
-                ast_context = get_ast_context()
-                logger.debug(f"Retrieved AST context: {len(ast_context) if ast_context else 0} chars")
-                return ast_context or ""
-            return ""
-        input_mapping["ast_context"] = get_ast_context_for_prompt
-        logger.debug(f"AST context lambda added to input mapping: {input_mapping.get('ast_context')}")
-    else:
-        logger.debug("AST context not added to agent chain (disabled)")
-        # Add empty AST context to avoid template errors
-        input_mapping["ast_context"] = lambda x: {}
+    # AST context is served on-demand via MCP tools (ast_get_tree, ast_search,
+    # ast_references).  No static blob is injected into the prompt.
+    input_mapping["ast_context"] = lambda x: ""
 
     # Disable Google native function calling for now - will migrate off langchain later
     if False: # endpoint == "google" and len(mcp_tools) > 0:

@@ -51,6 +51,7 @@ class ASTQueryEngine:
         # Build edge indices
         self.outgoing_edges: Dict[str, List[Edge]] = {}
         self.incoming_edges: Dict[str, List[Edge]] = {}
+        self.edge_type_index: Dict[str, List[Edge]] = {}
         
         for edge in self.ast.edges:
             if edge.source_id not in self.outgoing_edges:
@@ -60,6 +61,10 @@ class ASTQueryEngine:
             if edge.target_id not in self.incoming_edges:
                 self.incoming_edges[edge.target_id] = []
             self.incoming_edges[edge.target_id].append(edge)
+
+            if edge.edge_type not in self.edge_type_index:
+                self.edge_type_index[edge.edge_type] = []
+            self.edge_type_index[edge.edge_type].append(edge)
     
     def find_definitions(self, name: str) -> List[Node]:
         """
@@ -292,23 +297,37 @@ class ASTQueryEngine:
             function_name: Name of the function
             
         Returns:
-            List of call nodes
+            List of nodes representing call sites
         """
-        # Find function definitions with the given name
-        function_nodes = [
-            node for node in self.ast.nodes.values()
-            if node.node_type == "function" and node.name == function_name
-        ]
-        
-        # Find all calls to these functions
+        # Strategy 1: Edge-based lookup (same-file calls where "calls" edges exist)
         calls = []
-        for func_node in function_nodes:
-            for edge in self.ast.edges:
-                if (edge.target_id == func_node.node_id and 
-                    edge.edge_type == "calls" and
-                    edge.source_id in self.ast.nodes):
+        function_node_ids = {
+            node.node_id for node in self.ast.nodes.values()
+            if node.node_type == "function" and node.name == function_name
+        }
+
+        if function_node_ids:
+            for edge in self.edge_type_index.get("calls", []):
+                if (edge.target_id in function_node_ids and
+                        edge.source_id in self.ast.nodes):
                     calls.append(self.ast.nodes[edge.source_id])
-        
+
+        # Strategy 2: Name-based fallback — find "call" nodes whose name matches.
+        # Parsers always create call nodes even for cross-file targets, but the
+        # "calls" edge only links to definitions in the same file scope.
+        if not calls:
+            seen_ids: Set[str] = set()
+            name_lower = function_name.lower()
+            for node in self.ast.nodes.values():
+                if node.node_type == "call" and node.node_id not in seen_ids:
+                    # Exact match or attribute-style match (e.g. "self.foo" matches "foo")
+                    node_name = node.name
+                    if (node_name == function_name or
+                            node_name.lower() == name_lower or
+                            node_name.endswith("." + function_name)):
+                        calls.append(node)
+                        seen_ids.add(node.node_id)
+
         return calls
     
     def get_dependencies(self, file_path: str) -> List[str]:
@@ -326,7 +345,7 @@ class ASTQueryEngine:
             node_id for node_id in self.file_index.get(file_path, [])
         ]
         
-        # Find all imports from these nodes
+        # Strategy 1: Edge-based lookup (imports edges)
         dependencies = set()
         for node_id in file_nodes:
             for edge in self.outgoing_edges.get(node_id, []):
@@ -336,8 +355,126 @@ class ASTQueryEngine:
                     if target_file != file_path:
                         dependencies.add(target_file)
         
+        # Strategy 2: Fall back to import node attributes when no edges found.
+        # Parsers create import nodes with 'module' attributes but don't always
+        # create "imports" edges to the target file's module node.
+        if not dependencies:
+            for node_id in file_nodes:
+                node = self.ast.nodes.get(node_id)
+                if not node or node.node_type != "import":
+                    continue
+                attrs = node.attributes or {}
+                module_name = attrs.get("module") or node.name
+                if module_name:
+                    # Try to resolve the module to an indexed file path
+                    resolved = self._resolve_module_to_file(module_name, file_path)
+                    if resolved and resolved != file_path:
+                        dependencies.add(resolved)
+                    elif module_name:
+                        # Keep the raw module name as a dependency even if
+                        # we can't resolve it to a local file (stdlib, etc.)
+                        dependencies.add(module_name)
+
         return list(dependencies)
+
+    def _resolve_module_to_file(self, module_name: str, source_file: str) -> Optional[str]:
+        """Try to resolve a module name to an indexed file path."""
+        if not module_name:
+            return None
+
+        # Convert dotted module path to file path fragments
+        # e.g. "app.utils.logging_utils" -> ["app", "utils", "logging_utils"]
+        parts = module_name.replace("-", "_").split(".")
+
+        # Check indexed files for a suffix match
+        import os
+        for indexed_path in self.file_index:
+            normalized = indexed_path.replace(os.sep, "/")
+            # Build candidate suffixes: "app/utils/logging_utils.py",
+            # "app/utils/logging_utils/__init__.py", etc.
+            suffix_py = "/".join(parts) + ".py"
+            suffix_init = "/".join(parts) + "/__init__.py"
+            suffix_ts = "/".join(parts) + ".ts"
+            suffix_tsx = "/".join(parts) + ".tsx"
+            if (normalized.endswith(suffix_py) or
+                    normalized.endswith(suffix_init) or
+                    normalized.endswith(suffix_ts) or
+                    normalized.endswith(suffix_tsx)):
+                return indexed_path
+
+        # Relative import: try resolving from the source file's directory
+        if not module_name.startswith("."):
+            return None
+        source_dir = os.path.dirname(source_file)
+        # Strip leading dots and resolve
+        stripped = module_name.lstrip(".")
+        levels_up = len(module_name) - len(stripped)
+        for _ in range(levels_up - 1):
+            source_dir = os.path.dirname(source_dir)
+        rel_parts = stripped.split(".") if stripped else []
+        candidate_base = os.path.join(source_dir, *rel_parts)
+        for ext in [".py", "/__init__.py", ".ts", ".tsx"]:
+            candidate = candidate_base + ext
+            normalized_candidate = candidate.replace(os.sep, "/")
+            for indexed_path in self.file_index:
+                if indexed_path.replace(os.sep, "/").endswith(normalized_candidate.lstrip("/")):
+                    return indexed_path
+
+        return None
     
+    def get_reverse_dependencies(self, file_path: str) -> List[str]:
+        """
+        Get all files that depend on (import from) the given file.
+
+        This is the inverse of get_dependencies — answers "who imports me?"
+
+        Args:
+            file_path: Path to the file
+
+        Returns:
+            List of file paths that import from the given file
+        """
+        importers = set()
+
+        # Strategy 1: Edge-based — find "imports" edges pointing INTO this file's nodes
+        file_node_ids = set(self.file_index.get(file_path, []))
+        if file_node_ids:
+            for edge in self.edge_type_index.get("imports", []):
+                if edge.target_id in file_node_ids and edge.source_id in self.ast.nodes:
+                    source_file = self.ast.nodes[edge.source_id].source_location.file_path
+                    if source_file != file_path:
+                        importers.add(source_file)
+
+        # Strategy 2: Scan all import nodes across all files for module name match.
+        # This catches cross-file imports where no "imports" edge was created.
+        if not importers:
+            import os
+            basename = os.path.splitext(os.path.basename(file_path))[0]
+
+            for other_file, node_ids in self.file_index.items():
+                if other_file == file_path:
+                    continue
+                for node_id in node_ids:
+                    node = self.ast.nodes.get(node_id)
+                    if not node or node.node_type != "import":
+                        continue
+                    module_name = (node.attributes or {}).get("module") or node.name
+                    if not module_name:
+                        continue
+                    # Match: module ends with the basename, or resolves to the file
+                    if (module_name.endswith(basename) or
+                            module_name.endswith("." + basename) or
+                            module_name == basename):
+                        importers.add(other_file)
+                        break  # one match per file is enough
+                    # Also try full resolution
+                    resolved = self._resolve_module_to_file(module_name, other_file)
+                    if resolved == file_path:
+                        importers.add(other_file)
+                        break
+
+        return sorted(importers)
+
     def generate_summary(self, file_path: str) -> Dict[str, Any]:
         """
         Generate a summary of a file.
