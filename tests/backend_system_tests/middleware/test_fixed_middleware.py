@@ -12,7 +12,7 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, AIMe
 from langchain_core.outputs import ChatGeneration
 from langchain_core.tracers.log_stream import RunLogPatch
 
-from app.utils.middleware import StreamingMiddleware
+from app.middleware.streaming import StreamingMiddleware
 
 class TestFixedMiddleware(unittest.TestCase):
     """Test the fixed streaming middleware."""

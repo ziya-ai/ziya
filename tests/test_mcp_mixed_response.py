@@ -11,7 +11,7 @@ import re
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 # Import the updated version
-from app.mcp_fixes_updated import improved_parse_tool_call, find_and_execute_all_tools
+from app.mcp.utils import improved_parse_tool_call, find_and_execute_all_tools
 
 def test_mixed_response():
     """Test a response with both <n> and <name> tag formats."""

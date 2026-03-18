@@ -17,7 +17,7 @@ import json
 # Add the app directory to the path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from app.mcp_fixes import clean_sentinels, improved_parse_tool_call, improved_extract_tool_output
+from app.mcp.utils import clean_sentinels, improved_parse_tool_call, improved_extract_tool_output
 from app.server import detect_and_execute_mcp_tools
 
 # Real-world examples of problematic responses
@@ -69,7 +69,7 @@ async def test_detect_and_execute_mcp_tools_with_mock():
     original_execute = __import__('app.mcp_consolidated').mcp_consolidated.execute_mcp_tools_with_status
     
     async def mock_execute_mcp_tools_with_status(response):
-        from app.mcp_fixes import clean_sentinels
+        from app.mcp.utils import clean_sentinels
         
         # Just clean the sentinels and return a mock result
         cleaned = clean_sentinels(response)
@@ -122,7 +122,7 @@ async def test_streaming_simulation():
     
     # Simulate the streaming code in server.py
     def process_streaming_chunk(chunk):
-        from app.mcp_fixes import clean_sentinels
+        from app.mcp.utils import clean_sentinels
         
         # Clean any sentinel fragments
         cleaned_content = clean_sentinels(chunk)

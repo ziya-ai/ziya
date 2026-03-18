@@ -16,7 +16,7 @@ import re
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 # Import the updated version
-from app.mcp_fixes_updated import improved_parse_tool_call, clean_sentinels
+from app.mcp.utils import improved_parse_tool_call, clean_sentinels
 
 def test_n_tag_format():
     """Test the improved_parse_tool_call function with <n> tag format."""
@@ -48,9 +48,11 @@ def test_clean_sentinels_with_name_tags():
     """Test the clean_sentinels function with <name> tags."""
     print("Testing clean_sentinels with <name> tags...")
     
+    
     # Test case: Complete tool call with <name> tags
     test_input = "This is a test <TOOL_SENTINEL><name>tool_name</name><arguments>{}</arguments></TOOL_SENTINEL> with a tool call."
-    expected_output = "This is a test  with a tool call."
+    # clean_sentinels removes the tool block and normalizes whitespace
+    expected_output = "This is a test with a tool call."
     actual_output = clean_sentinels(test_input)
     assert actual_output == expected_output, f"Expected: {expected_output}, Got: {actual_output}"
     

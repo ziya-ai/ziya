@@ -5,8 +5,10 @@ import os
 import sys
 import pytest
 from unittest.mock import patch, MagicMock
+from types import SimpleNamespace
 
-import app.config as config
+from app.config.models_config import DEFAULT_ENDPOINT
+from app.config.app_config import DEFAULT_PORT
 from app.main import parse_arguments, validate_model_and_endpoint, setup_environment
 
 
@@ -17,15 +19,15 @@ def test_parse_arguments():
         args = parse_arguments()
         assert args.exclude == []
         assert args.profile is None
-        assert args.endpoint == config.DEFAULT_ENDPOINT
+        assert args.endpoint == DEFAULT_ENDPOINT
         assert args.model is None
         assert args.model_id is None
-        assert args.port == config.DEFAULT_PORT
+        assert args.port == DEFAULT_PORT
         assert args.temperature is None
         assert args.top_p is None
         assert args.top_k is None
         assert args.max_output_tokens is None
-    
+
     # Test with all arguments
     with patch('sys.argv', [
         'ziya',
@@ -54,26 +56,61 @@ def test_parse_arguments():
 
 
 def test_validate_model_and_endpoint():
-    """Test model and endpoint validation."""
+    """Test model and endpoint validation.
+
+    validate_model_and_endpoint returns a 3-tuple:
+        (is_valid, error_message, corrected_endpoint)
+    """
     # Test valid model and endpoint
-    is_valid, error_message = validate_model_and_endpoint("bedrock", "sonnet3.5")
+    is_valid, error_message, _ = validate_model_and_endpoint("bedrock", "sonnet3.5")
     assert is_valid
     assert error_message is None
-    
+
     # Test invalid endpoint
-    is_valid, error_message = validate_model_and_endpoint("invalid-endpoint", "sonnet3.5")
+    is_valid, error_message, _ = validate_model_and_endpoint("invalid-endpoint", "sonnet3.5")
     assert not is_valid
     assert "Invalid endpoint" in error_message
-    
+
     # Test invalid model
-    is_valid, error_message = validate_model_and_endpoint("bedrock", "invalid-model")
+    is_valid, error_message, _ = validate_model_and_endpoint("bedrock", "invalid-model")
     assert not is_valid
     assert "Invalid model" in error_message
-    
+
     # Test None model (should use default)
-    is_valid, error_message = validate_model_and_endpoint("bedrock", None)
+    is_valid, error_message, _ = validate_model_and_endpoint("bedrock", None)
     assert is_valid
     assert error_message is None
+
+
+def _make_args(**overrides):
+    """Build a SimpleNamespace with all required fields for setup_environment.
+
+    Using SimpleNamespace instead of MagicMock avoids TypeError when
+    os.environ receives a MagicMock instead of a string for unset attrs.
+    """
+    defaults = dict(
+        exclude=[],
+        profile=None,
+        endpoint="bedrock",
+        model="sonnet3.5",
+        model_id=None,
+        max_depth=5,
+        ast=False,
+        ast_resolution="standard",
+        root=None,
+        include_only=[],
+        include=[],
+        region=None,
+        ephemeral=False,
+        thinking_level=None,
+        mcp=None,
+        temperature=None,
+        top_p=None,
+        top_k=None,
+        max_output_tokens=None,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
 
 
 @pytest.mark.parametrize("args_dict", [
@@ -86,60 +123,43 @@ def test_validate_model_and_endpoint():
 ])
 def test_setup_environment(args_dict, monkeypatch):
     """Test environment setup with different arguments."""
-    # Create a mock args object
-    args = MagicMock()
-    
-    # Set default values
-    args.exclude = []
-    args.profile = None
-    args.endpoint = "bedrock"
-    args.model = "sonnet3.5"
-    args.model_id = None
-    args.max_depth = 5
-    args.ast = False
-    args.temperature = None
-    args.top_p = None
-    args.top_k = None
-    args.max_output_tokens = None
-    
-    # Override with test values
-    for key, value in args_dict.items():
-        setattr(args, key, value)
-    
+    args = _make_args(**args_dict)
+
     # Save original environment variables
     original_env = os.environ.copy()
-    
+
     try:
         # Mock validate_model_and_endpoint to always return valid
-        with patch('app.main.validate_model_and_endpoint', return_value=(True, None)):
+        with patch('app.main.validate_model_and_endpoint',
+                   return_value=(True, None, args.endpoint)):
             # Call setup_environment
             setup_environment(args)
-            
+
             # Check that environment variables were set correctly
             assert os.environ["ZIYA_ADDITIONAL_EXCLUDE_DIRS"] == ','.join(args.exclude)
-            
+
             if args.profile:
                 assert os.environ["ZIYA_AWS_PROFILE"] == args.profile
-            
+
             assert os.environ["ZIYA_ENDPOINT"] == args.endpoint
-            
+
             if args.model:
                 assert os.environ["ZIYA_MODEL"] == args.model
-            
+
             assert os.environ["ZIYA_MAX_DEPTH"] == str(args.max_depth)
-            
+
             if args.model_id:
                 assert os.environ["ZIYA_MODEL_ID_OVERRIDE"] == args.model_id
-            
+
             if args.temperature is not None:
                 assert os.environ["ZIYA_TEMPERATURE"] == str(args.temperature)
-            
+
             if args.top_p is not None:
                 assert os.environ["ZIYA_TOP_P"] == str(args.top_p)
-            
+
             if args.top_k is not None:
                 assert os.environ["ZIYA_TOP_K"] == str(args.top_k)
-            
+
             if args.max_output_tokens is not None:
                 assert os.environ["ZIYA_MAX_OUTPUT_TOKENS"] == str(args.max_output_tokens)
     finally:

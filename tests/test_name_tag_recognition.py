@@ -11,7 +11,7 @@ import re
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 # Import the updated version
-from app.mcp_fixes_updated import improved_parse_tool_call
+from app.mcp.utils import improved_parse_tool_call
 
 def test_name_tag_recognition():
     """Test that <name> tag format is correctly recognized."""

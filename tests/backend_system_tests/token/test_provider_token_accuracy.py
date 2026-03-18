@@ -45,7 +45,7 @@ def _make_sample_tools(count: int) -> List[Dict[str, Any]]:
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "The shell command to execute"},
-                "timeout": {"type": "integer", "description": "Timeout in seconds (default: 90)"},
+                "timeout": {"type": "number", "description": "Timeout in seconds (default: 30, max: 300)"},
             },
             "required": ["command"],
         },

@@ -19,7 +19,7 @@ sys.path.insert(0, str(project_root))
 def pytest_configure(config):
     """Configure pytest with custom markers."""
     config.addinivalue_line(
-        "markers", 
+        "markers",
         "integration: mark test as integration test (requires network)"
     )
     config.option.asyncio_mode = "auto"
