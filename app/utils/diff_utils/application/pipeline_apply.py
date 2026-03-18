@@ -134,4 +134,4 @@ def apply_diff_with_pipeline_approach(
             else:
                 os.environ.pop("ZIYA_FORCE_DIFFLIB", None)
 
-            set_project_root(original_context_root)
+            set_project_root(original_codebase_dir)
