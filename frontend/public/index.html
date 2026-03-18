@@ -46,20 +46,5 @@
 })();
 </script>
 
-<!-- Inject formatter plugin scripts before React app loads -->
-{% if formatter_scripts %}
-    {% for formatter_script in formatter_scripts %}
-    <script type="text/javascript">
-    (function() {
-        try {
-            {{ formatter_script|safe }}
-        } catch (error) {
-            console.error('Failed to load formatter plugin:', error);
-        }
-    })();
-    </script>
-    {% endfor %}
-{% endif %}
-
 </body>
 </html>

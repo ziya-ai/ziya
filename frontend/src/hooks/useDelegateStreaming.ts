@@ -9,7 +9,7 @@
  * Disconnects automatically when the user navigates away or the stream ends.
  */
 
-import { useEffect, useRef } from 'react';
+ import { useEffect, useRef, useMemo } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import type { Conversation } from '../utils/types';
 
@@ -36,10 +36,42 @@ export function useDelegateStreaming({
   const accumulatedRef = useRef<string>('');
   const connectedConvRef = useRef<string | null>(null);
   const siblingWsRef = useRef<Map<string, WebSocket>>(new Map());
+  // Track which sibling IDs we've already attempted to connect (prevents reconnect storms)
+  const siblingConnectedIdsRef = useRef<Set<string>>(new Set());
+
+  // Derive stable keys from *only* the delegate-relevant fields so
+  // effects don't re-fire on every unrelated conversation change
+  // (message adds, server-sync updates, mute toggles, etc.).
+  const delegateKey = useMemo(() => {
+    const conv = conversations.find(c => c.id === conversationId);
+    if (!conv?.delegateMeta) return 'none';
+    const dm = conv.delegateMeta as any;
+    return `${conversationId}:${dm.status || ''}:${dm.plan_id || ''}`;
+  }, [conversationId, conversations]);
+
+  const siblingKey = useMemo(() => {
+    const conv = conversations.find(c => c.id === conversationId);
+    const planId = (conv?.delegateMeta as any)?.plan_id;
+    if (!planId) return 'no-plan';
+    const siblings = conversations.filter(c => {
+      const dm = c.delegateMeta as any;
+      return dm?.plan_id === planId && dm?.role === 'delegate' && c.id !== conversationId;
+    });
+    return siblings.map(s => `${s.id}:${(s.delegateMeta as any)?.status}`).join('|');
+  }, [conversationId, conversations]);
 
   useEffect(() => {
     // Only connect for delegate/orchestrator conversations
-    const conv = conversations.find(c => c.id === conversationId);
+    // PERFORMANCE: Use conversationId as primary key, only scan conversations
+    // array when needed (not on every conversations reference change).
+    let conv: any = null;
+    for (const c of conversations) {
+      if (c.id === conversationId) {
+        conv = c;
+        break;
+      }
+    }
+    
     if (!conv?.delegateMeta) {
       // Not a delegate — disconnect if previously connected
       if (wsRef.current) {
@@ -72,7 +104,9 @@ export function useDelegateStreaming({
       return;
     }
 
-    if (connectedConvRef.current === conversationId && wsRef.current?.readyState === WebSocket.OPEN) {
+    // Already connected to this conversation with an open WebSocket — skip
+    if (connectedConvRef.current === conversationId && 
+        wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       return;
     }
 
@@ -85,6 +119,7 @@ export function useDelegateStreaming({
     const wsUrl = `${protocol}//${window.location.host}/ws/delegate-stream/${conversationId}`;
     console.log('📡 DELEGATE_STREAM: Connecting to', wsUrl);
 
+    let connectionTimedOut = false;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
     connectedConvRef.current = conversationId;
@@ -96,19 +131,32 @@ export function useDelegateStreaming({
       accumulatedRef.current = '';
     }
 
-    // Stale session detection: if no data arrives within a few seconds
-    // of connecting, the delegate is no longer active server-side.
     let receivedData = false;
     let staleTimer: ReturnType<typeof setTimeout> | null = null;
 
+    // Hard timeout on the WebSocket connection attempt itself.
+    const connectTimer = setTimeout(() => {
+      if (ws.readyState === WebSocket.CONNECTING) {
+        console.log('📡 DELEGATE_STREAM: Connection timeout, aborting', conversationId.substring(0, 8));
+        connectionTimedOut = true;
+        ws.close();
+        wsRef.current = null;
+        connectedConvRef.current = null;
+      }
+    }, 5000);
+
     ws.onopen = () => {
+      clearTimeout(connectTimer);
+      if (connectionTimedOut) return;
       console.log('📡 DELEGATE_STREAM: Connected for', conversationId.substring(0, 8));
       addStreamingConversation(conversationId);
+      // Stale session detection: if no data arrives shortly after
+      // connecting, the delegate is no longer active server-side.
       staleTimer = setTimeout(() => {
         if (!receivedData) {
           console.log('📡 DELEGATE_STREAM: No data received — stale session, cleaning up', conversationId.substring(0, 8));
           removeStreamingConversation(conversationId);
-          ws.close();
+          try { ws.close(); } catch {}
           wsRef.current = null;
           connectedConvRef.current = null;
         }
@@ -162,16 +210,18 @@ export function useDelegateStreaming({
     };
 
     ws.onerror = (err) => {
+      clearTimeout(connectTimer);
       console.warn('📡 DELEGATE_STREAM: Error:', err);
     };
 
     return () => {
       if (staleTimer) clearTimeout(staleTimer);
+      clearTimeout(connectTimer);
       ws.close();
       connectedConvRef.current = null;
     };
-    // conversations dep handles terminal-status cleanup via delegateMeta.status changes
-  }, [conversationId, conversations]);
+    // delegateKey changes only when this conversation's delegate status changes
+  }, [delegateKey]);
 
   // ------------------------------------------------------------------
   // Sibling delegate connections: when viewing the orchestrator (or any
@@ -180,10 +230,25 @@ export function useDelegateStreaming({
   // ------------------------------------------------------------------
   useEffect(() => {
     const conv = conversations.find(c => c.id === conversationId);
-    const planId = (conv?.delegateMeta as any)?.plan_id;
+    if (!conv?.delegateMeta) return;
+    
+    const planId = (conv.delegateMeta as any)?.plan_id;
     if (!planId) return;
+    
+    // Don't open sibling connections for terminal delegate conversations.
+    // The user is reviewing completed/failed work — no live data to stream.
+    const myStatus = (conv.delegateMeta as any)?.status;
+    const isTerminal = myStatus === 'crystal' || myStatus === 'failed' || myStatus === 'interrupted';
+    if (isTerminal && (conv.delegateMeta as any)?.role !== 'orchestrator') {
+      // Close any existing sibling connections
+      const siblingMap = siblingWsRef.current;
+      for (const [id, ws] of siblingMap.entries()) {
+        ws.close();
+        siblingMap.delete(id);
+      }
+      return;
+    }
 
-    // Find all running delegates in this plan that aren't the viewed conversation
     const siblings = conversations.filter(c => {
       const dm = c.delegateMeta as any;
       return dm?.plan_id === planId
@@ -204,9 +269,10 @@ export function useDelegateStreaming({
       }
     }
 
-    // Open connections for newly-running delegates
+    // Open connections for newly-running delegates (skip if already attempted)
     for (const sib of siblings) {
-      if (siblingMap.has(sib.id)) continue;
+      if (siblingMap.has(sib.id) || siblingConnectedIdsRef.current.has(sib.id)) continue;
+      siblingConnectedIdsRef.current.add(sib.id);
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${protocol}//${window.location.host}/ws/delegate-stream/${sib.id}`;
@@ -261,6 +327,8 @@ export function useDelegateStreaming({
         removeStreamingConversation(id);
       }
       siblingMap.clear();
+      siblingConnectedIdsRef.current.clear();
     };
-  }, [conversationId, conversations]);
+    // siblingKey changes only when sibling delegate statuses change
+  }, [siblingKey]);
 }

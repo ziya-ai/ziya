@@ -439,7 +439,11 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
             </Space>
           }
           name={["temperature"]}
-          extra={`Current: ${sliderValues.temperature}`}
+          extra={
+            <Text type="secondary" style={{ fontSize: '12px' }}>
+              Current: {sliderValues.temperature} — Lower values produce focused, deterministic responses. Higher values increase creativity and variation.
+            </Text>
+          }
         >
           <Slider
             min={tempLimits.min}
@@ -460,7 +464,11 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
               </span>
             </Space>}
             name="top_k"
-            extra={`Current: ${sliderValues.top_k}`}
+            extra={
+              <Text type="secondary" style={{ fontSize: '12px' }}>
+                Current: {sliderValues.top_k} — Limits token choices per step. Lower values (1–15) give precise output; higher values allow more diverse responses.
+              </Text>
+            }
           >
             <Slider min={topKLimits.min} max={topKLimits.max} step={5} tooltip={{ formatter: value => `${value}` }} />
           </Form.Item>

@@ -1226,7 +1226,7 @@ class ConversationDB implements DB {
             return [];
         }
 
-        const { caseSensitive = false, maxSnippetLength = 150 } = options;
+        const { caseSensitive = false, maxSnippetLength = 150, projectId } = options;
         const searchTerm = caseSensitive ? query : query.toLowerCase();
 
         try {
@@ -1234,9 +1234,13 @@ class ConversationDB implements DB {
             const conversations = await this.getConversations();
             const activeConversations = conversations.filter(conv => conv.isActive !== false);
 
+            // Filter by project if requested
+            const filteredConversations = projectId
+                ? activeConversations.filter(conv => conv.projectId === projectId)
+                : activeConversations;
             const results: SearchResult[] = [];
 
-            for (const conv of activeConversations) {
+            for (const conv of filteredConversations) {
                 const matches: MessageMatch[] = [];
 
                 // Search through conversation title
@@ -1301,6 +1305,7 @@ class ConversationDB implements DB {
                         conversationId: conv.id,
                         conversationTitle: conv.title,
                         folderId: conv.folderId,
+                        projectId: conv.projectId,
                         matches,
                         totalMatches: matches.length + (titleMatches ? 1 : 0),
                         lastAccessedAt: conv.lastAccessedAt || 0

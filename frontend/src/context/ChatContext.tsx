@@ -1,4 +1,5 @@
 import React, { createContext, ReactNode, useContext, useState, useEffect, Dispatch, SetStateAction, useRef, useCallback, useMemo } from 'react';
+import { StreamingProvider } from './StreamingContext';
 import { Conversation, Message, ConversationFolder } from "../utils/types";
 import { v4 as uuidv4 } from "uuid";
 import { db } from '../utils/db';
@@ -55,6 +56,7 @@ interface ChatContext {
     setConversations: Dispatch<SetStateAction<Conversation[]>>;
     conversations: Conversation[];
     isLoadingConversation: boolean;
+    isProjectSwitching: boolean;
     currentConversationId: string;
     streamingConversations: Set<string>;
     addStreamingConversation: (id: string) => void;
@@ -114,253 +116,20 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [isStreaming, setIsStreaming] = useState(false);
     const [streamedContentMap, setStreamedContentMap] = useState(() => new Map<string, string>());
     const [reasoningContentMap, setReasoningContentMap] = useState(() => new Map<string, string>());
+    const [isTopToBottom, setIsTopToBottom] = useState<boolean>(() => {
+        try { return JSON.parse(localStorage.getItem('ZIYA_TOP_DOWN_MODE') || 'true'); } catch { return true; }
+    });
     const [isStreamingAny, setIsStreamingAny] = useState(false);
     const [processingStates, setProcessingStates] = useState(() => new Map<string, ConversationProcessingState>());
     const [conversations, setConversations] = useState<Conversation[]>([]);
+    const [streamingConversations, setStreamingConversations] = useState<Set<string>>(() => new Set());
     const [isLoadingConversation, setIsLoadingConversation] = useState(false);
-    const [currentConversationId, setCurrentConversationId] = useState<string>('');
-    const currentConversationRef = useRef<string>(currentConversationId);
-    const [currentMessages, setCurrentMessages] = useState<Message[]>([]);
-
-    /**
-     * Tag any IndexedDB conversations that lack a projectId with the given projectId.
-     * Returns the full (mutated) conversation list after persisting the migration.
-     * Both INIT_SYNC and PROJECT_SWITCH call this to avoid duplicating migration logic.
-     */
-    const migrateUntaggedConversations = useCallback(async (
-        allConversations: Conversation[],
-        projectId: string
-    ): Promise<Conversation[]> => {
-        const untagged = allConversations.filter(c => !c.projectId);
-        if (untagged.length === 0) return allConversations;
-
-        console.log(`🔄 MIGRATION: Tagging ${untagged.length} conversations without projectId → project "${projectId}"`);
-        const migrated = allConversations.map(c => {
-            if (!c.projectId) {
-                return { ...c, projectId, _version: Date.now() };
-            }
-            return c;
-        });
-
-        await db.saveConversations(migrated);
-        console.log(`✅ MIGRATION: Tagged ${untagged.length} conversations`);
-        return migrated;
-    }, []);
-
-    // Listen for project switch - reload project-specific conversations
-    useEffect(() => {
-        const handleProjectSwitch = async (event: CustomEvent) => {
-            const { projectId, projectPath, projectName } = event.detail;
-            console.log('💬 PROJECT_SWITCH: Loading conversations for project:', projectName, projectId);
-
-            try {
-                // Mark this project as synced so the init effect doesn't re-run
-                serverSyncedForProject.current = projectId;
-
-                // 1. Load from SERVER first (source of truth across ports)
-                let serverChats: syncApi.ServerChat[] = [];
-                try {
-                    // Full data needed when switching projects — include message bodies
-                    serverChats = await syncApi.listChats(projectId, true);
-                    console.log(`📡 PROJECT_SWITCH: Got ${serverChats.length} chats from server`);
-                } catch (e) {
-                    console.warn('📡 PROJECT_SWITCH: Server unavailable, falling back to IndexedDB:', e);
-                }
-
-                // 2. Load from IndexedDB (local cache)
-                let allConversations: Conversation[];
-                try {
-                    allConversations = await db.getConversations();
-                } catch (dbErr) {
-                    console.warn('📡 PROJECT_SWITCH: IndexedDB unavailable, using server data only:', dbErr);
-                    allConversations = [];
-                }
-
-                // 3. Migrate untagged conversations (shared helper)
-                allConversations = await migrateUntaggedConversations(allConversations, projectId);
-
-                // 4. Merge: server chats win, then add local-only conversations
-                const localProjectConvs = allConversations.filter(c => c.projectId === projectId || c.isGlobal);
-                const serverIdSet = new Set(serverChats.map(c => c.id));
-                const localOnly = localProjectConvs.filter(c => !serverIdSet.has(c.id));
-
-                // Also include global server chats that may belong to other projects
-                const globalServerChats = serverChats.filter((sc: any) => sc.isGlobal);
-                // Convert server chats to frontend Conversation shape
-                const serverAsConversations = serverChats.map((sc: any) => ({
-                    ...sc,
-                    projectId: sc.projectId || projectId,
-                    folderId: sc.groupId || sc.folderId || null,
-                    delegateMeta: sc.delegateMeta || null,
-                    lastAccessedAt: sc.lastAccessedAt || sc.lastActiveAt,
-                    isActive: sc.isActive !== false,
-                    _version: sc._version || Date.now(),
-                }));
-
-                const mergedConversations = [...serverAsConversations, ...localOnly];
-
-                // 5. Push local-only conversations to server (async, non-blocking)
-                const activeLocalOnly = localOnly.filter(c => c.isActive !== false);
-                if (activeLocalOnly.length > 0) {
-                    console.log(`📡 SYNC: Pushing ${activeLocalOnly.length} local-only conversations to server`);
-                    const chatsToSync = activeLocalOnly.map(c => syncApi.conversationToServerChat(c, projectId));
-                    syncApi.bulkSync(projectId, chatsToSync).then(result => {
-                        console.log('📡 SYNC result:', result);
-                    }).catch(e => console.warn('📡 SYNC failed (non-fatal):', e));
-                }
-
-                let allFolders: ConversationFolder[];
-                try {
-                    allFolders = await db.getFolders();
-                } catch (dbErr) {
-                    console.warn('📡 PROJECT_SWITCH: IndexedDB folders unavailable:', dbErr);
-                    allFolders = [];
-                }
-                // Merge server folders so TaskPlan folders appear immediately
-                // (they may not be in IndexedDB yet if the page was refreshed)
-                let serverFolders: ConversationFolder[] = [];
-                try {
-                    const { listServerFolders } = await import('../api/folderSyncApi');
-                    serverFolders = await listServerFolders(projectId);
-                } catch (e) {
-                    console.warn('📡 PROJECT_SWITCH: Server folders unavailable:', e);
-                }
-
-                const folderMap = new Map<string, ConversationFolder>();
-                allFolders.forEach(f => folderMap.set(f.id, f));
-                serverFolders.forEach(sf => {
-                    const local = folderMap.get(sf.id);
-                    if (serverFolderWins(local, sf)) {
-                        folderMap.set(sf.id, { ...sf, projectId: sf.projectId || projectId });
-                    }
-                });
-                const mergedAllFolders = Array.from(folderMap.values());
-                const projectFolders = mergedAllFolders.filter(f => f.projectId === projectId || f.isGlobal);
-
-                // Persist any new server folders to IndexedDB
-                const newServerFolders = serverFolders.filter(sf => !allFolders.some(f => f.id === sf.id));
-                if (newServerFolders.length > 0) {
-                    Promise.all(newServerFolders.map(f => db.saveFolder({ ...f, projectId: f.projectId || projectId }))).catch(
-                        e => console.warn('📡 PROJECT_SWITCH: Failed to persist server folders:', e)
-                    );
-                }
-
-                console.log(`📊 PROJECT_SWITCH: ${mergedConversations.length} conversations (${serverChats.length} server, ${localOnly.length} local-only), ${projectFolders.length} folders`);
-
-                // Update state with filtered data
-                setConversations(mergedConversations);
-                setFolders(projectFolders);
-
-                // Restore the tab's own conversation for this project, or pick
-                // the most recent if we don't have one yet.  Never force-switch
-                // to another tab/window's most-recent conversation.
-                const savedId = getTabState('ZIYA_CURRENT_CONVERSATION_ID');
-                const restoredConv = savedId
-                    ? mergedConversations.find(c => c.id === savedId)
-                    : null;
-
-                if (restoredConv) {
-                    setCurrentConversationId(restoredConv.id);
-                    setCurrentMessages(restoredConv.messages);
-                    console.log(`✅ PROJECT_SWITCH: Restored tab's own conversation "${restoredConv.title}"`);
-                } else if (mergedConversations.length > 0) {
-                    // No saved conversation for this tab — use most recent
-                    // only as a fallback (e.g., first time opening the project).
-                    const mostRecent = mergedConversations.reduce((a, b) =>
-                        (b.lastAccessedAt || 0) > (a.lastAccessedAt || 0) ? b : a
-                    );
-                    setCurrentConversationId(mostRecent.id);
-                    setCurrentMessages(mostRecent.messages);
-                    console.log(`✅ PROJECT_SWITCH: No saved conversation, using most recent "${mostRecent.title}"`);
-                } else {
-                    const newConversationId = uuidv4();
-                    const newConversation: Conversation = {
-                        id: newConversationId,
-                        title: 'New Conversation',
-                        projectId,
-                        messages: [],
-                        lastAccessedAt: Date.now(),
-                        isActive: true,
-                        _version: Date.now(),
-                        hasUnreadResponse: false
-                    };
-                    setConversations(prev => [...prev, newConversation]);
-                    setCurrentConversationId(newConversationId);
-                    setCurrentMessages([]);
-                    console.log('✅ PROJECT_SWITCH: No conversations found, created new one');
-                }
-            } catch (error) {
-                console.error('❌ PROJECT_SWITCH: Failed to load project data:', error);
-                // Fallback: create fresh conversation
-                const newConversationId = uuidv4();
-                setCurrentConversationId(newConversationId);
-                setCurrentMessages([]);
-            }
-
-            // Clear streaming state
-            setStreamedContentMap(new Map());
-            setReasoningContentMap(new Map());
-            setProcessingStates(new Map());
-
-            // CRITICAL FIX: Restore file selections for the switched-to project
-            const savedSelections = projectFileSelections.current.get(projectId);
-            if (savedSelections && savedSelections.size > 0) {
-                console.log(`📂 Restoring ${savedSelections.size} file selections for project ${projectName}`);
-                // Dispatch event to FolderContext to restore selections
-                window.dispatchEvent(new CustomEvent('restoreProjectFileSelections', {
-                    detail: { projectId, selections: Array.from(savedSelections) }
-                }));
-            }
-        };
-
-        window.addEventListener('projectSwitched', handleProjectSwitch as EventListener);
-        return () => window.removeEventListener('projectSwitched', handleProjectSwitch as EventListener);
-    }, [currentProject?.id]);
-
-    // CRITICAL: Persist currentConversationId to localStorage whenever it changes
-    useEffect(() => {
-        if (isEphemeralMode) return;
-        setTabState('ZIYA_CURRENT_CONVERSATION_ID', currentConversationId);
-    }, [currentConversationId, isEphemeralMode]);
-
-    // CRITICAL FIX: Persist the CURRENT conversation to localStorage immediately
-    // This ensures the active conversation survives refresh even if IndexedDB write is pending
-    useEffect(() => {
-        if (isEphemeralMode) return;
-    }, [currentConversationId, conversations, isEphemeralMode]);
-
-    // Track if we've initialized ephemeral mode
-    const ephemeralInitialized = useRef(false);
-
-    // CRITICAL: Clear persisted state when ephemeral mode is detected
-    useEffect(() => {
-        if (isEphemeralMode && !ephemeralInitialized.current) {
-            console.log('🔒 EPHEMERAL: Clearing persisted conversation state');
-            ephemeralInitialized.current = true;
-
-            // Clear all conversation-related localStorage
-            try {
-                localStorage.removeItem('ZIYA_CURRENT_CONVERSATION_ID');
-                localStorage.removeItem('ZIYA_CONVERSATION_BACKUP');
-                localStorage.removeItem('ZIYA_CURRENT_CONVERSATION_DATA');
-                localStorage.removeItem('ZIYA_EMERGENCY_CONVERSATION_RECOVERY');
-                localStorage.removeItem('ZIYA_CONVERSATION_BACKUP_WITH_RECOVERY');
-            } catch (e) {
-                console.warn('Failed to clear localStorage:', e);
-            }
-
-            // Force a fresh conversation ID
-            setCurrentConversationId(uuidv4());
-        }
-    }, [isEphemeralMode]);
-
-    const [streamingConversations, setStreamingConversations] = useState<Set<string>>(new Set());
-    const [isTopToBottom, setIsTopToBottom] = useState(() => {
-        const saved = localStorage.getItem('ZIYA_TOP_DOWN_MODE');
-        return saved ? JSON.parse(saved) : true;
-    });
+    const [isProjectSwitching, setIsProjectSwitching] = useState(false);
     const [isInitialized, setIsInitialized] = useState(false);
     const [userHasScrolled, setUserHasScrolled] = useState(false);
+    const [currentConversationId, setCurrentConversationId] = useState<string>('');
+    const [currentMessages, setCurrentMessages] = useState<Message[]>([]);
+    const currentConversationRef = useRef<string>('');
     const conversationIdRestored = useRef(false);
 
     // Restore conversation ID from localStorage ONLY if not in ephemeral mode
@@ -1306,19 +1075,17 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             console.log('🔄 Loading conversation:', conversationId);
 
-            // Don't remove streaming for the conversation we're switching away from
-            // First update conversations in memory
-            // Mark current conversation as read
-            setConversations(prevConversations => {
-                const updatedConversations = prevConversations.map(conv =>
-                    conv.id === currentConversationId
+            // Mark current conversation as read — cosmetic flag only.
+            // Do NOT trigger queueSave here; persisting 456 conversations
+            // to IndexedDB just to flip hasUnreadResponse was the main
+            // source of 35-second freezes on conversation switch.
+            // The flag will be persisted on the next substantive save.
+            setConversations(prev =>
+                prev.map(conv =>
+                    conv.id === conversationId
                         ? { ...conv, hasUnreadResponse: false }
-                        : conv);
-
-                // Then persist to database
-                queueSave(updatedConversations, { changedIds: [currentConversationId] }).catch(console.error);
-                return updatedConversations;
-            });
+                        : conv)
+            );
 
             // Set the current conversation ID after updating state
             // Remove artificial delay that might be blocking
@@ -1334,32 +1101,38 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             // Delegate conversations are created server-side. Their messages
             // may not be in IndexedDB yet. Fetch fresh data on demand.
-            const conv = conversations.find(c => c.id === conversationId);
-            if (conv?.delegateMeta) {
-                try {
-                    const pid = conv.projectId || currentProject?.id;
-                    if (pid) {
-                        const serverChat = await syncApi.getChat(pid, conversationId);
-                        if (serverChat && serverChat.messages && serverChat.messages.length > 0) {
-                            const freshMessages = serverChat.messages;
-                            setConversations(prev => prev.map(c =>
-                                c.id === conversationId
-                                    ? { ...c, messages: freshMessages, delegateMeta: serverChat.delegateMeta ?? c.delegateMeta }
-                                    : c
-                            ));
-                            await db.saveConversations(conversations.map(c =>
-                                c.id === conversationId ? { ...c, messages: freshMessages } : c
-                            ));
-                        }
-                    }
-                } catch (err) {
-                    console.warn('Failed to fetch delegate conversation from server:', err);
+            const conv = conversationsRef.current.find(c => c.id === conversationId);
+            const delegateStatus = (conv?.delegateMeta as any)?.status;
+            const isTerminalDelegate = delegateStatus === 'crystal'
+                || delegateStatus === 'failed'
+                || delegateStatus === 'interrupted';
+            // Skip the blocking server fetch for terminal delegates — their
+            // messages are already persisted in IndexedDB by delegate polling.
+            // For running delegates, fetch in the BACKGROUND so the
+            // conversation loads instantly from IndexedDB.  The blocking
+            // await was causing multi-minute UI freezes because it held
+            // setIsLoadingConversation(true) while the server responded,
+            // and the state update on completion cascaded through effects.
+            if (conv?.delegateMeta && !isTerminalDelegate) {
+                const pid = conv.projectId || currentProject?.id;
+                if (pid) {
+                    // Fire-and-forget: don't block conversation load
+                    syncApi.getChat(pid, conversationId).then(serverChat => {
+                        if (!serverChat?.messages?.length) return;
+                        setConversations(prev => prev.map(c =>
+                            c.id === conversationId
+                                ? { ...c, messages: serverChat.messages, delegateMeta: serverChat.delegateMeta ?? c.delegateMeta }
+                                : c
+                        ));
+                    }).catch(err => {
+                        console.warn('Background delegate fetch failed:', err);
+                    });
                 }
             }
 
             // Set the current folder ID based on the conversation's folder
             // This should not block conversation loading
-            const conversation = conversations.find(c => c.id === conversationId);
+            const conversation = conversationsRef.current.find(c => c.id === conversationId);
             if (conversation) {
                 // Set folder ID asynchronously to not block message loading
                 setTimeout(() => {
@@ -1410,15 +1183,16 @@ export function ChatProvider({ children }: ChatProviderProps) {
             setStreamedContentMap(prev => {
                 const next = new Map(prev);
                 // Keep streaming content for active streaming conversations
+                const streaming = streamingConversationsRef.current;
                 for (const [id, content] of prev) {
-                    if (!streamingConversations.has(id)) {
+                    if (!streaming.has(id)) {
                         next.delete(id);
                     }
                 }
                 return next;
             });
         }
-    }, [currentConversationId, conversations, streamingConversations, queueSave, isTopToBottom, currentProject?.id]);
+    }, [currentConversationId, streamingConversations, isTopToBottom, currentProject?.id]);
 
     // Load conversation and scroll to specific message
     const loadConversationAndScrollToMessage = useCallback(async (conversationId: string, messageIndex: number) => {
@@ -1675,6 +1449,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         try {
             await db.init();
             // Fast path: load shells (metadata only, no message bodies)
+            // GC pass runs below after shells are loaded.
             // Messages for the active conversation are loaded below.
             const savedConversations = await db.getConversationShells();
             console.log('✅ Setting conversation shells immediately:', savedConversations.length);
@@ -1685,8 +1460,26 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 setConversations(savedConversations);
             }
 
-            // CRITICAL: Verify the restored currentConversationId exists in loaded conversations
+            // Immediate startup GC: purge stale empty "New Conversation" entries
+            // that accumulated from previous sessions.  Uses a shorter threshold
+            // (5 min) than the periodic GC (1 hour) because at startup we know
+            // no human is mid-thought in an empty conversation from a prior run.
+            const STARTUP_GC_MAX_AGE_MS = 5 * 60 * 1000; // 5 minutes
+            const protectedAtStartup = new Set<string>();
+            // Protect whichever conversation we're about to restore
             const savedCurrentId = getTabState('ZIYA_CURRENT_CONVERSATION_ID');
+            if (savedCurrentId) protectedAtStartup.add(savedCurrentId);
+
+            const { kept: gcKept, purgedIds: gcPurged } = gcEmptyConversations(
+                savedConversations, protectedAtStartup, STARTUP_GC_MAX_AGE_MS
+            );
+            if (gcPurged.length > 0) {
+                console.log(`🗑️ Startup GC: removing ${gcPurged.length} stale empty conversation(s)`);
+                setConversations(gcKept);
+                db.saveConversations(gcKept).catch(e => console.warn('Startup GC save failed:', e));
+            }
+
+            // CRITICAL: Verify the restored currentConversationId exists in loaded conversations
             if (savedCurrentId && !savedConversations.some(conv => conv.id === savedCurrentId)) {
                 // Saved conversation ID not found in IndexedDB.
                 // INIT_SYNC will merge from server shortly; for now use most recent local.
@@ -1849,6 +1642,31 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
         const projectId = currentProject.id;
 
+        // Only show the switching spinner when the PROJECT actually changes,
+        // not when isServerReachable or other deps change.
+        if (serverSyncedForProject.current !== projectId) {
+            setIsProjectSwitching(true);
+            console.log('🔄 PROJECT_SWITCH: Set isProjectSwitching = true for', projectId);
+        }
+
+        // Migrate conversations without a projectId to the current project
+        const migrateUntaggedConversations = async (conversations: Conversation[], projectId: string): Promise<Conversation[]> => {
+            const untagged = conversations.filter(c => !c.projectId && c.isActive !== false);
+            if (untagged.length === 0) return conversations;
+
+            console.log(`🔄 MIGRATION: Tagging ${untagged.length} conversations with project ${projectId}`);
+            const migrated = conversations.map(c => {
+                if (!c.projectId && c.isActive !== false) {
+                    return { ...c, projectId, _version: Date.now() };
+                }
+                return c;
+            });
+
+            await db.saveConversations(migrated);
+            console.log('✅ MIGRATION: Conversations tagged with projectId');
+            return migrated;
+        };
+
         const syncWithServer = async () => {
             // Skip sync entirely when server is known to be unreachable.
             // ServerStatusContext already polls /api/config and will flip
@@ -1948,6 +1766,14 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     if (!local) {
                         // Server-only conversation — use full-fetched data if available
                         const full = fullFetchMap.get(sc.id);
+
+                        // Skip empty "New Conversation" shells from the server.
+                        // These are stale empties that the GC purged locally;
+                        // re-importing them defeats the cleanup.
+                        const isEmptyShell = sc.title === 'New Conversation'
+                            && (!full?.messages || full.messages.length === 0);
+                        if (isEmptyShell) return;
+
                         if (full) {
                             mergedMap.set(sc.id, {
                                 ...full,
@@ -2127,12 +1953,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     console.warn('📡 SERVER_SYNC: Folder sync failed:', e);
                 }
 
-            } catch (e) {
-                console.debug('📡 SERVER_SYNC: Failed (server may be down):', e);
+            } catch (syncError) {
+                console.error('📡 SERVER_SYNC: Error syncing with server:', syncError);
+            } finally {
+                setIsProjectSwitching(false);
             }
         };
-
-        // Run immediately on first load
         syncWithServer();
 
         // Poll every 30 seconds to pick up changes from other browser instances
@@ -2163,6 +1989,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
             }
         };
 
+        // Run first GC cycle immediately (catches anything the startup GC
+        // missed, e.g. conversations created during the init settle window).
+        runGc();
         const intervalId = setInterval(runGc, GC_INTERVAL_MS);
         return () => clearInterval(intervalId);
     }, [isInitialized, isEphemeralMode, currentConversationId, streamingConversations, queueSave]);
@@ -2701,6 +2530,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         moveConversationToFolder,
         dbError,
         isLoadingConversation,
+        isProjectSwitching,
         toggleMessageMute,
         editingMessageIndex,
         setEditingMessageIndex,
@@ -2824,7 +2654,18 @@ export function ChatProvider({ children }: ChatProviderProps) {
         };
     }, [conversations, currentConversationId]);
 
-    return <chatContext.Provider value={value}>{children}</chatContext.Provider>;
+    return (
+        <chatContext.Provider value={value}>
+            <StreamingProvider
+                isStreaming={isStreaming}
+                isStreamingAny={isStreamingAny}
+                currentConversationId={currentConversationId}
+                streamingConversations={streamingConversations}
+            >
+                {children}
+            </StreamingProvider>
+        </chatContext.Provider>
+    );
 }
 
 export function useChatContext(): ChatContext {

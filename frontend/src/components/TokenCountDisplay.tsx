@@ -86,6 +86,12 @@ export const TokenCountDisplay = memo(() => {
     const builtinServerNames = ['time', 'shell'];
 
     const lastMuteSignatureRef = useRef<string>('');
+
+    // Project-scoped headers so the backend resolves the correct AST enhancer
+    const getProjectHeaders = (): Record<string, string> => {
+        const path = (window as any).__ZIYA_CURRENT_PROJECT_PATH__;
+        return path ? { 'X-Project-Root': path } : {};
+    };
     const lastTokenCalcRunRef = useRef<number>(0);
     const [cacheHealth, setCacheHealth] = useState<any>(null);
     const [showTelemetryModal, setShowTelemetryModal] = useState(false);
@@ -100,7 +106,9 @@ export const TokenCountDisplay = memo(() => {
     // Fetch AST resolutions data
     const fetchAstResolutions = useCallback(async () => {
         try {
-            const response = await fetch('/api/ast/resolutions');
+            const response = await fetch('/api/ast/resolutions', {
+                headers: getProjectHeaders(),
+            });
             if (response.ok) {
                 const data = await response.json();
                 console.log('Fetched AST resolutions:', data.resolutions);
@@ -128,7 +136,9 @@ export const TokenCountDisplay = memo(() => {
 
         const checkAstEnabled = async () => {
             try {
-                const response = await fetch('/api/ast/status');
+                const response = await fetch('/api/ast/status', {
+                    headers: getProjectHeaders(),
+                });
                 if (response.ok) {
                     const data = await response.json();
                     if (isMounted) {
@@ -149,7 +159,9 @@ export const TokenCountDisplay = memo(() => {
                     if (isMounted && data.enabled === true && data.is_indexing && !data.is_complete) {
                         const pollForCompletion = setInterval(async () => {
                             try {
-                                const pollResponse = await fetch('/api/ast/status');
+                                const pollResponse = await fetch('/api/ast/status', {
+                                    headers: getProjectHeaders(),
+                                });
                                 if (pollResponse.ok) {
                                     const pollData = await pollResponse.json();
                                     if (isMounted && pollData.token_count !== undefined) {
@@ -271,6 +283,7 @@ export const TokenCountDisplay = memo(() => {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
+                    ...getProjectHeaders(),
                 },
                 body: JSON.stringify({ resolution: newResolution }),
             });
@@ -800,7 +813,7 @@ export const TokenCountDisplay = memo(() => {
     }
     
     // Add AST if enabled
-    if (astEnabled) {
+    if (astEnabled && astTokenCount > 0) {
         const astComponent = astResolutionsLoaded ? (
             <Dropdown
                 menu={{ items: astMenuItems, onClick: handleMenuClick }}
