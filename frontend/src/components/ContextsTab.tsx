@@ -24,6 +24,7 @@ export const ContextsTab: React.FC = () => {
     removeSkillFromLens,
     createContext,
     createSkill,
+    updateSkill,
     deleteSkill,
     tokenInfo,
   } = useProject();
@@ -317,6 +318,7 @@ export const ContextsTab: React.FC = () => {
           addSkillToLens={addSkillToLens}
           removeSkillFromLens={removeSkillFromLens}
           createSkill={createSkill}
+          updateSkill={updateSkill}
           deleteSkill={deleteSkill}
           searchQuery={searchQuery}
         />

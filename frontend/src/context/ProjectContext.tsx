@@ -86,21 +86,62 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [isLoadingSkills, setIsLoadingSkills] = useState(false);
   
-  // Active lens state
-  const [activeContextIds, setActiveContextIds] = useState<string[]>([]);
-  const [activeSkillIds, _setActiveSkillIds] = useState<string[]>(() => {
+  // ── Lens persistence helpers ──────────────────────────────────────
+  // Store active context/skill IDs per project in localStorage so they
+  // survive page reloads AND project switches.
+  const _lensKey = (projectId: string) => `ZIYA_LENS_${projectId}`;
+
+  const _saveLens = useCallback((projectId: string, ctxIds: string[], skillIds: string[]) => {
     try {
-      const saved = sessionStorage.getItem('ZIYA_ACTIVE_SKILL_IDS');
-      return saved ? JSON.parse(saved) : [];
-    } catch { return []; }
-  });
+      localStorage.setItem(_lensKey(projectId), JSON.stringify({ contextIds: ctxIds, skillIds }));
+    } catch { /* quota exceeded — non-fatal */ }
+  }, []);
+
+  const _loadLens = useCallback((projectId: string): { contextIds: string[]; skillIds: string[] } => {
+    try {
+      const raw = localStorage.getItem(_lensKey(projectId));
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return {
+          contextIds: Array.isArray(parsed.contextIds) ? parsed.contextIds : [],
+          skillIds: Array.isArray(parsed.skillIds) ? parsed.skillIds : [],
+        };
+      }
+    } catch { /* corrupt data — start fresh */ }
+    return { contextIds: [], skillIds: [] };
+  }, []);
+
+  // Active lens state
+  const [activeContextIds, _setActiveContextIds] = useState<string[]>([]);
+  const [activeSkillIds, _setActiveSkillIds] = useState<string[]>([]);
+
+  // Wrapped setters that auto-persist to localStorage
+  const setActiveContextIds = useCallback((ids: string[] | ((prev: string[]) => string[])) => {
+    _setActiveContextIds(prev => {
+      const next = typeof ids === 'function' ? ids(prev) : ids;
+      // Persist (needs current project ID — read from ref to avoid stale closure)
+      const pid = (window as any).__ZIYA_CURRENT_PROJECT_ID__;
+      if (pid) _saveLens(pid, next, _activeSkillIdsRef.current);
+      return next;
+    });
+  }, [_saveLens]);
+
   const setActiveSkillIds = useCallback((ids: string[] | ((prev: string[]) => string[])) => {
     _setActiveSkillIds(prev => {
       const next = typeof ids === 'function' ? ids(prev) : ids;
-      try { sessionStorage.setItem('ZIYA_ACTIVE_SKILL_IDS', JSON.stringify(next)); } catch {}
+      const pid = (window as any).__ZIYA_CURRENT_PROJECT_ID__;
+      if (pid) _saveLens(pid, _activeContextIdsRef.current, next);
       return next;
     });
-  }, []);
+  }, [_saveLens]);
+
+  // Refs to let the setters read each other's current value without
+  // creating circular dependencies.
+  const _activeContextIdsRef = React.useRef(activeContextIds);
+  const _activeSkillIdsRef = React.useRef(activeSkillIds);
+  React.useEffect(() => { _activeContextIdsRef.current = activeContextIds; }, [activeContextIds]);
+  React.useEffect(() => { _activeSkillIdsRef.current = activeSkillIds; }, [activeSkillIds]);
+
   const [additionalFiles, setAdditionalFiles] = useState<string[]>([]);
   const [additionalPrompt, setAdditionalPrompt] = useState<string | null>(null);
   
@@ -112,6 +153,17 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // Initialize - load current project
   useEffect(() => {
     const init = async () => {
+      // Migrate from old sessionStorage key (one-time)
+      try {
+        const legacySkills = sessionStorage.getItem('ZIYA_ACTIVE_SKILL_IDS');
+        if (legacySkills) {
+          // Will be merged into the project-scoped key once we know the project ID
+          (window as any).__ZIYA_LEGACY_SKILL_IDS__ = JSON.parse(legacySkills);
+          sessionStorage.removeItem('ZIYA_ACTIVE_SKILL_IDS');
+          console.log('ProjectContext: Migrated legacy skill IDs from sessionStorage');
+        }
+      } catch {}
+
       try {
         setIsLoadingProject(true);
         
@@ -121,6 +173,24 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         const project = await projectApi.getCurrentProject();
         console.log('ProjectContext: Got current project:', project);
         setCurrentProject(project);
+        // Expose project ID globally for lens persistence
+        (window as any).__ZIYA_CURRENT_PROJECT_ID__ = project.id;
+        
+        // Restore lens state for this project
+        const savedLens = _loadLens(project.id);
+        // Merge any legacy skill IDs from the old sessionStorage migration
+        const legacySkills = (window as any).__ZIYA_LEGACY_SKILL_IDS__;
+        if (legacySkills && Array.isArray(legacySkills)) {
+          const merged = new Set([...savedLens.skillIds, ...legacySkills]);
+          savedLens.skillIds = Array.from(merged);
+          delete (window as any).__ZIYA_LEGACY_SKILL_IDS__;
+          console.log('ProjectContext: Merged legacy skill IDs:', legacySkills);
+        }
+        if (savedLens.contextIds.length > 0 || savedLens.skillIds.length > 0) {
+          console.log('ProjectContext: Restoring lens state:', savedLens);
+          _setActiveContextIds(savedLens.contextIds);
+          _setActiveSkillIds(savedLens.skillIds);
+        }
         
         const allProjects = await projectApi.listProjects();
         console.log('ProjectContext: Got all projects:', allProjects.length);
@@ -138,6 +208,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // Expose current project path globally for FolderContext (avoids circular hook dependency)
   useEffect(() => {
     (window as any).__ZIYA_CURRENT_PROJECT_PATH__ = currentProject?.path || null;
+    (window as any).__ZIYA_CURRENT_PROJECT_ID__ = currentProject?.id || null;
   }, [currentProject?.path]);
   
   // Load contexts when project changes
@@ -307,16 +378,25 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setIsLoadingProject(true);
     
     try {
+      // Save current lens state for the project we're leaving
+      const leavingId = (window as any).__ZIYA_CURRENT_PROJECT_ID__;
+      if (leavingId) {
+        _saveLens(leavingId, _activeContextIdsRef.current, _activeSkillIdsRef.current);
+      }
+
       // 1. Load the project data FIRST
       const project = await projectApi.getProject(projectId);
       setCurrentProject(project);
       
       // 2. Update global path SYNCHRONOUSLY (before any events)
       (window as any).__ZIYA_CURRENT_PROJECT_PATH__ = project.path;
+      (window as any).__ZIYA_CURRENT_PROJECT_ID__ = project.id;
       
-      // 3. Clear active lens
-      setActiveContextIds([]);
-      setActiveSkillIds([]);
+      // 3. Restore lens state for the project we're switching TO
+      const savedLens = _loadLens(project.id);
+      console.log(`ProjectContext: Restoring lens for project ${project.name}:`, savedLens);
+      _setActiveContextIds(savedLens.contextIds);
+      _setActiveSkillIds(savedLens.skillIds);
       setAdditionalFiles([]);
       setAdditionalPrompt(null);
       
@@ -520,6 +600,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setActiveSkillIds([]);
     setAdditionalFiles([]);
     setAdditionalPrompt(null);
+    // Also clear persisted state
+    const pid = (window as any).__ZIYA_CURRENT_PROJECT_ID__;
+    if (pid) {
+      try { localStorage.removeItem(_lensKey(pid)); } catch {}
+    }
   }, []);
   
   const value = useMemo(() => ({

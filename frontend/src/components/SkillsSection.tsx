@@ -14,6 +14,7 @@ import { Input, Button, message, Tooltip } from 'antd';
 import {
   PlusOutlined,
   ImportOutlined,
+  EditOutlined,
   CodeOutlined,
   BookOutlined,
   FolderOutlined,
@@ -22,7 +23,7 @@ import {
   DeleteOutlined,
   RobotOutlined,
 } from '@ant-design/icons';
-import { Skill, SkillCreate } from '../types/skill';
+import { Skill, SkillCreate, SkillUpdate } from '../types/skill';
 import { useTheme } from '../context/ThemeContext';
 
 /* ------------------------------------------------------------------ */
@@ -131,16 +132,19 @@ interface Props {
   addSkillToLens: (id: string) => void;
   removeSkillFromLens: (id: string) => void;
   createSkill: (data: SkillCreate) => Promise<Skill>;
+  updateSkill: (id: string, updates: SkillUpdate) => Promise<void>;
   deleteSkill: (id: string) => Promise<void>;
   searchQuery: string;
 }
 
 export const SkillsSection: React.FC<Props> = ({
   skills, activeSkillIds, addSkillToLens, removeSkillFromLens,
-  createSkill, deleteSkill, searchQuery,
+  createSkill, updateSkill, deleteSkill, searchQuery,
 }) => {
   const { isDarkMode } = useTheme();
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValues, setEditValues] = useState<{ name: string; description: string; prompt: string }>({ name: '', description: '', prompt: '' });
   const [isCreating, setIsCreating] = useState(false);
   const [newSkill, setNewSkill] = useState({ name: '', description: '', prompt: '' });
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -221,6 +225,39 @@ export const SkillsSection: React.FC<Props> = ({
     } catch { message.error('Failed to create skill'); }
   };
 
+  const startEditing = (skill: Skill) => {
+    setEditingId(skill.id);
+    setEditValues({
+      name: skill.name,
+      description: skill.description,
+      prompt: skill.prompt,
+    });
+  };
+
+  const cancelEditing = () => {
+    setEditingId(null);
+    setEditValues({ name: '', description: '', prompt: '' });
+  };
+
+  const handleSaveEdit = async (skillId: string) => {
+    if (!editValues.name.trim() || !editValues.prompt.trim()) {
+      message.error('Name and prompt are required');
+      return;
+    }
+    try {
+      await updateSkill(skillId, {
+        name: editValues.name,
+        description: editValues.description,
+        prompt: editValues.prompt,
+      });
+      message.success(`Skill "${editValues.name}" updated`);
+      setEditingId(null);
+      setEditValues({ name: '', description: '', prompt: '' });
+    } catch (err: any) {
+      message.error(err?.message || 'Failed to update skill');
+    }
+  };
+
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -289,6 +326,7 @@ export const SkillsSection: React.FC<Props> = ({
   const renderCard = (skill: Skill) => {
     const level = getLevel(skill, activeSkillIds);
     const isExpanded = expandedId === skill.id;
+    const isEditing = editingId === skill.id;
     const isOff = level === 'off';
 
     return (
@@ -403,29 +441,74 @@ export const SkillsSection: React.FC<Props> = ({
             </div>
 
             {/* Prompt preview */}
-            <div style={{
-              background: t.promptBg, borderRadius: '4px', padding: '8px',
-              maxHeight: '100px', overflowY: 'auto',
-              fontFamily: 'monospace', fontSize: '10px', lineHeight: '1.4',
-              whiteSpace: 'pre-wrap', color: t.promptFg,
-            }}>
-              {skill.prompt || '(prompt loaded on activation)'}
-            </div>
+            {isEditing ? (
+              /* ---- Inline edit form ---- */
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <Input
+                  size="small"
+                  placeholder="Skill name..."
+                  value={editValues.name}
+                  onChange={e => setEditValues(p => ({ ...p, name: e.target.value }))}
+                  autoFocus
+                />
+                <Input
+                  size="small"
+                  placeholder="Short description..."
+                  value={editValues.description}
+                  onChange={e => setEditValues(p => ({ ...p, description: e.target.value }))}
+                />
+                <Input.TextArea
+                  placeholder="Instructions for the AI..."
+                  value={editValues.prompt}
+                  onChange={e => setEditValues(p => ({ ...p, prompt: e.target.value }))}
+                  rows={8}
+                  style={{ fontFamily: 'monospace', fontSize: '11px' }}
+                />
+                <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end' }}>
+                  <Button size="small" onClick={cancelEditing}>
+                    Cancel
+                  </Button>
+                  <Button size="small" type="primary" onClick={() => handleSaveEdit(skill.id)}>
+                    Save
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              /* ---- Read-only prompt preview ---- */
+              <div style={{
+                background: t.promptBg, borderRadius: '4px', padding: '8px',
+                maxHeight: '100px', overflowY: 'auto',
+                fontFamily: 'monospace', fontSize: '10px', lineHeight: '1.4',
+                whiteSpace: 'pre-wrap', color: t.promptFg,
+              }}>
+                {skill.prompt || '(prompt loaded on activation)'}
+              </div>
+            )}
 
             {/* Footer meta + actions */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px' }}>
               <span style={{ fontSize: '9px', color: t.textMuted }}>
                 {skill.tokenCount.toLocaleString()} tokens · {skill.source || 'custom'}
               </span>
-              {skill.source === 'custom' && (
-                <Button
-                  type="text" size="small" danger
-                  icon={<DeleteOutlined />}
-                  onClick={() => handleDelete(skill.id, skill.name)}
-                  style={{ fontSize: '11px' }}
-                >
-                  Delete
-                </Button>
+              {skill.source === 'custom' && !isEditing && (
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  <Button
+                    type="text" size="small"
+                    icon={<EditOutlined />}
+                    onClick={() => startEditing(skill)}
+                    style={{ fontSize: '11px' }}
+                  >
+                    Edit
+                  </Button>
+                  <Button
+                    type="text" size="small" danger
+                    icon={<DeleteOutlined />}
+                    onClick={() => handleDelete(skill.id, skill.name)}
+                    style={{ fontSize: '11px' }}
+                  >
+                    Delete
+                  </Button>
+                </div>
               )}
             </div>
           </div>
