@@ -13,6 +13,7 @@ from pathlib import Path
 from app.mcp.client import MCPClient, MCPResource, MCPTool, MCPPrompt # Assuming MCPClient is in the same directory or sys.path is configured
 from app.utils.logging_utils import logger
 from app.mcp.dynamic_tools import get_dynamic_loader
+from app.mcp.tool_guard import scan_tool_description, detect_shadowing, fingerprint_tools, check_fingerprint_change
 import time
 
 
@@ -57,6 +58,9 @@ class MCPManager:
         self._reconnection_attempts: Dict[str, float] = {}  # Track last reconnection attempt per server
         self._failed_servers: set = set()  # Servers that have failed too many times
         
+        # Tool definition fingerprints for rug-pull detection (ATC mitigation)
+        self._tool_fingerprints: Dict[str, str] = {}
+
         # Loop detection for repetitive tool calls
         self._recent_tool_calls: Dict[str, List[tuple]] = {}  # conversation_id -> [(tool_name, arguments, timestamp)]
         self._max_recent_calls = 10
@@ -95,6 +99,10 @@ class MCPManager:
     def _is_workspace_scoped(self, server_name: str) -> bool:
         """Check if MCP server should be instantiated per workspace."""
         config = self.server_configs.get(server_name, {})
+
+        # Remote servers are never workspace-scoped (no subprocess cwd to manage)
+        if config.get("url"):
+            return False
         
         # Check explicit configuration
         if config.get("workspace_scoped") is not None:
@@ -295,8 +303,24 @@ class MCPManager:
                 # Verify server command exists
                 command = server_config.get("command")
                 args = server_config.get("args", [])
+                url = server_config.get("url")
                 
-                # Pre-validate command and script paths for clear diagnostics
+                # Remote URL-based server: skip command validation, go straight to client creation
+                if url:
+                    enhanced_config = server_config.copy()
+                    enhanced_config["name"] = server_name
+                    # Apply auth token if configured
+                    auth_config = server_config.get("auth")
+                    if auth_config and auth_config.get("type") == "bearer":
+                        token = auth_config.get("token") or os.environ.get(auth_config.get("token_env", ""), "")
+                        if token:
+                            enhanced_config["auth_token"] = token
+                    client = MCPClient(enhanced_config)
+                    self.clients[server_name] = client
+                    connection_tasks.append(self._connect_server(server_name, client))
+                    continue
+
+                # Pre-validate command and script paths for clear diagnostics (stdio servers only)
                 if command and not server_config.get("builtin", False):
                     import shutil
                     skip = False
@@ -355,6 +379,17 @@ class MCPManager:
                     enhanced_config["enable_response_cleaning"] = True
                     logger.debug(f"Configured {server_name} as external server with enhanced settings")
                 
+                # OAuth / bearer token support for remote MCP servers.
+                # Config:  "auth": {"type": "bearer", "token": "..."}
+                # Or env:  "auth": {"type": "bearer", "token_env": "MY_TOKEN_VAR"}
+                auth_config = server_config.get("auth")
+                if auth_config and auth_config.get("type") == "bearer":
+                    token = auth_config.get("token") or os.environ.get(
+                        auth_config.get("token_env", ""), "")
+                    if token:
+                        enhanced_config["auth_token"] = token
+                        logger.debug(f"Configured OAuth bearer token for {server_name}")
+
                 client = MCPClient(enhanced_config)
                 self.clients[server_name] = client
                 connection_tasks.append(self._connect_server(server_name, client))
@@ -549,6 +584,26 @@ class MCPManager:
             success = await client.connect()
             if success:
                 logger.debug(f"Connected to MCP server: {server_name}")
+
+                # Fingerprint tool definitions for rug-pull detection
+                tool_dicts = [
+                    {"name": t.name, "description": t.description, "inputSchema": t.inputSchema}
+                    for t in client.tools
+                ]
+                new_fp = fingerprint_tools(tool_dicts)
+                old_fp = self._tool_fingerprints.get(server_name)
+                if old_fp is not None:
+                    warning = check_fingerprint_change(server_name, old_fp, new_fp)
+                    if warning:
+                        logger.warning(f"⚠️  SECURITY: {warning}")
+                self._tool_fingerprints[server_name] = new_fp
+
+                # Scan external tool descriptions for prompt injection
+                is_builtin = self.server_configs.get(server_name, {}).get("builtin", False)
+                if not is_builtin:
+                    for tool in client.tools:
+                        for w in scan_tool_description(tool.name, tool.description):
+                            logger.warning(f"⚠️  TOOL POISONING: {w}")
             else:
                 logger.error(f"Failed to connect to MCP server: {server_name}")
                 
@@ -591,6 +646,10 @@ class MCPManager:
         
         # Cache miss or expired - fetch fresh tools
         tools = []
+
+        # Collect built-in tool names first for shadowing detection
+        builtin_tool_names: set = set()
+
         # Log the enabled/disabled state of ALL configured servers
         server_states = {
             name: {'enabled': cfg.get('enabled', True), 'has_client': name in self.clients}
@@ -606,8 +665,24 @@ class MCPManager:
             
             if client.is_connected and is_enabled:
                 client_tools = client.tools
+                is_builtin = server_config.get("builtin", False)
                 logger.debug(f"MCP_MANAGER.get_all_tools: Server '{server_name}' has {len(client_tools)} tools: {[t.name for t in client_tools]}")
+
+                # Register built-in tool names for shadowing detection
+                if is_builtin:
+                    for tool_data in client_tools:
+                        builtin_tool_names.add(tool_data.name)
+
                 for tool_data in client_tools:
+                    # Shadowing check: skip external tools that collide with built-in names
+                    if not is_builtin:
+                        shadow_warning = detect_shadowing(
+                            builtin_tool_names, tool_data.name, server_name
+                        )
+                        if shadow_warning:
+                            logger.warning(f"⚠️  SHADOWING: {shadow_warning}")
+                            continue  # Built-in takes precedence
+
                     mcp_tool = MCPTool(
                         name=tool_data.name,
                         description=tool_data.description,

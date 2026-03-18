@@ -16,6 +16,7 @@ from pathlib import Path
 import uuid
 import time
 
+
 from app.utils.logging_utils import logger
 
 
@@ -63,6 +64,11 @@ class MCPClient:
         self.process: Optional[subprocess.Popen] = None
         self.request_id = 0
         self.is_connected = False
+        # SDK-based transport for remote (SSE / StreamableHTTP) connections
+        self._sdk_session = None          # mcp.client.session.ClientSession
+        self._sdk_exit_stack = None       # contextlib.AsyncExitStack keeping transports alive
+        self._is_remote = bool(server_config.get("url"))
+
         self._response_buffer: Dict[int, Dict[str, Any]] = {}  # Buffer for out-of-order responses
         self.capabilities: Dict[str, Any] = {}
         self.resources: List[MCPResource] = []
@@ -89,6 +95,10 @@ class MCPClient:
             bool: True if connection successful, False otherwise
         """
         try:
+            # Remote server: use the official MCP SDK transports
+            if self._is_remote:
+                return await self._connect_remote()
+
             # Start the MCP server process
             command = self.server_config.get("command", [])
             if isinstance(command, str):
@@ -415,6 +425,18 @@ class MCPClient:
     
     async def disconnect(self):
         """Disconnect from the MCP server."""
+        # Remote SDK session cleanup
+        if self._sdk_exit_stack:
+            try:
+                await self._sdk_exit_stack.aclose()
+            except Exception as e:
+                logger.error(f"Error closing remote MCP session: {e}")
+            finally:
+                self._sdk_session = None
+                self._sdk_exit_stack = None
+                self.is_connected = False
+            return
+
         if self.process:
             try:
                 self.process.terminate()
@@ -428,6 +450,113 @@ class MCPClient:
                 self.process = None
                 self.is_connected = False
     
+    # ----------------------------------------------------------------
+    # Remote (SSE / StreamableHTTP) connection support
+    # ----------------------------------------------------------------
+    async def _connect_remote(self) -> bool:
+        """Connect to a remote MCP server via SSE or StreamableHTTP."""
+        import contextlib
+        url = self.server_config["url"]
+        server_name = self.server_config.get("name", url)
+        transport_type = self.server_config.get("transport", "streamable-http")
+        logger.info(f"Connecting to remote MCP server: {server_name} at {url} (transport={transport_type})")
+
+        # Build optional headers (e.g. Authorization: Bearer <token>)
+        headers: Dict[str, str] = dict(self.server_config.get("headers", {}))
+        auth_token = self.server_config.get("auth_token")
+        if auth_token:
+            headers.setdefault("Authorization", f"Bearer {auth_token}")
+
+        try:
+            from mcp.client.session import ClientSession
+
+            stack = contextlib.AsyncExitStack()
+            await stack.__aenter__()
+
+            if transport_type == "sse":
+                from mcp.client.sse import sse_client
+                transport_cm = sse_client(url, headers=headers or None, timeout=30, sse_read_timeout=300)
+            else:
+                # Default: StreamableHTTP (the modern MCP transport)
+                import httpx
+                from mcp.client.streamable_http import streamable_http_client
+                http_client = httpx.AsyncClient(
+                    headers=headers or {},
+                    timeout=httpx.Timeout(30, read=300),
+                )
+                transport_cm = streamable_http_client(url, http_client=http_client)
+
+            read_stream, write_stream, *_rest = await stack.enter_async_context(transport_cm)
+            session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
+
+            init_result = await session.initialize()
+            logger.info(f"Remote MCP server initialized: {server_name} (protocol={init_result.protocolVersion})")
+
+            self._sdk_session = session
+            self._sdk_exit_stack = stack
+            self.capabilities = {}
+            if init_result.capabilities:
+                caps = init_result.capabilities
+                if caps.tools:
+                    self.capabilities["tools"] = True
+                if caps.resources:
+                    self.capabilities["resources"] = True
+                if caps.prompts:
+                    self.capabilities["prompts"] = True
+
+            self.is_connected = True
+            self._last_successful_call = time.time()
+
+            # Load tools, resources, prompts via the SDK session
+            await self._load_remote_capabilities()
+            logger.info(f"Remote MCP: {server_name} — {len(self.tools)} tools, {len(self.resources)} resources")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to connect to remote MCP server {server_name}: {e}", exc_info=True)
+            self.logs.append(f"ERROR: Remote connection failed — {e}")
+            self.is_connected = False
+            return False
+
+    async def _load_remote_capabilities(self):
+        """Load tools/resources/prompts from a remote MCP session."""
+        session = self._sdk_session
+        server_name = self.server_config.get("name", "remote")
+
+        if "tools" in self.capabilities:
+            try:
+                result = await session.list_tools()
+                self.tools = [
+                    MCPTool(
+                        name=t.name,
+                        description=t.description or "",
+                        inputSchema=t.inputSchema if isinstance(t.inputSchema, dict) else {},
+                    )
+                    for t in (result.tools if result else [])
+                ]
+            except Exception as e:
+                logger.error(f"Failed to list tools from remote {server_name}: {e}")
+
+        if "resources" in self.capabilities:
+            try:
+                result = await session.list_resources()
+                self.resources = [
+                    MCPResource(uri=str(r.uri), name=r.name, description=r.description)
+                    for r in (result.resources if result else [])
+                ]
+            except Exception as e:
+                logger.error(f"Failed to list resources from remote {server_name}: {e}")
+
+        if "prompts" in self.capabilities:
+            try:
+                result = await session.list_prompts()
+                self.prompts = [
+                    MCPPrompt(name=p.name, description=p.description or "")
+                    for p in (result.prompts if result else [])
+                ]
+            except Exception as e:
+                logger.error(f"Failed to list prompts from remote {server_name}: {e}")
+
     def _is_external_server_healthy(self) -> bool:
         """Check if external server is responding consistently."""
         server_name = self.server_config.get('name', 'unknown')
@@ -451,6 +580,10 @@ class MCPClient:
     
     def _is_process_healthy(self) -> bool:
         """Check if the MCP server process is still healthy."""
+        # Remote servers don't have a process — check session
+        if self._is_remote:
+            return self._sdk_session is not None and self.is_connected
+
         if not self.process:
             return False
         
@@ -1011,6 +1144,44 @@ class MCPClient:
         
         # Get conversation_id from arguments if present (for signing context)
         conversation_id = arguments.get('conversation_id', 'default')
+
+        # Remote server path: delegate to SDK ClientSession
+        if self._sdk_session and self._is_remote:
+            try:
+                # Strip internal metadata before sending to remote server
+                clean_args = {k: v for k, v in arguments.items()
+                              if k not in ('conversation_id', '_workspace_path')}
+                sdk_result = await self._sdk_session.call_tool(name, clean_args)
+
+                # Convert SDK result to our dict format
+                content_list = []
+                if sdk_result and sdk_result.content:
+                    for item in sdk_result.content:
+                        if hasattr(item, 'text'):
+                            content_list.append({"type": "text", "text": item.text})
+                        elif hasattr(item, 'data'):
+                            content_list.append({"type": "image", "data": item.data,
+                                                 "mimeType": getattr(item, 'mimeType', 'image/png')})
+                        else:
+                            content_list.append({"type": "text", "text": str(item)})
+
+                result = {"content": content_list} if content_list else {"content": [{"type": "text", "text": ""}]}
+
+                if sdk_result and getattr(sdk_result, 'isError', False):
+                    result["error"] = True
+                    result["message"] = content_list[0].get("text", "Unknown error") if content_list else "Unknown error"
+
+                # Sign the result
+                if not result.get("error"):
+                    result = sign_tool_result(name, clean_args, result, conversation_id)
+
+                self._record_call_result(not result.get("error", False))
+                return result
+
+            except Exception as e:
+                logger.error(f"Remote tool call failed for {name}: {e}")
+                self._record_call_result(False)
+                return {"error": True, "message": f"Remote tool call failed: {e}", "code": -32603}
         
         try:
             unwrapped_tool_input = False
