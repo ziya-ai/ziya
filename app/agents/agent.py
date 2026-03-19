@@ -1429,7 +1429,7 @@ class LazyLoadedModel:
             logger.debug("ModelManager state is empty, initializing model on first use")
             model_instance = ModelManager.initialize_model(force_reinit=True) # Initialize without override here
             if model_instance is None:
-                logger.error("Model initialization failed - returning None")
+                logger.debug("Model not yet available - will initialize on first use")
                 return None
             self._model = RetryingChatBedrock(model_instance)
         return self._model
@@ -1447,14 +1447,14 @@ class LazyLoadedModel:
     def bind(self, **kwargs):
         model = self.get_model()
         if model is None:
-            logger.error("Cannot bind model - model initialization failed")
+            logger.debug("Model bind deferred - will retry on first use")
             return None
         return model.bind(**kwargs)
  
 model = LazyLoadedModel()
 llm_with_stop = model.bind(stop=[TOOL_SENTINEL_CLOSE])
 if llm_with_stop is None:
-    logger.warning("Model binding failed during initialization - will retry later")
+    logger.debug("Model binding deferred - will complete on first request")
 
 # Store the initial llm_with_stop in ModelManager
 from app.agents.models import ModelManager
