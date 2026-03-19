@@ -141,6 +141,12 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
     """
     logger.debug(f"🔍 FUNCTION_START: build_messages_for_streaming called with {len(files)} files")
     
+    # SDO-183: Strip hidden characters from user input before it reaches the model.
+    # This prevents Unicode tag smuggling attacks where invisible instructions
+    # are embedded in user prompts.
+    from app.mcp.response_validator import sanitize_text
+    question = sanitize_text(question)
+
     def format_content_with_images(text_content: str, images: List[dict] = None):
         """
         Format message content with images for Claude API.
