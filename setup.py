@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 from setuptools import setup, find_packages
 from setuptools.command.bdist_wheel import bdist_wheel
@@ -39,7 +39,7 @@ def run_post_build():
 # We're just adding our custom command class
 setup(
     name="ziya",
-    version="0.6.0.1",
+    version="0.6.1.0",
     author="Dan Cohn, Vishnu Krishnaprasad",
     author_email="chroma@gmail.com",
     packages=find_packages(include=["app", "app.*", "mcp_servers", "app.mcp_servers.*"]),
