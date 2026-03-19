@@ -546,11 +546,11 @@ class ModelManager:
                 for attempt in range(max_retries):
                     try:
                         identity = sts.get_caller_identity()
-                        logger.debug(f"Successfully authenticated as: {identity.get('Arn', 'Unknown')}")
+                        logger.info(f"Successfully authenticated as: {identity.get('Arn', 'Unknown')}")
                         break  # Success - exit retry loop
                     except Exception as cred_error:
                         error_str = str(cred_error)
-                        logger.warning(f"STS attempt {attempt + 1}/{max_retries} failed: {error_str[:120]}")
+                        logger.debug(f"STS attempt {attempt + 1}/{max_retries} failed: {error_str[:120]}")
                         
                         # Check if this is a truly transient credential loading issue
                         is_transient = any(indicator in error_str for indicator in [
@@ -573,14 +573,14 @@ class ModelManager:
                             logger.info(f"Credential provider initializing, retrying in {delay}s (attempt {attempt + 1}/{max_retries})...")
                             time.sleep(delay)
                         elif is_permanent:
-                            logger.error(f"Permanent credential failure detected: {error_str}")
+                            logger.debug(f"Credential check failed (will retry lazily): {error_str[:80]}")
                             raise  # Fail fast for invalid/expired credentials
                         else:
                             raise
                             
             except Exception as cred_error:
                 error_msg = f"AWS credentials check failed after {max_retries} attempts: {cred_error}"
-                logger.error(error_msg)
+                logger.debug(error_msg)
                 cls._state['last_auth_error'] = error_msg
                 from app.utils.custom_exceptions import KnownCredentialException
                 raise KnownCredentialException(error_msg, is_server_startup=False)
@@ -619,7 +619,7 @@ class ModelManager:
             return throttle_safe_client
             
         except Exception as e:
-            logger.error(f"Error creating persistent bedrock client: {e}")
+            logger.debug(f"Bedrock client creation deferred: {e}")
             raise
     
     @classmethod
@@ -727,7 +727,7 @@ class ModelManager:
             cls._state['auth_success'] = True
         except KnownCredentialException as e:
             # Handle credential exception without terminating the server
-            logger.warning(f"Authentication failed but continuing server operation: {str(e)}")
+            logger.info("AWS credentials not yet available — model will authenticate on first use")
             
             # Update state to indicate authentication failure
             cls._state['model'] = None
