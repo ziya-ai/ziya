@@ -1042,42 +1042,48 @@ class MCPClient:
             logger.error(f"Error loading MCP server capabilities for {self.server_config.get('name', 'unknown')}: {str(e)}", exc_info=True)
     
     def _validate_and_clean_response(self, result: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        """Validate and clean MCP tool response, handling external server quirks."""
-        if not result:
+        """Validate and clean MCP tool response.
+
+        Delegates to the centralised response_validator module which checks
+        schema conformance, size limits, MIME types, hidden-character
+        stripping, and injection-pattern scanning.
+        """
+        if result is None:
             return result
-        
-        # Handle content field responses (common in external servers)
-        if "content" in result and isinstance(result["content"], list):
-            content_list = result["content"]
-            
-            # Clean up mixed/cached content responses
-            if len(content_list) > 0:
-                first_content = content_list[0]
-                if isinstance(first_content, dict) and "text" in first_content:
-                    text_content = first_content["text"]
-                    
-                    # Detect cache contamination patterns
-                    cache_indicators = [
-                        "Contents of https://wttr.in/", 
-                        "Contents of https://api.",
-                        "Failed to fetch https://"
-                    ]
-                    
-                    has_cache_contamination = any(indicator in text_content for indicator in cache_indicators)
-                    
-                    if has_cache_contamination:
-                        logger.warning(f"Cache contamination detected in response: {text_content[:100]}...")
-                        
-                        # Try to extract the actual content after the contamination
-                        for indicator in cache_indicators:
-                            if indicator in text_content:
-                                # Find the end of the cache indicator line and extract what follows
-                                lines = text_content.split('\n')
-                                clean_lines = [line for line in lines if not any(ci in line for ci in cache_indicators)]
-                                if clean_lines:
-                                    first_content["text"] = '\n'.join(clean_lines).strip()
-                                    logger.info(f"Cleaned cache contamination, extracted: {first_content['text'][:100]}...")
-        
+
+        from app.mcp.response_validator import (
+            ResponseValidationError,
+            validate_response,
+            run_semantic_validators,
+        )
+
+        # Determine tool name for logging (from the call context)
+        tool_name = result.get("_tool_name", "unknown")
+
+        try:
+            result = validate_response(result, tool_name=tool_name)
+        except ResponseValidationError as exc:
+            logger.error(f"Response validation failed for '{tool_name}': {exc}")
+            return {
+                "error": True,
+                "message": str(exc),
+                "code": exc.error_code,
+                "content": [{"type": "text", "text": f"❌ **Response Validation Error**: {exc}"}],
+            }
+
+        # Run per-tool semantic validators (if any are registered).
+        is_valid, messages = run_semantic_validators(tool_name, result)
+        for msg in messages:
+            logger.warning(f"Semantic validation ({tool_name}): {msg}")
+        if not is_valid:
+            error_msgs = [m for m in messages if m.startswith("ERROR:")]
+            return {
+                "error": True,
+                "message": "; ".join(error_msgs),
+                "code": -32602,
+                "content": [{"type": "text", "text": f"❌ **Semantic Validation Error**: {'; '.join(error_msgs)}"}],
+            }
+
         return result
     
     async def get_resource(self, uri: str) -> Optional[str]:
@@ -1170,6 +1176,9 @@ class MCPClient:
                 if sdk_result and getattr(sdk_result, 'isError', False):
                     result["error"] = True
                     result["message"] = content_list[0].get("text", "Unknown error") if content_list else "Unknown error"
+
+                # Validate and sanitize the remote response
+                result = self._validate_and_clean_response(result)
 
                 # Sign the result
                 if not result.get("error"):
@@ -1419,6 +1428,26 @@ class MCPClient:
                     value = str(value)
                 validated[key] = value
                 
+        # --- Schema constraint validation (enum, min/max, pattern, etc.) ---
+        from app.mcp.response_validator import (
+            ResponseValidationError,
+            validate_input_constraints,
+        )
+
+        # Determine tool name for logging — scan self.tools for the matching schema
+        tool_name = "unknown"
+        for tool in self.tools:
+            if tool.inputSchema is schema:
+                tool_name = tool.name
+                break
+
+        try:
+            validated, warnings = validate_input_constraints(validated, schema, tool_name)
+            for w in warnings:
+                logger.warning(f"Input validation warning: {w}")
+        except ResponseValidationError as exc:
+            return {"__validation_error__": True, "message": str(exc)}
+
         return validated
     
     async def get_prompt(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> Optional[str]:

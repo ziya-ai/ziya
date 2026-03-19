@@ -921,6 +921,14 @@ class StreamingToolExecutor:
         
         def track_yield(event_data):
             """Track metrics for yielded events"""
+            # SDO-183: Strip hidden characters from model output before sending
+            # to the user, preventing exfiltration via Unicode tag smuggling.
+            if isinstance(event_data, dict):
+                content = event_data.get('content')
+                if isinstance(content, str):
+                    from app.mcp.response_validator import sanitize_text
+                    event_data['content'] = sanitize_text(content)
+
             chunk_size = len(json.dumps(event_data))
             stream_metrics['events_sent'] += 1
             stream_metrics['bytes_sent'] += chunk_size
@@ -1680,8 +1688,10 @@ class StreamingToolExecutor:
                     # in a single pass.  A future cleanup pass can replace
                     # the chunk['type'] dispatch with isinstance() dispatch.
                     if isinstance(stream_event, TextDelta):
+                        from app.mcp.response_validator import sanitize_text as _sanitize
+                        _clean = _sanitize(stream_event.content) if stream_event.content else ''
                         chunk = {'type': 'content_block_delta',
-                                 'delta': {'type': 'text_delta', 'text': stream_event.content}}
+                                 'delta': {'type': 'text_delta', 'text': _clean}}
                     elif isinstance(stream_event, ToolUseStart):
                         chunk = {'type': 'content_block_start',
                                  'index': stream_event.index,
