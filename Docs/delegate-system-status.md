@@ -199,3 +199,15 @@ Changes made in the stability pass, listed by root cause:
 | Both useEffect hooks re-fired on every conversation change | `[conversationId, conversations]` dependency | Replaced with `delegateKey` and `siblingKey` (useMemo) that only change on delegate status transitions |
 | Clicking inactive delegate locks UX | `loadConversation` blocked on server fetch + WebSocket opened + effects re-ran on every `conversations` change | Skip fetch for terminal delegates; derive stable `delegateKey`/`siblingKey` via `useMemo`; add 5s connection timeout |
 | Clicking **running** delegate freezes UX | Server fetch was `await`ed, holding `setIsLoadingConversation(true)` for seconds; completion cascaded through `conversations`→effects→`streamingConversations`→recreate `loadConversation` | Made fetch fire-and-forget (`.then()` instead of `await`); removed `streamingConversations` from `loadConversation` dependency array (use ref instead) |
+
+## Crystal Summary Cleaning (Round 10)
+
+| Symptom | Root Cause | Fix |
+|---------|------------|-----|
+| Completion report full of tool noise (file listings, failed fetches, JSON blobs) | Stub crystals built from raw `accumulated` which includes tool headers + output blocks | Track `prose_only` separately; stub crystals use `prose_only` for summaries |
+| Directory listings, `▶ Expand` lines, `🔧`/`🛠️` headers in crystal summaries | No cleaning applied to crystal summaries displayed in source conversation | `_clean_crystal_summary()` strips tool headers, short fenced blocks, sequential-thinking JSON, directory listings, and `▶ Expand` lines |
+| Directory listing regex ate prose after blank line | `(?:\s+\S...)` pattern matched `\n` + first char of next paragraph | Changed to `(?:  \S...)` requiring 2 leading spaces (actual listing format) |
+| No way to see full delegate output | Crystal summaries were either noisy (all content) or stripped (just prose) | Completion report now has clean summaries at top + expandable `<details>` blocks per delegate with full raw output |
+| Progress posts showed raw tool noise | `_post_progress_to_source()` used `crystal.summary[:120]` verbatim | Applied `_clean_crystal_summary(crystal.summary, max_length=120)` |
+| Orchestrator crystal receipt showed noise | `_orchestrator_receive_crystal()` used `crystal.summary` verbatim | Applied `_clean_crystal_summary(crystal.summary, max_length=800)` |
+| Sub-plan rollup summaries showed noise | `_on_subplan_complete()` used `crystal.summary` verbatim | Applied `_clean_crystal_summary(crystal.summary, max_length=300)` |

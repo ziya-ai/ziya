@@ -1,10 +1,20 @@
 [tool.poetry]
 name = "ziya"
 version = "0.6.1.0"
-description = ""
+description = "Self-hosted AI workbench for code, architecture, and operations. Rich visualizations (Graphviz, Mermaid, Vega-Lite, DrawIO), diff application with per-hunk tracking, parallel AI agents, MCP tool integration, enterprise plugin system."
 authors = ["Dan Cohn <chroma@gmail.com>",
            "Vishnu Krishnaprasad <vishnukool@gmail.com>"]
 license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/ziya-ai/ziya"
+repository = "https://github.com/ziya-ai/ziya"
+keywords = ["ai", "llm", "coding", "architecture", "operations", "visualization", "self-hosted", "bedrock", "claude", "mcp"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development",
+    "License :: OSI Approved :: MIT License",
+]
 
 packages = [
     { include = "app", from = "." },
