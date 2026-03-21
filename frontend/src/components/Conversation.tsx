@@ -2,7 +2,7 @@ import React, { useEffect, useRef, memo, useCallback, useMemo, useState, useTran
 import { useChatContext } from '../context/ChatContext';
 import { EditSection } from "./EditSection";
 import { Spin, Button, Tooltip, Image as AntImage } from 'antd';
-import { RedoOutlined, SoundOutlined, MutedOutlined, PictureOutlined } from "@ant-design/icons";
+import { RedoOutlined, SoundOutlined, MutedOutlined, PictureOutlined, CodeOutlined, EyeOutlined } from "@ant-design/icons";
 import { sendPayload } from "../apis/chatApi";
 
 import ModelChangeNotification from './ModelChangeNotification';
@@ -23,6 +23,8 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     const { currentMessages,
         editingMessageIndex,
         isTopToBottom,
+        conversations,
+        setDisplayMode,
         isLoadingConversation,
         isProjectSwitching,
         addStreamingConversation,
@@ -56,29 +58,65 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     // Extract for use in component
     const { isCurrentlyStreaming, hasStreamedContent } = conversationStreamingState;
 
+    // Raw markdown display mode — toggled via Ctrl+Shift+U
+    const isRawMode = useMemo(() => {
+        const conv = conversations.find(c => c.id === currentConversationId);
+        return conv?.displayMode === 'raw';
+    }, [conversations, currentConversationId]);
+
+    const isRawModeRef = useRef(isRawMode);
+    isRawModeRef.current = isRawMode;
+
     // Progressive rendering: on conversation switch, render only the last
     // INITIAL_WINDOW messages immediately.  Once the browser paints, expand
-    // to the full list inside a transition so the main thread stays free.
+    // in steps so the browser can paint between batches and stay responsive.
     const INITIAL_WINDOW = 8;
     const [messageWindow, setMessageWindow] = useState<number>(INITIAL_WINDOW);
-    const [, startTransition] = useTransition();
     const windowConvRef = useRef(currentConversationId);
+    const expandTimerRef = useRef<number | null>(null);
 
     useEffect(() => {
         if (windowConvRef.current !== currentConversationId) {
             windowConvRef.current = currentConversationId;
-            // Reset to small window on conversation switch
             setMessageWindow(INITIAL_WINDOW);
-            // Expand after first paint via low-priority transition
-            requestAnimationFrame(() => {
-                startTransition(() => setMessageWindow(Infinity));
-            });
+            if (expandTimerRef.current) cancelAnimationFrame(expandTimerRef.current);
+
+            // Expand progressively: 8 → 20 → 50 → all
+            // Each step waits for a paint so the UI stays responsive.
+            const steps = [20, 50, Infinity];
+            let step = 0;
+            const expand = () => {
+                if (step >= steps.length) return;
+                expandTimerRef.current = requestAnimationFrame(() => {
+                    setMessageWindow(steps[step]);
+                    step++;
+                    if (step < steps.length) {
+                        expandTimerRef.current = requestAnimationFrame(expand);
+                    }
+                });
+            };
+            expandTimerRef.current = requestAnimationFrame(expand);
         }
+        return () => {
+            if (expandTimerRef.current) cancelAnimationFrame(expandTimerRef.current);
+        };
     }, [currentConversationId]);
 
     // Refs for conversation switch overlay (direct DOM manipulation)
     const switchOverlayRef = useRef<HTMLDivElement>(null);
     const prevConversationRef = useRef(currentConversationId);
+
+    // Keyboard shortcut: Ctrl+Shift+U toggles raw markdown view
+    useEffect(() => {
+        const handleRawToggle = (e: KeyboardEvent) => {
+            if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'u') {
+                e.preventDefault();
+                setDisplayMode(currentConversationId, isRawModeRef.current ? 'pretty' : 'raw');
+            }
+        };
+        window.addEventListener('keydown', handleRawToggle);
+        return () => window.removeEventListener('keydown', handleRawToggle);
+    }, [currentConversationId, setDisplayMode]);
 
     // Conversation switch overlay: show a spinner immediately when the user
     // switches conversations.  The heavy MarkdownRenderer work blocks the
@@ -409,6 +447,19 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                 }}
                 className="conversation-messages-container"
             >
+                {/* Raw mode indicator banner */}
+                {isRawMode && (
+                    <div className="raw-mode-banner">
+                        <CodeOutlined style={{ marginRight: 6 }} />
+                        Raw Markdown View — <kbd>Ctrl+Shift+U</kbd> to return to rendered view
+                        <Button
+                            type="link" size="small"
+                            icon={<EyeOutlined />}
+                            onClick={() => setDisplayMode(currentConversationId, 'pretty')}
+                            style={{ marginLeft: 8, color: 'inherit' }}
+                        >Rendered</Button>
+                    </div>
+                )}
                 {displayMessages?.map((msg, index) => {
                     // Convert display index to actual index for bottom-up mode
                     const actualIndex = isTopToBottom ? index : currentMessages.length - 1 - index;
@@ -511,12 +562,16 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                             )}
                                             {/* Only render message content if there's actual text content */}
                                             {msg.content && <div className="message-content">
-                                                <MarkdownRenderer
-                                                    markdown={msg.content}
-                                                    enableCodeApply={enableCodeApply}
-                                                    onOpenShellConfig={onOpenShellConfig}
-                                                        isStreaming={false}
-                                                />
+                                                {isRawMode ? (
+                                                    <pre className="raw-markdown-view">{msg.content}</pre>
+                                                ) : (
+                                                    <MarkdownRenderer
+                                                        markdown={msg.content}
+                                                        enableCodeApply={enableCodeApply}
+                                                        onOpenShellConfig={onOpenShellConfig}
+                                                            isStreaming={false}
+                                                    />
+                                                )}
                                             </div>}
                                         </>
                                     ) : msg.role === 'assistant' && msg.content ? (
@@ -534,12 +589,16 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                                 {renderRetryButton(actualIndex)}
                                             </div>
                                             <div className="message-content">
-                                                <MarkdownRenderer
-                                                    markdown={msg.content}
-                                                    enableCodeApply={enableCodeApply}
-                                                    onOpenShellConfig={onOpenShellConfig}
+                                                {isRawMode ? (
+                                                    <pre className="raw-markdown-view">{msg.content}</pre>
+                                                ) : (
+                                                    <MarkdownRenderer
+                                                        markdown={msg.content}
+                                                        enableCodeApply={enableCodeApply}
+                                                        onOpenShellConfig={onOpenShellConfig}
                                                         isStreaming={false}
-                                                />
+                                                    />
+                                                )}
                                             </div>
                                         </>
                                     ) : null}

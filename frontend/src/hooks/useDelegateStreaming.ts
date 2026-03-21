@@ -9,7 +9,7 @@
  * Disconnects automatically when the user navigates away or the stream ends.
  */
 
- import { useEffect, useRef, useMemo } from 'react';
+ import { useEffect, useRef, useMemo, useCallback } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import type { Conversation } from '../utils/types';
 
@@ -38,6 +38,38 @@ export function useDelegateStreaming({
   const siblingWsRef = useRef<Map<string, WebSocket>>(new Map());
   // Track which sibling IDs we've already attempted to connect (prevents reconnect storms)
   const siblingConnectedIdsRef = useRef<Set<string>>(new Set());
+
+  // ── Batched streaming content updates ──
+  // Instead of calling setStreamedContentMap on every WebSocket chunk
+  // (which can be 50-80+ times/sec across all delegates), accumulate
+  // pending updates in a Map and flush them once per animation frame.
+  const pendingStreamUpdates = useRef<Map<string, string>>(new Map());
+  const rafHandle = useRef<number | null>(null);
+
+  const flushStreamUpdates = useCallback(() => {
+    rafHandle.current = null;
+    const pending = pendingStreamUpdates.current;
+    if (pending.size === 0) return;
+    // Snapshot and clear before the setState to avoid losing writes
+    // that arrive during the React commit.
+    const batch = new Map(pending);
+    pending.clear();
+    setStreamedContentMap(prev => {
+      const next = new Map(prev);
+      let changed = false;
+      for (const [id, content] of batch) {
+        if (next.get(id) !== content) { next.set(id, content); changed = true; }
+      }
+      return changed ? next : prev;
+    });
+  }, [setStreamedContentMap]);
+
+  const scheduleFlush = useCallback((id: string, content: string) => {
+    pendingStreamUpdates.current.set(id, content);
+    if (rafHandle.current === null) {
+      rafHandle.current = requestAnimationFrame(flushStreamUpdates);
+    }
+  }, [flushStreamUpdates]);
 
   // Derive stable keys from *only* the delegate-relevant fields so
   // effects don't re-fire on every unrelated conversation change
@@ -173,12 +205,7 @@ export function useDelegateStreaming({
         if (ctype === 'text') {
           accumulatedRef.current += chunk.content || '';
           const snapshot = accumulatedRef.current;
-          setStreamedContentMap(prev => {
-            if (prev.get(conversationId) === snapshot) return prev;
-            const next = new Map(prev);
-            next.set(conversationId, snapshot);
-            return next;
-          });
+          scheduleFlush(conversationId, snapshot);
         } else if (ctype === 'stream_end' || ctype === 'delegate_complete') {
           // Stream finished — persist content as a message and stop streaming UI
           // The backend already persisted this message via
@@ -217,6 +244,10 @@ export function useDelegateStreaming({
     return () => {
       if (staleTimer) clearTimeout(staleTimer);
       clearTimeout(connectTimer);
+      // Flush any pending content before disconnecting so nothing is lost
+      if (rafHandle.current) { cancelAnimationFrame(rafHandle.current); rafHandle.current = null; }
+      flushStreamUpdates();
+      accumulatedRef.current = '';
       ws.close();
       connectedConvRef.current = null;
     };
@@ -260,11 +291,14 @@ export function useDelegateStreaming({
     const siblingMap = siblingWsRef.current;
     const desiredIds = new Set(siblings.map(s => s.id));
 
-    // Close connections for delegates that are no longer running
+    // Close connections for delegates that are no longer running,
+    // but DON'T clear siblingConnectedIdsRef — those delegates
+    // already reached a terminal state and shouldn't be retried.
     for (const [id, ws] of siblingMap.entries()) {
       if (!desiredIds.has(id)) {
         ws.close();
         siblingMap.delete(id);
+        // Don't remove from siblingConnectedIdsRef — prevents reconnect storm
         removeStreamingConversation(id);
       }
     }
@@ -300,13 +334,7 @@ export function useDelegateStreaming({
           const chunk = JSON.parse(event.data);
           if (chunk.type === 'text') {
             sibAccum += chunk.content || '';
-            const snapshot = sibAccum;
-            setStreamedContentMap(prev => {
-              if (prev.get(sibId) === snapshot) return prev;
-              const next = new Map(prev);
-              next.set(sibId, snapshot);
-              return next;
-            });
+            scheduleFlush(sibId, sibAccum);
           } else if (chunk.type === 'stream_end' || chunk.type === 'delegate_complete') {
             removeStreamingConversation(sibId);
             ws.close();
@@ -322,12 +350,14 @@ export function useDelegateStreaming({
     }
 
     return () => {
+      // Only close WebSockets on true unmount (conversation switch).
+      // Keep siblingConnectedIdsRef intact — it's cleared in the
+      // primary effect cleanup when the conversation changes.
       for (const [id, ws] of siblingMap.entries()) {
         ws.close();
         removeStreamingConversation(id);
       }
       siblingMap.clear();
-      siblingConnectedIdsRef.current.clear();
     };
     // siblingKey changes only when sibling delegate statuses change
   }, [siblingKey]);

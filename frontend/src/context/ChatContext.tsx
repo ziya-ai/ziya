@@ -1066,6 +1066,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const loadConversation = useCallback(async (conversationId: string) => {
         setIsLoadingConversation(true);
 
+        const isDelegate = conversationsRef.current.find(c => c.id === conversationId)?.delegateMeta;
         // Only scroll if we're actually switching conversations
         const isActualSwitch = conversationId !== currentConversationId;
 
@@ -1119,11 +1120,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     // Fire-and-forget: don't block conversation load
                     syncApi.getChat(pid, conversationId).then(serverChat => {
                         if (!serverChat?.messages?.length) return;
-                        setConversations(prev => prev.map(c =>
-                            c.id === conversationId
-                                ? { ...c, messages: serverChat.messages, delegateMeta: serverChat.delegateMeta ?? c.delegateMeta }
-                                : c
-                        ));
+                        // Use startTransition so the heavy re-render from
+                        // injecting many messages doesn't block the UI.
+                        React.startTransition(() => {
+                            setConversations(prev => prev.map(c =>
+                                c.id === conversationId
+                                    ? { ...c, messages: serverChat.messages, delegateMeta: serverChat.delegateMeta ?? c.delegateMeta }
+                                    : c
+                            ));
+                        });
                     }).catch(err => {
                         console.warn('Background delegate fetch failed:', err);
                     });
@@ -1778,7 +1783,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             mergedMap.set(sc.id, {
                                 ...full,
                                 projectId: full.projectId || projectId,
-                                folderId: full.groupId || full.folderId || null,
+                                folderId: full.groupId || full.folderId || sc.groupId || sc.folderId || null,
                                 delegateMeta: full.delegateMeta || null,
                                 lastAccessedAt: full.lastAccessedAt || full.lastActiveAt,
                                 isActive: full.isActive !== false,
