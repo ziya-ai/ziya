@@ -1,169 +1,211 @@
-# Ziya
+<p align="center">
+  <img src="docs/images/logo.svg" alt="Ziya" width="280">
+</p>
 
-## Documentation
-See the [GitHub Repository](https://github.com/ziya-ai/ziya)
+<h3 align="center">AI Technical Workbench for Code, Architecture, and Operations</h3>
 
-## Overview  
+<p align="center">
+  Self-hosted. Runs alongside your editor, not instead of it.
+</p>
 
-> **Note**: This is the community edition of Ziya. Enterprise users should check with their
-> IT department for internal editions with additional integrations.
+<p align="center">
+  <a href="https://pypi.org/project/ziya/"><img alt="PyPI" src="https://img.shields.io/pypi/v/ziya?style=flat-square&color=b32ca8"></a>
+  <a href="https://pypi.org/project/ziya/"><img alt="Python" src="https://img.shields.io/pypi/pyversions/ziya?style=flat-square"></a>
+  <a href="https://github.com/ziya-ai/ziya/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/ziya-ai/ziya?style=flat-square"></a>
+  <a href="https://github.com/ziya-ai/ziya/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/ziya-ai/ziya?style=flat-square"></a>
+</p>
 
-Ziya is a full-stack AI development environment with a cooperative web frontend and server backend that provides comprehensive code-related integrations including code analysis, edits, and visualizations. It can analyze your codebase within context limits, answer questions, and apply suggested code changes directly to your files.
+<!-- Uncomment when hero.gif or hero-screenshot.png is captured:
+<p align="center">
+  <img src="docs/images/hero.gif" alt="Ziya in action" width="800">
+</p>
+-->
 
-Key features include:
-- Contextual codebase analysis and understanding
-- Code editing with automatic application of changes
-- Visualization support with plugins for Graphviz, MathML, Mermaid, and VegaLite
-- Interactive model parameter configuration
-- Ability to switch models mid-conversation for second opinions
-- Resizable interface panels for customized workspace
-- Support for multiple simultaneous conversations and workflows
+---
 
-The current version supports:
-1. Writing and editing code with automatic application of changes
-2. Visualizing complex data and relationships
-3. Iteratively refining solutions through conversation
-4. Managing parallel development tasks in separate conversation threads
+## What is Ziya?
 
-Ziya has been most extensively tested against Claude, Nova, Deepseek, and Gemini models.
+Ziya is a self-hosted AI technical workbench — a browser-based environment where you work with AI on code, architecture, and operational analysis in a single conversation. It was originally developed by engineers at a major technology company as an internal tool for real development and operations workflows, and has been used in production across hundreds of engineers.
 
-## Pre-requisites
-### Setup Authentication:
-
-#### For AWS Bedrock:
-The easiest way is to set the env variables with access to AWS Bedrock models.
-
-```bash
-export AWS_ACCESS_KEY_ID=<YOUR-KEY>
-export AWS_SECRET_ACCESS_KEY=<YOUR-SECRET>
-```
-
-#### For Google Gemini:
-Set up your Google API key:
-
-```bash
-export GOOGLE_API_KEY=<YOUR-GOOGLE-API-KEY>
-```
-
-### Installation
+It is **not** an IDE, not a plugin, and not a terminal-only CLI. You keep your editor. Ziya is the surface where you think about your systems — where code context, operational data, and visual analysis come together.
 
 ```bash
 pip install ziya
-```
-
-## Run Ziya
-
-```bash 
 ziya
 ```
-Then navigate to http://localhost:6969 in your browser and start chatting with your codebase. 
 
-When you ask a question Ziya sends relevant parts of your codebase as context to the LLM, along with your question and any chat history.
-```
-> Entering new AgentExecutor chain...
-Reading user's current codebase: /Users/vkrishnaprasad/personal_projects/ziya
-ziya
-    ├── .gitignore
-    ├── DEVELOPMENT.md
-    ├── LICENSE
-    ├── README.md
-    └── pyproject.toml
-    app
-        ├── __init__.py
-        ├── main.py
-        └── server.py
-...
-```
+Then open [localhost:6969](http://localhost:6969). That's it.
 
-## Common Workflows
+---
 
-### Code Analysis and Editing
-Ask Ziya to analyze your code, suggest improvements, or implement new features. When Ziya suggests code changes, they can be automatically applied to your files with a single click.
+## What Makes This Different
 
-### Visualization
-Create diagrams and visualizations using supported plugins:
-- Graphviz for dependency graphs and flowcharts
-- Mermaid for sequence diagrams and flowcharts
-- MathML for mathematical expressions
-- VegaLite for data visualizations
+### 🔧 Rendered Diffs with Apply/Undo
 
-### Model Switching
-Change models mid-conversation to get different perspectives or capabilities. Simply use the model selector in the interface to switch between available models.
+Code changes appear as structured diffs with per-hunk Apply and Undo buttons. A multi-strategy patch pipeline (`patch` → `git apply` → difflib → LLM resolver) handles imperfect model output gracefully. No more copy-paste from a chat window.
 
-### Parameter Tuning
-Adjust model parameters like temperature, top-k, and max tokens directly from the interface without restarting Ziya.
+<!-- Uncomment: ![Diff apply](docs/images/diff-apply.gif) -->
 
-### Parallel Conversations
-Work on multiple tasks simultaneously by creating separate conversation threads. Each conversation maintains its own context and history, allowing you to switch between different development tasks without losing your place.
+### 📐 Architecture & Operations Analysis
 
-## Command Line Options
+Paste a thread dump and get a Graphviz deadlock diagram. Ask about your system architecture and get a DrawIO diagram generated from the actual code. Drag and drop existing architecture diagrams, operational plots, or monitoring screenshots directly into the conversation for integrated visual analysis alongside your codebase. This is the gap no coding assistant fills — Ziya works with operational data, not just source files.
 
-Most parameters can be configured interactively in the web interface. The following command line options are primarily for initial setup:
+<!-- Uncomment: ![Ops analysis](docs/images/ops-analysis.png) -->
 
-#### General Options
-`--include`: Include paths outside of the current working directory. Supports comma-separated lists. (e.g., `--include '/path/to/external/lib,/another/external/path'`)
+### 📊 Six Visualization Renderers
 
-`--exclude`: Exclude specified files, directories, or file patterns from the codebase. Supports comma-separated lists. (e.g., `--exclude 'node_modules,dist,*.pyc'`)
+All rendered inline, all with a normalization layer that handles imperfect LLM output:
 
-`--include-only`: Only include specified directories, files, or file patterns, excluding everything else. Supports comma-separated lists and wildcard patterns. (e.g., `--include-only 'src,lib'` or `--include-only '*.py,*.tsx'`)
+| Renderer | Use Cases |
+|---|---|
+| **Graphviz** | Dependency graphs, call flows, lock cycles, network topologies |
+| **Mermaid** | Sequence diagrams, flowcharts, ER diagrams, state machines |
+| **Vega-Lite** | Latency distributions, throughput charts, statistical plots |
+| **DrawIO** | System architecture, exportable `.drawio` files |
+| **KaTeX** | Inline and display math |
+| **Packet Diagrams** | Bit-level protocol frame layouts with rulers and annotations |
 
-`--port`: The port number for frontend app. Default is `6969`.
+Plus **HTML mockups** — interactive UI previews rendered in isolated iframes.
 
-`--max-depth`: Maximum depth for folder structure traversal. Default is `15`.
+### 🤖 Parallel AI Agents (Swarm)
 
-`--debug`: Enable debug logging.
+Decompose complex tasks into parallel delegates that run simultaneously, each with independent context. Completed delegates produce "crystals" — compacted memory summaries that downstream agents can query. Recursive sub-swarms supported. Live progress tracking in the sidebar.
 
-`--check-auth`: Check authentication setup without starting the server.
+### 🔌 MCP Tool Integration with Security Controls
 
-`--list-models`: List all supported endpoints and their available models.
+Connect any MCP server (stdio or remote HTTPS). Built-in protections:
+- **Tool poisoning detection** — descriptions scanned for prompt injection
+- **Tool shadowing prevention** — external tools can't override built-ins
+- **Rug-pull detection** — tool definitions fingerprinted; changes on reconnect trigger warnings
 
-`--version`: Prints the version of Ziya.
+Browse and install MCP servers from the built-in registry.
 
-#### Model Selection and Configuration
-`--endpoint`: Model endpoint to use. Options include `bedrock` and `google`. Default is `bedrock`.
+### 🧠 Skills System
 
-`--model`: The model to use from the selected endpoint. Available models depend on the endpoint.
+Activate reusable instruction bundles that steer model behavior — documentation standards, code review checklists, operational runbooks. Create custom skills from the UI. Skills compose: stack multiple for a single conversation.
 
-`--model-id`: Override the model ID directly (advanced usage, bypasses model name lookup).
+### 📁 Project-Scoped Everything
 
-`--profile`: AWS profile to use (for AWS Bedrock).
+Multiple simultaneous projects, each with its own conversations, context, and file tree. Conversation forking, per-message editing, export/import. Token budget visible per file.
 
-`--region`: AWS region to use (for AWS Bedrock). Default is `us-west-2`.
+### 💻 Web UI + CLI
 
-#### Model Parameters
-These parameters can also be configured in the web interface:
+Full browser UI at `localhost:6969`. Also a rich terminal mode (`ziya chat`) with `prompt_toolkit` autocomplete, multiline paste detection, and streaming. One-shot mode (`ziya ask "question"`), code review (`ziya review --staged`), and pipe support (`git diff | ziya review`).
 
-`--temperature`: Temperature for model generation. Lower values make output more deterministic.
+---
 
-`--top-p`: Top-p sampling parameter for supported models.
+## How People Use It
 
-`--top-k`: Top-k sampling parameter for supported models.
+**Development** — Ask about code, get diffs with one-click apply. Generate architecture diagrams from the actual codebase. Fork conversations to explore alternatives. Run parallel agents on complex refactors.
 
-`--max-output-tokens`: Maximum number of tokens to generate in the response.
+**Operations** — Paste thread dumps, log snippets, or error traces. Get visual analysis: deadlock diagrams, latency charts, packet breakdowns. Drag and drop existing monitoring dashboards, Grafana screenshots, or CloudWatch plots for AI-assisted interpretation alongside the code that produced the data.
 
-#### Advanced Options
+**Architecture** — Point it at a codebase and get living architecture documentation — DrawIO and Mermaid diagrams generated from what the code actually does, not from stale wiki pages. Ask "what happens if this service goes down?" and get failure mode diagrams with affected paths highlighted.
 
-`--mcp`: Enable MCP (Model Context Protocol) server integration. Enabled by default.
+---
 
-`--no-mcp`: Disable MCP (Model Context Protocol) server integration.
+## Supported Models
 
-`--ast`: Enable AST-based code understanding capabilities. Disabled by default.
+| Provider | Models | What You Need |
+|---|---|---|
+| **AWS Bedrock** | Claude 4.6/4.5/4.0/3.7/3.5 (Sonnet, Opus, Haiku), Nova Premier/Pro/Lite/Micro, DeepSeek R1/V3, Qwen3, and more | AWS credentials with Bedrock access |
+| **Google** | Gemini 3.1 Pro, 3 Pro/Flash, 2.5 Pro/Flash, 2.0 Flash | `GOOGLE_API_KEY` |
+| **OpenAI** | GPT-4.1/Mini/Nano, GPT-4o, o3, o4-mini | `OPENAI_API_KEY` |
 
-`--ast-resolution`: AST context resolution level. Options: `disabled`, `minimal`, `medium`, `detailed`, `comprehensive`. Default is `medium`.
+Switch models mid-conversation. Configure temperature, top-k, top-p, max tokens from the UI. Prompt caching reduces cost and latency on follow-up messages.
+
+---
+
+## Quick Start
 
 ```bash
-# Example with AWS Bedrock
-ziya --endpoint=bedrock --model=sonnet4.0 --profile=default --region=us-east-1 --exclude='node_modules,dist,*.pyc'
+# Install
+pip install ziya
 
-# Example with Google Gemini
-ziya --endpoint=google --model=gemini-pro --exclude='node_modules,dist,*.pyc'
+# For AWS Bedrock (most common)
+export AWS_ACCESS_KEY_ID=<your-key>
+export AWS_SECRET_ACCESS_KEY=<your-secret>
 
-# Example with include-only option for specific directories
-ziya --include-only='src,lib' --profile=default
+# For Google Gemini
+export GOOGLE_API_KEY=<your-key>
 
-# Example with include-only option for specific file types
-ziya --include-only='*.py,*.tsx' --profile=default
-
-# Example with external include paths
-ziya --include='/path/to/external/lib,/another/external/path'
+# Run
+ziya
 ```
+
+Open [localhost:6969](http://localhost:6969). Ziya reads your codebase from the current directory and loads it as context.
+
+### Common Options
+
+```bash
+# Use a specific model
+ziya --endpoint=bedrock --model=sonnet4.0
+
+# Exclude build artifacts
+ziya --exclude='node_modules,dist,*.pyc'
+
+# Focus on specific directories
+ziya --include-only='src,lib'
+
+# CLI chat mode (terminal)
+ziya chat
+
+# One-shot question
+ziya ask "explain the authentication flow"
+
+# Code review
+git diff | ziya review
+```
+
+See `ziya --help` for all options, or configure everything interactively in the web UI.
+
+---
+
+## Comparison
+
+| | IDE Forks | CLI Tools | Extensions | **Ziya** |
+|---|---|---|---|---|
+| Keep your editor | ❌ | ✅ | ✅ | ✅ |
+| Rich visual UI | ✅ | ❌ | Partial | ✅ |
+| Hunk-level diff apply | Partial | ❌ | ❌ | ✅ |
+| Inline diagrams (6 types) | ❌ | ❌ | ❌ | ✅ |
+| Operational data → visual analysis | ❌ | ❌ | ❌ | ✅ |
+| Drag-and-drop image/document analysis | Partial | ❌ | ❌ | ✅ |
+| Self-hosted / fully private | ❌ | ✅ | ❌ | ✅ |
+| Parallel agents (swarm) | ❌ | ❌ | ❌ | ✅ |
+| Web + Terminal modes | ❌ | Terminal only | ❌ | ✅ |
+| Multi-model switching | Partial | ✅ | Partial | ✅ |
+
+---
+
+## Enterprise
+
+Ziya includes a plugin architecture for enterprise deployment — pluggable auth, endpoint restriction, encryption-at-rest, data retention policies, shared Bedrock accounts, and custom MCP formatting. Currently deployed at scale internally at a major technology company.
+
+See [Docs/Enterprise.md](Docs/Enterprise.md) for the full plugin system.
+
+---
+
+## Documentation
+
+- [Feature Inventory](Docs/FeatureInventory.md) — comprehensive list of every capability
+- [Architecture Overview](Docs/ArchitectureOverview.md) — system design and component map
+- [User Configuration](Docs/UserConfigurationFiles.md) — `~/.ziya/` config files reference
+- [MCP Security Controls](Docs/MCPSecurityControls.md) — tool poisoning, shadowing, rug-pull detection
+- [Skills](Docs/Skills.md) — the skills system and built-in skills
+- [Enterprise](Docs/Enterprise.md) — plugin interfaces and internal deployment
+- [Brand Guide](Docs/BrandGuide.md) — logo and color specifications
+
+---
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Bug fixes, visualization improvements, model support, and documentation are all welcome.
+
+## Security
+
+See [SECURITY.md](SECURITY.md). Do not open public issues for security vulnerabilities.
+
+## License
+
+[MIT](LICENSE)

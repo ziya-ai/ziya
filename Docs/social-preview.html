@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<!--
+  Open this file in a browser, then screenshot at exactly 1280x640.
+  DevTools: Cmd+Shift+M → set 1280x640 → Cmd+Shift+P → "Capture full size screenshot"
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    width: 1280px;
+    height: 640px;
+    overflow: hidden;
+    background: linear-gradient(135deg, #18121b 0%, #0d2220 100%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Avenir Next', Avenir, Montserrat, 'Trebuchet MS', sans-serif;
+  }
+  .logo {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    margin-bottom: 32px;
+  }
+  .z {
+    font-family: Georgia, 'Times New Roman', serif;
+    font-weight: 800;
+    font-size: 220px;
+    letter-spacing: -0.02em;
+    background: linear-gradient(90deg, #b32ca8, #2dd4bf);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    filter: drop-shadow(0 0 18px rgba(179, 44, 168, 0.5));
+  }
+  .iya {
+    font-weight: 700;
+    font-size: 196px;
+    letter-spacing: 0.10em;
+    background: linear-gradient(90deg, #8b3aaa, #2dd4bf);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    position: relative;
+    top: 2px;
+  }
+  .tagline {
+    font-weight: 400;
+    font-size: 42px;
+    background: linear-gradient(90deg, #a0a0a0, #d0d0d0);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 20px;
+    filter: drop-shadow(0 0 8px rgba(45, 212, 191, 0.2));
+  }
+  .divider {
+    width: 360px;
+    height: 2px;
+    background: linear-gradient(90deg, #b32ca8, #2dd4bf);
+    opacity: 0.35;
+    margin-bottom: 20px;
+  }
+  .subtitle {
+    font-weight: 300;
+    font-size: 26px;
+    color: #808080;
+    letter-spacing: 0.18em;
+  }
+</style>
+</head>
+<body>
+  <div class="logo">
+    <span class="z">ℤ</span><span class="iya">iya</span>
+  </div>
+  <div class="tagline">AI Technical Workbench</div>
+  <div class="divider"></div>
+  <div class="subtitle">Code · Architecture · Operations</div>
+</body>
+</html>
