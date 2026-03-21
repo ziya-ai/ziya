@@ -36,6 +36,7 @@ from app.providers.base import (
     UsageEvent,
 )
 from app.utils.logging_utils import get_mode_aware_logger
+from app.providers.bedrock_region_router import BedrockRegionRouter
 
 logger = get_mode_aware_logger(__name__)
 
@@ -66,6 +67,7 @@ class BedrockProvider(LLMProvider):
         self.model_id = model_id
         self.model_config = model_config
         self._region = region
+        self._aws_profile = aws_profile
 
         from app.agents.models import ModelManager
 
@@ -89,6 +91,13 @@ class BedrockProvider(LLMProvider):
                     retries={'max_attempts': 2, 'mode': 'adaptive'},
                 ),
             )
+
+    # ------------------------------------------------------------------
+        # Multi-region router — activates only when model_config has
+        # multiple region prefixes in model_id (e.g. {"us": ..., "eu": ...}).
+        self._region_router = BedrockRegionRouter(
+            model_config=model_config, aws_profile=aws_profile, primary_region=region,
+        )
 
     # ------------------------------------------------------------------
     # LLMProvider interface
@@ -162,6 +171,39 @@ class BedrockProvider(LLMProvider):
                         except Exception:
                             pass  # fall through to ErrorEvent
 
+                # Region failover: on throttle/overloaded, try an alternate
+                # region before surfacing the error to the orchestrator.
+                # This is a single failover attempt — not a retry loop.
+                if (
+                    classified in (ErrorType.THROTTLE, ErrorType.OVERLOADED)
+                    and self._region_router.enabled
+                ):
+                    self._region_router.report_throttle(self._region)
+                    alt_endpoint = self._region_router.select_endpoint(exclude=self._region)
+                    if alt_endpoint:
+                        alt_client = self._region_router.get_client_for_region(alt_endpoint.region)
+                        if alt_client:
+                            logger.info(
+                                f"BedrockProvider: region failover {self._region} → "
+                                f"{alt_endpoint.region} ({alt_endpoint.model_id})"
+                            )
+                            try:
+                                alt_params = {
+                                    "modelId": alt_endpoint.model_id,
+                                    "body": json.dumps(body),
+                                }
+                                response = await asyncio.wait_for(
+                                    asyncio.get_event_loop().run_in_executor(
+                                        _bedrock_executor,
+                                        lambda: alt_client.invoke_model_with_response_stream(**alt_params),
+                                    ),
+                                    timeout=connect_timeout,
+                                )
+                                self._region_router.report_success(alt_endpoint.region)
+                                break
+                            except Exception as alt_e:
+                                logger.warning(f"BedrockProvider: failover to {alt_endpoint.region} also failed: {alt_e}")
+
                 yield ErrorEvent(
                     message=error_str,
                     error_type=classified,
@@ -176,6 +218,10 @@ class BedrockProvider(LLMProvider):
         # Parse the boto3 stream into normalized events
         async for event in self._parse_stream(response, config):
             yield event
+
+        # Successful completion — reward the region that served the request
+        if self._region_router.enabled:
+            self._region_router.report_success(self._region)
 
     def build_assistant_message(
         self,
@@ -267,6 +313,15 @@ class BedrockProvider(LLMProvider):
     @property
     def provider_name(self) -> str:
         return "bedrock"
+
+    @property
+    def region_routing_status(self) -> Dict[str, Any]:
+        """Diagnostics for multi-region routing state."""
+        return self._region_router.status()
+
+    @property
+    def region_router(self) -> BedrockRegionRouter:
+        return self._region_router
 
     # ------------------------------------------------------------------
     # Internal: request body building
