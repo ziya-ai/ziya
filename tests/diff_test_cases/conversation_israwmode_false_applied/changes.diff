@@ -1,0 +1,26 @@
+diff --git a/frontend/src/components/Conversation.tsx b/frontend/src/components/Conversation.tsx
+--- a/frontend/src/components/Conversation.tsx
++++ b/frontend/src/components/Conversation.tsx
+@@ -586,12 +586,18 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
+                                                 {renderRetryButton(actualIndex)}
+                                             </div>
+                                             <div className="message-content">
+-                                                <MarkdownRenderer
+-                                                    markdown={msg.content}
+-                                                    enableCodeApply={enableCodeApply}
+-                                                    onOpenShellConfig={onOpenShellConfig}
+-                                                        isStreaming={false}
+-                                                />
++                                                {isRawMode ? (
++                                                    <pre className="raw-markdown-view">{msg.content}</pre>
++                                                ) : (
++                                                    <MarkdownRenderer
++                                                        markdown={msg.content}
++                                                        enableCodeApply={enableCodeApply}
++                                                        onOpenShellConfig={onOpenShellConfig}
++                                                            isStreaming={false}
++                                                    />
++                                                )}
+                                             </div>
+                                         </>
+                                     ) : null}

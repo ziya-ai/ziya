@@ -1,0 +1,5 @@
+{
+    "description": "Real Conversation.tsx: the human message MarkdownRenderer (line ~562) already has isRawMode wrapper, causing false 'already applied' when wrapping the assistant message MarkdownRenderer (line ~589) with the same pattern",
+    "target_file": "frontend/src/components/Conversation.tsx",
+    "expected_to_fail": false
+}

@@ -1,0 +1,5 @@
+{
+    "description": "Test case where a similar MarkdownRenderer block elsewhere in the file already has the isRawMode wrapper, causing false 'already applied' detection for a different block that needs the change",
+    "target_file": "frontend/src/components/Conversation.tsx",
+    "expected_to_fail": false
+}
