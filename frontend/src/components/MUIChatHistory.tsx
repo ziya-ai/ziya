@@ -2210,6 +2210,11 @@ const MUIChatHistory = () => {
     // the current view, e.g. a globally-shared conv whose folder isn't shared) to root
     activeConversations.forEach(conv => {
       if (!conv.folderId || !folderMap.has(conv.folderId)) {
+        // Delegate conversations belong in their swarm folder. If the folder
+        // hasn't synced yet, hide them rather than showing orphaned "New
+        // Conversation" entries at root that vanish when clicked.
+        if (conv.delegateMeta && conv.folderId) return;
+
         const convNode = {
           id: `conv-${conv.id}`,
           name: conv.title,
