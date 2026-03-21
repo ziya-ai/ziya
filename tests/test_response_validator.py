@@ -193,6 +193,39 @@ class TestSanitizeText:
         assert result == "Dear Jeff,\n\nThis requires AI summary.\n\n\nThanks!"
 
 
+class TestSanitizeTextPreserveAnsi:
+    """ANSI escape sequences are always preserved (rendered by terminal or frontend)."""
+
+    def test_ansi_color_preserved_by_default(self):
+        """ANSI color codes survive sanitization (frontend converts to HTML)."""
+        text = "\x1b[91mFAIL\x1b[0m"
+        result = sanitize_text(text)
+        assert result == text, f"ANSI escape stripped: {result!r}"
+
+    def test_full_ansi_sequence_preserved(self):
+        """Complete ANSI sequences (ESC + bracket + params + terminator) survive intact."""
+        text = "\x1b[91mFAIL\x1b[0m normal \x1b[1;32mPASS\x1b[0m"
+        result = sanitize_text(text)
+        assert result == text
+
+    def test_preserve_ansi_still_strips_other_control_chars(self):
+        """Non-ESC control characters are still stripped."""
+        text = "hello\x00world\x07test\x1b[32mOK\x1b[0m"
+        result = sanitize_text(text)
+        assert "\x00" not in result
+        assert "\x07" not in result
+        assert "\x1b[32m" in result
+        assert result == "helloworldtest\x1b[32mOK\x1b[0m"
+
+    def test_preserve_ansi_still_strips_hidden_chars(self):
+        """Hidden-char stripping still works alongside ANSI preservation."""
+        text = "\u200bhello\x1b[91mred\x1b[0m\u200bworld"
+        result = sanitize_text(text)
+        assert "\u200b" not in result
+        assert "\x1b[91m" in result
+        assert result == "hello\x1b[91mred\x1b[0mworld"
+
+
 # =============================================================================
 # scan_text_for_injection
 # =============================================================================
