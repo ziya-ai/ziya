@@ -2359,3 +2359,53 @@ body:not(.dark) .token.attr-name {
   opacity: 0.6;
   cursor: not-allowed;
 }
+
+/* ── Raw Markdown View ─────────────────────────────────── */
+
+.raw-markdown-view {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  overflow-x: auto;
+  tab-size: 4;
+}
+
+.dark .raw-markdown-view {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
+  color: #d4d4d4;
+}
+
+.raw-mode-banner {
+  display: flex;
+  align-items: center;
+  padding: 6px 14px;
+  margin-bottom: 8px;
+  background: #fffbe6;
+  border: 1px solid #ffe58f;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #8c6d1f;
+}
+
+.raw-mode-banner kbd {
+  padding: 1px 5px;
+  margin: 0 2px;
+  border: 1px solid #d9d9d9;
+  border-radius: 3px;
+  background: #fafafa;
+  font-size: 11px;
+}
+
+.dark .raw-mode-banner {
+  background: #2b2111;
+  border-color: #594214;
+  color: #d8bd75;
+}
