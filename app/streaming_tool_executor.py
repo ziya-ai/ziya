@@ -2492,6 +2492,10 @@ Please try again or proceed without this tool."""
                                             result_text = error_msg
                                         elif 'repetitive execution' in error_msg:
                                             result_text = f"BLOCKED: {error_msg} Previous attempts may have succeeded - check the results above before retrying."
+                                        elif result.get('policy_block') or '🚫 BLOCKED' in error_msg or '🚫 WRITE BLOCKED' in error_msg:
+                                            result_text = (f"POLICY BLOCK (do NOT retry this command): {error_msg}\n"
+                                                          "This command is blocked by shell security policy. "
+                                                          "Use a different approach or an allowed command.")
                                         elif 'non-zero exit status' in error_msg:
                                             result_text = f"COMMAND FAILED: {error_msg}. The external tool encountered an error."
                                         elif 'Content truncated' in error_msg:
