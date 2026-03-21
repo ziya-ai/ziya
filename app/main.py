@@ -283,8 +283,14 @@ def update_package(current_version: str, latest_version: Optional[str]) -> None:
     try:
         logger.info(f"Updating ziya from {current_version} to {latest_version}")
 
+        # Use public PyPI if pip is pointed at a corporate mirror
+        pip_index = os.environ.get('PIP_INDEX_URL', '')
+        extra_args = []
+        if not pip_index or 'pypi.org' not in pip_index:
+            extra_args = ['--index-url', 'https://pypi.org/simple/']
+
         if is_package_installed_with_pip('ziya'):
-            subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade', 'ziya'], 
+            subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--upgrade'] + extra_args + ['ziya'],
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         elif is_package_installed_with_pipx('ziya'):
             subprocess.check_call(['pipx', 'upgrade', 'ziya'],
