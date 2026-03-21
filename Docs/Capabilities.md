@@ -190,3 +190,25 @@ Some models support extended reasoning before responding:
 - **Adaptive thinking** — Sonnet 4.6, Opus 4.6: controllable effort (`low` through `max`), enabled via model settings panel
 - **Extended thinking** — Sonnet 3.7, Sonnet/Opus 4.0–4.5, Nova Pro/Premier: enable via model settings panel
 - **Gemini thinking levels** — Gemini 3 Pro/Flash: `low`, `medium`, `high`, set in model settings
+
+## Multi-Region Routing (Bedrock)
+
+Models available in multiple AWS regions benefit from automatic region failover on throttle. When a request is rate-limited in the primary region, Ziya transparently retries in an alternate region before surfacing the error.
+
+**How it works:**
+- Models with cross-region inference profiles (e.g. `us.`, `eu.`, `global.` prefixes) are eligible
+- Each region is weighted; the user's configured region gets a preference bonus
+- When a throttle or overloaded error occurs, the request is retried once in the highest-weighted alternate region
+- Throttled regions have their weight temporarily reduced, shifting subsequent requests toward healthier regions
+- Weights recover automatically after a cooldown period (default: 2 minutes)
+
+**Eligible models** (those with multi-region model IDs):
+- Sonnet 4.0, 4.5, 4.6
+- Sonnet 3.5, 3.5-v2
+- Opus 4.6
+
+**Environment variables:**
+| Variable | Default | Description |
+|---|---|---|
+| `BEDROCK_REGION_COOLDOWN_SECS` | `120` | Seconds before a throttled region recovers full weight |
+

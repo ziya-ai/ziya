@@ -21,6 +21,8 @@
 | **Session resume** | `ziya chat --resume` or `/resume` in-session — interactive picker to restore any of the last 10 sessions |
 | **Session suspend** | `/suspend` — gracefully save and exit; re-enter exactly where you left off |
 | **Pipe / stdin support** | Any `ziya` command accepts piped stdin (log files, diffs, error output, raw text) |
+| **Raw Markdown Toggle** | `Ctrl+Shift+U` toggles the conversation between rendered and raw markdown view, showing the pre-rendered source with all fence markers, inline formatting, and whitespace preserved verbatim — useful for diagnosing rendering issues or copying raw content for reprocessing |
+| **Keyboard shortcuts** | `Ctrl+Shift+U` raw/rendered toggle · `Ctrl+Shift+D` health debug · `Ctrl+Shift+G` conversation graph · `Ctrl+R` reload |
 
 ---
 
