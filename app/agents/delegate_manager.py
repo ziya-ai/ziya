@@ -51,7 +51,7 @@ ProgressCallback = Callable[
     Coroutine[Any, Any, None],
 ]
 
-DEFAULT_MAX_CONCURRENCY = 4
+DEFAULT_MAX_CONCURRENCY = 8
 
 
 class DelegateManager:
@@ -819,6 +819,8 @@ class DelegateManager:
         checkpoints: list = []
         _CHECKPOINT_INTERVAL = 4000  # chars between interim snapshots
         accumulated = ""
+        # Prose-only accumulator: model text without tool call artifacts.
+        prose_only = ""
         crystal_from_stream: Optional[MemoryCrystal] = None
         streaming_msg_id: Optional[str] = None
         stream_failed = False
@@ -834,6 +836,7 @@ class DelegateManager:
                     ctype = chunk.get("type")
                     if ctype == "text":
                         accumulated += chunk.get("content", "")
+                        prose_only += chunk.get("content", "")
                         await delegate_stream_relay.push(
                             spec.conversation_id or did, chunk
                         )
@@ -938,12 +941,15 @@ class DelegateManager:
                     )
                 _decisions = _decisions[:5]
 
-                _summary_limit = min(len(accumulated), 2000)
+                # Use prose_only (model text without tool artifacts) for the
+                # summary.  Fall back to accumulated if model produced no prose.
+                _summary_source = prose_only.strip() or accumulated
+                _summary_limit = min(len(_summary_source), 2000)
                 _stub_summary = f"Completed: {spec.name}.\n\n"
-                _stub_summary += accumulated[:_summary_limit]
-                if len(accumulated) > _summary_limit:
+                _stub_summary += self._clean_crystal_summary(_summary_source[:_summary_limit])
+                if len(_summary_source) > _summary_limit:
                     _stub_summary += (
-                        f"\n\n[...truncated, {len(accumulated) - _summary_limit}"
+                        f"\n\n[...truncated, {len(_summary_source) - _summary_limit}"
                         f" chars omitted]"
                     )
 
@@ -1231,7 +1237,7 @@ class DelegateManager:
 
         incoming = (
             f"**{spec_emoji} {spec_name} → orchestrator:** [Crystal received]\n\n"
-            f"{crystal.summary}"
+            f"{self._clean_crystal_summary(crystal.summary, max_length=800)}"
             f"{files_md}"
             f"{decisions_md}\n\n"
             f"*({crystal.original_tokens:,} → {crystal.crystal_tokens:,} tokens)*"
@@ -1429,18 +1435,34 @@ class DelegateManager:
             items = "\n".join(f"- {d}" for d in all_decisions[:6])
             decisions_md = f"\n\n**Key decisions across delegates:**\n{items}"
 
-        # Crystal summaries in a collapsible block
+        # Clean crystal summaries (prose only, no tool noise)
         summaries: list[str] = []
         for spec in plan.delegate_specs:
             c = crystals.get(spec.delegate_id)
             if c and c.summary:
-                summaries.append(f"**{spec.name}:** {c.summary}")
+                clean = self._clean_crystal_summary(c.summary, max_length=500)
+                summaries.append(f"**{spec.name}:** {clean}")
         summaries_md = ""
         if summaries:
             body = "\n\n".join(summaries)
-            summaries_md = (
-                f"\n\n<details>\n<summary>Crystal summaries</summary>\n\n"
-                f"{body}\n</details>"
+            summaries_md = f"\n\n**Delegate results:**\n\n{body}"
+
+        # Full artifacts per delegate — expandable for deep inspection
+        artifacts_md = ""
+        artifact_blocks: list[str] = []
+        for spec in plan.delegate_specs:
+            c = crystals.get(spec.delegate_id)
+            if c and c.summary and len(c.summary) > 200:
+                artifact_blocks.append(
+                    f"<details>\n"
+                    f"<summary>{spec.emoji} {spec.name} — full output</summary>\n\n"
+                    f"{c.summary}\n"
+                    f"</details>"
+                )
+        if artifact_blocks:
+            artifacts_md = (
+                f"\n\n---\n\n**Full delegate outputs** (click to expand):\n\n"
+                + "\n\n".join(artifact_blocks)
             )
 
         if failed_count:
@@ -1459,6 +1481,7 @@ class DelegateManager:
             f"{decisions_md}"
             f"{summaries_md}"
         )
+        content += artifacts_md
         if synthesis:
             content += (
                 f"\n\n---\n\n**Orchestrator Synthesis:**\n\n{synthesis}"
@@ -1495,7 +1518,7 @@ class DelegateManager:
             if s == "crystal"
         )
 
-        summary_preview = crystal.summary[:120] if crystal.summary else ""
+        summary_preview = self._clean_crystal_summary(crystal.summary, max_length=120)
         content = f"💎 **{done}/{total}** — {name} completed: {summary_preview}"
 
         from app.models.chat import Message
@@ -1582,7 +1605,7 @@ class DelegateManager:
         crystal_summaries = []
         all_files: List[str] = []
         for did, crystal in sub_crystals.items():
-            crystal_summaries.append(f"- **{did}:** {crystal.summary}")
+            crystal_summaries.append(f"- **{did}:** {self._clean_crystal_summary(crystal.summary, max_length=300)}")
             all_files.extend(fc.path for fc in crystal.files_changed)
 
         summary_text = (
@@ -1820,6 +1843,41 @@ class DelegateManager:
             logger.info(f"🆕 Dynamic delegate spawned: {spec.name} ({spec.delegate_id})")
         except Exception as exc:
             logger.error(f"Failed to spawn dynamic delegate {spec.name}: {exc}", exc_info=True)
+
+    @staticmethod
+    def _clean_crystal_summary(text: str, max_length: int = 0) -> str:
+        """Strip tool-call noise from a crystal summary for user display.
+
+        Removes tool headers (🔧 **...**), fenced tool output blocks,
+        sequential-thinking JSON fragments, and collapse runs of blank
+        lines.  Returns clean prose suitable for the completion report.
+        """
+        import re
+        if not text:
+            return ""
+        # Remove 🔧 tool header lines
+        cleaned = re.sub(r'\n*🔧\s*\*\*[^*]*\*\*\n*', '\n', text)
+        # Remove 🛠️ tool header lines
+        cleaned = re.sub(r'\n*🛠️[^\n]*\n*', '\n', cleaned)
+        # Remove fenced code blocks that look like tool output
+        # (```...``` blocks shorter than 30 lines — keeps actual code diffs)
+        def _strip_short_fences(m: re.Match) -> str:
+            body = m.group(0)
+            if body.count('\n') < 30:
+                return '\n'
+            return body
+        cleaned = re.sub(r'```[^\n]*\n[\s\S]*?```', _strip_short_fences, cleaned)
+        # Remove sequential-thinking JSON fragments
+        cleaned = re.sub(r'\{[^}]*"thoughtNumber"[^}]*\}', '', cleaned)
+        # Remove "▶ Expand (Output ...)" lines
+        cleaned = re.sub(r'▶\s*Expand\s*\(Output[^\n]*\n?', '', cleaned)
+        # Remove directory listing blocks (header + 2-space-indented entries)
+        cleaned = re.sub(r'Contents of \S+\s*\[\d+ entries\][^\n]*\n(?:  \S[^\n]*\n)*', '', cleaned)
+        # Collapse multiple blank lines
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+        if max_length and len(cleaned) > max_length:
+            cleaned = cleaned[:max_length] + '…'
+        return cleaned
 
     @staticmethod
     def _find_spec(plan: TaskPlan, delegate_id: str) -> Optional[DelegateSpec]:

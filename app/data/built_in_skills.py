@@ -212,7 +212,8 @@ Rules:
 - dependencies lists delegate_ids that must complete first
 - files should be specific paths, not globs (empty array [] is valid for coordinators/verifiers)
 - role must be one of: "worker", "coordinator", "verifier"
-- Aim for 2-8 delegates total including coordinator/verifier roles
+- Go wide when the work is parallelizable — use as many delegates as there are separably useful units of work
+- Don't create delegates just to fill a quota; each one should have a distinct, non-overlapping responsibility
 - Workers should run in parallel (no dependencies on each other)
 - If the task is simple enough for a single response, just answer directly — don't over-delegate
 - KEEP AGENTS NARROW: Prefer many small focused agents over few large general ones.
