@@ -222,6 +222,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
     verificationError: verificationErrorProp
 }) => {
     const [isExpanded, setIsExpanded] = useState(false);
+    const { ansiToHtml, containsAnsi } = useMemo(() => require('../utils/ansiToHtml'), []);
     const [renderedHtml, setRenderedHtml] = useState('');
     const [renderedHeaderHtml, setRenderedHeaderHtml] = useState('');
     const [highlightedShellOutput, setHighlightedShellOutput] = useState('');
@@ -726,6 +727,19 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
                             <code className={`language-${contentLanguage === 'sh' ? 'bash' : contentLanguage}`} dangerouslySetInnerHTML={{ __html: highlightedShellOutput }} />
                         </pre>
                     ) : (
+                        containsAnsi(cleanContent) ? (
+                        <pre style={{
+                            margin: 0,
+                            padding: '16px',
+                            color: colors.contentText,
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-word',
+                            maxHeight: isExpanded ? 'none' : '400px',
+                            overflow: isExpanded ? 'visible' : 'auto'
+                        }}>
+                            <code dangerouslySetInnerHTML={{ __html: ansiToHtml(cleanContent) }} />
+                        </pre>
+                        ) : (
                         <pre style={{
                             margin: 0,
                             padding: '16px',
@@ -737,6 +751,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
                         }}>
                             {cleanContent}
                         </pre>
+                        )
                     )
                 )
             )}

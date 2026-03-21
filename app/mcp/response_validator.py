@@ -68,7 +68,11 @@ _HIDDEN_CHARS_RE = re.compile(
 _SURROGATE_RE = re.compile("[\ud800-\udfff]")
 
 # Control characters (except \t \n \r which are normal whitespace).
-_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+# ESC (\x1b) is intentionally preserved: in CLI mode the terminal renders
+# ANSI escape sequences natively; in server/web mode the frontend converts
+# them to styled HTML spans.  The range is therefore split around \x1b:
+#   \x0e-\x1a (before ESC) + \x1c-\x1f (after ESC).
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1a\x1c-\x1f\x7f]")
 
 # Bidi override characters for visual spoofing.
 _BIDI_OVERRIDE_RE = re.compile(
@@ -185,7 +189,7 @@ def validate_response(
     return result
 
 
-def sanitize_text(text: str) -> str:
+def sanitize_text(text: str, preserve_ansi: bool = False) -> str:  # noqa: ARG001
     """Strip hidden characters, control chars, bidi overrides, and surrogates.
 
     Per SDO-183 (GenAI Hidden Character Smuggling), stripping is applied
@@ -196,6 +200,10 @@ def sanitize_text(text: str) -> str:
         return str(text)
 
     # Iterative stripping per SDO-183 reference implementation (do-while loop).
+    # ESC (\x1b) is always preserved so ANSI color codes survive.  In CLI mode
+    # the terminal renders them; in web mode the frontend converts them to
+    # styled HTML <span> tags via ansiToHtml().
+
     previous = None
     cleaned = text
     while cleaned != previous:
