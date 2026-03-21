@@ -590,6 +590,18 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
                         if is_code_move:
                             logger.debug(f"Distinctive added content found at pos {search_pos} but also present in removed lines (code move) - not already applied")
                             continue
+                        # The added content exists in the file, but before
+                        # declaring already applied, verify the removal
+                        # content is truly gone. If it still exists somewhere,
+                        # the hunk has not been applied — there is just a
+                        # similar block that coincidentally matches the result.
+                        for scan_pos in range(len(file_lines) - len(removed_lines) + 1):
+                            file_scan_block = [normalize_line_for_comparison(file_lines[scan_pos + j])
+                                               for j in range(len(removed_lines))]
+                            if file_scan_block == removed_normalized:
+                                logger.debug(f"Distinctive added content found at {search_pos} but removal content still present at {scan_pos} - NOT already applied")
+                                return False
+
                         logger.debug(f"Hunk appears already applied: distinctive added content found at pos {search_pos}")
                         return True
                 
@@ -660,6 +672,7 @@ def _check_pure_addition_already_applied(file_lines: List[str], added_lines: Lis
             
             if check_pos + len(added_lines) > len(file_lines):
                 continue
+                        # The added content exists in the file, but before
             
             file_block = [normalize_line_for_comparison(file_lines[check_pos + i]) 
                          for i in range(len(added_lines))]
