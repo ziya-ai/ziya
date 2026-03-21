@@ -722,11 +722,27 @@ class MCPClient:
                     self._last_successful_call = time.time()
                     return response.get("result")
                 
-                # Use longer timeout for external servers that may do complex processing
+                # Determine readline timeout based on context:
+                # 1. If this is a tools/call with an explicit timeout arg, honour it (+ buffer)
+                # 2. External servers get a longer default
+                # 3. Everything else gets 30s
                 server_name = self.server_config.get('name', 'unknown')
                 is_external_server = any(keyword in server_name.lower() 
                                        for keyword in ['fetch', 'web', 'http', 'api', 'external'])
                 timeout_duration = 60.0 if is_external_server else 30.0
+
+                # For tool calls, extract the tool's own timeout so long-running
+                # commands aren't killed by the readline timeout before the
+                # subprocess timeout fires (which gives a cleaner error).
+                if method == 'tools/call' and params:
+                    tool_timeout = params.get('arguments', {}).get('timeout')
+                    if tool_timeout is not None:
+                        try:
+                            tool_timeout = float(tool_timeout)
+                            # Add 10s buffer so subprocess.TimeoutExpired fires first
+                            timeout_duration = max(timeout_duration, tool_timeout + 10.0)
+                        except (ValueError, TypeError):
+                            pass  # Invalid value, keep default
                 
                 logger.debug(f"Using {timeout_duration}s timeout for server: {server_name}")
                 
@@ -850,7 +866,7 @@ class MCPClient:
                 logger.error(f"Timeout waiting for response from MCP server for method '{method}'")
                 return {
                     "error": True,
-                    "message": f"Request timed out after 30 seconds for method '{method}'",
+                    "message": f"Request timed out after {timeout_duration:.0f} seconds for method '{method}'",
                     "code": -32000 # Custom timeout error code
                 }
             except Exception as e:
@@ -872,15 +888,21 @@ class MCPClient:
                         "code": error_code
                     }
                 
+                # Don't retry policy blocks (shell BLOCKED, WRITE BLOCKED) —
+                # these are permanent rejections that won't change on retry.
+                if "BLOCKED" in error_message:
+                    logger.info(f"MCP server policy block (not retrying): {error_message[:200]}")
+                    return {
+                        "error": True,
+                        "message": error_message,
+                        "code": error_code,
+                        "policy_block": True
+                    }
+                
                 # Check for external server specific errors that should trigger retries
                 external_server_errors = [
-                    "ExtractArticle.js", "non-zero exit status", "Command", "returned",
-                    "cache", "processing", "temporary", "busy"
-                ]
-                
-                # Add more specific error patterns
-                content_processing_errors = [
-                    "Content type", "cannot be simplified", "truncated"
+                    "ExtractArticle.js", "non-zero exit status",
+                    "temporary failure", "temporarily unavailable", "server is busy"
                 ]
                 
                 should_retry_external = any(err_pattern in error_message for err_pattern in external_server_errors)
