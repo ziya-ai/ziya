@@ -126,9 +126,3 @@ Models not in the list simply won't appear. The model definitions themselves (ca
 ## MCP Tools
 
 Ziya can connect to external MCP (Model Context Protocol) servers to give the model additional capabilities — shell access, web search, internal databases, and more. See your server's documentation for setup instructions.
-
----
-
-## Internal (Amazon) Users
-
-Use the `AtoZiya` internal package. Run `mwinit -o` before starting Ziya to refresh credentials. Everything else is automatic.
