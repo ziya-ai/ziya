@@ -191,7 +191,7 @@ class TestStreamingModels:
                 try:
                     server_process.terminate()
                     server_process.wait(timeout=5)
-                except:
+                except Exception:
                     server_process.kill()
                     server_process.wait(timeout=2)
                 # Add delay to ensure port is released
@@ -267,7 +267,7 @@ class TestStreamingModels:
                 try:
                     server_process.terminate()
                     server_process.wait(timeout=5)
-                except:
+                except Exception:
                     server_process.kill()
                     server_process.wait(timeout=2)
                 # Add delay to ensure port is released
@@ -306,7 +306,7 @@ class TestStreamingModels:
                     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                         if s.connect_ex(('127.0.0.1', server_port)) == 0:
                             break
-                except:
+                except Exception:
                     pass
                 time.sleep(0.1)
             else:
@@ -361,7 +361,7 @@ class TestStreamingModels:
                 try:
                     server_process.terminate()
                     server_process.wait(timeout=5)
-                except:
+                except Exception:
                     server_process.kill()
                     server_process.wait(timeout=2)
                 # Add delay to ensure port is released
@@ -462,7 +462,7 @@ class TestStreamingModels:
                 try:
                     server_process.terminate()
                     server_process.wait(timeout=5)
-                except:
+                except Exception:
                     server_process.kill()
                     server_process.wait(timeout=2)
                 # Add delay to ensure port is released

@@ -90,6 +90,10 @@ class DiffRegressionTest(unittest.TestCase):
             diff = f.read()
             
         # Load expected result
+        if metadata.get('expect_deletion', False):
+            expected = ''
+            return metadata, original, diff, expected
+
         with open(expected_file, 'r', encoding='utf-8') as f:
             expected = f.read()
             
@@ -157,6 +161,24 @@ class DiffRegressionTest(unittest.TestCase):
         # Check if test is expected to fail
         expected_to_fail = metadata.get('expected_to_fail', False)
         
+        # Handle file deletion test cases
+        if metadata.get('expect_deletion', False):
+            test_file_path = os.path.join(self.temp_dir, metadata['target_file'])
+            os.makedirs(os.path.dirname(test_file_path), exist_ok=True)
+            with open(test_file_path, 'w', encoding='utf-8') as f:
+                f.write(original)
+
+            from app.utils.diff_utils.pipeline.pipeline_manager import apply_diff_pipeline
+            result = apply_diff_pipeline(diff, test_file_path)
+
+            self.assertEqual(result.get('status'), 'success',
+                             f"Deletion diff failed: {result.get('error', result)}")
+            self.assertTrue(result.get('is_deletion', False),
+                            f"Pipeline did not mark result as deletion: {result}")
+            self.assertFalse(os.path.exists(test_file_path),
+                             f"File should have been deleted but still exists: {test_file_path}")
+            return
+
         # Set up the test file in the temp directory
         test_file_path = os.path.join(self.temp_dir, metadata['target_file'])
         os.makedirs(os.path.dirname(test_file_path), exist_ok=True)

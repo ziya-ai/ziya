@@ -272,7 +272,7 @@ class ZiyaTestRunner:
                 return ('SLOW_TEST' in content or 
                         'performance' in test_file.lower() or
                         'integration' in test_file.lower())
-        except:
+        except Exception:
             return False
     
     def _print_summary(self, total_duration: float):
@@ -383,7 +383,7 @@ class ZiyaTestRunner:
                     for line in docstring_lines:
                         if line:
                             return line
-        except:
+        except Exception:
             pass
         return None
     

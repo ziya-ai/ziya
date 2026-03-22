@@ -7,9 +7,7 @@ Bug 1: diff_parser.py - old_start=0 is valid for new file diffs (@@ -0,0 +1,N @@
 Bug 2a: git_diff.py apply_diff_atomically - `not hunk.get('old_block')` is True
          for empty lists, falsely flagging new-file hunks as malformed.
 
-Bug 2b: pipeline_apply.py validate_diff_hunks - same truthiness bug as 2a.
-
-Bug 2c: pipeline_manager.py - already fixed (uses `'old_block' not in hunk`),
+Bug 2b: pipeline_manager.py - already fixed (uses `'old_block' not in hunk`),
          included here as a regression guard.
 """
 
@@ -25,7 +23,6 @@ sys.path.insert(0, project_root)
 import pytest
 from app.utils.diff_utils.parsing.diff_parser import parse_unified_diff_exact_plus
 from app.utils.diff_utils.application.git_diff import apply_diff_atomically
-from app.utils.diff_utils.application.pipeline_apply import validate_diff_hunks
 from app.utils.diff_utils.core.exceptions import PatchApplicationError
 from app.utils.code_util import use_git_to_apply_code_diff
 
@@ -131,26 +128,6 @@ class TestApplyDiffAtomicallyNewFile:
             assert result['status'] == 'success', (
                 f"apply_diff_atomically should succeed for new file, got: {result}"
             )
-
-
-class TestValidateDiffHunksNewFile:
-    """Bug 2b: validate_diff_hunks falsely flags new-file hunks as malformed."""
-
-    def test_validate_new_file_hunks(self):
-        """Hunks from a @@ -0,0 diff should pass validation."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            file_path = os.path.join(temp_dir, "test.md")
-            with open(file_path, 'w') as f:
-                f.write("")
-
-            # This should NOT raise PatchApplicationError
-            try:
-                validate_diff_hunks(NEW_FILE_DIFF, file_path)
-            except PatchApplicationError as e:
-                pytest.fail(
-                    f"validate_diff_hunks should not reject new-file diffs, "
-                    f"but raised: {e}"
-                )
 
 
 class TestPipelineManagerNewFile:

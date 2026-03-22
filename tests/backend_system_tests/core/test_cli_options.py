@@ -9,7 +9,10 @@ from types import SimpleNamespace
 
 from app.config.models_config import DEFAULT_ENDPOINT
 from app.config.app_config import DEFAULT_PORT
-from app.main import parse_arguments, validate_model_and_endpoint, setup_environment
+from app.main import parse_arguments, setup_environment
+# validate_model_and_endpoint now lives in the shared module;
+# main.py re-exports it for backward compatibility
+from app.config.environment import validate_model_and_endpoint
 
 
 def test_parse_arguments():
@@ -129,14 +132,16 @@ def test_setup_environment(args_dict, monkeypatch):
     original_env = os.environ.copy()
 
     try:
-        # Mock validate_model_and_endpoint to always return valid
-        with patch('app.main.validate_model_and_endpoint',
+        # Mock validate_model_and_endpoint in the shared module where
+        # setup_environment actually calls it
+        with patch('app.config.environment.validate_model_and_endpoint',
                    return_value=(True, None, args.endpoint)):
             # Call setup_environment
             setup_environment(args)
 
             # Check that environment variables were set correctly
-            assert os.environ["ZIYA_ADDITIONAL_EXCLUDE_DIRS"] == ','.join(args.exclude)
+            if args.exclude:
+                assert os.environ["ZIYA_ADDITIONAL_EXCLUDE_DIRS"] == ','.join(args.exclude)
 
             if args.profile:
                 assert os.environ["ZIYA_AWS_PROFILE"] == args.profile

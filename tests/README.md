@@ -74,6 +74,33 @@ To run a specific test:
 python -m pytest tests/test_ziya_string.py::test_ziya_string_creation -v
 ```
 
+## End-to-End Pipeline Integration Tests
+
+**`test_e2e_pipeline.py`** exercises the full request→agent→tool→response pipeline
+that accounts for the majority of Ziya's critical path (~900KB across `server.py`,
+`streaming_tool_executor.py`, `agent.py`, `mcp/manager.py`).
+
+Uses dependency injection at two levels to avoid real credentials or network calls:
+
+1. **`MockLLMProvider`** — implements the `LLMProvider` interface from `app/providers/base.py`
+   with scripted `StreamEvent` sequences. Each "turn" is a list of events (text deltas,
+   tool_use blocks, usage events, stream end) that the orchestrator processes identically
+   to a real provider.
+
+2. **Mock MCP Manager** — returns controlled tool results without starting real MCP servers.
+
+### Test scenarios covered:
+
+| Test class | What it validates |
+|---|---|
+| `TestE2EPipelineTextOnly` | Simple question → text response → SSE stream |
+| `TestE2EPipelineWithToolCall` | Question → LLM tool_use → MCP execution → result fed back → final response |
+| `TestE2EPipelineFastAPIIntegration` | Full HTTP POST to `/api/chat` → `stream_chunks()` → SSE response parsing |
+| `TestE2EPipelineErrorHandling` | Provider errors and tool execution failures surface correctly |
+| `TestE2EPipelineMultipleToolCalls` | Multiple parallel tool calls in a single turn |
+
+Run: `python -m pytest tests/test_e2e_pipeline.py -v`
+
 ## Adding New Tests
 
 When adding new tests, follow these guidelines:
