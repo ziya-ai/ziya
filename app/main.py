@@ -1,7 +1,7 @@
 # CRITICAL: Set execution mode FIRST before any other imports
 # This must be the very first thing to ensure logging is configured correctly
 import sys
-if any(cmd in sys.argv for cmd in ['chat', 'ask', 'review', 'explain']):
+if any(cmd in sys.argv for cmd in ['chat', 'ask', 'review', 'explain', 'task']):
     import os
     os.environ["ZIYA_MODE"] = "chat"
     os.environ.setdefault("ZIYA_LOG_LEVEL", "WARNING")
@@ -24,6 +24,11 @@ from app.utils.version_util import get_current_version, get_latest_version
 # Import configuration instead of individual constants
 import app.config.models_config as config
 from app.config.app_config import DEFAULT_PORT
+
+# Shared environment setup (common to server + CLI)
+from app.config.environment import setup_environment as _shared_setup_environment
+# Re-export for backward compatibility (used by tests and possibly plugins)
+from app.config.environment import find_endpoint_for_model, validate_model_and_endpoint  # noqa: F401
 
 
 def get_available_models(endpoint=None):
@@ -78,170 +83,26 @@ def parse_arguments():
     return parser.parse_args()
 
 
-def find_endpoint_for_model(model):
-    """Find which endpoint contains the specified model."""
-    for endpoint, models in config.MODEL_CONFIGS.items():
-        if model in models:
-            return endpoint
-    return None
-
-
-def validate_model_and_endpoint(endpoint, model, explicit_endpoint=False):
-    """
-    Validate that the specified endpoint and model are valid.
-    
-    Args:
-        endpoint: The endpoint name to validate
-        model: The model name to validate
-        explicit_endpoint: If True, the user explicitly specified this endpoint;
-            suppress auto-detection to a different endpoint.
-        
-    Returns:
-        tuple: (is_valid, error_message, corrected_endpoint)
-    """
-    # If model is specified but endpoint doesn't contain it, try to auto-detect.
-    # Suppress auto-detection when the user explicitly chose an endpoint.
-    if model and endpoint in config.MODEL_CONFIGS and model not in config.MODEL_CONFIGS[endpoint] and not explicit_endpoint:
-        correct_endpoint = find_endpoint_for_model(model)
-        if correct_endpoint:
-            return True, None, correct_endpoint
-    
-    # Check if endpoint is valid
-    if endpoint not in config.MODEL_CONFIGS:
-        valid_endpoints = ", ".join(config.MODEL_CONFIGS.keys())
-        return False, f"Invalid endpoint: '{endpoint}'. Valid endpoints are: {valid_endpoints}", None
-    
-    # If model is None, use the default model for the endpoint
-    if model is None:
-        model = config.DEFAULT_MODELS.get(endpoint)
-    
-    # Check if model is valid for the endpoint
-    if model not in config.MODEL_CONFIGS[endpoint]:
-        valid_models = ", ".join(config.MODEL_CONFIGS[endpoint].keys())
-        return False, f"Invalid model: '{model}' for endpoint '{endpoint}'. Valid models are: {valid_models}", None
-    
-    return True, None, endpoint
-
-
 def setup_environment(args):
-    import os
-    
-    # Set root directory if specified, otherwise use current working directory
-    root_dir = args.root if args.root else os.getcwd()
-    os.environ["ZIYA_USER_CODEBASE_DIR"] = root_dir
+    """Server entry-point environment setup.
 
-    # Handle file inclusion/exclusion options
-    additional_excluded_dirs = ','.join(args.exclude)
-    os.environ["ZIYA_ADDITIONAL_EXCLUDE_DIRS"] = additional_excluded_dirs
-    
-    # Handle include-only option (takes precedence over exclude)
-    if args.include_only:
-        include_only_dirs = ','.join(args.include_only)
-        os.environ["ZIYA_INCLUDE_ONLY_DIRS"] = include_only_dirs
-        logger.info(f"Only including specified directories/files: {include_only_dirs}")
-    
-    # Handle include option for external paths
-    if args.include:
-        include_dirs = ','.join(args.include)
-        os.environ["ZIYA_INCLUDE_DIRS"] = include_dirs
-        logger.info(f"Including external paths: {include_dirs}")
+    Delegates common settings to the shared setup_environment() in
+    app.config.environment, then applies server-only extras.
+    """
+    _shared_setup_environment(args)
 
-    # Check for conflicting arguments before setting AWS profile
-    if args.endpoint == "google" and args.profile:
-        logger.error("The --profile argument is for AWS Bedrock and cannot be used with --endpoint google.")
-        logger.error("Please remove the --profile argument or use --endpoint bedrock.")
-        sys.exit(1)
-
-    if args.profile:
-        os.environ["ZIYA_AWS_PROFILE"] = args.profile
-        logger.info(f"Using AWS profile: {args.profile}")
-
-    # Handle region selection
-    # First check if region is explicitly specified via command line
-    if args.region:
-        os.environ["AWS_REGION"] = args.region
-        logger.info(f"Using AWS region from command line: {args.region}")
-    else:
-        # If model is specified, check if it has a default region
-        if args.model and args.model in config.MODEL_DEFAULT_REGIONS:
-            region = config.MODEL_DEFAULT_REGIONS[args.model]
-            os.environ["AWS_REGION"] = region
-            logger.info(f"Using model-specific default region for {args.model}: {region}")
-        else:
-            # Otherwise use the global default region
-            os.environ["AWS_REGION"] = config.DEFAULT_REGION
-            logger.info(f"Using default region: {config.DEFAULT_REGION}")
-
-    # Validate endpoint and model before setting environment variables
-    endpoint = args.endpoint
-    model = args.model
-    
-    # Detect whether the user explicitly passed --endpoint on the command line.
-    # We can't rely on args.endpoint being None (it has a default), so check sys.argv.
-    explicit_endpoint = any(
-        arg == '--endpoint' or arg.startswith('--endpoint=')
-        for arg in sys.argv[1:]
-    )
-    is_valid, error_message, corrected_endpoint = validate_model_and_endpoint(endpoint, model, explicit_endpoint=explicit_endpoint)
-    if not is_valid:
-        logger.error(error_message)
-        sys.exit(1)
-    
-    # Use corrected endpoint if auto-detection occurred
-    if corrected_endpoint and corrected_endpoint != endpoint:
-        logger.info(f"Auto-detected endpoint '{corrected_endpoint}' for model '{model}'")
-        endpoint = corrected_endpoint
-        # Update args.endpoint so it's available throughout the application
-        args.endpoint = corrected_endpoint
-    
-    os.environ["ZIYA_ENDPOINT"] = endpoint
-    if model:
-        os.environ["ZIYA_MODEL"] = model
-
+    # -- Server-only settings -----------------------------------------------
     os.environ["ZIYA_MAX_DEPTH"] = str(args.max_depth)
-    
-    # Set path to templates directory
-    import os.path
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    templates_dir = os.path.join(current_dir, "templates")
-    os.environ["ZIYA_TEMPLATES_DIR"] = templates_dir
-    logger.info(f"Using templates directory: {templates_dir}")
-    
-    # Enable AST capabilities if requested
+
     if args.ast:
         os.environ["ZIYA_ENABLE_AST"] = "true"
         os.environ["ZIYA_AST_RESOLUTION"] = args.ast_resolution
-    
-    # Set ephemeral mode if requested
+        logger.info(f"AST-based code understanding enabled (resolution: {args.ast_resolution})")
+
     if args.ephemeral:
         os.environ["ZIYA_EPHEMERAL_MODE"] = "true"
         logger.info("Ephemeral mode enabled - conversations will not be persisted")
-        
-    # Set model parameter environment variables if provided
-    if args.temperature is not None:
-        os.environ["ZIYA_TEMPERATURE"] = str(args.temperature)
-    if args.top_p is not None:
-        os.environ["ZIYA_TOP_P"] = str(args.top_p)
-    if args.top_k is not None:
-        os.environ["ZIYA_TOP_K"] = str(args.top_k)
-    if args.max_output_tokens is not None:
-        os.environ["ZIYA_MAX_OUTPUT_TOKENS"] = str(args.max_output_tokens)
-    if args.thinking_level is not None:
-        os.environ["ZIYA_THINKING_LEVEL"] = args.thinking_level
-    
-    # Set model ID override if provided
-    if args.model_id is not None:
-        os.environ["ZIYA_MODEL_ID_OVERRIDE"] = args.model_id
-        logger.info(f"Overriding model ID with: {args.model_id}")
-    
-    # Enable AST if requested
-    if args.ast:
-        os.environ["ZIYA_ENABLE_AST"] = "true"
-        logger.info("AST-based code understanding enabled")
-        logger.info(f"AST resolution level: {args.ast_resolution}")
-        os.environ["ZIYA_MAX_DEPTH"] = str(args.max_depth)
-        logger.info(f"Using max depth for AST: {args.max_depth}")
-    # Set MCP enablement flag
+
     if args.mcp:
         os.environ["ZIYA_ENABLE_MCP"] = "true"
         logger.info("MCP (Model Context Protocol) integration enabled")
@@ -339,7 +200,7 @@ def print_info(args):
                 if 'branding' in config and 'edition' in config['branding']:
                     edition = config['branding']['edition']
                     break
-    except:
+    except Exception:
         pass
     
     # Version info
@@ -589,9 +450,6 @@ def start_server(args):
             logger.info("=== STARTUP PHASE 1: Authentication Complete ===")
             # Skip model initialization completely - we'll initialize on demand
             # This avoids the double initialization issue
-            logger.info("Authentication successful, starting server...")
-            
-            # Pass the environment variable to child processes
             os.environ["ZIYA_SKIP_INIT"] = "true"
             
             logger.info("=== STARTUP PHASE 2: Server Initialization ===")
@@ -685,7 +543,7 @@ def check_auth(args):
 
 def main():
     # Check if running as CLI subcommand (ziya chat, ziya ask, etc.)
-    cli_commands = {'chat', 'ask', 'review', 'explain'}
+    cli_commands = {'chat', 'ask', 'review', 'explain', 'task'}
     
     # Check if any argument is a CLI command (handles both "ziya chat" and "ziya --profile x chat")
     if any(arg in cli_commands for arg in sys.argv[1:]):
