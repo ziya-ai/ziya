@@ -119,7 +119,9 @@ export function useDelegatePolling(
 
         // Merge delegate status changes into conversations
         const newlyCrystalConvIds: string[] = [];
-        setConversations(prev => prev.map(c => {
+        setConversations(prev => {
+          let anyChanged = false;
+          const next = prev.map(c => {
           if (!c.delegateMeta || c.delegateMeta.plan_id !== data.plan_id) return c;
           const did = c.delegateMeta.delegate_id;
           if (!did || !data.delegates[did]) return c;
@@ -133,8 +135,12 @@ export function useDelegatePolling(
           if (newStatus === 'crystal' && c.delegateMeta.status !== 'crystal') {
             newlyCrystalConvIds.push(c.id);
           }
+          anyChanged = true;
           return updated;
-        }));
+          });
+          // Return same reference when nothing changed — avoids cascading re-renders
+          return anyChanged ? next : prev;
+        });
 
         // Refresh source conversation only when a NEW crystal arrives
         // (not on every poll where crystals exist).
@@ -146,11 +152,14 @@ export function useDelegatePolling(
           try {
             const freshChat = await syncApi.getChat(pid, sourceId);
             if (freshChat?.messages) {
-              setConversations(prev => prev.map(c => {
+              setConversations(prev => {
+                const c = prev.find(c => c.id === sourceId);
+                if (!c || freshChat.messages.length <= c.messages.length) return prev;
+                return prev.map(c => {
                 if (c.id !== sourceId) return c;
-                if (freshChat.messages.length <= c.messages.length) return c;
                 return { ...c, messages: freshChat.messages, hasUnreadResponse: true, _version: Date.now() };
-              }));
+                });
+              });
             }
           } catch { /* retry next poll cycle */ }
         }

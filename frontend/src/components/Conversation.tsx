@@ -621,9 +621,6 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
             </div>
         </div>
     );
-}, (prevProps, nextProps) => {
-    // Custom comparison to prevent re-renders on unrelated changes
-    return prevProps.enableCodeApply === nextProps.enableCodeApply;
 });
 
 // Set display name for debugging
