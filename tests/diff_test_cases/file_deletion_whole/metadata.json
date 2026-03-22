@@ -1,0 +1,7 @@
+{
+  "description": "whole file deletion via git diff with deleted file mode and +++ /dev/null",
+  "target_file": "obsolete_module.py",
+  "expected_to_fail": false,
+  "apply_twice": false,
+  "expect_deletion": true
+}

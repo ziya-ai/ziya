@@ -62,7 +62,7 @@ def run_single_test(test_case_name):
         # Cleanup
         try:
             shutil.rmtree(temp_dir)
-        except:
+        except Exception:
             pass
 
 def main():
