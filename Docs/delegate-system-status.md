@@ -114,6 +114,7 @@ reuses the same conversation/delegate ID, and launches via `_run_delegate`.
 | Scenario | Handling |
 |----------|----------|
 | Delegate fails | Status → `failed`, downstream stays `proposed`, plan shows `needs_attention` |
+| Crystal rehydration fails | Status → `crystal_degraded`, error logged, downstream still runs but without upstream context |
 | Server restarts | `rehydrate()` rebuilds from disk, running → `interrupted`, completed_partial skipped |
 | Retry failed delegate | `retry_delegate` resets to `proposed`, cascades downstream reset |
 | Unblock manually | `promote_to_stub_crystal` creates stub, triggers cascade |
@@ -159,12 +160,13 @@ reuses the same conversation/delegate ID, and launches via `_run_delegate`.
 | `test_compaction_engine.py` | 32 | Phase A/B extraction, LLM fallback |
 | `test_compaction_hook.py` | 8 | Auto-compaction hook in streaming |
 | `test_delegate_comprehensive.py` | 18 | Rehydration, cascade, dynamic delegates, concurrency stress |
+| `test_crystal_rehydration_failure.py` | 7 | Degraded crystal handling, error logging, downstream scheduling |
 | `test_swarm_recovery_api.py` | 12 | Retry, promote-stub, cancel, needs_attention, completed_partial |
 | `test_swarm_recovery_rehydration.py` | 8 | Legacy plan rehydration, group→plan mapping, cross-restart recovery |
 | `test_delegate_stream_inactive.py` | 21 | Terminal delegate detection, key derivation, fast-path loading |
 | `test_recursive_swarms.py` | 14 | Parent linkage, crystal rollup, 3-level nesting |
 | `test_delegate_stream_inactive.py` | 21 | Terminal detection, key derivation, blocking fetch skip |
-| **Total** | **245** | All passing |
+| **Total** | **252** | All passing |
 
 ## Swarm Stability Fixes (Round 8)
 
@@ -211,3 +213,12 @@ Changes made in the stability pass, listed by root cause:
 | Progress posts showed raw tool noise | `_post_progress_to_source()` used `crystal.summary[:120]` verbatim | Applied `_clean_crystal_summary(crystal.summary, max_length=120)` |
 | Orchestrator crystal receipt showed noise | `_orchestrator_receive_crystal()` used `crystal.summary` verbatim | Applied `_clean_crystal_summary(crystal.summary, max_length=800)` |
 | Sub-plan rollup summaries showed noise | `_on_subplan_complete()` used `crystal.summary` verbatim | Applied `_clean_crystal_summary(crystal.summary, max_length=300)` |
+
+## Crystal Rehydration Resilience (#18)
+
+| Symptom | Root Cause | Fix |
+|---------|------------|-----|
+| Crystal rehydration failure completely silent | `except Exception: pass` in `rehydrate()` swallowed all errors | Replaced with `logger.error()` and `crystal_degraded` status |
+| Delegates silently run without upstream context | Status stayed `"crystal"` but no crystal stored — `get_upstream_crystals()` returned `[]` | New `"crystal_degraded"` status distinguishes "completed but data lost" from "completed with data" |
+| Downstream blocked forever on degraded upstream | `_resolve_and_start()` only checked `"crystal"` and `"failed"` | Added `"crystal_degraded"` to both dependency-satisfaction checks |
+| No visibility into rehydration data loss | Summary log only counted crystals | Summary now includes degraded count when non-zero |

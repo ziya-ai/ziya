@@ -87,11 +87,15 @@ ziya --list-models                # Print all available models and exit
 Ziya also works without a browser:
 
 ```bash
-ziya chat                         # Interactive terminal chat
-ziya ask "what does this do?"     # One-shot question, prints answer and exits
+ziya chat                              # Interactive terminal chat
+ziya ask "explain the auth flow"       # One-shot question, prints answer and exits
+ziya review --staged                   # Review staged git changes
+ziya explain utils.py                  # Explain a file
+git diff | ziya review                 # Pipe a diff for review
+cat error.log | ziya ask "what's wrong?"
 ```
 
-CLI mode uses the same model and credentials as the server.
+CLI mode uses the same model and credentials as the server. See `Capabilities.md` for the full CLI reference.
 
 ---
 

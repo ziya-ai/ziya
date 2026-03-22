@@ -70,17 +70,21 @@
 | Feature | Detail |
 |---|---|
 | **Persistent conversation history** | Conversations never silently reset; history survives context overflow |
+| **User-controlled context curation** | Ziya gives users direct control over what the model sees, rather than relying on automatic summarization that may discard information the user considers important. Four complementary mechanisms work together (see below). |
+| **Per-message muting** | Mute/unmute any message (human or assistant) to exclude it from model context without deleting it. Muted messages remain visible in the UI with a visual indicator and can be unmuted at any time. The model never sees muted messages. |
+| **Conversation forking** | Fork from any message to explore a tangential path without losing the original thread. Optionally truncate from the fork point to shed context weight while preserving the full original conversation. |
+| **Per-message editing** | Edit, resubmit, fork, truncate, or delete any message in the conversation history |
+| **Selective file removal** | Remove individual files from context mid-conversation when they're no longer relevant, reclaiming token budget for new material |
 | **Multiple simultaneous projects** | Open separate browser tabs, each with its own project, history, and context |
 | **Project organization** | Conversations grouped by project in the sidebar |
-| **Conversation forking** | Fork from any message to explore a tangential path without losing the original thread |
-| **Per-message editing** | Edit, resubmit, fork, truncate, or delete any message in the conversation history |
 | **Conversation export / import** | Export for local reuse (JSON), export for sharing (Markdown), export directly to paste services; import to restore |
 | **Project & session naming** | Name projects, groups, and individual sessions for organization in the sidebar |
 | **Conversation checkpointing** | Auto-checkpointing of conversation state; web UI supports session resume across browser restarts |
 | **Context window usage display** | Toolbar shows consumed tokens vs. model limit at all times |
-| **Selective context removal** | Remove any file or message from context mid-conversation |
 | **CLI session history** | Persistent CLI history file (`~/.ziya/history`) with `prompt_toolkit` autocomplete |
 | **Shell command history** | Shell allowlist persisted to `~/.ziya/`; session-local overrides without touching persisted state |
+
+> **Design note — Context curation vs. auto-compaction:** Most AI coding tools (Claude Code, Cline, Codex, Kiro) use automatic context compaction — the machine decides what to summarize or discard when context fills up. Ziya deliberately does not auto-compact. Instead, it provides tools for the user to curate context: mute messages that are no longer relevant, fork and truncate to shed weight, remove files that have served their purpose. This keeps the user in control of what the model retains. In 18+ months of daily use with very large contexts, manual curation with mute/fork/truncate has proven more reliable than automatic summarization, which risks discarding details the user knows are important but the model doesn't recognize as such.
 
 ---
 
@@ -196,6 +200,7 @@ Ziya's visualization suite is the most comprehensive of any AI coding assistant.
 | **Ctrl+C double-tap to exit** | Single Ctrl+C cancels in-flight request or clears input; double-tap exits |
 | **Streaming cancellation** | Ctrl+C during a streaming response cancels it mid-stream; partial response preserved |
 | **Tool call display** | Each tool invocation shown with header, arguments, and result in the terminal |
+| **Granular processing indicators** | Context-aware spinner labels instead of generic "Running tools…": 📋 Planning task decomposition, 📖 Reading file context, ✏️ Writing files, ⚡ Running command, 🔍 Searching codebase, 🌐 Searching the web, 📐 Generating diagram, 🚀 Launching delegates, 💎 Compacting results |
 | **Interactive model picker** | `/model` shows a `RadioList` with context window sizes; `→` opens settings dialog |
 | **Model settings dialog** | Configure temperature, max tokens, top-k without leaving the CLI |
 | **Git integration** | `ziya review --staged` / `--diff` for git-aware code review |
@@ -220,7 +225,7 @@ Format per row: the gap, who has it, and notes for context.
 | **Background task notifications** | Aki (desktop notifications), Cursor | No signal when a long-running swarm or CLI task finishes |
 | **Custom subagent definitions** | Claude Code (`.claude/agents/` YAML), Kiro (`.kiro/agents/`) | Delegates are dynamically generated from task decomposition; no user-defined agent templates |
 | **Commit / PR creation** | Claude Code (branch + PR via gh), Codex (GhostCommit + PR), Kiro (autonomous PRs) | No built-in git commit generation or PR creation; users apply diffs manually and commit themselves |
-| **Context compaction** | Claude Code (auto at ~95% + manual /compact), Codex (model_auto_compact_token_limit), Cline (AI summarization), Kiro (customizable thresholds) | No automatic context compaction; when the context window fills, the conversation must be forked or restarted |
+| **Automatic context compaction** | Claude Code (auto at ~95% + manual /compact), Codex (model_auto_compact_token_limit), Cline (AI summarization), Kiro (customizable thresholds) | Deliberate design choice: Ziya provides user-controlled context curation (per-message muting, fork+truncate, selective file removal) instead of automatic compaction. Auto-compaction risks discarding details the user knows are important. See §4 "Context curation vs. auto-compaction" for rationale. |
 | **Git checkpointing / rewind** | Claude Code (per-prompt checkpoint, /rewind, Esc+Esc), Codex (Ghost snapshots + `codex undo`), Cline (shadow Git per tool use), Kiro (GA checkpointing) | Ziya has per-diff undo but no filesystem-level snapshot/rewind across an entire prompt's changes |
 | **Permission modes** | Claude Code (6 modes: default, acceptEdits, plan, delegate, dontAsk, bypassPermissions), Codex (suggest, auto-edit, full-auto), Cline (per-category auto-approve) | No tiered permission system; all tool calls are either allowed or require manual shell allowlisting |
 
