@@ -119,7 +119,8 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                 logger.info("=== AGENT astream received chunk ===")
                 logger.info(f"Chunk type: {type(chunk)}")
                 # Log thinking mode status
-                thinking_mode_enabled = os.environ.get("ZIYA_THINKING_MODE") == "1"
+                from app.config.app_config import env_bool
+                thinking_mode_enabled = env_bool("ZIYA_THINKING_MODE")
                 logger.debug(f"Thinking mode enabled: {thinking_mode_enabled}")
                 
                 chunk_content = ""
@@ -181,9 +182,9 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                     is_structured = isinstance(raw_content, dict) and ('thinking' in raw_content or 'reasoning' in raw_content)
                     logger.debug(f"Content appears to be structured thinking: {is_structured}")
                     
-                        # Let stream_chunks handle structured error detection within content
+                    # Let stream_chunks handle structured error detection within content
                     if raw_content: # Avoid sending empty data chunks
-                            # Properly handle different content types
+                        # Properly handle different content types
                         # Always accumulate content for preservation
                         if isinstance(raw_content, str):
                             accumulated_content += raw_content
@@ -304,8 +305,6 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                                         yield f"data: {json.dumps(content)}\n\n"
                                     else:
                                         yield f"data: {content}\n\n"
-                                yield f"data: {content}\n\n"
-                                continue
                     
                     # Handle DeepSeek format specifically
                     if isinstance(chunk, dict) and "generation" in chunk:

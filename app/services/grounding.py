@@ -100,7 +100,7 @@ class GroundingService:
         self.region = region
 
         # Determine AWS profile from env or parameter
-        profile = profile_name or os.environ.get("AWS_PROFILE") or os.environ.get("ZIYA_AWS_PROFILE", "ziya")
+        profile = profile_name or os.environ.get("ZIYA_AWS_PROFILE") or os.environ.get("AWS_PROFILE", "ziya")
 
         try:
             session = boto3.Session(profile_name=profile)
