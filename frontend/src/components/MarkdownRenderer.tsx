@@ -2415,7 +2415,11 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                     }
                     triggerDiffUpdate(data.details?.hunk_statuses || {}, data.request_id, diffElementId);
 
-                    message.success(`Changes applied successfully to ${filePath}`);
+                    if (data.is_deletion) {
+                        message.success(`File deleted: ${filePath}`);
+                    } else {
+                        message.success(`Changes applied successfully to ${filePath}`);
+                    }
                 } else if (result.status === 'partial') {
                     console.log('Processing partial status');
                     // Only mark as applied if at least one hunk succeeded

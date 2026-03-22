@@ -4,6 +4,7 @@ import {
     message, Spin, Alert, Typography, Divider, Badge, Checkbox, Statistic, Row, Col, Empty, Radio, Descriptions, Popconfirm
 } from 'antd';
 import MarkdownRenderer from './MarkdownRenderer';
+import ServiceCard from './ServiceCard';
 import {
     SearchOutlined,
     DownloadOutlined,
@@ -571,657 +572,67 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
     };
 
     const renderEnhancedServiceCard = (service: MCPService, searchResults: ToolSearchResult[] = []) => {
-        const isBuiltinService = service.serviceId.startsWith('builtin_');
-        
-        // Check if this service is installed (even if manually configured)
         const installedInstance = installedServices.find(s => s.serviceId === service.serviceId);
-        const isInstalled = !!installedInstance;
-        const isManuallyConfigured = installedInstance?._manually_configured === true;
-
-        // Find matching tools for this service if we're in search mode
         const matchingResult = searchResults.find(result => result.service.serviceId === service.serviceId);
         const matchingTools = matchingResult?.matchingTools || (service as any)._matchingTools || [];
 
         return (
-            <Card
-                key={service.serviceId}
-                style={{ marginBottom: 16 }}
-                hoverable
-                actions={[
-                    !isBuiltinService && (
-                        <Button
-                            key="preview"
-                            icon={<EyeOutlined />}
-                            onClick={() => showServicePreview(service.serviceId, service.provider.id)}
-                        >
-                            Preview
-                        </Button>
-                    ),
-                    <Tooltip title={favorites.includes(service.serviceId) ? "Remove from favorites" : "Add to favorites"} key="favorite">
-                        <Button
-                            icon={favorites.includes(service.serviceId) ? <HeartFilled style={{ color: '#ff4d4f' }} /> : <HeartOutlined />}
-                            onClick={() => toggleFavorite(service.serviceId)}
-                        />
-                    </Tooltip>,
-                    <Button
-                        key="install"
-                        type={isBuiltinService ? "default" : "primary"}
-                        icon={<DownloadOutlined />}
-                        loading={installing[service.serviceId]}
-                        disabled={isInstalled}
-                        onClick={() => installService(service.serviceId)}
-                    >
-                        {isBuiltinService ? (isInstalled ? 'Enabled' : 'Enable') : (isInstalled ? (isManuallyConfigured ? 'Configured' : 'Installed') : 'Install')}
-                    </Button>,
-                    !isBuiltinService && service.repositoryUrl && (
-                        <Tooltip title="View Repository" key="repo">
-                            <Button
-                                icon={<GithubOutlined />}
-                                onClick={() => window.open(service.repositoryUrl, '_blank')}
-                            />
-                        </Tooltip>
-                    ),
-                    !isBuiltinService && service.securityReviewLink && (
-                        <Tooltip title="Security Review" key="security">
-                            <Button
-                                key="security"
-                                icon={<SafetyCertificateOutlined />}
-                                onClick={() => window.open(service.securityReviewLink, '_blank')}
-                            />
-                        </Tooltip>
-                    ),
-                    isInstalled && !isBuiltinService && (
-                        <Tooltip title="Uninstall service" key="uninstall">
-                            <Button
-                                icon={<DeleteOutlined />}
-                                danger
-                                onClick={() => uninstallService(installedInstance.serverName)}
-                            />
-                        </Tooltip>
-                    ),
-                    <Tooltip title={expandedServices[service.serviceId] ? "Show less" : "Show more"} key="info">
-                        <Button
-                            icon={<InfoCircleOutlined />}
-                            onClick={() => toggleServiceExpanded(service.serviceId)}
-                        />
-                    </Tooltip>
-                ].filter(Boolean)}
-            >
-                <Card.Meta
-                    title={
-                        <Space wrap>
-                            <span>{service.serviceName}</span>
-                            <Tag color={getSupportLevelColor(service.supportLevel)}>
-                                {service.supportLevel}
-                            </Tag>
-                            {isManuallyConfigured && (
-                                <Tag color="orange" icon={<ToolOutlined />}>
-                                    Manually Configured
-                                </Tag>
-                            )}
-                            {isBuiltinService ? (
-                                <Tag color="purple">
-                                    <ExperimentOutlined /> Builtin
-                                </Tag>
-                            ) : service.provider.availableIn && service.provider.availableIn.length > 1 ? (
-                                <Tooltip title={`Available in: ${service.provider.availableIn.join(', ')}`}>
-                                    <Tag color="purple">
-                                        {service.provider.availableIn.length} sources
-                                    </Tag>
-                                </Tooltip>
-                            ) : (
-                                <Tag color={service.provider.isInternal ? 'gold' : 'blue'}>
-                                    {service.provider.name}
-                                </Tag>
-                            )}
-                            {service.installationType && (
-                                <Tag color="geekblue">{service.installationType}</Tag>
-                            )}
-                            {isBuiltinService && service._dependencies_available === false && (
-                                <Tag color="orange" icon={<WarningOutlined />}>
-                                    Dependencies Required
-                                </Tag>
-                            )}
-                        </Space>
-                    }
-                    description={
-                        <div>
-                            <Paragraph
-                                ellipsis={expandedServices[service.serviceId] ? false : { rows: 2 }}
-                                style={{ marginBottom: 8 }}
-                            >
-                                {service.serviceDescription}
-                            </Paragraph>
-
-                            {/* Show matching tools if in search mode */}
-                            {matchingTools && matchingTools.length > 0 && (
-                                <div style={{ marginBottom: 8 }}>
-                                    <Text strong>Matching Tools: </Text>
-                                    {matchingTools.map(tool => (
-                                        <Tag key={tool.toolName} icon={<ToolOutlined />} color="blue">
-                                            {tool.toolName}
-                                        </Tag>
-                                    ))}
-                                </div>
-                            )}
-
-                            {isBuiltinService && service._available_tools && (
-                                <div style={{ marginBottom: 8 }}>
-                                    <Text strong>Available Tools: </Text>
-                                    {service._available_tools.map(toolName => (
-                                        <Tag key={toolName} color="cyan">{toolName}</Tag>
-                                    ))}
-                                </div>
-                            )}
-
-                            {isBuiltinService && service._dependencies_available === false && (
-                                <Alert
-                                    message="Dependencies Required"
-                                    description={
-                                        <div>
-                                            Install with: <code>pip install scapy dpkt</code>
-                                        </div>
-                                    }
-                                    style={{ marginBottom: 8 }}
-                                />
-                            )}
-
-                            {expandedServices[service.serviceId] && (
-                                <div style={{
-                                    marginTop: 12,
-                                    paddingTop: 12,
-                                    borderTop: '1px solid #f0f0f0'
-                                }}>
-                                    <Row gutter={16} style={{ marginBottom: 12 }}>
-                                        {service.downloadCount && (
-                                            <Col span={8}>
-                                                <Statistic
-                                                    title="Downloads"
-                                                    value={service.downloadCount}
-                                                    prefix={<DownloadOutlined />}
-                                                    valueStyle={{ fontSize: '16px' }}
-                                                />
-                                            </Col>
-                                        )}
-                                        {service.starCount && (
-                                            <Col span={8}>
-                                                <Statistic
-                                                    title="Stars"
-                                                    value={service.starCount}
-                                                    prefix={<StarOutlined />}
-                                                    valueStyle={{ fontSize: '16px' }}
-                                                />
-                                            </Col>
-                                        )}
-                                        <Col span={8}>
-                                            <Statistic
-                                                title="Updated"
-                                                value={new Date(service.lastUpdatedAt).toLocaleDateString()}
-                                                prefix={<ClockCircleOutlined />}
-                                                valueStyle={{ fontSize: '14px' }}
-                                            />
-                                        </Col>
-                                    </Row>
-
-                                    {service.author && (
-                                        <div style={{ marginBottom: 8 }}>
-                                            <Text strong>Author: </Text>
-                                            <Text>{service.author}</Text>
-                                        </div>
-                                    )}
-
-                                    {service.provider.availableIn && service.provider.availableIn.length > 1 && (
-                                        <div style={{ marginBottom: 8 }}>
-                                            <Text strong>Available in: </Text>
-                                            {service.provider.availableIn.map(source => (
-                                                <Tag key={source} color="blue">{source}</Tag>
-                                            ))}
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-
-                            <div style={{ marginBottom: 8 }}>
-                                {service.tags?.map(tag => (
-                                    <Tag key={tag} color="default">{tag}</Tag>
-                                ))}
-                            </div>
-
-                            <Text type="secondary" style={{ fontSize: '12px', display: 'flex', justifyContent: 'space-between' }}>
-                                <span>ID: {service.serviceId}</span>
-                                {service.version && <span>v{service.version}</span>}
-                            </Text>
-                        </div>
-                    }
-                />
-            </Card>
+            <ServiceCard
+                service={{ ...service, serverName: installedInstance?.serverName }}
+                isInstalled={!!installedInstance}
+                isManuallyConfigured={installedInstance?._manually_configured === true}
+                isFavorite={favorites.includes(service.serviceId)}
+                isExpanded={!!expandedServices[service.serviceId]}
+                isInstalling={!!installing[service.serviceId]}
+                matchingTools={matchingTools}
+                showUninstall={true}
+                onInstall={installService}
+                onUninstall={uninstallService}
+                onPreview={showServicePreview}
+                onToggleFavorite={toggleFavorite}
+                onToggleExpanded={toggleServiceExpanded}
+                getSupportLevelColor={getSupportLevelColor}
+            />
         );
     };
 
     const renderServiceCard = (service: MCPService) => {
-        const isBuiltinService = service.serviceId.startsWith('builtin_');
-        
-        // Check if this service is installed (even if manually configured)
         const installedInstance = installedServices.find(s => s.serviceId === service.serviceId);
-        const isInstalled = !!installedInstance;
-        const isManuallyConfigured = installedInstance?._manually_configured === true;
 
         return (
-            <Card
-                key={service.serviceId}
-                style={{ marginBottom: 16 }}
-                hoverable
-                actions={[
-                    !isBuiltinService && (
-                        <Button
-                            key="preview"
-                            icon={<EyeOutlined />}
-                            onClick={() => showServicePreview(service.serviceId, service.provider.id)}
-                        >
-                            Preview
-                        </Button>
-                    ),
-                    <Tooltip title={favorites.includes(service.serviceId) ? "Remove from favorites" : "Add to favorites"} key="favorite">
-                        <Button
-                            icon={favorites.includes(service.serviceId) ? <HeartFilled style={{ color: '#ff4d4f' }} /> : <HeartOutlined />}
-                            onClick={() => toggleFavorite(service.serviceId)}
-                        />
-                    </Tooltip>,
-                    <Button
-                        key="install"
-                        type={isBuiltinService ? "default" : "primary"}
-                        icon={<DownloadOutlined />}
-                        loading={installing[service.serviceId]}
-                        disabled={isInstalled}
-                        onClick={() => installService(service.serviceId)}
-                    >
-                        {isBuiltinService ? (isInstalled ? 'Enabled' : 'Enable') : (isInstalled ? (isManuallyConfigured ? 'Configured' : 'Installed') : 'Install')}
-                    </Button>,
-                    !isBuiltinService && service.repositoryUrl && (
-                        <Tooltip title="View Repository" key="repo">
-                            <Button
-                                icon={<GithubOutlined />}
-                                onClick={() => window.open(service.repositoryUrl, '_blank')}
-                            />
-                        </Tooltip>
-                    ),
-                    !isBuiltinService && service.securityReviewLink && (
-                        <Tooltip title="Security Review" key="security">
-                            <Button
-                                key="security"
-                                icon={<SafetyCertificateOutlined />}
-                                onClick={() => window.open(service.securityReviewLink, '_blank')}
-                            />
-                        </Tooltip>
-                    ),
-                    <Tooltip title={expandedServices[service.serviceId] ? "Show less" : "Show more"} key="info">
-                        <Button
-                            icon={<InfoCircleOutlined />}
-                            onClick={() => toggleServiceExpanded(service.serviceId)}
-                        />
-                    </Tooltip>
-                ].filter(Boolean)}
-            >
-                <Card.Meta
-                    title={
-                        <Space wrap>
-                            <span>{service.serviceName}</span>
-                            <Tag color={getSupportLevelColor(service.supportLevel)}>
-                                {service.supportLevel}
-                            </Tag>
-                            {isManuallyConfigured && (
-                                <Tag color="orange" icon={<ToolOutlined />}>
-                                    Manually Configured
-                                </Tag>
-                            )}
-                            {isBuiltinService ? (
-                                <Tag color="purple">
-                                    <ExperimentOutlined /> Builtin
-                                </Tag>
-                            ) : service.provider.availableIn && service.provider.availableIn.length > 1 ? (
-                                <Tooltip title={`Available in: ${service.provider.availableIn.join(', ')}`}>
-                                    <Tag color="purple">
-                                        {service.provider.availableIn.length} sources
-                                    </Tag>
-                                </Tooltip>
-                            ) : (
-                                <Tag color={service.provider.isInternal ? 'gold' : 'blue'}>
-                                    {service.provider.name}
-                                </Tag>
-                            )}
-                            {service.installationType && (
-                                <Tag color="geekblue">{service.installationType}</Tag>
-                            )}
-                            {isBuiltinService && service._dependencies_available === false && (
-                                <Tag color="orange" icon={<WarningOutlined />}>
-                                    Dependencies Required
-                                </Tag>
-                            )}
-                        </Space>
-                    }
-                    description={
-                        <div>
-                            <Paragraph
-                                ellipsis={expandedServices[service.serviceId] ? false : { rows: 2 }}
-                                style={{ marginBottom: 8 }}
-                            >
-                                {service.serviceDescription}
-                            </Paragraph>
-
-                            {isBuiltinService && service._available_tools && (
-                                <div style={{ marginBottom: 8 }}>
-                                    <Text strong>Available Tools: </Text>
-                                    {service._available_tools.map(toolName => (
-                                        <Tag key={toolName} color="cyan">{toolName}</Tag>
-                                    ))}
-                                </div>
-                            )}
-
-                            {isBuiltinService && service._dependencies_available === false && (
-                                <Alert
-                                    message="Dependencies Required"
-                                    description={
-                                        <div>
-                                            Install with: <code>pip install scapy dpkt</code>
-                                        </div>
-                                    }
-                                    style={{ marginBottom: 8 }}
-                                />
-                            )}
-
-                            {expandedServices[service.serviceId] && (
-                                <div style={{
-                                    marginTop: 12,
-                                    paddingTop: 12,
-                                    borderTop: '1px solid #f0f0f0'
-                                }}>
-                                    <Row gutter={16} style={{ marginBottom: 12 }}>
-                                        {service.downloadCount && (
-                                            <Col span={8}>
-                                                <Statistic
-                                                    title="Downloads"
-                                                    value={service.downloadCount}
-                                                    prefix={<DownloadOutlined />}
-                                                    valueStyle={{ fontSize: '16px' }}
-                                                />
-                                            </Col>
-                                        )}
-                                        {service.starCount && (
-                                            <Col span={8}>
-                                                <Statistic
-                                                    title="Stars"
-                                                    value={service.starCount}
-                                                    prefix={<StarOutlined />}
-                                                    valueStyle={{ fontSize: '16px' }}
-                                                />
-                                            </Col>
-                                        )}
-                                        <Col span={8}>
-                                            <Statistic
-                                                title="Updated"
-                                                value={new Date(service.lastUpdatedAt).toLocaleDateString()}
-                                                prefix={<ClockCircleOutlined />}
-                                                valueStyle={{ fontSize: '14px' }}
-                                            />
-                                        </Col>
-                                    </Row>
-
-                                    {service.author && (
-                                        <div style={{ marginBottom: 8 }}>
-                                            <Text strong>Author: </Text>
-                                            <Text>{service.author}</Text>
-                                        </div>
-                                    )}
-
-                                    {service.provider.availableIn && service.provider.availableIn.length > 1 && (
-                                        <div style={{ marginBottom: 8 }}>
-                                            <Text strong>Available in: </Text>
-                                            {service.provider.availableIn.map(source => (
-                                                <Tag key={source} color="blue">{source}</Tag>
-                                            ))}
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-
-                            <div style={{ marginBottom: 8 }}>
-                                {service.tags?.map(tag => (
-                                    <Tag key={tag} color="default">{tag}</Tag>
-                                ))}
-                            </div>
-
-                            <Text type="secondary" style={{ fontSize: '12px', display: 'flex', justifyContent: 'space-between' }}>
-                                <span>ID: {service.serviceId}</span>
-                                {service.version && <span>v{service.version}</span>}
-                            </Text>
-                        </div>
-                    }
-                />
-            </Card>
+            <ServiceCard
+                service={service}
+                isInstalled={!!installedInstance}
+                isManuallyConfigured={installedInstance?._manually_configured === true}
+                isFavorite={favorites.includes(service.serviceId)}
+                isExpanded={!!expandedServices[service.serviceId]}
+                isInstalling={!!installing[service.serviceId]}
+                onInstall={installService}
+                onPreview={showServicePreview}
+                onToggleFavorite={toggleFavorite}
+                onToggleExpanded={toggleServiceExpanded}
+                getSupportLevelColor={getSupportLevelColor}
+            />
         );
     };
 
     const renderInstalledService = (service: InstalledService) => {
-        if (!service || !service.serviceId) {
-            return null; // Skip rendering if service is invalid
-        }
-        
-        const isBuiltinService = service.serviceId?.startsWith('builtin_') || false;
-        const isManuallyConfigured = service._manually_configured === true;
-        
+        if (!service?.serviceId) return null;
+
         return (
-            <Card
-                key={service.serviceId}
-                style={{ marginBottom: 16 }}
-                hoverable
-                actions={[
-                    !isBuiltinService && (
-                        <Button
-                            key="preview"
-                            icon={<EyeOutlined />}
-                            onClick={() => showServicePreview(service.serviceId, service.provider?.id)}
-                        >
-                            Preview
-                        </Button>
-                    ),
-                    <Tooltip title={favorites.includes(service.serviceId) ? "Remove from favorites" : "Add to favorites"} key="favorite">
-                        <Button
-                            icon={favorites.includes(service.serviceId) ? <HeartFilled style={{ color: '#ff4d4f' }} /> : <HeartOutlined />}
-                            onClick={() => toggleFavorite(service.serviceId)}
-                        />
-                    </Tooltip>,
-                    <Button
-                        key="install"
-                        type={isBuiltinService ? "default" : "primary"}
-                        icon={<DownloadOutlined />}
-                        loading={installing[service.serviceId]}
-                        disabled={isServiceInstalled(service.serviceId)}
-                        onClick={() => installService(service.serviceId)}
-                    >
-                        {isBuiltinService ? (isServiceInstalled(service.serviceId) ? 'Enabled' : 'Enable') : (isServiceInstalled(service.serviceId) ? 'Installed' : 'Install')}
-                    </Button>,
-                    !isBuiltinService && service.repositoryUrl && (
-                        <Tooltip title="View Repository" key="repo">
-                            <Button
-                                icon={<GithubOutlined />}
-                                onClick={() => window.open(service.repositoryUrl, '_blank')}
-                            />
-                        </Tooltip>
-                    ),
-                    !isBuiltinService && service.securityReviewLink && (
-                        <Tooltip title="Security Review" key="security">
-                            <Button
-                                key="security"
-                                icon={<SafetyCertificateOutlined />}
-                                onClick={() => window.open(service.securityReviewLink, '_blank')}
-                            />
-                        </Tooltip>
-                    ),
-                    <Tooltip title={expandedServices[service.serviceId] ? "Show less" : "Show more"} key="info">
-                        <Button
-                            icon={<InfoCircleOutlined />}
-                            onClick={() => toggleServiceExpanded(service.serviceId)}
-                        />
-                    </Tooltip>
-                ].filter(Boolean)}
-            >
-                <Card.Meta
-                    title={
-                        <Space wrap>
-                            <span>{service.serviceName}</span>
-                            <Tag color={getSupportLevelColor(service.supportLevel || 'Community')}>
-                                {service.supportLevel || 'Community'}
-                            </Tag>
-                            {isManuallyConfigured && (
-                                <Tag color="orange" icon={<ToolOutlined />}>
-                                    Manually Configured
-                                </Tag>
-                            )}
-                            {isBuiltinService ? (
-                                <Tag color="purple">
-                                    <ExperimentOutlined /> Builtin
-                                </Tag>
-                            ) : service.provider?.availableIn && service.provider.availableIn.length > 1 ? (
-                                <Tooltip title={`Available in: ${service.provider.availableIn.join(', ')}`}>
-                                    <Tag color="purple">
-                                        {service.provider.availableIn.length} sources
-                                    </Tag>
-                                </Tooltip>
-                            ) : (
-                                <Tag color={service.provider?.isInternal ? 'gold' : 'blue'}>
-                                    {service.provider?.name || 'Unknown'}
-                                </Tag>
-                            )}
-                            {service.installationType && (
-                                <Tag color="geekblue">{service.installationType}</Tag>
-                            )}
-                            {isBuiltinService && service._dependencies_available === false && (
-                                <Tag color="orange" icon={<WarningOutlined />}>
-                                    Dependencies Required
-                                </Tag>
-                            )}
-                        </Space>
-                    }
-                    description={
-                        <div>
-                            <Paragraph
-                                ellipsis={expandedServices[service.serviceId] ? false : { rows: 2 }}
-                                style={{ marginBottom: 8 }}
-                            >
-                                {service.serviceDescription || service.serviceName}
-                            </Paragraph>
-                            
-                            {isBuiltinService && service._available_tools && (
-                                <div style={{ marginBottom: 8 }}>
-                                    <Text strong>Available Tools: </Text>
-                                    {service._available_tools.map(toolName => (
-                                        <Tag key={toolName} color="cyan">{toolName}</Tag>
-                                    ))}
-                                </div>
-                            )}
-                            
-                            {isBuiltinService && service._dependencies_available === false && (
-                                <Alert
-                                    message="Dependencies Required"
-                                    description={
-                                        <div>
-                                            Install with: <code>pip install scapy dpkt</code>
-                                        </div>
-                                    }
-                                    style={{ marginBottom: 8 }}
-                                />
-                            )}
-
-                            {isBuiltinService && service._available_tools && (
-                                <div style={{ marginBottom: 8 }}>
-                                    <Text strong>Available Tools: </Text>
-                                    {service._available_tools.map(toolName => (
-                                        <Tag key={toolName} color="cyan">{toolName}</Tag>
-                                    ))}
-                                </div>
-                            )}
-
-                            {isBuiltinService && service._dependencies_available === false && (
-                                <Alert
-                                    message="Dependencies Required"
-                                    description={
-                                        <div>
-                                            Install with: <code>pip install scapy dpkt</code>
-                                        </div>
-                                    }
-                                    style={{ marginBottom: 8 }}
-                                />
-                            )}
-
-                            {expandedServices[service.serviceId] && (
-                                <div style={{
-                                    marginTop: 12,
-                                    paddingTop: 12,
-                                    borderTop: '1px solid #f0f0f0'
-                                }}>
-                                    <Row gutter={16} style={{ marginBottom: 12 }}>
-                                        {service.downloadCount && (
-                                            <Col span={8}>
-                                                <Statistic
-                                                    title="Downloads"
-                                                    value={service.downloadCount}
-                                                    prefix={<DownloadOutlined />}
-                                                    valueStyle={{ fontSize: '16px' }}
-                                                />
-                                            </Col>
-                                        )}
-                                        {service.starCount && (
-                                            <Col span={8}>
-                                                <Statistic
-                                                    title="Stars"
-                                                    value={service.starCount}
-                                                    prefix={<StarOutlined />}
-                                                    valueStyle={{ fontSize: '16px' }}
-                                                />
-                                            </Col>
-                                        )}
-                                        <Col span={8}>
-                                            <Statistic
-                                                title="Updated"
-                                                value={service.lastUpdatedAt ? new Date(service.lastUpdatedAt).toLocaleDateString() : 'N/A'}
-                                                prefix={<ClockCircleOutlined />}
-                                                valueStyle={{ fontSize: '14px' }}
-                                            />
-                                        </Col>
-                                    </Row>
-
-                                    {service.author && (
-                                        <div style={{ marginBottom: 8 }}>
-                                            <Text strong>Author: </Text>
-                                            <Text>{service.author}</Text>
-                                        </div>
-                                    )}
-
-                                    {service.provider?.availableIn && service.provider.availableIn.length > 1 && (
-                                        <div style={{ marginBottom: 8 }}>
-                                            <Text strong>Available in: </Text>
-                                            {service.provider.availableIn.map(source => (
-                                                <Tag key={source} color="blue">{source}</Tag>
-                                            ))}
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-
-                            <div style={{ marginBottom: 8 }}>
-                                {service.tags?.map(tag => (
-                                    <Tag key={tag} color="default">{tag}</Tag>
-                                ))}
-                            </div>
-
-                            <Text type="secondary" style={{ fontSize: '12px', display: 'flex', justifyContent: 'space-between' }}>
-                                <span>ID: {service.serviceId}</span>
-                                {service.version && <span>v{service.version}</span>}
-                            </Text>
-                        </div>
-                    }
-                />
-            </Card>
+            <ServiceCard
+                service={service}
+                isInstalled={isServiceInstalled(service.serviceId)}
+                isManuallyConfigured={service._manually_configured === true}
+                isFavorite={favorites.includes(service.serviceId)}
+                isExpanded={!!expandedServices[service.serviceId]}
+                isInstalling={!!installing[service.serviceId]}
+                onInstall={installService}
+                onPreview={showServicePreview}
+                onToggleFavorite={toggleFavorite}
+                onToggleExpanded={toggleServiceExpanded}
+                getSupportLevelColor={getSupportLevelColor}
+            />
         );
     };
 

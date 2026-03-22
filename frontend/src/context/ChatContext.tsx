@@ -662,9 +662,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             console.log('📝 Adding message to non-current conversation - scroll preservation mode');
         }
 
-        const folderId = currentFolderId;
-        // Use the dynamicTitleLength from state - updated only by UI components
-
+        // dynamicTitleLength from state - updated only by UI components
         // Debug logging to see when messages are added
         console.log('📝 Adding message:', { role: message.role, conversationId: targetConversationId, titleLength: dynamicTitleLength });
 
@@ -705,7 +703,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             hasUnreadResponse: shouldMarkUnread,
                             lastAccessedAt: Date.now(),
                             _version: Date.now(),
-                            folderId: folderId,
+                            // Preserve existing folderId — never overwrite on message add.
+                            // (Fixes bug where viewing a swarm delegate re-rooted new conversations.)
                             title: isFirstMessage && message.role === 'human' ? message.content.slice(0, dynamicTitleLength) + (message.content.length > dynamicTitleLength ? '...' : '') : conv.title
                         };
                     }
@@ -719,7 +718,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         : 'New Conversation',
                     projectId: currentProject?.id,
                     messages: [message],
-                    folderId: folderId,
+                    // Use currentFolderId for brand-new inline conversations, but
+                    // never auto-place inside TaskPlan (swarm) folders.
+                    folderId: (currentFolderId && folders.find(f => f.id === currentFolderId)?.taskPlan) ? null : currentFolderId,
                     lastAccessedAt: Date.now(),
                     isActive: true, // Explicitly set to true
                     _version: Date.now(),
@@ -739,7 +740,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             return updatedConversations;
         });
-    }, [currentConversationId, currentFolderId, dynamicTitleLength, queueSave, currentProject?.id]);
+    }, [currentConversationId, currentFolderId, dynamicTitleLength, queueSave, currentProject?.id, folders]);
 
     // T28: Poll for delegate status changes when TaskPlan folders are active
     useDelegatePolling(currentProject?.id, folders, setConversations, setFolders);
@@ -1107,14 +1108,19 @@ export function ChatProvider({ children }: ChatProviderProps) {
             const isTerminalDelegate = delegateStatus === 'crystal'
                 || delegateStatus === 'failed'
                 || delegateStatus === 'interrupted';
-            // Skip the blocking server fetch for terminal delegates — their
-            // messages are already persisted in IndexedDB by delegate polling.
-            // For running delegates, fetch in the BACKGROUND so the
-            // conversation loads instantly from IndexedDB.  The blocking
-            // await was causing multi-minute UI freezes because it held
-            // setIsLoadingConversation(true) while the server responded,
-            // and the state update on completion cascaded through effects.
-            if (conv?.delegateMeta && !isTerminalDelegate) {
+            // Skip server fetch for RUNNING delegates entirely — the
+            // WebSocket stream (useDelegateStreaming) provides live content
+            // and delegate polling handles status updates.  Fetching
+            // getChat here returns a potentially huge message array that
+            // triggers an expensive synchronous re-render cascade (the
+            // original cause of multi-minute UI freezes when clicking
+            // active swarm members).
+            //
+            // For QUEUED delegates (not yet terminal, not yet running),
+            // still fetch since they have no WebSocket stream yet.
+            const isActivelyStreaming = delegateStatus === 'running'
+                || delegateStatus === 'compacting';
+            if (conv?.delegateMeta && !isTerminalDelegate && !isActivelyStreaming) {
                 const pid = conv.projectId || currentProject?.id;
                 if (pid) {
                     // Fire-and-forget: don't block conversation load
@@ -1186,13 +1192,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             // Only clear streamed content for conversations that are NOT actively streaming
             setStreamedContentMap(prev => {
-                const next = new Map(prev);
-                // Keep streaming content for active streaming conversations
                 const streaming = streamingConversationsRef.current;
+                let anyRemoved = false;
                 for (const [id, content] of prev) {
-                    if (!streaming.has(id)) {
-                        next.delete(id);
-                    }
+                    if (!streaming.has(id)) { anyRemoved = true; break; }
+                }
+                if (!anyRemoved) return prev;
+                const next = new Map(prev);
+                for (const [id] of prev) {
+                    if (!streaming.has(id)) next.delete(id);
                 }
                 return next;
             });
