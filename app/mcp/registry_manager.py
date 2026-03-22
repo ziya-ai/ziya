@@ -73,7 +73,8 @@ class RegistryIntegrationManager:
             pass
         
         # Fall back to environment variable
-        return os.getenv('ZIYA_INCLUDE_INTERNAL_REGISTRIES', 'false').lower() == 'true'
+        from app.config.app_config import env_bool
+        return env_bool('ZIYA_INCLUDE_INTERNAL_REGISTRIES')
     
     async def get_available_services(self, max_results: int = 100, provider_filter: Optional[List[str]] = None) -> List[RegistryServiceInfo]:
         """Get unified list of services with deduplication across all registries."""

@@ -10,6 +10,11 @@ import re
 import json
 from langchain_core.tools import BaseTool
 
+# Debug/tracking state imported by server.py debug_mcp_state endpoint.
+_tool_execution_counter = 0
+_consecutive_timeouts = 0
+_conversation_tool_states: Dict[str, Any] = {}
+
 from app.utils.logging_utils import logger
 
 # Import conversation management tools
@@ -142,5 +147,8 @@ __all__ = [
     "ListFoldersAndConversationsTool",
     "MoveConversationTool",
     "create_mcp_tools",
-    "parse_tool_call"
+    "parse_tool_call",
+    "_tool_execution_counter",
+    "_consecutive_timeouts",
+    "_conversation_tool_states",
 ]

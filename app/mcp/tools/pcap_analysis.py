@@ -193,7 +193,7 @@ def validate_pcap_file(file_path: str) -> bool:
     try:
         # Basic file check - just verify it exists and has reasonable size
         return os.path.exists(file_path) and os.path.getsize(file_path) > 24
-    except:
+    except Exception:
         return False
 
 
