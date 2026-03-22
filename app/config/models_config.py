@@ -1164,6 +1164,10 @@ def get_model_capabilities(endpoint=None, model_name=None):
         "model_name": model_name
     }
 
+# Canonical fallback for max_output_tokens when no model-specific or
+# endpoint-specific override is configured.  Every call site should
+# reference this constant instead of hardcoding a number.
+DEFAULT_MAX_OUTPUT_TOKENS = 32768
 
 # User-defined model allowlist — None means no restriction
 _user_allowed_models = None

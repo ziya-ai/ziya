@@ -273,32 +273,21 @@ def print_chat_startup_info(args):
 
 
 def setup_env(args):
-    """Minimal environment setup for CLI mode."""
-    import sys
-    
-    # Helper to extract flag value from sys.argv
-    def get_flag_from_argv(flag_name):
-        """Extract flag value from sys.argv (handles --flag value format)."""
-        try:
-            if f'--{flag_name}' in sys.argv:
-                idx = sys.argv.index(f'--{flag_name}')
-                if idx + 1 < len(sys.argv):
-                    return sys.argv[idx + 1]
-        except (ValueError, IndexError):
-            pass
-        return None
-    
-    # Handle debug flag first, before any other setup
+    """CLI entry-point environment setup.
+
+    Handles CLI-only concerns (debug logging, logger reconfiguration),
+    then delegates common settings to the shared setup_environment().
+    """
+    # Handle debug flag first, before any other setup (must precede shared setup
+    # so that logger calls inside it respect the level).
     if getattr(args, 'debug', False):
         os.environ["ZIYA_LOG_LEVEL"] = "DEBUG"
-        # CRITICAL: Also disable chat mode suppression for debug
         os.environ["ZIYA_MODE"] = "debug"
         print("🐛 Debug logging enabled", file=sys.stderr)
-    
-    # Force reconfigure all existing loggers to respect chat mode
-    # This handles case where modules were imported before ZIYA_MODE was set
+
+    # Reconfigure existing loggers so modules imported before ZIYA_MODE was set
+    # pick up the correct level (WARNING for chat, DEBUG when --debug).
     try:
-        # Get the target log level from environment (respects --debug flag)
         target_level = getattr(logging, os.environ.get('ZIYA_LOG_LEVEL', 'WARNING').upper())
         for logger_name in list(logging.Logger.manager.loggerDict.keys()):
             if logger_name.startswith('app.') or logger_name == 'app':
@@ -308,30 +297,17 @@ def setup_env(args):
                     for handler in existing_logger.handlers:
                         handler.setLevel(target_level)
                 except Exception:
-                    pass  # Skip loggers that can't be configured
+                    pass
     except Exception as e:
         print(f"Warning: Could not reconfigure logging in setup_env: {e}", file=sys.stderr)
 
-    
-    # Set root directory
-    root = getattr(args, 'root', None) or os.getcwd()
-    os.environ.setdefault("ZIYA_USER_CODEBASE_DIR", root)
-    
-    # Model settings
-    if getattr(args, 'model', None):
-        os.environ["ZIYA_MODEL"] = args.model
-    
-    # AWS settings - set BOTH env vars for compatibility
-    profile = getattr(args, 'profile', None) or get_flag_from_argv('profile')
-    if profile:
-        os.environ["ZIYA_AWS_PROFILE"] = profile
-        os.environ["AWS_PROFILE"] = profile
-    # AWS region setting
-    if getattr(args, 'region', None):
-        os.environ["AWS_REGION"] = args.region
-    # Endpoint must be set before auth checks read ZIYA_ENDPOINT
-    if getattr(args, 'endpoint', None):
-        os.environ["ZIYA_ENDPOINT"] = args.endpoint
+    # Shared setup (root dir, AWS, endpoint/model validation, model params, …)
+    from app.config.environment import setup_environment as _shared_setup_environment
+    _shared_setup_environment(args)
+
+    # -- CLI-only: enable MCP by default for CLI sessions -------------------
+    os.environ.setdefault("ZIYA_ENABLE_MCP", "true")
+
 def resolve_files(paths: List[str], root: str) -> List[str]:
     """Resolve file/directory paths to list of files."""
     import glob
@@ -404,6 +380,7 @@ class CLI:
         self._cancellation_requested = False
         self._diff_applicator = None  # Lazy-load diff applicator
         self._last_ctrl_c_time = 0   # Track last Ctrl+C press for double-tap exit
+        self._partial_response = ""  # Accumulates streaming content for crash recovery
         self._last_keypress_time = 0  # Track last keypress for paste detection
         self._last_input_time = 0  # Track last input time for paste detection
         self._session_shell_commands = None  # Session-local shell command overrides
@@ -618,15 +595,33 @@ class CLI:
         
         # Reset cancellation flag
         self._cancellation_requested = False
-        
+        self._partial_response = ""  # Reset per-request accumulator
+
         # Track partial response for cancellation scenarios
         partial_response = ""
         
         try:
             response = await self._run_with_tools_and_validate(question, stream)
             partial_response = response
+        except asyncio.CancelledError:
+            # In Python 3.9+, CancelledError inherits from BaseException,
+            # not Exception — it must be caught explicitly before the
+            # generic Exception handler.
+            print("\n\033[33mOperation cancelled.\033[0m")
+            response = self._partial_response or partial_response
+            self.history.append({'type': 'human', 'content': question})
+            if response:
+                self.history.append({'type': 'ai', 'content': response})
+            return response
         except Exception as e:
             error_str = str(e)
+            
+            # Preserve partial response that was already streamed to the user
+            partial = self._partial_response or partial_response
+            if partial:
+                print(f"\n\033[33m⚠ Response was truncated due to an error ({len(partial)} chars preserved).\033[0m", file=sys.stderr)
+                self.history.append({'type': 'human', 'content': question})
+                self.history.append({'type': 'ai', 'content': partial})
             
             # Extract traceback info for better error reporting
             tb = traceback.extract_tb(sys.exc_info()[2])
@@ -644,18 +639,9 @@ class CLI:
                 print("\033[33mRate limit hit. Please wait a moment before trying again.\033[0m", file=sys.stderr)
             elif 'ExpiredToken' in error_str:
                 print("\033[33mCredentials expired. Please refresh: aws sso login --profile <profile>\033[0m", file=sys.stderr)
-            elif isinstance(e, asyncio.CancelledError):
-                # Graceful cancellation
-                print("\n\033[33mOperation cancelled.\033[0m")
-                # Use partial response accumulated before cancellation
-                response = partial_response
-                # Update history with partial response
-                self.history.append({'type': 'human', 'content': question})
-                if response:
-                    self.history.append({'type': 'ai', 'content': response})
-                return response
             
-            return ""
+            # Return whatever partial content was accumulated
+            return partial if partial else ""
         
         # Update history
         self.history.append({'type': 'human', 'content': question})
@@ -863,91 +849,6 @@ class CLI:
         # Get model response using existing method
         return await self._run_with_tools_from_messages(messages, stream=True)
     
-    async def _run_with_tools(self, question: str, stream: bool = True) -> str:
-        """Run model with tool execution loop."""
-        from app.streaming_tool_executor import StreamingToolExecutor
-        from app.mcp.manager import get_mcp_manager
-        from app.agents.models import ModelManager
-        
-        messages = self._build_messages(question)
-        
-        # Get MCP manager and tools
-        mcp_manager = get_mcp_manager()
-        if not mcp_manager or not mcp_manager.is_initialized:
-            # No tools, just invoke normally
-            return await self._simple_invoke(messages, stream)
-        
-        # Get tools for StreamingToolExecutor
-        from app.mcp.enhanced_tools import create_secure_mcp_tools
-        tools = create_secure_mcp_tools()
-        
-        if not tools:
-            return await self._simple_invoke(messages, stream)
-        
-        # Check for Google endpoint - use native model loop instead of AWS executor
-        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
-        if endpoint == "google":
-            async def stream_task():
-                async for chunk in self.model.astream(messages, tools=tools):
-                    if self._cancellation_requested:
-                        raise asyncio.CancelledError("User cancelled operation")
-                    yield chunk
-            
-            task = asyncio.create_task(self._stream_handler(stream_task(), stream))
-            self._active_task = task
-            try:
-                return await task
-            finally:
-                self._active_task = None
-
-        if endpoint == "openai":
-            async def stream_task():
-                async for chunk in self.model.astream(messages, tools=tools):
-                    if self._cancellation_requested:
-                        raise asyncio.CancelledError("User cancelled operation")
-                    yield chunk
-            
-            task = asyncio.create_task(self._stream_handler(stream_task(), stream))
-            self._active_task = task
-            try:
-                return await task
-            finally:
-                self._active_task = None
-
-        # Get AWS config
-        state = ModelManager.get_state()
-        aws_profile = state.get('aws_profile')
-        aws_region = state.get('aws_region', 'us-west-2')
-        
-        # Create StreamingToolExecutor
-        executor = StreamingToolExecutor(profile_name=aws_profile, region=aws_region)
-        
-        # Convert LangChain messages to OpenAI format
-        openai_messages = self._convert_to_openai_format(messages)
-        
-        # Create streaming task
-        full_response = ""
-        
-        async def stream_task():
-            """Streaming task that can be cancelled."""
-            async for chunk in executor.stream_with_tools(openai_messages, tools, conversation_id=self.conversation_id):
-                # Check for cancellation
-                if self._cancellation_requested:
-                    raise asyncio.CancelledError("User cancelled operation")
-                
-                yield chunk
-        
-        # Store task for cancellation
-        task = asyncio.create_task(self._stream_handler(stream_task(), stream))
-        self._active_task = task
-        
-        try:
-            full_response = await task
-        finally:
-            self._active_task = None
-        
-        return full_response
-    
     async def _run_with_tools_from_messages(self, messages, stream: bool = True) -> str:
         """Run model with tools from existing message list (for retries)."""
         from app.streaming_tool_executor import StreamingToolExecutor
@@ -976,6 +877,9 @@ class CLI:
             self._active_task = task
             try:
                 return await task
+            except asyncio.CancelledError:
+                # Preserve partial content accumulated by _stream_handler
+                raise  # Re-raise to be handled by ask()
             finally:
                 self._active_task = None
 
@@ -1084,6 +988,10 @@ class CLI:
                     # Add original content (with markers) to full_response for proper rewind processing
                     full_response += content
                 
+                    # Update instance-level accumulator so ask() can recover
+                    # partial content if the stream is cancelled mid-flight.
+                    self._partial_response = full_response
+
                     # For display: filter out rewind markers and continuation messages
                     display_content = re.sub(r'<!-- REWIND_MARKER: [^\s]+(?: -->|(?:\|FENCE:[`~]\w*)? -->)', '', content)
                     display_content = display_content.replace('', '')
@@ -1119,88 +1027,89 @@ class CLI:
                     print(f"\n\033[36m⚙ Executing {display_header}...\033[0m", flush=True)
             
                 elif chunk_type == 'tool_display':
-                    if md_renderer:
-                        md_renderer.flush()
-                    # Show tool result with formatting
-                    tool_name = chunk.get('tool_name', 'unknown')
-                    result = chunk.get('result', '')
-                    args = chunk.get('args', {})
-                
-                    # Build header with any available metadata
-                    display_header = chunk.get('display_header')
-                    if not display_header:
-                        # Derive header from args for file tools
-                        normalized = tool_name.split('_', 1)[-1] if 'mcp_' in tool_name else tool_name
-                        if normalized in ('file_read', 'file_write', 'file_list'):
-                            path = args.get('path', '')
-                            label = normalized.replace('_', ' ')
-                            display_header = f"{label}: {path}" if path else label
-                        else:
-                            display_header = tool_name
-                    header_parts = [display_header]
-                    metadata = []
-                
-                    # Extract common metadata patterns from args
-                    if 'thoughtNumber' in args and 'totalThoughts' in args:
-                        # Progress indicator (e.g., thought 3/5)
-                        metadata.append(f"{args['thoughtNumber']}/{args['totalThoughts']}")
-                
-                    if args.get('isRevision') and 'revisesThought' in args:
-                        # Revision indicator
-                        metadata.append(f"revises #{args['revisesThought']}")
-                    elif 'branchId' in args:
-                        # Branch indicator
-                        metadata.append(f"branch: {args['branchId']}")
-                
-                    if 'branchFromThought' in args:
-                        # Branch origin
-                        metadata.append(f"from #{args['branchFromThought']}")
-                
-                    # Add command if available (for shell tools)
-                    if 'command' in args and not result.startswith('$ '):
-                        metadata.append(f"$ {args['command']}")
-                
-                    # For search tools, show the search query
-                    if 'WorkspaceSearch' in tool_name or 'CodeSearch' in tool_name:
-                        # Extract query from args (handle nested tool_input)
-                        search_args = args.get('tool_input', args)
-                        if isinstance(search_args, str):
-                            import json
-                            try:
-                                search_args = json.loads(search_args)
-                            except: pass
-                        query = search_args.get('searchQuery') or search_args.get('query', '')
-                        if query:
-                            metadata.append(f'query: "{query}"')
-                
-                    # Build final header
-                    if metadata:
-                        header = f"{header_parts[0]} ({', '.join(metadata)})"
-                    else:
-                        header = header_parts[0]
-                
-                    # Print header
-                    print(f"\n\033[36m┌─ {header}\033[0m", flush=True)
-                
-                    # Print the thought content if it's in args (for sequential thinking)
-                    if 'thought' in args:
-                        thought_text = args['thought']
-                        if thought_text:
-                            for line in thought_text.split('\n'):
-                                print(f"\033[90m│\033[0m {line}", flush=True)
-                
-                    # Print result (tool output/response)
-                    # For sequential thinking, skip the JSON result if we showed the thought
-                    if result:
-                        # Check if result is just JSON metadata (starts with '{' and contains thoughtNumber)
-                        is_json_metadata = result.strip().startswith('{') and 'thoughtNumber' in result
+                    try:
+                        if md_renderer:
+                            md_renderer.flush()
+                        # Show tool result with formatting
+                        tool_name = chunk.get('tool_name', 'unknown')
+                        result = chunk.get('result', '') or ''
+                        args = chunk.get('args') or {}
+                        if not isinstance(args, dict):
+                            args = {}
                     
-                        # Only show result if it's not metadata and not a duplicate of the thought
-                        if not is_json_metadata and result != args.get('thought', ''):
-                            for line in result.rstrip('\n').split('\n'):
-                                print(f"\033[90m│\033[0m {line}", flush=True)
-                
-                    print(f"\033[36m└─\033[0m", flush=True)
+                        # Build header with any available metadata
+                        display_header = chunk.get('display_header')
+                        if not display_header:
+                            # Derive header from args for file tools
+                            normalized = tool_name.split('_', 1)[-1] if 'mcp_' in tool_name else tool_name
+                            if normalized in ('file_read', 'file_write', 'file_list'):
+                                path = args.get('path', '')
+                                label = normalized.replace('_', ' ')
+                                display_header = f"{label}: {path}" if path else label
+                            else:
+                                display_header = tool_name
+                        header_parts = [display_header]
+                        metadata = []
+                    
+                        # Extract common metadata patterns from args
+                        if 'thoughtNumber' in args and 'totalThoughts' in args:
+                            metadata.append(f"{args['thoughtNumber']}/{args['totalThoughts']}")
+                    
+                        if args.get('isRevision') and 'revisesThought' in args:
+                            metadata.append(f"revises #{args['revisesThought']}")
+                        elif 'branchId' in args:
+                            metadata.append(f"branch: {args['branchId']}")
+                    
+                        if 'branchFromThought' in args:
+                            metadata.append(f"from #{args['branchFromThought']}")
+                    
+                        # Add command if available (for shell tools)
+                        if 'command' in args and isinstance(result, str) and not result.startswith('$ '):
+                            metadata.append(f"$ {args['command']}")
+                    
+                        # For search tools, show the search query
+                        if 'WorkspaceSearch' in tool_name or 'CodeSearch' in tool_name:
+                            search_args = args.get('tool_input', args)
+                            if isinstance(search_args, str):
+                                try:
+                                    search_args = json.loads(search_args)
+                                except Exception:
+                                    search_args = {}
+                            if isinstance(search_args, dict):
+                                query = search_args.get('searchQuery') or search_args.get('query', '')
+                                if query:
+                                    metadata.append(f'query: "{query}"')
+                    
+                        # Build final header
+                        if metadata:
+                            header = f"{header_parts[0]} ({', '.join(metadata)})"
+                        else:
+                            header = header_parts[0]
+                    
+                        # Print header
+                        print(f"\n\033[36m┌─ {header}\033[0m", flush=True)
+                    
+                        # Print the thought content if it's in args (for sequential thinking)
+                        if 'thought' in args:
+                            thought_text = args['thought']
+                            if thought_text and isinstance(thought_text, str):
+                                for line in thought_text.split('\n'):
+                                    print(f"\033[90m│\033[0m {line}", flush=True)
+                    
+                        # Print result (tool output/response)
+                        if result and isinstance(result, str):
+                            is_json_metadata = result.strip().startswith('{') and 'thoughtNumber' in result
+                    
+                            if not is_json_metadata and result != args.get('thought', ''):
+                                for line in result.rstrip('\n').split('\n'):
+                                    print(f"\033[90m│\033[0m {line}", flush=True)
+                    
+                        print(f"\033[36m└─\033[0m", flush=True)
+                    except Exception as e:
+                        # Log and continue — don't crash the stream for a display issue
+                        logger.warning(f"Error rendering tool_display chunk: {e}")
+                        tool_name = chunk.get('tool_name', 'unknown') if isinstance(chunk, dict) else 'unknown'
+                        print(f"\n\033[33m⚠ Tool result from {tool_name} (display error)\033[0m", flush=True)
             
                 elif chunk_type == 'stream_end':
                     break
@@ -1232,8 +1141,9 @@ class CLI:
             print(f"\n\033[90m(Partial response collected: {len(full_response)} chars)\033[0m")
             if md_renderer:
                 md_renderer.flush()
-            # Return partial response instead of raising
-            return full_response
+            # Preserve partial content and re-raise so ask() handles it uniformly
+            self._partial_response = full_response
+            raise
         
         if stream:
             if md_renderer:
@@ -1259,28 +1169,51 @@ class CLI:
         return openai_msgs
     
     async def _simple_invoke(self, messages, stream: bool) -> str:
-        """Simple invocation without tools."""
+        """Simple invocation without tools, with cancellation support."""
         if stream:
             response = ""
-            async for chunk in self.model.astream(messages):
-                if isinstance(chunk, dict):
-                    content = chunk.get('content', '')
-                else:
-                    content = getattr(chunk, 'content', '')
-                
-                if isinstance(content, str):
-                    print(content, end='', flush=True)
-                    response += content
+            try:
+                async for chunk in self.model.astream(messages):
+                    if self._cancellation_requested:
+                        print("\n\033[33m^C - Cancelled.\033[0m")
+                        break
+                    if isinstance(chunk, dict):
+                        content = chunk.get('content', '')
+                    else:
+                        content = getattr(chunk, 'content', '')
+                    
+                    if isinstance(content, str):
+                        print(content, end='', flush=True)
+                        response += content
+            except asyncio.CancelledError:
+                # Preserve partial content and re-raise for consistent handling
+                self._partial_response = response
+                raise
             print()
             return response
         else:
-            result = await self.model.ainvoke(messages)
-            if isinstance(result, dict):
-                content = result.get('content', '')
-            else:
-                content = getattr(result, 'content', str(result))
-            print(content)
-            return content
+            # Wrap the blocking ainvoke in a task so Ctrl+C can cancel it
+            task = asyncio.create_task(self.model.ainvoke(messages))
+            try:
+                while not task.done():
+                    if self._cancellation_requested:
+                        task.cancel()
+                        print("\n\033[33m^C - Cancelled.\033[0m")
+                        raise asyncio.CancelledError("User cancelled operation")
+                    # Poll every 200ms to stay responsive to cancellation
+                    await asyncio.sleep(0.2)
+                result = task.result()
+                if isinstance(result, dict):
+                    content = result.get('content', '')
+                else:
+                    content = getattr(result, 'content', str(result))
+                print(content)
+                return content
+            except asyncio.CancelledError:
+                task.cancel()
+                # Preserve empty partial and re-raise for consistent handling
+                self._partial_response = ""
+                raise
     
     def _remove_tool_blocks(self, text: str, open_tag: str, close_tag: str) -> str:
         """Remove tool call blocks from text."""
@@ -2055,6 +1988,15 @@ async def _initialize_mcp():
         print(f"\033[90mMCP initialization skipped: {e}\033[0m", file=sys.stderr)
 
 
+async def _run_with_mcp(coro):
+    """Initialize MCP servers then run the given coroutine in the same event loop.
+
+    Avoids the double-asyncio.run() bug where the first run tears down MCP connections.
+    """
+    await _initialize_mcp()
+    return await coro
+
+
 async def _run_async_cli(cli):
     """Run CLI in async context with MCP initialized."""
     # Initialize MCP in this event loop
@@ -2065,21 +2007,63 @@ async def _run_async_cli(cli):
 
 
 # ============================================================================
+# Session factory — single source of truth for init → auth → CLI creation
+# ============================================================================
+
+def _init_and_authenticate(args, *, skip_setup_env: bool = False):
+    """Common initialisation: environment setup, plugin loading, and auth check.
+
+    Exits the process with a clear error message if authentication fails.
+
+    Args:
+        args: Parsed CLI arguments.
+        skip_setup_env: Set ``True`` if ``setup_env(args)`` was already called
+            (e.g. when the handler needs env set up before an early-exit path).
+    """
+    if not skip_setup_env:
+        setup_env(args)
+
+    from app.plugins import initialize as initialize_plugins
+    initialize_plugins()
+
+    profile = getattr(args, 'profile', None)
+    if not _check_auth_quick(profile):
+        _print_auth_error()
+        sys.exit(1)
+
+
+def _create_cli_session(args, files=None) -> 'CLI':
+    """Perform full init, authenticate, resolve files, and return a CLI instance.
+
+    This is the canonical entry point for command handlers that follow the
+    standard setup_env → plugins → auth → resolve_files → CLI() sequence.
+    """
+    _init_and_authenticate(args)
+    if files is None:
+        root = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        files = resolve_files(args.files, root) if getattr(args, 'files', None) else []
+    return CLI(files=files)
+
+
+# ============================================================================
 # Command handlers
 # ============================================================================
 
 def cmd_chat(args):
     """Handle: ziya chat [FILES...]"""
-    # CRITICAL FIX: Set up environment BEFORE auth check
-    # This ensures AWS_PROFILE is set before check_aws_credentials is called
+    # Environment + plugins needed before --resume early path
     setup_env(args)
-    
-    # Initialize plugins BEFORE auth check - needed for Amazon auth provider
     from app.plugins import initialize as initialize_plugins
     initialize_plugins()
     
-    # Handle session resume
+    # Handle session resume (needs env + plugins but also needs auth)
     if getattr(args, 'resume', False):
+        # Authenticate on resume path — fixes historical auth bypass
+        profile = getattr(args, 'profile', None)
+        if not _check_auth_quick(profile):
+            _print_auth_error()
+            sys.exit(1)
+
         session_id = asyncio.run(select_session())
         if session_id:
             try:
@@ -2106,19 +2090,14 @@ def cmd_chat(args):
                 print(f"\033[33m{e}\033[0m")
                 print("\033[90mStarting new session instead\033[0m\n")
     
-    # Now check auth with the profile from setup_env
-    profile = getattr(args, 'profile', None)
-    if not _check_auth_quick(profile):
-        _print_auth_error()
-        sys.exit(1)
+    # Normal (non-resume) path — skip setup_env/plugins (already ran above)
+    _init_and_authenticate(args, skip_setup_env=True)
     
     root = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
     files = resolve_files(args.files, root) if args.files else []
-    
     cli = CLI(files=files)
     asyncio.run(_run_async_cli(cli))
     
-    # Save session on exit (unless ephemeral)
     if not getattr(args, 'ephemeral', False):
         save_session(cli)
         print(f"\n\033[90mSession saved\033[0m")
@@ -2126,24 +2105,7 @@ def cmd_chat(args):
 
 def cmd_ask(args):
     """Handle: ziya ask "question" [FILES...]"""
-    # CRITICAL FIX: Set up environment BEFORE auth check
-    setup_env(args)
-    
-    # Initialize plugins BEFORE auth check - needed for Amazon auth provider
-    from app.plugins import initialize as initialize_plugins
-    initialize_plugins()
-    
-    # Now check auth with the profile from setup_env
-    profile = getattr(args, 'profile', None)
-    if not _check_auth_quick(profile):
-        _print_auth_error()
-        sys.exit(1)
-    
-    root = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
-    files = resolve_files(args.files, root) if args.files else []
-    
-    # Initialize MCP servers
-    asyncio.run(_initialize_mcp())
+    cli = _create_cli_session(args)
     
     # Build question from args and stdin
     question = args.question
@@ -2157,33 +2119,18 @@ def cmd_ask(args):
         print("Error: No question provided", file=sys.stderr)
         sys.exit(1)
     
-    cli = CLI(files=files)
-    asyncio.run(cli.ask(question, stream=not args.no_stream))
+    asyncio.run(_run_with_mcp(cli.ask(question, stream=not args.no_stream)))
 
 
 def cmd_review(args):
     """Handle: ziya review [FILES...] [--staged]"""
-    # CRITICAL FIX: Set up environment BEFORE auth check
-    setup_env(args)
-    
-    # Initialize plugins BEFORE auth check - needed for Amazon auth provider
-    from app.plugins import initialize as initialize_plugins
-    initialize_plugins()
-    # Show clean startup info
+    cli = _create_cli_session(args)
     print_chat_startup_info(args)
-    
-    
-    # Now check auth with the profile from setup_env
-    profile = getattr(args, 'profile', None)
-    if not _check_auth_quick(profile):
-        _print_auth_error()
-        sys.exit(1)
     
     root = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
     
     # Get content to review
     content = None
-    files = []
     
     if args.staged:
         content = get_git_staged_diff()
@@ -2198,11 +2145,6 @@ def cmd_review(args):
     else:
         # Check stdin first
         content = read_stdin_if_available()
-        if not content and args.files:
-            files = resolve_files(args.files, root)
-    
-    # Initialize MCP servers
-    asyncio.run(_initialize_mcp())
     
     prompt = args.prompt or "Review this code. Focus on bugs, security issues, and improvements."
     
@@ -2211,30 +2153,12 @@ def cmd_review(args):
     else:
         question = prompt
     
-    cli = CLI(files=files)
-    asyncio.run(cli.ask(question, stream=not args.no_stream))
+    asyncio.run(_run_with_mcp(cli.ask(question, stream=not args.no_stream)))
 
 
 def cmd_explain(args):
     """Handle: ziya explain [FILES...]"""
-    # CRITICAL FIX: Set up environment BEFORE auth check
-    setup_env(args)
-    
-    # Initialize plugins BEFORE auth check - needed for Amazon auth provider
-    from app.plugins import initialize as initialize_plugins
-    initialize_plugins()
-    
-    # Now check auth with the profile from setup_env
-    profile = getattr(args, 'profile', None)
-    if not _check_auth_quick(profile):
-        _print_auth_error()
-        sys.exit(1)
-    
-    root = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
-    files = resolve_files(args.files, root) if args.files else []
-    
-    # Initialize MCP servers
-    asyncio.run(_initialize_mcp())
+    cli = _create_cli_session(args)
     
     content = read_stdin_if_available()
     prompt = args.prompt or "Explain this code clearly and concisely."
@@ -2244,9 +2168,87 @@ def cmd_explain(args):
     else:
         question = prompt
     
-    cli = CLI(files=files)
-    asyncio.run(cli.ask(question, stream=not args.no_stream))
+    asyncio.run(_run_with_mcp(cli.ask(question, stream=not args.no_stream)))
 
+
+def cmd_task(args):
+    """Handle: ziya task <name> [--list] [--show TASK]"""
+    from app.task_runner import (
+        load_tasks, validate_task_allow,
+        apply_task_permissions, restore_permissions,
+    )
+    setup_env(args)  # needed for root dir before --list/--show early exits
+    setup_env(args)
+    root = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+    tasks = load_tasks(root)
+
+    # --list: print available tasks and exit
+    if getattr(args, 'list_tasks', False):
+        if not tasks:
+            print("No tasks defined.")
+            print("Create ~/.ziya/tasks.yaml or .ziya/tasks.yaml")
+            return
+        max_name = max(len(n) for n in tasks)
+        print(f"\033[1mAvailable tasks:\033[0m\n")
+        for name in sorted(tasks):
+            desc = tasks[name].get("description", "")
+            print(f"  \033[36m{name:<{max_name}}\033[0m  {desc}")
+        print(f"\nRun: ziya task <name>")
+        return
+
+    # --show: print task prompt and exit
+    if getattr(args, 'show', None):
+        task_name = args.show
+        if task_name not in tasks:
+            print(f"\033[31mUnknown task: {task_name}\033[0m", file=sys.stderr)
+            sys.exit(1)
+        task = tasks[task_name]
+        print(f"\033[1m{task_name}\033[0m: {task.get('description', '')}\n")
+        print(task.get("prompt", "(no prompt)"))
+        return
+
+    # Running a task requires a name
+    task_name = getattr(args, 'task_name', None)
+    if not task_name:
+        args.list_tasks = True
+        cmd_task(args)
+        return
+
+    if task_name not in tasks:
+        print(f"\033[31mUnknown task: {task_name}\033[0m", file=sys.stderr)
+        print(f"Run \033[36mziya task --list\033[0m to see available tasks.", file=sys.stderr)
+        sys.exit(1)
+
+    task_def = tasks[task_name]
+
+    # Validate and apply escalated permissions BEFORE MCP init
+    errors = validate_task_allow(task_def)
+    if errors:
+        print(f"\033[31mTask '{task_name}' has invalid allow block:\033[0m", file=sys.stderr)
+        for err in errors:
+            print(f"  • {err}", file=sys.stderr)
+        sys.exit(1)
+
+    saved_env = apply_task_permissions(task_def)
+    if saved_env:
+        allow = task_def.get("allow", {})
+        parts = []
+        if allow.get("commands"):
+            parts.append(f"commands: {', '.join(allow['commands'])}")
+        if allow.get("git_operations"):
+            parts.append(f"git: {', '.join(allow['git_operations'])}")
+        if allow.get("write_patterns"):
+            parts.append(f"write: {', '.join(allow['write_patterns'])}")
+        print(f"\033[33m⚡ Escalated permissions: {'; '.join(parts)}\033[0m", file=sys.stderr)
+
+    try:
+        # Full init for actual task execution (setup_env already called above)
+        _init_and_authenticate(args, skip_setup_env=True)
+
+        cli = CLI(files=[])  # Tasks don't use file context
+        asyncio.run(_run_with_mcp(cli.ask(task_def["prompt"], stream=not args.no_stream)))
+    finally:
+        restore_permissions(saved_env)
 
 # ============================================================================
 # Auth helpers
@@ -2361,6 +2363,16 @@ Examples:
     explain_parser.add_argument('--prompt', '-p', help='Custom prompt')
     explain_parser.set_defaults(func=cmd_explain)
     
+    # task
+    task_parser = subparsers.add_parser('task', parents=[common_parent],
+                                        help='Run a named task prompt')
+    task_parser.add_argument('task_name', nargs='?', help='Task to run')
+    task_parser.add_argument('--list', '-l', action='store_true',
+                             dest='list_tasks', help='List available tasks')
+    task_parser.add_argument('--show', metavar='TASK',
+                             help='Show the prompt for a task')
+    task_parser.set_defaults(func=cmd_task)
+
     return parser
     
     
@@ -2377,7 +2389,7 @@ def main():
     # Pre-process argv to support flags both before and after subcommand
     # e.g., "ziya --profile x chat" -> "ziya chat --profile x"
     argv = sys.argv[1:]
-    commands = {'chat', 'ask', 'review', 'explain'}
+    commands = {'chat', 'ask', 'review', 'explain', 'task'}
     global_flags = {'--model', '-m', '--profile', '--region', '--root', '--no-stream', '--debug'}
     
     # Find command position

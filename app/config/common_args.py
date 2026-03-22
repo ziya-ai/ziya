@@ -41,8 +41,9 @@ def add_common_arguments(parser):
     
     # AWS configuration
     parser.add_argument('--profile', type=str, default=None, help='AWS profile')
-    parser.add_argument('--region', type=str, default=config.DEFAULT_REGION,
-                        help=f'AWS region (default: {config.DEFAULT_REGION})')
+    parser.add_argument('--region', type=str, default=None,
+                        help=f'AWS region (default: {config.DEFAULT_REGION}). '
+                             f'If omitted, model-specific defaults may apply.')
     
     # Model parameters
     parser.add_argument('--temperature', type=float, default=None,
