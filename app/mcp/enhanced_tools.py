@@ -810,7 +810,8 @@ def create_secure_mcp_tools() -> List[BaseTool]:
     logger.info(f"🔐 SECURE_TOOLS: Cache miss/expired, rebuilding tool list")
     
     # Check if secure mode is enabled
-    secure_mode_enabled = os.environ.get("ZIYA_SECURE_MCP", "true").lower() in ("true", "1", "yes")
+    from app.config.app_config import env_bool
+    secure_mode_enabled = env_bool("ZIYA_SECURE_MCP", True)
     if not secure_mode_enabled:
         logger.debug("Secure MCP mode disabled, falling back to basic MCP tools")
         from app.mcp.tools import create_mcp_tools

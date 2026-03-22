@@ -17,6 +17,12 @@ from app.mcp.tool_guard import scan_tool_description, detect_shadowing, fingerpr
 import time
 
 
+# Default timeout (seconds) for individual MCP tool executions when no
+# tool-specific timeout is provided.  Override via ZIYA_TOOL_TIMEOUT.
+DEFAULT_TOOL_TIMEOUT = 120
+# Buffer added on top of a tool's own timeout so inner layers fire first.
+TOOL_TIMEOUT_BUFFER = 15
+
 class MCPManager:
     """
     Manager for MCP servers and their integration with Ziya.
@@ -56,10 +62,14 @@ class MCPManager:
         self._tools_cache_timestamp: float = 0
         self._tools_cache_ttl: float = 300  # 5 minutes cache TTL
         self._reconnection_attempts: Dict[str, float] = {}  # Track last reconnection attempt per server
-        self._failed_servers: set = set()  # Servers that have failed too many times
+        self._failed_servers: Dict[str, float] = {}  # server_name → timestamp when marked failed
+        self._failed_server_ttl: float = 300  # seconds before a failed server becomes eligible for retry
+        self._reconnection_failures: Dict[str, int] = {}  # server_name → consecutive failure count
         
         # Tool definition fingerprints for rug-pull detection (ATC mitigation)
         self._tool_fingerprints: Dict[str, str] = {}
+
+        self.tool_timeout: float = float(os.environ.get("ZIYA_TOOL_TIMEOUT", DEFAULT_TOOL_TIMEOUT))
 
         # Loop detection for repetitive tool calls
         self._recent_tool_calls: Dict[str, List[tuple]] = {}  # conversation_id -> [(tool_name, arguments, timestamp)]
@@ -300,6 +310,13 @@ class MCPManager:
                 if "env" in server_config:
                     server_env.update(server_config["env"])
                 
+                # Task-level permission escalations (set by apply_task_permissions
+                # in cmd_task) must win over persisted server config values.
+                _ESCALATION_KEYS = ("ALLOW_COMMANDS", "SAFE_GIT_OPERATIONS", "ALLOWED_WRITE_PATTERNS", "YOLO_MODE")
+                for key in _ESCALATION_KEYS:
+                    if key in os.environ:
+                        server_env[key] = os.environ[key]
+
                 # Verify server command exists
                 command = server_config.get("command")
                 args = server_config.get("args", [])
@@ -456,16 +473,23 @@ class MCPManager:
                             client._consecutive_failures = 0
                     except Exception as e:
                         logger.error(f"Failed to restart external server {server_name}: {e}")
-                        self._failed_servers.add(server_name)
+                        self._failed_servers[server_name] = time.time()
     
     async def _ensure_client_healthy(self, client: 'MCPClient') -> bool:
         """Ensure client is healthy, reconnect if necessary."""
         server_name = getattr(client, 'server_name', client.server_config.get('name', 'unknown'))
         
         # Skip servers that have failed too many times
-        if server_name in self._failed_servers:
-            logger.debug(f"Server {server_name} is in failed state, skipping health check")
-            return False
+        failed_at = self._failed_servers.get(server_name)
+        if failed_at is not None:
+            elapsed = time.time() - failed_at
+            if elapsed < self._failed_server_ttl:
+                logger.debug(f"Server {server_name} is in failed state ({elapsed:.0f}s / {self._failed_server_ttl:.0f}s TTL), skipping health check")
+                return False
+            # TTL expired — give the server another chance (half-open state)
+            logger.info(f"Server {server_name} failed state expired after {elapsed:.0f}s, allowing retry")
+            del self._failed_servers[server_name]
+            self._reconnection_failures.pop(server_name, None)
         
         # Prevent rapid reconnection attempts (minimum 30 seconds between attempts)
         last_attempt = self._reconnection_attempts.get(server_name, 0)
@@ -487,20 +511,17 @@ class MCPManager:
                     # Invalidate tools cache to reload capabilities
                     self.invalidate_tools_cache()
                     # Reset failure count on successful reconnection
-                    if hasattr(self, '_reconnection_failures'):
-                        self._reconnection_failures.pop(server_name, None)
+                    self._reconnection_failures.pop(server_name, None)
                     return True
                 else:
                     logger.error(f"Client {server_name} reconnection failed")
                     
                     # Track failed attempts - if too many, disable this server
-                    if not hasattr(self, '_reconnection_failures'):
-                        self._reconnection_failures = {}
                     self._reconnection_failures[server_name] = self._reconnection_failures.get(server_name, 0) + 1
                     
                     if self._reconnection_failures[server_name] >= 3:
                         logger.error(f"Server {server_name} failed {self._reconnection_failures[server_name]} times, disabling")
-                        self._failed_servers.add(server_name)
+                        self._failed_servers[server_name] = time.time()
                     return False
             except Exception as e:
                 logger.error(f"Error during client reconnection for {server_name}: {e}")
@@ -563,6 +584,11 @@ class MCPManager:
             # Create and connect new client
             client = MCPClient(server_config)
             self.clients[server_name] = client
+
+            # Clear any failed/failure state so the server gets a fresh start
+            self._failed_servers.pop(server_name, None)
+            self._reconnection_attempts.pop(server_name, None)
+            self._reconnection_failures.pop(server_name, None)
             success = await self._connect_server(server_name, client)
             
             # Invalidate cache when client configuration changes
@@ -892,16 +918,6 @@ class MCPManager:
                                 continue
                         except (json.JSONDecodeError, TypeError):
                             pass
-                    # Parse JSON strings into arrays when schema expects array
-                    if expected_type == 'array' and isinstance(value, str):
-                        try:
-                            parsed = json.loads(value)
-                            if isinstance(parsed, list):
-                                logger.info(f"Coercing JSON-encoded string to array for {key}")
-                                coerced[key] = parsed
-                                continue
-                        except (json.JSONDecodeError, TypeError):
-                            pass
                     # Coerce non-string values to string when schema expects string
                     # Models frequently pass numeric IDs as bare numbers
                     if expected_type == 'string' and not isinstance(value, str):
@@ -1168,6 +1184,58 @@ class MCPManager:
             logger.error(f"❌ Error creating workspace-scoped client: {e}")
             return None
     
+    async def _call_tool_with_timeout(
+        self,
+        client: 'MCPClient',
+        tool_name: str,
+        arguments: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Call a tool on *client* with a timeout guard.
+
+        Timeout behaviour:
+        - If the tool arguments contain a ``timeout`` key (e.g. the shell
+          tool's per-command timeout), the effective timeout is
+          ``max(self.tool_timeout, tool_timeout + TOOL_TIMEOUT_BUFFER)``
+          so the tool's own inner timeout fires first and produces a
+          descriptive error.
+        - Otherwise ``self.tool_timeout`` (default 120 s, configurable
+          via ``ZIYA_TOOL_TIMEOUT``) is used as-is.
+
+        Returns a structured error dict on timeout so callers don't need
+        their own try/except for the timeout case.
+        """
+        effective_timeout = self.tool_timeout
+
+        # Respect the tool's own timeout parameter so we never kill a
+        # legitimately long-running command before the inner layer does.
+        tool_requested_timeout = arguments.get("timeout") if isinstance(arguments, dict) else None
+        if tool_requested_timeout is not None:
+            try:
+                effective_timeout = max(effective_timeout, float(tool_requested_timeout) + TOOL_TIMEOUT_BUFFER)
+            except (ValueError, TypeError):
+                pass  # Non-numeric value — keep the default
+
+        server_name = getattr(client, 'server_name', client.server_config.get('name', 'unknown'))
+        try:
+            return await asyncio.wait_for(
+                client.call_tool(tool_name, arguments),
+                timeout=effective_timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                f"⏱️ MCP tool '{tool_name}' on server '{server_name}' timed out "
+                f"after {effective_timeout:.0f}s"
+            )
+            return {
+                "error": True,
+                "message": (
+                    f"Tool '{tool_name}' timed out after {int(effective_timeout)} seconds. "
+                    f"The MCP server '{server_name}' did not respond in time. "
+                    f"You can increase the timeout with the ZIYA_TOOL_TIMEOUT environment variable."
+                ),
+                "code": -32000,
+            }
+
     async def cleanup_stale_workspace_instances(self):
         """Clean up workspace-scoped instances that haven't been used recently."""
         now = time.time()
@@ -1283,7 +1351,7 @@ class MCPManager:
             workspace_client = await self._get_or_create_workspace_client(target_server_name, workspace_path)
             
             if workspace_client:
-                result = await workspace_client.call_tool(internal_tool_name, arguments)
+                result = await self._call_tool_with_timeout(workspace_client, internal_tool_name, arguments)
                 
                 # Trigger periodic cleanup
                 if time.time() % 60 < 1:
@@ -1348,8 +1416,8 @@ class MCPManager:
                 if hasattr(client, '_is_process_healthy') and not await self._ensure_client_healthy(client):
                     logger.error(f"Client {server_name} is unhealthy, cannot execute tool")
                     return {"error": True, "message": f"Server '{server_name}' is unhealthy", "code": -32002}
-                    
-                return await client.call_tool(internal_tool_name, arguments)
+
+                return await self._call_tool_with_timeout(client, internal_tool_name, arguments)
         else:
             # Try all connected servers
             for client in self.clients.values():
@@ -1368,7 +1436,7 @@ class MCPManager:
                                 if os.environ.get('ZIYA_MODE', 'server') == 'server':
                                     logger.debug(f"🔍 MCP_MANAGER: About to call client.call_tool with name='{name_to_try}', arguments={arguments}")
 
-                                result = await client.call_tool(name_to_try, arguments)
+                                result = await self._call_tool_with_timeout(client, name_to_try, arguments)
 
                                 logger.debug(f"🔍 MCP_MANAGER: Tool call succeeded: {name_to_try}")
 
