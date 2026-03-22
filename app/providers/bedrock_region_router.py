@@ -209,8 +209,8 @@ class BedrockRegionRouter:
             return ep._client
 
         try:
-            from app.agents.models import ModelManager
-            client = ModelManager._get_persistent_bedrock_client(
+            from app.providers.bedrock_client_cache import get_persistent_bedrock_client
+            client = get_persistent_bedrock_client(
                 aws_profile=self._aws_profile,
                 region=region,
                 model_id=ep.model_id,
