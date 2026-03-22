@@ -16,8 +16,8 @@ from typing import Dict, List, Any, Optional, Tuple
 from app.utils.logging_utils import logger
 from ..core.exceptions import PatchApplicationError
 from ..parsing.diff_parser import parse_unified_diff_exact_plus, extract_target_file_from_diff, split_combined_diff
-from ..validation.validators import is_new_file_creation, is_hunk_already_applied, normalize_line_for_comparison
-from ..file_ops.file_handlers import create_new_file, cleanup_patch_artifacts, cleanup_workspace_artifacts
+from ..validation.validators import is_new_file_creation, is_file_deletion, is_hunk_already_applied, normalize_line_for_comparison
+from ..file_ops.file_handlers import create_new_file, delete_file, cleanup_patch_artifacts, cleanup_workspace_artifacts
 from ..application.patch_apply import apply_diff_with_difflib, apply_diff_with_difflib_hybrid_forced, apply_diff_with_difflib_hybrid_forced_hunks
 from ..application.git_diff import parse_patch_output
 
@@ -191,6 +191,42 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
             pipeline.complete(error=error)
             return pipeline.result.to_dict()
     
+    # Handle file deletion
+    if is_file_deletion(diff_lines):
+        try:
+            deleted_path = delete_file(git_diff, user_codebase_dir)
+            cleanup_patch_artifacts(user_codebase_dir, file_path)
+
+            # Build a synthetic hunk to track success
+            removed_lines = [
+                line[1:] for line in diff_lines
+                if line.startswith('-') and not line.startswith('---')
+            ]
+            synthetic_hunk = {
+                'number': 1,
+                'old_start': 1,
+                'old_count': len(removed_lines),
+                'new_start': 0,
+                'new_count': 0,
+                'header': f'@@ -1,{len(removed_lines)} +0,0 @@',
+                'old_block': removed_lines,
+                'new_lines': []
+            }
+            pipeline.initialize_hunks([synthetic_hunk])
+            pipeline.update_hunk_status(1, PipelineStage.SYSTEM_PATCH, HunkStatus.SUCCEEDED)
+
+            pipeline.result.changes_written = True
+            pipeline.result.is_deletion = True
+            pipeline.result.file_path = deleted_path
+            pipeline.result.status = "success"
+            pipeline.complete()
+            return pipeline.result.to_dict()
+        except Exception as e:
+            error = f"Error deleting file: {str(e)}"
+            logger.error(error)
+            pipeline.complete(error=error)
+            return pipeline.result.to_dict()
+
     # Parse the hunks to track
     try:
         logger.debug(f"Before parsing hunks, git_diff first 10 lines:\n{git_diff.splitlines()[:10]}")

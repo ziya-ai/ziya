@@ -43,10 +43,30 @@ def extract_target_file_from_diff(diff_content: str) -> Optional[str]:
     """
     if not diff_content:
         return None
-        
+
+    # Detect file deletion: when +++ is /dev/null, the meaningful path
+    # is the source (the file being deleted), not the target.
     lines = diff_content.splitlines()
+    is_deletion = any(
+        line.strip() == '+++ /dev/null'
+        for line in lines[:10]
+    )
+    if is_deletion:
+        for line in lines:
+            if line.startswith('--- a/'):
+                return line[6:]
+            if line.startswith('diff --git'):
+                if ' a/' in line:
+                    a_part = line.split(' a/', 1)[1]
+                    if ' b/' in a_part:
+                        return a_part.split(' b/')[0]
+                    return a_part
+        return None
+
+    # Priority 1: +++ header — the canonical target path.
+    # Scanned separately because diff --git (line 0) and --- a/ (line 1)
+    # appear before +++ b/ (line 2) and would preempt it in a single pass.
     for line in lines:
-        # For new files (with standard format)
         if line.startswith('+++ b/'):
             path = line[6:]
             # Restore leading slash for absolute paths encoded as '+++ b/Users/...'
@@ -56,17 +76,17 @@ def extract_target_file_from_diff(diff_content: str) -> Optional[str]:
                 if os.path.exists(candidate):
                     return candidate
             return path
-            
-        # For new files (with /dev/null format)
+
         if line.startswith('+++ ') and not line.startswith('+++ b/') and not line.startswith('+++ /dev/null'):
-            # Extract the path without any prefix
             return line[4:].strip()
-            
-        # For deleted files
+
+    # Priority 2: --- a/ header (for diffs without +++ b/, e.g. truncated diffs)
+    for line in lines:
         if line.startswith('--- a/'):
             return line[6:]
-            
-        # Check diff --git line as fallback
+
+    # Priority 3: diff --git header as last resort
+    for line in lines:
         if line.startswith('diff --git'):
             parts = line.split(' b/', 1)
             if len(parts) > 1:
@@ -76,7 +96,7 @@ def extract_target_file_from_diff(diff_content: str) -> Optional[str]:
                     if os.path.exists(candidate):
                         return candidate
                 return path
-                
+
     return None
 
 def split_combined_diff(diff_content: str) -> List[str]:
