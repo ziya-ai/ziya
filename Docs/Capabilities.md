@@ -162,6 +162,8 @@ When the model suggests a diff:
 - **Undo** reverses it
 - The diff pipeline tries multiple strategies (`patch`, `git apply`, difflib) so it handles imperfect diffs gracefully
 - Per-hunk status is shown — partial success is fine
+- **File deletion** diffs (`deleted file mode` / `+++ /dev/null`) delete the target file when applied
+- **New file creation** diffs (`new file mode` / `--- /dev/null`) create the file when applied
 
 Files outside the project root can be modified if they were added via the file browser.
 
@@ -174,6 +176,17 @@ Files outside the project root can be modified if they were added via the file b
 - The file tree shows token counts to help you manage context size
 - Files outside the project root can be added via the browser
 - Context window usage is shown in the toolbar
+
+### Context Curation
+
+Ziya gives you direct control over what the model sees, rather than relying on automatic summarization that may discard information you consider important:
+
+- **Mute/unmute messages** — exclude any message from context without deleting it. Muted messages stay visible (dimmed) and can be restored anytime. Use this to shed weight from dead-end explorations while keeping the important discoveries.
+- **Fork + truncate** — branch from any message to explore an alternative. Optionally truncate the fork to start with a lighter context, while the original conversation remains intact.
+- **Edit or resubmit** — revise any message in the history and resubmit from that point.
+- **Selective file removal** — drop individual files from context when they've served their purpose, reclaiming token budget.
+
+This is a deliberate alternative to automatic context compaction (used by Claude Code, Cline, and others). Auto-compaction lets the machine decide what to keep — which risks losing details you know are critical. Manual curation takes a few clicks but keeps you in control.
 
 ---
 
@@ -211,4 +224,66 @@ Models available in multiple AWS regions benefit from automatic region failover 
 | Variable | Default | Description |
 |---|---|---|
 | `BEDROCK_REGION_COOLDOWN_SECS` | `120` | Seconds before a throttled region recovers full weight |
+
+---
+
+## CLI Mode
+
+Ziya provides a full terminal interface alongside the web UI. All commands use the same model, credentials, and MCP tools as the server.
+
+### Commands
+
+| Command | Description |
+|---|---|
+| `ziya chat [FILES...]` | Interactive terminal chat with optional file context |
+| `ziya ask "question" [FILES...]` | One-shot question — prints the answer and exits |
+| `ziya review [--staged\|--diff] [FILES...]` | Code review with optional custom prompt |
+| `ziya explain [FILES...] [--prompt "..."]` | Explain code from files or stdin |
+
+### Piping
+
+Any command that accepts content also reads from stdin, so standard Unix piping works:
+
+```bash
+git diff | ziya review                      # Review uncommitted changes
+git diff --cached | ziya review             # Same as: ziya review --staged
+cat error.log | ziya ask "what's wrong?"    # Diagnose a log file
+cat utils.py | ziya explain                 # Explain a file via pipe
+```
+
+When both a question argument and piped input are provided, they are combined:
+
+```bash
+cat handler.py | ziya ask "find the bug"    # "find the bug" + file contents
+```
+
+### Common flags
+
+All subcommands accept the same global flags:
+
+```bash
+ziya ask "..." --model haiku-4.5            # Use a specific model
+ziya review --staged --profile prod         # Use a specific AWS profile
+ziya ask "..." --endpoint google            # Use Google Gemini
+ziya chat --no-stream                       # Disable streaming output
+ziya chat --debug                           # Enable debug logging
+```
+
+Flags can appear before or after the subcommand:
+
+```bash
+ziya --profile dev ask "explain this"       # Equivalent to:
+ziya ask "explain this" --profile dev
+```
+
+### Sessions
+
+Interactive `chat` sessions are auto-saved to `~/.ziya/sessions/`. Resume a previous session with:
+
+```bash
+ziya chat --resume                          # Interactive session picker
+ziya chat --ephemeral                       # Don't save this session
+```
+
+
 

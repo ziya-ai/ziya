@@ -79,7 +79,19 @@ All MCP tool results are signed with HMAC-SHA256 using a per-session secret gene
 
 Each tool execution receives a cryptographic token (`ToolExecutionToken`) with a SHA-256 signature binding the tool name, arguments, conversation ID, and timestamp. Executions are tracked in a registry for verification.
 
-### 7. Permission Management
+### 7. Tool Execution Timeout
+
+**Module:** `app/mcp/manager.py` — `_call_tool_with_timeout()`
+
+Every MCP tool invocation is wrapped in `asyncio.wait_for()` with a configurable deadline. If an MCP server hangs (network issue, infinite loop, unresponsive process), the call is cancelled and a structured error is returned to the model instead of blocking the session indefinitely.
+
+| Setting | Default | Description |
+|---|---|---|
+| `ZIYA_TOOL_TIMEOUT` | `120` (seconds) | Maximum time a single tool call may run before being cancelled |
+
+The timeout applies uniformly to all tool execution paths: direct server calls, workspace-scoped instances, and the auto-routing fallback path. Dynamic tools (in-process) are not subject to this timeout as they run in the same event loop.
+
+### 8. Permission Management
 
 **Module:** `app/mcp/permissions.py`
 
@@ -106,15 +118,23 @@ This produces a report covering all four ATC threat categories and can be submit
 | `tests/test_response_validator.py` | Hidden character stripping, response schema validation |
 | `tests/test_mcp_client_retry.py` | Retry logic: policy blocks not retried, transient errors retried |
 | `tests/test_mcp_client_timeout.py` | Timeout alignment: tool-requested timeouts honoured by MCP client |
+| `tests/test_mcp_tool_timeout.py` | Manager-level tool timeout: default, env override, tool-param extension, error format |
 
-## Shell Command Timeout Chain
+## Tool Execution Timeout Chain
 
-Three layers of timeouts protect shell command execution. They must be aligned so that inner layers fire before outer layers, producing clean error messages:
+Four layers of timeouts protect tool execution. They are ordered so that inner layers fire before outer layers, producing the most descriptive error possible:
 
 | Layer | Default | Env Var | Description |
 |---|---|---|---|
 | Shell server (`subprocess.run`) | 30s | `COMMAND_TIMEOUT` | Kills the actual shell process. Model can request up to `MAX_COMMAND_TIMEOUT` (300s) via the `timeout` tool parameter. |
 | MCP client (`readline`) | 30s | — | Waits for the shell server's JSON-RPC response. Automatically extended to `tool_timeout + 10s` when the tool call includes a `timeout` argument. |
-| Tool executor (`asyncio.wait_for`) | 300s | `TOOL_EXEC_TIMEOUT` | Outermost guard wrapping the entire MCP call from the streaming executor. |
+| MCP manager (`asyncio.wait_for`) | 120s | `ZIYA_TOOL_TIMEOUT` | Guards every `call_tool()` invocation — covers CLI, server, and streaming paths. When the tool's arguments include a `timeout` key, the effective timeout is `max(ZIYA_TOOL_TIMEOUT, tool_timeout + 15s)` so inner layers fire first. |
+| Streaming tool executor (`asyncio.wait_for`) | 300s | `TOOL_EXEC_TIMEOUT` | Outermost guard wrapping the entire tool execution cycle in the streaming path (includes argument normalization, signing, etc.). |
 
-The 10-second buffer between the shell server timeout and the MCP client readline timeout ensures that `subprocess.TimeoutExpired` fires first, giving a descriptive "Command timed out after N seconds" error rather than a generic "Timeout waiting for response from MCP server".
+The buffer between each layer ensures that the innermost timeout fires first. For example, a shell command with `timeout=200`:
+- Shell server kills the process at 200s
+- MCP client readline waits 210s (200+10)
+- MCP manager waits 215s (200+15)
+- Streaming executor waits 300s
+
+This produces a clean "Command timed out after 200 seconds" error from the shell server rather than a generic timeout from an outer layer.

@@ -83,6 +83,23 @@ Providers are loaded when `ZIYA_LOAD_INTERNAL_PLUGINS=1` is set. The system look
 
 ---
 
+## Environment Setup
+
+Both entry points (web server via `app/main.py` and CLI via `app/cli.py`) share a single `setup_environment()` function in `app/config/environment.py`. This function translates parsed CLI arguments into environment variables for:
+
+* Root directory and file inclusion/exclusion
+* AWS profile, region (with model-specific defaults from `MODEL_DEFAULT_REGIONS`)
+* Endpoint + model validation and auto-detection
+* Model parameter flags (temperature, top_p, top_k, etc.)
+* Templates directory
+
+Each entry point adds its own extras after calling the shared function:
+
+* **Server** (`main.py`): AST, MCP enablement, ephemeral mode, max_depth
+* **CLI** (`cli.py`): Debug logging, logger reconfiguration for chat mode
+
+---
+
 ## Service Models
 
 Service models are small specialized models that augment the primary model by backing specific tools. The first instance is Nova Web Grounding:
@@ -144,3 +161,29 @@ Code changes suggested by the model are applied via `POST /api/apply-changes`. T
 4. **LLM resolver** (future) — for structurally complex cases
 
 Each hunk is tracked independently through the pipeline. The result reports per-hunk status (succeeded, failed, already-applied) so the UI can show partial success accurately. Failed hunks include the pipeline stage where they failed and why.
+
+---
+
+## Frontend React Context Architecture
+
+The frontend uses a **slice context** pattern to prevent cascade re-renders. State is owned by a single `ChatProvider` but exposed through focused contexts so consumers only subscribe to the state they need.
+
+```
+ChatProvider  (state owner — frontend/src/context/ChatContext.tsx)
+    │
+    ├── ScrollContext         scroll position, auto-scroll, direction
+    ├── ConversationListContext  conversations[], folders[], CRUD operations
+    ├── ActiveChatContext     current messages, streaming maps, editing state
+    └── StreamingContext      read-only streaming flags (isStreaming, etc.)
+```
+
+**Why slices?** A monolithic context with ~55 dependency items causes every state change to re-render all 25+ consumers. During streaming (60Hz updates to `streamedContentMap`), this forced `FolderTree`, `ProjectManagerModal`, and other unrelated components to re-render. The slice pattern keeps the state management code centralized in `ChatProvider` while delivering narrow subscriptions.
+
+| Context | Key consumers | Changes when |
+|---|---|---|
+| `ScrollContext` | App, Conversation | User scrolls or auto-scroll fires |
+| `ConversationListContext` | FolderTree, FolderButton, Debug, DelegateLaunchButton | Conversation/folder CRUD |
+| `ActiveChatContext` | Conversation, SendChat, StreamedContent, EditSection | Message streaming, editing |
+| `StreamingContext` | MarkdownRenderer sub-components | Streaming starts/stops |
+
+**Migration path**: Components that previously called `useChatContext()` are incrementally migrated to the appropriate slice hook (`useScrollContext()`, `useConversationList()`, `useActiveChat()`, `useStreamingContext()`). The monolithic `useChatContext()` remains available for complex consumers that span multiple slices.

@@ -155,3 +155,11 @@ Per-project settings, contexts, and skills are stored here automatically. You do
 | `~/.ziya/tool_enhancements.json` | Global tool description overrides |
 | `~/.ziya/projects/` | Per-project state (managed by UI) |
 | `./mcp_config.json` | Project-level MCP server definitions |
+
+---
+
+For the complete list of `ZIYA_*` environment variables (44+ vars across 12 categories), see [EnvironmentVariables.md](EnvironmentVariables.md).
+
+---
+
+For the complete list of `ZIYA_*` environment variables (50+ vars across 12 categories), see [EnvironmentVariables.md](EnvironmentVariables.md).
