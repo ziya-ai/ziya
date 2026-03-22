@@ -79,6 +79,7 @@ class PipelineResult:
     request_id: Optional[str] = None  # Store the request ID for tracking
     _parsed_hunks_cache: Optional[List[Dict[str, Any]]] = field(default=None, init=False, repr=False)  # Cache for parsed hunks
     is_new_file: bool = False  # Track if this was a new file creation
+    is_deletion: bool = False  # Track if this was a file deletion
 
     # Removed redundant methods and properties to avoid confusion
     # We'll use the existing succeeded_hunks, failed_hunks, etc. properties consistently
@@ -197,6 +198,10 @@ class PipelineResult:
         # Not reversible if it was a new file creation
         if self.is_new_file:
             return False
+
+        # Not reversible if it was a file deletion (reverse = recreation, risky)
+        if self.is_deletion:
+            return False
         
         # Not reversible if any hunks failed
         if self.failed_hunks:
@@ -270,6 +275,7 @@ class PipelineResult:
             "changes_written": self.changes_written,
             "reversible": reversible,  # Whether this diff can be safely un-applied
             "request_id": self.request_id,  # Include the request ID in the response
+            "is_deletion": self.is_deletion,
             "error": self.error,
             "hunk_statuses": hunk_details,
             "details": {

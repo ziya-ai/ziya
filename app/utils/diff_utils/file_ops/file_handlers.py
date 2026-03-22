@@ -9,6 +9,40 @@ from typing import List
 
 from app.utils.logging_utils import logger
 
+def delete_file(git_diff: str, base_dir: str) -> str:
+    """
+    Delete a file indicated by a deletion diff.
+
+    Returns the relative path of the deleted file.
+
+    Args:
+        git_diff: The git diff content (must be a deletion diff)
+        base_dir: The base directory of the project
+
+    Raises:
+        FileNotFoundError: If the file does not exist
+        ValueError: If the file path cannot be determined
+    """
+    from ..parsing.diff_parser import extract_target_file_from_diff
+
+    rel_path = extract_target_file_from_diff(git_diff)
+    if not rel_path:
+        raise ValueError("Could not determine file path from deletion diff")
+
+    full_path = os.path.join(base_dir, rel_path)
+    if not os.path.isabs(full_path):
+        full_path = os.path.abspath(full_path)
+
+    if not os.path.exists(full_path):
+        raise FileNotFoundError(f"File does not exist: {full_path}")
+
+    logger.info(f"Deleting file: {full_path}")
+    os.remove(full_path)
+    logger.info(f"Successfully deleted file: {rel_path}")
+
+    return rel_path
+
+
 def create_new_file(git_diff: str, base_dir: str) -> None:
     """
     Create a new file from a git diff.
