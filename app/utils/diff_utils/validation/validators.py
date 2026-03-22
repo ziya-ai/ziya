@@ -59,6 +59,39 @@ def is_new_file_creation(diff_lines: List[str]) -> bool:
     logger.debug("No new file indicators found")
     return False
 
+
+def is_file_deletion(diff_lines: List[str]) -> bool:
+    """
+    Determine if a diff represents a file deletion.
+
+    A deletion diff has:
+      - 'deleted file mode' marker
+      - '+++ /dev/null' as the target
+
+    Args:
+        diff_lines: The lines of the diff
+
+    Returns:
+        True if the diff represents a file deletion, False otherwise
+    """
+    if not diff_lines:
+        return False
+
+    has_deleted_mode = False
+    has_dev_null_target = False
+
+    for line in diff_lines[:10]:
+        if 'deleted file mode' in line:
+            has_deleted_mode = True
+        if line.strip() == '+++ /dev/null':
+            has_dev_null_target = True
+
+    if has_deleted_mode and has_dev_null_target:
+        logger.debug("Confirmed file deletion: has both deleted file mode and /dev/null target")
+        return True
+
+    return False
+
     # Additional sanity checks - new files shouldn't have these characteristics
     has_delete_lines = any(line.startswith('-') and not line.startswith('---') for line in diff_lines)
     if has_delete_lines:

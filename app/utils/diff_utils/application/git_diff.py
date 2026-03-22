@@ -415,9 +415,9 @@ def correct_git_diff(git_diff: str, file_path: str) -> str:
                 parsed_patches = list(whatthepatch.parse_patch(cleaned_diff))
             except ValueError as e:
                 logger.warning(f"whatthepatch parsing error: {str(e)}")
-                # If parsing fails, try to handle embedded diff markers
-                from .hunk_utils import handle_embedded_diff_markers
-                return handle_embedded_diff_markers(cleaned_diff)
+                # If parsing fails, return the diff as-is and let
+                # downstream stages handle it.
+                return cleaned_diff
                 
             if not parsed_patches:
                 logger.warning("No valid patches found in diff")
@@ -810,7 +810,6 @@ def apply_diff_atomically(file_path: str, git_diff: str) -> Dict[str, Any]:
     try:
         from io import StringIO
         from .patch_apply import apply_diff_with_difflib_hybrid_forced
-        from .language_integration import verify_changes_with_language_handler
         
         # Apply the diff to the content
         modified_lines = apply_diff_with_difflib_hybrid_forced(file_path, git_diff, original_lines)
@@ -822,14 +821,44 @@ def apply_diff_atomically(file_path: str, git_diff: str) -> Dict[str, Any]:
             return {"status": "success", "details": {"already_applied": already_applied_hunks, "changes_written": False}}
         
         # Verify changes with language handler
-        is_valid, error_details = verify_changes_with_language_handler(file_path, original_content, modified_content)
-        if not is_valid:
-            logger.error(f"Language validation failed: {error_details}")
-            return {"status": "error", "details": error_details}
+        try:
+            from ..language_handlers import LanguageHandlerRegistry
+            handler_class = LanguageHandlerRegistry.get_handler(file_path)
+            is_valid, error_msg = handler_class.verify_changes(original_content, modified_content, file_path)
+            if not is_valid:
+                logger.error(f"Language validation failed: {error_msg}")
+                return {"status": "error", "details": {"type": "language_validation", "message": error_msg}}
+            has_duplicates, duplicates = handler_class.detect_duplicates(original_content, modified_content)
+            if has_duplicates:
+                logger.warning(f"Duplicate code detected in {file_path}: {', '.join(duplicates)}")
+                return {"status": "error", "details": {"type": "duplicate_code", "duplicates": duplicates}}
+        except ImportError:
+            logger.debug("Language handlers not available for validation")
+        except Exception as e:
+            logger.warning(f"Error in language validation: {str(e)}")
         
-        # Write the modified content back to the file in a single operation
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(modified_content)
+        # Atomic write: write to a temp file in the same directory, fsync,
+        # then replace.  os.replace() is atomic on POSIX; on Windows it is
+        # the best available primitive (overwrites target if it exists).
+        target_dir = os.path.dirname(file_path) or '.'
+        fd = None
+        tmp_path = None
+        try:
+            fd, tmp_path = tempfile.mkstemp(dir=target_dir, suffix='.tmp')
+            with os.fdopen(fd, 'w', encoding='utf-8') as tmp_f:
+                fd = None  # os.fdopen takes ownership of the fd
+                tmp_f.write(modified_content)
+                tmp_f.flush()
+                os.fsync(tmp_f.fileno())
+            # Preserve original file permissions
+            os.chmod(tmp_path, os.stat(file_path).st_mode)
+            os.replace(tmp_path, file_path)
+            tmp_path = None  # rename succeeded, nothing to clean up
+        finally:
+            if fd is not None:
+                os.close(fd)
+            if tmp_path is not None and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
         
         logger.info(f"Successfully wrote changes to {file_path}")
         return {"status": "success", "details": {"succeeded": list(range(1, len(hunks) + 1)), "changes_written": True}}
