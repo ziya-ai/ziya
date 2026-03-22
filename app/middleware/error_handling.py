@@ -71,11 +71,11 @@ class ErrorHandlingMiddleware(BaseHTTPMiddleware):
                 # Create a streaming response with the error
                 # Use a more descriptive error format for SSE
                 async def error_stream(error_message):
-                    yield f"data: Error: {str(e)}\n\n"
+                    yield f"data: Error: {error_message}\n\n"
                     yield "data: [DONE]\n\n"
                 
                 response = StreamingResponse(
-                    error_stream(),
+                    error_stream(str(e)),
                     media_type="text/event-stream",
                     status_code=500
                 )
