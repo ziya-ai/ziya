@@ -1,5 +1,4 @@
-import React, { useState, useRef, useEffect, useLayoutEffect, Suspense } from 'react';
-import { FolderTree } from './FolderTree';
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, Suspense } from 'react';import { FolderTree } from './FolderTree';
 import { SendChatContainer } from './SendChatContainer';
 import { StreamedContent } from './StreamedContent';
 import { Button, Tooltip, ConfigProvider } from "antd";
@@ -130,6 +129,8 @@ export const App: React.FC = () => {
     const chatContainerRef = useRef<HTMLDivElement | null>(null);
 
     const [showShellConfig, setShowShellConfig] = useState(false);
+    const handleOpenShellConfig = useCallback(() => setShowShellConfig(true), []);
+
     const [showMCPStatus, setShowMCPStatus] = useState(false);
     const [showMCPRegistry, setShowMCPRegistry] = useState(false);
     const [showExportModal, setShowExportModal] = useState(false);
@@ -307,7 +308,7 @@ export const App: React.FC = () => {
                 maxWidth: '100%', overflowX: 'hidden'
             }}>
                 <Suspense fallback={<div>Loading conversation...</div>}>
-                    <Conversation key="conv" enableCodeApply={enableCodeApply} onOpenShellConfig={() => setShowShellConfig(true)} />
+                    <Conversation key="conv" enableCodeApply={enableCodeApply} onOpenShellConfig={handleOpenShellConfig} />
                 </Suspense>
                 <StreamedContent key="stream" />
             </div>
@@ -322,7 +323,7 @@ export const App: React.FC = () => {
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
                 <div className="bottom-up-content" ref={bottomUpContentRef}>
                     <Suspense fallback={<div>Loading conversation...</div>}>
-                        <Conversation key="conv" enableCodeApply={enableCodeApply} onOpenShellConfig={() => setShowShellConfig(true)} />
+                        <Conversation key="conv" enableCodeApply={enableCodeApply} onOpenShellConfig={handleOpenShellConfig} />
                     </Suspense>
                 </div>
             </div>
