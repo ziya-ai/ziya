@@ -67,7 +67,7 @@ from app.utils.error_handlers import format_error_response, detect_error_type
 from app.utils.custom_exceptions import KnownCredentialException, ThrottlingException, ExpiredTokenException
 
 from app.mcp.manager import get_mcp_manager
-from app.config.models_config import TOOL_SENTINEL_CLOSE
+from app.config.models_config import TOOL_SENTINEL_CLOSE, DEFAULT_MAX_OUTPUT_TOKENS
 from app.mcp.tools import create_mcp_tools, parse_tool_call
 
 # Lazy initialization of ModelManager - don't initialize at module load time
@@ -612,7 +612,7 @@ class RetryingChatBedrock(Runnable):
         throttling_base_delay = 5  # Start with 5 seconds for throttling
 
         # Get max_tokens from environment variables
-        max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 0)) or int(os.environ.get("ZIYA_MAX_TOKENS", 0)) or None
+        max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 0)) or int(os.environ.get("ZIYA_MAX_TOKENS", 0)) or DEFAULT_MAX_OUTPUT_TOKENS
         
         # Create a copy of kwargs to avoid modifying the original
         filtered_kwargs = {}
@@ -1851,8 +1851,9 @@ def create_agent_chain(chat_model: BaseChatModel):
     
     # Create cache key based on model configuration
     model_id = ModelManager.get_model_id() or getattr(chat_model, 'model_id', 'unknown')
-    ast_enabled = os.environ.get("ZIYA_ENABLE_AST") == "true"
-    mcp_enabled = os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes")
+    from app.config.app_config import env_bool
+    ast_enabled = env_bool("ZIYA_ENABLE_AST")
+    mcp_enabled = env_bool("ZIYA_ENABLE_MCP", True)
     
     # Get MCP tools first to include in cache key
     mcp_tools = []

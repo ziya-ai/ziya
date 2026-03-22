@@ -15,6 +15,7 @@ from langchain_core.runnables import Runnable, RunnableConfig
 from app.utils.logging_utils import logger
 from app.utils.context_cache import get_context_cache_manager
 from app.utils.conversation_context import conversation_context
+from app.config.models_config import DEFAULT_MAX_OUTPUT_TOKENS
 
 
 class ZiyaBedrock(Runnable):
@@ -327,7 +328,7 @@ class ZiyaBedrock(Runnable):
         messages = self._ensure_system_message_ordering(messages)
 
         # Use much higher default if not set
-        kwargs["max_tokens"] = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", self.ziya_max_tokens or 32768))
+        kwargs["max_tokens"] = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", self.ziya_max_tokens or DEFAULT_MAX_OUTPUT_TOKENS))
         if self.ziya_max_tokens is not None and "max_tokens" not in kwargs:
             kwargs["max_tokens"] = self.ziya_max_tokens
             logger.debug(f"Added max_tokens={self.ziya_max_tokens} to _generate kwargs")

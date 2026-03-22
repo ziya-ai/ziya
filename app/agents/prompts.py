@@ -377,7 +377,8 @@ Remember to strictly adhere to the Git diff format guidelines provided above whe
 """
 
 # Add AST capabilities to the template if available
-if os.environ.get("ZIYA_ENABLE_AST") == "true" and AST_AVAILABLE:
+from app.config.app_config import env_bool
+if env_bool("ZIYA_ENABLE_AST") and AST_AVAILABLE:
     # Get AST context and token count
     from app.utils.ast_parser import get_ast_context, get_ast_token_count
     AST_CONTEXT = get_ast_context()

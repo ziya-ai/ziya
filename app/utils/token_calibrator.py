@@ -194,7 +194,7 @@ class TokenCalibrator:
                 temp_file = self.cache_file + '.tmp'
                 if temp_file and os.path.exists(temp_file):
                     os.remove(temp_file)
-            except:
+            except Exception:
                 pass
     
     def establish_baseline_if_needed(
