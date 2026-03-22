@@ -1119,15 +1119,7 @@ class MCPClient:
             return None
         except Exception as e:
             logger.error(f"Error getting MCP resource {uri} from {self.server_config.get('name', 'unknown')}: {str(e)}")
-            raw_result = await self._send_request("tools/call", {
-                "name": name,
-                "arguments": arguments
-            })
-            
-            # Validate and clean the response
-            result = self._validate_and_clean_response(raw_result)
-            
-            return result
+            return None
     
     def set_tool_rate_limit(self, tool_name: str, seconds: float) -> None:
         """
