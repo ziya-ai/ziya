@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/logo.svg" alt="Ziya" width="300">
+  <img src="Docs/social-preview.jpg" alt="Ziya">
 </p>
 
 <h1 align="center">AI Technical Workbench</h1>
