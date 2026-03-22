@@ -69,10 +69,10 @@ class BedrockProvider(LLMProvider):
         self._region = region
         self._aws_profile = aws_profile
 
-        from app.agents.models import ModelManager
+        from app.providers.bedrock_client_cache import get_persistent_bedrock_client
 
         try:
-            self.bedrock = ModelManager._get_persistent_bedrock_client(
+            self.bedrock = get_persistent_bedrock_client(
                 aws_profile=aws_profile,
                 region=region,
                 model_id=model_id,
