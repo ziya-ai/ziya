@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.1.3] - 2025-07-14
 
 ### Added
 - `app/config/env_registry.py`: centralised environment variable registry for
@@ -32,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   factory, CLI tool-display resilience, and error stream parameter.
 
 ### Changed
+- `Docs/Enterprise.md`: de-Amazon-ify class names and descriptions; rename
+  example provider classes to generic `Enterprise*` equivalents; neutralise
+  Amazon-specific phrasing throughout.
+- `Docs/FeatureInventory.md`: remove built-in Amazon-internal MCPs row;
+  remove background-task notification gap row; update version reference from
+  v0.4.x to v0.6.x.
+- `README.md`: replace logo with social-preview image.
 - `app/cli.py`, `app/main.py`: wired in the new environment registry and task
   runner subsystems.
 - `app/config/app_config.py`, `app/config/common_args.py`,
@@ -71,6 +78,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `test_streaming_models.py`, `tests/README.md`.
 
 ### Removed
+- `Docs/NewUser.md`: removed "Internal (Amazon) Users" section.
+- `Docs/delegate-bugs-analysis.md`: deleted internal working/scratch document
+  not intended for the public repository.
+- `Docs/delegate-completion-notification-design.md`: deleted internal design
+  document not intended for the public repository.
 - **Legacy diff pipeline modules** (20+ files): `comment_handler.py`,
   `conservative_fuzzy_match.py`, `content_matcher.py`, `direct_apply.py`,
   `duplication_preventer.py`, `empty_file_handler.py`,
