@@ -322,6 +322,38 @@ class CompactionEngine:
 
         return exports
 
+    def _read_research_artifacts(self, paths: List[str], max_total: int = 8000) -> str:
+        """Read .md files written by research delegates to extract findings.
+
+        Research delegates typically write their real findings to
+        .ziya/tasks/<id>/<topic>/findings.md files. The actual findings
+        content in those files is far more useful as a crystal summary
+        source than the delegate's process narration in its last message.
+        """
+        import os
+        project_root = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        combined = []
+        total_len = 0
+
+        for path in paths:
+            full_path = os.path.join(project_root, path) if not os.path.isabs(path) else path
+            try:
+                if os.path.isfile(full_path):
+                    with open(full_path, 'r', errors='replace') as f:
+                        content = f.read()
+                    if content.strip():
+                        remaining = max_total - total_len
+                        if remaining <= 0:
+                            break
+                        chunk = content[:remaining]
+                        combined.append(chunk)
+                        total_len += len(chunk)
+            except Exception as exc:
+                logger.debug(f"Could not read research artifact {path}: {exc}")
+                continue
+
+        return "\n\n---\n\n".join(combined) if combined else ""
+
     # ------------------------------------------------------------------
     # Phase B: LLM summary
     # ------------------------------------------------------------------
@@ -349,13 +381,34 @@ class CompactionEngine:
         file_list = ", ".join(fc.path for fc in files_changed[:8])
         decision_list = "; ".join(decisions[:5])
 
-        # Analysis-type delegates (no code changes) need richer summaries
-        # to preserve their findings through compaction.
-        is_analysis = len(files_changed) == 0
+        # Detect research/analysis delegates that produce findings artifacts
+        # rather than source code changes. These need richer summaries because
+        # their findings ARE the deliverable.
+        research_artifact_paths = [
+            fc.path for fc in files_changed
+            if '.ziya/tasks/' in fc.path and fc.path.endswith('.md')
+        ]
+        source_code_changes = [
+            fc for fc in files_changed
+            if '.ziya/tasks/' not in fc.path
+        ]
+        is_analysis = len(source_code_changes) == 0
+
+        # For research delegates: read their written findings files to use
+        # as summary source instead of the (often narration-heavy) last message
+        if is_analysis and research_artifact_paths:
+            artifact_content = self._read_research_artifacts(research_artifact_paths)
+            if artifact_content:
+                last_assistant = artifact_content
+
         if is_analysis:
-            token_limit = "500-800"
-            sentence_limit = "a detailed paragraph (8-12 sentences)"
-            last_assistant = last_assistant[:3000] if last_assistant else ""
+            token_limit = "1500-2000"
+            sentence_limit = (
+                "a comprehensive summary preserving all specific findings, "
+                "rankings, file locations, and line numbers. This summary "
+                "IS the deliverable — do not refer to external files"
+            )
+            last_assistant = last_assistant[:6000] if last_assistant else ""
         else:
             token_limit = "200"
             sentence_limit = "2-3 sentences"
@@ -388,13 +441,16 @@ class CompactionEngine:
         from app.agents.agent import model as lazy_model
         from langchain_core.messages import HumanMessage, SystemMessage
 
+        # Scale the prompt window to the token budget — research summaries
+        # need far more source material than 2-3 sentence code summaries
+        prompt_source_limit = 4000 if int(token_limit.split("-")[0]) > 200 else 800
         prompt = (
             f"Summarize what was accomplished in this delegate task in "
             f"{sentence_limit} (max {token_limit} tokens).\n\n"
             f"Task: {task}\n"
             f"Files changed: {files}\n"
             f"Key decisions: {decisions}\n"
-            f"Final work:\n{last_msg[:800]}\n\n"
+            f"Final work:\n{last_msg[:prompt_source_limit]}\n\n"
             f"Summary:"
         )
 

@@ -181,14 +181,24 @@ class DelegateManager:
                     try:
                         crystal = MemoryCrystal(**crystal_raw) if isinstance(crystal_raw, dict) else crystal_raw
                         self._crystals[plan_id][did] = crystal
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.error(
+                            f"💎 Crystal rehydration failed for delegate {did} "
+                            f"in plan {plan_id[:8]}: {e}"
+                        )
+                        # Status says "crystal" but we have no crystal object.
+                        # Mark degraded so downstream delegates are aware.
+                        self._statuses[plan_id][did] = "crystal_degraded"
 
             recovered += 1
             logger.info(
                 f"♻️  Rehydrated plan {plan.name!r} ({plan_id[:8]}) — "
                 f"{len(self._statuses[plan_id])} delegates, "
                 f"{sum(1 for s in self._statuses[plan_id].values() if s == 'crystal')} crystals"
+                + (
+                    f", {sum(1 for s in self._statuses[plan_id].values() if s == 'crystal_degraded')} degraded"
+                    if any(s == "crystal_degraded" for s in self._statuses[plan_id].values()) else ""
+                )
             )
 
         return recovered
@@ -747,12 +757,12 @@ class DelegateManager:
             # A dependency is satisfied if it produced a crystal.
             # A failed dependency means this delegate can never run.
             deps_met = all(
-                statuses.get(dep) in ("crystal", "failed") for dep in spec.dependencies
+                statuses.get(dep) in ("crystal", "crystal_degraded", "failed") for dep in spec.dependencies
             )
             if deps_met:
                 # Only actually run if all deps succeeded
                 all_deps_crystal = all(
-                    statuses.get(dep) == "crystal" for dep in spec.dependencies
+                    statuses.get(dep) in ("crystal", "crystal_degraded") for dep in spec.dependencies
                 )
                 if all_deps_crystal:
                     statuses[did] = "ready"
@@ -1293,6 +1303,15 @@ class DelegateManager:
         crystals = self._crystals.get(plan_id, {})
         statuses = self._statuses.get(plan_id, {})
 
+        # Detect research-heavy plans: most delegates wrote .ziya artifacts
+        # rather than source code. These need richer synthesis since the
+        # findings themselves are the deliverable.
+        research_crystal_count = sum(
+            1 for c in crystals.values()
+            if c and any('.ziya/tasks/' in fc.path for fc in c.files_changed)
+        )
+        is_research_plan = research_crystal_count > len(crystals) / 2
+
         crystal_summaries = []
         for spec in plan.delegate_specs:
             c = crystals.get(spec.delegate_id)
@@ -1306,16 +1325,33 @@ class DelegateManager:
                     f"- {spec.emoji} {spec.name} ({status}): No crystal"
                 )
 
-        synthesis_prompt = (
-            f"You are the orchestrator for task plan '{plan.name}'.\n"
-            f"Description: {plan.description}\n\n"
-            f"All {len(plan.delegate_specs)} delegates have completed. "
-            f"Here are their results:\n\n"
-            + "\n".join(crystal_summaries) + "\n\n"
-            f"Provide a final synthesis: What was accomplished overall? "
-            f"Any gaps or concerns? What should the user know? "
-            f"Respond in a structured summary (5-10 sentences)."
-        )
+        if is_research_plan:
+            synthesis_prompt = (
+                f"You are the orchestrator for task plan '{plan.name}'.\n"
+                f"Description: {plan.description}\n\n"
+                f"All {len(plan.delegate_specs)} delegates have completed. "
+                f"Here are their results:\n\n"
+                + "\n".join(crystal_summaries) + "\n\n"
+                f"Present the COMPLETE deliverable inline. The user is waiting "
+                f"for the full findings — do NOT summarize, do NOT say 'see file X'. "
+                f"Structure the output with clear headings and numbered items. "
+                f"Include all specific file paths, line numbers, severity ratings, "
+                f"and fix descriptions from the delegate findings. "
+                f"This response IS the final product the user will read.\n\n"
+                f"Do NOT reference .ziya/ paths, internal artifacts, or delegate "
+                f"scratch files. Those are internal — only reference actual source paths."
+            )
+        else:
+            synthesis_prompt = (
+                f"You are the orchestrator for task plan '{plan.name}'.\n"
+                f"Description: {plan.description}\n\n"
+                f"All {len(plan.delegate_specs)} delegates have completed. "
+                f"Here are their results:\n\n"
+                + "\n".join(crystal_summaries) + "\n\n"
+                f"Provide a final synthesis: What was accomplished overall? "
+                f"Any gaps or concerns? What should the user know? "
+                f"Respond in a structured summary (5-10 sentences)."
+            )
 
         try:
             synthesis = await self._orchestrator_llm_call(synthesis_prompt)
@@ -1440,12 +1476,15 @@ class DelegateManager:
         for spec in plan.delegate_specs:
             c = crystals.get(spec.delegate_id)
             if c and c.summary:
-                clean = self._clean_crystal_summary(c.summary, max_length=500)
+                # Research delegates get more space since findings ARE content
+                has_research_artifacts = any('.ziya/tasks/' in fc.path for fc in c.files_changed)
+                limit = 1500 if has_research_artifacts else 500
+                clean = self._clean_crystal_summary(c.summary, max_length=limit)
                 summaries.append(f"**{spec.name}:** {clean}")
         summaries_md = ""
         if summaries:
             body = "\n\n".join(summaries)
-            summaries_md = f"\n\n**Delegate results:**\n\n{body}"
+            summaries_md = f"\n\n<details>\n<summary>Delegate results ({len(summaries)} delegates)</summary>\n\n{body}\n\n</details>"
 
         # Full artifacts per delegate — expandable for deep inspection
         artifacts_md = ""
@@ -1472,20 +1511,24 @@ class DelegateManager:
             header = f"## ✅ Task Plan Complete: {plan.name}"
             count_line = f"**{crystal_count}/{total}** delegates completed successfully."
 
-        content = (
-            f"{header}\n\n"
-            f"{count_line}\n\n"
+        # Build with synthesis FIRST if available — that's what the user wants
+        content = f"{header}\n\n{count_line}\n\n"
+
+        if synthesis:
+            content += f"{synthesis}\n\n---\n\n"
+
+        # Collapse metadata — users rarely need it
+        content += (
+            f"<details>\n"
+            f"<summary>Delegate details ({crystal_count} completed)</summary>\n\n"
             f"| Delegate | Status | Files Changed |\n"
             f"|----------|--------|---------------|\n"
             f"{table}"
             f"{decisions_md}"
-            f"{summaries_md}"
-        )
-        content += artifacts_md
-        if synthesis:
-            content += (
-                f"\n\n---\n\n**Orchestrator Synthesis:**\n\n{synthesis}"
+            f"{summaries_md}\n\n"
+            f"</details>"
             )
+        content += artifacts_md
 
         from app.models.chat import Message
         import uuid as _uuid
@@ -1518,7 +1561,21 @@ class DelegateManager:
             if s == "crystal"
         )
 
-        summary_preview = self._clean_crystal_summary(crystal.summary, max_length=120)
+        # Build a meaningful preview from structured data instead of
+        # truncating the summary (which is often process narration)
+        preview_parts = []
+        if crystal.decisions:
+            preview_parts.append(crystal.decisions[0][:80])
+        if crystal.files_changed:
+            source_files = [f for f in crystal.files_changed if '.ziya/tasks/' not in f.path]
+            artifact_files = [f for f in crystal.files_changed if '.ziya/tasks/' in f.path]
+            if source_files:
+                preview_parts.append(f"{len(source_files)} file(s) changed")
+            if artifact_files:
+                preview_parts.append(f"{len(artifact_files)} report(s) written")
+        summary_preview = " · ".join(preview_parts) if preview_parts else \
+            self._clean_crystal_summary(crystal.summary, max_length=120)
+
         content = f"💎 **{done}/{total}** — {name} completed: {summary_preview}"
 
         from app.models.chat import Message
@@ -1869,6 +1926,10 @@ class DelegateManager:
         cleaned = re.sub(r'```[^\n]*\n[\s\S]*?```', _strip_short_fences, cleaned)
         # Remove sequential-thinking JSON fragments
         cleaned = re.sub(r'\{[^}]*"thoughtNumber"[^}]*\}', '', cleaned)
+        # Remove references to internal .ziya/tasks/ scratch paths — these are
+        # meaningless UUIDs that the LLM will abbreviate or parrot unhelpfully.
+        # Matches paths like ".ziya/tasks/caaf71ab-.../topic/file.md"
+        cleaned = re.sub(r'\.ziya/tasks/[a-f0-9-]+/\S+', '[internal artifact]', cleaned)
         # Remove "▶ Expand (Output ...)" lines
         cleaned = re.sub(r'▶\s*Expand\s*\(Output[^\n]*\n?', '', cleaned)
         # Remove directory listing blocks (header + 2-space-indented entries)

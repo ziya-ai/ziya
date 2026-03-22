@@ -13,7 +13,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_classic.callbacks.base import BaseCallbackHandler
 from app.utils.logging_utils import logger
 import app.config.models_config as config
-from app.config.models_config import get_supported_parameters  # Import the function explicitly
+from app.config.models_config import get_supported_parameters, DEFAULT_MAX_OUTPUT_TOKENS
 import google.auth
 import google.auth.exceptions
 from dotenv import load_dotenv
@@ -79,6 +79,9 @@ class ModelManager:
         logger.info("Resetting ModelManager state")
         
         # Clear AWS region environment variable to ensure clean region selection
+        from app.providers.bedrock_client_cache import clear_cache as _clear_client_cache
+        _clear_client_cache()
+
         if 'AWS_REGION' in os.environ:
             del os.environ['AWS_REGION']
             logger.info("Cleared AWS_REGION environment variable")
@@ -434,7 +437,8 @@ class ModelManager:
             
             # Add thinking_mode from environment if it exists
             if "ZIYA_THINKING_MODE" in os.environ:
-                settings["thinking_mode"] = os.environ["ZIYA_THINKING_MODE"] == "1"
+                from app.config.app_config import env_bool
+                settings["thinking_mode"] = env_bool("ZIYA_THINKING_MODE")
             elif "supports_thinking" in model_config:
                 settings["thinking_mode"] = model_config["supports_thinking"]
 
@@ -446,8 +450,8 @@ class ModelManager:
             elif "default_max_output_tokens" in cls.ENDPOINT_DEFAULTS.get(endpoint, {}):
                 settings["max_output_tokens"] = cls.ENDPOINT_DEFAULTS[endpoint]["default_max_output_tokens"]
             else:
-                # Fall back to maximum value
-                settings["max_output_tokens"] = model_config.get("max_output_tokens", 4096)
+                # Fall back to canonical default
+                settings["max_output_tokens"] = model_config.get("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)
             
             # Get supported parameters for filtering
             supported_params = []
@@ -501,125 +505,29 @@ class ModelManager:
     @classmethod
     def _get_client_config_hash(cls, aws_profile: str, region: str, model_id: str) -> str:
         """Generate a hash for the client configuration to track when clients can be reused."""
-        import hashlib
-        config_string = f"{aws_profile}_{region}_{model_id}"
-        return hashlib.md5(config_string.encode()).hexdigest()[:8]
+        from app.providers.bedrock_client_cache import get_client_config_hash
+        return get_client_config_hash(aws_profile, region, model_id)
     
     @classmethod
     def _get_persistent_bedrock_client(cls, aws_profile: str, region: str, model_id: str, model_config: Optional[Dict[str, Any]] = None):
         """
         Get or create a persistent Bedrock client for the given configuration.
-        Reuses existing clients when configuration matches.
+        Delegates to the extracted bedrock_client_cache module.
+
+        Kept as a classmethod for backward compatibility — existing code
+        that calls ModelManager._get_persistent_bedrock_client() continues
+        to work without changes.
         """
-        from app.utils.aws_utils import ThrottleSafeBedrock, check_aws_credentials, create_fresh_boto3_session
-        from app.utils.custom_bedrock import CustomBedrockClient
-        
-        # Generate configuration hash
-        config_hash = cls._get_client_config_hash(aws_profile, region, model_id)
-        
-        # Check if we can reuse existing client
-        if config_hash in cls._state['persistent_bedrock_clients']:
-            logger.debug(f"Reusing persistent Bedrock client for {aws_profile}/{region}/{model_id}")
-            return cls._state['persistent_bedrock_clients'][config_hash]
-        
-        # Create new client
-        logger.info(f"Creating new persistent Bedrock client for {aws_profile}/{region}/{model_id}")
-        
-        # Create fresh boto3 session and client
+        from app.providers.bedrock_client_cache import get_persistent_bedrock_client
         try:
-            session = create_fresh_boto3_session(profile_name=aws_profile)
-            
-            max_retries = 2
-            retry_delays = [0.5, 1.0]
-            
-            # Check AWS credentials using the same fresh session
-            try:
-                from botocore.config import Config as BotoConfig
-                sts = session.client(
-                    'sts',
-                    region_name=region,
-                    config=BotoConfig(connect_timeout=5, read_timeout=5),
-                )
-                
-                logger.info(f"Checking AWS credentials via STS (timeout=5s)...")
-                
-                for attempt in range(max_retries):
-                    try:
-                        identity = sts.get_caller_identity()
-                        logger.info(f"Successfully authenticated as: {identity.get('Arn', 'Unknown')}")
-                        break  # Success - exit retry loop
-                    except Exception as cred_error:
-                        error_str = str(cred_error)
-                        logger.debug(f"STS attempt {attempt + 1}/{max_retries} failed: {error_str[:120]}")
-                        
-                        # Check if this is a truly transient credential loading issue
-                        is_transient = any(indicator in error_str for indicator in [
-                            'Unable to locate credentials',
-                            'Credential provider not yet initialized',
-                            'Could not connect to the endpoint',
-                            'Temporary failure in name resolution',
-                            'timed out',
-                            'ConnectTimeoutError',
-                        ])
-                        
-                        is_permanent = any(indicator in error_str for indicator in [
-                            'InvalidClientTokenId',
-                            'ExpiredToken',
-                            'InvalidToken'
-                        ])
-                        
-                        if is_transient and not is_permanent and attempt < max_retries - 1:
-                            delay = retry_delays[attempt]
-                            logger.info(f"Credential provider initializing, retrying in {delay}s (attempt {attempt + 1}/{max_retries})...")
-                            time.sleep(delay)
-                        elif is_permanent:
-                            logger.debug(f"Credential check failed (will retry lazily): {error_str[:80]}")
-                            raise  # Fail fast for invalid/expired credentials
-                        else:
-                            raise
-                            
-            except Exception as cred_error:
-                error_msg = f"AWS credentials check failed after {max_retries} attempts: {cred_error}"
-                logger.debug(error_msg)
-                cls._state['last_auth_error'] = error_msg
-                from app.utils.custom_exceptions import KnownCredentialException
-                raise KnownCredentialException(error_msg, is_server_startup=False)
-            
-            # read_timeout high for extended-context (1M tokens can take minutes).
-            # Retries at 2 with adaptive mode let boto3 absorb transient 503s;
-            # BedrockProvider and StreamingToolExecutor handle longer backoff.
-            bedrock_client = session.client(
-                'bedrock-runtime',
-                region_name=region,
-                config=BotoConfig(
-                    read_timeout=300,
-                    max_pool_connections=25,
-                    retries={'max_attempts': 2, 'mode': 'adaptive'},
-                ),
+            return get_persistent_bedrock_client(
+                aws_profile=aws_profile,
+                region=region,
+                model_id=model_id,
+                model_config=model_config,
             )
-            logger.info(f"Created fresh bedrock client with profile {aws_profile} and region {region}")
-            
-            # Test the client to ensure it's working properly
-            try:
-                _ = bedrock_client.meta.region_name
-                logger.info("Bedrock client validation successful")
-            except (AttributeError, RecursionError) as e:
-                logger.debug(f"Client validation failed, creating fallback: {e}")
-                # Force recreation without session profile if needed
-                bedrock_client = boto3.client('bedrock-runtime', region_name=region)
-            
-            # Wrap with CustomBedrockClient and ThrottleSafeBedrock
-            custom_client = CustomBedrockClient(bedrock_client, model_config=model_config)
-            throttle_safe_client = ThrottleSafeBedrock(custom_client)
-            
-            # Store in persistent cache
-            cls._state['persistent_bedrock_clients'][config_hash] = throttle_safe_client
-            cls._state['client_config_hash'] = config_hash
-            
-            return throttle_safe_client
-            
         except Exception as e:
-            logger.debug(f"Bedrock client creation deferred: {e}")
+            cls._state['last_auth_error'] = str(e)
             raise
     
     @classmethod
@@ -737,7 +645,6 @@ class ModelManager:
             
             # Set environment variable to indicate auth was attempted but failed
             os.environ["ZIYA_AUTH_CHECKED"] = "true"
-            os.environ["ZIYA_AUTH_FAILED"] = "true"
             
             # Return None - the server will continue running but model operations will fail
             # with appropriate error messages
@@ -936,7 +843,7 @@ class ModelManager:
         # Get base config values again for clarity
         base_temperature = model_config.get("temperature", 0.3)
         base_top_k = model_config.get("top_k", 15)
-        base_max_tokens = model_config.get("max_output_tokens", 4096)
+        base_max_tokens = model_config.get("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)
         base_top_p = model_config.get("top_p")
         base_thinking_mode = model_config.get("thinking_mode", config.GLOBAL_MODEL_DEFAULTS.get("thinking_mode", False))
 
