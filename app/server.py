@@ -51,7 +51,7 @@ from app.agents.direct_streaming import get_direct_streaming_agent, get_shell_to
 import app.config.models_config as config
 from app.config.app_config import DEFAULT_PORT
 from app.agents.models import ModelManager
-from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE, DEFAULT_MAX_OUTPUT_TOKENS
 from app.agents.wrappers.nova_wrapper import NovaBedrock  # Import NovaBedrock for isinstance check
 from botocore.exceptions import ClientError, BotoCoreError, CredentialRetrievalError
 from botocore.exceptions import EventStreamError
@@ -2394,7 +2394,7 @@ async def stream_chunks(body):
                 else:
                     # Fall through to LangChain path for non-Nova models
                     pass
-            except:
+            except Exception:
                 # Fall through to LangChain path
                 pass
     
@@ -2460,7 +2460,7 @@ async def stream_chunks(body):
                     logger.error(f"🚀 DIRECT_STREAMING: Error in Nova StreamingToolExecutor: {e}")
                     # Fall through to LangChain as last resort
                     pass
-    except:
+    except Exception:
         pass
     
     # Fallback to LangChain for non-direct streaming
@@ -3272,7 +3272,7 @@ async def stream_chunks(body):
                                         line_count = len(current_response.split('\n'))
                                         chunk_data['content'] = f"<!-- REWIND_MARKER: {line_count} -->" + chunk_data['content']
                                         chunk = f"data: {json.dumps(chunk_data)}\n\n"
-                                except:
+                                except Exception:
                                     pass  # If parsing fails, just yield original chunk
                             yield chunk
                         return
@@ -5879,7 +5879,7 @@ class ModelSettingsRequest(BaseModel):
     model_config = {"extra": "allow"}
     temperature: float = Field(default=0.3, ge=0, le=1)
     top_k: int = Field(default=15, ge=0, le=500)
-    max_output_tokens: int = Field(default=4096, ge=1)
+    max_output_tokens: int = Field(default=DEFAULT_MAX_OUTPUT_TOKENS, ge=1)
     thinking_mode: bool = Field(default=False)
     thinking_level: Optional[str] = Field(default=None, pattern='^(low|medium|high)$')
     thinking_effort: Optional[str] = Field(default=None, pattern='^(low|medium|high|max)$')
