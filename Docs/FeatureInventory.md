@@ -147,7 +147,6 @@ Ziya's visualization suite is the most comprehensive of any AI coding assistant.
 | **Multi-source config merge** | `mcp_config.json` loaded from CWD, project root, and `~/.ziya/`; later entries win |
 | **Remote MCP servers** | Connect to hosted MCP endpoints via `"url"` config key; supports StreamableHTTP (default) and SSE transports |
 | **OAuth / bearer token auth** | `"auth": {"type": "bearer", "token_env": "..."}` for remote MCP servers; inline tokens or env-var references |
-| **Built-in Amazon internal MCPs** | AmazonInternalMCPServer, BuilderMCP — available via enterprise plugin |
 | **Tool poisoning detection** | External tool descriptions scanned for 13 prompt-injection patterns at connect time |
 | **Tool shadowing prevention** | External tools that collide with built-in tool names are blocked; built-ins always take precedence |
 | **Rug-pull detection** | Tool definitions fingerprinted (SHA-256) at connect time; changes on reconnect trigger security warnings |
@@ -209,7 +208,7 @@ Ziya's visualization suite is the most comprehensive of any AI coding assistant.
 
 ---
 
-## 12. What Ziya Does NOT Have (as of v0.4.x)
+## 12. What Ziya Does NOT Have (as of v0.6.x)
 
 Tracked against the competitive landscape: Aki, Kiro, Cursor, GitHub Copilot, Windsurf, Claude Code, Aider, Cline.  
 Format per row: the gap, who has it, and notes for context.
@@ -222,7 +221,6 @@ Format per row: the gap, who has it, and notes for context.
 | **Plan / Act mode** | Aki (Plan=read-only, Act=execute), Cursor (preview mode) | No read-only preview toggle before file writes; users cannot review what the agent _intends_ to do before it does it |
 | **Lifecycle hooks** | Aki (`PreToolUse`, `PostToolUse`, `SessionStart`, `Stop`) | No hook system for approvals, notifications, logging, or external writes around tool calls |
 | **Output schema enforcement** | Aki, LangChain structured output | No validation that LLM responses conform to a declared JSON schema; matters for pipeline/automation use cases |
-| **Background task notifications** | Aki (desktop notifications), Cursor | No signal when a long-running swarm or CLI task finishes |
 | **Custom subagent definitions** | Claude Code (`.claude/agents/` YAML), Kiro (`.kiro/agents/`) | Delegates are dynamically generated from task decomposition; no user-defined agent templates |
 | **Commit / PR creation** | Claude Code (branch + PR via gh), Codex (GhostCommit + PR), Kiro (autonomous PRs) | No built-in git commit generation or PR creation; users apply diffs manually and commit themselves |
 | **Automatic context compaction** | Claude Code (auto at ~95% + manual /compact), Codex (model_auto_compact_token_limit), Cline (AI summarization), Kiro (customizable thresholds) | Deliberate design choice: Ziya provides user-controlled context curation (per-message muting, fork+truncate, selective file removal) instead of automatic compaction. Auto-compaction risks discarding details the user knows are important. See §4 "Context curation vs. auto-compaction" for rationale. |

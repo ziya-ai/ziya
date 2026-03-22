@@ -98,7 +98,7 @@ class MyConfigProvider(ConfigProvider):
 
 When one or more active `ConfigProvider` implementations return a non-None list from `get_allowed_endpoints()`, the intersection of all such lists becomes the effective allowed set. Models from disallowed endpoints disappear from the model picker and cannot be selected via the API.
 
-This is how Amazon internal deployments hide the Google/Gemini endpoint — internal users don't have Google API keys, so there's no reason to show those options.
+This is how enterprise deployments that want to restrict users to Bedrock hide the Google/Gemini and other endpoints.
 
 #### Startup Enforcement
 
@@ -244,7 +244,7 @@ Enhancement priority (later overrides earlier for the same tool):
 
 ### Nova Web Grounding (`nova_grounding`)
 
-Exposes Amazon Nova Web Grounding as a tool that the primary model (Claude) can call when it needs current web information. No external MCP server or API key required — uses the AWS Bedrock Converse API with the `nova_grounding` system tool.
+Exposes Amazon Nova Web Grounding as a tool that the primary model (Claude, in most deployments) can call when it needs current web information. No external MCP server or API key required — uses the AWS Bedrock Converse API with the `nova_grounding` system tool.
 
 **Default state**: enabled for all users (`enabled_by_default: True`).
 
@@ -274,7 +274,7 @@ register_service_model_provider(NovaGroundingProvider(region=region))
 
 ## Registering the Complete Internal Plugin Set
 
-Here is the canonical `register()` function pattern for an Amazon-style internal plugin:
+Here is the canonical `register()` function pattern for an internal enterprise plugin:
 
 ```python
 def register():
@@ -289,17 +289,17 @@ def register():
 
     region = os.environ.get("AWS_REGION", "us-west-2")
 
-    from .amazon_auth import AmazonAuthProvider
-    register_auth_provider(AmazonAuthProvider())
+    from .amazon_auth import EnterpriseAuthProvider
+    register_auth_provider(EnterpriseAuthProvider())
 
-    from .amazon_config import AmazonConfigProvider
-    register_config_provider(AmazonConfigProvider())
+    from .amazon_config import EnterpriseConfigProvider
+    register_config_provider(EnterpriseConfigProvider())
 
-    from .amazon_registry import AmazonRegistryProvider
-    register_registry_provider(AmazonRegistryProvider(region=region))
+    from .amazon_registry import EnterpriseRegistryProvider
+    register_registry_provider(EnterpriseRegistryProvider(region=region))
 
-    from .amazon_data_retention import AmazonDataRetentionProvider
-    register_data_retention_provider(AmazonDataRetentionProvider())
+    from .amazon_data_retention import EnterpriseDataRetentionProvider
+    register_data_retention_provider(EnterpriseDataRetentionProvider())
 
     from app.plugins.service_models import NovaGroundingProvider
     register_service_model_provider(NovaGroundingProvider(region=region))
