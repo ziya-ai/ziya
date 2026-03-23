@@ -45,7 +45,7 @@ setup(
     packages=find_packages(include=["app", "app.*", "mcp_servers", "app.mcp_servers.*"]),
     include_package_data=True,
     zip_safe=False,
-    python_requires=">=3.10",
+    python_requires=">=3.10,<3.15",
     cmdclass={
         'bdist_wheel': CustomBdistWheel,
     },
