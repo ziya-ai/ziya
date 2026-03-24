@@ -141,12 +141,15 @@ def main():
             print("Frontend source unchanged since last build, skipping TypeScript compilation")
     else:
         print("No frontend directory found, skipping frontend build")
-
     # Build Python package
     print("Building Python package...")
     try:
-        result = subprocess.run(["poetry", "build", "--format", "wheel"], check=True, capture_output=True, text=True)
-        print("Poetry build output:", result.stdout)
+        env = os.environ.copy()
+        env["POETRY_PYTHON"] = sys.executable
+        result = subprocess.run(
+            ["poetry", "build", "--format", "wheel"],
+            check=True, capture_output=True, text=True, env=env
+        )
         if result.stderr:
             print("Poetry build errors:", result.stderr)
     except subprocess.CalledProcessError as e:
