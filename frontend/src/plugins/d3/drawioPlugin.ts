@@ -37,6 +37,7 @@ declare global {
         __maxGraphLoaded?: boolean;
         __maxGraphLoading?: Promise<any>;
         __lastDrawIOGraph?: any;
+        __maxGraphArrowOverridden?: boolean;
     }
 }
 
@@ -291,6 +292,10 @@ async function loadMaxGraph(): Promise<any> {
             console.log('📦 Loading @maxgraph/core...');
             const maxGraphModule = await import('@maxgraph/core');
             window.maxGraph = maxGraphModule;
+            // Since 0.6.0, codecs must be registered before encode/decode
+            if (maxGraphModule.registerCoreCodecs) {
+                maxGraphModule.registerCoreCodecs();
+            }
             window.__maxGraphLoaded = true;
             console.log('✅ @maxgraph/core loaded successfully');
             return maxGraphModule;
@@ -600,37 +605,22 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
             console.log('📐 DrawIO: maxGraph loaded, module keys:', Object.keys(maxGraphModule).slice(0, 10));
 
             // CRITICAL FIX: Override arrow size constants BEFORE any rendering
-            // MaxGraph uses Constants.ARROW_SIZE (default 30) for arrow head sizing
-            // We must override this constant and the marker creation function
-            if (!maxGraphModule.MarkerShape.__arrowSizeOverridden) {
+            // In 0.22+, use StyleDefaultsConfig for global defaults.
+            // EdgeMarkerRegistry replaces the removed MarkerShape registry.
+            if (!window.__maxGraphArrowOverridden) {
                 console.log('📐 DrawIO: Installing arrow size overrides for smaller arrows');
 
-                // Override the Constants.ARROW_SIZE global constant
-                if (maxGraphModule.Constants) {
-                    const originalArrowSize = maxGraphModule.Constants.ARROW_SIZE;
-                    maxGraphModule.Constants.ARROW_SIZE = 6;
-                    console.log(`📐 DrawIO: Changed Constants.ARROW_SIZE from ${originalArrowSize} to 6`);
+                // Use StyleDefaultsConfig (0.22+) with Constants fallback (pre-0.22)
+                if (maxGraphModule.StyleDefaultsConfig) {
+                    maxGraphModule.StyleDefaultsConfig.arrowSize = 6;
+                    maxGraphModule.StyleDefaultsConfig.markerSize = 6;
+                    console.log('📐 DrawIO: Set StyleDefaultsConfig.arrowSize=6, markerSize=6');
+                } else if (maxGraphModule.constants) {
+                    maxGraphModule.constants.ARROW_SIZE = 6;
+                    console.log('📐 DrawIO: Set constants.ARROW_SIZE=6 (legacy path)');
                 }
 
-                // Override the marker creation function as backup
-                const originalCreateMarker = maxGraphModule.MarkerShape.createMarker;
-                maxGraphModule.MarkerShape.createMarker = function(canvas, shape, type, pe, dx, dy, size, source, sw, filled) {
-                    // Force arrow size to 6 (override any provided size)
-                    // Log all parameters to understand what's happening
-                    if (!this.__loggedOnce) {
-                        console.log(`🎯 createMarker called:`, {
-                            size, type, source, sw, filled,
-                            pe: pe?.toString().substring(0, 50),
-                            dx, dy
-                        });
-                        this.__loggedOnce = true;
-                    }
-                    // FORCE size to 1.4 (6 / 4.27 to compensate for the scaling)
-                    const customSize = 1.4;
-                    return originalCreateMarker.call(this, canvas, shape, type, pe, dx, dy, customSize, source, sw, filled);
-                };
-
-                maxGraphModule.MarkerShape.__arrowSizeOverridden = true;
+                window.__maxGraphArrowOverridden = true;
             }
 
             if (!maxGraphModule.Graph) throw new Error('maxGraph.Graph not found in module');
@@ -731,7 +721,7 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                 }
             } else {
                 // No diagram wrapper, check if we already have mxGraphModel at root
-                const rootModel = xmlDoc.querySelector('mxGraphModel');
+                const rootModel = xmlDocX.querySelector('mxGraphModel');
                 console.log('📐 DrawIO: No diagram node, rootModel exists?', !!rootModel);
                 if (rootModel) {
                     // Use the entire XML as-is
@@ -773,8 +763,9 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
             };
 
             // Disable tree images to avoid 404s - use CSS styling instead
-            if (maxGraphModule.Constants) {
-                maxGraphModule.Constants.STYLE_IMAGE = null;
+            // In 0.22, constants are exported as a namespace (lowercase)
+            if (maxGraphModule.constants) {
+                maxGraphModule.constants.STYLE_IMAGE = null;
             }
             graph.collapsedImage = null;
             graph.expandedImage = null;
@@ -791,8 +782,9 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
             // Override updateFixedTerminalPoint for smart connection points
             graph.view.updateFixedTerminalPoint = function(edge: any, terminal: any, source: any, constraint: any) {
                 // Call parent implementation first
-                const View = maxGraphModule.GraphView;
-                View.prototype.updateFixedTerminalPoint.apply(this, arguments);
+                const viewProto = Object.getPrototypeOf(this);
+                const originalFn = viewProto.updateFixedTerminalPoint || maxGraphModule.GraphView?.prototype?.updateFixedTerminalPoint;
+                if (originalFn) originalFn.apply(this, arguments);
 
                 // Use routing center for cleaner connection points
                 const pts = edge.absolutePoints;

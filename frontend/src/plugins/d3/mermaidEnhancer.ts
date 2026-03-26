@@ -2572,7 +2572,7 @@ export function initMermaidEnhancer(): void {
 
               // Stop if we hit another Mermaid command or empty line followed by command
               if (nextTrimmed.match(/^(participant|Note|activate|deactivate|\w+->>|\w+-->>|loop|rect|alt|opt|par|critical|break|and|else|end)/) ||
-                nextTrimmed === '' && j + 1 < lines.length && lines[j + 1].trim().match(/^(participant|Note|activate|deactivate|\w+->>|\w+-->>|loop|rect|alt|opt|par|critical|break|and|else|end)/)) {
+                (nextTrimmed === '' && j + 1 < lines.length && lines[j + 1].trim().match(/^(participant|Note|activate|deactivate|\w+->>|\w+-->>|loop|rect|alt|opt|par|critical|break|and|else|end)/))) {
                 break;
               }
 
