@@ -34,18 +34,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from langserve import add_routes
-from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
-from app.agents.agent import model, RetryingChatBedrock, initialize_langserve
-from app.agents.agent import get_or_create_agent, get_or_create_agent_executor, create_agent_chain, create_agent_executor
-from app.agents.agent import update_conversation_state, update_and_return, parse_output
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from app.agents.agent import model, create_agent_chain, create_agent_executor
 from fastapi.responses import FileResponse
 from starlette.responses import StreamingResponse
 from pydantic import BaseModel, Field
-
-# Direct streaming imports
-from app.config.app_config import USE_DIRECT_STREAMING
-from app.agents.direct_streaming import get_direct_streaming_agent, get_shell_tool_schema
 
 # Import configuration
 import app.config.models_config as config
@@ -57,10 +50,7 @@ from botocore.exceptions import ClientError, BotoCoreError, CredentialRetrievalE
 from botocore.exceptions import EventStreamError
 import botocore.errorfactory
 from starlette.concurrency import run_in_threadpool
-from langchain_core.outputs import Generation
 
-# import pydevd_pycharm
-from google.api_core.exceptions import ResourceExhausted
 import uvicorn
 
 from app.utils.code_util import use_git_to_apply_code_diff, correct_git_diff
@@ -899,63 +889,6 @@ async def chat_endpoint(request: Request):
                     "Access-Control-Allow-Headers": "Content-Type"
                 }
             )
-        else:
-            # Use LangChain for other models (Gemini, Nova, etc.)
-            logger.debug("🔍 CHAT_ENDPOINT: Using LANGCHAIN for non-Bedrock models")
-            
-            # Format chat history for LangChain
-            formatted_chat_history = []
-            
-            # Check if the question is already the last message to avoid duplication
-            messages_to_process = messages
-            if messages and question:
-                last_msg = messages[-1]
-                if isinstance(last_msg, list) and len(last_msg) >= 2:
-                    last_content = last_msg[1]
-                elif isinstance(last_msg, dict):
-                    last_content = last_msg.get('content', '')
-                else:
-                    last_content = ''
-                
-                # If the last message content matches the question, exclude it
-                if last_content.strip() == question.strip():
-                    messages_to_process = messages[:-1]
-            
-            for msg in messages_to_process:
-                if isinstance(msg, list) and len(msg) >= 2:
-                    # Frontend tuple format: ["human", "content"]
-                    role, content = msg[0], msg[1]
-                    if role in ['human', 'user']:
-                        formatted_chat_history.append(('human', content))
-                    elif role in ['assistant', 'ai']:
-                        formatted_chat_history.append(('assistant', content))
-                elif isinstance(msg, dict):
-                    # Already in dict format
-                    role = msg.get('role', msg.get('type', 'user'))
-                    content = msg.get('content', '')
-                    if role and content:
-                        if role in ['human', 'user']:
-                            formatted_chat_history.append(('human', content))
-                        elif role in ['assistant', 'ai']:
-                            formatted_chat_history.append(('assistant', content))
-            
-            # Format the data for LangChain endpoint
-            formatted_body = {
-                'question': question,
-                'conversation_id': conversation_id,
-                'chat_history': formatted_chat_history,
-                'config': {
-                    'conversation_id': conversation_id,
-                    'files': files
-                }
-            }
-            
-            # Forward to /ziya/stream endpoint for LangChain processing
-            stream_request = Request(scope=request.scope)
-            stream_request._body = json.dumps(formatted_body).encode()
-            
-            return await stream_endpoint(stream_request, formatted_body)
-            
     except Exception as e:
         logger.error(f"Error in chat_endpoint: {str(e)}")
         return JSONResponse({"error": str(e)}, status_code=500)
@@ -1115,38 +1048,6 @@ if os.path.exists(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
     logger.debug(f"Mounted static files from {static_dir}")
 
-# Global flag to prevent multiple LangServe initializations
-_langserve_initialized = False
-
-# SELECTIVELY REMOVE ONLY CONFLICTING LANGSERVE ROUTES
-logger.debug("=== REMOVING CONFLICTING LANGSERVE ROUTES ===")
-routes_to_remove = []
-for route in app.routes:
-    if hasattr(route, 'path'):
-        # Only remove routes that conflict with our custom streaming endpoints
-        if (route.path == '/ziya/stream' and hasattr(route, 'endpoint') and 
-            'langserve' in str(type(route.endpoint))):
-            routes_to_remove.append(route)
-            logger.debug(f"Removing conflicting LangServe route: {route.path}")
-
-for route in routes_to_remove:
-    app.routes.remove(route)
-
-logger.debug(f"Removed {len(routes_to_remove)} conflicting LangServe routes")
-
-# Log remaining /ziya routes
-logger.debug("=== REMAINING /ziya ROUTES ===")
-for route in app.routes:
-    if hasattr(route, 'path') and route.path.startswith('/ziya'):
-        logger.debug(f"Route: {route.methods if hasattr(route, 'methods') else 'N/A'} {route.path}")
-logger.debug("=== END /ziya ROUTES ===")
-
-# DISABLED: LangServe routes bypass custom streaming and extended context handling
-# add_routes(app, agent_executor, disabled_endpoints=["playground", "stream_log", "stream", "invoke"], path="/ziya")
-
-# DISABLED: Manual /ziya endpoints conflict with /api/chat
-# @app.post("/ziya/stream_log")
-# async def stream_log_endpoint(request: Request, body: dict):
 async def cleanup_stream(conversation_id: str):
     """Clean up resources when a stream ends or is aborted."""
     with active_streams_lock:
@@ -1934,11 +1835,22 @@ async def stream_chunks(body):
                         """Collect SSE events during validation to yield later."""
                         validation_events.append({"type": event_type, **data})
                     
-                    validation_feedback = validation_hook.validate_and_enhance(
-                        content=accumulated_content,
-                        model_messages=messages,
-                        send_event=send_sse_event
-                    )
+                    try:
+                        validation_feedback = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                validation_hook.validate_and_enhance,
+                                content=accumulated_content,
+                                model_messages=messages,
+                                send_event=send_sse_event
+                            ),
+                            timeout=30,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.error("⏰ Diff validation timed out after 30s, skipping")
+                        validation_feedback = None
+                    except Exception as e:
+                        logger.error(f"❌ Diff validation failed: {e}")
+                        validation_feedback = None
                     
                     # Yield any events that were collected during validation
                     for event in validation_events:
@@ -2934,7 +2846,6 @@ async def stream_chunks(body):
                                     'content': before_tool
                                 }
                                 yield f"data: {json.dumps(text_msg)}\n\n"
-                                import asyncio
                                 await asyncio.sleep(0.01)  # Longer delay to prevent batching
                             
                             # Send tool_start message
@@ -3046,7 +2957,6 @@ async def stream_chunks(body):
                         }
                         yield f"data: {json.dumps(text_msg)}\n\n"
                         # Force task scheduling to ensure individual processing
-                        import asyncio
                         await asyncio.sleep(0)
                     else:
                         logger.debug(f"🔍 AGENT: Suppressed tool call content from frontend")
@@ -3381,53 +3291,6 @@ async def stream_chunks(body):
             yield f"data: {json.dumps({'error': f'An unexpected error occurred: {str(e)[:100]}...', 'error_type': 'unexpected'})}\n\n"
         if conversation_id: # Ensure cleanup if conversation_id was set
             await cleanup_stream(conversation_id)
-
-# Override the stream endpoint with our error handling
-# DISABLED: Manual /ziya/stream endpoint conflicts with /api/chat
-async def stream_endpoint(request: Request, body: dict = None):
-    """Stream the agent's response with centralized error handling."""
-    if body is None:
-        body = await request.json()
-        
-    try:
-        # Get agent executor from ModelManager
-        from app.agents.agent import get_or_create_agent_executor
-        agent_executor = get_or_create_agent_executor()
-        
-        first_chunk = True
-        # Stream the response
-        async for chunk in agent_executor.astream_log(body):
-            # Process the chunk
-            try:
-                # Parse and clean the chunk before sending
-                parsed_chunk = parse_output(chunk)
-                if parsed_chunk and parsed_chunk.return_values:
-                    cleaned_output = parsed_chunk.return_values.get("output", "")
-                    if cleaned_output:
-                        first_chunk = False
-                        # Use proper JSON format for SSE
-                        yield f"data: {json.dumps({'text': cleaned_output})}\n\n"
-                        continue
-                
-                # Fall back to original chunk if parsing fails
-                chunk_content = chunk.content if hasattr(chunk, 'content') else str(chunk)
-                first_chunk = False
-                # Use proper JSON format for SSE
-                yield f"data: {json.dumps({'text': chunk_content})}\n\n"
-            except Exception as e:
-                logger.error(f"Error processing chunk: {e}")
-                continue
-        
-        # Send the [DONE] marker
-        yield f"data: {json.dumps({'done': True})}\n\n"
-        
-    except Exception as e:
-        # Use the centralized error handler for streaming errors
-        logger.error(f"Exception during streaming: {str(e)}")
-        
-        # Don't try to handle the error here, let the middleware handle it
-        # Just re-raise the exception so the middleware can catch it
-        raise
 
 @app.get("/")
 async def root(request: Request):
@@ -5653,10 +5516,7 @@ async def set_model(request: SetModelRequest):
                 logger.error(f"Failed to create agent: {str(agent_error)}", exc_info=True)
                 raise agent_error
 
-            # COMPLETELY DISABLED: LangServe routes cause duplicate execution with /api/chat
-            # initialize_langserve(app, agent_executor)
-            # _langserve_initialized = True
-            logger.info("LangServe completely disabled to prevent duplicate execution - using /api/chat only")
+            logger.info("Agent chain and executor updated for new model")
 
             # Invalidate config cache so next /api/config poll picks up new model
             if hasattr(get_config, '_cache'):
