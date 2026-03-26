@@ -1,0 +1,5 @@
+{
+  "depcheck": {
+    "ignoreMatches": ["mermaid", "eslint-plugin-react", "eslint-config-react-app", "eslint", "@eslint/js"]
+  }
+}
