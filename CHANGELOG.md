@@ -5,6 +5,75 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2.1] - 2025-07-17
+
+### Added
+- CLI: `/tune` command for runtime session settings (e.g. max tool iterations).
+- CLI: Graceful SIGINT handler on asyncio event loop for clean streaming cancellation.
+- CLI: Thinking effort configuration for adaptive-thinking models.
+- Delegate manager: Artifact report files embedded inline as collapsible `<details>`
+  blocks in progress updates (replaces "N report(s) written" summary).
+- Delegate manager: Progress update posted for every crystal including the final one.
+- Frontend: `ActiveChatContext`, `ConversationListContext`, `ScrollContext` — focused
+  context providers extracted from monolithic `ChatProvider` to eliminate 60Hz
+  re-renders of unrelated components during streaming.
+- Frontend: `useSendPayload` hook centralises `sendPayload` call-site boilerplate.
+- Frontend: Stable content-based React keys for markdown tokens (`stableTokenKey`).
+- Frontend: Headerless continuation diff blocks merged into preceding headed diff.
+- Frontend: Bare code-fence stripping for prose-wrapping fences emitted by models.
+- Frontend: Base64-encoded display math to protect LaTeX from markdown escaping.
+- Frontend: Mermaid skip-edge rerouter arcs feedback loops above/below intermediate nodes.
+- Frontend: Connection pool health logging and reader release in `chatApi.ts`.
+- Frontend: Image resize (max 1568px) before Bedrock upload.
+- Frontend: `MutationObserver` disconnect on tab hide to reduce idle overhead.
+- Project API: `conversationCount` field on project list items.
+- Diff pipeline: `diff_preprocessor.py` for additive-insert-instead-of-replace sanitisation.
+- Diff pipeline: Full-file replacement fallback when single hunk covers >90% of file.
+- Token calibrator: Physically reasonable bounds (1.0–15.0 chars/token) reject implausible
+  samples; baseline re-established when MCP tool count changes.
+- Tree-sitter: Migrate to `tree-sitter-language-pack` with legacy fallback.
+- Extensive new test suites: diff pipeline edge cases, frontend context split, rendering,
+  display math encoding, edge rerouter, legend dedup, shell conversation guards.
+
+### Changed
+- MUI upgraded from v5 to v7; `@maxgraph/core` upgraded from 0.11 to 0.22.
+- DrawIO plugin: Use `StyleDefaultsConfig` (0.22+) for arrow size overrides;
+  register core codecs.
+- Mermaid plugin: Popup window inherits parent dark/light theme on open;
+  theme toggle applies `!important` styles to override embedded Mermaid CSS.
+- Vega-Lite plugin: Fix duplicate legend domain entries from LLM-generated specs.
+- Streaming tool executor: Configurable max iterations via `ZIYA_MAX_TOOL_ITERATIONS`
+  env var (default 200); baseline invoke moved to `run_in_executor`.
+- Bedrock provider: Serialize body once; log payload size, image count, and timing;
+  close boto3 stream on `CancelledError`.
+- Diff validation wrapped in `asyncio.wait_for` with 30s timeout (CLI, server, chat API).
+- Documentation: Architecture overview updated with context-split design, shell loading
+  guards, and value-object hygiene rules; Capabilities adds diagram rendering section;
+  NewUser broadens Python requirement to 3.10–3.14.
+
+### Removed
+- `langserve` dependency and all LangServe routing code (`initialize_langserve`,
+  `/ziya` route management, LangChain fallback path in `chat_endpoint`).
+- `frontend/eslint.config.mjs`, `frontend/webpack.config.js`, Playwright
+  `math-copy.spec.ts` — stale/unused configs and tests.
+- `typescript-eslint` and `globals` dev dependencies; `resolutions` block.
+- Deleted `test_langserve_integration.py` and `test_langserve_error.py`.
+
+### Fixed
+- `clean_input_diff`: `new_count` was reading regex group(1) twice instead of group(2).
+- `clean_input_diff`: No longer drops extra +/- lines when header counts are wrong.
+- `hunk_line_correction`: Best-ratio match preferred over proximity-to-original-line
+  when one position clearly dominates, preventing wildly wrong line numbers.
+- `overlapping_hunks_fix`: Generic splice replaces hardcoded merge logic.
+- `patch_apply`: Truncated diffs handled via partial old_block verification at EOF.
+- `apply_diff_atomically`: Returns `None` on failure to fall through to full pipeline.
+- `correct_git_diff`: Uses max of header vs actual counts for truncated diffs.
+- MCP client: `CancelledError` re-raised instead of swallowed.
+- `MUIChatHistory`: `InputProps` → `slotProps.input` for MUI v7 compatibility.
+- `determineTokenType`: Explicit language tags no longer overridden by content heuristics.
+- Operator-precedence bugs in `isDiffComplete`, `vegaLitePlugin`, `mermaidEnhancer`,
+  and `useDelegatePolling` fixed with proper parenthesisation.
+
 ## [0.6.1.3] - 2025-07-14
 
 ### Added
