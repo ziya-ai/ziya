@@ -2,7 +2,8 @@ import { D3RenderPlugin } from '../../types/d3';
 import initMermaidSupport, { enhancePacketDarkMode } from './mermaidEnhancer';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
-import { getZoomScript } from '../../utils/popupScriptUtils';
+import { rerouteSkipEdges, shouldRerouteEdges } from './mermaidEdgeRerouter';
+import { getZoomScript, getDownloadSvgScript } from '../../utils/popupScriptUtils';
 import { hexToRgb, enhanceSVGVisibility } from '../../utils/colorUtils';
 
 // Add mermaid to window for TypeScript
@@ -609,6 +610,22 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             console.log('🎨 VISIBILITY-FIX: Skipping post-processing - diagram has explicit color styles');
         }
 
+        // POST-RENDER: Reroute skip edges that cut through intermediate nodes
+        // Mermaid/dagre draws feedback loops as straight lines through nodes;
+        // this replaces those paths with arced bezier curves.
+        setTimeout(() => {
+            if (shouldRerouteEdges(svgElement)) {
+                console.log('🔀 EDGE-REROUTE: Diagram qualifies for skip-edge rerouting');
+                const rerouteResult = rerouteSkipEdges(svgElement);
+                console.log('🔀 EDGE-REROUTE: Complete', {
+                    total: rerouteResult.totalEdges,
+                    rerouted: rerouteResult.reroutedEdges,
+                    skipped: rerouteResult.skippedEdges,
+                    details: rerouteResult.details
+                });
+            }
+        }, 600); // Run after visibility enhancement (500ms)
+
         // Apply unified responsive scaling for all browsers
         applyUnifiedResponsiveScaling(container, svgElement, isDarkMode);
 
@@ -737,13 +754,13 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                         }
                     </style>
                 </head>
-                <body data-theme="light">
+                <body data-theme="${isDarkMode ? 'dark' : 'light'}">
                     <div class="toolbar">
                         <div>
                             <button onclick="zoomIn()">Zoom In</button>
                             <button onclick="zoomOut()">Zoom Out</button>
                             <button onclick="resetZoom()">Reset</button>
-                            <button class="theme-toggle" onclick="toggleTheme()">🌙 Dark</button>
+                            <button class="theme-toggle" onclick="toggleTheme()">${isDarkMode ? '☀️ Light' : '🌙 Dark'}</button>
                         </div>
                         <div>
                             <button onclick="downloadSvg()">Download SVG</button>
@@ -753,17 +770,11 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                         ${svgData}
                     </div>
                     <script>
-                        const svg = document.querySelector('svg');
-                        let currentScale = 1;
-                        let isDarkMode = false;
-                        
-                        // Make sure SVG is responsive
-                        svg.setAttribute('width', '100%');
-                        svg.setAttribute('height', '100%');
-                        svg.style.maxWidth = '100%';
-                        svg.style.maxHeight = '100%';
-                        svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
                         ${getZoomScript()}
+                        ${getDownloadSvgScript(`mermaid-diagram-${Date.now()}.svg`)}
+                        let isDarkMode = ${isDarkMode ? 'true' : 'false'};
+                        
+                        svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
                         function getOptimalTextColor(bgColor) {
                             if (!bgColor || bgColor === 'none' || bgColor === 'transparent') return isDarkMode ? '#eceff4' : '#000000';
                             var m = bgColor.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
@@ -804,8 +815,16 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                             applyMermaidTheme(currentSvg, isDarkMode);
                         }
                         
-                        function applyMermaidTheme(svgElement, isDark) {
-                            const darkTheme = {
+                        function applyMermaidTheme(svgEl, isDark) {
+                            // Override Mermaid's embedded <style> tag so CSS-based styles
+                            // don't fight with our attribute overrides
+                            var existingStyles = svgEl.querySelectorAll('style');
+                            existingStyles.forEach(function(s) {
+                                s.setAttribute('data-original', s.textContent);
+                                s.textContent = '';
+                            });
+
+                            var darkTheme = {
                                 primaryColor: '#88c0d0',
                                 primaryTextColor: '#ffffff',
                                 primaryBorderColor: '#88c0d0',
@@ -822,7 +841,7 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                                 clusterBkg: '#2e3440'
                             };
                             
-                            const lightTheme = {
+                            var lightTheme = {
                                 primaryColor: '#1890ff',
                                 primaryTextColor: '#000000',
                                 primaryBorderColor: '#1890ff',
@@ -839,69 +858,79 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                                 clusterBkg: '#f8f9fa'
                             };
                             
-                            const colors = isDark ? darkTheme : lightTheme;
-                            
-                            // Apply theme to Mermaid elements
-                            svgElement.querySelectorAll('.edgePath path').forEach(el => {
-                                el.setAttribute('stroke', colors.lineColor);
-                                el.setAttribute('stroke-width', '1.5px');
+                            var colors = isDark ? darkTheme : lightTheme;
+                            var textColor = isDark ? '#eceff4' : '#1a1a2e';
+
+                            // SVG background
+                            svgEl.style.backgroundColor = isDark ? '#2e3440' : '#ffffff';
+
+                            // Node shapes
+                            svgEl.querySelectorAll('.node rect, .node circle, .node polygon, .node path').forEach(function(el) {
+                                el.style.setProperty('fill', colors.nodeBkg, 'important');
+                                el.style.setProperty('stroke', colors.nodeBorder, 'important');
                             });
-                            
-                            svgElement.querySelectorAll('defs marker path').forEach(el => {
-                                el.setAttribute('stroke', colors.lineColor);
-                                el.setAttribute('fill', colors.lineColor);
+
+                            // Cluster / subgraph backgrounds
+                            svgEl.querySelectorAll('.cluster rect').forEach(function(el) {
+                                el.style.setProperty('fill', colors.clusterBkg, 'important');
+                                el.style.setProperty('stroke', colors.nodeBorder, 'important');
                             });
-                            
-                            svgElement.querySelectorAll('.node rect, .node circle, .node polygon, .node path').forEach(el => {
-                                el.setAttribute('stroke', colors.nodeBorder);
-                                el.setAttribute('fill', colors.nodeBkg);
+
+                            // Edge paths and arrowheads
+                            svgEl.querySelectorAll('.edgePath path, .flowchart-link, path.path').forEach(function(el) {
+                                el.style.setProperty('stroke', colors.lineColor, 'important');
                             });
-                            
-                            svgElement.querySelectorAll('.cluster rect').forEach(el => {
-                                el.setAttribute('stroke', colors.nodeBorder);
-                                el.setAttribute('fill', colors.clusterBkg);
-            });
-            
-            // Text styling - node labels should contrast with node background
-            svgElement.querySelectorAll('.node .label text, .cluster .label text').forEach(textEl => {
-                // Find the background color of the parent node/cluster
-                const parentGroup = textEl.closest('g.node, g.cluster');
-                if (parentGroup) {
-                    const backgroundShape = parentGroup.querySelector('rect, polygon, circle, path');
-                    if (backgroundShape) {
-                        const fill = backgroundShape.getAttribute('fill');
-                        const contrastColor = fill ? getOptimalTextColor(fill) : (isDark ? '#ffffff' : '#000000');
-                        textEl.setAttribute('fill', contrastColor);
-                    }
-                }
-            });
-            
-            // Flow chart links
-            svgElement.querySelectorAll('.flowchart-link, path.path, path.messageText').forEach(el => {
-                                el.setAttribute('stroke', colors.lineColor);
-                                el.setAttribute('stroke-width', '1.5px');
+                            svgEl.querySelectorAll('defs marker path').forEach(function(el) {
+                                el.style.setProperty('stroke', colors.lineColor, 'important');
+                                el.style.setProperty('fill', colors.lineColor, 'important');
+                            });
+
+                            // Edge label backgrounds
+                            svgEl.querySelectorAll('.edgeLabel rect, .edgeLabel .label-container').forEach(function(el) {
+                                el.style.setProperty('fill', colors.edgeLabelBackground, 'important');
+                                el.style.setProperty('stroke', 'none', 'important');
+                            });
+
+                            // ALL text: SVG text elements, foreignObject content, labels
+                            svgEl.querySelectorAll('text').forEach(function(el) {
+                                el.style.setProperty('fill', textColor, 'important');
+                            });
+                            svgEl.querySelectorAll('foreignObject span, foreignObject div, foreignObject p').forEach(function(el) {
+                                el.style.setProperty('color', textColor, 'important');
+                            });
+
+                            // Node labels: contrast against node background
+                            svgEl.querySelectorAll('.node .label text, .node .label tspan').forEach(function(textEl) {
+                                var parentGroup = textEl.closest('g.node');
+                                if (parentGroup) {
+                                    var bg = parentGroup.querySelector('rect, polygon, circle, path');
+                                    if (bg) {
+                                        var fill = bg.style.getPropertyValue('fill') || bg.getAttribute('fill');
+                                        var contrast = fill ? getOptimalTextColor(fill) : textColor;
+                                        textEl.style.setProperty('fill', contrast, 'important');
+                                    }
+                                }
+                            });
+                            svgEl.querySelectorAll('.node foreignObject span, .node foreignObject div').forEach(function(el) {
+                                var parentGroup = el.closest('g.node');
+                                if (parentGroup) {
+                                    var bg = parentGroup.querySelector('rect, polygon, circle, path');
+                                    if (bg) {
+                                        var fill = bg.style.getPropertyValue('fill') || bg.getAttribute('fill');
+                                        var contrast = fill ? getOptimalTextColor(fill) : textColor;
+                                        el.style.setProperty('color', contrast, 'important');
+                                    }
+                                }
+                            });
+
+                            // Cluster / subgraph title text
+                            svgEl.querySelectorAll('.cluster text, .cluster tspan').forEach(function(el) {
+                                el.style.setProperty('fill', textColor, 'important');
                             });
                         }
                         
-                        function downloadSvg() {
-                            const svgData = new XMLSerializer().serializeToString(svg);
-                            const svgBlob = new Blob([svgData], {type: 'image/svg+xml'});
-                            const url = URL.createObjectURL(svgBlob);
-                            
-                            const link = document.createElement('a');
-                            link.href = url;
-                            link.download = 'mermaid-diagram-${Date.now()}.svg';
-                            document.body.appendChild(link);
-                            link.click();
-                            document.body.removeChild(link);
-                            
-                            setTimeout(() => URL.revokeObjectURL(url), 1000);
-                        }
-                        
-                        // Initialize theme based on system preference
-                        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
-                            toggleTheme();
-                        }
+                        // Apply theme on load to match parent window state
+                        if (isDarkMode) { applyMermaidTheme(svg, true); }
                     </script>
                 </body>
                 </html>
