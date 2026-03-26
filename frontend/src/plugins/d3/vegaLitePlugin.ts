@@ -2221,6 +2221,142 @@ export const vegaLitePlugin: D3RenderPlugin = {
         });
       }
 
+      // Fix synthetic legend layers with duplicate domain entries
+      // LLMs commonly generate legend layers like: domain: ["Task","Task","Task"], range: ["#1a1a2e","#2a9d8f","#ffd700"]
+      // where every domain entry is the same string mapped to different colors — making the legend useless.
+      if (vegaSpec.layer && Array.isArray(vegaSpec.layer)) {
+        vegaSpec.layer.forEach((layer: any, layerIndex: number) => {
+          const colorScale = layer.encoding?.color?.scale;
+          if (!colorScale?.domain || !Array.isArray(colorScale.domain) || colorScale.domain.length < 2) return;
+          if (!colorScale.range || !Array.isArray(colorScale.range)) return;
+
+          // Check if domain has duplicates
+          const uniqueDomain = new Set(colorScale.domain);
+          if (uniqueDomain.size === colorScale.domain.length) return; // all unique, nothing to fix
+
+          console.log(`🔧 LEGEND-DEDUP-FIX: Layer ${layerIndex} has duplicate legend domain entries:`, colorScale.domain);
+
+          // Determine if this is a synthetic/invisible legend layer
+          const isSyntheticLegend =
+            (layer.mark?.opacity === 0 || layer.mark?.size === 0) ||
+            (layer.data?.values && layer.data.values.every((d: any) =>
+              Object.values(d).some(v => v === 0) || layer.mark?.opacity === 0
+            ));
+
+          // Try to infer meaningful labels from sibling layers
+          const siblingLayers = vegaSpec.layer.filter((_: any, i: number) => i !== layerIndex);
+          const inferredLabels: string[] = [];
+
+          for (let i = 0; i < colorScale.domain.length; i++) {
+            if (i < siblingLayers.length) {
+              const sibling = siblingLayers[i];
+              const markType = sibling.mark?.type || sibling.mark || '';
+              const xField = sibling.encoding?.x?.field || '';
+              const yField = sibling.encoding?.y?.field || '';
+              // Use the most descriptive field name, falling back to mark type
+              const label = xField && xField !== yField && xField !== 'background'
+                ? xField
+                : yField || markType || `Series ${i + 1}`;
+              // Capitalise and clean up
+              inferredLabels.push(
+                label.replace(/[_-]/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())
+              );
+            } else {
+              inferredLabels.push(`Series ${i + 1}`);
+            }
+          }
+
+          // Ensure the inferred labels are themselves unique
+          const seen = new Map<string, number>();
+          const dedupedLabels = inferredLabels.map(label => {
+            const count = seen.get(label) || 0;
+            seen.set(label, count + 1);
+            return count > 0 ? `${label} ${count + 1}` : label;
+          });
+
+          console.log(`🔧 LEGEND-DEDUP-FIX: Replaced domain with:`, dedupedLabels);
+          colorScale.domain = dedupedLabels;
+
+          // Also update the data values if this is a synthetic legend layer with a series field
+          if (isSyntheticLegend && layer.data?.values && layer.encoding?.color?.field) {
+            const field = layer.encoding.color.field;
+            layer.data.values = dedupedLabels.map((label: string, i: number) => ({
+              ...layer.data.values[i],
+              [field]: label
+            }));
+            console.log(`🔧 LEGEND-DEDUP-FIX: Updated synthetic legend data values`);
+          }
+        });
+      }
+
+      // Fix synthetic legend layers with duplicate domain entries
+      // LLMs commonly generate legend layers like: domain: ["Task","Task","Task"], range: ["#1a1a2e","#2a9d8f","#ffd700"]
+      // where every domain entry is the same string mapped to different colors — making the legend useless.
+      if (vegaSpec.layer && Array.isArray(vegaSpec.layer)) {
+        vegaSpec.layer.forEach((layer: any, layerIndex: number) => {
+          const colorScale = layer.encoding?.color?.scale;
+          if (!colorScale?.domain || !Array.isArray(colorScale.domain) || colorScale.domain.length < 2) return;
+          if (!colorScale.range || !Array.isArray(colorScale.range)) return;
+
+          // Check if domain has duplicates
+          const uniqueDomain = new Set(colorScale.domain);
+          if (uniqueDomain.size === colorScale.domain.length) return; // all unique, nothing to fix
+
+          console.log(`🔧 LEGEND-DEDUP-FIX: Layer ${layerIndex} has duplicate legend domain entries:`, colorScale.domain);
+
+          // Determine if this is a synthetic/invisible legend layer
+          const isSyntheticLegend =
+            (layer.mark?.opacity === 0 || layer.mark?.size === 0) ||
+            (layer.data?.values && layer.data.values.every((d: any) =>
+              Object.values(d).some(v => v === 0) || layer.mark?.opacity === 0
+            ));
+
+          // Try to infer meaningful labels from sibling layers
+          const siblingLayers = vegaSpec.layer.filter((_: any, i: number) => i !== layerIndex);
+          const inferredLabels: string[] = [];
+
+          for (let i = 0; i < colorScale.domain.length; i++) {
+            if (i < siblingLayers.length) {
+              const sibling = siblingLayers[i];
+              const markType = sibling.mark?.type || sibling.mark || '';
+              const xField = sibling.encoding?.x?.field || '';
+              const yField = sibling.encoding?.y?.field || '';
+              // Use the most descriptive field name, falling back to mark type
+              const label = xField && xField !== yField && xField !== 'background'
+                ? xField
+                : yField || markType || `Series ${i + 1}`;
+              // Capitalise and clean up
+              inferredLabels.push(
+                label.replace(/[_-]/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())
+              );
+            } else {
+              inferredLabels.push(`Series ${i + 1}`);
+            }
+          }
+
+          // Ensure the inferred labels are themselves unique
+          const seen = new Map<string, number>();
+          const dedupedLabels = inferredLabels.map(label => {
+            const count = seen.get(label) || 0;
+            seen.set(label, count + 1);
+            return count > 0 ? `${label} ${count + 1}` : label;
+          });
+
+          console.log(`🔧 LEGEND-DEDUP-FIX: Replaced domain with:`, dedupedLabels);
+          colorScale.domain = dedupedLabels;
+
+          // Also update the data values if this is a synthetic legend layer with a series field
+          if (isSyntheticLegend && layer.data?.values && layer.encoding?.color?.field) {
+            const field = layer.encoding.color.field;
+            layer.data.values = dedupedLabels.map((label: string, i: number) => ({
+              ...layer.data.values[i],
+              [field]: label
+            }));
+            console.log(`🔧 LEGEND-DEDUP-FIX: Updated synthetic legend data values`);
+          }
+        });
+      }
+
       // Fix layered charts missing legends for hardcoded colors
       if (vegaSpec.layer && Array.isArray(vegaSpec.layer) && vegaSpec.layer.length > 1) {
         console.log('🔧 VEGA-POST-PROCESS: Adding legends for layered chart with hardcoded colors');
@@ -2842,7 +2978,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
         console.log('Fixing line chart x,y encodings');
         const firstRow = vegaSpec.data.values[0];
         const fields = Object.keys(firstRow);
-        const dateField = fields.find(f => firstRow[f] && (f.includes('date') || f.includes('time') || typeof firstRow[f] === 'string' && firstRow[f].match(/\d{4}-\d{2}-\d{2}/)));
+        const dateField = fields.find(f => firstRow[f] && (f.includes('date') || f.includes('time') || (typeof firstRow[f] === 'string' && firstRow[f].match(/\d{4}-\d{2}-\d{2}/))));
         const numericField = fields.find(f => typeof firstRow[f] === 'number');
 
         if (dateField && numericField) {
@@ -3170,24 +3306,6 @@ export const vegaLitePlugin: D3RenderPlugin = {
         }
       }
 
-      // Fix arc/pie charts missing theta encoding for segment sizing
-      if (vegaSpec.mark && (vegaSpec.mark.type === 'arc' || vegaSpec.mark === 'arc') &&
-        vegaSpec.encoding && vegaSpec.encoding.color && !vegaSpec.encoding.theta) {
-        console.log('Fixing line chart with y encoding missing field property');
-
-        // If there's a fold transform, use the value field from it
-        if (vegaSpec.transform && vegaSpec.transform.some(t => t.fold)) {
-          const foldTransform = vegaSpec.transform.find(t => t.fold);
-          const valueField = foldTransform?.as?.[1] || 'value';
-          vegaSpec.encoding.y.field = valueField;
-          console.log(`Added y field from fold transform: "${valueField}"`);
-        } else if (vegaSpec.transform && vegaSpec.transform.some(t => t.calculate && t.as === 'y')) {
-          // If there's a calculated field 'y', use that
-          vegaSpec.encoding.y.field = 'y';
-          console.log('Added y field from calculated field: "y"');
-        }
-      }
-
       // Fix line charts with detail encoding that may be interfering with proper rendering
       if (vegaSpec.mark && (vegaSpec.mark.type === 'line' || vegaSpec.mark === 'line') &&
         vegaSpec.encoding && vegaSpec.encoding.detail && vegaSpec.encoding.color &&
@@ -3249,80 +3367,6 @@ export const vegaLitePlugin: D3RenderPlugin = {
       }
 
       // Fix line charts with fold transforms missing y-axis encoding for the folded value field
-      if (vegaSpec.mark && (vegaSpec.mark.type === 'line' || vegaSpec.mark === 'line') &&
-        vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
-        vegaSpec.encoding && vegaSpec.encoding.x && (!vegaSpec.encoding.y || !vegaSpec.encoding.y.field)) {
-        console.log('Fixing line chart with fold transform missing y-axis encoding');
-
-        // Find the fold transform to get the correct field name for the y-axis
-        const foldTransform = vegaSpec.transform.find(t => t.fold);
-        const yFieldName = foldTransform?.as?.[1] || 'value';
-
-        if (!vegaSpec.encoding.y) {
-          vegaSpec.encoding.y = {};
-        }
-        vegaSpec.encoding.y = {
-          ...vegaSpec.encoding.y,
-          field: yFieldName,
-          type: 'quantitative',
-          title: yFieldName.charAt(0).toUpperCase() + yFieldName.slice(1)
-        };
-
-        // Also add color encoding to distinguish the different lines if not already present
-        if (!vegaSpec.encoding.color) {
-          const colorFieldName = foldTransform?.as?.[0] || 'key';
-          vegaSpec.encoding.color = {
-            field: colorFieldName,
-            type: 'nominal',
-            title: colorFieldName.charAt(0).toUpperCase() + colorFieldName.slice(1)
-          };
-        }
-      }
-
-      // Fix area charts with fold transforms missing y-axis encoding
-      if (vegaSpec.mark && (vegaSpec.mark.type === 'area' || vegaSpec.mark === 'area') &&
-        vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
-        vegaSpec.encoding && vegaSpec.encoding.x && !vegaSpec.encoding.y) {
-        console.log('Fixing area chart with fold transform missing y-axis encoding');
-
-        const foldTransform = vegaSpec.transform.find(t => t.fold);
-        const yFieldName = foldTransform?.as?.[1] || 'value';
-
-        vegaSpec.encoding.y = {
-          field: yFieldName,
-          type: 'quantitative',
-          title: yFieldName.charAt(0).toUpperCase() + yFieldName.slice(1)
-        };
-
-        if (!vegaSpec.encoding.color) {
-          const colorFieldName = foldTransform?.as?.[0] || 'key';
-          vegaSpec.encoding.color = {
-            field: colorFieldName,
-            type: 'nominal',
-            title: colorFieldName.charAt(0).toUpperCase() + colorFieldName.slice(1)
-          };
-        }
-      }
-
-      // Fix line charts with y encoding missing field property
-      if (vegaSpec.mark && (vegaSpec.mark.type === 'line' || vegaSpec.mark === 'line') &&
-        vegaSpec.encoding && vegaSpec.encoding.y && !vegaSpec.encoding.y.field) {
-        console.log('Fixing line chart with y encoding missing field property');
-
-        // If there's a fold transform, use the value field from it
-        if (vegaSpec.transform && vegaSpec.transform.some(t => t.fold)) {
-          const foldTransform = vegaSpec.transform.find(t => t.fold);
-          const valueField = foldTransform?.as?.[1] || 'value';
-          vegaSpec.encoding.y.field = valueField;
-          console.log(`Added y field from fold transform: "${valueField}"`);
-        } else if (vegaSpec.transform && vegaSpec.transform.some(t => t.calculate && t.as === 'y')) {
-          // If there's a calculated field 'y', use that
-          vegaSpec.encoding.y.field = 'y';
-          console.log('Added y field from calculated field: "y"');
-        }
-      }
-
-      // Fix regular line charts with fold transforms missing y-axis encoding
       if (vegaSpec.mark && (vegaSpec.mark.type === 'line' || vegaSpec.mark === 'line') &&
         vegaSpec.transform && vegaSpec.transform.some(t => t.fold) &&
         vegaSpec.encoding && vegaSpec.encoding.x && (!vegaSpec.encoding.y || !vegaSpec.encoding.y.field)) {
@@ -4893,10 +4937,10 @@ ${svgData}`;
       // During streaming or with incomplete JSON, don't show errors unless forced
       // CRITICAL: Don't suppress errors when forceRender is true - user explicitly wants to see what's wrong
       const shouldSuppressError = (
-        !spec.forceRender && (
+        (!spec.forceRender && (
           (spec.isStreaming && !spec.isMarkdownBlockClosed) ||
           (spec.isStreaming && isIncompleteDefinition)
-        ) ||
+        )) ||
         (!spec.definition || spec.definition.trim().length === 0) ||
         (isStreamingError && !spec.forceRender)
       );

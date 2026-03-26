@@ -271,7 +271,7 @@ export function assignBracketDepths(brackets: PacketBracket[], side: 'left' | 'r
     // Find the minimum depth that doesn't overlap any already-assigned bracket
     let depth = 0;
     while (true) {
-      const conflict = assigned.some(
+      const conflict = assigned.some( // eslint-disable-line no-loop-func -- synchronous callback, depth is correct per-iteration
         a => a.depth === depth &&
           a.start_row <= br.end_row &&
           a.end_row >= br.start_row

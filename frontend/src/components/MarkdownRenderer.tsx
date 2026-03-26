@@ -4,7 +4,7 @@ import { Alert, Button, message, Tooltip, Collapse } from 'antd';
 import { parseDiff } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
 import { DiffLine } from './DiffLine';
-import { useChatContext } from '../context/ChatContext';
+import { useActiveChat } from '../context/ActiveChatContext';
 import { parseToolCall, formatToolCallForDisplay } from '../utils/toolCallParser';
 import { parseThinkingContent, removeThinkingTags } from '../utils/thinkingParser';
 import { useFolderContext } from '../context/FolderContext';
@@ -20,7 +20,6 @@ import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 import 'katex/dist/katex.min.css';
 import {
     restartStreamWithEnhancedContext,
-    sendPayload,
     applyDiff,
     undoDiff,
     parseHunkStatuses
@@ -28,6 +27,7 @@ import {
 import { extractAllFilesFromDiff, checkFilesInContext, findSupersededDiffIndices } from '../utils/diffUtils';
 import { formatMCPOutput } from '../utils/mcpFormatter';
 import { useProject } from '../context/ProjectContext';
+import { useSendPayload } from '../hooks/useSendPayload';
 import { useStreamingContext } from '../context/StreamingContext';
 
 // Lazy-load heavy diagram and mockup renderers.
@@ -169,6 +169,11 @@ export function pruneRendererCaches(): void {
     processedWindowEvents.clear();
     diffRequestMap.clear();
 
+    // Prune diffElementPaths — maps diff element IDs to file paths on each Apply click
+    if (window.diffElementPaths?.size > 500) {
+        const entries = Array.from(window.diffElementPaths.entries());
+        window.diffElementPaths = new Map(entries.slice(-200));
+    }
     // Cap window-level registries — keep the most recent entries
     if (window.hunkStatusRegistry?.size > 500) {
         const entries = Array.from(window.hunkStatusRegistry.entries());
@@ -194,6 +199,28 @@ function stableDiffId(diffContent: string): string {
     }
     // Unsigned hex for a compact, URL-safe string
     return `diff-${(hash >>> 0).toString(36)}`;
+}
+
+/**
+ * Generate a stable React key for a marked token based on its type and
+ * content.  Avoids index-based keys that shift when tokens are inserted
+ * during streaming — which would unmount stateful components like
+ * DiffToken and lose hunk-application state.
+ *
+ * @param dupCount disambiguation suffix for tokens with identical hashes
+ */
+function stableTokenKey(
+    token: Tokens.Generic | TokenWithText,
+    dupCount: number,
+): string {
+    const t = token as TokenWithText;
+    const sample = (t.text || t.raw || '').slice(0, 120);
+    let hash = 5381;
+    for (let i = 0; i < sample.length; i++) {
+        hash = ((hash << 5) + hash + sample.charCodeAt(i)) | 0;
+    }
+    const base = `${token.type || 'u'}-${(hash >>> 0).toString(36)}`;
+    return dupCount > 0 ? `${base}-${dupCount}` : base;
 }
 
 interface ApplyChangesButtonProps {
@@ -728,29 +755,29 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
                         </pre>
                     ) : (
                         containsAnsi(cleanContent) ? (
-                        <pre style={{
-                            margin: 0,
-                            padding: '16px',
-                            color: colors.contentText,
-                            whiteSpace: 'pre-wrap',
-                            wordBreak: 'break-word',
-                            maxHeight: isExpanded ? 'none' : '400px',
-                            overflow: isExpanded ? 'visible' : 'auto'
-                        }}>
-                            <code dangerouslySetInnerHTML={{ __html: ansiToHtml(cleanContent) }} />
-                        </pre>
+                            <pre style={{
+                                margin: 0,
+                                padding: '16px',
+                                color: colors.contentText,
+                                whiteSpace: 'pre-wrap',
+                                wordBreak: 'break-word',
+                                maxHeight: isExpanded ? 'none' : '400px',
+                                overflow: isExpanded ? 'visible' : 'auto'
+                            }}>
+                                <code dangerouslySetInnerHTML={{ __html: ansiToHtml(cleanContent) }} />
+                            </pre>
                         ) : (
-                        <pre style={{
-                            margin: 0,
-                            padding: '16px',
-                            color: colors.contentText,
-                            whiteSpace: 'pre-wrap',
-                            wordBreak: 'break-word',
-                            maxHeight: isExpanded ? 'none' : '400px',
-                            overflow: isExpanded ? 'visible' : 'auto'
-                        }}>
-                            {cleanContent}
-                        </pre>
+                            <pre style={{
+                                margin: 0,
+                                padding: '16px',
+                                color: colors.contentText,
+                                whiteSpace: 'pre-wrap',
+                                wordBreak: 'break-word',
+                                maxHeight: isExpanded ? 'none' : '400px',
+                                overflow: isExpanded ? 'visible' : 'auto'
+                            }}>
+                                {cleanContent}
+                            </pre>
                         )
                     )
                 )
@@ -1337,7 +1364,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     const parsedFilesRef = useRef<any[]>([]);
     const [parseError, setParseError] = useState<boolean>(false);
     const lastValidDiffRef = useRef<string | null>(null);
-    const { isStreaming: isGlobalStreaming } = useChatContext();
+    const { isStreaming: isGlobalStreaming } = useStreamingContext();
     const [instanceHunkStatusMap, setInstanceHunkStatusMap] = useState<Map<string, HunkStatus>>(new Map());
     const [statusUpdateCounter, setStatusUpdateCounter] = useState<number>(0);
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -2258,8 +2285,8 @@ const isDiffComplete = (diffContent: string, isStreaming: boolean): boolean => {
     // Check if the diff ends properly (not cut off mid-hunk)
     const lastNonEmptyLine = lines.filter(line => line.trim()).pop() || '';
     const endsAbruptly = lastNonEmptyLine.startsWith('@@') ||
-        lastNonEmptyLine.match(/^[+-]/) &&
-        !lines.slice(-3).some(line => line.trim() === '');
+        (lastNonEmptyLine.match(/^[+-]/) &&
+            !lines.slice(-3).some(line => line.trim() === ''));
 
     // A complete diff should have header structure and not end abruptly
     const hasMinimalStructure = hasGitHeader && hasFileHeaders && hasHunkHeader && hasContent;
@@ -2698,8 +2725,10 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode, superseded 
     // 80+ re-renders per setConversations call in delegate conversations).
     const chatContextRef = useRef<any>(null);
     const { checkedKeys, addFilesToContext } = useFolderContext();
-    // Generate a unique ID once when the component mounts
-    const [diffId] = useState(() => stableDiffId(token.text));
+    // Generate a stable ID scoped to the current conversation so that the
+    // same diff content in two different conversations gets distinct registry
+    // keys, preventing applied-state from leaking across conversations.
+    const [diffId] = useState(() => `${currentConversationId}:${stableDiffId(token.text)}`);
     const contentRef = useRef<string | null>(null);
     const [isCheckingFiles, setIsCheckingFiles] = useState(false);
     const hasCheckedFilesRef = useRef(false);
@@ -2944,12 +2973,11 @@ interface DiffViewWrapperProps {
 const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, index, elementId }: DiffViewWrapperProps) => {
     const [viewType, setViewType] = useState<'unified' | 'split'>(window.diffViewType || 'unified');
     const [showLineNumbers, setShowLineNumbers] = useState<boolean>(window.diffShowLineNumbers || false);
-    const { currentConversationId } = useChatContext(); // Add access to currentConversationId
+    const { currentConversationId, isStreaming: isGlobalStreaming } = useStreamingContext();
     const [displayMode, setDisplayMode] = useState<DisplayMode>(window.diffDisplayMode || 'pretty');
     const [isVisible, setIsVisible] = useState<boolean>(true);
     const [currentContent, setCurrentContent] = useState<string>(token.text || '');
     const lastValidDiffRef = useRef<string | null>(null);
-    const { isStreaming: isGlobalStreaming } = useChatContext();
     const { isDarkMode } = useTheme();
     const initialFileTitleRef = useRef<string | null>(null);
     const stableElementIdRef = useRef(elementId);
@@ -3263,7 +3291,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
     const { isDarkMode } = useTheme();
     const [prismInstance, setPrismInstance] = useState<PrismStatic | null>(null);
 
-    const { isStreaming: isGlobalStreaming } = useChatContext();
+    const { isStreaming: isGlobalStreaming } = useStreamingContext();
 
     // Normalize the language identifier
     const normalizedLang = useMemo(() => {
@@ -3471,10 +3499,10 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
 type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' |
     'd3' | 'mermaid' | 'file-operation' | 'tool' |
     'joint' | 'jointjs' | 'code' | 'html' | 'text' | 'list' | 'table' | 'escape' | 'math' |
-    'paragraph' | 'heading' | 'hr' | 'blockquote' | 'space' | 'packet' |
+    'paragraph' | 'heading' | 'hr' | 'blockquote' | 'space' | 'packet' | 'drawio' |
     'circuitikz' | 'html-mockup' | 'delegate-tasks' |
     'codespan' | 'strong' | 'em' | 'del' | 'link' | 'image' |
-    'br' | 'list_item' | 'circuitikz' | 'latex' |
+    'br' | 'list_item' |
     'unknown';
 
 // Track last log timestamp to prevent excessive logging
@@ -3484,7 +3512,8 @@ let lastLogTimestamp = 0;
 function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTokenType {
     const tokenType = token.type as string;
 
-    // 1. Prioritize content-based detection for diffs, regardless of lang tag
+    // 1. Content-based diff detection — fallback only when no explicit language tag is
+    // present. An explicit lang (e.g. 'python', 'javascript') always takes precedence.
     if (tokenType === 'code' && 'text' in token && typeof token.text === 'string') {
         const text = token.text;
 
@@ -3516,7 +3545,10 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
             });
         }
 
-        if (containsDiffGit || diffMarkersFound >= 2) {
+        // An explicit non-diff lang tag must not be overridden by content heuristics.
+        const _cl = (('lang' in token ? (token as any).lang : '') as string).toLowerCase().trim();
+        const _noExplicitLang = !_cl || _cl === 'diff' || _cl === 'plaintext' || _cl === 'text';
+        if (_noExplicitLang && (containsDiffGit || diffMarkersFound >= 2)) {
             if (isDebugLoggingEnabled()) {
                 debugLog('DETECTED AS DIFF (content-based)');
             }
@@ -3814,9 +3846,41 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
     // Pre-scan diff tokens to detect superseded diffs (earlier revision for
     // the same file with overlapping hunk ranges).
     let supersededIndices = new Set<number>();
+
+    // Pre-pass: merge headerless continuation diff blocks into the preceding
+    // headed diff.  LLMs (especially Opus) sometimes emit multiple ```diff
+    // fenced blocks for the same file where only the first has the
+    // "diff --git" header and subsequent blocks start directly with "@@".
+    // We merge these into the headed block so they parse as a single diff.
+    const absorbedDiffIndices = new Set<number>();
+    if (!isSubRender) {
+        let lastHeadedDiffIndex: number | null = null;
+
+        for (let i = 0; i < tokens.length; i++) {
+            const tok = tokens[i] as TokenWithText;
+            if (determineTokenType(tok) !== 'diff' || !tok.text) continue;
+
+            const text = tok.text.trimStart();
+            const hasDiffGitHeader = text.startsWith('diff --git ') ||
+                text.split('\n').slice(0, 3).some(l => l.startsWith('diff --git '));
+
+            if (hasDiffGitHeader) {
+                lastHeadedDiffIndex = i;
+            } else if (lastHeadedDiffIndex !== null && text.startsWith('@@')) {
+                // Continuation hunk block — merge into the headed diff
+                const headedTok = tokens[lastHeadedDiffIndex] as TokenWithText;
+                headedTok.text = headedTok.text.trimEnd() + '\n' + tok.text;
+                absorbedDiffIndices.add(i);
+            }
+            // If it's a diff block without a header AND doesn't start with @@,
+            // leave it alone (might be a malformed diff handled elsewhere).
+        }
+    }
+
     if (!isSubRender) {
         const diffTexts: { index: number; text: string }[] = [];
         tokens.forEach((token, index) => {
+            if (absorbedDiffIndices.has(index)) return;
             if (determineTokenType(token) === 'diff' && (token as TokenWithText).text) {
                 diffTexts.push({ index, text: (token as TokenWithText).text });
             }
@@ -3827,7 +3891,19 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
         }
     }
 
+    // Build stable, content-based keys so React can reconcile elements
+    // correctly when tokens are inserted/removed during streaming.
+    const keyDupCounts = new Map<string, number>();
     return tokens.map((token, index) => {
+        const rawKey = stableTokenKey(token, 0);
+        const dupCount = keyDupCounts.get(rawKey) || 0;
+        keyDupCounts.set(rawKey, dupCount + 1);
+        const sk = dupCount > 0
+            ? stableTokenKey(token, dupCount)
+            : rawKey;
+
+        if (absorbedDiffIndices.has(index)) return null;
+
         const previousToken = index > 0 ? tokens[index - 1] : null;
         // Determine the definitive type for rendering
         const determinedType = determineTokenType(token);
@@ -3848,7 +3924,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 if (!tokenWithText.text?.startsWith('```') && !tokenWithText.text?.startsWith('    ')) {
                     // Force this to be treated as markdown instead of code
                     return (
-                        <div key={index}>
+                        <div key={sk}>
                             <MarkdownRenderer
                                 markdown={tokenWithText.text || ''}
                                 enableCodeApply={enableCodeApply}
@@ -3895,12 +3971,12 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     if (isDebugLoggingEnabled() && false) {
                         debugLog('Rendering single DiffToken component');
                     }
-                    return <DiffToken key={index} token={diffToken} index={index} enableCodeApply={enableCodeApply} isDarkMode={isDarkMode} superseded={supersededIndices.has(index)} />;
+                    return <DiffToken key={sk} token={diffToken} index={index} enableCodeApply={enableCodeApply} isDarkMode={isDarkMode} superseded={supersededIndices.has(index)} />;
 
                 case 'html-mockup':
                     if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
                     return (
-                        <React.Suspense key={index} fallback={null}>
+                        <React.Suspense key={sk} fallback={null}>
                             <HTMLMockupRenderer html={tokenWithText.text} isStreaming={isStreaming} />
                         </React.Suspense>
                     );
@@ -3911,7 +3987,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     // DelegateLaunchButton's regex expects.
                     const delegateContent = '```delegate-tasks\n' + tokenWithText.text + '\n```';
                     return (
-                        <React.Suspense key={index} fallback={<div style={{padding:'1em',opacity:0.5}}>Loading delegate plan...</div>}>
+                        <React.Suspense key={sk} fallback={<div style={{ padding: '1em', opacity: 0.5 }}>Loading delegate plan...</div>}>
                             <DelegateLaunchButton messageContent={delegateContent} />
                         </React.Suspense>
                     );
@@ -3923,7 +3999,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     if (safetyResult.shouldRender) {
                         return (
                             <FileOperationRenderer
-                                key={index}
+                                key={sk}
                                 content={tokenWithText.text}
                                 enableApply={enableCodeApply}
                             />
@@ -3935,7 +4011,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'graphviz':
                     if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
                     return (
-                        <LazyD3Renderer
+                        <LazyD3Renderer key={sk}
                             spec={{
                                 type: 'graphviz',
                                 isStreaming: isStreaming,
@@ -3952,7 +4028,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     if (isDebugLoggingEnabled() && false) {
                         debugLog(`CREATING MERMAID SPEC:`, { text: tokenWithText.text.substring(0, 100) });
                     }
-                    // Pass the definition directly to D3Renderer, which will use the mermaidPlugin
+                    // Pass the definition directly to D3Renderer via the mermaidPlugin
                     // We need a spec object that the mermaidPlugin can handle with streaming flag
                     const mermaidSpec = {
                         type: 'mermaid',
@@ -3962,13 +4038,13 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         forceRender: true // Force render even if incomplete
                     };
                     console.log(`🎯 CALLING D3RENDERER WITH MERMAID SPEC:`, mermaidSpec);
-                    return <LazyD3Renderer key={index} spec={mermaidSpec} type="d3" isStreaming={isStreaming} />;
+                    return <LazyD3Renderer key={sk} spec={mermaidSpec} type="d3" isStreaming={isStreaming} />;
 
                 case 'packet':
                     if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
                     return (
                         <LazyD3Renderer
-                            key={index}
+                            key={sk}
                             spec={{
                                 type: 'packet',
                                 definition: tokenWithText.text,
@@ -4023,7 +4099,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                     return (
                         <LazyD3Renderer
-                            key={index}
+                            key={sk}
                             spec={vegaLiteSpec}
                             type="d3"
                             isStreaming={isStreaming}
@@ -4052,7 +4128,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         };
                     }
 
-                    return <LazyD3Renderer key={index} spec={jointSpec} type="d3" isStreaming={isStreaming} />;
+                    return <LazyD3Renderer key={sk} spec={jointSpec} type="d3" isStreaming={isStreaming} />;
 
                 case 'tool':
                     if (!hasText(tokenWithText) || !tokenWithText.toolName) {
@@ -4083,14 +4159,14 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             errorMessage = pythonDictMatch[1].replace(/\\n/g, '\n').replace(new RegExp('^🚫 SECURITY' + ' BLOCK:\\s*'), '');
                         }
                         return (
-                            <Alert key={index} message="🚫 Command Blocked" description={makeShellConfigLinkClickable(errorMessage, onOpenShellConfig)} type="warning" showIcon style={{ margin: '16px 0', border: '2px solid #faad14', whiteSpace: 'pre-line' }} />
+                            <Alert key={sk} message="🚫 Command Blocked" description={makeShellConfigLinkClickable(errorMessage, onOpenShellConfig)} type="warning" showIcon style={{ margin: '16px 0', border: '2px solid #faad14', whiteSpace: 'pre-line' }} />
                         );
                     }
 
                     // Special handling for thinking content
                     if (tokenWithText.toolName?.startsWith('thinking_')) {
                         return (
-                            <ThinkingBlock key={index} isDarkMode={isDarkMode} isStreaming={isStreaming}>
+                            <ThinkingBlock key={sk} isDarkMode={isDarkMode} isStreaming={isStreaming}>
                                 {toolContent}
                             </ThinkingBlock>
                         );
@@ -4101,13 +4177,13 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         debugLog('Successfully rendering tool block:', { toolName: tokenWithText.toolName, contentLength: toolContent.length });
                     }
                     return (
-                        <ToolBlock key={index} toolName={tokenWithText.toolName} content={toolContent} isDarkMode={isDarkMode} onOpenShellConfig={onOpenShellConfig} />
+                        <ToolBlock key={sk} toolName={tokenWithText.toolName} content={toolContent} isDarkMode={isDarkMode} onOpenShellConfig={onOpenShellConfig} />
                     );
 
                 case 'd3':
                     if (!hasText(tokenWithText)) return null;
                     return (
-                        <LazyD3Renderer key={index} spec={tokenWithText.text} type="d3" isStreaming={isStreaming} />
+                        <LazyD3Renderer key={sk} spec={tokenWithText.text} type="d3" isStreaming={isStreaming} />
                     );
 
                 case 'code':
@@ -4169,7 +4245,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     if (tokenWithText.lang?.startsWith('tool:')) {
                         console.error('CRITICAL ERROR: Tool block reached code case!', { lang: tokenWithText.lang, determinedType });
                         // Force redirect to tool rendering
-                        return <ToolBlock key={index} toolName={tokenWithText.lang.substring(5)} content={tokenWithText.text} isDarkMode={isDarkMode} onOpenShellConfig={onOpenShellConfig} />
+                        return <ToolBlock key={sk} toolName={tokenWithText.lang.substring(5)} content={tokenWithText.text} isDarkMode={isDarkMode} onOpenShellConfig={onOpenShellConfig} />
                     }
 
                     // Check for file operations first
@@ -4179,7 +4255,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         if (safetyResult.shouldRender) {
                             return (
                                 <FileOperationRenderer
-                                    key={index}
+                                    key={sk}
                                     content={tokenWithText.text}
                                     enableApply={enableCodeApply}
                                 />
@@ -4187,7 +4263,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         } else {
                             // Render as safe code block with warnings
                             return (
-                                <div key={index}>
+                                <div key={sk}>
                                     {safetyResult.warnings.length > 0 && (
                                         <Alert
                                             type="warning"
@@ -4209,7 +4285,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         ...codeToken,
                         text: decodeHtmlEntities(codeToken.text)
                     };
-                    return <CodeBlock key={index} token={decodedToken} index={index} />;
+                    return <CodeBlock key={sk} token={decodedToken} index={index} />;
 
                 // --- Handle Standard Markdown Elements ---
                 case 'paragraph':
@@ -4220,7 +4296,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     const paragraphContent = pTokens.map(t => (t as TokenWithText).text || '').join('');
                     if (paragraphContent.includes('⟨MATH_INLINE:')) {
                         const parts = paragraphContent.split(/(⟨MATH_INLINE:[\s\S]*?⟩)/);
-                        return <p key={index}>{parts.map((part, i) => {
+                        return <p key={sk}>{parts.map((part, i) => {
                             if (part.startsWith('⟨MATH_INLINE:')) {
                                 const math = part.slice('⟨MATH_INLINE:'.length, -1).trim();
                                 return <MathRenderer key={i} math={math} displayMode={false} />;
@@ -4232,14 +4308,14 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     // Filter out empty text tokens that might remain after processing
                     const filteredPTokens = pTokens.filter(t => t.type !== 'text' || (t as TokenWithText).text.trim() !== '');
                     if (filteredPTokens.length === 0) return null; // Don't render empty paragraphs
-                    return <p key={index}>{renderTokens(filteredPTokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</p>;
+                    return <p key={sk}>{renderTokens(filteredPTokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</p>;
 
                 case 'list':
                     // Render list, processing items recursively
                     const listToken = token as Tokens.List;
                     const ListTag = listToken.ordered ? 'ol' : 'ul';
                     return (
-                        <ListTag key={index} start={listToken.ordered ? (listToken.start || 1) : undefined}>
+                        <ListTag key={sk} start={listToken.ordered ? (listToken.start || 1) : undefined}>
                             {listToken.items.map((item, itemIndex) => (
                                 // Render list items using the 'list_item' case below
                                 <React.Fragment key={itemIndex}>
@@ -4257,12 +4333,12 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     // Handle task list items
                     if (listItemToken.task) {
                         return (
-                            <li key={index} style={{ listStyle: 'none' }}>
+                            <li key={sk} style={{ listStyle: 'none' }}>
                                 <input
                                     type="checkbox"
                                     checked={listItemToken.checked}
-                                    id={`task-checkbox-${index}-${Math.random().toString(36).substring(2, 9)}`}
-                                    name={`task-checkbox-${index}`}
+                                    id={`task-checkbox-${sk}-${Math.random().toString(36).substring(2, 9)}`}
+                                    name={`task-checkbox-${sk}`}
                                     readOnly
                                     style={{ marginRight: '0.5em', verticalAlign: 'middle' }}
                                 />
@@ -4271,12 +4347,12 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         );
                     }
                     // Regular list item
-                    return <li key={index}>{itemContent}</li>;
+                    return <li key={sk}>{itemContent}</li>;
 
                 case 'table':
                     const tableToken = token as Tokens.Table;
                     return (
-                        <table key={index} style={{ borderCollapse: 'collapse', width: '100%', marginBottom: '1em' }}>
+                        <table key={sk} style={{ borderCollapse: 'collapse', width: '100%', marginBottom: '1em' }}>
                             <thead>
                                 <tr>
                                     {tableToken.header.map((cell, cellIndex) => (
@@ -4327,7 +4403,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         const verificationError = errorMatch ? errorMatch[1] : undefined;
                         if (toolName === 'mcp_sequentialthinking' || toolName.includes('thinking')) {
                             return (
-                                <ThinkingBlock key={index} isDarkMode={isDarkMode} isStreaming={isStreaming}>
+                                <ThinkingBlock key={sk} isDarkMode={isDarkMode} isStreaming={isStreaming}>
                                     {toolContent}
                                 </ThinkingBlock>
                             );
@@ -4336,7 +4412,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         // Regular tool blocks
                         return (
                             <ToolBlock
-                                key={index}
+                                key={sk}
                                 toolName={`${toolName}|${displayHeader}`}
                                 content={toolContent}
                                 isDarkMode={isDarkMode}
@@ -4355,7 +4431,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             const content = match[1];
                             console.log('🤔 Extracted thinking content:', content.substring(0, 50) + '...');
                             console.log('🤔 Returning ThinkingBlock component');
-                            return <ThinkingBlock key={index} isDarkMode={isDarkMode} isStreaming={isStreaming}>{content}</ThinkingBlock>;
+                            return <ThinkingBlock key={sk} isDarkMode={isDarkMode} isStreaming={isStreaming}>{content}</ThinkingBlock>;
                         }
                     }
 
@@ -4394,7 +4470,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     if (htmlContent.includes('⟨MATH_INLINE:')) {
                         const parts = htmlContent.split(/(⟨MATH_INLINE:[\s\S]*?⟩)/);
                         return (
-                            <React.Fragment key={index}>
+                            <React.Fragment key={sk}>
                                 {parts.map((part, i) => {
                                     if (part.startsWith('⟨MATH_INLINE:')) {
                                         const math = part.slice('⟨MATH_INLINE:'.length, -1).trim();
@@ -4412,10 +4488,9 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             const mathWithNamespace = htmlContent.includes('xmlns=')
                                 ? htmlContent
                                 : htmlContent.replace('<math', '<math xmlns="http://www.w3.org/1998/Math/MathML"');
-                            return <span key={index} dangerouslySetInnerHTML={{ __html: mathWithNamespace }} />;
+                            return <span key={sk} dangerouslySetInnerHTML={{ __html: mathWithNamespace }} />;
                         } catch (error) {
-                            console.error('MathML rendering error:', error);
-                            return <span key={index}>{htmlContent}</span>;
+                            return <span key={sk}>{htmlContent}</span>;
                         }
                     }
 
@@ -4424,31 +4499,45 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     const isThrottlingMessage = htmlContent.includes('throttle-retry-button') ||
                         (htmlContent.includes('Rate Limit') && htmlContent.includes('<button'));
                     const isAuthRetryMessage = htmlContent.includes('auth-error-retry-button');
+
                     if (isAuthRetryMessage) {
-                        return <div key={index} dangerouslySetInnerHTML={{ __html: sanitizeInlineHtml(htmlContent) }} />;
+                        return <div key={sk} dangerouslySetInnerHTML={{ __html: sanitizeInlineHtml(htmlContent) }} />;
                     }
                     if (isThrottlingMessage) {
-                        return <div key={index} dangerouslySetInnerHTML={{ __html: sanitizeInlineHtml(htmlContent) }} />;
+                        return <div key={sk} dangerouslySetInnerHTML={{ __html: sanitizeInlineHtml(htmlContent) }} />;
                     }
-
                     // Check if this is a wrapped MathML block
                     if (htmlContent.includes('class="mathml-block"')) {
-                        return <div key={index} dangerouslySetInnerHTML={{ __html: sanitizeInlineHtml(htmlContent) }} />;
+                        return <div key={sk} dangerouslySetInnerHTML={{ __html: sanitizeInlineHtml(htmlContent) }} />;
+                    }
+
+                    // Base64-encoded display math — protects \\, &, etc. from
+                    // markdown escape processing (see extraction step in lexedTokens)
+                    if (htmlContent.includes('math-display-encoded')) {
+                        const encodedMatch = htmlContent.match(/data-math="([^"]*)"/);
+                        if (encodedMatch) {
+                            try {
+                                const math = decodeURIComponent(escape(atob(encodedMatch[1])));
+                                return <MathRenderer key={sk} math={math} displayMode={true} />;
+                            } catch (e) {
+                                console.warn('Failed to decode display math:', e);
+                            }
+                        }
                     }
 
                     // Check for KATEX/LATEX math expressions
                     if (htmlContent.includes('MATH_DISPLAY:')) {
                         const mathMatch = htmlContent.match(/MATH_DISPLAY:([^<]*)/s);
-                        if (mathMatch) return <MathRenderer key={index} math={mathMatch[1]} displayMode={true} />;
+                        if (mathMatch) return <MathRenderer key={sk} math={mathMatch[1]} displayMode={true} />;
                     }
                     if (htmlContent.includes('MATH_INLINE:')) {
                         const mathMatch = htmlContent.match(/MATH_INLINE:([^<]*)/s);
-                        if (mathMatch) return <MathRenderer key={index} math={mathMatch[1]} displayMode={false} />;
+                        if (mathMatch) return <MathRenderer key={sk} math={mathMatch[1]} displayMode={false} />;
                     }
 
                     if (htmlContent.includes('class="math-inline-span"') && htmlContent.includes('MATH_INLINE:')) {
                         const mathMatch = htmlContent.match(/MATH_INLINE:([^<]*)/);
-                        if (mathMatch) return <MathRenderer key={index} math={mathMatch[1]} displayMode={false} />;
+                        if (mathMatch) return <MathRenderer key={sk} math={mathMatch[1]} displayMode={false} />;
                     }
 
                     const tagMatches = htmlContent.match(/<\/?([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/g);
@@ -4461,15 +4550,15 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                         if (hasUnknownTags) {
                             // If there are unknown tags, render as literal text
-                            return <span key={index}>{htmlContent}</span>;
+                            return <span key={sk}>{htmlContent}</span>;
                         }
 
                         // All tags are known safe HTML tags - render as HTML
-                        return <div key={index} dangerouslySetInnerHTML={{ __html: sanitizeInlineHtml(htmlContent) }} />;
+                        return <div key={sk} dangerouslySetInnerHTML={{ __html: sanitizeInlineHtml(htmlContent) }} />;
                     }
 
                     // Render as text content to avoid HTML parsing issues with angle brackets
-                    return <div key={index}>{decodeHtmlEntities(htmlContent)}</div>;
+                    return <div key={sk}>{decodeHtmlEntities(htmlContent)}</div>;
 
                 case 'text':
                     if (!hasText(tokenWithText)) return null;
@@ -4492,14 +4581,14 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                         // Render as ThinkingBlock or ToolBlock
                         return toolName === 'mcp_sequentialthinking' || toolName.includes('thinking') ?
-                            <ThinkingBlock key={index} isDarkMode={isDarkMode} isStreaming={isStreaming}>{toolContent}</ThinkingBlock> :
-                            <ToolBlock key={index} toolName={`${toolName}|${displayHeader}`} content={toolContent} isDarkMode={isDarkMode} />;
+                            <ThinkingBlock key={sk} isDarkMode={isDarkMode} isStreaming={isStreaming}>{toolContent}</ThinkingBlock> :
+                            <ToolBlock key={sk} toolName={`${toolName}|${displayHeader}`} content={toolContent} isDarkMode={isDarkMode} />;
                     }
 
                     // Handle thinking block tokens
                     if (decodedText.startsWith('THINKING_MARKER')) {
                         const thinkingContent = thinkingContentRef?.current || '';
-                        return <ThinkingBlock key={index} isDarkMode={isDarkMode} isStreaming={isStreaming}>{thinkingContent}</ThinkingBlock>;
+                        return <ThinkingBlock key={sk} isDarkMode={isDarkMode} isStreaming={isStreaming}>{thinkingContent}</ThinkingBlock>;
                     }
 
                     // Handle math expressions in text tokens
@@ -4529,22 +4618,22 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                 // --- Handle Inline Markdown Elements (Recursively) ---
                 case 'strong':
-                    return <strong key={index}>{renderTokens((token as Tokens.Strong).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</strong>;
+                    return <strong key={sk}>{renderTokens((token as Tokens.Strong).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</strong>;
                 case 'em':
-                    return <em key={index}>{renderTokens((token as Tokens.Em).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</em>;
+                    return <em key={sk}>{renderTokens((token as Tokens.Em).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</em>;
                 case 'codespan':
                     if (!hasText(tokenWithText)) return null;
                     const decodedCode = decodeHtmlEntities(tokenWithText.text);
                     // Use text content instead of dangerouslySetInnerHTML to prevent HTML parsing issues
-                    return <code key={index}>{decodedCode}</code>;
+                    return <code key={sk}>{decodedCode}</code>;
                 case 'br':
-                    return <br key={index} />;
+                    return <br key={sk} />;
                 case 'del':
-                    return <del key={index}>{renderTokens((token as Tokens.Del).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</del>;
+                    return <del key={sk}>{renderTokens((token as Tokens.Del).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</del>;
 
                 case 'link':
                     const linkToken = token as Tokens.Link;
-                    return <a key={index} href={linkToken.href} title={linkToken.title ?? undefined}>{renderTokens(linkToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</a>;
+                    return <a key={sk} href={linkToken.href} title={linkToken.title ?? undefined}>{renderTokens(linkToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</a>;
 
                 case 'escape':
                     if (!hasText(tokenWithText)) return null;
@@ -4557,20 +4646,20 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     // Skip rendering if href is empty or contains template literals
                     if (!imageHref || imageHref.includes('{') || imageHref.includes('}')) {
                         console.warn('Invalid image URL detected:', imageHref);
-                        return <span key={index}>[Invalid image: {imageToken.text || 'No description'}]</span>;
+                        return <span key={sk}>[Invalid image: {imageToken.text || 'No description'}]</span>;
                     }
                     // Only render valid image URLs
-                    return <img key={index} src={imageHref} alt={imageToken.text || ''} title={imageToken.title ?? undefined} />;
+                    return <img key={sk} src={imageHref} alt={imageToken.text || ''} title={imageToken.title ?? undefined} />;
 
                 // --- Other Block Types ---
                 case 'heading':
                     const headingToken = token as Tokens.Heading;
                     const Tag = `h${headingToken.depth}` as keyof JSX.IntrinsicElements;
-                    return <Tag key={index}>{renderTokens(headingToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</Tag>;
+                    return <Tag key={sk}>{renderTokens(headingToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</Tag>;
                 case 'hr':
-                    return <hr key={index} />;
+                    return <hr key={sk} />;
                 case 'blockquote':
-                    return <blockquote key={index}>{renderTokens((token as Tokens.Blockquote).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</blockquote>;
+                    return <blockquote key={sk}>{renderTokens((token as Tokens.Blockquote).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</blockquote>;
                 case 'space': // Usually ignored
                     return null;
 
@@ -4579,12 +4668,12 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 default:
                     console.warn("Unhandled token type in renderTokens switch:", token.type, token);
                     // Attempt to render raw text if available
-                    return hasText(tokenWithText) ? <span key={index}>{decodeHtmlEntities(tokenWithText.text || '')}</span> : null;
+                    return hasText(tokenWithText) ? <span key={sk}>{decodeHtmlEntities(tokenWithText.text || '')}</span> : null;
             }
         } catch (error) {
             console.error(`Error rendering token index ${index} (type: ${token.type}):`, error);
             // Fallback for errors during rendering a specific token
-            return <div key={index} style={{ color: 'red' }}>[Error rendering content]</div>;
+            return <div key={sk} style={{ color: 'red' }}>[Error rendering content]</div>;
         }
     });
 };
@@ -4866,7 +4955,7 @@ const normalizeIndentedDiffs = (content: string): string => {
 };
 
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply, isStreaming: externalStreaming = false, forceRender = false, isSubRender = false, onOpenShellConfig }) => {
-    const { isStreaming } = useChatContext();
+    const { isStreaming } = useStreamingContext();
     const { isDarkMode } = useTheme();
     const containerRef = useRef<HTMLDivElement>(null);
 
@@ -5024,6 +5113,111 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             // Also fix after paragraphs or text that directly precedes code fences
             processedMarkdown = processedMarkdown.replace(/([^\n])\n(\`\`\`[a-zA-Z0-9_-]*)/g, '$1\n\n$2');
 
+            // Fix 4: Strip bare code fences that wrap markdown prose instead of code.
+            // Models sometimes output bare fences (no language tag) as visual separators
+            // between sections. The marked tokenizer pairs consecutive bare fences as
+            // open/close, causing alternating sections to be parsed as code blocks
+            // instead of rendered markdown. This walks the lines, detects fence pairs
+            // whose content looks like prose (bold, lists, headings) rather than code,
+            // and strips the fences so the content renders normally.
+            {
+                const fenceLines = processedMarkdown.split('\n');
+                const fenceOutput: string[] = [];
+                let fi = 0;
+                // Track language-tagged fence blocks so their closing bare
+                // ``` isn't mistakenly stripped as a prose-wrapping fence.
+                let insideLangFence = false;
+                let langFenceLen = 0;
+
+                while (fi < fenceLines.length) {
+                    const fLine = fenceLines[fi];
+                    const bareFenceMatch = fLine.match(/^(`{3,})\s*$/);
+
+                    // Detect opening of a language-tagged fence (e.g. ```diff, ```python)
+                    if (!insideLangFence) {
+                        const langFenceMatch = fLine.match(/^(`{3,})\S/);
+                        if (langFenceMatch) {
+                            insideLangFence = true;
+                            langFenceLen = langFenceMatch[1].length;
+                            fenceOutput.push(fLine);
+                            fi++;
+                            continue;
+                        }
+                    }
+
+                    if (bareFenceMatch && insideLangFence && bareFenceMatch[1].length >= langFenceLen) {
+                        // This bare fence closes a language-tagged block — pass through
+                        insideLangFence = false;
+                        langFenceLen = 0;
+                        fenceOutput.push(fLine);
+                        fi++;
+                        continue;
+                    }
+
+                    if (bareFenceMatch && !insideLangFence) {
+                        const fLen = bareFenceMatch[1].length;
+                        let closeIdx = -1;
+                        for (let fj = fi + 1; fj < fenceLines.length; fj++) {
+                            const closeMatch = fenceLines[fj].match(/^(`{3,})\s*$/);
+                            if (closeMatch && closeMatch[1].length >= fLen) {
+                                closeIdx = fj;
+                                break;
+                            }
+                        }
+
+                        if (closeIdx !== -1) {
+                            const innerLines = fenceLines.slice(fi + 1, closeIdx);
+                            const innerContent = innerLines.join('\n').trim();
+
+                            if (!innerContent) {
+                                fi = closeIdx + 1;
+                                continue;
+                            }
+
+                            const looksLikeMarkdown = /\*\*|^#{1,6}\s|^\d+\.|^[-*]\s|^>\s/m.test(innerContent);
+                            const looksLikeCode = innerContent.split('\n').some(l => {
+                                const t = l.trimStart();
+                                return (
+                                    t.startsWith('import ') || t.startsWith('from ') ||
+                                    t.startsWith('def ') || t.startsWith('class ') ||
+                                    t.startsWith('function ') || t.startsWith('const ') ||
+                                    t.startsWith('let ') || t.startsWith('var ') ||
+                                    t.startsWith('return ') || t.startsWith('if (') ||
+                                    t.startsWith('for ') || t.startsWith('while ') ||
+                                    /^[a-z_]+\s*[=(]/.test(t) || /^\s*[{}]\s*$/.test(t) ||
+                                    t.startsWith('diff --git') || t.startsWith('--- a/') ||
+                                    t.startsWith('+++ b/')
+                                );
+                            });
+
+                            if (looksLikeMarkdown && !looksLikeCode) {
+                                fenceOutput.push(...innerLines);
+                                fi = closeIdx + 1;
+                                continue;
+                            }
+                        } else {
+                            const remainingContent = fenceLines.slice(fi + 1).join('\n').trim();
+                            const remainingIsMarkdown = /\*\*|^#{1,6}\s|^\d+\.|^[-*]\s/m.test(remainingContent);
+                            const remainingIsCode = fenceLines.slice(fi + 1).some(l => {
+                                const t = l.trimStart();
+                                return t.startsWith('import ') || t.startsWith('def ') ||
+                                    t.startsWith('function ') || t.startsWith('const ');
+                            });
+
+                            if (remainingIsMarkdown && !remainingIsCode) {
+                                fi++;
+                                continue;
+                            }
+                        }
+                    }
+
+                    fenceOutput.push(fLine);
+                    fi++;
+                }
+
+                processedMarkdown = fenceOutput.join('\n');
+            }
+
             // Don't process empty or whitespace-only markdown during streaming
             if (isStreamingState && (!processedMarkdown || processedMarkdown.trim() === '')) {
                 return previousTokensRef.current.length > 0 ? previousTokensRef.current : [];
@@ -5082,12 +5276,15 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             // contains backticks because non-greedy *? matches the FIRST ``` even if inside content.
             // Per CommonMark spec, a closing fence must be at line start with >= opening fence length.
 
-            // Extract display math ($$...$$) before fence processing
-            processedMarkdown = processedMarkdown.replace(/\$\$([\s\S]*?)\$\$/g, (match, content) => {
-                const placeholder = `__MATH_DISPLAY_${mathCounter}__`;
-                mathBlocks.push({ placeholder, content: match });
-                mathCounter++;
-                return placeholder;
+            // Extract display math ($...$) before fence processing.
+            // Base64-encode the content so that markdown escape processing
+            // cannot corrupt LaTeX characters like \\ (row separators in
+            // matrices/aligned environments) or & (column separators).
+            // The encoded content is stored in a data attribute and decoded
+            // in the 'html' token handler below.
+            processedMarkdown = processedMarkdown.replace(/\$\$([\s\S]*?)\$\$/g, (_match, innerContent) => {
+                const encoded = btoa(unescape(encodeURIComponent(innerContent.trim())));
+                return `\n\n<div class="math-display-encoded" data-math="${encoded}"></div>\n\n`;
             });
 
             // Extract inline math ($...$) before fence processing
@@ -5273,7 +5470,10 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
             // Pass 1: Mid-message — short orphaned content between consecutive fences
             processedMarkdown = processedMarkdown.replace(
-                /```([ \t]*\n)((?:[^\n]{0,80}\n){1,5})(```[a-zA-Z])/g,
+                // (?<!`) lookbehind prevents matching ``` inside longer fences
+                // like ```` (4-backtick tool blocks). Without this, the regex
+                // splits ```` fences and incorrectly reabsorbs legitimate text.
+                /(?<!`)```([ \t]*\n)((?:[^\n]{0,80}\n){1,5})((?<!`)```[a-zA-Z])/g,
                 (_match, _nl, leaked, nextFence) => {
                     const trimmed = leaked.trim();
                     if (!trimmed || trimmed.length > 120) return _match;
@@ -5287,7 +5487,9 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
             // Pass 2: End-of-string — short orphaned content after last closing fence
             processedMarkdown = processedMarkdown.replace(
-                /```([ \t]*\n)((?:[^\n]{0,80}\n?){1,5})$/,
+                // (?<!`) lookbehind prevents matching ``` inside longer fences
+                // like ```` (4-backtick tool blocks).
+                /(?<!`)```([ \t]*\n)((?:[^\n]{0,80}\n?){1,5})$/,
                 (_match, newline, leaked) => {
                     const trimmed = leaked.trim();
                     if (!trimmed || trimmed.length > 120) {
@@ -5340,12 +5542,10 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     }, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender]); // Use forceRender to trigger re-renders
 
     // Attach event listeners to throttle retry buttons after render
-    const { currentConversationId, currentMessages, addMessageToConversation, streamedContentMap,
-        setStreamedContentMap, setIsStreaming, removeStreamingConversation, streamingConversations,
-        updateProcessingState, addStreamingConversation, throttlingRecoveryData,
-        setThrottlingRecoveryData } = useChatContext();
-    const { checkedKeys } = useFolderContext();
-    const { currentProject } = useProject();
+    const { currentConversationId, currentMessages,
+        addStreamingConversation, throttlingRecoveryData,
+        setThrottlingRecoveryData } = useActiveChat();
+    const { send } = useSendPayload();
 
     // Track attached handlers to prevent duplicates
     const attachedHandlersRef = useRef<Set<Element>>(new Set());
@@ -5416,14 +5616,11 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
                 // Start the retry
                 addStreamingConversation(conversationId);
-                await sendPayload(messagesForRetry, lastUserMessage.content, checkedKeys as string[], conversationId, undefined, undefined, streamedContentMap, setStreamedContentMap, setIsStreaming, removeStreamingConversation,
-                    addMessageToConversation,
-                    streamingConversations.has(conversationId),
-                    (state) => updateProcessingState(conversationId, state),
-                    undefined, // setReasoningContentMap
-                    undefined, // throttlingRecoveryDataRef
-                    currentProject
-                );
+                await send({
+                    messages: messagesForRetry,
+                    question: lastUserMessage.content,
+                    conversationId,
+                });
 
                 const next = new Map(throttlingRecoveryData);
                 next.delete(conversationId);
@@ -5442,10 +5639,8 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         };
 
         button.addEventListener('click', handleClick);
-    }, [currentMessages, throttlingRecoveryData, checkedKeys, streamedContentMap,
-        setStreamedContentMap, setIsStreaming, removeStreamingConversation,
-        addMessageToConversation, streamingConversations, updateProcessingState,
-        addStreamingConversation, setThrottlingRecoveryData, currentProject]);
+    }, [currentMessages, throttlingRecoveryData,
+        addStreamingConversation, setThrottlingRecoveryData, send]);
 
     // Attach handler to auth-error retry buttons
     const attachAuthRetryHandler = useCallback((button: HTMLButtonElement) => {
@@ -5477,7 +5672,6 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         allButtons.forEach(button => {
             if (!(button as HTMLButtonElement).dataset.handlerAttached) {
                 attachThrottleRetryHandler(button as HTMLButtonElement);
-                attachedHandlersRef.current.add(button);
             }
         });
 
@@ -5486,9 +5680,17 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         authButtons.forEach(button => {
             if (!(button as HTMLButtonElement).dataset.handlerAttached) {
                 attachAuthRetryHandler(button as HTMLButtonElement);
-                attachedHandlersRef.current.add(button);
             }
         });
+
+        // Prune stale DOM references that are no longer in the document.
+        // Elements removed from the DOM stay in the Set and prevent GC
+        // of their closures and associated DOM trees.
+        for (const el of attachedHandlersRef.current) {
+            if (!document.body.contains(el)) {
+                attachedHandlersRef.current.delete(el);
+            }
+        }
 
         // Mark that we've done at least one scan
         hasScannedInitiallyRef.current = true;
@@ -5496,6 +5698,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
     // Setup MutationObserver to watch for dynamically added throttle buttons
     useLayoutEffect(() => {
+        let observer: MutationObserver | null = null;
         // Listen for throttling error events to trigger immediate attachment
         const handleThrottlingError = (event: CustomEvent) => {
             console.log('🚨 THROTTLING_ERROR event received, scanning for buttons');
@@ -5543,7 +5746,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             }, 300);
         };
 
-        const observer = new MutationObserver((_mutations) => {
+        observer = new MutationObserver((_mutations) => {
             debouncedObserverCallback();
             /* Original per-mutation scanning removed — the debounced
                scanAndAttachHandlers above covers all cases without
@@ -5583,8 +5786,26 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             initialScanTimer = setTimeout(scanAndAttachHandlers, 200);
         }
 
+        // Disconnect observer when tab is hidden to reduce idle overhead.
+        // Reconnect on visibility change so we don't miss mutations while visible.
+        const handleVisibilityChange = () => {
+            if (document.hidden) {
+                observer?.disconnect();
+            } else if (containerRef.current && observer) {
+                observer.observe(containerRef.current as Node, {
+                    childList: true,
+                    subtree: true
+                });
+                // Scan once on return in case mutations happened while hidden
+                setTimeout(scanAndAttachHandlers, 100);
+            }
+        };
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+
         return () => {
-            observer.disconnect();
+            observer?.disconnect();
+            observer = null;
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
             if (observerTimer) clearTimeout(observerTimer);
             if (initialScanTimer !== undefined) clearTimeout(initialScanTimer);
             document.removeEventListener('throttlingError', handleThrottlingError as EventListener);
@@ -5623,7 +5844,7 @@ const cleanDiffContent = (content: string): string => {
         // Handle offset diff format lines
         // Pattern: optional leading spaces + optional +/- + [number + optional modifier] + space + content
         // Examples: [001 ], [002+], [003*], [004,+], +[005 ], -[006 ]
-        const offsetMatch = line.match(/^(\s*)([+-]?)?\[(\d+)([+*,\s]*)\]\s(.*)⟩/);
+        const offsetMatch = line.match(/^(\s*)([+-]?)?\[(\d+)([+*,\s]*)\]\s(.*)$/);
         if (offsetMatch) {
             const [_, leadingSpace, diffMarker, lineNum, modifier, content] = offsetMatch;
 
