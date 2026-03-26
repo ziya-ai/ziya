@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="Docs/social-preview.jpg" alt="Ziya">
+  <img src="Docs/social-preview.jpg" alt="Ziya AI Technical Workbench">
 </p>
-
-<h1 align="center">AI Technical Workbench</h1>
 
 <p align="center">
 Self-hosted AI workbench for code, architecture, and operations.<br>
