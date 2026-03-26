@@ -1,12 +1,8 @@
 import React from "react";
-import {useChatContext} from '../context/ChatContext';
-import {sendPayload} from "../apis/chatApi";
-import {Message} from "../utils/types";
-import {useFolderContext} from "../context/FolderContext";
-import {useProject} from "../context/ProjectContext";
+import {useActiveChat} from '../context/ActiveChatContext';
 import {Button, Tooltip, Space} from "antd";
-import { convertKeysToStrings } from '../utils/types';
 import {RedoOutlined, LoadingOutlined} from "@ant-design/icons";
+import {useSendPayload} from '../hooks/useSendPayload';
 
 interface RetrySectionProps {
     index: number;
@@ -16,53 +12,25 @@ export const RetrySection: React.FC<RetrySectionProps> = ({index}) => {
     const {
         currentMessages,
         currentConversationId,
-        addMessageToConversation,
-        setIsStreaming,
-	updateProcessingState,
-	removeStreamingConversation,
-	streamedContentMap,
-	setStreamedContentMap,
-	streamingConversations
-    } = useChatContext();
-    
-    const {checkedKeys} = useFolderContext();
-    const { currentProject } = useProject();
+        streamingConversations,
+        addStreamingConversation,
+        removeStreamingConversation,
+    } = useActiveChat();
+    const { send } = useSendPayload();
 
     const handleRetry = async () => {
         const lastHumanMessage = currentMessages[index];
-        setIsStreaming(true);
-	setStreamedContentMap(new Map());
+        addStreamingConversation(currentConversationId);
 
         try {
-            const result = await sendPayload(
-                currentMessages,
-                lastHumanMessage.content,
-                convertKeysToStrings(checkedKeys),
-                currentConversationId,
-                undefined,
-                undefined, // images
-                setStreamedContentMap,
-                setIsStreaming,
-                streamedContentMap,
-                removeStreamingConversation,
-                addMessageToConversation,
-                streamingConversations.has(currentConversationId),
-                (state) => updateProcessingState(currentConversationId, state),
-                undefined, // setReasoningContentMap
-                undefined, // throttlingRecoveryDataRef
-                currentProject
-            );
-            if (result) {
-                const newAIMessage: Message = {
-                    content: result,
-                    role: 'assistant'
-                };
-                addMessageToConversation(newAIMessage, currentConversationId);
-            }
+            await send({
+                messages: currentMessages,
+                question: lastHumanMessage.content,
+            });
         } catch (error) {
             console.error('Error retrying message:', error);
         } finally {
-            setIsStreaming(false);
+            removeStreamingConversation(currentConversationId);
         }
     };
 

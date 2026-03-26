@@ -8,7 +8,7 @@ import {
 } from '@ant-design/icons';
 import { useProject } from '../context/ProjectContext';
 import { useTheme } from '../context/ThemeContext';
-import { useChatContext } from '../context/ChatContext';
+import { useActiveChat } from '../context/ActiveChatContext';
 import { WritePolicy } from '../types/project';
 
 const { Panel } = Collapse;
@@ -27,7 +27,7 @@ interface ProjectManagerModalProps {
 
 const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onClose, initialSettingsId }) => {
     const { currentProject, projects, switchProject, updateProject, deleteProject, mergeProjects, refreshProjects } = useProject();
-    const { conversations, startNewChat } = useChatContext();
+    const { startNewChat } = useActiveChat();
     const { isDarkMode } = useTheme();
 
     const [editingId, setEditingId] = useState<string | null>(null);
@@ -86,10 +86,6 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
             loadPolicy();
         }
     }, [settingsId]);
-
-    const getConversationCount = (projectId: string): number => {
-        return conversations.filter(c => c.projectId === projectId && c.isActive !== false).length;
-    };
 
     const handleRename = async (projectId: string) => {
         if (!editValue.trim()) {
@@ -415,7 +411,7 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
     // Merge sub-view
     if (mergeSourceId) {
         const sourceProject = projects.find(p => p.id === mergeSourceId);
-        const sourceConvCount = getConversationCount(mergeSourceId);
+        const sourceConvCount = sourceProject?.conversationCount ?? 0;
         return (
             <Modal
                 title={`Merge "${sourceProject?.name}" into...`}
@@ -479,7 +475,7 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
                 <div>
                     {projects.map(project => {
                         const isActive = project.id === currentProject?.id;
-                        const convCount = getConversationCount(project.id);
+                        const convCount = project.conversationCount ?? 0;
                         const isEditing = editingId === project.id;
 
                         return (

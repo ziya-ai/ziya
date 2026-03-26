@@ -1,20 +1,19 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo, useTransition, useId, Suspense } from 'react';
-import { useChatContext, ProcessingState } from '../context/ChatContext';
-import { useFolderContext } from '../context/FolderContext';
-import { Space, Alert, Typography } from 'antd';
+import { useActiveChat } from '../context/ActiveChatContext';
+import { useConversationList } from '../context/ConversationListContext';
+import { useScrollContext } from '../context/ScrollContext';
+import type { ProcessingState } from '../context/ChatContext';
+import { Space, Alert, Typography, Button } from 'antd';
 import { v4 as uuidv4 } from 'uuid';
 import StopStreamButton from './StopStreamButton';
 import { RobotOutlined, LoadingOutlined } from '@ant-design/icons';
 import { useQuestionContext } from '../context/QuestionContext';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
-import type { ConversationFolder } from '../utils/types';
-import ReasoningDisplay from './ReasoningDisplay';
-import { useProject } from '../context/ProjectContext';
-import { sendPayload } from '../apis/chatApi';
+import { useSendPayload } from '../hooks/useSendPayload';
 import SwarmRecoveryPanel from './SwarmRecoveryPanel';
 import SwarmFlowGraph from './SwarmFlowGraph';
 import type { SwarmNode } from './SwarmFlowGraph';
-import { convertKeysToStrings } from '../utils/types';
+import ReasoningDisplay from './ReasoningDisplay';
 const MarkdownRenderer = React.lazy(() => import("./MarkdownRenderer"));
 
 export const StreamedContent: React.FC<{}> = () => {
@@ -30,29 +29,32 @@ export const StreamedContent: React.FC<{}> = () => {
     const [hasShownContent, setHasShownContent] = useState<boolean>(false);
     const lastScrollPositionRef = useRef<number>(0);
     const processedPreservedEvents = useRef<Set<string>>(new Set());
+    const [showPreservedContinue, setShowPreservedContinue] = useState(false);
     const {
         streamedContentMap,
+        currentConversationId,
+        setStreamedContentMap,
+        removeStreamingConversation,
         addMessageToConversation,
         addStreamingConversation,
+        streamingConversations,
         isStreaming,
         setIsStreaming,
-        currentConversationId,
-        streamingConversations,
+        updateProcessingState,
         currentMessages,
+    } = useActiveChat();
+    const {
+        folders,
+        conversations,
+    } = useConversationList();
+    const {
         userHasScrolled,
         isTopToBottom,
         setUserHasScrolled,
-        removeStreamingConversation,
-        setStreamedContentMap,
-        setReasoningContentMap,
-        getProcessingState,
-        updateProcessingState,
-        folders,
-        conversations
-    } = useChatContext();
+    } = useScrollContext();
 
-    const { checkedKeys } = useFolderContext();
-    const { activeSkillPrompts, currentProject } = useProject();
+    const { getProcessingState, setReasoningContentMap } = useActiveChat();
+    const { send } = useSendPayload();
 
     // Get the latest streamed content directly without memoization to avoid stale content
     const streamedContent = streamedContentMap.get(currentConversationId) ?? '';
@@ -120,7 +122,6 @@ export const StreamedContent: React.FC<{}> = () => {
                 crystalCount,
                 runningCount,
                 status: tp.status,
-                folderId: folder.id,
             };
         }
         return null;
@@ -228,6 +229,7 @@ export const StreamedContent: React.FC<{}> = () => {
     useEffect(() => {
         const isWaitingForResponse = streamingConversations.has(currentConversationId);
         setIsPendingResponse(isWaitingForResponse);
+        if (isWaitingForResponse) setShowPreservedContinue(false);
 
         // If we're waiting for a response, ensure isStreaming is true for this conversation
         if (isWaitingForResponse && !isStreaming) {
@@ -242,6 +244,7 @@ export const StreamedContent: React.FC<{}> = () => {
             currentConversationRef.current = currentConversationId;
             // Reset the content shown flag when switching conversations
             setHasShownContent(false);
+            setShowPreservedContinue(false);
         }
     }, [currentConversationId]);
 
@@ -267,7 +270,7 @@ export const StreamedContent: React.FC<{}> = () => {
     const stopStreaming = useCallback(() => {
         if (streamingConversations.has(currentConversationId)) {
             // Capture content before any cleanup that might clear the map
-            const contentToPreserve = streamedContentMap.get(currentConversationId) || '';
+            const contentToPreserve = streamedContentMapRef.current.get(currentConversationId) || '';
             console.log('StreamedContent: Stopping streaming for conversation:', currentConversationId, 'Current streaming conversations:', Array.from(streamingConversations));
 
             // 1. Dispatch custom event to abort the stream (for the fetch request)
@@ -313,6 +316,30 @@ export const StreamedContent: React.FC<{}> = () => {
             }
         }
     }, [currentConversationId, removeStreamingConversation, setIsStreaming, streamingConversations, addMessageToConversation]);
+
+    // "Continue Response" handler for preserved-content error recovery.
+    // Top-level useCallback avoids the stale-closure problem that the
+    // previous in-effect definition had; conversationsRef ensures we
+    // always read current message history at invocation time.
+    const handlePreservedContinue = useCallback(async () => {
+        if (isRetrying) return;
+        setIsRetrying(true);
+        setShowPreservedContinue(false);
+        try {
+            const messages = conversationsRef.current
+                .find(c => c.id === currentConversationId)?.messages || [];
+            addStreamingConversation(currentConversationId);
+            await send({
+                messages,
+                question: "Please continue your previous response.",
+                includeReasoning: true,
+            });
+        } catch (error) {
+            console.error('Continue failed:', error);
+        } finally {
+            setIsRetrying(false);
+        }
+    }, [currentConversationId, isRetrying, addStreamingConversation, send]);
 
     // Listen for streaming stopped events
     useEffect(() => {
@@ -463,7 +490,7 @@ export const StreamedContent: React.FC<{}> = () => {
     useEffect(() => {
         const handlePreservedContent = (event: CustomEvent) => {
             // Create a unique key for this event to prevent duplicates
-            const eventKey = `${event.detail.error_detail || 'unknown'}_${event.detail.conversation_id || 'unknown'}_${event.detail.preservation_timestamp || Date.now()}`;
+            const eventKey = `${event.detail.error_detail || 'unknown'}_${event.detail.conversation_id || 'unknown'}`;
             if (processedPreservedEvents.current.has(eventKey)) {
                 console.log('Skipping duplicate preserved content event:', eventKey);
                 return;
@@ -548,44 +575,8 @@ export const StreamedContent: React.FC<{}> = () => {
                         : '');
                 preservedContent += errorContext;
 
-                // Add retry button handler
-                const handleContinue = async () => {
-                    if (isRetrying) return;
-
-                    setIsRetrying(true);
-
-                    try {
-                        // Get current conversation messages
-                        const messages = conversations.find(c => c.id === currentConversationId)?.messages || [];
-
-                        // Send a continuation prompt
-                        await sendPayload(
-                            messages,
-                            "Please continue your previous response.",
-                            convertKeysToStrings(checkedKeys),
-                            currentConversationId,
-                            activeSkillPrompts || undefined,
-                            undefined, // images
-                            streamedContentMap,
-                            setStreamedContentMap,
-                            setIsStreaming,
-                            removeStreamingConversation,
-                            addMessageToConversation,
-                            streamingConversations.has(currentConversationId),
-                            (state) => updateProcessingState(currentConversationId, state),
-                            setReasoningContentMap,
-                            undefined, // throttlingRecoveryDataRef
-                            currentProject
-                        );
-                    } catch (error) {
-                        console.error('Continue failed:', error);
-                    } finally {
-                        setIsRetrying(false);
-                    }
-                };
-
-                // Add retry button HTML to preserved content
-                preservedContent += '\n\n<div style="margin-top: 16px;"><button class="continue-button" data-continue-handler="true">↗️ Continue Response</button></div>';
+                // Signal React to render a proper continue button component
+                setShowPreservedContinue(true);
 
                 console.log('Creating preserved message with content length:', preservedContent.length);
                 console.log('First 200 chars:', preservedContent.substring(0, 200));
@@ -608,25 +599,6 @@ export const StreamedContent: React.FC<{}> = () => {
 
                 addMessageToConversation(preservedMessage, currentConversationId);
                 console.log('Added preserved message with successful tool results');
-
-                // Attach click handler to the continue button after React renders it
-                setTimeout(() => {
-                    const continueButton = document.querySelector('[data-continue-handler="true"]') as HTMLButtonElement;
-                    if (continueButton && !continueButton.dataset.handlerAttached) {
-                        continueButton.dataset.handlerAttached = 'true';
-                        continueButton.addEventListener('click', handleContinue);
-
-                        // Style the button
-                        continueButton.style.padding = '6px 15px';
-                        continueButton.style.fontSize = '14px';
-                        continueButton.style.fontWeight = '500';
-                        continueButton.style.borderRadius = '6px';
-                        continueButton.style.border = '1px solid #1890ff';
-                        continueButton.style.backgroundColor = '#f0f8ff';
-                        continueButton.style.color = '#1890ff';
-                        continueButton.style.cursor = 'pointer';
-                    }
-                }, 100);
 
                 // Now remove the streaming conversation since we've preserved the content
                 removeStreamingConversation(currentConversationId);
@@ -664,24 +636,12 @@ export const StreamedContent: React.FC<{}> = () => {
                 // Mark the conversation as streaming so the UI reflects the retry
                 addStreamingConversation(retryConversationId);
 
-                await sendPayload(
-                    messagesToSend,
-                    lastHumanMessage.content,
-                    convertKeysToStrings(checkedKeys),
-                    currentConversationId,
-                    activeSkillPrompts || undefined,
-                    undefined, // images - not re-sending images on retry
-                    streamedContentMap,
-                    setStreamedContentMap,
-                    setIsStreaming,
-                    removeStreamingConversation,
-                    addMessageToConversation,
-                    true,
-                    (state) => updateProcessingState(currentConversationId, state),
-                    setReasoningContentMap,
-                    undefined, // throttlingRecoveryDataRef
-                    currentProject
-                );
+                await send({
+                    messages: messagesToSend,
+                    question: lastHumanMessage.content,
+                    isStreamingToCurrentConversation: true,
+                    includeReasoning: true,
+                });
             } catch (error) {
                 console.error('Retry after auth error failed:', error);
             }
@@ -696,16 +656,10 @@ export const StreamedContent: React.FC<{}> = () => {
     }, [
         currentConversationId,
         addMessageToConversation,
+        removeStreamingConversation,
         addStreamingConversation,
         currentMessages,
-        checkedKeys,
-        activeSkillPrompts,
-        setStreamedContentMap,
-        setIsStreaming,
-        removeStreamingConversation,
-        updateProcessingState,
-        setReasoningContentMap,
-        currentProject
+        send,
     ]);
 
     // Reset error when new content starts streaming
@@ -733,7 +687,7 @@ export const StreamedContent: React.FC<{}> = () => {
         return () => {
             window.removeEventListener('error', handleStreamError);
         };
-    }, [isTopToBottom, isStreaming, streamingConversations, currentConversationId]);
+    }, [isTopToBottom, isStreaming, streamingConversations, currentConversationId, removeStreamingConversation, setIsStreaming]);
 
     // Update loading state based on streaming status
     useEffect(() => {
@@ -827,6 +781,21 @@ export const StreamedContent: React.FC<{}> = () => {
                 ) && (
                     <LoadingIndicator />
                 )}
+            {/* Continue button after preserved-content error recovery.
+                Rendered as a proper React component instead of imperative DOM
+                manipulation so onClick is never stale and cleanup is automatic. */}
+            {showPreservedContinue && !streamingConversations.has(currentConversationId) && (
+                <div style={{ margin: '12px 20px', textAlign: 'center' }}>
+                    <Button
+                        onClick={handlePreservedContinue}
+                        loading={isRetrying}
+                        type="default"
+                        style={{ borderColor: '#1890ff', backgroundColor: '#f0f8ff', color: '#1890ff' }}
+                    >
+                        ↗️ Continue Response
+                    </Button>
+                </div>
+            )}
             {/* Active swarm indicator — shown when this conversation spawned delegates */}
             {activeSwarmInfo && (
                 <><SwarmFlowGraph

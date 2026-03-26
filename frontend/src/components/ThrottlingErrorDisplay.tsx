@@ -2,9 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Alert, Button, Space, Typography, Progress } from 'antd';
 import { ReloadOutlined, ClockCircleOutlined } from '@ant-design/icons';
 import { useTheme } from '../context/ThemeContext';
-import { sendPayload } from '../apis/chatApi';
-import { useChatContext } from '../context/ChatContext';
-import { useProject } from '../context/ProjectContext';
+import { useSendPayload } from '../hooks/useSendPayload';
 
 const { Text, Paragraph } = Typography;
 
@@ -40,17 +38,7 @@ export const ThrottlingErrorDisplay: React.FC<ThrottlingErrorDisplayProps> = ({
   const [countdown, setCountdown] = useState(60);
   const [isRetrying, setIsRetrying] = useState(false);
   const [isWaitingForRetry, setIsWaitingForRetry] = useState(false);
-  
-  const {
-    streamedContentMap,
-    setStreamedContentMap,
-    setIsStreaming,
-    removeStreamingConversation,
-    addMessageToConversation,
-    updateProcessingState,
-    setReasoningContentMap
-  } = useChatContext();
-  const { currentProject } = useProject();
+  const { send } = useSendPayload();
 
   const suggestedWaitTime = parseInt(error.retry_after || '60');
   const throttleInfo = error.throttle_info;
@@ -78,34 +66,32 @@ export const ThrottlingErrorDisplay: React.FC<ThrottlingErrorDisplayProps> = ({
     try {
       const { messages, question, checkedItems, conversationId } = error.originalRequestData;
       
-      await sendPayload(
+      await send({
         messages,
         question,
         checkedItems,
         conversationId,
-        undefined,
-        undefined, // images
-        streamedContentMap,
-        setStreamedContentMap,
-        setIsStreaming,
-        removeStreamingConversation,
-        addMessageToConversation,
-        true, // isStreamingToCurrentConversation
-        (state) => updateProcessingState(conversationId, state),
-        setReasoningContentMap,
-        undefined, // throttlingRecoveryDataRef
-        currentProject
-      );
+        isStreamingToCurrentConversation: true,
+        includeReasoning: true,
+      });
     } catch (retryError) {
       console.error('Retry failed:', retryError);
     } finally {
       setIsRetrying(false);
     }
-  }, [error.originalRequestData, isRetrying, onDismiss, streamedContentMap, setStreamedContentMap, setIsStreaming, removeStreamingConversation, addMessageToConversation, updateProcessingState, setReasoningContentMap, currentProject]);
+  }, [error.originalRequestData, isRetrying, onDismiss, send]);
 
   const handleWaitAndRetry = useCallback(() => {
     setIsWaitingForRetry(true);
   }, []);
+
+  // Auto-retry when countdown reaches zero after user clicked "Wait Ns then retry"
+  useEffect(() => {
+    if (isWaitingForRetry && countdown === 0) {
+      setIsWaitingForRetry(false);
+      handleRetryNow();
+    }
+  }, [isWaitingForRetry, countdown, handleRetryNow]);
 
   return (
     <Alert

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Card, Typography, Button } from 'antd';
 import { EyeOutlined, EyeInvisibleOutlined } from '@ant-design/icons';
-import { useChatContext } from '../context/ChatContext';
+import { useActiveChat } from '../context/ActiveChatContext';
 
 const { Text } = Typography;
 
@@ -11,7 +11,7 @@ interface ReasoningDisplayProps {
 
 export const ReasoningDisplay: React.FC<ReasoningDisplayProps> = ({ conversationId }) => {
     const [isVisible, setIsVisible] = useState<boolean>(true);
-    const { reasoningContentMap } = useChatContext();
+    const { reasoningContentMap } = useActiveChat();
     
     const reasoningContent = reasoningContentMap.get(conversationId) || '';
 

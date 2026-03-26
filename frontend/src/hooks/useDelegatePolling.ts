@@ -144,9 +144,11 @@ export function useDelegatePolling(
 
         // Refresh source conversation only when a NEW crystal arrives
         // (not on every poll where crystals exist).
-        const anyNewCrystal = newlyCrystalConvIds.length > 0 || Object.values(data.delegates).some(
-          (info: any) => info.status === 'crystal'
-        ) && !prevStatuses._hadCrystals;
+        const anyNewCrystal = newlyCrystalConvIds.length > 0 || (
+          Object.values(data.delegates).some(
+            (info: any) => info.status === 'crystal'
+          ) && !prevStatuses._hadCrystals
+        );
         const sourceId = folder.taskPlan?.source_conversation_id;
         if (newlyCrystalConvIds.length > 0 && sourceId && pid) {
           try {

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Modal, Radio, Button, message, Space, Typography, Divider, Progress, Switch, Segmented, InputNumber, Select } from 'antd';
 import { CopyOutlined, DownloadOutlined, GithubOutlined, CloudOutlined, FileTextOutlined, LinkOutlined, PictureOutlined, CheckCircleOutlined, FilePdfOutlined, MessageOutlined, FilterOutlined, EyeOutlined } from '@ant-design/icons';
-import { useChatContext } from '../context/ChatContext';
+import { useActiveChat } from '../context/ActiveChatContext';
 import { useTheme } from '../context/ThemeContext';
 import { captureAllVisualizations } from '../utils/visualizationCapture';
 import { exportConversationAsPdf } from '../utils/pdfExport';
@@ -38,7 +38,7 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
             description: 'Public paste service with markdown support'
         }
     ]);
-    const { currentConversationId, currentMessages } = useChatContext();
+    const { currentConversationId, currentMessages } = useActiveChat();
     const { isDarkMode } = useTheme();
 
     useEffect(() => {

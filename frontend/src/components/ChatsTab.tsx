@@ -2,7 +2,8 @@
  * ChatsTab - Browse conversations with groups
  */
 import React, { useState, useEffect } from 'react';
-import { useChatContext } from '../context/ChatContext';
+import { useConversationList } from '../context/ConversationListContext';
+import { useActiveChat } from '../context/ActiveChatContext';
 import { useProject } from '../context/ProjectContext';
 import { Button, Input, Dropdown, Menu } from 'antd';
 import { DownOutlined, PlusOutlined, MoreOutlined } from '@ant-design/icons';
@@ -10,14 +11,16 @@ import { DownOutlined, PlusOutlined, MoreOutlined } from '@ant-design/icons';
 export const ChatsTab: React.FC = () => {
   const {
     conversations,
-    currentConversationId,
-    loadConversation,
-    startNewChat,
     folders,
     createFolder,
     deleteFolder,
     moveConversationToFolder,
-  } = useChatContext();
+  } = useConversationList();
+  const {
+    currentConversationId,
+    loadConversation,
+    startNewChat,
+  } = useActiveChat();
   
   const { contexts, skills, activeContextIds, activeSkillIds } = useProject();
   

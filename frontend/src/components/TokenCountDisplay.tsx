@@ -5,7 +5,8 @@ import { Tooltip, Spin, Progress, Typography, message, ProgressProps, Dropdown, 
 import { debounce } from "lodash";
 import { useTheme } from '../context/ThemeContext';
 import { ModelSettings } from './ModelConfigModal';
-import { useChatContext } from "../context/ChatContext";
+import { useActiveChat } from '../context/ActiveChatContext';
+import { useConversationList } from '../context/ConversationListContext';
 import { CheckCircleOutlined, CloseCircleOutlined, DashboardOutlined } from '@ant-design/icons';
 
 // Global request deduplication cache
@@ -56,11 +57,12 @@ const getTokenCount = async (text: string): Promise<number> => {
 
 export const TokenCountDisplay = memo(() => {
     const [containerWidth, setContainerWidth] = useState(0);
-
     const tokenCalculationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
     const { folders, checkedKeys, getFolderTokenCount, accurateTokenCounts } = useFolderContext();
-    const { currentMessages, currentConversationId, isStreaming, currentFolderId, folders: chatFolders, folderFileSelections } = useChatContext();
+    const { currentMessages, currentConversationId, isStreaming } = useActiveChat();
+    const { currentFolderId, folders: chatFolders, folderFileSelections } = useConversationList();
     const [totalTokenCount, setTotalTokenCount] = useState(0);
+
     const [chatTokenCount, setChatTokenCount] = useState(0);
     const [isLoading, setIsLoading] = useState(false);
     const { isDarkMode } = useTheme();

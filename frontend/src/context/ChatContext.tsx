@@ -1,5 +1,8 @@
 import React, { createContext, ReactNode, useContext, useState, useEffect, Dispatch, SetStateAction, useRef, useCallback, useMemo } from 'react';
 import { StreamingProvider } from './StreamingContext';
+import { ScrollProvider } from './ScrollContext';
+import { ConversationListProvider } from './ConversationListContext';
+import { ActiveChatProvider } from './ActiveChatContext';
 import { Conversation, Message, ConversationFolder } from "../utils/types";
 import { v4 as uuidv4 } from "uuid";
 import { db } from '../utils/db';
@@ -8,7 +11,6 @@ import { message } from 'antd';
 import { useTheme } from './ThemeContext';
 import { useConfig } from './ConfigContext';
 import { useProject } from './ProjectContext';
-import { useFolderContext } from './FolderContext';
 import { projectSync } from '../utils/projectSync';
 import { getTabState, setTabState } from '../utils/tabState';
 import * as syncApi from '../api/conversationSyncApi';
@@ -110,8 +112,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const { isEphemeralMode } = useConfig();
     const { currentProject } = useProject();
     const { isServerReachable } = useServerStatus();
-    const { checkedKeys: _checkedKeys } = useFolderContext();
-    const checkedKeysRef = useRef(_checkedKeys);
     const renderCount = useRef(0);
     const [isStreaming, setIsStreaming] = useState(false);
     const [streamedContentMap, setStreamedContentMap] = useState(() => new Map<string, string>());
@@ -183,6 +183,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const saveQueue = useRef<Promise<void>>(Promise.resolve());
     const otherProjectConvsCache = useRef<{convs: any[], timestamp: number}>({convs: [], timestamp: 0});  // BUGFIX: Cache other-project convos to avoid reading ALL from DB on every save
 
+    const KNOWN_SERVER_IDS_MAX = 5000; // Cap to prevent unbounded growth during idle polling
+
     const [lastResponseIncomplete, setLastResponseIncomplete] = useState<boolean>(false);
     const isRecovering = useRef<boolean>(false);
     const lastRecoveryAttempt = useRef<number>(0);
@@ -203,23 +205,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null);
     const lastManualScrollTime = useRef<number>(0);
     const manualScrollCooldownActive = useRef<boolean>(false);
-    const [messageUpdateCounter, setMessageUpdateCounter] = useState(0);
     const [throttlingRecoveryData, setThrottlingRecoveryData] = useState<Map<string, { toolResults?: any[]; partialContent?: string }>>(new Map());
 
     // CRITICAL: Track scroll state per conversation to prevent cross-conversation interference
 
-    // CRITICAL FIX: Preserve file selections per project across DB refreshes
-    const projectFileSelections = useRef<Map<string, Set<string>>>(new Map());
-    // Keep checkedKeys ref current without causing re-renders
-    useEffect(() => {
-        checkedKeysRef.current = _checkedKeys;
-    }, [_checkedKeys]);
-
-    useEffect(() => {
-        if (currentProject?.id) {
-            projectFileSelections.current.set(currentProject.id, new Set(checkedKeysRef.current));
-        }
-    }, [currentProject?.id]);
     const conversationScrollStates = useRef<Map<string, {
         userScrolledAway: boolean;
         lastManualScrollTime: number;
@@ -439,6 +428,14 @@ export function ChatProvider({ children }: ChatProviderProps) {
             return Promise.resolve();
         }
 
+        // GUARD: Never persist shell data — shells have only first+last messages
+        // and would destroy full conversation history if written to IndexedDB.
+        const hasShellData = conversations.some(c => (c as any)._isShell);
+        if (hasShellData && (!options.changedIds || options.changedIds.length === 0)) {
+            console.warn('📝 SHELL_GUARD: Blocking save — React state contains shell conversations (messages stripped). Waiting for full data to load.');
+            return Promise.resolve();
+        }
+
         // Skip saves during the first 5 seconds after init to let all data settle.
         // Shells → server sync → lazy-load → folders all trigger setConversations
         // in rapid succession; saving each intermediate state is wasted I/O.
@@ -485,13 +482,29 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             const changedIdSet = new Set(options.changedIds || []);
 
-            // Use cached other-project conversations when possible to avoid
-            // the 50-200ms full-DB read on every save.  The cache holds
-            // conversations from OTHER projects; we merge with this tab's
-            // in-memory state for the current project.
+            // Use cached other-project conversations when possible, BUT
+            // never substitute React state for IndexedDB when state contains
+            // shell conversations (messages stripped to first+last only).
+            // Writing shells back to IndexedDB would destroy full message data.
             const CACHE_TTL_MS = 60_000;
             let allDbConversations: Conversation[];
-            if (changedIdSet.size > 0 &&
+            const reactStateHasShells = validatedConversations.some(c => (c as any)._isShell);
+            if (reactStateHasShells) {
+                // CRITICAL: React state has shell data — must read full data from IndexedDB
+                console.debug('📝 SHELL_GUARD: Fast-path disabled — React state has shells, reading full data from IndexedDB');
+                allDbConversations = await db.getConversations();
+                const pid = currentProject?.id;
+                if (pid) {
+                    otherProjectConvsCache.current = {
+                        // Strip message bodies — only metadata is needed for merge logic.
+                        // Full messages were the #1 memory leak during idle polling.
+                        convs: allDbConversations
+                            .filter(c => c.projectId !== pid)
+                            .map(c => ({ ...c, messages: [] })),
+                        timestamp: Date.now()
+                    };
+                }
+            } else if (changedIdSet.size > 0 &&
                 otherProjectConvsCache.current.timestamp > 0 &&
                 Date.now() - otherProjectConvsCache.current.timestamp < CACHE_TTL_MS) {
                 allDbConversations = [...otherProjectConvsCache.current.convs, ...validatedConversations];
@@ -501,7 +514,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 const pid = currentProject?.id;
                 if (pid) {
                     otherProjectConvsCache.current = {
-                        convs: allDbConversations.filter(c => c.projectId !== pid),
+                        // Strip message bodies — only metadata is needed for merge logic.
+                        convs: allDbConversations
+                            .filter(c => c.projectId !== pid)
+                            .map(c => ({ ...c, messages: [] })),
                         timestamp: Date.now()
                     };
                 }
@@ -1419,7 +1435,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 setCurrentMessages(messages);
             }
         }
-    }, [conversations, currentConversationId, messageUpdateCounter]);
+    }, [conversations, currentConversationId, currentMessages]);
 
     // Enhanced initialization with corruption detection and recovery
     const initializeWithRecovery = useCallback(async () => {
@@ -1518,7 +1534,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     const fullConv = allFull.find(c => c.id === activeId);
                     if (fullConv && fullConv.messages.length > 0) {
                         setConversations(prev => prev.map(c =>
-                            c.id === activeId ? { ...c, messages: fullConv.messages } : c
+                            c.id === activeId ? { ...c, messages: fullConv.messages, _isShell: false, _fullMessageCount: undefined } : c
                         ));
                         console.log(`✅ Lazy-loaded ${fullConv.messages.length} messages for active conversation`);
                     }
@@ -1790,6 +1806,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         if (full) {
                             mergedMap.set(sc.id, {
                                 ...full,
+                                _isShell: false,
+                                _fullMessageCount: undefined,
                                 projectId: full.projectId || projectId,
                                 folderId: full.groupId || full.folderId || sc.groupId || sc.folderId || null,
                                 delegateMeta: full.delegateMeta || null,
@@ -1806,6 +1824,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         if (full) {
                             mergedMap.set(sc.id, {
                                 ...full,
+                                _isShell: false,
+                                _fullMessageCount: undefined,
                                 projectId: full.projectId || projectId,
                                 folderId: full.groupId || full.folderId || null,
                                 delegateMeta: full.delegateMeta || null,
@@ -1831,6 +1851,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
                 // Record all IDs the server currently knows about.
                 serverChats.forEach((sc: any) => knownServerConversationIds.current.add(sc.id));
+
+                // Prune to prevent unbounded growth during idle polling.
+                // Keep the most recent IDs (those the server just told us about)
+                // and drop the oldest accumulated entries.
+                if (knownServerConversationIds.current.size > KNOWN_SERVER_IDS_MAX) {
+                    const currentServerIds = new Set(serverChats.map((sc: any) => sc.id));
+                    knownServerConversationIds.current = currentServerIds;
+                    console.debug(`🧹 Pruned knownServerConversationIds: was > ${KNOWN_SERVER_IDS_MAX}, reset to ${currentServerIds.size}`);
+                }
 
                 // 3b. Detect locally-present conversations that the server no longer has.
                 // This means another instance deleted them — mark inactive locally.
@@ -2263,8 +2292,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
             return updated;
         });
 
-        // Don't force a full re-render via messageUpdateCounter
-        // The conversation state update will propagate through React's normal rendering
     }, [queueSave]);
 
     // New functions for session management integration
@@ -2493,20 +2520,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setDynamicTitleLength,
         setStreamedContentMap,
         setReasoningContentMap,
-        // Group conversation-specific state to reduce re-renders
-        currentConversationState: {
-            currentMessages,
-            editingMessageIndex,
-            isLoadingConversation,
-            isStreaming: streamingConversations.has(currentConversationId),
-            hasStreamedContent: streamedContentMap.has(currentConversationId),
-        },
-        // Group global state
-        globalState: {
-            conversations,
-            folders,
-            isStreamingAny,
-        },
         getProcessingState,
         updateProcessingState,
         isStreaming,
@@ -2669,6 +2682,67 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
     return (
         <chatContext.Provider value={value}>
+            <ScrollProvider
+                scrollToBottom={scrollToBottom}
+                userHasScrolled={userHasScrolled}
+                setUserHasScrolled={setUserHasScrolled}
+                recordManualScroll={recordManualScroll}
+                isTopToBottom={isTopToBottom}
+                setIsTopToBottom={setIsTopToBottom}
+            >
+            <ConversationListProvider
+                conversations={conversations}
+                setConversations={setConversations}
+                folders={folders}
+                setFolders={setFolders}
+                currentFolderId={currentFolderId}
+                setCurrentFolderId={setCurrentFolderId}
+                folderFileSelections={folderFileSelections}
+                setFolderFileSelections={setFolderFileSelections}
+                createFolder={createFolder}
+                updateFolder={updateFolder}
+                deleteFolder={deleteFolder}
+                moveConversationToFolder={moveConversationToFolder}
+                moveChatToGroup={moveChatToGroup}
+                toggleConversationGlobal={toggleConversationGlobal}
+                moveConversationToProject={moveConversationToProject}
+                moveFolderToProject={moveFolderToProject}
+                toggleFolderGlobal={toggleFolderGlobal}
+                dbError={dbError}
+                isProjectSwitching={isProjectSwitching}
+                isLoadingConversation={isLoadingConversation}
+            >
+            <ActiveChatProvider
+                currentConversationId={currentConversationId}
+                currentMessages={currentMessages}
+                currentDisplayMode={conversations.find(c => c.id === currentConversationId)?.displayMode ?? 'pretty'}
+                setCurrentConversationId={setCurrentConversationId}
+                addMessageToConversation={addMessageToConversation}
+                loadConversation={loadConversation}
+                loadConversationAndScrollToMessage={loadConversationAndScrollToMessage}
+                startNewChat={startNewChat}
+                editingMessageIndex={editingMessageIndex}
+                setEditingMessageIndex={setEditingMessageIndex}
+                isStreaming={isStreaming}
+                setIsStreaming={setIsStreaming}
+                streamingConversations={streamingConversations}
+                addStreamingConversation={addStreamingConversation}
+                removeStreamingConversation={removeStreamingConversation}
+                streamedContentMap={streamedContentMap}
+                setStreamedContentMap={setStreamedContentMap}
+                reasoningContentMap={reasoningContentMap}
+                setReasoningContentMap={setReasoningContentMap}
+                getProcessingState={getProcessingState}
+                updateProcessingState={updateProcessingState}
+                dynamicTitleLength={dynamicTitleLength}
+                setDynamicTitleLength={setDynamicTitleLength}
+                lastResponseIncomplete={lastResponseIncomplete}
+                setDisplayMode={setDisplayMode}
+                toggleMessageMute={toggleMessageMute}
+                setChatContexts={setChatContexts}
+                throttlingRecoveryData={throttlingRecoveryData}
+                setThrottlingRecoveryData={setThrottlingRecoveryData}
+            >
             <StreamingProvider
                 isStreaming={isStreaming}
                 isStreamingAny={isStreamingAny}
@@ -2677,6 +2751,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
             >
                 {children}
             </StreamingProvider>
+            </ActiveChatProvider>
+            </ConversationListProvider>
+            </ScrollProvider>
         </chatContext.Provider>
     );
 }

@@ -2,7 +2,6 @@ import React, { createContext, ReactNode, useContext, useCallback, useEffect, us
 import { Folders } from "../utils/types";
 import { message } from 'antd';
 import { convertToTreeData, insertIntoFolders, updateTokenInFolders, removeFromFolders } from "../utils/folderUtil";
-import { useChatContext } from "./ChatContext";
 import { TreeDataNode } from "antd";
 import { debounce } from "../utils/debounce";
 import { useConfig } from "./ConfigContext";

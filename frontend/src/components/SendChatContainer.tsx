@@ -2,10 +2,11 @@
  * SendChatContainer - Handles sending messages with context
  */
 import React, { useState, useRef, useCallback, useEffect, KeyboardEvent, useMemo } from 'react';
-import { useChatContext } from '../context/ChatContext';
+import { useActiveChat } from '../context/ActiveChatContext';
+import { useScrollContext } from '../context/ScrollContext';
 import { useProject } from '../context/ProjectContext';
 import { useFolderContext } from '../context/FolderContext';
-import { sendPayload } from '../apis/chatApi';
+import { useSendPayload } from '../hooks/useSendPayload';
 import { Button, message } from 'antd';
 import { SendOutlined, PictureOutlined } from '@ant-design/icons';
 import { ImageAttachment, Message } from '../utils/types';
@@ -49,13 +50,14 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     streamingConversations,
     updateProcessingState,
     addMessageToConversation,
-    setUserHasScrolled,
-  } = useChatContext();
+  } = useActiveChat();
   
+  const { setUserHasScrolled } = useScrollContext();
   const { checkedKeys } = useFolderContext();
   const { activeSkillPrompts, currentProject } = useProject();
   const { isServerReachable } = useServerStatus();
   const { isDarkMode } = useTheme();
+  const { send } = useSendPayload();
   
   const isCurrentlyStreaming = streamingConversations.has(currentConversationId);
   // isSubmitting is true only when the CURRENT conversation has a send in flight.
@@ -250,10 +252,36 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
           reader.readAsDataURL(file);
         });
         
-        const imageAttachment: ImageAttachment = {
+        // Resize large images before sending.  Claude processes images at
+        // max 1568px on the long edge; anything larger just inflates the
+        // payload and slows down the Bedrock call.
+        const resized = await new Promise<string>((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            const MAX_EDGE = 1568;
+            if (img.width <= MAX_EDGE && img.height <= MAX_EDGE) {
+              resolve(base64);
+              return;
+            }
+            const scale = MAX_EDGE / Math.max(img.width, img.height);
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.round(img.width * scale);
+            canvas.height = Math.round(img.height * scale);
+            const ctx = canvas.getContext('2d')!;
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            // Use same media type; fall back to PNG for non-lossy formats
+            const outputType = file.type === 'image/jpeg' ? 'image/jpeg' : 'image/png';
+            const quality = file.type === 'image/jpeg' ? 0.85 : undefined;
+            resolve(canvas.toDataURL(outputType, quality));
+          };
+          img.onerror = () => resolve(base64); // on error, send original
+          img.src = base64;
+        });
+
+         const imageAttachment: ImageAttachment = {
           id: uuidv4(),
           filename: file.name,
-          data: base64.split(',')[1],
+          data: resized.split(',')[1],
           mediaType: file.type
         };
         
@@ -582,36 +610,23 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       // Include the new user message in the messages sent to API
       const messagesToSend = [...currentMessages, userMessage].filter(m => !m.muted);
       
-      // Send with active skill prompts included
-      await sendPayload(
-        messagesToSend,
-        text,
-        Array.from(checkedKeys).map(String),
-        targetConversationId,
-        activeSkillPrompts,
-        orderedImages, // Include images in order they appear
-        streamedContentMap,
-        setStreamedContentMap,
-        setIsStreaming,
-        removeStreamingConversation,
-        addMessageToConversation,
-        streamingConversations.has(targetConversationId),
-        (state) => updateProcessingState(targetConversationId, state),
-        setReasoningContentMap,
-        undefined, // throttlingRecoveryDataRef - not used here
-        currentProject // Pass current project so backend knows working directory
-      );
+      await send({
+        messages: messagesToSend,
+        question: text,
+        conversationId: targetConversationId,
+        images: orderedImages,
+        includeReasoning: true,
+      });
     } catch (error) {
       console.error('Error sending message:', error);
+      removeStreamingConversation(targetConversationId);
     } finally {
       setSubmittingConversationId(null);
     }
   }, [
     shouldSendAsFeedback, sendToolFeedback, serializeEditorContent, isSubmitting,
     isCurrentlyStreaming, currentConversationId, setUserHasScrolled, addMessageToConversation,
-    addStreamingConversation, currentMessages, checkedKeys, activeSkillPrompts,
-    streamedContentMap, setStreamedContentMap, setIsStreaming, removeStreamingConversation,
-    streamingConversations, updateProcessingState, setReasoningContentMap, currentProject
+    addStreamingConversation, removeStreamingConversation, currentMessages, send
   ]);
   
   // Handle keyboard events - must be after sendToolFeedback and handleSend
