@@ -326,35 +326,22 @@ def clean_input_diff(diff_content: str) -> str:
             match = re.match(r'^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@', line)
             if match:
                 old_count = int(match.group(1)) if match.group(1) else 1
-                new_count = int(match.group(1)) if match.group(1) else 1
+                new_count = int(match.group(2)) if match.group(2) else 1
             continue
 
         if skip_until_next_file:
             # We skip lines until next file/hunk
             continue
 
-        # If we're inside a hunk, apply the strict approach
+        # If we're inside a hunk, keep all diff lines.  Header counts are
+        # often wrong; correct_git_diff will recalculate them downstream.
         if in_hunk:
-            # Check if we've already read all minus and plus lines
-            done_minus = (minus_seen >= old_count)
-            done_plus = (plus_seen >= new_count)
-
             if line.startswith('-'):
-                if not done_minus:
-                    minus_seen += 1
-                    result_lines.append(line)
-                else:
-                    # We have enough minus lines => ignore it
-                    logger.debug(f"[clean_input_diff] ignoring extra '-' line: {line.rstrip()}")
+                result_lines.append(line)
                 continue
 
             if line.startswith('+'):
-                if not done_plus:
-                    plus_seen += 1
-                    result_lines.append(line)
-                else:
-                    # We have enough plus lines => ignore it
-                    logger.debug(f"[clean_input_diff] ignoring extra '+' line: {line.rstrip()}")
+                result_lines.append(line)
                 continue
 
             if line.startswith(' '):
@@ -452,10 +439,15 @@ def correct_git_diff(git_diff: str, file_path: str) -> str:
                     continue
                 old_start = int(match.group(1))
                 new_start = int(match.group(3))
+                # Preserve original header counts for truncated diffs
+                header_old_count = int(match.group(2)) if match.group(2) else 1
+                header_new_count = int(match.group(4)) if match.group(4) else 1
                 # Count actual changes in this hunk
                 old_count = sum(1 for line in hunk[1:] if line.startswith((' ', '-')))
                 new_count = sum(1 for line in hunk[1:] if line.startswith((' ', '+')))
-                # Output corrected hunk
+                # Use the larger of header vs actual to handle truncated diffs
+                old_count = max(old_count, header_old_count)
+                new_count = max(new_count, header_new_count)
                 result.append(f"@@ -{old_start},{old_count} +{new_start},{new_count} @@")
                 result.extend(hunk[1:])
             normalized_diff = '\n'.join(result) + '\n'
@@ -758,10 +750,10 @@ def apply_diff_atomically(file_path: str, git_diff: str) -> Dict[str, Any]:
     try:
         hunks = list(parse_unified_diff_exact_plus(git_diff, file_path))
         if not hunks:
-            return {"status": "error", "details": {"error": "No valid hunks found in diff"}}
+            return None  # Fall through to full pipeline
     except Exception as e:
         logger.error(f"Error parsing diff: {str(e)}")
-        return {"status": "error", "details": {"error": f"Error parsing diff: {str(e)}"}}
+        return None  # Fall through to full pipeline
     
     # Check for malformed hunks first
     malformed_hunks = []
@@ -784,8 +776,8 @@ def apply_diff_atomically(file_path: str, git_diff: str) -> Dict[str, Any]:
     
     # If any hunks are malformed, return an error
     if malformed_hunks:
-        logger.warning(f"Found {len(malformed_hunks)} malformed hunks, aborting")
-        return {"status": "error", "details": {"error": "Malformed hunks detected", "malformed_hunks": malformed_hunks}}
+        logger.warning(f"Found {len(malformed_hunks)} malformed hunks in atomic path, falling back to pipeline")
+        return None  # Pipeline handles malformed hunks with line number correction
     
     # Check if all hunks are already applied
     all_already_applied = True
@@ -817,8 +809,8 @@ def apply_diff_atomically(file_path: str, git_diff: str) -> Dict[str, Any]:
         
         # Check if content actually changed
         if modified_content == original_content:
-            logger.warning("No changes were made to the content")
-            return {"status": "success", "details": {"already_applied": already_applied_hunks, "changes_written": False}}
+            logger.warning("Atomic application made no changes, falling back to full pipeline")
+            return None  # Pipeline has line number correction and fuzzy matching
         
         # Verify changes with language handler
         try:
@@ -865,7 +857,8 @@ def apply_diff_atomically(file_path: str, git_diff: str) -> Dict[str, Any]:
         
     except Exception as e:
         logger.error(f"Error applying diff: {str(e)}")
-        return {"status": "error", "details": {"error": str(e)}}
+        logger.info("Falling back to full pipeline after atomic application error")
+        return None  # Fall through to full pipeline
     finally:
         # Clean up any temporary files
         cleanup_patch_artifacts(os.path.dirname(file_path), file_path)

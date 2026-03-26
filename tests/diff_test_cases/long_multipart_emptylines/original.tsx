@@ -22,3 +22,5 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                         position: 'relative'
                     }}
                 />
+            ) : null}
+        </div>

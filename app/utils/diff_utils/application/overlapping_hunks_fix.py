@@ -191,42 +191,17 @@ def merge_overlapping_hunks(hunks: List[Dict[str, Any]], overlap_indices: List[i
     # Build the new content by reconstructing the final result step by step
     # We need to apply all the changes from all hunks in the correct order
     
-    # Start with the old_block and apply changes systematically
-    result_lines = []
-    
-    # Process each line in the old_block
-    for i, old_line in enumerate(merged_old_block):
-        old_line_stripped = old_line.strip()
-        
-        # Add the old line
-        result_lines.append(old_line)
-        
-        # Insert additions after specific lines based on the expected result
-        if old_line_stripped == "# Skip empty items":
-            # After "# Skip empty items", add:
-            # 1. "# Also skip None values"
-            # 2. "# This is a duplicate comment that will cause conflicts"
-            result_lines.append("        # Also skip None values")
-            result_lines.append("        # This is a duplicate comment that will cause conflicts")
-        
-        elif old_line_stripped == "if not item:":
-            # Before "if not item:", we need to insert the None check
-            # Remove the "if not item:" line we just added
-            result_lines.pop()
-            
-            # Add the None check first
-            result_lines.append("        if item is None:")
-            result_lines.append("            continue")
-            
-            # Then add back the original "if not item:"
-            result_lines.append(old_line)
-        
-        elif old_line_stripped == "# Add to results if valid":
-            # After "# Add to results if valid", add:
-            # "# Check validity before adding"
-            # "# This is another duplicate comment that will cause conflicts"
-            result_lines.append("        # Check validity before adding")
-            result_lines.append("        # This is another duplicate comment that will cause conflicts")
+    # Apply each constituent hunk's changes onto the merged old_block.
+    # Process in reverse order so that splicing earlier hunks doesn't shift
+    # the offsets of later ones.
+    result_lines = list(merged_old_block)
+    for idx in reversed(sorted_indices):
+        hunk = hunks[idx]
+        h_old_block = hunk.get('old_block', [])
+        h_new_lines = hunk.get('new_lines', [])
+        h_old_start = hunk['old_start']
+        merge_offset = h_old_start - merged_old_start
+        result_lines[merge_offset:merge_offset + len(h_old_block)] = h_new_lines
     
     merged_new_lines = result_lines
     

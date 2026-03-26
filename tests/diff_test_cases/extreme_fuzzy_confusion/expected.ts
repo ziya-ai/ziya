@@ -22,7 +22,7 @@ if (headerCmd) {
 }
 
 // Block E
-const toolDisplay = headerCmd
+const toolDisplay = headerCmd 
     ? `\n\`\`\`tool:${name}|${headerCmd}\n${content}\n\`\`\`\n\n`
     : `\n\`\`\`tool:${name}\n${content}\n\`\`\`\n\n`;
 
