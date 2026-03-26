@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 from typing import List
 import os
 
+from ..storage.chats import ChatStorage
 from ..models.project import Project, ProjectCreate, ProjectUpdate, ProjectListItem
 from ..storage.projects import ProjectStorage
 from ..utils.paths import get_ziya_home
@@ -20,6 +21,8 @@ async def list_projects():
     storage = get_project_storage()
     projects = storage.list_deduped()
     cwd = os.getcwd()
+    ziya_home = get_ziya_home()
+    projects_dir = ziya_home / "projects"
     
     # Add flag for current working directory
     result = []
@@ -29,10 +32,20 @@ async def list_projects():
             name=p.name,
             path=p.path,
             lastAccessedAt=p.lastAccessedAt,
-            isCurrentWorkingDirectory=(p.path == cwd)
+            isCurrentWorkingDirectory=(p.path == cwd),
+            conversationCount=_count_chats(projects_dir / p.id / "chats"),
         ))
     
     return result
+
+
+def _count_chats(chats_dir) -> int:
+    """Count chat JSON files in a project's chats directory (excluding internal files)."""
+    from pathlib import Path
+    d = Path(chats_dir)
+    if not d.is_dir():
+        return 0
+    return sum(1 for f in d.iterdir() if f.suffix == '.json' and not f.name.startswith('_'))
 
 @router.get("/current", response_model=Project)
 async def get_current_project():
