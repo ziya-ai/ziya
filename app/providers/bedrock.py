@@ -119,17 +119,35 @@ class BedrockProvider(LLMProvider):
         connect_timeout = int(os.environ.get("BEDROCK_CONNECT_TIMEOUT", "180"))
         response = None
 
+        # Serialize body once — reuse for both size check and API call.
+        body_json = json.dumps(body)
+        body_size = len(body_json)
+
+        # Count images for diagnostics
+        image_count = sum(
+            1 for msg in messages
+            if isinstance(msg.get("content"), list)
+            for block in msg["content"]
+            if isinstance(block, dict) and block.get("type") == "image"
+        )
+
         # Scale connect timeout for large payloads.  Bedrock can take
         # several minutes to begin streaming when ingesting >200K tokens.
-        body_size = len(json.dumps(body))
         if body_size > 800_000:  # ~200K tokens at ~4 chars/token
             connect_timeout = max(connect_timeout, 600)
+
+        logger.info(
+            f"BedrockProvider: invoking {self.model_id} — "
+            f"body={body_size/1_048_576:.1f}MB, images={image_count}, "
+            f"messages={len(messages)}, timeout={connect_timeout}s"
+        )
+        call_start = time.time()
 
         for _attempt in range(1):  # Single attempt; loop kept for break-on-success
             try:
                 api_params = {
                     "modelId": self.model_id,
-                    "body": json.dumps(body),
+                    "body": body_json,
                 }
                 # Run the synchronous boto3 call in a thread so it doesn't
                 # block the event loop while waiting for the Bedrock API to
@@ -141,10 +159,14 @@ class BedrockProvider(LLMProvider):
                     ),
                     timeout=connect_timeout,
                 )
+                logger.info(f"BedrockProvider: stream started in {time.time() - call_start:.1f}s")
                 break
             except Exception as e:
                 error_str = str(e)
                 classified = self._classify_error(error_str)
+                logger.warning(
+                    f"BedrockProvider: call failed after {time.time() - call_start:.1f}s — "
+                    f"{classified.value}: {error_str[:200]}")
 
                 # Safety net: if CustomBedrockClient didn't handle context limit
                 # (e.g. no conversation_id available), try once with extended context.
@@ -208,6 +230,10 @@ class BedrockProvider(LLMProvider):
                     message=error_str,
                     error_type=classified,
                     retryable=classified in (ErrorType.THROTTLE, ErrorType.READ_TIMEOUT, ErrorType.OVERLOADED),
+                )
+                logger.warning(
+                    f"BedrockProvider: failed after {time.time() - call_start:.1f}s — "
+                    f"{classified.name}: {error_str[:200]}"
                 )
                 return
 
@@ -458,6 +484,18 @@ class BedrockProvider(LLMProvider):
 
                 # Read completed successfully — clear the pending task
                 pending_read = None
+
+            except asyncio.CancelledError:
+                # Ctrl+C or task cancellation — close the boto3 stream so
+                # the thread blocked in next(stream_iter) gets unblocked.
+                # Without this, shield() prevents cancellation from reaching
+                # the run_in_executor future and the thread sits in a
+                # blocking network read forever.
+                try:
+                    stream_body.close()
+                except Exception:
+                    pass
+                raise
 
             except asyncio.TimeoutError:
                 # Outer safety net — should not be reached with the inner handling,

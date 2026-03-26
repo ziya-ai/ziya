@@ -4,6 +4,7 @@ Example chat endpoint integration with diff validation and auto-context enhancem
 The backend handles everything: validation, context enhancement, model regeneration.
 Frontend just syncs UI state.
 """
+import asyncio
 
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
@@ -50,11 +51,19 @@ async def stream_chat_with_validation(
             yield send_sse_event("content", {"content": chunk})
             
             # Validate any completed diffs
-            validation_feedback = validation_hook.validate_and_enhance(
-                content=accumulated_content,
-                model_messages=model_messages,  # Pass messages so hook can append context
-                send_event=lambda event_type, data: send_sse_event(event_type, data)
-            )
+            try:
+                validation_feedback = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        validation_hook.validate_and_enhance,
+                        content=accumulated_content,
+                        model_messages=model_messages,
+                        send_event=lambda event_type, data: send_sse_event(event_type, data)
+                    ),
+                    timeout=30,
+                )
+            except (asyncio.TimeoutError, Exception) as e:
+                logger.warning(f"Diff validation timed out or failed ({e}), skipping")
+                validation_feedback = None
             
             # If validation failed
             if validation_feedback:

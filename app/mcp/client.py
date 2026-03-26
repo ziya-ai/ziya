@@ -869,6 +869,8 @@ class MCPClient:
                     "message": f"Request timed out after {timeout_duration:.0f} seconds for method '{method}'",
                     "code": -32000 # Custom timeout error code
                 }
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.error(f"Error reading from MCP server: {e}")
                 return create_error_response(f"Error reading from MCP server: {str(e)}")
@@ -957,6 +959,9 @@ class MCPClient:
             total_time = time.time() - start_time
             logger.debug(f"🔍 MCP_TIMING: Total request took {total_time*1000:.1f}ms for method '{method}'")
             return response.get("result")
+
+        except asyncio.CancelledError:
+            raise
             
         except Exception as e:
             logger.error(f"Error sending MCP request: {str(e)}")
