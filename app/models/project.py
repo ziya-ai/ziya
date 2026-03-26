@@ -39,3 +39,4 @@ class ProjectListItem(BaseModel):
     path: str
     lastAccessedAt: int
     isCurrentWorkingDirectory: bool = False
+    conversationCount: int = 0

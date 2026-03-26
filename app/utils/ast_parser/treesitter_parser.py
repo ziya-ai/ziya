@@ -1,7 +1,7 @@
 """
 Tree-sitter based AST parser for C/C++, Rust, Go, Java, and other languages.
 
-Uses the tree-sitter-languages package which bundles pre-built grammars
+Uses the tree-sitter-language-pack package which bundles pre-built grammars
 for ~40 languages.  Falls back gracefully if not installed.
 """
 
@@ -14,11 +14,17 @@ from .unified_ast import UnifiedAST, SourceLocation
 logger = logging.getLogger(__name__)
 
 try:
-    from tree_sitter_languages import get_language, get_parser
+    from tree_sitter_language_pack import get_language, get_parser
     _TS_AVAILABLE = True
 except ImportError:
-    _TS_AVAILABLE = False
-    logger.info("tree-sitter-languages not installed — C/C++/Rust/Go parsing disabled")
+    # Fall back to the old (unmaintained) package for existing installations
+    try:
+        from tree_sitter_languages import get_language, get_parser
+        _TS_AVAILABLE = True
+        logger.info("Using legacy tree-sitter-languages; consider upgrading to tree-sitter-language-pack")
+    except ImportError:
+        _TS_AVAILABLE = False
+        logger.info("tree-sitter-language-pack not installed — C/C++/Rust/Go parsing disabled")
 
 # Map tree-sitter node types to unified AST node types, per language.
 # Each entry: ts_node_type -> (unified_type, name_child_field, extra_fields)

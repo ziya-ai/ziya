@@ -42,4 +42,5 @@ export interface ProjectListItem {
   path: string;
   lastAccessedAt: number;
   isCurrentWorkingDirectory: boolean;
+  conversationCount: number;
 }
