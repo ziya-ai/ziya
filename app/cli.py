@@ -23,6 +23,7 @@ Examples:
     ziya review --staged           Review staged git changes
 """
 
+import argparse
 import json
 from datetime import datetime
 import os
@@ -44,8 +45,7 @@ try:
 except Exception as e:
     print(f"Warning: Could not configure logging: {e}", file=sys.stderr)
 import re
-import hashlib
-import argparse
+import signal
 import time
 import traceback
 from pathlib import Path
@@ -521,6 +521,8 @@ class CLI:
             if self._active_task:
                 # Cancel the active streaming task
                 self._cancellation_requested = True
+                if not self._active_task.done():
+                    self._active_task.cancel()
                 print("\n\033[33m^C - Cancelling operation...\033[0m")
                 # Reset double-tap timer so this doesn't count toward exit
                 self._last_ctrl_c_time = 0
@@ -679,8 +681,10 @@ class CLI:
         for attempt in range(max_attempts):
             # Reset cancellation flag for each attempt
             self._cancellation_requested = False
+            print(f"\033[90m[trace] model call attempt={attempt}\033[0m", file=sys.stderr)
             
             response = await self._run_with_tools_from_messages(messages, stream)
+            print(f"\033[90m[trace] model returned, len={len(response)}, has_diff={'```diff' in response}\033[0m", file=sys.stderr)
             
             # If no diffs, we're done
             if '```diff' not in response:
@@ -689,10 +693,20 @@ class CLI:
                 return response
             
             # Validate diffs using FULL apply pipeline (dry-run)
-            validation_feedback = validation_hook.validate_and_enhance(
-                content=response,
-                model_messages=messages,
-            )
+            print(f"\033[90m[trace] starting validate_and_enhance\033[0m", file=sys.stderr)
+            try:
+                validation_feedback = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        validation_hook.validate_and_enhance,
+                        content=response,
+                        model_messages=messages,
+                    ),
+                    timeout=30,
+                )
+            except (asyncio.TimeoutError, Exception) as e:
+                print(f"\033[33m⚠ Diff validation timed out or failed ({e}), skipping validation\033[0m", file=sys.stderr)
+                validation_feedback = None
+            print(f"\033[90m[trace] validate_and_enhance done, has_feedback={bool(validation_feedback)}\033[0m", file=sys.stderr)
             
             # If validation passed, process diffs interactively
             if not validation_feedback:
@@ -709,7 +723,9 @@ class CLI:
                 while True:
                     # Show diffs to user for interactive application
                     try:
+                        print("\033[90m[trace] entering process_response\033[0m", file=sys.stderr)
                         completed_normally = self.diff_applicator.process_response(full_response)
+                        print(f"\033[90m[trace] process_response done, completed_normally={completed_normally}\033[0m", file=sys.stderr)
                     except Exception as e:
                         if os.environ.get('ZIYA_LOG_LEVEL') == 'DEBUG':
                             print(f"\n\033[33mNote: Could not process diffs: {e}\033[0m", file=sys.stderr)
@@ -727,7 +743,9 @@ class CLI:
                             "please continue. Otherwise, confirm that all necessary changes have been provided."
                         )
                         # Continue conversation with the model
+                        print("\033[90m[trace] sending continuation to model\033[0m", file=sys.stderr)
                         continue_response = await self._continue_conversation(continuation_message, messages)
+                        print(f"\033[90m[trace] continuation returned, len={len(continue_response)}\033[0m", file=sys.stderr)
                         
                         # If continuation contains more diffs, process those too
                         if '```diff' in continue_response:
@@ -878,9 +896,11 @@ class CLI:
             try:
                 return await task
             except asyncio.CancelledError:
-                # Preserve partial content accumulated by _stream_handler
+                task.cancel()
                 raise  # Re-raise to be handled by ask()
             finally:
+                if not task.done():
+                    task.cancel()
                 self._active_task = None
 
         state = ModelManager.get_state()
@@ -904,10 +924,11 @@ class CLI:
             full_response = await task
             return full_response
         except asyncio.CancelledError:
-            # Task was cancelled, but we may have accumulated partial response
-            # The _stream_handler should have returned what it collected so far
+            task.cancel()
             raise  # Re-raise to be handled by ask()
         finally:
+            if not task.done():
+                task.cancel()
             self._active_task = None
     
     def _parse_markdown_state(self, content: str) -> dict:
@@ -1330,6 +1351,7 @@ class CLI:
                 except asyncio.CancelledError:
                     # Operation was cancelled, continue the loop
                     pass
+                print("\033[90m[trace] ask() returned, looping to prompt\033[0m", file=sys.stderr)
                 print()
                 
             except KeyboardInterrupt:
@@ -1367,6 +1389,8 @@ class CLI:
                  /shell git <op>    Allow a git operation (e.g. add, commit, push, all)
                  Append 'save' to persist: /shell add git save
   /clear         Clear conversation history
+  /tune <key> <val> Adjust session settings:
+                 /tune iterations <n>  Max tool iterations (default: 200)
   /model <name>  Switch model
   /quit          Exit
 
@@ -1436,10 +1460,49 @@ class CLI:
         elif command in ['/model', '/m']:
             await self._handle_model_selection_async(arg)
         
+        elif command == '/tune':
+            self._handle_tune(arg)
+
         else:
             print(f"\033[90mUnknown command: {command}\033[0m")
         
         return True
+
+    _TUNABLES = {
+        'iterations': ('ZIYA_MAX_TOOL_ITERATIONS', '200', 'Max tool iterations per response'),
+    }
+
+    def _handle_tune(self, arg: str):
+        """Handle /tune subcommands for session settings."""
+        parts = arg.split() if arg else []
+        if not parts:
+            print("\033[1mTunable settings:\033[0m")
+            for key, (env, default, desc) in self._TUNABLES.items():
+                current = os.environ.get(env, default)
+                print(f"  {key} = {current}  \033[90m({desc})\033[0m")
+            print(f"\n\033[90mUsage: /tune <key> <value>\033[0m")
+            return
+
+        key = parts[0]
+        if key not in self._TUNABLES:
+            print(f"\033[31mUnknown tunable: {key}\033[0m")
+            print(f"\033[90mAvailable: {', '.join(self._TUNABLES)}\033[0m")
+            return
+
+        env_var, default, desc = self._TUNABLES[key]
+        if len(parts) < 2:
+            current = os.environ.get(env_var, default)
+            print(f"\033[90m{key} = {current}  ({desc})\033[0m")
+            return
+
+        try:
+            n = int(parts[1])
+            if n < 1:
+                raise ValueError
+            os.environ[env_var] = str(n)
+            print(f"\033[32m✓ {key} = {n}\033[0m")
+        except ValueError:
+            print(f"\033[31m{key} requires a positive integer\033[0m")
 
     async def _handle_shell_command(self, arg: str):
         """Handle /shell subcommands for managing allowed shell commands."""
@@ -1790,6 +1853,21 @@ class CLI:
             else:
                 settings['top_k'] = current_top_k
         
+        # Thinking effort if model supports adaptive thinking
+        if model_config.get('supports_adaptive_thinking'):
+            valid_efforts = ['low', 'medium', 'high', 'max']
+            default_effort = model_config.get('thinking_effort_default', 'medium')
+            current_effort = current_settings.get('thinking_effort') or os.environ.get('ZIYA_THINKING_EFFORT') or default_effort
+            effort_input = input(f"Thinking Effort [{'/'.join(valid_efforts)}] (current: {current_effort}): ").strip().lower()
+            if effort_input:
+                if effort_input in valid_efforts:
+                    settings['thinking_effort'] = effort_input
+                else:
+                    print(f"\033[33mInvalid choice, using {current_effort}\033[0m")
+                    settings['thinking_effort'] = current_effort
+            else:
+                settings['thinking_effort'] = current_effort
+
         return settings
     
     async def _handle_model_selection_async(self, arg: str):
@@ -1949,10 +2027,25 @@ class CLI:
                         return
                     
                     # Apply settings
+                    # Check if anything actually changed
+                    model_changed = selected_model != current_model
+                    settings_changed = False
+                    for key, value in settings.items():
+                        env_key = f"ZIYA_{key.upper()}"
+                        old_value = os.environ.get(env_key)
+                        new_value = str(value)
+                        if old_value != new_value:
+                            settings_changed = True
+                            break
+
+                    if not model_changed and not settings_changed:
+                        print(f"\n\033[90mSettings unchanged for {selected_model}\033[0m")
+                        return
+
                     for key, value in settings.items():
                         env_key = f"ZIYA_{key.upper()}"
                         os.environ[env_key] = str(value)
-                    
+
                     print(f"\n\033[32m✓ Switched to {selected_model} with custom settings\033[0m")
                     for key, value in settings.items():
                         print(f"  {key}: {value}")
@@ -2001,8 +2094,32 @@ async def _run_async_cli(cli):
     """Run CLI in async context with MCP initialized."""
     # Initialize MCP in this event loop
     await _initialize_mcp()
-    
-    # Now run the chat in the same loop
+
+    # Install a custom SIGINT handler on the event loop so that ^C during
+    # streaming cancels the active task gracefully instead of tearing down
+    # the entire event loop (which is what the default KeyboardInterrupt
+    # propagation through asyncio.run() does).
+    loop = asyncio.get_running_loop()
+
+    def _sigint_handler():
+        if cli._active_task and not cli._active_task.done():
+            # Mid-stream: request cancellation and cancel the task
+            cli._cancellation_requested = True
+            cli._active_task.cancel()
+        else:
+            # At the prompt the terminal is in raw mode, so SIGINT
+            # won't fire — prompt_toolkit handles ^C as a character.
+            # Nothing to do here; keep the handler installed to
+            # prevent the default asyncio SIGINT teardown.
+            pass
+
+    try:
+        loop.add_signal_handler(signal.SIGINT, _sigint_handler)
+    except NotImplementedError:
+        # Windows doesn't support add_signal_handler; fall back to
+        # default behavior (KeyboardInterrupt).
+        pass
+
     await cli.chat()
 
 
