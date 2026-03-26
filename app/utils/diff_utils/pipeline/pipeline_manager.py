@@ -16,6 +16,7 @@ from typing import Dict, List, Any, Optional, Tuple
 from app.utils.logging_utils import logger
 from ..core.exceptions import PatchApplicationError
 from ..parsing.diff_parser import parse_unified_diff_exact_plus, extract_target_file_from_diff, split_combined_diff
+from ..parsing.diff_preprocessor import preprocess_diff
 from ..validation.validators import is_new_file_creation, is_file_deletion, is_hunk_already_applied, normalize_line_for_comparison
 from ..file_ops.file_handlers import create_new_file, delete_file, cleanup_patch_artifacts, cleanup_workspace_artifacts
 from ..application.patch_apply import apply_diff_with_difflib, apply_diff_with_difflib_hybrid_forced, apply_diff_with_difflib_hybrid_forced_hunks
@@ -229,6 +230,15 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
 
     # Parse the hunks to track
     try:
+        # Preprocess: fix additive-insert-instead-of-replace and wrong hunk counts
+        preprocessed, additive_converted = preprocess_diff(git_diff)
+        if preprocessed != git_diff:
+            logger.info("diff_preprocessor: diff was sanitized before pipeline entry")
+            git_diff = preprocessed
+            pipeline.current_diff = git_diff
+            if additive_converted:
+                pipeline.original_diff = git_diff
+
         logger.debug(f"Before parsing hunks, git_diff first 10 lines:\n{git_diff.splitlines()[:10]}")
         hunks = list(parse_unified_diff_exact_plus(git_diff, file_path))
         pipeline.initialize_hunks(hunks)
@@ -1443,12 +1453,37 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
             # If actual new lines is much larger than new_count header (miscounted)
             # AND covers most of the file, treat as full replacement
             # But only if the discrepancy is significant (not just a few lines off)
-            if actual_new_lines > new_count * 1.5 and actual_new_lines > file_line_count and old_count >= file_line_count * 0.9:
+            actual_old_lines = sum(1 for line in lines if line.startswith(('-', ' ')))
+            is_truncated_full_file = (old_count >= file_line_count * 0.9
+                                      and actual_old_lines < old_count * 0.8)
+            is_miscounted_full_file = (actual_new_lines > new_count * 1.5
+                                       and actual_new_lines > file_line_count
+                                       and old_count >= file_line_count * 0.9)
+            if is_miscounted_full_file or is_truncated_full_file:
+                logger.info(f"Full file replacement: truncated={is_truncated_full_file}, miscounted={is_miscounted_full_file}")
                 new_content_lines = []
+
+                # The hunk body may not start at line 1 — find where its
+                # first context/removal line appears in the original file
+                # and preserve any preceding lines.
+                first_old_line = None
+                for bl in lines:
+                    if bl.startswith((' ', '-')) and bl[1:].strip():
+                        first_old_line = bl[1:].strip()
+                        break
+                if first_old_line:
+                    for idx, orig in enumerate(original_lines):
+                        if orig.strip().rstrip('\n') == first_old_line:
+                            if idx > 0:
+                                new_content_lines.extend(
+                                    line.rstrip('\n') for line in original_lines[:idx]
+                                )
+                            break
+
                 for line in lines:
                     if line.startswith(('+', ' ')):
                         new_content_lines.append(line[1:])
-                
+
                 logger.info(f"Applying full file replacement: {len(new_content_lines)} lines")
                 # Join with newlines
                 new_content = '\n'.join(new_content_lines) + '\n' if not any('\n' in l for l in new_content_lines) else ''.join(new_content_lines)

@@ -136,8 +136,13 @@ def find_best_match_position(context: List[str], file_lines: List[str], original
     context_len = len(context)
     matches = []  # Store all good matches with their empty line counts
     
-    # Search entire file for best match
-    for i in range(len(file_lines) - context_len + 1):
+    # Search file for best match, including positions where context extends
+    # past the end of the file (handles truncated diffs / snippet test files).
+    # Require at least 50% of context lines to overlap with actual file content
+    # to avoid spurious low-overlap matches.
+    min_overlap = max(context_len // 2, 1)
+    search_end = max(len(file_lines) - context_len + 1, len(file_lines) - min_overlap + 1)
+    for i in range(search_end):
         segment = [normalize_for_matching(line.rstrip('\n\r')) for line in file_lines[i:i + context_len]]
         ratio = SequenceMatcher(None, norm_context, segment).ratio()
         
@@ -158,18 +163,26 @@ def find_best_match_position(context: List[str], file_lines: List[str], original
         threshold = best_ratio * 0.95  # Within 5% of best
         good_matches = [(pos, ratio, empty_cnt) for pos, ratio, empty_cnt in matches if ratio >= threshold]
         
-        # First, try to find matches with exact empty line count
-        exact_empty_matches = [(pos, ratio) for pos, ratio, empty_cnt in good_matches if empty_cnt == context_empty_count]
+        # When one position clearly has the best ratio, prefer it over the
+        # proximity-to-original_line heuristic.  This prevents wildly-wrong
+        # line numbers (e.g. line 958 in a 64-line file) from overriding a
+        # correct match.
+        sorted_by_ratio = sorted(matches, key=lambda m: m[1], reverse=True)
+        runner_up_ratio = sorted_by_ratio[1][1] if len(sorted_by_ratio) > 1 else 0.0
         
-        if exact_empty_matches:
-            # Among exact matches, prefer closest to original line
-            if original_line is not None:
-                best_pos = min(exact_empty_matches, key=lambda m: abs(m[0] - (original_line - 1)))[0]
+        if best_ratio - runner_up_ratio > 0.01:
+            best_pos = sorted_by_ratio[0][0]
+        else:
+            exact_empty_matches = [(pos, ratio) for pos, ratio, empty_cnt in good_matches if empty_cnt == context_empty_count]
+            if exact_empty_matches:
+                if original_line is not None:
+                    best_pos = min(exact_empty_matches, key=lambda m: abs(m[0] - (original_line - 1)))[0]
+                else:
+                    best_pos = exact_empty_matches[0][0]
+            elif original_line is not None:
+                best_pos = min(good_matches, key=lambda m: abs(m[0] - (original_line - 1)))[0]
             else:
-                best_pos = exact_empty_matches[0][0]
-        elif original_line is not None:
-            # No exact matches, prefer closest to original line
-            best_pos = min(good_matches, key=lambda m: abs(m[0] - (original_line - 1)))[0]
+                best_pos = good_matches[0][0]
     
     return (best_pos, best_ratio)
 

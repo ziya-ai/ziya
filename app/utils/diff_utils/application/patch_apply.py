@@ -491,21 +491,31 @@ def apply_diff_with_difflib_hybrid_forced(
             old_block = h.get('old_block', [])
             new_lines = h.get('new_lines', [])
             
-            if old_start_0based >= 0 and old_start_0based + len(old_block) <= len(final_lines_with_endings):
-                # Verify the context matches at this position
-                file_slice = final_lines_with_endings[old_start_0based:old_start_0based + len(old_block)]
+            # Determine how many lines to replace: use header's old_count when
+            # the diff is truncated (old_block shorter than old_count).
+            old_count_header = h.get('old_count', len(old_block))
+            replace_count = max(old_count_header, len(old_block))
+            available = len(final_lines_with_endings) - old_start_0based
+            replace_count = min(replace_count, available)
+            
+            # How many old_block lines we can actually verify against the file
+            verify_count = min(len(old_block), available)
+            
+            if old_start_0based >= 0 and verify_count > 0:
+                # Verify the context matches at this position (partial OK at EOF)
+                file_slice = final_lines_with_endings[old_start_0based:old_start_0based + verify_count]
                 normalized_file = [normalize_line_for_comparison(line) for line in file_slice]
-                normalized_old = [normalize_line_for_comparison(line) for line in old_block]
+                normalized_old = [normalize_line_for_comparison(line) for line in old_block[:verify_count]]
                 
                 if normalized_file == normalized_old:
-                    # Perfect match - apply directly
+                    # Match confirmed — apply directly
                     new_lines_with_endings = [line + dominant_ending if not line.endswith('\n') else line for line in new_lines]
-                    final_lines_with_endings[old_start_0based:old_start_0based + len(old_block)] = new_lines_with_endings
+                    final_lines_with_endings[old_start_0based:old_start_0based + replace_count] = new_lines_with_endings
                     logger.info(f"Hunk #{hunk_idx}: Applied at corrected position {old_start_0based}")
                     
                     # Track this hunk as applied
-                    applied_hunks.append((h, old_start_0based, len(old_block), len(new_lines)))
-                    offset += len(new_lines) - len(old_block)
+                    applied_hunks.append((h, old_start_0based, replace_count, len(new_lines)))
+                    offset += len(new_lines) - replace_count
                     continue
                 else:
                     logger.warning(f"Hunk #{hunk_idx}: Context mismatch at corrected position, falling back to normal processing")
@@ -1862,6 +1872,22 @@ def apply_diff_with_difflib_hybrid_forced(
  
     if hunk_failures:
         logger.error(f"Failed to apply {len(hunk_failures)} hunks.")
+
+        # Full-file replacement fallback: when a single hunk covers the entire
+        # file but fuzzy matching failed (e.g. hallucinated context lines or
+        # wildly wrong line numbers), build the new content from the hunk's
+        # context + addition lines.
+        if len(hunks) == 1 and len(hunk_failures) == 1:
+            h = hunks[0]
+            h_old_count = h.get('old_count', 0)
+            file_line_count = len(original_lines_with_endings)
+            if h_old_count >= file_line_count * 0.9 or h_old_count > file_line_count:
+                new_lines = h.get('new_lines', [])
+                if new_lines:
+                    logger.info(f"Full-file replacement fallback: single hunk covers {h_old_count}/{file_line_count} lines, using {len(new_lines)} new lines")
+                    replacement = [line + dominant_ending if not line.endswith(('\n', '\r\n')) else line for line in new_lines]
+                    return replacement
+
         # Determine overall status based on whether *any* changes were made before failure
         # This requires tracking if any hunk *was* successfully applied before a failure occurred.
         # For simplicity here, we assume if there are failures, it's at least partial if offset != 0 or list lengths differ.

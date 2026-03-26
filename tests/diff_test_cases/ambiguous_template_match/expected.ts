@@ -23,7 +23,7 @@ if (headerCommand) {
 }
 
 // Block 3
-const toolResultDisplay = headerCommand
+const toolResultDisplay = headerCommand 
     ? `\n\`\`\`tool:${toolName}|${headerCommand}\n${formatted.content}\n\`\`\`\n\n`
     : `\n\`\`\`tool:${toolName}\n${formatted.content}\n\`\`\`\n\n`;
 
