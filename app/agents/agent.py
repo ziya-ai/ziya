@@ -46,10 +46,7 @@ except KnownCredentialException as e:
     print(str(e))
     print("=" * 80 + "\n")
     sys.exit(1)
-from langserve import add_routes
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field  # FastAPI/CORSMiddleware removed — only used by dead initialize_langserve
 from botocore.exceptions import ClientError
 
 from app.agents.prompts import conversational_prompt
@@ -2376,75 +2373,3 @@ def get_or_create_agent_executor():
             if agent_executor is None:
                 logger.warning("Agent executor creation failed - will retry when credentials are available")
     return agent_executor
-
-def initialize_langserve(app, executor):
-    """Initialize or reinitialize langserve routes with the given executor."""
-    import gc
-    
-    # Force garbage collection to clean up any lingering references
-    gc.collect()
-
-    # Create a new FastAPI app instance to ensure clean state
-    new_app = FastAPI(
-        title=app.title,
-        description=app.description,
-        version=app.version,
-        docs_url=app.docs_url,
-        redoc_url=app.redoc_url,
-        openapi_url=app.openapi_url
-    )  
-
-    # Store original routes that aren't /ziya routes
-    original_routes = [
-        route for route in app.routes 
-        if not route.path.startswith("/ziya")
-    ]
-
-    logger.info(f"Preserved {len(original_routes)} non-/ziya routes")
- 
-    # Add required middleware
-    new_app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
- 
-    # Add request size middleware
-    new_app.add_middleware(
-        RequestSizeMiddleware,
-        # Add the same max request size as in the original app
-        max_request_size=10 * 1024 * 1024  # 10MB
-    )
-
-    # Restore original routes
-    for route in original_routes:
-        new_app.routes.append(route)
- 
-    # Add LangServe routes for non-Bedrock models (Gemini, Nova, etc.)
-    # DISABLED: LangServe /ziya routes cause duplicate execution with /api/chat
-    # add_routes(
-    #     new_app,
-    #     executor,
-    #     disabled_endpoints=["playground"],  # Keep stream and invoke for non-Bedrock models
-    #     path="/ziya"
-    # )
-    
-    logger.info("DISABLED LangServe /ziya routes - using /api/chat only to prevent duplicate execution")
-
-    # Clear all routes from original app
-    while app.routes:
-        app.routes.pop()
- 
-    logger.info("Cleared existing routes")
-    
-    # Copy routes from new app to original app
-    for route in new_app.routes:
-        app.routes.append(route)
-        
-    # Force another garbage collection after route replacement
-    gc.collect()
-        
-    logger.info(f"Successfully reinitialized app with {len(new_app.routes)} routes")
-    return True
