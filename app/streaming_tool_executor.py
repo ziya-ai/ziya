@@ -1096,7 +1096,13 @@ class StreamingToolExecutor:
                 model_family = model_config.get('family', 'claude')
                 
                 # Only establish baseline if not already measured
-                should_establish_baseline = model_family not in calibrator.baselines_measured
+                # Also re-establish if the MCP tool count has changed since last measurement
+                current_tool_count = len(bedrock_tools) if bedrock_tools else 0
+                previous_tool_count = calibrator.baseline_tool_counts.get(model_family, 0)
+                should_establish_baseline = (
+                    model_family not in calibrator.baselines_measured
+                    or current_tool_count != previous_tool_count
+                )
             except Exception as e:
                 logger.debug(f"Could not check baseline status: {e}")
         
@@ -1115,7 +1121,8 @@ class StreamingToolExecutor:
                 _feedback_monitor_task.cancel()
             return
 
-        for iteration in range(100):  # Increased limit to support complex multi-step tasks
+        max_iterations = int(os.environ.get('ZIYA_MAX_TOOL_ITERATIONS', '200'))
+        for iteration in range(max_iterations):
             logger.debug(f"🔍 ITERATION_START: Beginning iteration {iteration}")
             hallucination_this_iteration = False
             
@@ -1214,9 +1221,13 @@ class StreamingToolExecutor:
                     
                     logger.info(f"📊 BASELINE: Using raw client type: {type(raw_client).__name__}")
                     
-                    baseline_response = raw_client.invoke_model(
-                        modelId=self.model_id,
-                        body=json.dumps(baseline_body)
+                    baseline_body_json = json.dumps(baseline_body)
+                    baseline_response = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: raw_client.invoke_model(
+                            modelId=self.model_id,
+                            body=baseline_body_json,
+                        ),
                     )
                     
                     baseline_response_body = json.loads(baseline_response['body'].read())
@@ -1271,7 +1282,7 @@ class StreamingToolExecutor:
                     logger.warning(f"📊 BASELINE: Establishment failed (will retry next time): {e}")
             
             # WARNING: Approaching iteration limit - notify model to wrap up
-            iterations_remaining = 100 - iteration
+            iterations_remaining = max_iterations - iteration
             warning_message = None
             
             if iterations_remaining == 5:
@@ -1343,6 +1354,7 @@ class StreamingToolExecutor:
             blocked_tools_this_iteration = 0  # Track blocked tools to prevent runaway loops
             commands_this_iteration = []  # Track commands executed in this specific iteration
             empty_tool_calls_this_iteration = 0  # Track empty tool calls in this iteration
+            continuation_happened = False  # Track if code block continuation occurred
             
             # Safety guard: prevent sending conversation ending with assistant message
             # to models that don't support assistant prefill (e.g. Opus 4 via Bedrock)
