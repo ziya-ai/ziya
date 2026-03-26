@@ -13,7 +13,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, mock_open, patch, PropertyMock
 
 import pytest
 
@@ -48,6 +48,116 @@ def manager(tmp_project):
     """Create a DelegateManager with test project."""
     from app.agents.delegate_manager import DelegateManager, reset_delegate_manager
     reset_delegate_manager()
+
+
+# ---------------------------------------------------------------------------
+# Tests for _post_progress_to_source — inline artifact report embedding
+# ---------------------------------------------------------------------------
+
+def _make_crystal_with_artifacts(delegate_id: str, artifact_paths: list) -> MemoryCrystal:
+    """Build a MemoryCrystal that references artifact files."""
+    from app.models.delegate import FileChange
+    return MemoryCrystal(
+        delegate_id=delegate_id,
+        task="Research task",
+        summary="Detailed research summary.",
+        decisions=["Decision A"],
+        files_changed=[
+            FileChange(path=p, action="created", line_delta="(new)")
+            for p in artifact_paths
+        ],
+    )
+
+
+class TestPostProgressInlineArtifacts:
+    """
+    _post_progress_to_source should embed artifact file contents as
+    <details> blocks rather than just saying "N report(s) written".
+    """
+
+    def _setup_plan(self, manager):
+        plan_id = "plan-artifact-test"
+        spec = DelegateSpec(
+            delegate_id="d1", name="Research Agent", emoji="🔬",
+            project_root="/fake/root",
+        )
+        plan = TaskPlan(
+            name="Test Plan",
+            source_conversation_id="src-conv-1",
+            delegate_specs=[spec],
+            created_at=time.time(),
+        )
+        manager._plans[plan_id] = plan
+        manager._statuses[plan_id] = {"d1": "crystal"}
+        return plan_id, spec, plan
+
+    def test_artifact_content_embedded_as_details(self, manager):
+        """Report content is embedded inline as a <details> collapsible block."""
+        plan_id, spec, plan = self._setup_plan(manager)
+        crystal = _make_crystal_with_artifacts(
+            "d1",
+            [".ziya/tasks/plan-abc/research-agent/analysis.md"],
+        )
+        report_content = "# Analysis\n\nHere are my findings."
+        posted_messages = []
+
+        mock_cs = MagicMock()
+        mock_cs.add_message.side_effect = lambda cid, m: posted_messages.append(m)
+
+        with patch.object(manager, "_get_chat_storage", return_value=mock_cs), \
+             patch("builtins.open", mock_open(read_data=report_content)), \
+             patch("app.agents.delegate_manager.get_project_root", return_value="/fake/root"):
+            manager._post_progress_to_source(plan_id, "d1", crystal)
+
+        assert len(posted_messages) == 1
+        content = posted_messages[0].content
+        assert "<details>" in content
+        assert "<summary>" in content
+        assert "analysis" in content
+        assert report_content in content
+        assert "report(s) written" not in content
+
+    def test_no_reports_no_details_block(self, manager):
+        """Crystals with only source-file changes don't add <details> blocks."""
+        plan_id, spec, plan = self._setup_plan(manager)
+        from app.models.delegate import FileChange
+        crystal = MemoryCrystal(
+            delegate_id="d1",
+            task="Code task",
+            summary="Changed some files.",
+            files_changed=[FileChange(path="src/main.py", action="modified", line_delta="+5 -2")],
+        )
+        posted_messages = []
+        mock_cs = MagicMock()
+        mock_cs.add_message.side_effect = lambda cid, m: posted_messages.append(m)
+
+        with patch.object(manager, "_get_chat_storage", return_value=mock_cs):
+            manager._post_progress_to_source(plan_id, "d1", crystal)
+
+        assert len(posted_messages) == 1
+        assert "<details>" not in posted_messages[0].content
+        assert "report(s) written" not in posted_messages[0].content
+
+    def test_unreadable_artifact_shows_fallback(self, manager):
+        """If an artifact file cannot be read, a graceful fallback is shown."""
+        plan_id, spec, plan = self._setup_plan(manager)
+        crystal = _make_crystal_with_artifacts(
+            "d1",
+            [".ziya/tasks/plan-abc/research-agent/analysis.md"],
+        )
+        posted_messages = []
+        mock_cs = MagicMock()
+        mock_cs.add_message.side_effect = lambda cid, m: posted_messages.append(m)
+
+        with patch.object(manager, "_get_chat_storage", return_value=mock_cs), \
+             patch("builtins.open", side_effect=OSError("No such file")), \
+             patch("app.agents.delegate_manager.get_project_root", return_value="/fake/root"):
+            manager._post_progress_to_source(plan_id, "d1", crystal)
+
+        assert len(posted_messages) == 1
+        content = posted_messages[0].content
+        assert "<details>" in content
+        assert "could not read" in content
     return DelegateManager("test-project", tmp_project, max_concurrency=2)
 
 

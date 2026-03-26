@@ -453,11 +453,14 @@ class DelegateManager:
         plan.crystals.append(crystal)
         self._persist_plan(plan_id)
 
-        # Post crystal arrival to orchestrator conversation (non-blocking).
-        # Must complete before we check plan completion so the orchestrator
-        # has all crystal context for final synthesis.
+        # Post crystal arrival to orchestrator conversation as a background
+        # task. Synthesis reads self._crystals directly, so this does not
+        # need to complete before the plan-completion check below.
         if plan.orchestrator_id:
-            await self._orchestrator_receive_crystal(plan_id, delegate_id, crystal)
+            asyncio.create_task(
+                self._orchestrator_receive_crystal(plan_id, delegate_id, crystal),
+                name=f"orch-recv-{delegate_id[:8]}",
+            )
 
         # T39: Retroactive review (non-blocking background task)
         asyncio.create_task(
@@ -469,6 +472,11 @@ class DelegateManager:
             "crystal_tokens": crystal.crystal_tokens,
             "original_tokens": crystal.original_tokens,
         })
+
+        # Post incremental progress for every crystal including the last one.
+        # Previously this was only in the else branch, so the Nth crystal's
+        # progress update was silently dropped when the plan completed.
+        self._post_progress_to_source(plan_id, delegate_id, crystal)
 
         if self._is_plan_complete(plan_id):
             # Distinguish clean completion from partial failure
@@ -515,7 +523,6 @@ class DelegateManager:
             await self._on_subplan_complete(plan_id)
         else:
             await self._resolve_and_start(plan_id)
-            self._post_progress_to_source(plan_id, delegate_id, crystal)
 
     async def on_delegate_failed(
         self, plan_id: str, delegate_id: str, error: str,
@@ -1384,7 +1391,7 @@ class DelegateManager:
 
         response = await raw_model.ainvoke([HumanMessage(content=prompt)])
         text = response.content if hasattr(response, "content") else str(response)
-        return text.strip()[:4000]
+        return text.strip()[:20000]
 
     # ------------------------------------------------------------------
     # Incremental message persistence
@@ -1548,7 +1555,7 @@ class DelegateManager:
     def _post_progress_to_source(
         self, plan_id: str, delegate_id: str, crystal: MemoryCrystal,
     ) -> None:
-        """Post a brief progress update to the source conversation per crystal."""
+        """Post a progress update to the source conversation per crystal, embedding report content inline."""
         plan = self._plans.get(plan_id)
         if not plan or not plan.source_conversation_id:
             return
@@ -1561,22 +1568,47 @@ class DelegateManager:
             if s == "crystal"
         )
 
-        # Build a meaningful preview from structured data instead of
-        # truncating the summary (which is often process narration)
-        preview_parts = []
+        # Build a one-line header preview from structured data.
+        header_parts = []
         if crystal.decisions:
-            preview_parts.append(crystal.decisions[0][:80])
+            header_parts.append(crystal.decisions[0][:80])
         if crystal.files_changed:
             source_files = [f for f in crystal.files_changed if '.ziya/tasks/' not in f.path]
             artifact_files = [f for f in crystal.files_changed if '.ziya/tasks/' in f.path]
             if source_files:
-                preview_parts.append(f"{len(source_files)} file(s) changed")
-            if artifact_files:
-                preview_parts.append(f"{len(artifact_files)} report(s) written")
-        summary_preview = " · ".join(preview_parts) if preview_parts else \
+                header_parts.append(f"{len(source_files)} file(s) changed")
+        summary_preview = " · ".join(header_parts) if header_parts else \
             self._clean_crystal_summary(crystal.summary, max_length=120)
 
         content = f"💎 **{done}/{total}** — {name} completed: {summary_preview}"
+
+        # Embed artifact report files as collapsed sections so the user can
+        # read the findings directly without navigating elsewhere.
+        artifact_files = [
+            f for f in crystal.files_changed if '.ziya/tasks/' in f.path
+        ] if crystal.files_changed else []
+        if artifact_files:
+            from app.context import get_project_root
+            project_root = (spec.project_root if spec else None) or get_project_root()
+            report_blocks: list[str] = []
+            for fc in artifact_files:
+                abs_path = os.path.join(project_root, fc.path) if project_root else fc.path
+                try:
+                    with open(abs_path, "r", encoding="utf-8") as fh:
+                        file_content = fh.read().strip()
+                except OSError:
+                    file_content = f"_(could not read {fc.path})_"
+                report_title = os.path.basename(fc.path).replace("-", " ").replace("_", " ")
+                if report_title.lower().endswith(".md"):
+                    report_title = report_title[:-3]
+                report_blocks.append(
+                    f"<details>\n"
+                    f"<summary>📄 {report_title}</summary>\n\n"
+                    f"{file_content}\n\n"
+                    f"</details>"
+                )
+            if report_blocks:
+                content += "\n\n" + "\n\n".join(report_blocks)
 
         from app.models.chat import Message
         import uuid as _uuid
