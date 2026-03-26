@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Python 3.11+
+- Python 3.10 – 3.14
 - AWS credentials with Bedrock access (or a Google API key for Gemini)
 
 ---
