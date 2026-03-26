@@ -1,0 +1,10 @@
+diff --git a/src/comp.tsx b/src/comp.tsx
+--- a/src/comp.tsx
++++ b/src/comp.tsx
+@@ -6,6 +6,7 @@
+                     return (
+                         <Alert key={index} msg="blocked" />
++                        <Alert key={sk} msg="blocked" />
+                     );
+                 }
+ 

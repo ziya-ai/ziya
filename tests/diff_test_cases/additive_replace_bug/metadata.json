@@ -1,0 +1,8 @@
+{
+    "target_file": "src/components/Renderer.tsx",
+    "description": "MRE for additive-replace bug: a multi-hunk diff where an earlier hunk adds lines (shifting offsets), causing a later single-line replacement hunk to be applied additively instead of replacing — both old and new lines end up in the file. This is the 'key={index} to key={sk}' class of bug observed in MarkdownRenderer.tsx.",
+    "date_added": "2025-07-14",
+    "issue_reference": "additive_replace_bug_mre",
+    "expected_to_fail": false,
+    "bug_class": "additive_replace_instead_of_replace"
+}
