@@ -28,15 +28,15 @@ interface SwarmFlowGraphProps {
 
 // Status → visual styling
 const STATUS_COLORS: Record<string, { fill: string; stroke: string; text: string }> = {
-  queued:      { fill: '#2a2a3e', stroke: '#555',    text: '#aaa' },
-  proposed:    { fill: '#2a2a3e', stroke: '#555',    text: '#aaa' },
-  ready:       { fill: '#2a2a3e', stroke: '#6366f1', text: '#ccc' },
-  running:     { fill: '#1a1a40', stroke: '#6366f1', text: '#e0e0ff' },
-  compacting:  { fill: '#1a2a1a', stroke: '#a78bfa', text: '#d8b4fe' },
-  crystal:     { fill: '#0a2a0a', stroke: '#52c41a', text: '#b7eb8f' },
-  failed:      { fill: '#2a0a0a', stroke: '#ff4d4f', text: '#ffa39e' },
+  queued: { fill: '#2a2a3e', stroke: '#555', text: '#aaa' },
+  proposed: { fill: '#2a2a3e', stroke: '#555', text: '#aaa' },
+  ready: { fill: '#2a2a3e', stroke: '#6366f1', text: '#ccc' },
+  running: { fill: '#1a1a40', stroke: '#6366f1', text: '#e0e0ff' },
+  compacting: { fill: '#1a2a1a', stroke: '#a78bfa', text: '#d8b4fe' },
+  crystal: { fill: '#0a2a0a', stroke: '#52c41a', text: '#b7eb8f' },
+  failed: { fill: '#2a0a0a', stroke: '#ff4d4f', text: '#ffa39e' },
   interrupted: { fill: '#2a1a0a', stroke: '#fa8c16', text: '#ffd591' },
-  blocked:     { fill: '#2a2a0a', stroke: '#faad14', text: '#ffe58f' },
+  blocked: { fill: '#2a2a0a', stroke: '#faad14', text: '#ffe58f' },
 };
 
 // Layout constants
@@ -205,7 +205,7 @@ const SwarmFlowGraph: React.FC<SwarmFlowGraphProps> = ({ nodes, planName, onNode
       const sourceNode = nodes.find(n => n.id === edge.from);
       const edgeColor = sourceNode?.status === 'crystal' ? '#52c41a'
         : sourceNode?.status === 'running' ? '#6366f1'
-        : '#444';
+          : '#444';
 
       edgeGroup.append('path')
         .attr('d', `M${x1},${y1} C${midX},${y1} ${midX},${y2} ${x2},${y2}`)
@@ -250,13 +250,12 @@ const SwarmFlowGraph: React.FC<SwarmFlowGraphProps> = ({ nodes, planName, onNode
         .attr('font-size', '16px')
         .text(node.emoji);
 
-      // Name (truncated)
-      const displayName = node.name.length > 12 ? node.name.slice(0, 11) + '…' : node.name;
+      const displayName = node.name.length > 20 ? node.name.slice(0, 19) + '…' : node.name;
       g.append('text')
         .attr('x', 34)
         .attr('y', NODE_H / 2 + 1)
         .attr('dominant-baseline', 'central')
-        .attr('fill', colors.text)
+        .attr('font-size', '10px')
         .attr('font-size', '12px')
         .attr('font-weight', 500)
         .text(displayName);
@@ -264,9 +263,9 @@ const SwarmFlowGraph: React.FC<SwarmFlowGraphProps> = ({ nodes, planName, onNode
       // Status indicator dot
       const dotColor = node.status === 'crystal' ? '#52c41a'
         : node.status === 'running' ? '#6366f1'
-        : node.status === 'failed' ? '#ff4d4f'
-        : node.status === 'compacting' ? '#a78bfa'
-        : 'transparent';
+          : node.status === 'failed' ? '#ff4d4f'
+            : node.status === 'compacting' ? '#a78bfa'
+              : 'transparent';
 
       if (dotColor !== 'transparent') {
         g.append('circle')

@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
 import { Button, Modal, Input, Form, Switch, message } from 'antd';
 import { FolderAddOutlined } from '@ant-design/icons';
-import { useChatContext } from '../context/ChatContext';
+import { useConversationList } from '../context/ConversationListContext';
 import { useTheme } from '../context/ThemeContext';
 
 export const FolderButton: React.FC = () => {
-  const { createFolder, currentFolderId } = useChatContext();
+  const { createFolder, currentFolderId } = useConversationList();
   const [isModalVisible, setIsModalVisible] = useState(false);
   const [form] = Form.useForm();
   const { isDarkMode } = useTheme();

@@ -29,7 +29,8 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import { Button, message, Modal, Tag, Tooltip } from 'antd';
 import { RocketOutlined, CheckCircleOutlined, LoadingOutlined } from '@ant-design/icons';
-import { useChatContext } from '../context/ChatContext';
+import { useConversationList } from '../context/ConversationListContext';
+import { useActiveChat } from '../context/ActiveChatContext';
 import { useProject } from '../context/ProjectContext';
 import { projectSync } from '../utils/projectSync';
 import { useTheme } from '../context/ThemeContext';
@@ -79,7 +80,8 @@ const DelegateLaunchButton: React.FC<DelegateLaunchButtonProps> = ({
   conversationId,
 }) => {
   const { currentProject } = useProject();
-  const { setConversations, setFolders, currentConversationId: contextConversationId } = useChatContext();
+  const { setConversations, setFolders } = useConversationList();
+  const { currentConversationId: contextConversationId } = useActiveChat();
   // Fall back to the active conversation when no explicit conversationId prop is supplied.
   const effectiveConversationId = conversationId ?? contextConversationId ?? null;
   const { isDarkMode } = useTheme();
@@ -206,7 +208,7 @@ const DelegateLaunchButton: React.FC<DelegateLaunchButtonProps> = ({
     } finally {
       setLaunching(false);
     }
-  }, [taskSpec, currentProject]);
+  }, [taskSpec, currentProject, effectiveConversationId, setConversations, setFolders]);
 
   if (!taskSpec) return null;
 

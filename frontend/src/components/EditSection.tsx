@@ -1,12 +1,12 @@
 import React, { useState, useRef, useEffect } from "react";
-import { useChatContext } from '../context/ChatContext';
-import { sendPayload } from "../apis/chatApi";
+import { useActiveChat } from '../context/ActiveChatContext';
+import { useConversationList } from '../context/ConversationListContext';
 import { Message, ImageAttachment } from "../utils/types";
 import { useFolderContext } from "../context/FolderContext";
 import { useProject } from "../context/ProjectContext";
 import { Button, Tooltip, Input, Space, message, Image as AntImage } from "antd";
-import { convertKeysToStrings } from '../utils/types';
 import { modelCapabilitiesService } from '../services/modelCapabilitiesService';
+import { useSendPayload } from '../hooks/useSendPayload';
 import {
     EditOutlined, CheckOutlined, CloseOutlined, SaveOutlined,
     PictureOutlined, PaperClipOutlined, DeleteOutlined
@@ -23,20 +23,18 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
         currentConversationId,
         addMessageToConversation,
         setIsStreaming,
-        setConversations,
         streamingConversations,
         addStreamingConversation,
-        streamedContentMap,
-        setStreamedContentMap,
-        removeStreamingConversation,
         editingMessageIndex,
-        setEditingMessageIndex
-    } = useChatContext();
-    const { currentProject } = useProject();
+        setStreamedContentMap,
+        setEditingMessageIndex,
+        removeStreamingConversation,
+    } = useActiveChat();
+    const { setConversations } = useConversationList();
 
-    const [editedMessage, setEditedMessage] = useState(currentMessages[index].content);
-    const { checkedKeys } = useFolderContext();
+    const { send } = useSendPayload();
     const [attachedImages, setAttachedImages] = useState<ImageAttachment[]>([]);
+    const [editedMessage, setEditedMessage] = useState('');
     const [supportsVision, setSupportsVision] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -68,6 +66,7 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
         if (isEditing) {
             const messageImages = currentMessages[index].images || [];
             setAttachedImages(messageImages);
+            setEditedMessage(currentMessages[index].content || '');
         }
     }, [isEditing, index, currentMessages]);
 
@@ -104,7 +103,32 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
                     reader.readAsDataURL(file);
                 });
 
-                const matches = imageData.match(/^data:(.+);base64,(.+)$/);
+                // Resize large images before sending.  Claude processes images
+                // at max 1568px on the long edge; anything larger just inflates
+                // the payload and slows down the Bedrock call.
+                const resized = await new Promise<string>((resolve) => {
+                    const resImg = new Image();
+                    resImg.onload = () => {
+                        const MAX_EDGE = 1568;
+                        if (resImg.width <= MAX_EDGE && resImg.height <= MAX_EDGE) {
+                            resolve(imageData);
+                            return;
+                        }
+                        const scale = MAX_EDGE / Math.max(resImg.width, resImg.height);
+                        const canvas = document.createElement('canvas');
+                        canvas.width = Math.round(resImg.width * scale);
+                        canvas.height = Math.round(resImg.height * scale);
+                        const ctx = canvas.getContext('2d')!;
+                        ctx.drawImage(resImg, 0, 0, canvas.width, canvas.height);
+                        const outputType = file.type === 'image/jpeg' ? 'image/jpeg' : 'image/png';
+                        const quality = file.type === 'image/jpeg' ? 0.85 : undefined;
+                        resolve(canvas.toDataURL(outputType, quality));
+                    };
+                    resImg.onerror = () => resolve(imageData);
+                    resImg.src = imageData;
+                });
+
+                const matches = resized.match(/^data:(.+);base64,(.+)$/);
                 if (!matches) {
                     throw new Error('Invalid image data format');
                 }
@@ -115,7 +139,7 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
                 await new Promise((resolve, reject) => {
                     img.onload = resolve;
                     img.onerror = reject;
-                    img.src = imageData;
+                    img.src = resized;
                 });
 
                 const attachment: ImageAttachment = {
@@ -239,24 +263,10 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
 
         addStreamingConversation(currentConversationId);
         try {
-            const result = await sendPayload(
-                truncatedMessages,
-                editedMessage,
-                convertKeysToStrings(checkedKeys),
-                currentConversationId,
-                undefined,
-                undefined, // images
-                streamedContentMap,
-                setStreamedContentMap,
-                setIsStreaming,
-                removeStreamingConversation,
-                addMessageToConversation,
-                streamingConversations.has(currentConversationId),
-                undefined, // setProcessingState - not available in EditSection
-                undefined, // setReasoningContentMap
-                undefined, // throttlingRecoveryDataRef
-                currentProject
-            );
+            const result = await send({
+                messages: truncatedMessages,
+                question: editedMessage,
+            });
             // sendPayload already adds the message to conversation, so we just need to clear the flag
             if (result) {
                 // Clear the edit in progress flag after the response is complete

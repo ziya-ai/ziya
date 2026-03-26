@@ -16,7 +16,9 @@ import {
 } from "@ant-design/icons";
 import { useTheme } from '../context/ThemeContext';
 import PanelResizer from './PanelResizer';
-import { useChatContext } from '../context/ChatContext';
+import { useActiveChat } from '../context/ActiveChatContext';
+import { useScrollContext } from '../context/ScrollContext';
+import { useStreamingContext } from '../context/StreamingContext';
 import { ProjectProvider } from '../context/ProjectContext';
 import { useProject } from '../context/ProjectContext';
 import { ProfilerWrapper } from './ProfilerWrapper';
@@ -101,9 +103,12 @@ const PANEL_WIDTH_KEY = 'ZIYA_PANEL_WIDTH';
 
 export const App: React.FC = () => {
     const {
-        streamedContentMap, currentMessages, startNewChat, isTopToBottom, setIsTopToBottom,
-        streamingConversations, currentConversationId, userHasScrolled, setUserHasScrolled, recordManualScroll
-    } = useChatContext();
+        streamedContentMap, currentMessages, startNewChat, currentConversationId,
+    } = useActiveChat();
+    const {
+        isTopToBottom, setIsTopToBottom, userHasScrolled, setUserHasScrolled, recordManualScroll,
+    } = useScrollContext();
+    const { streamingConversations } = useStreamingContext();
     const enableCodeApply = window.enableCodeApply === 'true';
     const { currentProject } = useProject();
     const [graphPanelOpen, setGraphPanelOpen] = useState(false);

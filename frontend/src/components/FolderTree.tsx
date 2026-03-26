@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useCallback, useRef, lazy, Suspense } from 'react';
 import { Tabs, message } from 'antd';
 import { useFolderContext, FolderProvider } from '../context/FolderContext';
-import { useChatContext } from '../context/ChatContext';
+import { useConversationList } from '../context/ConversationListContext';
+import { useActiveChat } from '../context/ActiveChatContext';
 import { useProject } from '../context/ProjectContext';
 import { TokenCountDisplay } from "./TokenCountDisplay";
 import { FolderOutlined } from '@ant-design/icons'; // Import icons
@@ -34,14 +35,12 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
     const [modelId, setModelId] = useState<string>('');
     const { isDarkMode } = useTheme();
     const projectContext = useProject();
-
-    // Use a more selective approach to extract only what we need from ChatContext
-    const chatContext = useChatContext();
-    const { createFolder } = chatContext;
+    // Extract only the specific values needed from ChatContext
+    // This reduces re-renders when unrelated ChatContext values change
+    // (e.g., streamedContentMap changes during streaming won't trigger FolderTree re-renders)
+    const { createFolder, currentFolderId } = useConversationList();
+    const { startNewChat } = useActiveChat();
     const { isScanning, scanError } = useFolderContext();
-    const currentFolderId = chatContext.currentFolderId;
-
-    // Add state to track panel width
     const [panelWidth, setPanelWidth] = useState<number>(300);
     const [modelDisplayName, setModelDisplayName] = useState<string>('');
 
@@ -109,13 +108,13 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
     // Handle creating a new chat at current folder level
     const handleCreateChatAtCurrentLevel = useCallback(async () => {
         try {
-            await chatContext.startNewChat(currentFolderId);
+            await startNewChat(currentFolderId);
             message.success('New chat created successfully');
         } catch (error) {
             console.error('Error creating chat:', error);
             message.error('Failed to create new chat');
         }
-    }, [chatContext, currentFolderId]);
+    }, [startNewChat, currentFolderId]);
 
     // Handle scan cancellation
     const handleCancelScan = useCallback(async () => {
