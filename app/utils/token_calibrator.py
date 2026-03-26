@@ -55,6 +55,11 @@ class TokenCalibrator:
     SELF-IMPROVING: Gets more accurate with every request.
     """
     
+    # Physically reasonable bounds for chars_per_token ratios.
+    # No real tokenizer produces less than ~1 char/token or more than ~15.
+    MIN_CHARS_PER_TOKEN = 1.0
+    MAX_CHARS_PER_TOKEN = 15.0
+    
     def __init__(self, cache_file: str = None):
         # Fixed overhead baselines (measured once from first request)
         self.baseline_overhead_tokens = {}  # model_family -> overhead_tokens
@@ -205,7 +210,8 @@ class TokenCalibrator:
         mcp_tool_count: int
     ):
         """
-        Establish baseline overhead from first request.
+        Establish baseline overhead from first request, or re-establish
+        if the MCP tool set has changed since last measurement.
         
         Args:
             model_family: Model family being used
@@ -213,8 +219,14 @@ class TokenCalibrator:
             file_chars: Total characters in file content
             mcp_tool_count: Number of MCP tools in the request
         """
-        if model_family in self.baselines_measured:
-            return  # Already measured
+        previous_tool_count = self.baseline_tool_counts.get(model_family, 0)
+        if model_family in self.baselines_measured and mcp_tool_count == previous_tool_count:
+            return  # Already measured with same tool set
+        
+        if model_family in self.baselines_measured and mcp_tool_count != previous_tool_count:
+            logger.info(f"📊 BASELINE INVALIDATED for {model_family}: "
+                       f"tool count changed {previous_tool_count} -> {mcp_tool_count}")
+            self.baselines_measured.discard(model_family)
         
         with self.lock:
             # Use naive 4.0 ratio for initial file estimate
@@ -225,6 +237,7 @@ class TokenCalibrator:
             
             # Store baseline
             self.baseline_overhead_tokens[model_family] = baseline_overhead
+            self.baseline_tool_counts[model_family] = mcp_tool_count
             self.baselines_measured.add(model_family)
             
             # Also estimate per-tool cost for future reference
@@ -284,6 +297,15 @@ class TokenCalibrator:
             
             # Calculate actual chars/token ratio for this batch
             actual_ratio = total_chars / actual_tokens
+            
+            # Sanity check: reject samples with implausible ratios.
+            # A ratio below MIN means the token count is inflated (e.g.
+            # unaccounted tool-definition overhead was attributed to files).
+            if actual_ratio < self.MIN_CHARS_PER_TOKEN or actual_ratio > self.MAX_CHARS_PER_TOKEN:
+                logger.warning(f"📊 CALIBRATION: Rejecting implausible ratio {actual_ratio:.3f} "
+                             f"({total_chars:,} chars / {actual_tokens:,} tokens). "
+                             f"Valid range: [{self.MIN_CHARS_PER_TOKEN}, {self.MAX_CHARS_PER_TOKEN}]")
+                return
             
             # Record sample for EACH file type encountered
             # This is GENERIC - learns whatever file types appear
@@ -453,7 +475,10 @@ class TokenCalibrator:
             # Calculate model-wide global ratio
             if model_ratios:
                 model_ratios.sort()
-                self.global_by_model[model] = model_ratios[len(model_ratios) // 2]  # Median
+                median = model_ratios[len(model_ratios) // 2]
+                self.global_by_model[model] = max(
+                    self.MIN_CHARS_PER_TOKEN, min(median, self.MAX_CHARS_PER_TOKEN)
+                )
                 
                 logger.debug(f"📊 {model}: {self.global_by_model[model]:.2f} chars/token "
                            f"({len(model_ratios)} samples, {len(self.samples_by_model_and_type[model])} types)")
@@ -534,6 +559,7 @@ class TokenCalibrator:
                 
                 # Use p95 for conservative estimates (handles outliers)
                 chars_per_token = stats['p95']
+                chars_per_token = max(chars_per_token, self.MIN_CHARS_PER_TOKEN)
                 estimated = int(content_length / chars_per_token)
                 
                 logger.debug(f"📊 [{model_family}] Calibrated {file_type}: {estimated:,} tokens "
@@ -553,6 +579,7 @@ class TokenCalibrator:
         # Tier 3: Calibrated model-wide global
         if model_family in self.global_by_model:
             chars_per_token = self.global_by_model[model_family]
+            chars_per_token = max(chars_per_token, self.MIN_CHARS_PER_TOKEN)
             estimated = int(content_length / chars_per_token)
             
             logger.debug(f"📊 [{model_family}] Using model global: {estimated:,} tokens (ratio: {chars_per_token:.2f})")
