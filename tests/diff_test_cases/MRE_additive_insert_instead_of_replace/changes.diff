@@ -1,0 +1,40 @@
+diff --git a/src/component.tsx b/src/component.tsx
+--- a/src/component.tsx
++++ b/src/component.tsx
+@@ -8,6 +8,7 @@
+                 case 'diff':
+                     return <DiffToken key={index} token={diffToken} index={index} />;
++                    return <DiffToken key={sk} token={diffToken} index={index} />;
+
+                 case 'graphviz':
+@@ -13,6 +14,7 @@
+                         <LazyD3Renderer key={index}
++                        <LazyD3Renderer key={sk}
+                             spec={{ type: "graphviz", definition: token.text }}
+                         />
+                     );
+@@ -19,6 +21,7 @@
+                     return <LazyD3Renderer key={index} spec={mermaidSpec} />;
++                    return <LazyD3Renderer key={sk} spec={mermaidSpec} />;
+
+                 case 'tool':
+@@ -24,6 +27,7 @@
+                             <Alert key={index} message="Blocked" />
++                            <Alert key={sk} message="Blocked" />
+                         );
+                     }
+@@ -29,6 +33,7 @@
+                             <ThinkingBlock key={index} isDarkMode={isDarkMode}>
++                            <ThinkingBlock key={sk} isDarkMode={isDarkMode}>
+                                 {toolContent}
+                             </ThinkingBlock>
+@@ -35,6 +40,7 @@
+                         <ToolBlock key={index} toolName={name} content={toolContent} />
++                        <ToolBlock key={sk} toolName={name} content={toolContent} />
+                     );
+
+@@ -39,6 +45,7 @@
+                     return <CodeBlock key={index} token={decodedToken} index={index} />;
++                    return <CodeBlock key={sk} token={decodedToken} index={index} />;
+
+                 case 'paragraph':

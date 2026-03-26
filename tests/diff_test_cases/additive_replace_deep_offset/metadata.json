@@ -1,0 +1,7 @@
+{
+  "target_file": "src/components/LargeRenderer.tsx",
+  "description": "Aggressive MRE for additive-replace bug: a 173-line file with 26 key={index} occurrences. Hunk 1 adds 9 lines early in the file, shifting all subsequent line numbers. The remaining 26 hunks each perform a single-line replacement (key={index} to key={sk}) at the ORIGINAL line numbers. Tests whether the pipeline correctly tracks accumulated offset so later hunks replace instead of insert additively. Reproduces false-success bug where all hunks report SUCCEEDED but file is unchanged.",
+  "date_added": "2025-07-14",
+  "issue_reference": "additive_replace_deep_offset",
+  "bug_class": "false_success_no_changes_applied"
+}
