@@ -673,7 +673,7 @@ ${svgData}`;
             margin: 0;
             box-sizing: border-box;
             color: ${isDarkMode ? '#e6e6e6' : '#24292e'};
-          }><code>${JSON.stringify(vegaSpec, null, 2)}</code></pre>`;
+          "><code>${JSON.stringify(vegaSpec, null, 2)}</code></pre>`;
 
           // Re-add the actions container after clearing innerHTML
           if (actionsContainer.parentNode !== container) {
