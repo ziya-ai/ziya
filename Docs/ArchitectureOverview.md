@@ -57,7 +57,7 @@ Conversations are stored in the browser's IndexedDB, not on the server filesyste
 
 ## Model Abstraction
 
-`ModelManager` (`app/agents/models.py`) is the single source of truth for model selection, configuration, and the boto3 client lifecycle.
+`ModelManager` (`app/agents/models.py`) is the single source of truth for model selection, configuration, and the boto3 client lifecycle. All model streaming uses `StreamingToolExecutor` directly — the legacy LangServe routing layer has been removed.
 
 Model definitions live in `app/config/models_config.py` as nested dicts:
 
@@ -179,6 +179,8 @@ ChatProvider  (state owner — frontend/src/context/ChatContext.tsx)
 
 **Why slices?** A monolithic context with ~55 dependency items causes every state change to re-render all 25+ consumers. During streaming (60Hz updates to `streamedContentMap`), this forced `FolderTree`, `ProjectManagerModal`, and other unrelated components to re-render. The slice pattern keeps the state management code centralized in `ChatProvider` while delivering narrow subscriptions.
 
+**Important:** `ChatProvider` must **not** subscribe to `FolderContext` (e.g. via `useFolderContext()`). Because `ChatProvider` is the root of the entire conversation tree, subscribing to folder state would cause a full re-render every time the user checks or unchecks a file. File selections are managed entirely within `FolderContext` and persisted via `sessionStorage`.
+
 | Context | Key consumers | Changes when |
 |---|---|---|
 | `ScrollContext` | App, Conversation | User scrolls or auto-scroll fires |
@@ -187,3 +189,21 @@ ChatProvider  (state owner — frontend/src/context/ChatContext.tsx)
 | `StreamingContext` | MarkdownRenderer sub-components | Streaming starts/stops |
 
 **Migration path**: Components that previously called `useChatContext()` are incrementally migrated to the appropriate slice hook (`useScrollContext()`, `useConversationList()`, `useActiveChat()`, `useStreamingContext()`). The monolithic `useChatContext()` remains available for complex consumers that span multiple slices.
+
+**Value object hygiene:** The `useMemo` value object in `ChatProvider` must contain only flat keys that match the `ChatContext` interface — no grouped sub-objects (they compute values that no consumer reads) and no state counters that are never incremented (they waste dependency-array slots without triggering updates). Tests in `ChatContextValueHygiene.test.ts` enforce this.
+
+### Conversation Shell Loading & Data Integrity
+
+On startup, `ChatProvider` loads **conversation shells** (`db.getConversationShells()`) — lightweight objects with only the first and last messages — so the sidebar renders immediately. Full message data for the active conversation is lazy-loaded afterward.
+
+A defense-in-depth guard prevents shell data from being written back to persistence stores, which would destroy middle messages:
+
+| Layer | Location | Mechanism |
+|---|---|---|
+| Shell markers | `db.getConversationShells()` | Each shell carries `_isShell: true` and `_fullMessageCount: N` |
+| Save blocker | `queueSave()` in ChatProvider | Blocks wholesale saves when React state contains shells |
+| Fast-path disable | `queueSave()` cache logic | Disables the `otherProjectConvsCache` optimization when shells are present, forcing a full IndexedDB read |
+| Write guard | `db._saveConversationsWithLock()` | Rejects any conversation where `_isShell && messages.length < _fullMessageCount` |
+| Flag clearing | Lazy-load and server sync | `_isShell` is cleared when full messages are loaded |
+
+The markers are transient (never persisted to IndexedDB or the server). They exist only in React state during the window between shell load and full data load.

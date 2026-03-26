@@ -196,6 +196,25 @@ Drag images into the chat input, paste from clipboard, or use the image button. 
 
 ---
 
+## Diagram Rendering
+
+Ziya renders inline diagrams from fenced code blocks. Supported formats:
+
+| Format | Block syntax | Notes |
+|---|---|---|
+| Mermaid | `` ```mermaid `` | Flowcharts, sequence, class, state, ER, Gantt, etc. Auto-preprocessed for syntax compatibility. |
+| Graphviz | `` ```graphviz `` | DOT language. Full layout engine. |
+| DrawIO | `` ```drawio `` | XML-based diagrams with export and online editor support. |
+| Vega-Lite | `` ```vega-lite `` | JSON data visualization specs. |
+| HTML Mockup | `` ```html-mockup `` | Interactive UI prototypes in sandboxed iframes. |
+| Packet | `` ```packet `` | Bit-level protocol frame layouts. |
+
+Rendered diagrams include **Open** (popup with zoom/pan), **Save** (SVG download), and **Source** (view/edit definition) buttons.
+
+**Skip-edge rerouting**: For Mermaid diagrams with feedback/control-loop edges that span multiple nodes, a post-render rerouter automatically arcs those paths above or below intermediate nodes instead of drawing them straight through. Arcs are nested by skip distance — shorter-range arcs sit closer to the node row, longer-range arcs arc further out — so overlapping edges remain visually distinct even when several skip edges share the same side.
+
+---
+
 ## Thinking Mode
 
 Some models support extended reasoning before responding:
