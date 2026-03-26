@@ -1,6 +1,6 @@
 import React from 'react';
 import { Button, Tooltip } from 'antd';
-import { useChatContext } from '../context/ChatContext';
+import { useActiveChat } from '../context/ActiveChatContext';
 
 interface StopStreamButtonProps {
   conversationId: string;
@@ -20,7 +20,7 @@ const StopStreamButton: React.FC<StopStreamButtonProps> = ({
     removeStreamingConversation,
     setIsStreaming,
     getProcessingState,
-  } = useChatContext();
+  } = useActiveChat();
 
   const isStreaming = streamingConversations.has(conversationId);
   const processingState = getProcessingState(conversationId);

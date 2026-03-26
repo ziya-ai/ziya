@@ -382,6 +382,18 @@ class ConversationDB implements DB {
         // CRITICAL: Deduplicate conversations before saving
         const deduped = new Map<string, Conversation>();
         conversations.forEach(conv => {
+            // CRITICAL: Strip shell markers before persisting — they are
+            // transient metadata that must never reach IndexedDB.
+            // Also reject shell conversations outright if they would
+            // downgrade the message count (data loss prevention).
+            if ((conv as any)._isShell) {
+                const fullCount = (conv as any)._fullMessageCount || 0;
+                if (conv.messages.length < fullCount) {
+                    console.warn(`🛡️ SAVE_GUARD: Blocking shell write for ${conv.id.substring(0, 8)} — has ${conv.messages.length} messages, full count is ${fullCount}`);
+                    return; // Skip this conversation entirely — IndexedDB already has the full version
+                }
+            }
+
             const existing = deduped.get(conv.id);
             if (!existing) {
                 deduped.set(conv.id, conv);
@@ -631,12 +643,15 @@ class ConversationDB implements DB {
                 const request = store.get('current');
                 request.onsuccess = () => {
                     const conversations: Conversation[] = Array.isArray(request.result) ? request.result : [];
-                    // Strip messages — keep only the first and last for preview/timestamp
+                    // Strip messages — keep only the first and last for preview/timestamp.
+                    // Mark as shell with original count so save paths can detect and protect.
                     const shells = conversations.map(conv => ({
                         ...conv,
                         messages: conv.messages?.length > 0
                             ? [conv.messages[0], ...(conv.messages.length > 1 ? [conv.messages[conv.messages.length - 1]] : [])]
                             : [],
+                        _isShell: true,
+                        _fullMessageCount: conv.messages?.length || 0,
                     }));
                     resolve(shells);
                 };

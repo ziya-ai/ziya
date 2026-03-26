@@ -1,12 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useChatContext } from '../context/ChatContext';
+import { useStreamingContext } from '../context/StreamingContext';
 
 /**
  * StreamingContentManager is a utility component that helps manage visibility
  * of content during streaming to prevent disappearing elements.
  */
 export const StreamingContentManager: React.FC = () => {
-  const { isStreaming, streamingConversations } = useChatContext();
+  const { isStreaming, streamingConversations } = useStreamingContext();
   const [activeStreamingElements, setActiveStreamingElements] = useState<Set<HTMLElement>>(new Set());
   const observerRef = useRef<IntersectionObserver | null>(null);
   const isStreamingActive = isStreaming || streamingConversations.size > 0;

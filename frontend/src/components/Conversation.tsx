@@ -1,12 +1,12 @@
-import React, { useEffect, useRef, memo, useCallback, useMemo, useState, useTransition } from "react";
-import { useChatContext } from '../context/ChatContext';
+import React, { useEffect, useRef, memo, useCallback, useMemo, useState } from "react";
+import { useActiveChat } from '../context/ActiveChatContext';
+import { useConversationList } from '../context/ConversationListContext';
+import { useScrollContext } from '../context/ScrollContext';
 import { EditSection } from "./EditSection";
 import { Spin, Button, Tooltip, Image as AntImage } from 'antd';
 import { RedoOutlined, SoundOutlined, MutedOutlined, PictureOutlined, CodeOutlined, EyeOutlined } from "@ant-design/icons";
-import { sendPayload } from "../apis/chatApi";
 
 import ModelChangeNotification from './ModelChangeNotification';
-import { convertKeysToStrings } from "../utils/types";
 import { useSetQuestion } from '../context/QuestionContext';
 import { useFolderContext } from '../context/FolderContext';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
@@ -14,56 +14,189 @@ import { useProject } from '../context/ProjectContext';
 
 // Lazy load the MarkdownRenderer
 import { MarkdownRenderer } from "./MarkdownRenderer";
+import { useSendPayload } from '../hooks/useSendPayload';
+
+/**
+ * MessageActions — memoized per-message action buttons (retry, resubmit, mute).
+ *
+ * Extracted from Conversation so that button callbacks don't inflate
+ * Conversation's useCallback dependency arrays. Each MessageActions instance
+ * subscribes to context independently and only re-renders when its own
+ * props or the specific values it reads change.
+ */
+interface MessageActionsProps {
+    message: any;
+    actualIndex: number;
+    isEditing: boolean;
+    needsResponse: boolean;
+    enableCodeApply: boolean;
+    onOpenShellConfig?: () => void;
+}
+
+const MessageActions = memo<MessageActionsProps>(({
+    message, actualIndex, isEditing, needsResponse,
+}) => {
+    const {
+        currentMessages,
+        currentConversationId,
+        addStreamingConversation,
+        streamingConversations,
+        toggleMessageMute,
+        editingMessageIndex,
+    } = useActiveChat();
+    const { setConversations } = useConversationList();
+    const { isTopToBottom, recordManualScroll } = useScrollContext();
+    const setQuestion = useSetQuestion();
+    const { send } = useSendPayload();
+
+    const isCurrentlyStreaming = streamingConversations.has(currentConversationId);
+
+    // Retry button — shown when a human message has no following assistant response
+    const showRetry = message.role === 'human' && needsResponse;
+
+    const handleRetry = useCallback(async () => {
+        const chatContainer = document.querySelector('.chat-container');
+        if (chatContainer) {
+            const isAtEnd = isTopToBottom
+                ? (chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight) < 50
+                : chatContainer.scrollTop < 50;
+            if (!isAtEnd) recordManualScroll();
+        }
+        addStreamingConversation(currentConversationId);
+        try {
+            await send({ question: message.content, images: message.images });
+        } catch (error) {
+            console.error('Error retrying message:', error);
+        }
+    }, [currentConversationId, currentMessages, message.content, message.images, addStreamingConversation, isTopToBottom, recordManualScroll, send]);
+
+    const handleResubmit = useCallback(() => {
+        if (isCurrentlyStreaming) return;
+        const truncatedMessages = currentMessages.slice(0, actualIndex + 1);
+        const messagesToSend = truncatedMessages.filter(msg => !msg.muted);
+        setConversations(prev => prev.map(conv =>
+            conv.id === currentConversationId
+                ? { ...conv, messages: truncatedMessages, _version: Date.now() }
+                : conv
+        ));
+        addStreamingConversation(currentConversationId);
+        (async () => {
+            try {
+                await send({
+                    messages: messagesToSend,
+                    question: message.content,
+                    images: message.images,
+                });
+            } catch (error) {
+                console.error('Error resubmitting message:', error);
+            }
+        })();
+        setQuestion('');
+    }, [currentConversationId, currentMessages, actualIndex, message.content, message.images, isCurrentlyStreaming, addStreamingConversation, send, setConversations, setQuestion]);
+
+    if (isEditing) return null;
+
+    return (
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginRight: '8px' }}>
+            {/* Mute button */}
+            {!showRetry && message.role !== 'system' && (
+                <Tooltip title={message.muted ? "Unmute (include in context)" : "Mute (exclude from context)"}>
+                    <Button icon={message.muted ? <MutedOutlined /> : <SoundOutlined />}
+                        type="default" size="small"
+                        style={{ padding: '0 8px', minWidth: '32px', height: '32px' }}
+                        onClick={() => toggleMessageMute(currentConversationId, actualIndex)} />
+                </Tooltip>
+            )}
+            {/* Resubmit button */}
+            {!showRetry && message.role === 'human' && !isCurrentlyStreaming && (
+                <Tooltip title="Resubmit this question">
+                    <Button icon={<RedoOutlined />} type="default" size="small"
+                        style={{ padding: '0 8px', minWidth: '32px', height: '32px' }}
+                        onClick={handleResubmit} />
+                </Tooltip>
+            )}
+            {/* Retry button */}
+            {showRetry && (
+                <Tooltip title="The AI response may have failed. Click to retry.">
+                    <Button icon={<RedoOutlined />} type="primary" size="small" onClick={handleRetry}>
+                        Retry AI Response
+                    </Button>
+                </Tooltip>
+            )}
+        </div>
+    );
+});
+MessageActions.displayName = 'MessageActions';
+
 interface ConversationProps {
     enableCodeApply: boolean;
     onOpenShellConfig?: () => void;
 }
 
 const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpenShellConfig }) => {
-    const { currentMessages,
-        editingMessageIndex,
-        isTopToBottom,
-        conversations,
-        setDisplayMode,
-        isLoadingConversation,
-        isProjectSwitching,
-        addStreamingConversation,
+    const {
+        currentMessages,
         streamingConversations,
         currentConversationId,
-        setIsStreaming,
-        setStreamedContentMap,
-        isStreaming,
-        addMessageToConversation,
-        removeStreamingConversation,
         streamedContentMap,
-        userHasScrolled,
-        updateProcessingState,
-        setConversations,
-        toggleMessageMute,
+        currentDisplayMode,
+        editingMessageIndex,
+    } = useActiveChat();
+    const {
+        isLoadingConversation,
+        isProjectSwitching,
+    } = useConversationList();
+    const {
+        isTopToBottom,
         recordManualScroll,
-    } = useChatContext();
+    } = useScrollContext();
 
-    const { checkedKeys } = useFolderContext();
-    const { currentProject, activeSkillPrompts } = useProject();
+    // Refs for callback-only values — avoids re-renders when these change.
+    // Callbacks read .current at invocation time, not at render time.
+    const activeChatRef = useRef(useActiveChat());
+    const convListRef = useRef(useConversationList());
+    const scrollRef = useRef(useScrollContext());
+    const folderRef = useRef(useFolderContext());
+    const projectRef = useRef(useProject());
+
+    // Keep refs current on every render (cheap assignment, no state change)
+    const activeChat = useActiveChat();
+    const convList = useConversationList();
+    const scrollCtx = useScrollContext();
+    const folderCtx = useFolderContext();
+    const projectCtx = useProject();
+    activeChatRef.current = activeChat;
+    convListRef.current = convList;
+    scrollRef.current = scrollCtx;
+    folderRef.current = folderCtx;
+    projectRef.current = projectCtx;
+
     const setQuestion = useSetQuestion();
-    const visibilityRef = useRef<boolean>(true);
-    // Memoize conversation-specific streaming state to prevent unnecessary re-renders
-    const conversationStreamingState = useMemo(() => ({
-        isCurrentlyStreaming: streamingConversations.has(currentConversationId),
-        hasStreamedContent: streamedContentMap.has(currentConversationId) &&
-            streamedContentMap.get(currentConversationId) !== '',
-        streamedContent: streamedContentMap.get(currentConversationId) || ''
-    }), [streamingConversations, streamedContentMap, currentConversationId]);
 
-    // Extract for use in component
-    const { isCurrentlyStreaming, hasStreamedContent } = conversationStreamingState;
+    // Two-layer streaming derivation: the raw values (Map/Set) change on every
+    // chunk, but the booleans only flip at stream start/end. Derive booleans
+    // first, then memo on the booleans so downstream code doesn't re-render
+    // 60 times/second during streaming.
+    const rawIsStreaming = streamingConversations.has(currentConversationId);
+    const rawHasContent = streamedContentMap.has(currentConversationId) &&
+        streamedContentMap.get(currentConversationId) !== '';
+    const prevStreamingRef = useRef(false);
+    const prevHasContentRef = useRef(false);
+
+    const isCurrentlyStreaming = useMemo(() => {
+        prevStreamingRef.current = rawIsStreaming;
+        return rawIsStreaming;
+    }, [rawIsStreaming]);
+
+    const hasStreamedContent = useMemo(() => {
+        prevHasContentRef.current = rawHasContent;
+        return rawHasContent;
+    }, [rawHasContent]);
 
     // Raw markdown display mode — toggled via Ctrl+Shift+U
-    const isRawMode = useMemo(() => {
-        const conv = conversations.find(c => c.id === currentConversationId);
-        return conv?.displayMode === 'raw';
-    }, [conversations, currentConversationId]);
-
+    // Sourced from ActiveChatContext (computed in ChatContext) to avoid subscribing
+    // to the full conversations[] array, which changes on every incoming message.
+    const isRawMode = currentDisplayMode === 'raw';
     const isRawModeRef = useRef(isRawMode);
     isRawModeRef.current = isRawMode;
 
@@ -111,12 +244,12 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
         const handleRawToggle = (e: KeyboardEvent) => {
             if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'u') {
                 e.preventDefault();
-                setDisplayMode(currentConversationId, isRawModeRef.current ? 'pretty' : 'raw');
+                activeChatRef.current.setDisplayMode(currentConversationId, isRawModeRef.current ? 'pretty' : 'raw');
             }
         };
         window.addEventListener('keydown', handleRawToggle);
         return () => window.removeEventListener('keydown', handleRawToggle);
-    }, [currentConversationId, setDisplayMode]);
+    }, [currentConversationId]);
 
     // Conversation switch overlay: show a spinner immediately when the user
     // switches conversations.  The heavy MarkdownRenderer work blocks the
@@ -161,186 +294,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
         }
     }, [currentMessages]);
 
-    const previousStreamingStateRef = useRef<boolean>(false);
-
-    // Check if we should show retry button for a message
-    const shouldShowRetry = useCallback((index: number) => {
-        const message = currentMessages[index];
-        if (!message || message.role !== 'human') return false;
-
-        const nextIndex = index + 1;
-        const hasNextMessage = nextIndex < currentMessages.length;
-        const nextMessage = hasNextMessage ? currentMessages[nextIndex] : null;
-
-        // Show retry if this human message doesn't have an assistant response following it
-        return !hasNextMessage || nextMessage?.role !== 'assistant';
-    }, [currentMessages]);
-
-    // Render retry button with explanation
-    const renderRetryButton = useCallback((index: number) => {
-        if (!shouldShowRetry(index)) return null;
-
-        return (
-            <Tooltip title="The AI response may have failed. Click to retry.">
-                <Button
-                    icon={<RedoOutlined />}
-                    type="primary"
-                    size="small"
-                    onClick={async () => {
-                        const message = currentMessages[index];
-
-                        const chatContainer = document.querySelector('.chat-container');
-                        if (chatContainer) {
-                            const isAtEnd = isTopToBottom ?
-                                (chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight) < 50 :
-                                chatContainer.scrollTop < 50;
-
-                            if (!isAtEnd) {
-                                recordManualScroll();
-                                console.log('📜 Retry while scrolled away - position locked');
-                            }
-                        }
-
-                        addStreamingConversation(currentConversationId);
-                        try {
-                            const messagesToSend = currentMessages.filter(msg => !msg.muted);
-                            await sendPayload(
-                                messagesToSend,
-                                message.content,
-                                convertKeysToStrings(checkedKeys || []),
-                                currentConversationId,
-                                activeSkillPrompts || undefined,
-                                message.images, // Include original images in retry
-                                streamedContentMap,
-                                setStreamedContentMap,
-                                setIsStreaming,
-                                removeStreamingConversation,
-                                addMessageToConversation,
-                                streamingConversations.has(currentConversationId),
-                                (state: 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'error') => updateProcessingState(currentConversationId, state),
-                                undefined, // setReasoningContentMap
-                                undefined, // throttlingRecoveryDataRef
-                                currentProject
-                            );
-                        } catch (error) {
-                            setIsStreaming(false);
-                            removeStreamingConversation(currentConversationId);
-                            console.error('Error retrying message:', error);
-                        }
-                    }}
-                >
-                    Retry AI Response
-                </Button>
-            </Tooltip>
-        );
-    }, [shouldShowRetry, currentMessages, isTopToBottom, recordManualScroll, addStreamingConversation, currentConversationId, checkedKeys, streamedContentMap, setStreamedContentMap, setIsStreaming, removeStreamingConversation, addMessageToConversation, streamingConversations, updateProcessingState]);
-
-    // Render mute button
-    const renderMuteButton = useCallback((index: number) => {
-        if (editingMessageIndex === index) {
-            return null;
-        }
-
-        const message = currentMessages[index];
-
-        if (shouldShowRetry(index)) {
-            return null;
-        }
-
-        if (!message || message.role === 'system') return null;
-
-        return (
-            <Tooltip title={message.muted ? "Unmute (include in context)" : "Mute (exclude from context)"}>
-                <Button
-                    icon={message.muted ? <MutedOutlined /> : <SoundOutlined />}
-                    type="default"
-                    size="small"
-                    style={{
-                        padding: '0 8px',
-                        minWidth: '32px',
-                        height: '32px'
-                    }}
-                    onClick={() => {
-                        toggleMessageMute(currentConversationId, index);
-                    }}
-                />
-            </Tooltip>
-        );
-    }, [editingMessageIndex, currentMessages, shouldShowRetry, toggleMessageMute, currentConversationId]);
-
-    // Render resubmit button for human messages
-    const renderResubmitButton = useCallback((index: number) => {
-        if (editingMessageIndex === index) {
-            return null;
-        }
-
-        const message = currentMessages[index];
-
-        if (shouldShowRetry(index)) {
-            return null;
-        }
-
-        if (!message || message.role !== 'human') return null;
-
-        if (isCurrentlyStreaming) return null;
-
-        return (
-            <Tooltip title="Resubmit this question">
-                <Button
-                    icon={<RedoOutlined />}
-                    type="default"
-                    size="small"
-                    style={{
-                        padding: '0 8px',
-                        minWidth: '32px',
-                        height: '32px'
-                    }}
-                    onClick={() => {
-                        setStreamedContentMap(new Map());
-
-                        const truncatedMessages = currentMessages.slice(0, index + 1);
-                        const messagesToSend = truncatedMessages.filter(msg => !msg.muted);
-
-                        setConversations(prev => prev.map(conv =>
-                            conv.id === currentConversationId
-                                ? { ...conv, messages: truncatedMessages, _version: Date.now() }
-                                : conv
-                        ));
-
-                        addStreamingConversation(currentConversationId);
-
-                        (async () => {
-                            try {
-                                await sendPayload(
-                                    messagesToSend,
-                                    message.content,
-                                    convertKeysToStrings(checkedKeys || []),
-                                    currentConversationId,
-                                    activeSkillPrompts || undefined,
-                                    message.images, // Include original images
-                                    streamedContentMap,
-                                    setStreamedContentMap,
-                                    setIsStreaming,
-                                    removeStreamingConversation,
-                                    addMessageToConversation,
-                                    streamingConversations.has(currentConversationId),
-                                (state: 'idle' | 'sending' | 'awaiting_model_response' | 'processing_tools' | 'error') => updateProcessingState(currentConversationId, state),
-                                undefined, // setReasoningContentMap
-                                undefined, // throttlingRecoveryDataRef
-                                currentProject
-                                );
-                            } catch (error) {
-                                setIsStreaming(false);
-                                removeStreamingConversation(currentConversationId);
-                                console.error('Error resubmitting message:', error);
-                            }
-                        })();
-                        setQuestion('');
-                    }}
-                />
-            </Tooltip>
-        );
-    }, [editingMessageIndex, currentMessages, shouldShowRetry, isCurrentlyStreaming, setStreamedContentMap, setConversations, currentConversationId, addStreamingConversation, checkedKeys, streamedContentMap, setIsStreaming, removeStreamingConversation, addMessageToConversation, streamingConversations, updateProcessingState, setQuestion]);
+    const previousStreamingStateRef = useRef<Set<string>>(new Set());
 
     // Apply progressive window: show only the tail during initial render,
     // then the full list once the transition completes.
@@ -369,53 +323,28 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                 debugLog('Conversation messages updated:', {
                     messageCount: currentMessages.length,
                     previousCount: renderedCountRef.current,
-                    isVisible: visibilityRef.current,
                     displayOrder: isTopToBottom ? 'top-down' : 'bottom-up'
                 });
             }
             renderedCountRef.current = currentMessages.length;
         }
-
-        // Set up visibility observer
-        const observer = new IntersectionObserver(
-            (entries) => {
-                entries.forEach(entry => {
-                    visibilityRef.current = entry.isIntersecting;
-                });
-            },
-            { threshold: 0.1 }
-        );
-
-        return () => observer.disconnect();
     }, [isTopToBottom, currentMessages.length]);
 
     // Detect when OTHER conversations complete streaming
     useEffect(() => {
-        // Track which conversations just stopped streaming
-        const previousSet = previousStreamingStateRef.current ? new Set([currentConversationId]) : new Set();
-        const currentSet = new Set(Array.from(streamingConversations));
+        const previousSet = previousStreamingStateRef.current;
+        const wasCurrentStreaming = previousSet.has(currentConversationId);
 
-        const wasStreaming = previousStreamingStateRef.current;
-        const isNowStreaming = isCurrentlyStreaming;
+        // Snapshot the current set for next render
+        previousStreamingStateRef.current = new Set(streamingConversations);
 
-        // Update ref
-        previousStreamingStateRef.current = isNowStreaming;
-
-        // Detect if ANY conversation finished (including background ones)
-        const streamingEnded = streamingConversations.size < previousSet.size ||
-            (wasStreaming && !isNowStreaming);
-
-        if (streamingEnded) {
-            // Check if it was the current conversation or a background one
-            if (wasStreaming && !isNowStreaming) {
+        if (wasCurrentStreaming && !isCurrentlyStreaming) {
                 console.log('✅ Current conversation finished streaming');
                 // Scroll behavior handled by scrollToBottom in ChatContext
-            } else if (streamingConversations.size < previousSet.size) {
+        } else if (previousSet.size > streamingConversations.size) {
                 // A background conversation finished
                 console.log('📌 Background conversation finished - locking scroll position');
-                // CRITICAL: Lock scroll position to prevent any movement
                 recordManualScroll();
-            }
         }
     }, [isCurrentlyStreaming, streamingConversations, currentConversationId, recordManualScroll]);
 
@@ -455,7 +384,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                         <Button
                             type="link" size="small"
                             icon={<EyeOutlined />}
-                            onClick={() => setDisplayMode(currentConversationId, 'pretty')}
+                            onClick={() => activeChatRef.current.setDisplayMode(currentConversationId, 'pretty')}
                             style={{ marginLeft: 8, color: 'inherit' }}
                         >Rendered</Button>
                     </div>
@@ -466,6 +395,9 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                     const nextActualIndex = actualIndex + 1;
                     const hasNextMessage = nextActualIndex < currentMessages.length;
                     const nextMessage = hasNextMessage ? currentMessages[nextActualIndex] : null;
+                    const needsRetry = msg.role === 'human' &&
+                        !isCurrentlyStreaming && !hasStreamedContent &&
+                        (!hasNextMessage || nextMessage?.role !== 'assistant');
                     const needsResponse = msg.role === 'human' &&
                         !isCurrentlyStreaming &&
                         !hasStreamedContent &&
@@ -515,15 +447,15 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                                     }}>(pending feedback)</span>
                                                 )}:
                                             </div>
-                                            <div style={{
-                                                display: 'flex',
-                                                gap: '8px',
-                                                alignItems: 'center',
-                                                marginRight: '8px'
-                                            }}>
-                                                {renderMuteButton(actualIndex)}
-                                                {renderResubmitButton(actualIndex)}
-                                                {needsResponse && renderRetryButton(actualIndex)}
+                                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                                <MessageActions
+                                                    message={msg}
+                                                    actualIndex={actualIndex}
+                                                    isEditing={editingMessageIndex === actualIndex}
+                                                    needsResponse={needsRetry}
+                                                    enableCodeApply={enableCodeApply}
+                                                    onOpenShellConfig={onOpenShellConfig}
+                                                />
                                                 <EditSection index={actualIndex} isInline={true} />
                                             </div>
                                         </div>
@@ -569,7 +501,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                                         markdown={msg.content}
                                                         enableCodeApply={enableCodeApply}
                                                         onOpenShellConfig={onOpenShellConfig}
-                                                            isStreaming={false}
+                                                        isStreaming={false}
                                                     />
                                                 )}
                                             </div>}
@@ -578,15 +510,14 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                         <>
                                             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
                                                 <div className="message-sender">AI:</div>
-                                                <div style={{
-                                                    display: 'flex',
-                                                    gap: '8px',
-                                                    alignItems: 'center',
-                                                    marginRight: '8px'
-                                                }}>
-                                                    {renderMuteButton(actualIndex)}
-                                                </div>
-                                                {renderRetryButton(actualIndex)}
+                                                <MessageActions
+                                                    message={msg}
+                                                    actualIndex={actualIndex}
+                                                    isEditing={false}
+                                                    needsResponse={needsRetry}
+                                                    enableCodeApply={enableCodeApply}
+                                                    onOpenShellConfig={onOpenShellConfig}
+                                                />
                                             </div>
                                             <div className="message-content">
                                                 {isRawMode ? (

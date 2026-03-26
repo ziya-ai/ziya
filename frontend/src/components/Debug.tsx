@@ -14,7 +14,7 @@ import { db } from '../utils/db';
 import { DiffTestRunner } from '../utils/diffTestRunner';
 import { diffTestSuites } from '../utils/diffTestCases';
 import { DiffTestReport } from '../utils/diffTestTypes';
-import { useChatContext } from '../context/ChatContext';
+import { useConversationList } from '../context/ConversationListContext';
 import { useFolderContext } from '../context/FolderContext';
 
 // Lazy load test components
@@ -32,7 +32,7 @@ export const Debug: React.FC = () => {
     const [testReport, setTestReport] = useState<DiffTestReport | null>(null);
     const [isRunningTests, setIsRunningTests] = useState(false);
     const [isRepairing, setIsRepairing] = useState(false);
-    const { dbError } = useChatContext();
+    const { dbError } = useConversationList();
     const { folders } = useFolderContext();
     const { isDarkMode, toggleTheme } = useTheme();
 

@@ -3,7 +3,9 @@ import { FixedSizeList } from 'react-window';
 import { message, Modal, Form, Spin, Input, Switch, Dropdown, Menu as AntMenu } from 'antd';
 import { ConversationHealthDebugModal } from './ConversationHealthDebug';
 import ExportConversationModal from './ExportConversationModal';
-import { useChatContext } from '../context/ChatContext';
+import { useConversationList } from '../context/ConversationListContext';
+import { useActiveChat } from '../context/ActiveChatContext';
+import { useStreamingContext } from '../context/StreamingContext';
 import { useTheme } from '../context/ThemeContext';
 import { useProject } from '../context/ProjectContext';
 import { Conversation, ConversationFolder, SearchResult } from '../utils/types';
@@ -680,28 +682,30 @@ const MoveToProjectMenu = ({
 const MUIChatHistory = () => {
   const {
     conversations,
-    currentConversationId,
     isProjectSwitching,
-    setDynamicTitleLength,
     setConversations,
     isLoadingConversation,
-    streamingConversations,
     toggleConversationGlobal,
     moveConversationToProject,
     moveFolderToProject,
     toggleFolderGlobal,
-    startNewChat,
-    loadConversation,
     folders,
     setFolders,
-    loadConversationAndScrollToMessage,
     currentFolderId,
     setCurrentFolderId,
     createFolder,
     updateFolder,
     deleteFolder,
     moveConversationToFolder
-  } = useChatContext();
+  } = useConversationList();
+  const {
+    currentConversationId,
+    setDynamicTitleLength,
+    startNewChat,
+    loadConversation,
+    loadConversationAndScrollToMessage,
+    streamingConversations,
+  } = useActiveChat();
 
   const { isDarkMode } = useTheme();
   const { projects, currentProject, switchProject } = useProject();
@@ -832,7 +836,7 @@ const MUIChatHistory = () => {
       // Log the expanded nodes for debugging
       console.log('Initial expanded nodes:', folderIds);
     }
-  }, []);
+  }, [folders]);
 
   // Ensure the folder chain containing the current conversation is always expanded.
   // This handles project switches, search-result navigation, and any other code path
@@ -1008,7 +1012,7 @@ const MUIChatHistory = () => {
   };
 
   // Handle moving a conversation to a folder
-  const handleMoveConversation = async (conversationId: string, folderId: string | null) => {
+  const handleMoveConversation = useCallback(async (conversationId: string, folderId: string | null) => {
     console.log('🔧 handleMoveConversation called:', { conversationId, folderId });
 
     // Get the original conversation ID for finding the conversation
@@ -1073,10 +1077,10 @@ const MUIChatHistory = () => {
       console.error('❌ Move failed:', error);
       message.error('Failed to move conversation');
     }
-  };
+  }, [conversations, moveConversationToFolder, folders]);
 
   // Handle moving a folder
-  const handleMoveFolder = async (folderId: string, targetParentId: string | null, insertionContext?: { type: string; targetNodeId?: string }) => {
+  const handleMoveFolder = useCallback(async (folderId: string, targetParentId: string | null, insertionContext?: { type: string; targetNodeId?: string }) => {
     try {
       const folder = folders.find(f => f.id === folderId);
       if (!folder) return;
@@ -1151,7 +1155,7 @@ const MUIChatHistory = () => {
       message.error('Failed to move folder');
       console.error('Move folder error:', error);
     }
-  };
+  }, [folders, updateFolder]);
 
   const startCustomDrag = useCallback((nodeId: string, nodeType: 'folder' | 'conversation', text: string) => {
     const ghostElement = createDragGhost(text);
@@ -2124,16 +2128,25 @@ const MUIChatHistory = () => {
 
   // Build tree data from folders and conversations
   // Stability refs to prevent unnecessary rebuilds
-  const lastTreeDataInputsRef = useRef<string>('');
+  const lastTreeDataInputsRef = useRef<number>(0);
   const lastTreeDataRef = useRef<any[]>([]);
 
   const treeDataRaw = useMemo(() => {
-    // Create a stable hash of inputs to detect actual changes
-    const inputHash = JSON.stringify({
-      folders: folders.map(f => ({ id: f.id, name: f.name, parentId: f.parentId, isGlobal: f.isGlobal, tpSrc: f.taskPlan?.source_conversation_id })),
-      conversations: conversations.map(c => ({ id: c.id, title: c.title, folderId: c.folderId, isActive: c.isActive, lastAccessedAt: c.lastAccessedAt, isGlobal: c.isGlobal, ds: c.delegateMeta?.status })),
-      pinnedFolders: Array.from(pinnedFolders)
-    });
+    // Use a lightweight numeric hash instead of JSON.stringify.
+    // JSON.stringify of all folder/conversation metadata was allocating
+    // multi-MB strings on every useMemo evaluation — a major source of
+    // memory pressure during idle re-renders.
+    let h = 0x811c9dc5; // FNV-1a offset basis
+    const fnv = (s: string) => {
+      for (let i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = Math.imul(h, 0x01000193);
+      }
+    };
+    folders.forEach(f => { fnv(f.id); fnv(f.name); fnv(f.parentId || ''); fnv(f.isGlobal ? 'g' : ''); fnv(f.taskPlan?.source_conversation_id || ''); });
+    conversations.forEach(c => { fnv(c.id); fnv(c.title); fnv(c.folderId || ''); fnv(c.isActive === false ? '0' : '1'); fnv(String(c.lastAccessedAt || 0)); fnv(c.isGlobal ? 'g' : ''); fnv(c.delegateMeta?.status || ''); });
+    pinnedFolders.forEach(id => fnv(id));
+    const inputHash = h >>> 0; // unsigned 32-bit
 
     // If inputs haven't changed, return cached result
     if (inputHash === lastTreeDataInputsRef.current && lastTreeDataRef.current.length > 0) {
@@ -2445,7 +2458,7 @@ const MUIChatHistory = () => {
 
     lastTreeDataRef.current = result;
     return result;
-  }, [conversations, folders, pinnedFolders]);
+  }, [conversations, folders, pinnedFolders]); // eslint-disable-line react-hooks/exhaustive-deps -- currentConversationId used only for debug logging; including it would force tree rebuild on every switch
 
   // Debounce treeData updates: during startup, conversations change 4+ times
   // in rapid succession. Only rebuild the flattened tree once things settle.
@@ -2459,7 +2472,9 @@ const MUIChatHistory = () => {
     } else {
       treeDataTimerRef.current = setTimeout(() => setTreeData(treeDataRaw), 300);
     }
-  }, [treeDataRaw]);
+  // treeData.length intentionally included so the "immediate vs debounce"
+  // decision re-evaluates when the tree transitions from empty to populated
+  }, [treeDataRaw, treeData.length]);
 
   // Virtualization: flatten visible tree nodes
   const expandedSet = useMemo(() => new Set(expandedNodes.map(String)), [expandedNodes]);
@@ -2765,21 +2780,23 @@ const MUIChatHistory = () => {
             placeholder="Search conversations..."
             value={searchQuery}
             onChange={(e) => handleSearchChange(e.target.value)}
-            InputProps={{
-              startAdornment: (
-                <SearchIcon sx={{ mr: 1, color: isDarkMode ? '#888' : '#999' }} />
-              ),
-              endAdornment: searchQuery && (
-                <IconButton
-                  size="small"
-                  onClick={() => {
-                    setSearchQuery('');
-                    setSearchResults([]);
-                  }}
-                >
-                  <CloseIcon fontSize="small" />
-                </IconButton>
-              )
+            slotProps={{
+              input: {
+                startAdornment: (
+                  <SearchIcon sx={{ mr: 1, color: isDarkMode ? '#888' : '#999' }} />
+                ),
+                endAdornment: searchQuery && (
+                  <IconButton
+                    size="small"
+                    onClick={() => {
+                      setSearchQuery('');
+                      setSearchResults([]);
+                    }}
+                  >
+                    <CloseIcon fontSize="small" />
+                  </IconButton>
+                )
+              }
             }}
             sx={{ flex: 1, minWidth: 0 }}
           />

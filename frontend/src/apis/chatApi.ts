@@ -799,6 +799,15 @@ export const sendPayload = async (
         // Filter out empty messages
         const messagesToSend = messages.filter(isValidMessage);
 
+        // Log connection health to help diagnose silent queuing from pool exhaustion
+        if (typeof performance !== 'undefined' && performance.getEntriesByType) {
+            const resources = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
+            const pending = resources.filter(r => r.responseStart === 0 && r.startTime > performance.now() - 30000);
+            if (pending.length > 0) {
+                console.warn(`⚠️ CONN_POOL: ${pending.length} recent requests still awaiting response — possible connection pool saturation`);
+            }
+        }
+
         // Log message count before and after filtering
         if (messages.length !== messagesToSend.length) {
             console.log("Filtered out empty messages:", {
@@ -2593,6 +2602,13 @@ export const sendPayload = async (
             removeStreamingConversation(conversationId);
             throw error;
         } finally {
+            // Release the ReadableStream reader so the underlying TCP connection
+            // returns to the browser's connection pool.  Without this, the
+            // connection stays open until the server or TCP keepalive closes it,
+            // which can exhaust the browser's 6-connection-per-origin limit and
+            // cause subsequent fetch() calls to silently queue for minutes.
+            try { readerRef?.cancel().catch(() => {}); } catch (_) {}
+            readerRef = null;
         }
     } catch (error) {
         console.error('Error in sendPayload:', error);
@@ -2631,8 +2647,6 @@ export const sendPayload = async (
         // Only disconnect WebSocket if we're truly done and not just switching conversations
         // The WebSocket should persist across multiple requests in the same conversation
     }
-
-    return !errorOccurred && currentContent ? currentContent : '';
 };
 
 /**

@@ -9,7 +9,8 @@ import {
     ExportOutlined,
     SyncOutlined
 } from '@ant-design/icons';
-import { useChatContext } from '../context/ChatContext';
+import { useConversationList } from '../context/ConversationListContext';
+import { useActiveChat } from '../context/ActiveChatContext';
 import { db } from '../utils/db';
 import { Conversation } from '../utils/types';
 import { useTheme } from '../context/ThemeContext';
@@ -41,7 +42,8 @@ interface HealthReport {
 }
 
 const ConversationHealthDebug: React.FC = () => {
-    const { conversations, currentConversationId, folders } = useChatContext();
+    const { conversations, folders } = useConversationList();
+    const { currentConversationId } = useActiveChat();
     const { isDarkMode } = useTheme();
     const [healthReport, setHealthReport] = useState<HealthReport | null>(null);
     const [loading, setLoading] = useState(false);
