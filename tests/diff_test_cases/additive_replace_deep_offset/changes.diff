@@ -1,0 +1,160 @@
+diff --git a/src/components/LargeRenderer.tsx b/src/components/LargeRenderer.tsx
+--- a/src/components/LargeRenderer.tsx
++++ b/src/components/LargeRenderer.tsx
+@@ -7,6 +7,15 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+     return items.map((item, index) => {
++        // Stable key generation for streaming reconciliation
++        const keyDupCounts = new Map<string, number>();
++        const rawKey = hashContent(item.type + (item.text || '').slice(0, 80));
++        const dupCount = keyDupCounts.get(rawKey) || 0;
++        keyDupCounts.set(rawKey, dupCount + 1);
++        const sk = dupCount > 0
++            ? rawKey + '-' + dupCount
++            : rawKey;
++
+         // Case: info
+         if (type === "info") return (
+@@ -9,7 +18,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+         // Case: info
+         if (type === "info") return (
+-            <div key={index} className="info-wrapper">
++            <div key={sk} className="info-wrapper">
+                 <span>{item.message}</span>
+             </div>
+@@ -18,7 +27,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+             return (
+-                <div key={index} className="status-block">
++                <div key={sk} className="status-block">
+                     <p>{item.text}</p>
+                 </div>
+@@ -25,7 +34,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+ 
+-        if (type === "warning") return <span key={index}>{item.content}</span>;
++        if (type === "warning") return <span key={sk}>{item.content}</span>;
+ 
+@@ -28,7 +37,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+ 
+-        if (type === "error") return <h2 key={index}>{item.title}</h2>;
++        if (type === "error") return <h2 key={sk}>{item.title}</h2>;
+ 
+@@ -32,7 +41,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+         if (type === "success") return (
+-            <div key={index} className="success-wrapper">
++            <div key={sk} className="success-wrapper">
+                 <span>{item.message}</span>
+             </div>
+@@ -41,7 +50,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+             return (
+-                <div key={index} className="debug-block">
++                <div key={sk} className="debug-block">
+                     <p>{item.text}</p>
+                 </div>
+@@ -48,7 +57,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+ 
+-        if (type === "trace") return <span key={index}>{item.content}</span>;
++        if (type === "trace") return <span key={sk}>{item.content}</span>;
+ 
+@@ -51,7 +60,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+ 
+-        if (type === "metric") return <h2 key={index}>{item.title}</h2>;
++        if (type === "metric") return <h2 key={sk}>{item.title}</h2>;
+ 
+@@ -55,7 +64,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+         if (type === "config") return (
+-            <div key={index} className="config-wrapper">
++            <div key={sk} className="config-wrapper">
+                 <span>{item.message}</span>
+             </div>
+@@ -64,7 +73,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+             return (
+-                <div key={index} className="health-block">
++                <div key={sk} className="health-block">
+                     <p>{item.text}</p>
+                 </div>
+@@ -71,7 +80,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+ 
+-        if (type === "alert") return <span key={index}>{item.content}</span>;
++        if (type === "alert") return <span key={sk}>{item.content}</span>;
+ 
+@@ -74,7 +83,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+ 
+-        if (type === "notice") return <h2 key={index}>{item.title}</h2>;
++        if (type === "notice") return <h2 key={sk}>{item.title}</h2>;
+ 
+@@ -78,7 +87,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+         if (type === "event") return (
+-            <div key={index} className="event-wrapper">
++            <div key={sk} className="event-wrapper">
+                 <span>{item.message}</span>
+             </div>
+@@ -87,7 +96,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+             return (
+-                <div key={index} className="signal-block">
++                <div key={sk} className="signal-block">
+                     <p>{item.text}</p>
+                 </div>
+@@ -94,7 +103,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+ 
+-        if (type === "report") return <span key={index}>{item.content}</span>;
++        if (type === "report") return <span key={sk}>{item.content}</span>;
+ 
+@@ -97,7 +106,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+ 
+-        if (type === "summary") return <h2 key={index}>{item.title}</h2>;
++        if (type === "summary") return <h2 key={sk}>{item.title}</h2>;
+ 
+@@ -101,7 +110,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+         if (type === "detail") return (
+-            <div key={index} className="detail-wrapper">
++            <div key={sk} className="detail-wrapper">
+                 <span>{item.message}</span>
+             </div>
+@@ -110,7 +119,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+             return (
+-                <div key={index} className="overview-block">
++                <div key={sk} className="overview-block">
+                     <p>{item.text}</p>
+                 </div>
+@@ -117,7 +126,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+ 
+-        if (type === "highlight") return <span key={index}>{item.content}</span>;
++        if (type === "highlight") return <span key={sk}>{item.content}</span>;
+ 
+@@ -120,7 +129,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+ 
+-        if (type === "note") return <h2 key={index}>{item.title}</h2>;
++        if (type === "note") return <h2 key={sk}>{item.title}</h2>;
+ 
+@@ -124,7 +133,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+         if (type === "badge") return (
+-            <div key={index} className="badge-wrapper">
++            <div key={sk} className="badge-wrapper">
+                 <span>{item.message}</span>
+             </div>
+@@ -133,7 +142,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+             return (
+-                <div key={index} className="tag-block">
++                <div key={sk} className="tag-block">
+                     <p>{item.text}</p>
+                 </div>
+@@ -140,7 +149,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+ 
+-        if (type === "label") return <span key={index}>{item.content}</span>;
++        if (type === "label") return <span key={sk}>{item.content}</span>;
+ 
+@@ -143,7 +152,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+ 
+-        if (type === "marker") return <h2 key={index}>{item.title}</h2>;
++        if (type === "marker") return <h2 key={sk}>{item.title}</h2>;
+ 
+@@ -147,7 +156,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+         if (type === "indicator") return (
+-            <div key={index} className="indicator-wrapper">
++            <div key={sk} className="indicator-wrapper">
+                 <span>{item.message}</span>
+             </div>
+@@ -168,7 +177,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+ 
+-        return <span key={index}>{item.text}</span>;
++        return <span key={sk}>{item.text}</span>;
+     });

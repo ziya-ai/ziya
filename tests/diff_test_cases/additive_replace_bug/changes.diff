@@ -1,0 +1,66 @@
+diff --git a/src/components/Renderer.tsx b/src/components/Renderer.tsx
+--- a/src/components/Renderer.tsx
++++ b/src/components/Renderer.tsx
+@@ -21,7 +21,16 @@ const ItemBlock: React.FC<ItemProps> = ({ data, index }) => {
+ };
+ 
+ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
++    // Build stable keys so React can reconcile elements correctly
++    // when items are inserted/removed during streaming.
++    const keyDupCounts = new Map<string, number>();
+     return items.map((item, index) => {
++        const rawKey = hashContent(item.type + (item.text || item.content || '').slice(0, 80));
++        const dupCount = keyDupCounts.get(rawKey) || 0;
++        keyDupCounts.set(rawKey, dupCount + 1);
++        const sk = dupCount > 0
++            ? `${rawKey}-${dupCount}`
++            : rawKey;
++
+         const type = item.type;
+ 
+         switch (type) {
+@@ -29,7 +38,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+             case 'alert':
+                 return (
+-                    <div key={index} className="alert-wrapper">
++                    <div key={sk} className="alert-wrapper">
+                         <span>{item.message}</span>
+                     </div>
+                 );
+@@ -37,7 +46,7 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+             case 'status':
+                 if (!item.text) return null;
+                 return (
+-                    <div key={index} className="status-block">
++                    <div key={sk} className="status-block">
+                         <ItemBlock data={item} index={index} />
+                     </div>
+                 );
+@@ -45,16 +54,16 @@ const renderItems = (items: any[], isDark: boolean): React.ReactNode => {
+             case 'warning':
+                 return (
+-                    <span key={index} className="warning-text">
++                    <span key={sk} className="warning-text">
+                         {item.content}
+                     </span>
+                 );
+ 
+-            case 'info':
+-                return <p key={index}>{item.content}</p>;
++             case 'info':
++                return <p key={sk}>{item.content}</p>;
+ 
+             case 'heading':
+-                return <h2 key={index}>{item.title}</h2>;
++                return <h2 key={sk}>{item.title}</h2>;
+ 
+             case 'divider':
+-                return <hr key={index} />;
++                return <hr key={sk} />;
+ 
+             default:
+-                return <span key={index}>{item.text || ''}</span>;
++                return <span key={sk}>{item.text || ''}</span>;
+         }
+     });
+ };

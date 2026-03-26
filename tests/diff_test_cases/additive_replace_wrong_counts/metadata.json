@@ -1,0 +1,7 @@
+{
+  "target_file": "src/comp.tsx",
+  "description": "MRE for additive-replace symptom caused by a diff with NO removal line. The hunk has the old key={index} line as context (space-prefixed) and the new key={sk} line as addition (+-prefixed), with no corresponding '-' removal. The pipeline faithfully inserts the new line after the existing one, producing adjacent duplicates. This is the single-hunk minimal case.",
+  "date_added": "2025-07-14",
+  "issue_reference": "additive_insert_instead_of_replace",
+  "bug_class": "additive_insert_instead_of_replace"
+}
