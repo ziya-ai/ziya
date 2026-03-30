@@ -6,6 +6,7 @@ from typing import List, Optional
 from datetime import timedelta
 import uuid
 
+from ..utils.logging_utils import get_mode_aware_logger
 from ..models.chat import Chat, ChatCreate, ChatUpdate, ChatSummary, Message, ChatBulkSync, ChatGroupBulkSync
 from ..models.group import ChatGroup, ChatGroupCreate, ChatGroupUpdate
 from ..storage.projects import ProjectStorage
@@ -14,6 +15,7 @@ from ..storage.global_items import collect_global_chats, collect_global_groups
 from ..storage.groups import ChatGroupStorage
 from ..utils.paths import get_ziya_home, get_project_dir
 
+logger = get_mode_aware_logger(__name__)
 router = APIRouter(tags=["chats"])
 
 def get_chat_storage(project_id: str) -> ChatStorage:
@@ -245,6 +247,16 @@ async def bulk_sync_chats(project_id: str, data: ChatBulkSync):
 
                 if incoming_ver >= existing_ver:
                     merged = chat_data.model_dump()
+                    # Message-count guard: never allow an update to silently
+                    # reduce message count.  This prevents partial/shell data
+                    # from overwriting a complete conversation on the server.
+                    existing_msg_count = len(existing.messages) if existing.messages else 0
+                    incoming_msg_count = len(merged.get('messages', []))
+                    if incoming_msg_count < existing_msg_count and existing_msg_count > 2:
+                        logger.warning(
+                            f"bulk-sync: blocking message regression for {chat_data.id} "
+                            f"({existing_msg_count} -> {incoming_msg_count} messages)")
+                        merged['messages'] = [m.model_dump() for m in existing.messages]
                     if merged.get('delegateMeta') is None and existing.delegateMeta is not None:
                         merged['delegateMeta'] = existing.delegateMeta.model_dump() \
                             if hasattr(existing.delegateMeta, 'model_dump') \

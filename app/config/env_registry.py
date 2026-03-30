@@ -143,6 +143,8 @@ _VARS: List[EnvVar] = [
            "Maximum tool calls the model may make in a single round."),
     EnvVar("ZIYA_SECURE_MCP", bool, False, EnvCategory.MCP,
            "Enforce strict MCP result signing and verification."),
+    EnvVar("ZIYA_MAX_TOOL_ITERATIONS", int, 200, EnvCategory.MCP,
+           "Maximum agentic loop iterations per streaming response."),
 
     # ── Features ──────────────────────────────────────────────────────────
     EnvVar("ZIYA_ENABLE_AST", bool, False, EnvCategory.FEATURES,
@@ -186,6 +188,8 @@ _VARS: List[EnvVar] = [
     # ── Security ──────────────────────────────────────────────────────────
     EnvVar("ZIYA_ENCRYPTION_KEY", str, None, EnvCategory.SECURITY,
            "Passphrase for at-rest encryption of stored conversations."),
+    EnvVar("ZIYA_RETENTION_OVERRIDE_DAYS", float, None, EnvCategory.SECURITY,
+           "Minimum retention TTL in days, overriding stricter plugin policies."),
     EnvVar("ZIYA_DISABLE_AUDIT_LOG", bool, False, EnvCategory.SECURITY,
            "Disable the MCP tool audit log."),
     EnvVar("ZIYA_ALLOW_ALL_ENDPOINTS", bool, False, EnvCategory.SECURITY,

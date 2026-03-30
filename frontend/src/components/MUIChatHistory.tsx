@@ -489,10 +489,15 @@ interface FlatNode {
 function flattenVisibleNodes(
   nodes: any[],
   expandedSet: Set<string>,
-  depth: number = 0
+  depth: number = 0,
+  visited?: Set<string>
 ): FlatNode[] {
+  if (depth > 20) return []; // Prevent stack overflow from circular references
+  const seen = visited || new Set<string>();
   const result: FlatNode[] = [];
   for (const node of nodes) {
+    if (seen.has(node.id)) continue; // Skip circular references
+    seen.add(node.id);
     // Only real folders (with node.folder or node.taskPlan) are collapsible.
     // Conversations may have children (e.g. delegate swarm anchoring) but
     // should always render their children inline, not require expansion.
@@ -512,7 +517,7 @@ function flattenVisibleNodes(
     // For non-folder nodes with children (e.g. conversations with delegates),
     // always show children inline.
     if (hasChildren && (!isFolder || isExpanded)) {
-      result.push(...flattenVisibleNodes(node.children, expandedSet, depth + 1));
+      result.push(...flattenVisibleNodes(node.children, expandedSet, depth + 1, seen));
     }
   }
   return result;
@@ -1729,6 +1734,7 @@ const MUIChatHistory = () => {
           onOk: async () => {
             try {
               console.debug('Deleting conversation:', {
+                folderId: conversations.find(c => c.id === conversationId)?.folderId,
                 id: conversationId,
                 currentActive: conversations.filter(c => c.isActive).length,
                 isCurrentConversation: conversationId === currentConversationId
@@ -1736,6 +1742,9 @@ const MUIChatHistory = () => {
 
               // Delete from server first (cross-port sync)
               const projectId = conversations.find(c => c.id === conversationId)?.projectId;
+              // Track the folder this conversation belonged to so we can touch its timestamp
+              const parentFolderId = conversations.find(c => c.id === conversationId)?.folderId;
+
               if (projectId) {
                 const { deleteChat } = await import('../api/conversationSyncApi');
                 await deleteChat(projectId, conversationId);
@@ -1751,7 +1760,33 @@ const MUIChatHistory = () => {
               // Then update React state
               setConversations(updatedConversations);
 
+              // If the deleted conversation was active, switch to another existing
+              // one rather than creating a new one. Do NOT call startNewChat here —
+              // its stale conversations closure would write the deleted conversation
+              // back to IDB before the deletion save can land.
+              if (conversationId === currentConversationId) {
+                const next = updatedConversations
+                  .filter((c: any) => c.isActive !== false)
+                  .sort((a: any, b: any) => (b.lastAccessedAt || 0) - (a.lastAccessedAt || 0));
+                if (next.length > 0) {
+                  await loadConversation(next[0].id);
+                } else {
+                  setCurrentConversationId('');
+                }
+              }
+
               message.success('Conversation deleted');
+
+              // Update the parent folder's updatedAt so it sorts correctly
+              if (parentFolderId) {
+                const parentFolder = folders.find(f => f.id === parentFolderId);
+                if (parentFolder) {
+                  await updateFolder({
+                    ...parentFolder,
+                    updatedAt: Date.now(),
+                  });
+                }
+              }
             } catch (error) {
               console.error('Error deleting conversation:', error);
               message.error('Failed to delete conversation');
@@ -2143,8 +2178,8 @@ const MUIChatHistory = () => {
         h = Math.imul(h, 0x01000193);
       }
     };
-    folders.forEach(f => { fnv(f.id); fnv(f.name); fnv(f.parentId || ''); fnv(f.isGlobal ? 'g' : ''); fnv(f.taskPlan?.source_conversation_id || ''); });
-    conversations.forEach(c => { fnv(c.id); fnv(c.title); fnv(c.folderId || ''); fnv(c.isActive === false ? '0' : '1'); fnv(String(c.lastAccessedAt || 0)); fnv(c.isGlobal ? 'g' : ''); fnv(c.delegateMeta?.status || ''); });
+    folders.forEach(f => { fnv(f.id || ''); fnv(f.name || ''); fnv(f.parentId || ''); fnv(f.isGlobal ? 'g' : ''); fnv(f.taskPlan?.source_conversation_id || ''); });
+    conversations.forEach(c => { fnv(c.id || ''); fnv(c.title || ''); fnv(c.folderId || ''); fnv(c.isActive === false ? '0' : '1'); fnv(String(c.lastAccessedAt || 0)); fnv(c.isGlobal ? 'g' : ''); fnv(c.delegateMeta?.status || ''); });
     pinnedFolders.forEach(id => fnv(id));
     const inputHash = h >>> 0; // unsigned 32-bit
 
@@ -2186,7 +2221,7 @@ const MUIChatHistory = () => {
         const folderNode = folderMap.get(conv.folderId);
         const convNode = {
           id: `conv-${conv.id}`,
-          name: conv.title,
+          name: conv.title || 'Untitled',
           conversation: conv,
           delegateMeta: conv.delegateMeta || null,
           children: [] as any[],  // May hold TaskPlan folders spawned from this conversation
@@ -2209,7 +2244,7 @@ const MUIChatHistory = () => {
     const rootItems: any[] = [];
     folders.forEach(folder => {
       const node = folderMap.get(folder.id); // Get the node (which now includes conversation children)
-      if (folder.parentId && folderMap.has(folder.parentId)) {
+      if (folder.parentId && folder.parentId !== folder.id && folderMap.has(folder.parentId)) {
         const parentNode = folderMap.get(folder.parentId);
         // Ensure parentNode.children is initialized
         if (!parentNode.children) parentNode.children = [];
@@ -2230,7 +2265,7 @@ const MUIChatHistory = () => {
 
         const convNode = {
           id: `conv-${conv.id}`,
-          name: conv.title,
+          name: conv.title || 'Untitled',
           conversation: conv,
           delegateMeta: conv.delegateMeta || null,
           children: [] as any[],
@@ -2245,15 +2280,17 @@ const MUIChatHistory = () => {
     // place swarm folders adjacent to their parent chat instead.
     const anchoredFolderIds = new Set<string>();
     // Remove a node from anywhere in the tree (cross-level).
-    const removeNodeFromTree = (tree: any[], node: any): boolean => {
+    const removeNodeFromTree = (tree: any[], node: any, _depth = 0): boolean => {
+      if (_depth > 20) return false;
       const idx = tree.indexOf(node);
       if (idx !== -1) { tree.splice(idx, 1); return true; }
       for (const item of tree) {
-        if (item.children && removeNodeFromTree(item.children, node)) return true;
+        if (item.children && removeNodeFromTree(item.children, node, _depth + 1)) return true;
       }
       return false;
     };
-    const anchorFolder = (items: any[], folder: any, sourceConvId: string): boolean => {
+    const anchorFolder = (items: any[], folder: any, sourceConvId: string, _depth = 0): boolean => {
+      if (_depth > 20) return false;
       const srcIdx = items.findIndex(n => n.id === `conv-${sourceConvId}`);
       if (srcIdx !== -1) {
         // Remove folder from wherever it currently sits in the whole tree
@@ -2264,7 +2301,7 @@ const MUIChatHistory = () => {
         return true;
       }
       for (const item of items) {
-        if (item.children && anchorFolder(item.children, folder, sourceConvId)) return true;
+        if (item.children && anchorFolder(item.children, folder, sourceConvId, _depth + 1)) return true;
       }
       return false;
     };
@@ -2315,13 +2352,14 @@ const MUIChatHistory = () => {
     // After the tree is assembled, each folder's conversationCount only
     // reflects its direct conversation children.  Walk bottom-up so that
     // nested subfolder counts propagate all the way to the root.
-    const rollUpConversationCount = (node: any): number => {
+    const rollUpConversationCount = (node: any, _depth = 0): number => {
+      if (_depth > 20) return 0;
       if (!node.folder) return 0; // leaf conversation node
       let total = node.conversationCount || 0; // direct conversations
       if (node.children) {
         for (const child of node.children) {
           if (child.folder) {
-            total += rollUpConversationCount(child);
+            total += rollUpConversationCount(child, _depth + 1);
           }
         }
       }
@@ -2420,11 +2458,12 @@ const MUIChatHistory = () => {
     };
 
     // Apply sorting to all levels
-    const sortRecursive = (nodes: any[]) => {
+    const sortRecursive = (nodes: any[], _depth = 0): any[] => {
+      if (_depth > 20) return nodes;
       const sorted = sortNodes(nodes);
       sorted.forEach(node => {
         if (node.children && node.children.length > 0) {
-          node.children = sortRecursive(node.children);
+          node.children = sortRecursive(node.children, _depth + 1);
         }
       });
       return sorted;
@@ -2436,7 +2475,8 @@ const MUIChatHistory = () => {
     // conversation. Sorting may have separated them.  Recurse so anchoring
     // works when the source conversation lives inside a folder.
     if (anchoredFolderIds.size > 0) {
-      const reanchor = (items: any[]) => {
+      const reanchor = (items: any[], _depth = 0) => {
+        if (_depth > 20) return;
         for (const fid of anchoredFolderIds) {
           const folderNode = folderMap.get(fid);
           const sourceConvId = folderNode?.taskPlan?.source_conversation_id;
@@ -2450,7 +2490,7 @@ const MUIChatHistory = () => {
           }
         }
         for (const item of items) {
-          if (item.children?.length) reanchor(item.children);
+          if (item.children?.length) reanchor(item.children, _depth + 1);
         }
       };
       reanchor(result);
@@ -3029,7 +3069,7 @@ const MUIChatHistory = () => {
                   delegateStatus = delegateMeta.role === 'orchestrator' ? 'orchestrator' : (delegateMeta.status || null);
                 }
 
-                let labelText = node.name;
+                let labelText = node.name || 'Untitled';
                 if (delegateStatus && !isFolder) labelText = labelText.replace(/^[\p{Emoji_Presentation}\p{Extended_Pictographic}]\s*/u, '');
                 if (isTaskPlanFolder) labelText = labelText.replace(/^⚡\s*/, '');
 
@@ -3227,4 +3267,43 @@ const MUIChatHistory = () => {
   );
 };
 
-export default MUIChatHistory;
+/**
+ * Error boundary wrapping MUIChatHistory so sidebar crashes (circular
+ * folder references, corrupted data, etc.) show a retry button instead
+ * of killing the entire application.
+ */
+class ChatHistoryErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    console.error('💥 Chat sidebar crashed:', error.message, info.componentStack?.slice(0, 500));
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <Box sx={{ p: 2, textAlign: 'center', color: 'text.secondary' }}>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            Sidebar encountered an error
+          </Typography>
+          <Button size="small" variant="outlined"
+            onClick={() => this.setState({ hasError: false, error: null })}>
+            Retry
+          </Button>
+        </Box>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export default function SafeMUIChatHistory() {
+  return <ChatHistoryErrorBoundary><MUIChatHistory /></ChatHistoryErrorBoundary>;
+}
