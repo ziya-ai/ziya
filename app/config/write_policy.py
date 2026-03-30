@@ -262,7 +262,11 @@ class WritePolicyManager:
             data = self._read_json_ale_aware(pf)
             if data is None:
                 data = {"id": project_id, "settings": {}}
-        data.setdefault("settings", {}).setdefault("writePolicy", {}).update(overrides)
+        if not isinstance(data.get("settings"), dict):
+            data["settings"] = {}
+        if not isinstance(data["settings"].get("writePolicy"), dict):
+            data["settings"]["writePolicy"] = {}
+        data["settings"]["writePolicy"].update(overrides)
         self._write_json_ale_aware(pf, data)
         if self._project_id == project_id:
             self.load_for_project(project_id, self._project_root or "")

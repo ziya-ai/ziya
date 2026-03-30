@@ -42,7 +42,13 @@ class ShellWriteChecker:
         tok = _tokenize(cmd)
         if not tok or tok[0] not in self.policy.get('destructive_commands', []):
             return True, ""
-        targets = [t for t in tok[1:] if not t.startswith('-')]
+        args = [t for t in tok[1:] if not t.startswith('-')]
+        # For cp/mv, only the last argument is the write target;
+        # earlier arguments are read-only sources.
+        if tok[0] in ('cp', 'mv') and len(args) >= 2:
+            targets = args[-1:]
+        else:
+            targets = args
         if not targets:
             return False, f"Command '{tok[0]}' requires a target path."
         for t in targets:

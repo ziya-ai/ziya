@@ -1386,8 +1386,12 @@ class DelegateManager:
             raise RuntimeError("No model available for orchestrator call")
 
         raw_model = getattr(wrapper, 'model', wrapper)
-        if hasattr(raw_model, 'model') and raw_model is not wrapper:
-            raw_model = getattr(raw_model, 'model', raw_model)
+        # Only unwrap a second time if the inner object is a known LangChain
+        # model wrapper (has 'ainvoke'), not an arbitrary auto-attribute.
+        if raw_model is not wrapper:
+            inner = getattr(raw_model, 'model', None)
+            if inner is not None and hasattr(inner, 'ainvoke'):
+                raw_model = inner
 
         response = await raw_model.ainvoke([HumanMessage(content=prompt)])
         text = response.content if hasattr(response, "content") else str(response)
