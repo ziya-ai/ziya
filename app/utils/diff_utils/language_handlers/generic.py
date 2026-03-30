@@ -6,11 +6,10 @@ import re
 from typing import List, Tuple, Optional, Dict, Any
 
 from app.utils.logging_utils import logger
-from .base import LanguageHandler, LanguageHandlerRegistry
+from .base import LanguageHandler
 from ..core.config import get_max_offset
 
 
-@LanguageHandlerRegistry.register
 class GenericTextHandler(LanguageHandler):
     """Handler for generic text files."""
     
