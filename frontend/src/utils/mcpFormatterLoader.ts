@@ -3,6 +3,9 @@
  */
 import { formatterRegistry } from './formatterRegistry';
 
+// Track which formatter URLs have already been injected this page lifetime
+const loadedFormatterUrls = new Set<string>();
+
 export async function loadFormatters(): Promise<void> {
     try {
         // Get config from backend
@@ -24,11 +27,18 @@ export async function loadFormatters(): Promise<void> {
         
         // Load each formatter script
         for (const path of formatterPaths) {
+            // Skip if already injected (e.g. hot reload re-invoking this function)
+            if (loadedFormatterUrls.has(path)) {
+                console.log(`⏭️ Formatter already loaded, skipping: ${path}`);
+                continue;
+            }
+
             await new Promise<void>((resolve, reject) => {
                 const script = document.createElement('script');
                 script.src = path;
                 script.async = true;
                 script.onload = () => {
+                    loadedFormatterUrls.add(path);
                     console.log(`✅ Loaded formatter: ${path}`);
                     resolve();
                 };

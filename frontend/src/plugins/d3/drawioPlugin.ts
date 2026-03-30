@@ -2492,8 +2492,9 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
             // Multiple attempts with increasing delays to handle slow rendering
             const applyFitAndCenter = () => {
                 try {
-                    graph.fit(20); // 20px padding
-                    graph.center(true, true); // Center both horizontally and vertically
+                    // fit() lives on the FitPlugin in maxGraph >=0.17; fitCenter both fits and centers
+                    const fitPlugin = graph.getPlugin('fit');
+                    fitPlugin?.fitCenter({ margin: 20 });
                     
                     // CRITICAL: After fit(), resize graphContainer to match content bounds
                     // This allows the parent container to center it properly
@@ -2697,8 +2698,9 @@ function addZoomControls(graphContainer: HTMLElement, graph: any): void {
     const zoomOutBtn = createZoomButton('-', () => graph.zoomOut());
     const zoomFitBtn = createZoomButton('⊡', () => {
         try {
-            graph.fit(20); // 20px padding
-            graph.center(true, true, true); // Center with resize
+            // fit() lives on the FitPlugin in maxGraph >=0.17; fitCenter both fits and centers
+            const fitPlugin = graph.getPlugin('fit');
+            fitPlugin?.fitCenter({ margin: 20 });
             console.log('📐 DrawIO: Manual fit triggered from zoom button');
         } catch (e) {
             console.warn('📐 DrawIO: Fit error from button:', e);

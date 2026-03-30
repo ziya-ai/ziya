@@ -1909,9 +1909,110 @@ export function initMermaidEnhancer(): void {
     diagramTypes: ['xychart']
   });
 
+  // Gantt year-offset preprocessor: detect charts using bare year values
+  // (e.g., `dateFormat YYYY` with tasks like `:done, 0100, 0250`) and offset
+  // small years into a range that JavaScript's Date can handle correctly.
+  // Embeds a `%% gantt-year-offset: N` comment so the post-render step can
+  // fix axis labels back to the original values.
+  registerPreprocessor((def: string, type: string) => {
+    if (type !== 'gantt' && !def.trim().startsWith('gantt')) {
+      return def;
+    }
+
+    // Only applies when dateFormat is YYYY (bare years)
+    if (!/dateFormat\s+YYYY\s*$/m.test(def)) {
+      return def;
+    }
+
+    // Collect all year-like numbers from task lines
+    const lines = def.split('\n');
+    const yearValues: number[] = [];
+    const taskLineIndices: number[] = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const trimmed = lines[i].trim();
+      if (!trimmed || trimmed.startsWith('gantt') || trimmed.startsWith('title') ||
+          trimmed.startsWith('dateFormat') || trimmed.startsWith('axisFormat') ||
+          trimmed.startsWith('section') || trimmed.startsWith('%%') ||
+          trimmed.startsWith('tickInterval')) {
+        continue;
+      }
+      if (!trimmed.includes(':')) continue;
+
+      const colonIdx = trimmed.indexOf(':');
+      const parts = trimmed.substring(colonIdx + 1).split(',').map(p => p.trim());
+      for (const p of parts) {
+        const n = parseInt(p, 10);
+        if (!isNaN(n) && /^\d{3,4}$/.test(p)) {
+          yearValues.push(n);
+        }
+      }
+      taskLineIndices.push(i);
+    }
+
+    if (yearValues.length === 0) return def;
+
+    // Determine if offset is needed (years < 1000 break JS Date)
+    const minYear = Math.min(...yearValues);
+    if (minYear >= 1000) return def;
+
+    const OFFSET = 2000;
+    console.log(`🔍 GANTT-YEAR-OFFSET: Detected years < 1000 (min=${minYear}), offsetting by +${OFFSET}`);
+
+    const result: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const trimmed = lines[i].trim();
+
+      // Replace dateFormat YYYY with YYYY-MM-DD for reliable parsing
+      if (/^\s*dateFormat\s+YYYY\s*$/.test(lines[i])) {
+        result.push(lines[i].replace(/dateFormat\s+YYYY/, 'dateFormat YYYY-MM-DD'));
+        continue;
+      }
+
+      if (!taskLineIndices.includes(i)) {
+        result.push(lines[i]);
+        continue;
+      }
+
+      // Offset year values in task lines, converting bare YYYY to YYYY-01-01
+      const colonIdx = trimmed.indexOf(':');
+      const taskName = trimmed.substring(0, colonIdx);
+      const afterColon = trimmed.substring(colonIdx + 1);
+      const offsetParts = afterColon.split(',').map(p => {
+        const t = p.trim();
+        const n = parseInt(t, 10);
+        if (!isNaN(n) && /^\d{3,4}$/.test(t)) {
+          return ` ${String(n + OFFSET).padStart(4, '0')}-01-01`;
+        }
+        return p;
+      });
+      result.push(`    ${taskName}    :${offsetParts.join(',')}`);
+    }
+
+    // Prepend offset marker so post-render can fix axis labels
+    const markerLine = `%% gantt-year-offset: ${OFFSET}`;
+    const ganttIdx = result.findIndex(l => l.trim().startsWith('gantt'));
+    if (ganttIdx >= 0) {
+      result.splice(ganttIdx + 1, 0, `    ${markerLine}`);
+    }
+
+    console.log('🔍 GANTT-YEAR-OFFSET: Preprocessing complete');
+    return result.join('\n');
+  }, {
+    name: 'gantt-year-offset-fix',
+    priority: 130,
+    diagramTypes: ['gantt']
+  });
+
   // Add a preprocessor to fix Gantt diagram task definition issues
   registerPreprocessor((def: string, type: string) => {
     if (type !== 'gantt' && !def.trim().startsWith('gantt')) {
+      return def;
+    }
+
+    // Skip if already handled by the year-offset preprocessor
+    if (def.includes('gantt-year-offset:')) {
+      console.log('🔍 GANTT-FIX: Skipping — already processed by gantt-year-offset-fix');
       return def;
     }
 
@@ -3316,9 +3417,32 @@ export function enhanceMermaid(mermaid: any): void {
         console.warn('Definition still contains bullet characters after preprocessing');
       }
 
+      // Strip trailing markdown content that leaked into the diagram definition.
+      // LLMs sometimes append markdown headings, horizontal rules, or prose after
+      // the last valid diagram line inside the code fence. For example:
+      //   style Archive fill:#f39c12,color:black
+      //   ---
+      //   ## Chapter 33 — "The Archive: A History Not Their Own"
+      // The `---` is valid flowchart edge syntax, causing cryptic parse errors.
+      let cleanedDef = processedDef;
+
+      // Pattern 1: `---` followed by markdown heading
+      cleanedDef = cleanedDef.replace(/\n---\s*\n+##\s+.*/s, '');
+
+      // Pattern 2: Standalone markdown heading after blank line
+      cleanedDef = cleanedDef.replace(/\n\s*\n##\s+.*$/s, '');
+
+      // Pattern 3: Trailing `---` (markdown horizontal rule)
+      cleanedDef = cleanedDef.replace(/\n---\s*$/, '');
+
+      if (cleanedDef.length !== processedDef.length) {
+        console.log('🔍 MARKDOWN-STRIP: Removed trailing markdown content,',
+          processedDef.length - cleanedDef.length, 'chars stripped');
+      }
+
       // Add a unique marker to verify this exact definition is being used
       // Only add marker if definition doesn't end with incomplete syntax
-      const markedDef = processedDef.trim() + `\n%% PROCESSED-${Date.now()}`;
+      const markedDef = cleanedDef.trim() + `\n%% PROCESSED-${Date.now()}`;
 
       // DEBUG: Log the final processed definition to see what's actually being sent to Mermaid
       console.log('🔍 FINAL-DEF: About to render with processed definition:');
@@ -3475,9 +3599,11 @@ export default function initMermaidSupport(mermaidInstance?: any): void {
 
     // Match lines inside entity blocks: <type> <name> <unquoted-value>
     // where unquoted-value is a word/number not already wrapped in quotes.
-    // Pattern: leading whitespace, datatype, identifier, then a token without quotes.
+    // Pattern: leading whitespace, datatype, identifier, then a token without quotes,
+    // all on the SAME line.  Use [^\S\n] instead of \s to prevent matching across
+    // newlines (which would consume the closing } of the entity block).
     const result = def.replace(
-      /^(\s+)(\w+)\s+(\w+)\s+([^"\n][^\s\n]*)(\s*)$/gm,
+      /^(\s+)(\w+)[^\S\n]+(\w+)[^\S\n]+([^"\n][^\s\n]*)(\s*)$/gm,
       (match, indent, datatype, attrName, value, trail) => {
         // Skip relationship lines (they contain : or --)
         if (value.includes(':') || value.includes('-') || value.includes('|')) {
