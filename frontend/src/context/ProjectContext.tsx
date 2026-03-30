@@ -20,6 +20,8 @@ import * as skillApi from '../api/skillApi';
 import * as tokenApi from '../api/tokenApi';
 import { db } from '../utils/db';
 
+const LAST_PROJECT_KEY = 'ZIYA_LAST_PROJECT_ID';
+
 interface ProjectContextType {
   // Project state
   currentProject: Project | null;
@@ -167,18 +169,38 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       try {
         setIsLoadingProject(true);
         
-        // Log for debugging
-        console.log('ProjectContext: Initializing...');
+        console.log('ProjectContext: Initializing (fast path)...');
         
-        const project = await projectApi.getCurrentProject();
-        console.log('ProjectContext: Got current project:', project);
+        // ── Fast path: try last-used project from localStorage ───────
+        let project: Project | null = null;
+        const savedId = localStorage.getItem(LAST_PROJECT_KEY);
+        if (savedId) {
+          try {
+            project = await projectApi.getProject(savedId);
+            console.log('ProjectContext: Restored last project from localStorage:', project.name);
+          } catch {
+            console.warn('ProjectContext: Saved project ID invalid, falling back');
+            localStorage.removeItem(LAST_PROJECT_KEY);
+          }
+        }
+        
+        // ── Fallback: server-side last-accessed, then CWD ────────────
+        if (!project) {
+          try {
+            project = await projectApi.getLastAccessedProject();
+            console.log('ProjectContext: Using last-accessed project:', project.name);
+          } catch {
+            project = await projectApi.getCurrentProject();
+            console.log('ProjectContext: Fell back to CWD project:', project.name);
+          }
+        }
+        
         setCurrentProject(project);
-        // Expose project ID globally for lens persistence
         (window as any).__ZIYA_CURRENT_PROJECT_ID__ = project.id;
+        localStorage.setItem(LAST_PROJECT_KEY, project.id);
         
         // Restore lens state for this project
         const savedLens = _loadLens(project.id);
-        // Merge any legacy skill IDs from the old sessionStorage migration
         const legacySkills = (window as any).__ZIYA_LEGACY_SKILL_IDS__;
         if (legacySkills && Array.isArray(legacySkills)) {
           const merged = new Set([...savedLens.skillIds, ...legacySkills]);
@@ -192,12 +214,12 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
           _setActiveSkillIds(savedLens.skillIds);
         }
         
-        const allProjects = await projectApi.listProjects();
-        console.log('ProjectContext: Got all projects:', allProjects.length);
-        setProjects(allProjects);
+        // Load project list in background (non-blocking)
+        projectApi.listProjects().then(allProjects => {
+          setProjects(allProjects);
+        }).catch(err => console.error('Failed to load project list:', err));
       } catch (error) {
         console.error('Failed to initialize project:', error);
-        // Continue even if API fails - show error state instead of blocking
       } finally {
         setIsLoadingProject(false);
       }
@@ -391,6 +413,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       // 2. Update global path SYNCHRONOUSLY (before any events)
       (window as any).__ZIYA_CURRENT_PROJECT_PATH__ = project.path;
       (window as any).__ZIYA_CURRENT_PROJECT_ID__ = project.id;
+      localStorage.setItem(LAST_PROJECT_KEY, project.id);
       
       // 3. Restore lens state for the project we're switching TO
       const savedLens = _loadLens(project.id);
