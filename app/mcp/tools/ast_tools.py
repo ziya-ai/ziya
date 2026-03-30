@@ -42,7 +42,8 @@ def _format_symbol(node) -> str:
 
     if ntype == "class":
         bases = attrs.get("bases") or attrs.get("extends") or []
-        base_str = f"({', '.join(bases)})" if bases else ""
+        filtered_bases = [str(b) for b in bases if b]
+        base_str = f"({', '.join(filtered_bases)})" if filtered_bases else ""
         return f"class {name}{base_str}"
     elif ntype in ("function", "method"):
         params = attrs.get("params") or attrs.get("parameters") or []

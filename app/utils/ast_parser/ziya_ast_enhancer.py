@@ -66,7 +66,7 @@ class ZiyaASTEnhancer:
                          "__init__": lambda self, lk=lang_key: TreeSitterParser.__init__(self, lk),
                          "get_file_extensions": classmethod(lambda cls, c=cfg: c["extensions"])})
                     self.parser_registry.register_parser(parser_instance_class)
-                logger.info(f"Registered tree-sitter parsers for: {', '.join(_LANG_CONFIGS.keys())}")
+                logger.info(f"Registered tree-sitter parsers for {len(_LANG_CONFIGS)} languages")
         except Exception as e:
             logger.debug(f"Tree-sitter parsers not available: {e}")
         
@@ -406,7 +406,8 @@ class ZiyaASTEnhancer:
             attrs = node.attributes or {}
             if node.node_type == "class":
                 bases = attrs.get("bases") or attrs.get("extends") or []
-                base_str = f"({', '.join(b for b in bases if b)})" if bases else ""
+                filtered_bases = [b for b in bases if b]
+                base_str = f"({', '.join(filtered_bases)})" if filtered_bases else ""
                 symbols.append(f"class {node.name}{base_str}")
             elif node.node_type in ("function", "method"):
                 params = attrs.get("params") or attrs.get("parameters") or []
