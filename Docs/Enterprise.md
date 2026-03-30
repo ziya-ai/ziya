@@ -175,6 +175,8 @@ class MyRetentionProvider(DataRetentionProvider):
 
 Available TTL categories: `conversation_data`, `context_cache`, `prompt_cache`, `tool_result`, `file_state`, `session_max`. A `default_ttl` applies to all categories that don't have an explicit override.
 
+**Local override:** Set `ZIYA_RETENTION_OVERRIDE_DAYS=30` to guarantee at least 30 days of retention, even when a corporate plugin enforces a shorter TTL. This raises (never lowers) every TTL category to the specified minimum. The override is visible in the `/api/v1/retention-policy` endpoint and in the `policy_reason` field.
+
 ---
 
 ### FormatterProvider
@@ -201,6 +203,71 @@ class MyFormatterProvider(FormatterProvider):
         };
         """
 ```
+
+---
+
+### ToolResultFilterProvider
+
+Sanitizes tool results before they enter conversation context.  Filters strip
+site-specific metadata bloat that wastes context-window tokens without adding
+semantic value.  The core release ships general-purpose transforms (base64
+document extraction, size cap); enterprise plugins register site-specific
+filters via this interface.
+
+Multiple providers can register.  They run in priority order (highest first);
+each receives the output of the previous one, forming a filter chain.
+
+```python
+from app.plugins.interfaces import ToolResultFilterProvider
+import re
+
+_SECTION_ID_RE = re.compile(r'<!-- sectionId\s+[^>]*?-->')
+
+class MyToolResultFilter(ToolResultFilterProvider):
+    provider_id = "my-org"
+    priority = 100
+
+    def should_filter(self, tool_name: str) -> bool:
+        """Only filter Quip tool responses."""
+        return tool_name in {'QuipEditor', 'mcp_QuipEditor'}
+
+    def filter_result(self, tool_name: str, result_text: str, args: dict) -> str:
+        """Strip sectionId HTML comments from Quip responses."""
+        return _SECTION_ID_RE.sub('', result_text)
+```
+
+Registration in `register()`:
+
+```python
+from app.plugins import register_tool_result_filter_provider
+from .my_tool_filters import MyToolResultFilter
+register_tool_result_filter_provider(MyToolResultFilter())
+```
+
+**How the sanitization pipeline works:**
+
+Every tool result passes through `sanitize_for_context()` in
+`app/utils/tool_result_sanitizer.py` before entering conversation context:
+
+1. **Plugin filters** run first (this provider type)
+2. **Base64 document extraction** — PDFs, DOCX, XLSX, PPTX, and legacy
+   OLE2 documents encoded as base64 are decoded and text-extracted using
+   `document_extractor.py`.  A 417KB base64 PDF blob becomes ~12KB of
+   readable text — a ~47:1 reduction.
+3. **Size cap** — `TOOL_RESULT_MAX_CHARS` (default 100,000; env var override)
+
+**Why this matters:** A single Quip document read can embed thousands of
+`<!-- sectionId temp:... -->` HTML comments — one on every element — adding
+200K+ characters of metadata noise.  A WorkDocs PDF returns as an opaque
+base64 blob that burns ~140K tokens the model cannot read.  Together these
+can push a conversation from 400K tokens to over 1M tokens, triggering
+request rejection.  The sanitizer eliminates this bloat while preserving
+all semantic content.
+
+**Editing is not affected:** Quip `sectionId` HTML comments are rendering
+artifacts, not the mechanism QuipEditor uses for targeted edits.  Edit
+operations use either `documentRange` (heading text matching) or structured
+IDs from `returnSectionIds=true` — neither depends on HTML comments.
 
 ---
 
