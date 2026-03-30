@@ -191,15 +191,14 @@ class TestInterpreters:
         assert ok
 
     def test_python3_inline_with_shutil_not_safe_pattern(self, checker):
-        """python3 -c matches a safe pattern, so script_write_indicators
-        are NOT checked. This is by design: -c is considered safe."""
+        """python3 -c with shutil.rmtree is blocked: the write-indicator
+        check runs even for -c commands that match a safe pattern."""
         ok, _ = checker.check(
             "python3 -c 'import shutil; shutil.rmtree(\"src\")'",
             _simple_split
         )
-        # -c matches interpreter_safe_patterns → skips write indicator check
-        # Only redirection is checked, which passes here.
-        assert ok
+        # -c safe pattern matched, but shutil is a write indicator → blocked
+        assert not ok
 
     def test_python3_with_os_remove_redirect_blocked(self, checker):
         """Even safe-pattern python3 is blocked if it redirects to project files."""

@@ -215,27 +215,25 @@ class TestCmdTask:
             cmd_task(args)
         assert exc_info.value.code == 1
 
-    @patch("app.cli.asyncio")
-    @patch("app.cli._initialize_mcp")
-    @patch("app.cli._check_auth_quick", return_value=True)
+    @patch("app.cli._run_with_mcp", new_callable=AsyncMock, return_value=None)
+    @patch("app.cli._init_and_authenticate")
     @patch("app.cli.setup_env")
     @patch("app.task_runner.load_tasks", return_value=SAMPLE_TASKS)
-    def test_runs_prompt_through_ask(self, mock_load, mock_setup, mock_auth, mock_mcp, mock_asyncio):
+    def test_runs_prompt_through_ask(self, mock_load, mock_setup, mock_init_auth, mock_run_mcp):
         """Task execution sends the prompt through CLI.ask()."""
         from app.cli import cmd_task
-
-        mock_asyncio.run = MagicMock(side_effect=lambda coro: None)
 
         with patch("app.cli.CLI") as MockCLI:
             instance = MockCLI.return_value
             instance.ask = AsyncMock(return_value="done")
 
-            with patch("app.plugins.initialize"):
-                args = self._make_args(task_name="flush")
-                cmd_task(args)
+            args = self._make_args(task_name="flush")
+            cmd_task(args)
 
-        # asyncio.run should have been called twice: once for MCP, once for ask
-        assert mock_asyncio.run.call_count == 2
+        # CLI.ask should have been called with the task's prompt
+        instance.ask.assert_called_once()
+        call_args = instance.ask.call_args
+        assert "uncommitted" in call_args[0][0].lower()
 
 
 # ============================================================================

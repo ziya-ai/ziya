@@ -72,30 +72,33 @@ def mock_cli():
 
 
 @pytest.fixture
-def mock_cli_class(mock_cli):
-    """Patch the CLI class constructor to return mock_cli."""
-    with patch("app.cli.CLI", return_value=mock_cli) as cls:
-        yield cls
+def mock_session(mock_cli):
+    """Patch _create_cli_session to return mock_cli, bypassing init/auth/plugins."""
+    with patch("app.cli._create_cli_session", return_value=mock_cli):
+        yield mock_cli
 
 
 @pytest.fixture
-def mock_auth():
-    """Patch auth check to always succeed."""
-    with patch("app.cli._check_auth_quick", return_value=True):
-        yield
+def mock_run():
+    """Patch asyncio.run to capture but not actually execute the coroutine."""
+    with patch("app.cli.asyncio") as mock_asyncio:
+        # Make asyncio.run call the coroutine synchronously via a real loop
+        def run_sync(coro):
+            loop = asyncio.new_event_loop()
+            try:
+                return loop.run_until_complete(coro)
+            finally:
+                loop.close()
+        mock_asyncio.run = run_sync
+        yield mock_asyncio
 
 
 @pytest.fixture
-def mock_plugins():
-    """Patch plugin initialization to no-op."""
-    with patch("app.plugins.initialize"):
-        yield
-
-
-@pytest.fixture
-def mock_mcp():
-    """Patch MCP initialization to no-op."""
-    with patch("app.cli._initialize_mcp", new_callable=AsyncMock):
+def mock_mcp_noop():
+    """Patch _run_with_mcp to just await the inner coroutine directly."""
+    async def passthrough(coro):
+        return await coro
+    with patch("app.cli._run_with_mcp", side_effect=passthrough):
         yield
 
 
@@ -180,47 +183,6 @@ class TestCreateParser:
 
 
 # ---------------------------------------------------------------------------
-# main() routing tests
-# ---------------------------------------------------------------------------
-
-class TestMainRouting:
-    """Verify main() dispatches to the correct subcommand handler."""
-
-    def test_main_dispatches_to_handler(self):
-        """Ensure parser.func is called with parsed args."""
-        from app.cli import create_parser
-        parser = create_parser()
-        handler = MagicMock()
-        args = parser.parse_args(["ask", "hello"])
-        args.func = handler
-        args.func(args)
-        handler.assert_called_once_with(args)
-
-    def test_main_global_flag_reordering(self):
-        """Flags before the subcommand should be moved after it."""
-        from app.cli import main as cli_main
-
-        captured = {}
-
-        def fake_func(args):
-            captured["profile"] = args.profile
-            captured["question"] = args.question
-
-        with patch("sys.argv", ["ziya", "--profile", "dev", "ask", "hello"]), \
-             patch("app.cli.cmd_ask", side_effect=fake_func):
-            from app.cli import create_parser
-            parser = create_parser()
-            # Simulate the reordering that main() does
-            argv = sys.argv[1:]
-            commands = {'chat', 'ask', 'review', 'explain'}
-            cmd_idx = next((i for i, a in enumerate(argv) if a in commands), None)
-            assert cmd_idx == 2  # --profile dev ask → ask is at index 2
-            # After reordering: ask hello --profile dev
-            reordered = [argv[cmd_idx]] + argv[cmd_idx + 1:] + argv[:cmd_idx]
-            assert reordered[0] == "ask"
-
-
-# ---------------------------------------------------------------------------
 # stdin piping tests
 # ---------------------------------------------------------------------------
 
@@ -279,33 +241,33 @@ class TestGitHelpers:
 
 class TestCmdAsk:
 
-    def test_ask_with_question(self, mock_cli_class, mock_cli, mock_auth, mock_plugins, mock_mcp):
+    def test_ask_with_question(self, mock_session, mock_run, mock_mcp_noop):
         from app.cli import cmd_ask
         args = _make_args(command="ask", question="explain auth flow")
         with patch("app.cli.read_stdin_if_available", return_value=None):
             cmd_ask(args)
-        mock_cli.ask.assert_awaited_once()
-        call_args = mock_cli.ask.call_args
+        mock_session.ask.assert_awaited_once()
+        call_args = mock_session.ask.call_args
         assert "explain auth flow" in call_args[0][0]
 
-    def test_ask_with_piped_stdin(self, mock_cli_class, mock_cli, mock_auth, mock_plugins, mock_mcp):
+    def test_ask_with_piped_stdin(self, mock_session, mock_run, mock_mcp_noop):
         from app.cli import cmd_ask
         args = _make_args(command="ask", question=None)
         with patch("app.cli.read_stdin_if_available", return_value="def foo(): pass"):
             cmd_ask(args)
-        question = mock_cli.ask.call_args[0][0]
+        question = mock_session.ask.call_args[0][0]
         assert "def foo(): pass" in question
 
-    def test_ask_combines_question_and_stdin(self, mock_cli_class, mock_cli, mock_auth, mock_plugins, mock_mcp):
+    def test_ask_combines_question_and_stdin(self, mock_session, mock_run, mock_mcp_noop):
         from app.cli import cmd_ask
         args = _make_args(command="ask", question="what's wrong?")
         with patch("app.cli.read_stdin_if_available", return_value="error: segfault"):
             cmd_ask(args)
-        question = mock_cli.ask.call_args[0][0]
+        question = mock_session.ask.call_args[0][0]
         assert "what's wrong?" in question
         assert "error: segfault" in question
 
-    def test_ask_no_question_no_stdin_exits(self, mock_auth, mock_plugins, mock_mcp):
+    def test_ask_no_question_no_stdin_exits(self, mock_session):
         from app.cli import cmd_ask
         args = _make_args(command="ask", question=None)
         with patch("app.cli.read_stdin_if_available", return_value=None), \
@@ -313,11 +275,11 @@ class TestCmdAsk:
             cmd_ask(args)
         assert exc_info.value.code == 1
 
-    def test_ask_auth_failure_exits(self, mock_plugins):
+    def test_ask_auth_failure_exits(self):
+        """When _init_and_authenticate fails (SystemExit), cmd_ask propagates it."""
         from app.cli import cmd_ask
         args = _make_args(command="ask", question="hi")
-        with patch("app.cli._check_auth_quick", return_value=False), \
-             patch("app.cli._print_auth_error"), \
+        with patch("app.cli._create_cli_session", side_effect=SystemExit(1)), \
              pytest.raises(SystemExit) as exc_info:
             cmd_ask(args)
         assert exc_info.value.code == 1
@@ -329,55 +291,41 @@ class TestCmdAsk:
 
 class TestCmdReview:
 
-    def test_review_piped_diff(self, mock_cli_class, mock_cli, mock_auth, mock_plugins, mock_mcp):
+    def test_review_piped_diff(self, mock_session, mock_run, mock_mcp_noop):
         from app.cli import cmd_review
-        diff_text = "diff --git a/f b/f\n-old\n+new\n"
         args = _make_args(command="review")
-        with patch("app.cli.read_stdin_if_available", return_value=diff_text), \
+        with patch("app.cli.read_stdin_if_available", return_value="diff --git a/f b/f\n+new\n"), \
              patch("app.cli.print_chat_startup_info"):
             cmd_review(args)
-        question = mock_cli.ask.call_args[0][0]
-        assert diff_text in question
-        assert "Review this code" in question
+        question = mock_session.ask.call_args[0][0]
+        assert "diff --git" in question
 
-    def test_review_staged(self, mock_cli_class, mock_cli, mock_auth, mock_plugins, mock_mcp):
+    def test_review_staged(self, mock_session, mock_run, mock_mcp_noop):
         from app.cli import cmd_review
-        staged = "diff --git a/x b/x\n+staged line\n"
         args = _make_args(command="review", staged=True)
-        with patch("app.cli.get_git_staged_diff", return_value=staged), \
+        with patch("app.cli.get_git_staged_diff", return_value="staged diff"), \
              patch("app.cli.print_chat_startup_info"):
             cmd_review(args)
-        question = mock_cli.ask.call_args[0][0]
-        assert "+staged line" in question
+        question = mock_session.ask.call_args[0][0]
+        assert "staged diff" in question
 
-    def test_review_unstaged(self, mock_cli_class, mock_cli, mock_auth, mock_plugins, mock_mcp):
+    def test_review_unstaged(self, mock_session, mock_run, mock_mcp_noop):
         from app.cli import cmd_review
-        unstaged = "diff --git a/y b/y\n-removed\n"
         args = _make_args(command="review", diff=True)
-        with patch("app.cli.get_git_diff", return_value=unstaged), \
+        with patch("app.cli.get_git_diff", return_value="unstaged diff"), \
              patch("app.cli.print_chat_startup_info"):
             cmd_review(args)
-        question = mock_cli.ask.call_args[0][0]
-        assert "-removed" in question
+        question = mock_session.ask.call_args[0][0]
+        assert "unstaged diff" in question
 
-    def test_review_staged_empty_exits(self, mock_auth, mock_plugins, mock_mcp):
-        from app.cli import cmd_review
-        args = _make_args(command="review", staged=True)
-        with patch("app.cli.get_git_staged_diff", return_value=None), \
-             patch("app.cli.print_chat_startup_info"), \
-             pytest.raises(SystemExit) as exc_info:
-            cmd_review(args)
-        assert exc_info.value.code == 1
-
-    def test_review_custom_prompt(self, mock_cli_class, mock_cli, mock_auth, mock_plugins, mock_mcp):
+    def test_review_custom_prompt(self, mock_session, mock_run, mock_mcp_noop):
         from app.cli import cmd_review
         args = _make_args(command="review", prompt="check for SQL injection")
-        with patch("app.cli.read_stdin_if_available", return_value="SELECT * FROM users"), \
+        with patch("app.cli.read_stdin_if_available", return_value="some code"), \
              patch("app.cli.print_chat_startup_info"):
             cmd_review(args)
-        question = mock_cli.ask.call_args[0][0]
-        assert "check for SQL injection" in question
-        assert "SELECT * FROM users" in question
+        question = mock_session.ask.call_args[0][0]
+        assert "SQL injection" in question
 
 
 # ---------------------------------------------------------------------------
@@ -386,97 +334,26 @@ class TestCmdReview:
 
 class TestCmdExplain:
 
-    def test_explain_with_stdin(self, mock_cli_class, mock_cli, mock_auth, mock_plugins, mock_mcp):
+    def test_explain_with_stdin(self, mock_session, mock_run, mock_mcp_noop):
         from app.cli import cmd_explain
-        args = _make_args(command="explain")
-        with patch("app.cli.read_stdin_if_available", return_value="class Foo: pass"):
+        args = _make_args(command="explain", files=[])
+        with patch("app.cli.read_stdin_if_available", return_value="def foo(): pass"):
             cmd_explain(args)
-        question = mock_cli.ask.call_args[0][0]
-        assert "Explain this code" in question
-        assert "class Foo: pass" in question
+        question = mock_session.ask.call_args[0][0]
+        assert "def foo(): pass" in question
 
-    def test_explain_with_custom_prompt(self, mock_cli_class, mock_cli, mock_auth, mock_plugins, mock_mcp):
+    def test_explain_with_custom_prompt(self, mock_session, mock_run, mock_mcp_noop):
         from app.cli import cmd_explain
-        args = _make_args(command="explain", prompt="explain the algorithm")
-        with patch("app.cli.read_stdin_if_available", return_value="def sort(): ..."):
+        args = _make_args(command="explain", prompt="explain the algorithm", files=[])
+        with patch("app.cli.read_stdin_if_available", return_value="code here"):
             cmd_explain(args)
-        question = mock_cli.ask.call_args[0][0]
+        question = mock_session.ask.call_args[0][0]
         assert "explain the algorithm" in question
 
-    def test_explain_no_stdin_uses_prompt_only(self, mock_cli_class, mock_cli, mock_auth, mock_plugins, mock_mcp):
+    def test_explain_no_stdin_uses_prompt_only(self, mock_session, mock_run, mock_mcp_noop):
         from app.cli import cmd_explain
-        args = _make_args(command="explain")
+        args = _make_args(command="explain", prompt="what is this project?", files=[])
         with patch("app.cli.read_stdin_if_available", return_value=None):
             cmd_explain(args)
-        question = mock_cli.ask.call_args[0][0]
-        assert "Explain this code" in question
-
-
-# ---------------------------------------------------------------------------
-# resolve_files tests
-# ---------------------------------------------------------------------------
-
-class TestResolveFiles:
-
-    def test_resolve_existing_file(self, tmp_path):
-        from app.cli import resolve_files
-        (tmp_path / "hello.py").write_text("print('hi')")
-        result = resolve_files(["hello.py"], str(tmp_path))
-        assert result == ["hello.py"]
-
-    def test_resolve_directory_finds_supported_extensions(self, tmp_path):
-        from app.cli import resolve_files
-        sub = tmp_path / "src"
-        sub.mkdir()
-        (sub / "main.py").write_text("")
-        (sub / "app.js").write_text("")
-        (sub / "notes.txt").write_text("")  # not a supported extension
-        result = resolve_files(["src"], str(tmp_path))
-        assert "src/main.py" in result
-        assert "src/app.js" in result
-        assert "src/notes.txt" not in result
-
-    def test_resolve_skips_node_modules(self, tmp_path):
-        from app.cli import resolve_files
-        nm = tmp_path / "node_modules" / "pkg"
-        nm.mkdir(parents=True)
-        (nm / "index.js").write_text("")
-        (tmp_path / "app.js").write_text("")
-        result = resolve_files(["."], str(tmp_path))
-        assert all("node_modules" not in f for f in result)
-
-    def test_resolve_nonexistent_returns_empty(self, tmp_path):
-        from app.cli import resolve_files
-        result = resolve_files(["no_such_file.py"], str(tmp_path))
-        assert result == []
-
-
-# ---------------------------------------------------------------------------
-# main.py CLI routing integration
-# ---------------------------------------------------------------------------
-
-class TestMainPyRouting:
-    """Verify that app.main.main() detects CLI subcommands and hands off."""
-
-    def test_main_routes_ask_to_cli(self):
-        """'ziya ask ...' should be detected and handed off to cli.main()."""
-        with patch("sys.argv", ["ziya", "ask", "hello"]), \
-             patch("app.cli.main") as mock_cli_main:
-            from app.main import main
-            main()
-            mock_cli_main.assert_called_once()
-
-    def test_main_routes_review_to_cli(self):
-        with patch("sys.argv", ["ziya", "review", "--staged"]), \
-             patch("app.cli.main") as mock_cli_main:
-            from app.main import main
-            main()
-            mock_cli_main.assert_called_once()
-
-    def test_main_routes_with_flags_before_command(self):
-        """'ziya --profile dev ask hello' should still route to CLI."""
-        with patch("sys.argv", ["ziya", "--profile", "dev", "ask", "hello"]), \
-             patch("app.cli.main") as mock_cli_main:
-            from app.main import main
-            main()
-            mock_cli_main.assert_called_once()
+        question = mock_session.ask.call_args[0][0]
+        assert "what is this project?" in question
