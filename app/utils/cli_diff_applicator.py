@@ -18,16 +18,33 @@ class DiffBlock:
         self.file_path = self._extract_file_path()
     
     def _extract_file_path(self) -> Optional[str]:
-        """Extract target file path from diff."""
+        """Extract target file path from diff.
+        
+        For modifications/creations, returns the +++ path.
+        For deletions (+++ /dev/null), returns the --- source path.
+        """
+        source_path = None
         for line in self.content.split('\n'):
-            if line.startswith('+++ b/'):
+            if line.startswith('--- a/'):
+                source_path = line[6:].strip()
+            elif line.startswith('--- ') and not line.startswith('--- /dev/null'):
+                path = line[4:].strip()
+                if path.startswith('a/'):
+                    path = path[2:]
+                if path and path != '/dev/null':
+                    source_path = path
+            elif line.startswith('+++ /dev/null') or line.startswith('+++ b/dev/null'):
+                # File deletion — return the source path
+                self.is_deletion = True
+                return source_path
+            elif line.startswith('+++ b/'):
                 return line[6:].strip()
             elif line.startswith('+++ '):
                 path = line[4:].strip()
-                # Remove 'b/' prefix if present
                 if path.startswith('b/'):
                     path = path[2:]
-                return path
+                if path and path != '/dev/null':
+                    return path
         return None
     
     def get_preview(self, lines: int = 10) -> str:
@@ -276,6 +293,19 @@ class CLIDiffApplicator:
         if not diff.file_path:
             return False, "Could not determine file path"
         
+        # Handle file deletion diffs
+        if getattr(diff, 'is_deletion', False):
+            codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+            full_path = os.path.join(codebase_dir, diff.file_path)
+            if os.path.exists(full_path):
+                try:
+                    os.remove(full_path)
+                    return True, f"Deleted file: {diff.file_path}"
+                except OSError as e:
+                    return False, f"Could not delete {diff.file_path}: {e}"
+            else:
+                return True, f"File already absent: {diff.file_path}"
+        
         # Temporarily suppress logging from diff application to avoid ugly output
         # Save original log levels
         diff_logger = logging.getLogger('app.utils.diff_utils')
@@ -294,6 +324,10 @@ class CLIDiffApplicator:
             from app.utils.diff_utils.application.git_diff import apply_diff_atomically
             
             result = apply_diff_atomically(full_path, diff.content)
+            
+            # apply_diff_atomically returns None when it can't handle the diff
+            if result is None:
+                return False, "Diff could not be parsed or applied"
             
             status = result.get("status")
             if status == "success":
@@ -334,7 +368,7 @@ class CLIDiffApplicator:
                         return False, "Content doesn't match current file (file may have been modified)"
                 
                 # Generic error message
-                error = error_details.get("error", "Unknown error")
+                error = error_details.get("message") or error_details.get("error") or "Unknown error"
                 if "hunks failed" in str(error).lower():
                     return False, "Some changes couldn't be applied (file content mismatch)"
                 

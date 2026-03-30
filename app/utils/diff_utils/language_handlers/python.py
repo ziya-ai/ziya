@@ -44,12 +44,8 @@ class PythonHandler(LanguageHandler):
         try:
             ast.parse(modified_content, filename=file_path)
             
-            # Additional verification: check for common issues
-            issues = cls._check_common_issues(original_content, modified_content)
-            if issues:
-                return False, f"Code verification issues: {'; '.join(issues)}"
-            
-            # Check for duplicate functions
+            # Check for duplicate functions (ast.parse already validates syntax,
+            # brackets, indentation — no need for redundant manual checks)
             has_duplicates, duplicates = cls.detect_duplicates(original_content, modified_content)
             if has_duplicates:
                 return False, f"Duplicate code detected: {', '.join(duplicates)}"
@@ -175,10 +171,10 @@ class PythonHandler(LanguageHandler):
                     # Check if it was already duplicated in the original
                     original_count = len(original_functions.get(func_name, []))
                     
-                    # If there are more occurrences in the modified content than in the original,
-                    # or if the occurrences are far apart, it's likely a duplicate
-                    if len(occurrences) > original_count or cls._are_occurrences_far_apart(occurrences):
-                        # Get line numbers for better reporting
+                    # Only flag if there are strictly MORE occurrences than in the
+                    # original.  Existing repeated names (e.g. keybinding handlers
+                    # named `_`, multiple `__init__`) are not new duplications.
+                    if len(occurrences) > original_count:
                         line_numbers = ", ".join(str(line) for line in occurrences)
                         duplicates.append(f"{func_name} (lines {line_numbers})")
                         logger.warning(f"Function '{func_name}' appears to be duplicated after diff application at lines {line_numbers}")
@@ -196,9 +192,7 @@ class PythonHandler(LanguageHandler):
                         if class_name in original_methods and method_name in original_methods[class_name]:
                             original_count = len(original_methods[class_name][method_name])
                         
-                        # If there are more occurrences in the modified content than in the original,
-                        # or if the occurrences are far apart, it's likely a duplicate
-                        if len(occurrences) > original_count or cls._are_occurrences_far_apart(occurrences):
+                        if len(occurrences) > original_count:
                             line_numbers = ", ".join(str(line) for line in occurrences)
                             duplicates.append(f"{class_name}.{method_name} (lines {line_numbers})")
                             logger.warning(f"Method '{class_name}.{method_name}' appears to be duplicated after diff application at lines {line_numbers}")

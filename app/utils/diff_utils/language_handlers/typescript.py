@@ -44,30 +44,67 @@ class TypeScriptHandler(LanguageHandler):
         if JsonContentHandler.contains_json_content(original_content) or JsonContentHandler.contains_json_content(modified_content):
             logger.debug(f"TypeScript file contains JSON content, applying special handling")
             modified_content = JsonContentHandler.preserve_json_structure(original_content, modified_content)
-        
         # Try to use TypeScript compiler to validate syntax if available
         try:
-            # Create a temporary file with the modified content
             import tempfile
+            import re as _re
             import os
-            
-            with tempfile.NamedTemporaryFile(suffix='.ts', delete=False) as temp:
+            import shutil
+
+            # Prefer the project-local tsc over a global one.  Walk up from
+            # the file path to find node_modules/.bin/tsc.
+            def find_tsc(start_path: str) -> Optional[str]:
+                candidate = os.path.abspath(start_path)
+                for _ in range(6):  # max 6 levels up
+                    candidate = os.path.dirname(candidate)
+                    tsc_bin = os.path.join(candidate, 'node_modules', '.bin', 'tsc')
+                    if os.path.isfile(tsc_bin):
+                        return tsc_bin
+                return shutil.which('tsc')
+
+            tsc_path = find_tsc(file_path)
+            if not tsc_path:
+                raise FileNotFoundError('tsc not found in node_modules or PATH')
+
+            # Use the correct extension so tsc enables JSX parsing for .tsx
+            suffix = '.tsx' if file_path.endswith('.tsx') else '.ts'
+
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temp:
                 temp.write(modified_content.encode('utf-8'))
                 temp_path = temp.name
-            
+
             try:
-                # Use tsc to check syntax
+                tsc_args = [tsc_path, '--noEmit', '--skipLibCheck',
+                            '--isolatedModules', '--noResolve']
+                if suffix == '.tsx':
+                    tsc_args += ['--jsx', 'react-jsx']
+                tsc_args.append(temp_path)
+
                 result = subprocess.run(
-                    ['tsc', '--noEmit', temp_path],
+                    tsc_args,
                     capture_output=True,
                     text=True,
-                    timeout=5  # 5 second timeout
+                    timeout=5
                 )
                 
                 if result.returncode != 0:
-                    error_msg = result.stderr.strip()
-                    logger.error(f"TypeScript syntax validation failed for {file_path}: {error_msg}")
-                    return False, error_msg
+                    # tsc writes diagnostics to stdout, not stderr
+                    error_msg = (result.stdout.strip() or result.stderr.strip())
+
+                    # Distinguish real syntax errors (TS1xxx) from
+                    # import/type resolution errors (TS2xxx+) which are
+                    # expected when validating an isolated file.
+                    diag_codes = _re.findall(r'TS(\d+)', error_msg)
+                    has_syntax_error = any(c.startswith('1') for c in diag_codes)
+
+                    if has_syntax_error:
+                        logger.error(f"TypeScript syntax validation failed for {file_path}: {error_msg}")
+                        return False, error_msg
+
+                    # Only non-syntax diagnostics (unresolved imports, missing
+                    # types) — fall through to basic validation.
+                    logger.debug(f"tsc reported non-syntax diagnostics for {file_path}, falling back to basic validation")
+                    raise FileNotFoundError("tsc context insufficient, fall back")
                 
                 # Additional verification: check for common issues
                 issues = cls._check_common_issues(original_content, modified_content)
