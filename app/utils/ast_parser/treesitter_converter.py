@@ -60,9 +60,16 @@ class TreeSitterConverter:
                     return inner.text.decode("utf-8", errors="replace")
                 return child.text.decode("utf-8", errors="replace")
 
-        # Imports: use the whole node text (trimmed)
-        if node.type in ("preproc_include", "use_declaration",
-                         "import_declaration", "using_declaration"):
+        # Imports / whole-text nodes: use the full node text (trimmed).
+        # This covers import-like constructs across all supported languages.
+        _IMPORT_NODE_TYPES = {
+            "preproc_include", "use_declaration", "import_declaration",
+            "using_declaration", "using_directive", "import_header",
+            "namespace_use_declaration", "use_statement", "require_statement",
+            "import_or_export", "open_statement", "import_statement",
+            "using_statement", "import",
+        }
+        if node.type in _IMPORT_NODE_TYPES:
             txt = node.text.decode("utf-8", errors="replace").strip()
             # Trim to first line / reasonable length
             return txt.split("\n")[0][:120]
