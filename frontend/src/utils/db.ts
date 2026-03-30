@@ -397,6 +397,9 @@ class ConversationDB implements DB {
             const existing = deduped.get(conv.id);
             if (!existing) {
                 deduped.set(conv.id, conv);
+            } else if ((conv as any)._isShell && !(existing as any)._isShell) {
+                // Never let a shell overwrite a non-shell entry in the same batch
+                console.warn(`🛡️ DEDUP_GUARD: Keeping non-shell version of ${conv.id.substring(0, 8)} (shell had ${conv.messages?.length || 0}, non-shell has ${existing.messages?.length || 0})`);
             } else {
                 // Keep the one with more messages or newer version
                 const existingMsgCount = existing.messages?.length || 0;
@@ -454,6 +457,42 @@ class ConversationDB implements DB {
             const store = tx.objectStore(STORE_NAME);
 
             return new Promise<void>((resolve, reject) => {
+                // Read-before-write guard: within the same readwrite
+                // transaction, check if any conversation would lose
+                // messages.  Catches TOCTOU races from direct callers
+                // (rename, delete, fork) that bypass queueSave.
+                const guardRequest = store.get('current');
+                guardRequest.onerror = () => {
+                    // Cannot read — skip guard, proceed with write
+                    performWrite();
+                };
+                guardRequest.onsuccess = () => {
+                    const idbConversations: Conversation[] =
+                        Array.isArray(guardRequest.result) ? guardRequest.result : [];
+                    if (idbConversations.length > 0) {
+                        const idbMsgCounts = new Map<string, { count: number; msgs: any[] }>();
+                        for (const c of idbConversations) {
+                            if (c?.id && c.messages?.length) {
+                                idbMsgCounts.set(c.id, { count: c.messages.length, msgs: c.messages });
+                            }
+                        }
+                        for (const conv of uniqueConversations) {
+                            const prev = idbMsgCounts.get(conv.id);
+                            if (!prev) continue;
+                            const nextCount = conv.messages?.length || 0;
+                            if (prev.count > nextCount && prev.count > 2) {
+                                console.warn(
+                                    `🛡️ IDB_WRITE_GUARD: Preserving ${prev.count} IDB messages ` +
+                                    `for ${conv.id.substring(0, 8)} (caller had ${nextCount})`
+                                );
+                                conv.messages = prev.msgs;
+                            }
+                        }
+                    }
+                    performWrite();
+                };
+
+                const performWrite = () => {
                 const conversationsToSave = uniqueConversations.map(conv => ({
                     ...conv,
                     _version: conv._version || Date.now(),  // BUGFIX: preserve existing _version instead of overwriting all
@@ -517,6 +556,7 @@ class ConversationDB implements DB {
                     console.error('Transaction aborted');
                     reject(new Error('Transaction was aborted'));
                 };
+                }; // end performWrite
             });
         } finally {
             this.saveInProgress = false;
@@ -603,6 +643,18 @@ class ConversationDB implements DB {
                 const conversations = Array.isArray(request.result) ? request.result : [];
 
                 if (conversations.length > 0) {
+                    // Detect corrupt data: a single record with no id indicates
+                    // the stored value was corrupted (e.g. by a failed save that
+                    // wrote an incomplete object).  Treat as empty so callers
+                    // can fall back to server data instead of showing nothing.
+                    if (conversations.length === 1 && !conversations[0]?.id) {
+                        console.warn('🔧 IDB_CORRUPT: Found single record with no id — treating as empty');
+                        // Clear the corrupt record (fire-and-forget)
+                        store.put([], 'current');
+                        resolve([]);
+                        return;
+                    }
+
                     const validConversations = conversations.filter(conv =>
                         conv && this.validateConversations([conv])
                     );
@@ -642,7 +694,17 @@ class ConversationDB implements DB {
             return new Promise<Conversation[]>((resolve) => {
                 const request = store.get('current');
                 request.onsuccess = () => {
-                    const conversations: Conversation[] = Array.isArray(request.result) ? request.result : [];
+                    let conversations: Conversation[] = Array.isArray(request.result) ? request.result : [];
+
+                    // Mirror the corrupt-record check from getConversations.
+                    // A single entry with no id means the store value was
+                    // corrupted — treat as empty so the startup IDB_REPAIR
+                    // logic in ChatContext can detect and fix it cleanly.
+                    if (conversations.length === 1 && !conversations[0]?.id) {
+                        console.warn('🔧 IDB_CORRUPT: Shell read found corrupt record — treating as empty');
+                        conversations = [];
+                    }
+
                     // Strip messages — keep only the first and last for preview/timestamp.
                     // Mark as shell with original count so save paths can detect and protect.
                     const shells = conversations.map(conv => ({

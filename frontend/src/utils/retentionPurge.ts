@@ -62,9 +62,11 @@ export async function purgeExpiredConversations(db: any): Promise<void> {
     let purgedCount = 0;
 
     for (const conv of conversations) {
-        // Use the earliest meaningful timestamp
-        const createdAt = conv.createdAt || conv.lastAccessedAt || conv._version || 0;
-        if (createdAt > 0 && createdAt < cutoff) {
+        // Use the MOST RECENT activity timestamp for retention decisions.
+        // A conversation created months ago but used yesterday must not be
+        // purged.  Prefer lastAccessedAt > _version > lastActiveAt > createdAt.
+        const lastActivity = conv.lastAccessedAt || conv._version || conv.lastActiveAt || conv.createdAt || 0;
+        if (lastActivity > 0 && lastActivity < cutoff) {
             purgedCount++;
         } else {
             kept.push(conv);

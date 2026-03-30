@@ -64,6 +64,7 @@ All Ziya configuration environment variables use the `ZIYA_` prefix. This docume
 | `ZIYA_TOOL_SENTINEL` | str | `TOOL_SENTINEL` | — | XML tag name for tool call boundaries in streaming |
 | `ZIYA_MAX_TOOLS_PER_ROUND` | int | `5` | — | Maximum tool calls the model may make in a single round |
 | `ZIYA_SECURE_MCP` | bool | `false` | — | Enforce strict MCP result signing and verification |
+| `ZIYA_MAX_TOOL_ITERATIONS` | int | `200` | — | Maximum agentic loop iterations per streaming response |
 
 ## Features
 
@@ -101,6 +102,7 @@ All Ziya configuration environment variables use the `ZIYA_` prefix. This docume
 | `ZIYA_ENCRYPTION_KEY` | str | — | Passphrase for at-rest encryption of stored conversations |
 | `ZIYA_DISABLE_AUDIT_LOG` | bool | `false` | Disable the MCP tool audit log |
 | `ZIYA_ALLOW_ALL_ENDPOINTS` | bool | `false` | Bypass enterprise endpoint restrictions (dev/testing only) |
+| `ZIYA_RETENTION_OVERRIDE_DAYS` | number | — | Minimum retention in days — raises any plugin-enforced TTL that is shorter than this value (e.g. `30` to guarantee 30-day retention). Set to `0` or unset to disable. Fractional values like `0.5` (12 hours) are supported. |
 
 ## Logging / Debug
 
