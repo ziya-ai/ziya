@@ -144,6 +144,24 @@ Tool description enhancements are merged from three sources. For the same tool, 
 
 Per-project settings, contexts, and skills are stored here automatically. You don't need to edit these directly — they're managed through the UI.
 
+### Project Settings (via Manage Projects → ⚙️)
+
+Each project has configurable settings accessible from the Project Manager modal:
+
+**Context Management**
+
+| Setting | Default | Description |
+|---|---|---|
+| Auto-add diff files | Enabled | When the AI produces a diff referencing files not in the active context, automatically add those files so subsequent turns can see their full content. Disable if you prefer manual control over which files are in context. |
+
+**Write Policy**
+
+| Setting | Default | Description |
+|---|---|---|
+| Direct file write mode | No files | Controls whether the AI can write files directly using `file_write`. Options: *No files* (safe paths + patterns only), *New files* (create new files anywhere), *All files* (create and overwrite any project file). |
+| Allowed write patterns | (empty) | Glob patterns for files the shell may write (e.g. `*.md`, `docs/**`). |
+| Safe write paths | (empty) | Additional path prefixes writable within the project (added to global defaults like `.ziya/`, `/tmp/`). |
+
 ---
 
 ## Configuration File Locations Summary

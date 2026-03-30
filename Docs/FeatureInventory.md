@@ -76,7 +76,7 @@
 | **Per-message editing** | Edit, resubmit, fork, truncate, or delete any message in the conversation history |
 | **Selective file removal** | Remove individual files from context mid-conversation when they're no longer relevant, reclaiming token budget for new material |
 | **Multiple simultaneous projects** | Open separate browser tabs, each with its own project, history, and context |
-| **Project organization** | Conversations grouped by project in the sidebar |
+| **Project organization** | Conversations grouped by project in the sidebar; switching projects auto-restores the last-viewed conversation for that project |
 | **Conversation export / import** | Export for local reuse (JSON), export for sharing (Markdown), export directly to paste services; import to restore |
 | **Project & session naming** | Name projects, groups, and individual sessions for organization in the sidebar |
 | **Conversation checkpointing** | Auto-checkpointing of conversation state; web UI supports session resume across browser restarts |
