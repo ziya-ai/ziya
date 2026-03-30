@@ -147,6 +147,45 @@ class FormatterProvider(ABC):
         pass
 
 
+class ToolResultFilterProvider(ABC):
+    """
+    Tool result filter provider interface.
+
+    Plugins implement this to sanitize tool results before they enter
+    conversation context.  Filters strip metadata bloat, extract text
+    from binary blobs, and enforce size limits — reducing token waste
+    without losing semantic content.
+
+    Multiple providers can register.  They are applied in priority order
+    (highest first).  Each filter receives the output of the previous one.
+    """
+
+    provider_id: str = "default"
+    priority: int = 0
+
+    def should_filter(self, tool_name: str) -> bool:
+        """Return True if this provider wants to filter the given tool's results.
+
+        Default returns True (filter all tools).  Override to target
+        specific tools, e.g. only 'QuipEditor'.
+        """
+        return True
+
+    @abstractmethod
+    def filter_result(self, tool_name: str, result_text: str, args: dict) -> str:
+        """Filter a tool result string before it enters conversation context.
+
+        Args:
+            tool_name: Normalized tool name (e.g. 'QuipEditor', 'run_shell_command').
+            result_text: The raw result text from tool execution.
+            args: The arguments that were passed to the tool.
+
+        Returns:
+            The filtered result text.
+        """
+        pass
+
+
 @dataclass
 class DataRetentionPolicy:
     """

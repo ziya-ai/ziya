@@ -1313,6 +1313,9 @@ class StreamingToolExecutor:
             
             # Check for user feedback at the start of each iteration
             if conversation_id and iteration > 0:  # Skip check on first iteration
+                # Yield to event loop so the feedback monitor task can deposit
+                # any items it picked up from the asyncio Queue.
+                await asyncio.sleep(0)
                 for fb in _drain_pending_feedback():
                     if fb['type'] == 'interrupt':
                         yield track_yield({'type': 'text', 'content': '\n\n**User requested stop.**\n\n'})
@@ -1882,6 +1885,38 @@ class StreamingToolExecutor:
                             # Inside a code fence the model may legitimately quote error strings
                             if code_block_tracker.get('in_block'):
                                 _hallucination_match = None
+                                # Detect fake tool calls: model writes JSON resembling
+                                # a tool invocation instead of using the tool_use API.
+                                # Heuristic: if the text inside a code block contains 3+
+                                # quoted keys that match parameter names of any single
+                                # loaded tool, it's almost certainly a hallucinated call.
+                                if not hasattr(self, '_tool_param_sets'):
+                                    # Build once: set of param name sets per tool
+                                    self._tool_param_sets = []
+                                    for _td in tools:
+                                        _sk = set()
+                                        _schema = getattr(_td, 'args_schema', None)
+                                        if _schema and hasattr(_schema, 'schema'):
+                                            try:
+                                                _sk = set(_schema.schema().get('properties', {}).keys())
+                                            except Exception:
+                                                pass
+                                        if not _sk and hasattr(_td, 'args') and isinstance(_td.args, dict):
+                                            _sk = set(_td.args.keys())
+                                        if len(_sk) >= 3:
+                                            self._tool_param_sets.append(_sk)
+                                # Check tail for quoted keys matching a tool's params
+                                _quoted_keys = set(_re.findall(r'"(\w+)"\s*:', _tail))
+                                if len(_quoted_keys) >= 3:
+                                    for _param_set in self._tool_param_sets:
+                                        _overlap = _quoted_keys & _param_set
+                                        if len(_overlap) >= 3:
+                                            logger.info(
+                                                f"🚨 FAKE_TOOL_CALL: Detected {len(_overlap)} "
+                                                f"tool param keys in code block: {_overlap}"
+                                            )
+                                            _hallucination_match = True
+                                            break
                             if _hallucination_match:
                                 logger.warning(
                                     f"🚨 HALLUCINATION_BACKEND: Model generating fake tool output! "
@@ -2525,6 +2560,12 @@ Please try again or proceed without this tool."""
                                    else:
                                         result_text = str(result)
 
+                                   # Sanitize tool result for context efficiency:
+                                   # runs plugin filters (site-specific) then
+                                   # general-purpose transforms (base64, size cap).
+                                   from app.utils.tool_result_sanitizer import sanitize_for_context
+                                   result_text = sanitize_for_context(result_text, tool_name=actual_tool_name, args=args)
+
                                    tool_results.append({
                                         'tool_id': tool_id,
                                         'tool_name': tool_name,
@@ -2571,6 +2612,8 @@ Please try again or proceed without this tool."""
                                    )
                                     
                                    # Check for feedback that arrived during tool execution
+                                   # Yield first so monitor task can deposit queued items
+                                   await asyncio.sleep(0)
                                    for fb in _drain_pending_feedback():
                                        if fb['type'] == 'interrupt':
                                            yield track_yield({'type': 'text', 'content': '\n\n**User requested stop.**\n\n'})
@@ -2989,6 +3032,31 @@ Please retry the tool call with valid JSON. Ensure:
                     if empty_tool_calls_this_iteration == 0:
                         consecutive_empty_tool_calls = 0
                     
+                    # Drain any feedback that arrived during model streaming or
+                    # tool execution in this iteration.  Without this, feedback
+                    # sits in _pending_feedback until the next iteration's drain,
+                    # and the event-loop starvation bug at iteration boundaries
+                    # can cause it to be missed entirely.
+                    await asyncio.sleep(0)
+                    for fb in _drain_pending_feedback():
+                        if fb['type'] == 'interrupt':
+                            yield track_yield({'type': 'text', 'content': '\n\n**User requested stop.**\n\n'})
+                            yield track_yield({'type': 'stream_end'})
+                            if _feedback_monitor_task:
+                                _feedback_monitor_task.cancel()
+                            return
+                        fb_msg = fb.get('message', '')
+                        if any(w in fb_msg.lower() for w in ['stop', 'halt', 'abort', 'cancel', 'quit']):
+                            yield track_yield({'type': 'text', 'content': f"\n\n**User feedback:** {fb_msg}\n**Stopping execution as requested.**\n\n"})
+                            yield track_yield({'type': 'stream_end'})
+                            if _feedback_monitor_task:
+                                _feedback_monitor_task.cancel()
+                            return
+                        logger.info(f"🔄 FEEDBACK_PRE_CONTINUE: Injecting feedback before next iteration: {fb_msg[:60]}")
+                        conversation.append({"role": "user", "content": f"[User feedback]: {fb_msg}"})
+                        yield track_yield({'type': 'text', 'content': f"\n\n**📝 Feedback received:** {fb_msg}\n\n"})
+                        yield track_yield({'type': 'feedback_delivered', 'message': fb_msg[:80]})
+
                     logger.debug(f"🔍 CONTINUING_ROUND: Tool results added, model will continue in same stream (round {iteration + 1})")
                     # Yield heartbeat to flush stream before next iteration
                     # Notify frontend that we're waiting for the next model response
@@ -3003,10 +3071,24 @@ Please retry the tool call with valid JSON. Ensure:
                     # Check for pending feedback without blocking.
                     # The feedback monitor runs continuously so any messages
                     # already received are in _pending_feedback right now.
+                    # Yield to event loop first so the monitor can deposit
+                    # items that are in the asyncio Queue but haven't been
+                    # transferred to _pending_feedback yet.
+                    await asyncio.sleep(0)
                     pending_feedback_before_end = [
                         fb.get('message', '') for fb in _drain_pending_feedback()
                         if fb['type'] == 'feedback'
                     ]
+
+                    # Second-chance drain: if feedback was in-flight (e.g. the
+                    # monitor was mid-await when we yielded above), wait briefly
+                    # and try once more before committing to a break decision.
+                    if not pending_feedback_before_end:
+                        await asyncio.sleep(0.05)
+                        pending_feedback_before_end = [
+                            fb.get('message', '') for fb in _drain_pending_feedback()
+                            if fb['type'] == 'feedback'
+                        ]
                     
                     # If we found pending feedback, deliver it before ending
                     if pending_feedback_before_end:
@@ -3122,6 +3204,21 @@ Please retry the tool call with valid JSON. Ensure:
                 # This ensures feedback that arrived during the last iteration or after completion
                 # is not lost and gives the model a chance to respond
                 if conversation_id:
+                    # Cancel the monitor FIRST to prevent it from competing
+                    # with our direct queue.get() below.  Two consumers on the
+                    # same asyncio Queue means ~50% of items go to the wrong
+                    # reader, silently dropping feedback.
+                    if _feedback_monitor_task:
+                        _feedback_monitor_task.cancel()
+                        try:
+                            await _feedback_monitor_task
+                        except asyncio.CancelledError:
+                            pass
+                        _feedback_monitor_task = None
+
+                    # Also drain anything the monitor deposited before cancellation
+                    post_cancel_feedback = [fb.get('message', '') for fb in _drain_pending_feedback() if fb['type'] == 'feedback']
+
                     try:
                         from app.server import active_feedback_connections
                         if conversation_id in active_feedback_connections:
@@ -3139,6 +3236,11 @@ Please retry the tool call with valid JSON. Ensure:
                                     feedback_queue.get(), timeout=0.5
                                 )
                                 while feedback_data:
+                                    # Also incorporate anything drained from the monitor above
+                                    if post_cancel_feedback:
+                                        pending_feedback.extend(post_cancel_feedback)
+                                        post_cancel_feedback = []  # Only add once
+
                                     feedback_type = feedback_data.get('type')
                                     if feedback_type == 'tool_feedback':
                                         pending_feedback.append(feedback_data.get('message', ''))
@@ -3153,7 +3255,12 @@ Please retry the tool call with valid JSON. Ensure:
                                     except asyncio.QueueEmpty:
                                         break
                             except asyncio.TimeoutError:
-                                pass  # No feedback arrived within grace period
+                                # No feedback from queue within grace period.
+                                # Still incorporate anything drained from the
+                                # monitor before cancellation.
+                                if post_cancel_feedback:
+                                    pending_feedback.extend(post_cancel_feedback)
+                                    post_cancel_feedback = []
                             except Exception as queue_error:
                                 logger.debug(f"Error draining feedback queue: {queue_error}")
                             
@@ -3403,9 +3510,8 @@ Please retry the tool call with valid JSON. Ensure:
                     logger.error(f"Non-throttling error in iteration {iteration}: {error_str}")
                     yield {'type': 'error', 'content': f'Error: {error_str}'}
                     return
-
         # Stop the feedback monitor
-        if _feedback_monitor_task:
+        if _feedback_monitor_task and not _feedback_monitor_task.done():
             _feedback_monitor_task.cancel()
         
         # ------------------------------------------------------------------
