@@ -11,10 +11,16 @@ export interface WritePolicy {
   always_blocked?: string[];
 }
 
+export interface ContextManagementSettings {
+  /** Automatically add files referenced in diffs to the active context */
+  auto_add_diff_files?: boolean;
+}
+
 export interface ProjectSettings {
   defaultContextIds: string[];
   defaultSkillIds: string[];
   writePolicy?: WritePolicy;
+  contextManagement?: ContextManagementSettings;
 }
 
 export interface Project {
@@ -33,6 +39,7 @@ export interface ProjectCreate {
 
 export interface ProjectUpdate {
   name?: string;
+  path?: string;
   settings?: ProjectSettings;
 }
 

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Modal, Button, Input, Tag, Space, message, Divider, Alert, Collapse, Empty, Popconfirm, Select, Tooltip, List } from 'antd';
+import { Modal, Button, Input, Tag, Space, message, Divider, Alert, Collapse, Empty, Popconfirm, Select, Tooltip, List, Radio } from 'antd';
 import {
     DeleteOutlined, SettingOutlined, MergeCellsOutlined,
     EditOutlined, CheckOutlined, CloseOutlined,
@@ -9,7 +9,7 @@ import {
 import { useProject } from '../context/ProjectContext';
 import { useTheme } from '../context/ThemeContext';
 import { useActiveChat } from '../context/ActiveChatContext';
-import { WritePolicy } from '../types/project';
+import { WritePolicy, ContextManagementSettings } from '../types/project';
 
 const { Panel } = Collapse;
 
@@ -42,6 +42,12 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
     const [writePolicy, setWritePolicy] = useState<WritePolicy>({});
     const [newPattern, setNewPattern] = useState('');
     const [newWritePath, setNewWritePath] = useState('');
+
+    // Context management settings
+    const [contextManagement, setContextManagement] = useState<ContextManagementSettings>({ auto_add_diff_files: true });
+
+    // Project root path editing
+    const [editProjectPath, setEditProjectPath] = useState('');
 
     // New project creation state
     const [showCreateForm, setShowCreateForm] = useState(false);
@@ -81,6 +87,26 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
                     }
                 } catch (error) {
                     console.error('Failed to load write policy:', error);
+                }
+
+                // Initialize project path for editing
+                try {
+                    const proj = projects.find(p => p.id === settingsId);
+                    if (proj) setEditProjectPath(proj.path || '');
+                } catch {}
+
+                // Load context management settings from project
+                try {
+                    const proj = projects.find(p => p.id === settingsId);
+                    if (proj) {
+                        const fullProject = await fetch(`/api/v1/projects/${settingsId}`);
+                        if (fullProject.ok) {
+                            const projectData = await fullProject.json();
+                            setContextManagement(projectData.settings?.contextManagement || { auto_add_diff_files: true });
+                        }
+                    }
+                } catch (error) {
+                    console.error('Failed to load context management settings:', error);
                 }
             };
             loadPolicy();
@@ -188,7 +214,11 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
     };
 
     const selectBrowsePath = (path: string) => {
-        setNewProjectPath(path);
+        if (settingsId) {
+            setEditProjectPath(path);
+        } else {
+            setNewProjectPath(path);
+        }
         setShowBrowseModal(false);
     };
 
@@ -196,6 +226,34 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
         if (!settingsId) return;
         setIsProcessing(true);
         try {
+            // Save project root path if changed
+            const currentProj = projects.find(p => p.id === settingsId);
+            const trimmedPath = editProjectPath.trim();
+            if (currentProj && trimmedPath !== currentProj.path) {
+                await updateProject(settingsId, { path: trimmedPath || undefined });
+                // If this is the active project, notify the rest of the app
+                if (currentProject?.id === settingsId) {
+                    (window as any).__ZIYA_CURRENT_PROJECT_PATH__ = trimmedPath;
+                    window.dispatchEvent(new CustomEvent('projectSwitched', {
+                        detail: { projectId: settingsId, projectPath: trimmedPath, projectName: currentProj.name }
+                    }));
+                }
+            }
+
+            // Save context management settings via project update
+            const projectResp = await fetch(`/api/v1/projects/${settingsId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    settings: {
+                        contextManagement: contextManagement,
+                    }
+                })
+            });
+            if (!projectResp.ok) {
+                message.error('Failed to save context management settings');
+            }
+
             const response = await fetch('/api/mcp/write-policy', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -243,11 +301,73 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
                 footer={[
                     <Button key="cancel" onClick={() => setSettingsId(null)}>Cancel</Button>,
                     <Button key="save" type="primary" loading={isProcessing} onClick={handleSaveWritePolicy}>
-                        Save Write Policy
+                        Save Settings
                     </Button>
                 ]}
             >
                 <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                    <Alert
+                        message="Project Root"
+                        description="The root directory for this project. File context, AST indexing, and shell commands resolve relative to this path."
+                        type="info"
+                        showIcon
+                    />
+
+                    <div>
+                        <strong>Project Root Path</strong>
+                        <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+                            The absolute filesystem path that serves as the working directory for this project.
+                            Leave empty for idea/scratch projects with no directory.
+                        </div>
+                        <Input.Group compact>
+                            <Input
+                                placeholder="/path/to/project (optional)"
+                                value={editProjectPath}
+                                onChange={e => setEditProjectPath(e.target.value)}
+                                style={{ width: 'calc(100% - 80px)', fontFamily: 'monospace', fontSize: 12 }}
+                            />
+                            <Button onClick={() => {
+                                setShowBrowseModal(true);
+                                handleBrowse(editProjectPath || '~');
+                            }} style={{ width: 80 }}>
+                                Browse
+                            </Button>
+                        </Input.Group>
+                    </div>
+
+                    <Divider style={{ margin: '8px 0' }} />
+
+                    <Alert
+                        message="Automatic Context Management"
+                        description="Controls how the AI assistant manages file context when generating code changes."
+                        type="info"
+                        showIcon
+                    />
+
+                    <div>
+                        <strong>Auto-add diff files to context</strong>
+                        <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+                            When the AI produces a diff referencing files not currently in context,
+                            automatically add those files so the AI can see their full content on subsequent turns.
+                        </div>
+                        <Radio.Group
+                            value={contextManagement.auto_add_diff_files !== false}
+                            onChange={e => setContextManagement(prev => ({
+                                ...prev,
+                                auto_add_diff_files: e.target.value
+                            }))}
+                        >
+                            <Radio.Button value={true} style={{ minWidth: 100, textAlign: 'center' }}>
+                                Enabled
+                            </Radio.Button>
+                            <Radio.Button value={false} style={{ minWidth: 100, textAlign: 'center' }}>
+                                Disabled
+                            </Radio.Button>
+                        </Radio.Group>
+                    </div>
+
+                    <Divider style={{ margin: '8px 0' }} />
+
                     <Alert
                         message="Project Write Policy"
                         description="Controls which files the shell can write to within this project. These patterns are merged with the global write policy."

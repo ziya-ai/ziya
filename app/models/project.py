@@ -11,10 +11,15 @@ class WritePolicy(BaseModel):
     allowed_interpreters: List[str] = []
     always_blocked: List[str] = []
 
+class ContextManagementSettings(BaseModel):
+    """Per-project automatic context management settings."""
+    auto_add_diff_files: bool = True
+
 class ProjectSettings(BaseModel):
     defaultContextIds: List[str] = []
     defaultSkillIds: List[str] = []
     writePolicy: Optional[WritePolicy] = None
+    contextManagement: Optional[ContextManagementSettings] = None
 
 class Project(BaseModel):
     id: str
@@ -30,6 +35,7 @@ class ProjectCreate(BaseModel):
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
+    path: Optional[str] = None
     settings: Optional[ProjectSettings] = None
 
 class ProjectListItem(BaseModel):
