@@ -247,22 +247,21 @@ class TestTimeoutChainDocumentation:
         shell_mod = importlib.import_module("app.mcp_servers.shell_server")
         server = shell_mod.ShellServer()
 
-        # Get tool list via handle_message
+        # Get tool list via handle_request (dict-based MCP protocol)
         loop = asyncio.new_event_loop()
         try:
             response = loop.run_until_complete(
-                server.handle_message(json.dumps({
+                server.handle_request({
                     "jsonrpc": "2.0",
                     "id": 1,
                     "method": "tools/list",
                     "params": {}
-                }))
+                })
             )
         finally:
             loop.close()
 
-        resp = json.loads(response)
-        tools = resp["result"]["tools"]
+        tools = response["result"]["tools"]
         shell_tool = next(t for t in tools if t["name"] == "run_shell_command")
         props = shell_tool["inputSchema"]["properties"]
 

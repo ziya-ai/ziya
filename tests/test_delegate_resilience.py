@@ -307,9 +307,11 @@ class TestSourceRollupWithSynthesis:
 
         manager._post_completion_to_source("p1", synthesis="All tasks succeeded with full coverage.")
 
+
         assert len(written) == 1
         content = written[0][1].content
-        assert "Orchestrator Synthesis" in content
+        # Synthesis is embedded inline after the count line (no heading)
+        assert "Task Plan Complete" in content
         assert "All tasks succeeded" in content
 
     def test_no_synthesis_omits_section(self, manager):
@@ -332,7 +334,9 @@ class TestSourceRollupWithSynthesis:
         manager._post_completion_to_source("p1")
 
         content = written[0][1].content
-        assert "Orchestrator Synthesis" not in content
+        # Without synthesis, completion header still present but no synthesis text
+        assert "Task Plan Complete" in content
+        assert "All tasks succeeded" not in content
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +353,7 @@ class TestOrchestratorLLMCall:
             mock_model.ainvoke.return_value = MagicMock(content="Analysis result here")
             mock_wrapper = MagicMock()
             mock_wrapper.model = mock_model
+            mock_model.model = mock_model  # prevent double-unwrap from grabbing auto-mock
             mock_lazy.get_model.return_value = mock_wrapper
 
             result = await manager._orchestrator_llm_call("Analyze this plan")
@@ -357,14 +362,15 @@ class TestOrchestratorLLMCall:
         mock_model.ainvoke.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_llm_call_truncates_at_4000(self, manager):
+    async def test_llm_call_truncates_at_20000(self, manager):
         with patch("app.agents.agent.model") as mock_lazy:
             mock_model = AsyncMock()
-            mock_model.ainvoke.return_value = MagicMock(content="x" * 5000)
+            mock_model.ainvoke.return_value = MagicMock(content="x" * 25000)
             mock_wrapper = MagicMock()
             mock_wrapper.model = mock_model
+            mock_model.model = mock_model  # prevent double-unwrap from grabbing auto-mock
             mock_lazy.get_model.return_value = mock_wrapper
 
             result = await manager._orchestrator_llm_call("prompt")
 
-        assert len(result) == 4000
+        assert len(result) == 20000

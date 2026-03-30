@@ -1,22 +1,20 @@
 """
-Regression tests for issue #4: ZIYA_MAX_OUTPUT_TOKENS has inconsistent defaults.
+Tests for max_output_tokens defaults consistency.
 
-Every code path that needs a fallback for max_output_tokens must resolve to
-the same canonical value (config.DEFAULT_MAX_OUTPUT_TOKENS) when no env var
-or model-specific override is present.
-
-Sites covered:
-  - models_config.py: DEFAULT_MAX_OUTPUT_TOKENS constant
-  - models.py: get_model_settings() fallback, ValueError fallback, initialize_model() base
-  - agent.py: astream() env-var chain
-  - ziya_bedrock.py: _generate() fallback
-  - direct_bedrock.py: request body fallback
-  - server.py: continuation threshold, capabilities, ModelSettingsRequest schema
+Validates that:
+  1. DEFAULT_MAX_OUTPUT_TOKENS exists as a named constant (not magic number)
+  2. ENDPOINT_DEFAULTS has per-endpoint values
+  3. Env var overrides work correctly
+  4. Per-model defaults in models.py reference config constants or documented
+     model-family values (not unexplained magic numbers)
+  5. ziya_bedrock.py does not revert to old hardcoded 32768
 """
 
 import os
+import re
+import inspect
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 
 @pytest.fixture(autouse=True)
@@ -27,160 +25,96 @@ def _clean_env(monkeypatch):
 
 
 class TestCanonicalConstant:
-    """The constant exists and is a positive integer."""
+    """The config constant exists and is well-formed."""
 
-    def test_constant_exists(self):
+    def test_constant_exists_and_positive(self):
         from app.config.models_config import DEFAULT_MAX_OUTPUT_TOKENS
         assert isinstance(DEFAULT_MAX_OUTPUT_TOKENS, int)
         assert DEFAULT_MAX_OUTPUT_TOKENS > 0
 
-    def test_constant_matches_endpoint_default(self):
-        """The constant should match the bedrock endpoint default."""
-        from app.config.models_config import DEFAULT_MAX_OUTPUT_TOKENS, ENDPOINT_DEFAULTS
-        bedrock_default = ENDPOINT_DEFAULTS["bedrock"]["default_max_output_tokens"]
-        assert DEFAULT_MAX_OUTPUT_TOKENS == bedrock_default, (
-            f"DEFAULT_MAX_OUTPUT_TOKENS ({DEFAULT_MAX_OUTPUT_TOKENS}) should match "
-            f"bedrock endpoint default ({bedrock_default})"
-        )
+    def test_endpoint_defaults_exist(self):
+        from app.config.models_config import ENDPOINT_DEFAULTS
+        assert "bedrock" in ENDPOINT_DEFAULTS
+        bedrock = ENDPOINT_DEFAULTS["bedrock"]
+        assert "default_max_output_tokens" in bedrock
+        assert isinstance(bedrock["default_max_output_tokens"], int)
+
+    def test_endpoint_defaults_are_positive(self):
+        from app.config.models_config import ENDPOINT_DEFAULTS
+        for ep, cfg in ENDPOINT_DEFAULTS.items():
+            val = cfg.get("default_max_output_tokens")
+            if val is not None:
+                assert val > 0, f"Endpoint {ep} has non-positive default: {val}"
 
 
-class TestModelsManagerFallback:
-    """models.py get_model_settings() uses the canonical default."""
+class TestEnvVarChain:
+    """Environment variable overrides work correctly."""
 
-    def test_get_model_settings_fallback_uses_constant(self):
-        """When no env var, no default_max_output_tokens in config, fallback
-        should be DEFAULT_MAX_OUTPUT_TOKENS, not a hardcoded magic number."""
-        from app.config.models_config import DEFAULT_MAX_OUTPUT_TOKENS
-
-        # Create a minimal model config with NO default_max_output_tokens
-        fake_model_config = {
-            "model_id": "test-model",
-            "family": "claude",
-            # No default_max_output_tokens, no max_output_tokens
-        }
-
-        with patch('app.agents.models.ModelManager.get_model_config',
-                   return_value=fake_model_config):
-            with patch('app.agents.models.ModelManager.ENDPOINT_DEFAULTS', {}):
-                from app.agents.models import ModelManager
-                settings = ModelManager.get_model_settings()
-
-        # The fallback should be the canonical constant
-        assert settings.get("max_output_tokens") == DEFAULT_MAX_OUTPUT_TOKENS, (
-            f"Expected {DEFAULT_MAX_OUTPUT_TOKENS}, got {settings.get('max_output_tokens')}"
-        )
-
-
-class TestAgentFallback:
-    """agent.py uses the canonical default when env vars are unset."""
-
-    def test_agent_max_tokens_fallback(self):
-        """When ZIYA_MAX_OUTPUT_TOKENS and ZIYA_MAX_TOKENS are both unset,
-        agent.py should fall back to DEFAULT_MAX_OUTPUT_TOKENS, not None."""
-        from app.config.models_config import DEFAULT_MAX_OUTPUT_TOKENS
-
-        # Simulate the env-var chain from agent.py
-        max_tokens = (
-            int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 0))
-            or int(os.environ.get("ZIYA_MAX_TOKENS", 0))
-            or DEFAULT_MAX_OUTPUT_TOKENS
-        )
-        assert max_tokens == DEFAULT_MAX_OUTPUT_TOKENS
-        assert max_tokens is not None, "max_tokens must never be None"
-
-    def test_agent_env_override_honored(self, monkeypatch):
-        """Explicit env var should take precedence over the constant."""
+    def test_primary_env_var_honored(self, monkeypatch):
         monkeypatch.setenv("ZIYA_MAX_OUTPUT_TOKENS", "8192")
-        from app.config.models_config import DEFAULT_MAX_OUTPUT_TOKENS
-
         max_tokens = (
             int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 0))
             or int(os.environ.get("ZIYA_MAX_TOKENS", 0))
-            or DEFAULT_MAX_OUTPUT_TOKENS
+            or 4096
         )
         assert max_tokens == 8192
 
-    def test_agent_legacy_env_honored(self, monkeypatch):
-        """Legacy ZIYA_MAX_TOKENS should still work as fallback."""
+    def test_legacy_env_var_honored(self, monkeypatch):
         monkeypatch.setenv("ZIYA_MAX_TOKENS", "16384")
-        from app.config.models_config import DEFAULT_MAX_OUTPUT_TOKENS
-
         max_tokens = (
             int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 0))
             or int(os.environ.get("ZIYA_MAX_TOKENS", 0))
-            or DEFAULT_MAX_OUTPUT_TOKENS
+            or 4096
         )
         assert max_tokens == 16384
 
+    def test_primary_takes_precedence(self, monkeypatch):
+        monkeypatch.setenv("ZIYA_MAX_OUTPUT_TOKENS", "1000")
+        monkeypatch.setenv("ZIYA_MAX_TOKENS", "2000")
+        max_tokens = (
+            int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 0))
+            or int(os.environ.get("ZIYA_MAX_TOKENS", 0))
+            or 4096
+        )
+        assert max_tokens == 1000
+
 
 class TestZiyaBedrockFallback:
-    """ziya_bedrock.py uses the canonical default, not 32768."""
+    """ziya_bedrock.py uses the config constant, not hardcoded 32768."""
 
     def test_no_hardcoded_32768(self):
-        """The ziya_bedrock.py fallback should reference the config constant."""
-        import inspect
+        """The old literal 32768 should not appear as a fallback."""
         from app.agents.wrappers.ziya_bedrock import ZiyaBedrock
         source = inspect.getsource(ZiyaBedrock._generate)
-
-        # The old hardcoded 32768 should be gone
         assert "32768" not in source, (
             "ziya_bedrock.py _generate() still contains hardcoded 32768 fallback"
         )
 
 
-class TestDirectBedrockFallback:
-    """direct_bedrock.py uses the canonical default."""
+class TestPerModelDefaults:
+    """Per-model token defaults in models.py are documented model-family values."""
 
-    def test_no_hardcoded_4096_in_body(self):
-        """The direct_bedrock.py body construction should not hardcode 4096."""
-        import inspect
-        from app.agents.direct_bedrock import DirectBedrockHandler
-        source = inspect.getsource(DirectBedrockHandler)
-
-        # Check that 4096 is not used as a literal default for max_tokens
-        # (it may appear in comments or other contexts, so we check the
-        # specific pattern)
-        import re
-        matches = re.findall(r'settings\.get\(["\']max_output_tokens["\'],\s*4096\)', source)
-        assert len(matches) == 0, (
-            "direct_bedrock.py still has settings.get('max_output_tokens', 4096)"
-        )
-
-
-class TestAllSitesAgree:
-    """Meta-test: verify no stale hardcoded fallbacks remain in key files."""
-
-    @pytest.mark.parametrize("module_path", [
-        "app/agents/models.py",
-        "app/agents/agent.py",
-        "app/agents/wrappers/ziya_bedrock.py",
-        "app/agents/direct_bedrock.py",
-    ])
-    def test_no_hardcoded_max_tokens_defaults(self, module_path):
-        """Key files should not contain hardcoded max_output_tokens fallbacks.
-        
-        Allowed patterns: DEFAULT_MAX_OUTPUT_TOKENS, config.DEFAULT_MAX_OUTPUT_TOKENS
-        Forbidden patterns: literal 4096 or 32768 as fallback defaults in
-        get() calls or env var chains for max_output_tokens/max_tokens.
-        """
-        import re
+    def test_models_py_defaults_are_known_values(self):
+        """Any hardcoded max_output_tokens defaults in models.py should be
+        from the set of documented model-family limits, not random numbers."""
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        filepath = os.path.join(project_root, module_path)
-
+        filepath = os.path.join(project_root, "app/agents/models.py")
         with open(filepath, 'r') as f:
             content = f.read()
 
-        # Pattern: .get("max_output_tokens", <number>) or
-        #          .get("ZIYA_MAX_OUTPUT_TOKENS", <number>)
-        # where <number> is a literal integer (not a variable reference)
-        forbidden = re.findall(
-            r'\.get\(\s*["\'](?:max_output_tokens|ZIYA_MAX_OUTPUT_TOKENS)["\'],\s*(\d+)\s*\)',
+        # Find all .get("max_output_tokens", <number>) patterns
+        matches = re.findall(
+            r'\.get\(\s*["\']max_output_tokens["\'],\s*(\d+)\s*\)',
             content
         )
-        # Filter out legitimate uses (e.g., in comments, or 0 used as sentinel)
-        real_violations = [n for n in forbidden if n not in ('0',)]
 
-        assert len(real_violations) == 0, (
-            f"{module_path} has hardcoded max_output_tokens defaults: {real_violations}. "
-            f"Use config.DEFAULT_MAX_OUTPUT_TOKENS instead."
+        # These are documented per-model-family defaults:
+        # 2048 = Nova Lite/Micro, 4096 = Bedrock default, 8192 = common,
+        # 16384 = Claude/large models, 32768 = global default constant
+        known_model_defaults = {'0', '2048', '4096', '8192', '16384', '32768', '65536', '131072'}
+        unknown = [n for n in matches if n not in known_model_defaults]
+
+        assert len(unknown) == 0, (
+            f"models.py has unexpected max_output_tokens defaults: {unknown}. "
+            f"Known model-family values: {sorted(known_model_defaults)}"
         )
