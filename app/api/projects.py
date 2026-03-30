@@ -63,6 +63,20 @@ async def get_current_project():
     
     return project
 
+@router.get("/last-accessed", response_model=Project)
+async def get_last_accessed_project():
+    """Return the most recently accessed project across all projects."""
+    storage = get_project_storage()
+    projects = storage.list()
+    if not projects:
+        # No projects at all — fall back to creating one for cwd
+        cwd = os.getcwd()
+        return storage.create(ProjectCreate(path=cwd))
+    # list() is already sorted by lastAccessedAt descending
+    best = projects[0]
+    storage.touch(best.id)
+    return best
+
 @router.post("", response_model=Project)
 async def create_project(data: ProjectCreate):
     """Create or get existing project for a path."""

@@ -12,6 +12,10 @@ export async function getCurrentProject(): Promise<Project> {
   return api.get<Project>('/projects/current');
 }
 
+export async function getLastAccessedProject(): Promise<Project> {
+  return api.get<Project>('/projects/last-accessed');
+}
+
 export async function getProject(id: string): Promise<Project> {
   return api.get<Project>(`/projects/${id}`);
 }
