@@ -441,6 +441,84 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
       console.log('🔧 VEGA-PREPROCESS: Starting comprehensive preprocessing');
 
+      // Fix 0.1: Repair malformed gradient objects in mark properties
+      // LLMs generate invalid gradient syntax like: {"#4ecdc4": "linear", "x1": 1, "stops": [...]}
+      // Vega-Lite expects: {"gradient": "linear", "x1": 0, "y1": 0, "x2": 0, "y2": 1, "stops": [...]}
+      const fixMalformedGradient = (markObj: any): any => {
+        if (!markObj || typeof markObj !== 'object') return markObj;
+
+        const gradientProps = ['color', 'fill', 'stroke'];
+        for (const prop of gradientProps) {
+          const val = markObj[prop];
+          if (!val || typeof val !== 'object' || typeof val === 'string') continue;
+
+          // Detect gradient-like objects that have stops but missing/wrong "gradient" key
+          const hasStops = Array.isArray(val.stops) && val.stops.length > 0;
+          const hasValidGradient = val.gradient === 'linear' || val.gradient === 'radial';
+
+          if (hasStops && !hasValidGradient) {
+            console.log(`🔧 GRADIENT-FIX: Detected malformed gradient in mark.${prop}`);
+
+            // Try to salvage: build a proper gradient from the stops
+            const cleanGradient: any = {
+              gradient: 'linear',
+              x1: typeof val.x1 === 'number' ? val.x1 : 0,
+              y1: typeof val.y1 === 'number' ? val.y1 : 0,
+              x2: typeof val.x2 === 'number' ? val.x2 : 0,
+              y2: typeof val.y2 === 'number' ? val.y2 : 1,
+              stops: val.stops.filter((s: any) =>
+                s && typeof s.offset === 'number' && typeof s.color === 'string'
+              ),
+            };
+
+            if (cleanGradient.stops.length >= 2) {
+              markObj[prop] = cleanGradient;
+              console.log(`🔧 GRADIENT-FIX: Repaired gradient in mark.${prop}`);
+            } else {
+              // Fall back to first valid color from stops
+              const fallback = val.stops.find((s: any) => typeof s.color === 'string')?.color || '#888888';
+              markObj[prop] = fallback;
+              console.log(`🔧 GRADIENT-FIX: Gradient in mark.__MATH_INLINE_56__{fallback}`);
+            }
+          }
+        }
+        return markObj;
+      };
+
+      if (spec.mark && typeof spec.mark === 'object') {
+        fixMalformedGradient(spec.mark);
+        // Also fix nested line property (area marks use mark.line.color for the stroke)
+        if (spec.mark.line && typeof spec.mark.line === 'object') {
+          fixMalformedGradient(spec.mark.line);
+        }
+      }
+      if (spec.layer && Array.isArray(spec.layer)) {
+        spec.layer.forEach((layer: any) => {
+          if (layer.mark && typeof layer.mark === 'object') {
+            fixMalformedGradient(layer.mark);
+            if (layer.mark.line && typeof layer.mark.line === 'object') {
+              fixMalformedGradient(layer.mark.line);
+            }
+          }
+        });
+      }
+
+      // Fix 0.2: Preserve data order for nominal x-axis
+      // LLMs use nominal type for ordered categories (e.g., cosmic epochs, process steps).
+      // Nominal sorts alphabetically by default, losing the intended order.
+      if (spec.encoding?.x?.type === 'nominal' && !spec.encoding.x.sort && spec.data?.values) {
+        const xField = spec.encoding.x.field;
+        if (xField) {
+          const dataOrder = spec.data.values
+            .map((d: any) => d[xField])
+            .filter((v: any, i: number, arr: any[]) => arr.indexOf(v) === i);
+          if (dataOrder.length > 1 && dataOrder.length <= 100) {
+            spec.encoding.x.sort = dataOrder;
+            console.log(`🔧 NOMINAL-SORT-FIX: Preserved data order for x-axis field "${xField}":`, dataOrder);
+          }
+        }
+      }
+
       // Fix 0.3: Handle row/column faceting with binning where some facets have very few points
       // This causes data to disappear (e.g., Category C with only 2 points)
       // Solution: Auto-convert to overlay layout when sample sizes are too small
@@ -1568,10 +1646,15 @@ export const vegaLitePlugin: D3RenderPlugin = {
         return spec;
       }
 
-      // Add theta2 encoding for proper arc segments if missing
+      // Only add theta2 for non-stacked arc segments (like gauge charts).
+      // For standard pie/donut charts, theta alone with stack handles proportional
+      // sizing — adding theta2: {value:0} would break the stacking.
+      const thetaIsStacked = spec.encoding?.theta?.stack !== false;
       if (spec.encoding?.theta && !spec.encoding?.theta2) {
-        console.log('🔧 ARC-THETA2-FIX: Adding theta2 encoding for proper arc segments');
-        spec.encoding.theta2 = { value: 0 };
+        if (!thetaIsStacked) {
+          console.log('🔧 ARC-THETA2-FIX: Adding theta2 encoding for non-stacked arc segments');
+          spec.encoding.theta2 = { value: 0 };
+        }
       }
 
       return spec;
@@ -1862,6 +1945,81 @@ export const vegaLitePlugin: D3RenderPlugin = {
     };
 
 
+    // Fix 17: Enhance arc/pie/donut charts with text labels on slices
+    // LLMs generate arc charts with meaningful text only in tooltips (hover-only),
+    // leaving the rendered chart as unlabeled colored wedges.  This converts the
+    // spec to a layered chart: arc layer + text-label layer, and flags descriptive
+    // fields so a post-render HTML panel can display long text content.
+    const enhanceArcChartsWithTextLabels = (spec: any): any => {
+      const markType = typeof spec.mark === 'string' ? spec.mark : spec.mark?.type;
+      if (markType !== 'arc') return spec;
+      if (!spec.encoding?.theta) return spec;
+      if (spec.layer) return spec; // already layered — don't double-process
+
+      const colorField = spec.encoding?.color?.field;
+      if (!colorField || !spec.data?.values || spec.data.values.length === 0) return spec;
+
+      console.log('🔧 ARC-TEXT-FIX: Enhancing arc chart with text labels');
+
+      // Detect descriptive text fields (strings longer than 25 chars)
+      const firstRow = spec.data.values[0];
+      const descriptiveFields = Object.keys(firstRow).filter(key => {
+        if (key === colorField) return false;
+        const val = firstRow[key];
+        return typeof val === 'string' && val.length > 25;
+      });
+
+      const outerRadius = spec.mark?.outerRadius || 90;
+
+      // Build text-label encoding: reuse theta (and theta2 if present)
+      const textEncoding: any = {
+        theta: { ...spec.encoding.theta },
+        text: { field: colorField, type: 'nominal' },
+      };
+      if (spec.encoding.theta2) {
+        textEncoding.theta2 = { ...spec.encoding.theta2 };
+      }
+
+      // Pick a contrasting text color based on the spec background
+      const bg = (spec.background || '').toLowerCase();
+      const isLightBg = !bg || bg === '#ffffff' || bg.startsWith('#f');
+      textEncoding.color = { value: isLightBg ? '#333333' : '#eeeeee' };
+
+      // Arc layer keeps the full original encoding
+      const arcLayer = { mark: spec.mark, encoding: { ...spec.encoding } };
+
+      // Text layer positioned just outside the arcs
+      const textLayer = {
+        mark: {
+          type: 'text',
+          radiusOffset: Math.max(15, Math.round(outerRadius * 0.18)),
+          fontSize: 12,
+          fontWeight: 'bold',
+        },
+        encoding: textEncoding,
+      };
+
+      // Lift mark + encoding into layers; keep everything else at top level
+      const { mark: _mark, encoding: _enc, ...rest } = spec;
+      const layeredSpec: any = {
+        ...rest,
+        layer: [arcLayer, textLayer],
+      };
+
+      // Stash metadata that the post-render code uses to build a details panel.
+      // Prefixed with __ so vega-embed's JSON-clone drops them (non-enumerable
+      // would be cleaner but JSON.parse(JSON.stringify()) strips them anyway).
+      if (descriptiveFields.length > 0) {
+        console.log(`🔧 ARC-TEXT-FIX: Found descriptive fields for detail panel: ${descriptiveFields.join(', ')}`);
+        layeredSpec.__arcDescriptiveFields = descriptiveFields;
+        layeredSpec.__arcColorField = colorField;
+        layeredSpec.__arcColorScale = spec.encoding?.color?.scale;
+      }
+
+      return layeredSpec;
+    };
+
+
     // Fix 5: Improve LLM-generated chart compatibility
     const fixLLMGeneratedCharts = (spec: any): any => {
       console.log('🔧 LLM-CHART-FIX: Starting LLM-generated chart fixes');
@@ -1951,7 +2109,47 @@ export const vegaLitePlugin: D3RenderPlugin = {
     fixedSpec = fixLLMGeneratedCharts(fixedSpec);
     fixedSpec = fixTooltipEncodings(fixedSpec);
 
+    fixedSpec = enhanceArcChartsWithTextLabels(fixedSpec);
     fixedSpec = fixAxisDomainExtrapolation(fixedSpec);
+
+    // Fix area/line marks on log scale: ensure domain lower bound > 0
+    // log(0) is undefined, so area marks collapse to nothing when the
+    // scale domain includes 0 or is unset (Vega-Lite defaults to [0, max]).
+    const fixAreaLogScaleDomain = (s: any): any => {
+      const markType = typeof s.mark === 'string' ? s.mark : s.mark?.type;
+      if (!['area', 'line'].includes(markType)) return s;
+
+      const yEnc = s.encoding?.y;
+      if (!yEnc || yEnc.type !== 'quantitative') return s;
+      if (!yEnc.scale || yEnc.scale.type !== 'log') return s;
+
+      // Already has a valid lower bound
+      if (Array.isArray(yEnc.scale.domain) && yEnc.scale.domain[0] > 0) return s;
+
+      const field = yEnc.field;
+      if (!field || !s.data?.values) return s;
+
+      const values = s.data.values
+        .map((d: any) => d[field])
+        .filter((v: any) => typeof v === 'number' && v > 0);
+
+      if (values.length === 0) return s;
+
+      const minVal = Math.min(...values);
+      const maxVal = Math.max(...values);
+      // Lower bound: use 1 or the minimum positive value, whichever is smaller
+      const lowerBound = Math.min(1, minVal);
+      // Upper bound: pad slightly above max
+      const upperBound = maxVal * 2;
+
+      yEnc.scale.domain = [lowerBound, upperBound];
+      console.log(`🔧 AREA-LOG-FIX: Set log scale domain to [__MATH_INLINE_57__{upperBound}] for area/line mark (field: "${field}")`);
+
+      return s;
+    };
+
+    fixedSpec = fixAreaLogScaleDomain(fixedSpec);
+
     // Now preprocess the fixed spec
     vegaSpec = preprocessVegaSpec(fixedSpec);
 
@@ -4097,11 +4295,69 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // CRITICAL FIX: Signal completion to parent component
       // Dispatch a custom event that D3Renderer can listen for
       const renderCompleteEvent = new CustomEvent('vega-render-complete', {
-        detail: { success: true, container: renderContainer }
+        detail: { success: true, container: renderContainer },
+        bubbles: true
       });
       container.dispatchEvent(renderCompleteEvent);
       // Store the view for cleanup
       (container as any)._vegaView = result.view;
+
+      // Post-render: add an HTML details panel for arc charts with descriptive text
+      // The enhanceArcChartsWithTextLabels preprocessor stashes metadata on the spec
+      // (__arcDescriptiveFields, __arcColorField, __arcColorScale).  We read it from
+      // the pre-sanitized vegaSpec (finalSpec has been through JSON.stringify so the
+      // __ keys survive).
+      const arcDescFields: string[] = vegaSpec.__arcDescriptiveFields;
+      const arcColorField: string = vegaSpec.__arcColorField;
+      const arcColorScale: any = vegaSpec.__arcColorScale;
+      if (arcDescFields && arcDescFields.length > 0 && vegaSpec.data?.values) {
+        console.log('🔧 ARC-DETAILS-PANEL: Building descriptive details panel');
+
+        const dataValues: any[] = vegaSpec.data.values;
+        const colorDomain: string[] = arcColorScale?.domain || dataValues.map((d: any) => d[arcColorField]);
+        const colorRange: string[] = arcColorScale?.range || [];
+
+        const detailsPanel = document.createElement('div');
+        detailsPanel.className = 'vega-arc-details-panel';
+        detailsPanel.style.cssText = `
+          margin: 12px 8px 4px;
+          padding: 12px 16px;
+          border-radius: 6px;
+          background: ${isDarkMode ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.03)'};
+          border: 1px solid ${isDarkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)'};
+          font-family: system-ui, -apple-system, sans-serif;
+          font-size: 13px;
+          line-height: 1.6;
+          color: ${isDarkMode ? '#ccc' : '#333'};
+        `;
+
+        const rows = dataValues.map((row: any) => {
+          const label = row[arcColorField] || 'Unknown';
+          const idx = colorDomain.indexOf(label);
+          const swatchColor = idx >= 0 && idx < colorRange.length ? colorRange[idx] : '#888';
+
+          const details = arcDescFields
+            .map(f => row[f])
+            .filter(v => typeof v === 'string' && v.length > 0)
+            .join(' · ');
+
+          return `
+            <div style="display:flex; align-items:baseline; gap:8px; margin-bottom:6px;">
+              <span style="
+                display:inline-block; width:12px; height:12px; min-width:12px;
+                border-radius:3px; background:${swatchColor}; margin-top:3px;
+              "></span>
+              <span>
+                <strong style="color:${isDarkMode ? '#eee' : '#222'}">${label}:</strong>
+                ${details}
+              </span>
+            </div>`;
+        }).join('');
+
+        detailsPanel.innerHTML = rows;
+        container.appendChild(detailsPanel);
+        console.log('🔧 ARC-DETAILS-PANEL: Added details panel with', dataValues.length, 'entries');
+      }
 
       // Simple fix: Make parent containers fit the Vega-Lite content
       setTimeout(() => {
@@ -4828,7 +5084,8 @@ ${svgData}`;
 
           // CRITICAL FIX: Signal completion one more time after all sizing is done
           const finalRenderCompleteEvent = new CustomEvent('vega-render-complete', {
-            detail: { success: true, container: renderContainer, phase: 'sizing-complete' }
+            detail: { success: true, container: renderContainer, phase: 'sizing-complete' },
+            bubbles: true
           });
           container.dispatchEvent(finalRenderCompleteEvent);
 

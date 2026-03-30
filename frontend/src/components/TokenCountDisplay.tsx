@@ -135,6 +135,7 @@ export const TokenCountDisplay = memo(() => {
     // Check if AST is enabled and fetch initial data
     useEffect(() => {
         let isMounted = true;
+        let pollForCompletion: ReturnType<typeof setInterval> | null = null;
 
         const checkAstEnabled = async () => {
             try {
@@ -159,7 +160,7 @@ export const TokenCountDisplay = memo(() => {
 
                     // Set up polling if AST is indexing
                     if (isMounted && data.enabled === true && data.is_indexing && !data.is_complete) {
-                        const pollForCompletion = setInterval(async () => {
+                        pollForCompletion = setInterval(async () => {
                             try {
                                 const pollResponse = await fetch('/api/ast/status', {
                                     headers: getProjectHeaders(),
@@ -169,19 +170,17 @@ export const TokenCountDisplay = memo(() => {
                                     if (isMounted && pollData.token_count !== undefined) {
                                         setAstTokenCount(pollData.token_count);
                                     }
-                                    // Stop polling when indexing is complete
                                     if (!pollData.is_indexing || pollData.is_complete) {
                                         clearInterval(pollForCompletion);
+                                        pollForCompletion = null;
                                     }
                                 }
                             } catch (error) {
                                 console.debug('Error polling AST status:', error);
                                 clearInterval(pollForCompletion);
+                                pollForCompletion = null;
                             }
-                        }, 3000); // Poll every 3 seconds
-
-                        // Clean up interval after 5 minutes to prevent infinite polling
-                        setTimeout(() => clearInterval(pollForCompletion), 300000);
+                        }, 3000);
                     }
                 }
             } catch (error) {
@@ -235,6 +234,7 @@ export const TokenCountDisplay = memo(() => {
 
         return () => {
             isMounted = false;
+            if (pollForCompletion) clearInterval(pollForCompletion);
         };
     }, []);
 

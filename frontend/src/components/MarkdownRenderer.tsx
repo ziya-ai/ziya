@@ -2725,6 +2725,7 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode, superseded 
     // 80+ re-renders per setConversations call in delegate conversations).
     const chatContextRef = useRef<any>(null);
     const { checkedKeys, addFilesToContext } = useFolderContext();
+    const { currentProject } = useProject();
     // Generate a stable ID scoped to the current conversation so that the
     // same diff content in two different conversations gets distinct registry
     // keys, preventing applied-state from leaking across conversations.
@@ -2738,9 +2739,13 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode, superseded 
     const lastTokenLengthRef = useRef(0);
     const hasCheckedAfterStreamingRef = useRef(false);
 
+    // Check project setting for automatic context management
+    const autoAddDiffFiles = currentProject?.settings?.contextManagement?.auto_add_diff_files !== false;
+
     // Check for missing files after streaming completes if we haven't checked yet
     useEffect(() => {
         if (!streamingConversations.has(currentConversationId) &&
+            autoAddDiffFiles &&
             !hasCheckedAfterStreamingRef.current &&
             !hasCheckedFilesRef.current &&
             token.text.includes('diff --git')) {
@@ -2762,7 +2767,7 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode, superseded 
 
             checkAfterStreaming();
         }
-    }, [streamingConversations, currentConversationId, token.text, addFilesToContext]);
+    }, [streamingConversations, currentConversationId, token.text, addFilesToContext, autoAddDiffFiles]);
 
     // Debounced check function
     const debouncedCheck = useCallback((checkFn: () => Promise<void>) => {
@@ -2773,7 +2778,7 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode, superseded 
     // Check if referenced files are in context when diff is rendered during streaming
     useEffect(() => {
         const checkMissingFiles = async () => {
-            if (!token.text || hasCheckedFilesRef.current || isCheckingFiles) return;
+            if (!token.text || hasCheckedFilesRef.current || isCheckingFiles || !autoAddDiffFiles) return;
 
             // Check streaming state more comprehensively
             const isCurrentlyStreaming = streamingConversations.has(currentConversationId);
@@ -2829,7 +2834,7 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode, superseded 
                 checkMissingFiles();
             }
         }
-    }, [token.text.length, currentConversationId, streamingConversations, isCheckingFiles]);
+    }, [token.text.length, currentConversationId, streamingConversations, isCheckingFiles, autoAddDiffFiles]);
 
     // Restart stream with enhanced context
     const restartStreamWithFiles = async (addedFiles: string[]) => {
@@ -3195,7 +3200,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, inde
         return (
             <div>
                 <DiffControls
-                    fileTitle={parsedFilesRef.current?.[0] ? parsedFilesRef.current[0].oldPath || parsedFilesRef.current[0].newPath || '' : ''}
+                    fileTitle={fileTitle || ''}
                     displayMode={displayMode}
                     viewType={viewType}
                     showLineNumbers={showLineNumbers}
@@ -4305,8 +4310,12 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         })}</p>;
                     }
 
-                    // Filter out empty text tokens that might remain after processing
-                    const filteredPTokens = pTokens.filter(t => t.type !== 'text' || (t as TokenWithText).text.trim() !== '');
+                    // Filter out truly empty text tokens, but preserve standalone
+                    // newline tokens ("\n").  These appear between inline-styled
+                    // elements (em, strong, code) when each source line is fully
+                    // wrapped in markup — e.g. verse/poetry in blockquotes.
+                    // Keeping them lets the 'text' case convert them to <br/>.
+                    const filteredPTokens = pTokens.filter(t => t.type !== 'text' || (t as TokenWithText).text.trim() !== '' || (t as TokenWithText).text === '\n');
                     if (filteredPTokens.length === 0) return null; // Don't render empty paragraphs
                     return <p key={sk}>{renderTokens(filteredPTokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</p>;
 
@@ -4563,6 +4572,13 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'text':
                     if (!hasText(tokenWithText)) return null;
                     let decodedText = decodeHtmlEntities(tokenWithText.text);
+
+                    // Preserve line breaks between inline-styled content.
+                    // When the tokenizer splits lines at inline markup boundaries,
+                    // it emits standalone "\n" text tokens (e.g. verse, poetry, or
+                    // any content where each line is fully wrapped in em/strong/code).
+                    // Convert these to <br/> so the author's line structure is preserved.
+                    if (decodedText === '\n') return <br key={sk} />;
 
                     // Check for encoded tool blocks
                     const toolBlockMatch = decodedText.match(/⟨TOOL:(mcp_\w+)\|([^|]+)\|([^⟩]+)⟩/);

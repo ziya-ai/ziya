@@ -212,15 +212,16 @@ export function computeDimensions(spec: PacketSpec): { width: number; height: nu
   const bits = spec.bitWidth ?? 8;
   const L = defaultLayout(bits);
 
-  const totalRows = spec.sections.reduce((n, s) => n + s.rows.length, 0);
-  const numSections = spec.sections.length;
+  const sections = spec.sections ?? [];
+  const totalRows = sections.reduce((n, s) => n + (s.rows?.length ?? 0), 0);
+  const numSections = sections.length;
 
   // Compute max bracket nesting depth on each side to allocate space.
   // Must run the same auto-depth assignment that the renderer uses,
   // because input specs typically omit explicit depth values.
   let maxLeftDepth = 0;
   let maxRightDepth = 0;
-  for (const sec of spec.sections) {
+  for (const sec of sections) {
     const allBrackets = sec.brackets ?? [];
     const rightAssigned = assignBracketDepths(allBrackets, 'right');
     const leftAssigned  = assignBracketDepths(allBrackets, 'left');
@@ -297,3 +298,121 @@ export function escapeXml(s: string): string {
 
 // Re-export the theme maps so the plugin can use them
 export { THEMES_LIGHT, THEMES_DARK, AUTO_PALETTE_LIGHT, AUTO_PALETTE_DARK };
+
+// ── Input normalization ─────────────────────────────────────────────────────
+// Accept common "close but wrong" spec formats and coerce them into a valid
+// PacketSpec.  This handles schemas that LLMs frequently hallucinate.
+
+interface FlatField {
+  name: string;
+  bits: number;
+  color?: string;
+  description?: string;
+}
+
+interface LooseSpec {
+  name?: string;
+  title?: string;
+  subtitle?: string;
+  width?: number;
+  bitWidth?: number;
+  fields?: FlatField[];
+  sections?: any[];
+  type?: string;
+}
+
+/**
+ * Convert flat-field objects `{name, bits, color}` into row tuples
+ * `[[name, bits, color?]]`, auto-wrapping rows at the given bitWidth.
+ */
+function flatFieldsToRows(fields: FlatField[], bitWidth: number): PacketSection['rows'] {
+  const rows: PacketSection['rows'] = [];
+  let currentRow: Array<[string, number] | [string, number, string]> = [];
+  let rowBits = 0;
+
+  for (const f of fields) {
+    if (rowBits + f.bits > bitWidth && currentRow.length > 0) {
+      rows.push(currentRow);
+      currentRow = [];
+      rowBits = 0;
+    }
+    const tuple: [string, number] | [string, number, string] = f.color
+      ? [f.name, f.bits, f.color]
+      : [f.name, f.bits];
+    currentRow.push(tuple);
+    rowBits += f.bits;
+    if (rowBits >= bitWidth) {
+      rows.push(currentRow);
+      currentRow = [];
+      rowBits = 0;
+    }
+  }
+  if (currentRow.length > 0) rows.push(currentRow);
+  return rows;
+}
+
+/**
+ * Normalize a loosely-typed input into a valid PacketSpec.
+ * Returns null if the input is not recognizably packet-like.
+ */
+export function normalizePacketSpec(raw: unknown): PacketSpec | null {
+  // Unwrap arrays: [{...}] → {...}
+  let obj: LooseSpec = raw as LooseSpec;
+  if (Array.isArray(raw)) {
+    if (raw.length === 0) return null;
+    // Check if this is a bare array of field-like objects: [{name, bits}, ...]
+    // LLMs frequently produce this format instead of a proper spec wrapper.
+    const looksLikeFieldArray = raw.length > 1 &&
+      raw.every((item: any) => item && typeof item === 'object' && 'bits' in item && ('name' in item || 'label' in item));
+    if (looksLikeFieldArray) {
+      // Synthesize a spec from the flat field array
+      const fields = raw.map((f: any) => ({
+        name: f.name || f.label || '',
+        bits: f.bits || f.width || f.size || 1,
+        color: f.color,
+      }));
+      const bitWidth = fields.reduce((sum: number, f: FlatField) => sum + f.bits, 0);
+      // Pick the smallest standard row width that fits the widest field
+      const rowWidth = bitWidth <= 8 ? 8 : bitWidth <= 16 ? 16 : bitWidth <= 32 ? 32 : bitWidth;
+      const rows = flatFieldsToRows(fields, rowWidth);
+      return {
+        type: 'packet',
+        title: 'Packet Frame',
+        bitWidth: rowWidth,
+        sections: [{ label: 'Frame', rows }],
+      };
+    }
+    obj = raw[0] as LooseSpec;
+  }
+  if (!obj || typeof obj !== 'object') return null;
+
+  const title = obj.title || obj.name;
+  if (!title) return null;
+
+  const bitWidth = obj.bitWidth || obj.width || 8;
+
+  // Already has sections — accept as-is with aliased fields patched
+  if (obj.sections && Array.isArray(obj.sections) && obj.sections.length > 0) {
+    return {
+      type: 'packet',
+      title,
+      subtitle: obj.subtitle,
+      bitWidth,
+      sections: obj.sections,
+    };
+  }
+
+  // Flat fields array → single section with auto-wrapped rows
+  if (obj.fields && Array.isArray(obj.fields) && obj.fields.length > 0) {
+    const rows = flatFieldsToRows(obj.fields, bitWidth);
+    return {
+      type: 'packet',
+      title,
+      subtitle: obj.subtitle,
+      bitWidth,
+      sections: [{ label: title, rows }],
+    };
+  }
+
+  return null;
+}
