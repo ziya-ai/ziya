@@ -4,6 +4,7 @@
 import subprocess
 import sys
 import os
+import re
 import shutil
 from pathlib import Path
 # Import the robust process_wheel function
@@ -77,6 +78,29 @@ def should_rebuild_frontend():
 def main():
     """Build the project."""
     print("Building Ziya...")
+
+    # Ensure local dev dependencies are in sync with pyproject.toml.
+    # poetry build only packages the wheel — it doesn't install into
+    # the local venv, so newly added deps can be silently missing.
+    try:
+        result = subprocess.run(
+            ["poetry", "check", "--lock"],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            print("Lock file out of date, running poetry lock...")
+            subprocess.run(["poetry", "lock"], check=True)
+
+        print("Syncing local dependencies...")
+        subprocess.run(
+            ["poetry", "install", "--no-root", "--quiet"],
+            check=True
+        )
+    except FileNotFoundError:
+        pass  # poetry not available; pip-based workflow
+    except subprocess.CalledProcessError as e:
+        print(f"Warning: dependency sync failed: {e}")
+        # Non-fatal — continue with build
     
     # Clean previous builds
     if os.path.exists("dist"):
