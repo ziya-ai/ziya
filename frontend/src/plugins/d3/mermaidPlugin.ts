@@ -626,6 +626,39 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             }
         }, 600); // Run after visibility enhancement (500ms)
 
+        // POST-RENDER: Fix gantt axis labels when year-offset was applied
+        // The preprocessor shifted years by +N to work around JS Date limitations;
+        // subtract the offset from every axis tick label to show original years.
+        const yearOffsetMatch = rawDefinition.match(/gantt-year-offset:\s*(\d+)/);
+        if (yearOffsetMatch && diagramType === 'gantt') {
+          const offset = parseInt(yearOffsetMatch[1], 10);
+          console.log(`📅 GANTT-YEAR-FIX: Correcting axis labels by -${offset}`);
+          setTimeout(() => {
+            // Mermaid renders axis ticks as <text> inside <g class="tick">
+            const ticks = svgElement.querySelectorAll('.tick text, .x text, .xAxis text');
+            let fixed = 0;
+            ticks.forEach((el: Element) => {
+              const txt = el.textContent?.trim() ?? '';
+              const yearMatch = txt.match(/^(\d{4})$/);
+              if (yearMatch) {
+                const original = parseInt(yearMatch[1], 10) - offset;
+                el.textContent = String(original);
+                fixed++;
+              }
+            });
+            // Also check for any text elements that look like offset years
+            if (fixed === 0) {
+              svgElement.querySelectorAll('text').forEach((el: Element) => {
+                const txt = el.textContent?.trim() ?? '';
+                if (/^\d{4}$/.test(txt) && parseInt(txt, 10) >= offset) {
+                  el.textContent = String(parseInt(txt, 10) - offset);
+                }
+              });
+            }
+            console.log(`📅 GANTT-YEAR-FIX: Fixed ${fixed} axis labels`);
+          }, 300);
+        }
+
         // Apply unified responsive scaling for all browsers
         applyUnifiedResponsiveScaling(container, svgElement, isDarkMode);
 

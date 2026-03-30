@@ -674,8 +674,10 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                     if (mounted.current) setIsLoading(false);
                     setRenderError(null);
                     console.log('🔍 RENDERER: Render successful, setting hasSuccessfulRenderRef=true');
-                    onLoad?.();
                     hasSuccessfulRenderRef.current = true;
+                    setHasSuccessfulRender(true);
+                    setShowRawContent(false);
+                    onLoad?.();
 
                     // Update global cache
                     globalRenderCache.set(cacheKey, {

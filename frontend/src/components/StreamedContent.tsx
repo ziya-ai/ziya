@@ -46,6 +46,7 @@ export const StreamedContent: React.FC<{}> = () => {
     const {
         folders,
         conversations,
+        setConversations,
     } = useConversationList();
     const {
         userHasScrolled,
@@ -619,6 +620,25 @@ export const StreamedContent: React.FC<{}> = () => {
 
             console.log('Retrying request after auth error for conversation:', retryConversationId);
 
+            // Remove the error message (and the retry button it contains) from
+            // the conversation so the user doesn't see a stale error block once
+            // the retry succeeds.  The error message is identifiable by the
+            // auth-error-retry-button class embedded in its HTML content.
+            setConversations(prev => prev.map(conv => {
+                if (conv.id !== retryConversationId) return conv;
+                // Walk backwards to find and remove the error message
+                const msgs = [...conv.messages];
+                for (let i = msgs.length - 1; i >= 0; i--) {
+                    if (msgs[i].role === 'assistant' &&
+                        typeof msgs[i].content === 'string' &&
+                        msgs[i].content.includes('auth-error-retry-button')) {
+                        msgs.splice(i, 1);
+                        break;
+                    }
+                }
+                return { ...conv, messages: msgs, _version: Date.now() };
+            }));
+
             try {
                 // Get the last human message to resend
                 const lastHumanMessage = currentMessages
@@ -631,7 +651,10 @@ export const StreamedContent: React.FC<{}> = () => {
                 }
 
                 // Clear the error message and retry
-                const messagesToSend = currentMessages.filter(msg => !msg.muted);
+                // Filter out the error message as well — currentMessages may
+                // not yet reflect the state update above due to React batching.
+                const messagesToSend = currentMessages
+                    .filter(msg => !msg.muted && !(msg.role === 'assistant' && typeof msg.content === 'string' && msg.content.includes('auth-error-retry-button')));
 
                 // Mark the conversation as streaming so the UI reflects the retry
                 addStreamingConversation(retryConversationId);

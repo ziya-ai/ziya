@@ -34,16 +34,18 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
     const [showSource, setShowSource] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const iframeRef = useRef<HTMLIFrameElement>(null);
-    const [iframeHeight, setIframeHeight] = useState(600); // Start with reasonable default
+    const [iframeHeight, setIframeHeight] = useState(150); // Start small, grow to fit
     
     // Generate unique ID for this mockup instance
     const mockupId = useId();
+    const inlineMockupId = `${mockupId}-inline`;
     
     // Sanitize the HTML
     const sanitizedHTML = sanitizeHTML(html);
     
-    // Create a complete HTML document for the iframe
-    const iframeContent = `
+    // Create HTML document for iframes. Each gets a unique mockupId so
+    // messages from the fullscreen modal don't stomp the inline height.
+    const createIframeContent = (targetMockupId: string) => `
 <!DOCTYPE html>
 <html>
 <head>
@@ -72,60 +74,67 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
 <body>
     ${sanitizedHTML}
     <script>
-        console.log('🚀 MOCKUP SCRIPT STARTED');
+        (function() {
+            var mid = "${targetMockupId}";
+            var lastHeight = 0;
+
+            function measureAndSend() {
+                // Force reflow
+                void document.body.offsetHeight;
+
+                var height = Math.max(
+                    document.body.scrollHeight,
+                    document.body.offsetHeight,
+                    document.documentElement.scrollHeight,
+                    document.documentElement.offsetHeight
+                );
+
+                // Only send if height actually changed (avoid feedback loops)
+                if (height !== lastHeight && height > 0) {
+                    lastHeight = height;
+                    window.parent.postMessage({ type: 'resize', height: height, mockupId: mid }, '*');
+                }
+            }
+
+            // Initial measurement after layout settles
+            setTimeout(measureAndSend, 50);
+            setTimeout(measureAndSend, 200);
+            setTimeout(measureAndSend, 600);
+
+            // Use ResizeObserver for continuous accurate sizing
+            if (typeof ResizeObserver !== 'undefined') {
+                var ro = new ResizeObserver(function() {
+                    measureAndSend();
+                });
+                ro.observe(document.body);
+                ro.observe(document.documentElement);
+            }
         
-        let heightSent = false;
-        
-        function updateHeight() {
-            console.log('📏 UPDATE HEIGHT CALLED, heightSent:', heightSent);
-            // Only send height once to prevent feedback loops
-            if (heightSent) return;
-            
-            // Force a reflow to ensure layout is complete
-            void document.body.offsetHeight;
-            
-            // Use document.body.scrollHeight instead of firstChild.scrollHeight
-            // This gives us the full content height regardless of overflow settings on children
-            const height = document.body.scrollHeight;
-            
-            // Add padding for better spacing
-            const finalHeight = height + 40;
-            
-            heightSent = true;
-            window.parent.postMessage({ type: 'resize', height: finalHeight, mockupId: "${mockupId}" }, '*');
-            
-            console.log('📐 Mockup height measured:', height, 'final:', finalHeight, 'body dimensions:', {
-                scrollHeight: document.body.scrollHeight,
-                offsetHeight: document.body.offsetHeight
+            // Watch for image loads and other late content
+            window.addEventListener('load', function() {
+                setTimeout(measureAndSend, 50);
             });
-        }
-        
-        console.log('⏰ SETTING TIMEOUT');
-        // Measure after a short delay to ensure content is fully rendered
-        setTimeout(updateHeight, 200);
+        })();
     </script>
-    <script>console.log('✅ SECOND SCRIPT BLOCK EXECUTING');</script>
 </body>
 </html>
     `;
     
-    // Debug: Log the actual iframe content being rendered
-    useEffect(() => {
-        console.log('📄 iframeContent being set:', iframeContent.substring(0, 500));
-    }, [iframeContent]);
+    const inlineIframeContent = createIframeContent(inlineMockupId);
+    const fullscreenIframeContent = createIframeContent(`${mockupId}-fullscreen`);
     
     // Listen for height updates from iframe
     useEffect(() => {
         const handleMessage = (event: MessageEvent) => {
-            // Only handle messages from OUR iframe
-            if (event.data.type === 'resize' && event.data.height && event.data.mockupId === mockupId) {
-                setIframeHeight(event.data.height);
+            // Only handle messages from our INLINE iframe (not the fullscreen modal)
+            if (event.data.type === 'resize' && event.data.height && event.data.mockupId === inlineMockupId) {
+                setIframeHeight(Math.ceil(event.data.height));
             }
         };
         
         window.addEventListener('message', handleMessage);
         return () => window.removeEventListener('message', handleMessage);
-    }, [mockupId]);
+    }, [inlineMockupId]);
     
     // Copy HTML to clipboard
     const copyHTML = () => {
@@ -177,7 +186,7 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
                                 onClick={copyHTML}
                             />
                         </Tooltip>
-                        <Tooltip title="Fullscreen">
+                        <Tooltip title="Pop-out">
                             <Button
                                 size="small"
                                 icon={<ExpandOutlined />}
@@ -213,7 +222,7 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
                     padding: '16px'
                 }}>
                     <iframe
-                        srcDoc={iframeContent}
+                        srcDoc={inlineIframeContent}
                         ref={iframeRef}
                         sandbox="allow-scripts"
                         style={{
@@ -230,7 +239,7 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
             
             {/* Fullscreen modal */}
             <Modal
-                title="UI Mockup - Fullscreen"
+                title="UI Mockup"
                 open={isFullscreen}
                 onCancel={() => setIsFullscreen(false)}
                 footer={null}
@@ -238,7 +247,7 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
                 style={{ top: 20 }}
             >
                 <iframe
-                    srcDoc={iframeContent}
+                    srcDoc={fullscreenIframeContent}
                     style={{
                         width: '100%',
                         height: '80vh',

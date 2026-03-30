@@ -11,17 +11,65 @@ import {
   type LayoutConfig,
   computeDimensions, defaultLayout, resolveColor,
   assignBracketDepths, escapeXml,
+  normalizePacketSpec,
 } from '../../utils/d3Plugins/packetPlugin';
 import { getOptimalTextColor } from '../../utils/colorUtils';
+
+function renderError(container: HTMLElement, message: string, rawSpec: any, isDarkMode: boolean): void {
+  const specStr = typeof rawSpec === 'string' ? rawSpec
+    : typeof rawSpec?.definition === 'string' ? rawSpec.definition
+    : JSON.stringify(rawSpec, null, 2);
+  const escaped = escapeXml(specStr || '(empty)');
+
+  container.innerHTML = `
+    <div style="
+      padding: 16px;
+      margin: 8px;
+      background: ${isDarkMode ? '#2a1215' : '#fff1f0'};
+      border: 1px solid ${isDarkMode ? '#5c2223' : '#ffa39e'};
+      border-radius: 4px;
+      color: ${isDarkMode ? '#ff4d4f' : '#cf1322'};
+      font-family: monospace;
+      font-size: 14px;
+      line-height: 1.5;
+    ">
+      <strong>Packet diagram error:</strong> ${escapeXml(message)}
+      <details style="margin-top: 8px; cursor: pointer;">
+        <summary style="font-weight: bold;">Show Definition</summary>
+        <pre style="
+          max-height: 400px;
+          overflow: auto;
+          background: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'};
+          padding: 12px;
+          border-radius: 4px;
+          margin: 8px 0 0 0;
+          word-break: break-word;
+          white-space: pre-wrap;
+          color: ${isDarkMode ? '#e0e0e0' : '#24292e'};
+        "><code>${escaped}</code></pre>
+      </details>
+    </div>
+  `;
+}
 
 function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boolean): void {
   // Accept either a direct PacketSpec or { definition: jsonString }
   let pkt: PacketSpec;
   if (typeof rawSpec.definition === 'string') {
     try { pkt = JSON.parse(rawSpec.definition); }
-    catch { container.textContent = 'Invalid packet diagram JSON'; return; }
+    catch { renderError(container, 'Invalid JSON in definition', rawSpec, isDarkMode); return; }
   } else {
     pkt = rawSpec as PacketSpec;
+  }
+
+  // Normalize common alternate formats (flat fields, array wrapper, name/width aliases)
+  const normalized = normalizePacketSpec(pkt);
+  if (normalized) pkt = normalized;
+
+  // Validate required fields before attempting to render
+  if (!pkt.sections || !Array.isArray(pkt.sections) || pkt.sections.length === 0) {
+    renderError(container, 'Requires a "sections" array with at least one section', rawSpec, isDarkMode);
+    return;
   }
 
   const bits = pkt.bitWidth ?? 8;
@@ -279,7 +327,7 @@ export const packetPlugin: D3RenderPlugin = {
     if (typeof spec?.definition === 'string') {
       try {
         const parsed = JSON.parse(spec.definition);
-        return parsed?.type === 'packet' || (parsed?.sections && parsed?.title);
+        return !!(parsed?.type === 'packet' || normalizePacketSpec(parsed));
       } catch { return false; }
     }
     return false;
@@ -287,7 +335,8 @@ export const packetPlugin: D3RenderPlugin = {
   isDefinitionComplete: (definition: string): boolean => {
     try {
       const parsed = JSON.parse(definition);
-      return !!(parsed.title && parsed.sections?.length > 0);
+      const spec = normalizePacketSpec(parsed);
+      return !!(spec && spec.title && spec.sections?.length > 0);
     } catch { return false; }
   },
   render,
