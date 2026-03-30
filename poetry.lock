@@ -1977,29 +1977,6 @@ httpx = ">=0.25.2"
 orjson = ">=3.11.5"
 
 [[package]]
-name = "langserve"
-version = "0.3.3"
-description = ""
-optional = false
-python-versions = "<4.0,>=3.9"
-groups = ["main"]
-files = [
-    {file = "langserve-0.3.3-py3-none-any.whl", hash = "sha256:fac3bb70293b55e87ba27ddcf2d577b5f3bed3fc1b282f978af0b7fbe5ae8578"},
-    {file = "langserve-0.3.3.tar.gz", hash = "sha256:2d0f74fb8e633e98fdbd5038fe9774a9dcf136e5c779aa9c6475ac26b5c88d0a"},
-]
-
-[package.dependencies]
-httpx = ">=0.23.0,<1.0"
-langchain-core = ">=0.3,<2"
-orjson = ">=2,<4"
-pydantic = ">=2.7,<3.0"
-
-[package.extras]
-all = ["fastapi (>=0.90.1,<1)", "sse-starlette (>=1.3.0,<2.0.0)"]
-client = ["fastapi (>=0.90.1,<1)"]
-server = ["fastapi (>=0.90.1,<1)", "sse-starlette (>=1.3.0,<2.0.0)"]
-
-[[package]]
 name = "langsmith"
 version = "0.7.20"
 description = "Client library to connect to the LangSmith Observability and Evaluation Platform."
@@ -2039,7 +2016,7 @@ description = "lightweight wrapper around basic LLVM functionality"
 optional = true
 python-versions = ">=3.10"
 groups = ["main"]
-markers = "extra == \"all\""
+markers = "extra == \"all\" and python_version <= \"3.13\""
 files = [
     {file = "llvmlite-0.45.1-cp310-cp310-macosx_10_15_x86_64.whl", hash = "sha256:1b1af0c910af0978aa55fa4f60bbb3e9f39b41e97c2a6d94d199897be62ba07a"},
     {file = "llvmlite-0.45.1-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:02a164db2d79088bbd6e0d9633b4fe4021d6379d7e4ac7cc85ed5f44b06a30c5"},
@@ -2662,7 +2639,7 @@ description = "compiling Python code using LLVM"
 optional = true
 python-versions = ">=3.10"
 groups = ["main"]
-markers = "extra == \"all\""
+markers = "extra == \"all\" and python_version <= \"3.13\""
 files = [
     {file = "numba-0.62.1-cp310-cp310-macosx_10_15_x86_64.whl", hash = "sha256:a323df9d36a0da1ca9c592a6baaddd0176d9f417ef49a65bb81951dce69d941a"},
     {file = "numba-0.62.1-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:e1e1f4781d3f9f7c23f16eb04e76ca10b5a3516e959634bd226fc48d5d8e7a0a"},
@@ -6225,4 +6202,4 @@ tokens = ["tiktoken"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.15"
-content-hash = "97565c5c8e9ede921c6b2da2487f4a5160a179ca1d9fea4c06d5a8d582d0fed5"
+content-hash = "7bb8fcec01d4a48074e9f82dd25e0df314fb17dbc051f47eaf8fe127f6374b1e"
