@@ -648,6 +648,38 @@ export const sendPayload = async (
     // Throttle BroadcastChannel relay to avoid flooding other tabs
     let lastBroadcastTime = 0;
     let hallucinationDetected = false;  // Failsafe: track if model is generating fake tool output
+
+    // ── Screen Wake Lock ──────────────────────────────────────────────
+    // Prevent the display from dimming / OS from sleeping while a
+    // stream is active.  Keeping the display awake stops the OS power
+    // manager from suspending the network stack, which is the #1 cause
+    // of "Stream interrupted" during screensaver / lid-close events.
+    //
+    // The lock auto-releases when the tab becomes hidden; the
+    // visibilitychange handler re-acquires it when the user returns so
+    // the remainder of a long stream still benefits.
+    let _wakeLock: any = null;
+    const _acquireWakeLock = async () => {
+        try {
+            if ('wakeLock' in navigator && document.visibilityState === 'visible') {
+                _wakeLock = await (navigator as any).wakeLock.request('screen');
+                _wakeLock.addEventListener('release', () => {
+                    console.log('🔓 Screen Wake Lock released');
+                    _wakeLock = null;
+                });
+                console.log('🔒 Screen Wake Lock acquired — display will stay on during streaming');
+            }
+        } catch (e) {
+            // Non-fatal: Wake Lock fails when page is hidden or unsupported.
+            console.debug('Screen Wake Lock not available:', (e as Error).message);
+        }
+    };
+    const _onVisibilityChangeForWakeLock = () => {
+        if (document.visibilityState === 'visible' && !isAborted && !errorOccurred) {
+            _acquireWakeLock();
+        }
+    };
+
     const BROADCAST_INTERVAL_MS = 300;
     let toolInputsMap = new Map<string, any>(); // Store tool inputs by tool ID
     // ── Batched streaming map update ──────────────────────────────────
@@ -853,6 +885,10 @@ export const sendPayload = async (
         readerRef = reader;
         const decoder = new TextDecoder();
         let buffer = ''; // Buffer for incomplete SSE messages
+
+        // Activate Screen Wake Lock now that the stream is established
+        await _acquireWakeLock();
+        document.addEventListener('visibilitychange', _onVisibilityChangeForWakeLock);
 
         // Process chunks as they arrive
         const processChunk = (chunk: string) => {
@@ -2398,6 +2434,8 @@ export const sendPayload = async (
                     } catch (error) {
                         console.error('❌ Error reading stream:', error);
                         console.error('Error type:', (error as any)?.constructor?.name);
+                        const wasHidden = document.hidden;
+                        console.error('Tab hidden at time of error:', wasHidden);
                         console.error('Error message:', (error as any)?.message);
                         console.error('Error stack:', (error as any)?.stack);
                         console.error('Last chunk before error:', chunk?.substring(0, 200));
@@ -2408,12 +2446,19 @@ export const sendPayload = async (
                         if (currentContent && currentContent.trim() && !isAborted) {
                             const partialMessage: Message = {
                                 role: 'assistant',
-                                content: currentContent + '\n\n[Stream interrupted - partial response saved]',
+                                content: currentContent + (wasHidden
+                                    ? '\n\n[Stream interrupted while screen was inactive - partial response saved. You can retry the request to continue.]'
+                                    : '\n\n[Stream interrupted - partial response saved]'),
                                 _timestamp: Date.now()
                             };
                             addMessageToConversation(partialMessage, conversationId, !isStreamingToCurrentConversation);
                             console.log('💾 Saved partial content on abort:', currentContent.length, 'characters');
-                            showError(`Stream interrupted. Saved ${currentContent.length} characters of partial response.`, conversationId, addMessageToConversation, 'warning');
+                            showError(
+                                wasHidden
+                                    ? `Stream interrupted while screen was inactive (screen saver / sleep). Saved ${currentContent.length} characters. You can retry to continue.`
+                                    : `Stream interrupted. Saved ${currentContent.length} characters of partial response.`,
+                                conversationId, addMessageToConversation, 'warning'
+                            );
                         } else {
                             message.error('Stream reading error. Check JS console for details.');
                         }
@@ -2493,7 +2538,24 @@ export const sendPayload = async (
 
         try {
             console.log("Starting stream read...");
-            const result = await readStream();
+            // Acquire a Web Lock during streaming to prevent the browser from
+            // freezing this tab when it's backgrounded (screen saver, lid close,
+            // switching desktops).  The lock is held until readStream() finishes.
+            let result: string;
+            if (navigator.locks) {
+                result = await navigator.locks.request(
+                    `ziya-stream-${conversationId}`,
+                    { mode: 'exclusive' },
+                    async (lock) => {
+                        console.log('🔒 Acquired Web Lock for streaming:', lock.name);
+                        return readStream();
+                    }
+                );
+            } else {
+                // Fallback for browsers without Web Locks API
+                result = await readStream();
+            }
+
             // After successful streaming, update with final content
             if (currentContent && !errorOccurred) {
                 console.log("Stream completed successfully");
@@ -2632,6 +2694,12 @@ export const sendPayload = async (
     } finally {
         if (eventSource && typeof eventSource.close === 'function') eventSource.close();
         document.removeEventListener('abortStream', abortListener as EventListener);
+        // Release Screen Wake Lock and stop listening for visibility changes
+        document.removeEventListener('visibilitychange', _onVisibilityChangeForWakeLock);
+        if (_wakeLock) {
+            try { await _wakeLock.release(); } catch (_) { /* may already be released */ }
+            _wakeLock = null;
+        }
         // Cancel any pending rAF to prevent setState after cleanup
         if (_streamRafId !== null) {
             cancelAnimationFrame(_streamRafId);
