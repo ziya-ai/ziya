@@ -92,6 +92,14 @@ def validate_diff_with_full_pipeline(
         except ImportError:
             pass
 
+    # Second fallback: walk up from cwd looking for the file, useful when
+    # ZIYA_USER_CODEBASE_DIR is set to a subdirectory but the diff path is
+    # relative to a parent directory (or vice versa).
+    if not os.path.exists(full_path):
+        cwd_candidate = os.path.join(os.getcwd(), file_path)
+        if os.path.exists(cwd_candidate):
+            full_path = cwd_candidate
+
     # Check if this is a new file creation
     is_new_file = "new file mode" in diff_content or "--- /dev/null" in diff_content
     

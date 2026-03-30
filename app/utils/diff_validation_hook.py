@@ -188,41 +188,31 @@ class DiffValidationHook:
                     "failed_hunks": len(validation_result["failed_hunks"])
                 })
                 
-                # Check if file is in current context
-                file_in_context = self.is_file_in_context(file_path)
-                
-                if not file_in_context:
-                    logger.info(f"📂 File {file_path} not in context, adding automatically")
-                    
-                    # Read file content
-                    file_content = self.read_file_for_context(file_path)
-                    
-                    if file_content:
-                        # Add to model context as a user message
-                        context_message = {
-                            "role": "user",
-                            "content": (
-                                f"[SYSTEM: Current content of {file_path} for context]\n\n"
-                                f"```{self._detect_language(file_path)}\n"
-                                f"{file_content}\n"
-                                f"```"
-                            )
-                        }
-                        model_messages.append(context_message)
-                        
+                # Always inject current file content on failure — even if the file
+                # was already in context. The model needs the live state to generate
+                # correct line numbers, not a stale copy from the initial context load.
+                file_content = self.read_file_for_context(file_path)
+                if file_content:
+                    context_message = {
+                        "role": "user",
+                        "content": (
+                            f"[SYSTEM: Current content of {file_path} for diff correction]\n\n"
+                            f"```{self._detect_language(file_path)}\n"
+                            f"{file_content}\n"
+                            f"```"
+                        )
+                    }
+                    model_messages.append(context_message)
+                    self.current_context.add(file_path)
+                    context_was_enhanced = True
+                    logger.info(f"✅ Injected current {file_path} content for retry ({len(file_content)} chars)")
+                    if file_path not in self.added_files:
                         self.added_files.append(file_path)
-                        self.current_context.add(file_path)
-                        context_was_enhanced = True
-                        logger.info(f"✅ Added {file_path} to model context ({len(file_content)} chars)")
-                        
-                        # Immediately notify frontend about context enhancement
-                        if send_event:
-                            send_event("context_sync", {
-                                "added_files": [file_path],
-                                "reason": "diff_validation"
-                            })
-                        context_was_enhanced = True
-                        logger.info(f"✅ Added {file_path} to model context ({len(file_content)} chars)")
+                    if send_event:
+                        send_event("context_sync", {
+                            "added_files": [file_path],
+                            "reason": "diff_validation"
+                        })
                 
             # Notify frontend to sync UI
             else:

@@ -471,17 +471,25 @@ class JavaScriptHandler(LanguageHandler):
         # Check for common JavaScript syntax errors
         issues = []
         
-        # Check for missing semicolons at line ends (excluding certain cases)
+        # Check for missing semicolons. JS/TS uses ASI so this is best-effort.
+        # We only flag lines that look like complete statements, not continuation
+        # lines inside multi-line expressions, type annotations, import/export
+        # blocks, template literals, etc.
         lines = content.splitlines()
         for i, line in enumerate(lines):
             line = line.strip()
-            if (line and not line.endswith(';') and not line.endswith('{') and 
-                not line.endswith('}') and not line.endswith(':') and 
+            if (line and not line.endswith(';') and not line.endswith('{') and
+                not line.endswith('}') and not line.endswith(':') and
                 not line.startswith('//') and not line.startswith('/*') and
                 not line.endswith('*/') and not line.endswith(',') and
-                not re.match(r'^import\s+.*\s+from\s+.*$', line) and
-                not re.match(r'^export\s+.*$', line) and
-                not line.endswith(')')):
+                not line.endswith(')') and
+                not line.startswith('|') and not line.startswith('&') and
+                not line.endswith('|') and not line.endswith('&') and
+                not line.endswith('?') and not line.endswith('=>') and
+                not line.endswith('(') and not line.endswith('[') and
+                not re.match(r'^(import|export)\b', line) and
+                not re.match(r'^(declare|abstract|async|type|interface|enum)\b', line) and
+                not re.match(r'^[a-zA-Z_$][a-zA-Z0-9_$]*$', line)):  # bare identifier = continuation line
                 issues.append(f"Possible missing semicolon at line {i+1}")
         
         # Check for invalid variable names

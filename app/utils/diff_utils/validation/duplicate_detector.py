@@ -44,6 +44,12 @@ def detect_unexpected_duplicates(
     duplicates = []
     for i in range(len(region_of_interest) - 1):
         if region_of_interest[i] == region_of_interest[i + 1]:
+            # If this line already appears multiple times in the original file,
+            # it's a naturally repeated pattern (e.g., decorator handlers like
+            # `def _(event):`, closing braces, blank lines). Skip it.
+            if original_lines.count(region_of_interest[i]) >= 2:
+                continue
+
             # Check if this duplication existed in the original file
             orig_start_pos = max(0, start_pos - 1)  # Look a bit wider in original
             orig_end_pos = min(len(original_lines), end_pos + 1)

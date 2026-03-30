@@ -731,8 +731,40 @@ class CLI:
                             print(f"\n\033[33mNote: Could not process diffs: {e}\033[0m", file=sys.stderr)
                         break
                     
-                    # After processing diffs, check if model wants to continue
                     if completed_normally:
+                        # If any diffs failed at apply time, tell the model what
+                        # failed so it can correct — don't silently continue.
+                        if self.diff_applicator.failed_count > 0:
+                            failed_results = [
+                                f"  ✗ {fp}: {msg}"
+                                for fp, status, msg in self.diff_applicator.diff_results
+                                if status == "failed"
+                            ]
+                            failure_feedback = (
+                                f"The following diffs failed to apply:\n"
+                                + "\n".join(failed_results)
+                                + "\n\nPlease re-read the current file content and regenerate "
+                                "only the failed diffs with corrected line numbers and context."
+                            )
+                            messages.append(AIMessage(content=full_response))
+                            messages.append(HumanMessage(content=failure_feedback))
+                            # Inject current file content for each failed file
+                            for fp, status, _ in self.diff_applicator.diff_results:
+                                if status == "failed":
+                                    file_content = validation_hook.read_file_for_context(fp)
+                                    if file_content:
+                                        lang = validation_hook._detect_language(fp)
+                                        messages.append(HumanMessage(content=(
+                                            f"[SYSTEM: Current content of {fp}]\n\n"
+                                            f"```{lang}\n{file_content}\n```"
+                                        )))
+                            continue_response = await self._run_with_tools_from_messages(messages, stream)
+                            if '```diff' in continue_response:
+                                full_response = continue_response
+                                continue
+                            return response + "\n\n" + continue_response
+
+                        # After processing diffs, check if model wants to continue
                         # Add the assistant's response to messages so the model
                         # retains context of what it already said
                         messages.append(AIMessage(content=response))
@@ -2499,7 +2531,8 @@ def main():
     """CLI entry point."""
     parser = create_parser()
     
-    # Set terminal tab title (works in iTerm2, Terminal.app, etc.)
+    # Save current terminal title and set ours (xterm title stack push/pop)
+    sys.stdout.write("\033[22;0t")
     sys.stdout.write("\033]0;Ziya Chat\007")
     sys.stdout.flush()
     
@@ -2548,11 +2581,15 @@ def main():
     try:
         args.func(args)
     except KeyboardInterrupt:
+        sys.stdout.write("\033[23;0t")
+        sys.stdout.flush()
         print()
         sys.exit(0)
     except Exception as e:
         # Extract traceback info for better error reporting
         tb = traceback.extract_tb(sys.exc_info()[2])
+        sys.stdout.write("\033[23;0t")
+        sys.stdout.flush()
         if tb:
             last_frame = tb[-1]
             location = f"{last_frame.filename}:{last_frame.lineno}"
@@ -2562,8 +2599,14 @@ def main():
                 traceback.print_exc(file=sys.stderr)
         else:
             print(f"\033[31mError: {e}\033[0m", file=sys.stderr)
+        sys.stdout.write("\033[23;0t")
+        sys.stdout.flush()
         sys.exit(1)
 
+
+    # Restore terminal title on clean exit
+    sys.stdout.write("\033[23;0t")
+    sys.stdout.flush()
 
 if __name__ == '__main__':
     main()
