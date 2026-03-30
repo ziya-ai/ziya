@@ -19,6 +19,7 @@ _registry_providers = []
 _service_model_providers = []
 _formatter_providers = []
 _shell_config_providers = []
+_tool_result_filter_providers = []
 _tool_validator_providers = []
 _data_retention_providers = []
 _tool_enhancement_providers = []
@@ -62,6 +63,18 @@ def register_formatter_provider(provider):
     """Register a formatter provider plugin."""
     _formatter_providers.append(provider)
     logger.debug(f"Registered formatter provider: {getattr(provider, 'formatter_id', 'unknown')}")
+
+def register_tool_result_filter_provider(provider):
+    """
+    Register a tool result filter provider plugin.
+
+    Filters sanitize tool results before they enter conversation context.
+    Applied in priority order (highest first); each filter receives the
+    output of the previous one.
+    """
+    _tool_result_filter_providers.append(provider)
+    _tool_result_filter_providers.sort(key=lambda p: getattr(p, 'priority', 0), reverse=True)
+    logger.debug(f"Registered tool result filter provider: {getattr(provider, 'provider_id', 'unknown')}")
 
 def register_tool_validator_provider(provider):
     """
@@ -249,6 +262,10 @@ def get_formatter_providers() -> List:
     """Get all registered formatter providers."""
     return _formatter_providers.copy()
 
+def get_tool_result_filter_providers() -> List:
+    """Get all registered tool result filter providers."""
+    return _tool_result_filter_providers.copy()
+
 def get_tool_validator_providers() -> List:
     """Get all registered tool validator providers."""
     return _tool_validator_providers.copy()
@@ -283,6 +300,13 @@ def get_effective_retention_policy() -> DataRetentionPolicy:
     For each TTL category, the most restrictive (shortest non-None) value
     across all active providers is used. This follows least-privilege:
     if any provider demands a shorter TTL, that wins.
+
+    After merging, the ``ZIYA_RETENTION_OVERRIDE_DAYS`` environment variable
+    is checked.  When set to a positive number, every TTL category in the
+    merged policy is raised to *at least* that many days.  This allows a
+    local administrator to relax an overly aggressive corporate policy
+    without modifying the plugin itself.  Set to ``0`` to disable the
+    override (same as unsetting the variable).
 
     Returns:
         DataRetentionPolicy with the effective (most restrictive) TTLs.
@@ -325,6 +349,35 @@ def get_effective_retention_policy() -> DataRetentionPolicy:
         candidates = [p.custom_ttls[key] for p in active_policies if key in p.custom_ttls]
         if candidates:
             merged_custom[key] = min(candidates)
+
+    # ── Local override: ZIYA_RETENTION_OVERRIDE_DAYS ─────────────────
+    # Raises every TTL to at least N days.  Useful when a corporate
+    # plugin enforces a short TTL that doesn't suit local workflows.
+    override_env = os.environ.get("ZIYA_RETENTION_OVERRIDE_DAYS")
+    if override_env:
+        try:
+            override_days = float(override_env)
+            if override_days > 0:
+                override_td = timedelta(days=override_days)
+                for field_name in ttl_fields:
+                    current = merged_kwargs.get(field_name)
+                    if current is not None and current < override_td:
+                        logger.info(
+                            f"Retention override: {field_name} raised from "
+                            f"{current.days}d to {override_days}d "
+                            f"(ZIYA_RETENTION_OVERRIDE_DAYS)"
+                        )
+                        merged_kwargs[field_name] = override_td
+                for key, current in list(merged_custom.items()):
+                    if current < override_td:
+                        logger.info(
+                            f"Retention override: custom/{key} raised from "
+                            f"{current.days}d to {override_days}d"
+                        )
+                        merged_custom[key] = override_td
+                reasons.append(f"local override: {override_days}d minimum (ZIYA_RETENTION_OVERRIDE_DAYS)")
+        except ValueError:
+            logger.warning(f"Invalid ZIYA_RETENTION_OVERRIDE_DAYS value: {override_env!r} (expected number)")
 
     return DataRetentionPolicy(
         **merged_kwargs,
