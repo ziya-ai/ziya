@@ -1,3 +1,23 @@
+## Project Startup Performance
+
+On page load or browser refresh, Ziya restores the most recently used project
+rather than always falling back to the server's working directory:
+
+1. **localStorage fast-path** — The frontend stores the last-used project ID
+   in `ZIYA_LAST_PROJECT_ID`. On init it fetches `/projects/{id}` directly
+   (a single file read) instead of the slower `/projects/current` path scan.
+2. **`/projects/last-accessed` fallback** — When localStorage is empty (first
+   visit, cleared storage), the frontend calls this endpoint which returns
+   the most recently touched project across all projects. Only if no projects
+   exist at all does it create one for the current working directory.
+3. **Path index** — `ProjectStorage` maintains a `_path_index.json` mapping
+   normalized paths to project IDs. This makes `get_by_path()` O(1) instead
+   of scanning every project directory. The index auto-rebuilds on cache miss.
+4. **Parallel loading** — The project list loads in the background while the
+   current project is already set, so the UI is interactive sooner.
+
+---
+
 # Ziya Architecture Overview
 
 Ziya is a local-first AI coding assistant that streams responses from large language models (LLMs) directly to your browser. All conversation data stays on your machine; the only outbound traffic is to the LLM API you configure (AWS Bedrock or Google Gemini).
@@ -52,6 +72,12 @@ Conversations are stored in the browser's IndexedDB, not on the server filesyste
 7. Tool results are appended to the conversation as `tool_result` blocks; the model continues generating.
 8. Text chunks are forwarded to the browser as SSE events (`data: {"content": "..."}`) throughout.
 9. When the model sends a `message_stop` event, `data: {"done": true}` is sent and the browser persists the conversation to IndexedDB.
+
+### Stream Resilience
+
+Long-running streams (especially during tool execution) are protected against idle-connection drops by a server-side **SSE keepalive** that emits comment pings (`: keepalive`) every 15 seconds when no data is flowing. On the browser side, the streaming session acquires a **Web Lock** (`navigator.locks`) to signal the browser that the tab is performing important work, preventing it from freezing the page when the screen saver activates or the user switches away. If a stream is still interrupted (e.g. OS-level sleep), the frontend detects whether the tab was hidden at the time and provides a more specific recovery message.
+
+Additionally, streaming sessions acquire a **Screen Wake Lock** (`navigator.wakeLock`) that prevents the display from dimming and the OS from entering sleep mode while a response is being generated. This stops the OS power manager from suspending the network stack — the primary cause of "Stream interrupted" errors during screensaver or lid-close events. The Wake Lock auto-releases when the tab becomes hidden (e.g. screensaver overlay) and is automatically re-acquired when the tab returns to the foreground.
 
 ---
 
@@ -139,6 +165,23 @@ Every tool result is cryptographically signed (HMAC-SHA256) by `MCPClient` befor
 
 3. **Rug-pull fingerprinting** — Tool definitions are hashed (SHA-256) on each connection. On reconnection, changes to the fingerprint trigger a security warning, detecting possible post-install tool definition mutations.
 
+### Tool Result Sanitization
+
+Tool results are sanitized before entering conversation context to prevent
+context-window exhaustion from metadata bloat.  The sanitizer
+(`app/utils/tool_result_sanitizer.py`) runs on every tool result and applies
+transforms in order:
+
+1. **Plugin filters** — `ToolResultFilterProvider` plugins are called first, in priority order.  This is the extension point for site-specific cleanup (e.g. stripping Quip `sectionId` HTML comments in enterprise deployments).  Each filter receives the output of the previous one.
+2. **Base64 blob replacement** — Long base64 strings are detected.  PDFs are decoded and text-extracted via `document_extractor.py` (pdfplumber/pypdf).  ZIP-based Office documents (DOCX, XLSX, PPTX) are identified by inspecting the ZIP contents and extracted with the appropriate library (python-docx, openpyxl/pandas, python-pptx).  Legacy OLE2 documents (.xls, .doc) are also detected.  Other binary blobs are replaced with size placeholders.
+3. **Size cap** — Results exceeding `TOOL_RESULT_MAX_CHARS` (default 100K, configurable via env var) are truncated with a note.
+
+The sanitizer runs at the point where `result_text` is determined in the streaming tool executor, before the result enters both the user display path and the model conversation context.
+
+See `Enterprise.md` for registering custom `ToolResultFilterProvider` plugins.
+
+See `Enterprise.md` for registering custom `ToolResultFilterProvider` plugins.
+
 ---
 
 ## File Tree & Context
@@ -161,6 +204,12 @@ Code changes suggested by the model are applied via `POST /api/apply-changes`. T
 4. **LLM resolver** (future) — for structurally complex cases
 
 Each hunk is tracked independently through the pipeline. The result reports per-hunk status (succeeded, failed, already-applied) so the UI can show partial success accurately. Failed hunks include the pipeline stage where they failed and why.
+
+### Language Validation
+
+After applying a diff, the pipeline runs a **language-specific validator** (`app/utils/diff_utils/language_handlers/`) to catch syntax errors before writing to disk. Handlers exist for Python, TypeScript, JavaScript, Java, C++, and Rust.
+
+The TypeScript handler uses `tsc` when available (preferring a project-local `node_modules/.bin/tsc`). Because tsc cannot validate isolated files (missing imports, tsconfig context), the handler passes `--isolatedModules --noResolve` and only treats **syntax errors** (TS1xxx) as hard failures. Import/type resolution errors (TS2xxx+) fall back to basic bracket-matching validation. For `.tsx` files, the handler uses the correct file extension and `--jsx react-jsx` so JSX syntax is parsed correctly.
 
 ---
 
@@ -207,3 +256,57 @@ A defense-in-depth guard prevents shell data from being written back to persiste
 | Flag clearing | Lazy-load and server sync | `_isShell` is cleared when full messages are loaded |
 
 The markers are transient (never persisted to IndexedDB or the server). They exist only in React state during the window between shell load and full data load.
+
+### Message Count Regression Guards
+
+Beyond shell detection, a separate defense layer prevents *any* merge or sync operation from reducing the number of messages in a conversation. This addresses a class of bugs where partial data (from stale server copies, interrupted syncs, or cache inconsistencies) could silently overwrite complete conversation histories.
+
+| Layer | Location | Mechanism |
+|---|---|---|
+| Server bulk-sync | `app/api/chats.py` | Rejects incoming updates that have fewer messages than the existing server copy (threshold: existing > 2 messages) |
+| SERVER_SYNC merge | `ChatContext.tsx` syncWithServer | When server version wins by `_version` but has fewer messages, keeps local messages while accepting server metadata |
+| In-memory preservation | `ChatContext.tsx` setConversations updater | Compares merged conversation message count against React state; keeps whichever has more |
+| Lazy-load guard | `ChatContext.tsx` loadConversation | IDB and server lazy-load only accepted when loaded message count ≥ current count |
+| Delegate fetch guard | `ChatContext.tsx` loadConversation | Background delegate fetches won't overwrite local messages if server has fewer |
+| Shell append guard | `ChatContext.tsx` addMessageToConversation | Detects when a message is being appended to a shell conversation and triggers async recovery from IDB before appending |
+| IDB dedup guard | `db.ts` _saveConversationsWithLock | Shell entries never overwrite non-shell entries in the same save batch |
+| Cross-tab merge guard | `ChatContext.tsx` mergeConversations | Cross-tab BroadcastChannel merge rejects remote versions with fewer messages even if `_version` is newer |
+| IDB read-before-write guard | `db.ts` _saveConversationsWithLock | Before every IDB write, reads existing record and preserves messages for any conversation where the write would reduce count |
+| Retention timestamp | `retentionPurge.ts` | Retention decisions use `lastAccessedAt` (most recent activity), not `createdAt` — an old conversation still in active use is never purged |
+
+The threshold of `> 2` messages allows shell conversations (which legitimately have only first+last) to be freely replaced, while protecting any conversation with meaningful history.
+
+#### Known Limitation: Direct IDB Writers
+
+Several UI paths (`ChatHistory.tsx` rename/delete, `MUIChatHistory.tsx` rename/delete/fork) call `db.saveConversations()` directly, bypassing `queueSave`. These write the entire conversations array as a single IDB record. If `queueSave` is also running (e.g., from streaming), the two writes are serialized by `navigator.locks` but read stale data — a TOCTOU (Time-of-Check-to-Time-of-Use) race. The IDB read-before-write guard mitigates the most dangerous outcome (message loss) by preserving higher message counts from the existing IDB record. Metadata changes (title, folder) from the losing writer may still be lost and require a retry. A future refactor should route all conversation mutations through `queueSave`.
+
+### Null-Safety in Sidebar Tree Rendering
+
+The chat sidebar (`MUIChatHistory`) computes a tree from conversations and folders inside a `useMemo`. A lightweight FNV-1a hash detects whether inputs have changed. Because `useMemo` runs during rendering, any unhandled exception here crashes the entire page — React error boundaries don't catch errors thrown during the render phase of hooks.
+
+**Key defensive measures:**
+
+| Layer | Location | Mechanism |
+|---|---|---|
+| FNV hash null guard | `MUIChatHistory.tsx` treeDataRaw | All `fnv()` inputs use `\|\| ''` fallbacks so null/undefined fields produce empty-string hashes instead of TypeErrors |
+| Tree node name guard | `MUIChatHistory.tsx` treeDataRaw | `name: conv.title \|\| 'Untitled'` prevents null names from reaching the row renderer |
+| Shell normalization | `db.ts` getConversationShells | Filters out entries with no `id` and normalizes `title` to `'Untitled'` before returning |
+| Merge normalization | `ChatContext.tsx` mergeConversations | Normalizes `title` and `messages` on every merged conversation before setting state |
+| Error boundary | `MUIChatHistory.tsx` (export wrapper) | A `ChatHistoryErrorBoundary` wraps the sidebar so rendering crashes show a retry button instead of a white screen |
+
+**Root cause:** `setConversations` is a raw `useState` setter called from 40+ locations. Many of these paths — server sync, cross-tab BroadcastChannel, delegate polling, lazy loading — can introduce conversations with null or undefined `title` fields. The validation in `queueSave` only runs on the persistence path, not on all state-setting paths. The defensive measures above ensure the rendering layer is resilient regardless of what data enters state.
+
+### Circular Folder Reference Protection
+
+The sidebar tree is built from folders with `parentId` references. If a folder's `parentId` equals its own `id` (self-reference) or two folders reference each other (mutual cycle), the tree-building code creates a circular data structure. Six recursive functions then hit infinite recursion → stack overflow → page crash. This is the most common cause of "entire page crashes" because the crash occurs inside `useMemo` during render, bypassing all error boundaries.
+
+**How circular references enter the system:** Server sync (`listServerFolders`) passes `parentId` from the server with no validation. Corrupted server data from race conditions in drag-drop folder moves can produce `parentId === id`.
+
+**Defenses:**
+
+| Layer | Location | Mechanism |
+|---|---|---|
+| Self-ref guard | `MUIChatHistory.tsx` tree building | `folder.parentId !== folder.id` check before adding a folder as child of its parent |
+| Depth limits | `flattenVisibleNodes`, `rollUpConversationCount`, `sortRecursive`, `removeNodeFromTree`, `anchorFolder`, `reanchor` | All recursive functions cap at depth 20 |
+| Visited-set | `flattenVisibleNodes` | Tracks seen node IDs to break cycles even within the depth limit |
+| Error boundary | `MUIChatHistory.tsx` export wrapper | `ChatHistoryErrorBoundary` catches any residual crashes and shows a retry button |
