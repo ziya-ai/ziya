@@ -874,7 +874,7 @@ async def chat_endpoint(request: Request):
             logger.info("[CHAT_ENDPOINT] Using StreamingToolExecutor via stream_chunks for unified execution")
             
             return StreamingResponse(
-                stream_chunks(formatted_body),
+                _keepalive_wrapper(stream_chunks(formatted_body)),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -1602,6 +1602,65 @@ async def stream_continuation(messages: List, continuation_state: Dict[str, Any]
     except Exception as e:
         logger.error(f"Error in stream_continuation: {e}")
         raise
+
+
+async def _keepalive_wrapper(async_gen, interval: float = 15.0):
+    """Wrap an async generator with periodic SSE keepalive comments.
+
+    When the inner generator is busy (e.g. tool execution), the SSE
+    connection can go idle for minutes. Browsers and proxies may treat
+    an idle connection as dead and drop it — especially when the tab is
+    backgrounded (screen saver, lid close, etc.).
+
+    SSE spec allows lines starting with ':' as comments that clients
+    silently ignore, so we periodically inject ': keepalive\\n\\n' to
+    keep the TCP connection alive.
+    """
+    import asyncio
+
+    sentinel = object()
+
+    pending_task = None
+
+    while True:
+        # Reuse an in-flight read task if one is still pending from a
+        # previous keepalive timeout (wait_for cancels, so we must NOT
+        # use it — we need the task to survive across iterations).
+        if pending_task is None:
+            async def _next(gen=async_gen, _s=sentinel):
+                try:
+                    return await gen.__anext__()
+                except StopAsyncIteration:
+                    return _s
+            pending_task = asyncio.ensure_future(_next())
+
+        try:
+            done, _ = await asyncio.wait({pending_task}, timeout=interval)
+        except asyncio.CancelledError:
+            pending_task.cancel()
+            raise
+
+        if not done:
+            # Timeout — no data within the interval, send keepalive.
+            # The pending_task stays alive for the next iteration.
+            yield ": keepalive\n\n"
+            continue
+
+        try:
+            result = pending_task.result()
+        except Exception as exc:
+            logger.error(f"_keepalive_wrapper: stream_chunks raised: {exc!r}", exc_info=True)
+            yield f"data: {json.dumps({'error': str(exc), 'error_type': 'stream_error'})}\n\n"
+            yield "data: {\"type\": \"stream_end\"}\n\n"
+            break
+
+        pending_task = None
+
+        if result is sentinel:
+            break
+
+        yield result
+
 
 async def stream_chunks(body):
     """Stream chunks from the agent executor."""
@@ -6061,7 +6120,7 @@ async def retry_throttled_request(request: Request):
         
         # Forward to the main streaming endpoint with fresh retry attempts
         return StreamingResponse(
-            stream_chunks(body),
+            _keepalive_wrapper(stream_chunks(body)),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -6666,7 +6725,7 @@ async def restart_stream_with_context(request: Request):
         
         # Stream the enhanced response
         return StreamingResponse(
-            stream_chunks(enhanced_body),
+            _keepalive_wrapper(stream_chunks(enhanced_body)),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
