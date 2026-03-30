@@ -166,6 +166,41 @@ class TestBulkSync:
         assert result["created"] == 0
         assert result["updated"] == 0
 
+    def test_message_regression_blocked(self, client):
+        """Syncing with fewer messages but newer version must preserve existing messages."""
+        tc, pid = client
+        full_messages = [_make_message(f"msg-{i}") for i in range(20)]
+        chats = [_make_chat("chat-regress", "Full History", version=1000, messages=full_messages)]
+        tc.post(f"/api/v1/projects/{pid}/chats/bulk-sync", json={"chats": chats})
+
+        # Verify all 20 messages are stored
+        resp = tc.get(f"/api/v1/projects/{pid}/chats/chat-regress")
+        assert len(resp.json()["messages"]) == 20
+
+        # Now sync with newer version but fewer messages (simulates shell leak)
+        partial_messages = [full_messages[0], full_messages[-1]]  # first + last only
+        partial = [_make_chat("chat-regress", "Full History", version=2000, messages=partial_messages)]
+        resp = tc.post(f"/api/v1/projects/{pid}/chats/bulk-sync", json={"chats": partial})
+        result = resp.json()
+        assert result["updated"] == 1  # metadata updated
+
+        # Messages must NOT have regressed
+        resp = tc.get(f"/api/v1/projects/{pid}/chats/chat-regress")
+        assert len(resp.json()["messages"]) == 20
+
+    def test_message_regression_allowed_for_tiny_conversations(self, client):
+        """Conversations with <= 2 messages can be freely replaced (shell threshold)."""
+        tc, pid = client
+        chats = [_make_chat("chat-tiny", "Tiny", version=1000, messages=[_make_message("a"), _make_message("b")])]
+        tc.post(f"/api/v1/projects/{pid}/chats/bulk-sync", json={"chats": chats})
+
+        replacement = [_make_chat("chat-tiny", "Tiny", version=2000, messages=[_make_message("only one")])]
+        resp = tc.post(f"/api/v1/projects/{pid}/chats/bulk-sync", json={"chats": replacement})
+        assert resp.json()["updated"] == 1
+
+        resp = tc.get(f"/api/v1/projects/{pid}/chats/chat-tiny")
+        assert len(resp.json()["messages"]) == 1  # Allowed: existing had <=2
+
 
 # ── List Chats ─────────────────────────────────────────────────────
 

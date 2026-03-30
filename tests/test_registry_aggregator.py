@@ -123,7 +123,8 @@ class TestRegistryAggregator:
         aggregator = RegistryAggregator()
         fingerprint = aggregator._compute_service_fingerprint(service)
         
-        assert fingerprint == "name:unique server name"
+        # Aggregator normalizes spaces to hyphens in fingerprints
+        assert fingerprint == "name:unique-server-name"
     
     def test_merge_services_single(self, sample_service_official):
         """Test merging with single service returns it unchanged."""
