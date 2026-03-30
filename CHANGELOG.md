@@ -5,6 +5,80 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2.2] - 2025-07-22
+
+### Added
+- SSE keepalive wrapper emitting `: keepalive` comment pings every 15s during
+  idle stream periods to prevent proxy/browser connection drops.
+- Screen Wake Lock acquired during streaming to prevent OS sleep from
+  suspending the network stack — the primary cause of "Stream interrupted"
+  errors during screensaver or lid-close events.
+- Web Lock (`navigator.locks`) acquired during streaming to prevent browser
+  tab freezing when backgrounded.
+- Tab visibility detection on stream errors with targeted recovery messages.
+- Tool result sanitization pipeline (`app/utils/tool_result_sanitizer.py`):
+  plugin filters → base64 document extraction → size cap, reducing context
+  bloat from metadata-heavy tool responses.
+- `ToolResultFilterProvider` plugin interface for site-specific tool result
+  filters (e.g. stripping Quip sectionId HTML comments).
+- Fake tool call detection in code blocks via parameter key matching heuristic.
+- Project fast startup: localStorage fast-path, `/projects/last-accessed`
+  endpoint, `_path_index.json` for O(1) path lookups, parallel list loading.
+- `ContextManagementSettings` model with `auto_add_diff_files` toggle.
+- Project settings UI in ProjectManagerModal (context management, write policy).
+- Conversation data integrity: 10-layer message count regression guard across
+  server bulk-sync, ChatContext merge/sync/lazy-load, IDB read-before-write,
+  cross-tab BroadcastChannel, and shell append recovery.
+- `ZIYA_RETENTION_OVERRIDE_DAYS` env var to raise plugin-enforced TTLs to a
+  local minimum (e.g. 30 days).
+- `ZIYA_MAX_TOOL_ITERATIONS` env var for agentic loop iteration cap.
+- MUIChatHistory error boundary, FNV hash null guards, circular folder
+  reference protection (self-ref guard, visited-set, depth limits).
+- AST parser expanded to 25+ languages: C#, Kotlin, Swift, Ruby, PHP, Scala,
+  Lua, Perl, R, Elixir, Haskell, Dart, Zig, OCaml, Julia, Bash,
+  HCL/Terraform, SQL, TOML, YAML.
+- CLI auto-retry for failed diffs: re-reads files and re-prompts model with
+  current content and failure details.
+- File deletion diff support (`+++ /dev/null`) in CLIDiffApplicator.
+- Extensive new test suites for stream keepalive, tool sanitization, project
+  context management, retention override, message count guards, chat history
+  tree cycles, visualization plugins, and diff applicator edge cases.
+
+### Changed
+- Retention TTL decisions now use `lastActiveAt` instead of `createdAt`,
+  preventing active conversations from being purged prematurely.
+- TypeScript diff handler: prefers project-local `tsc`, uses `--isolatedModules
+  --noResolve`, only treats TS1xxx diagnostics as hard syntax errors, supports
+  `.tsx` files with `--jsx react-jsx`.
+- Python duplicate detector: only flags functions when count exceeds original
+  (fixes false positives on `_` handlers, `__init__`, etc.).
+- JavaScript semicolon checker: reduced false positives for TS/JSX patterns
+  (type unions, declaration keywords, arrow functions, bare identifiers).
+- Diff validation hook always injects fresh file content on failure regardless
+  of prior context — model gets live state, not stale copy.
+- Generic text handler no longer auto-registers (registered explicitly).
+- Pipeline validator falls back to cwd when resolving file paths.
+- Delegate model unwrapping checks for `ainvoke` before second unwrap.
+- Shell write checker treats only last arg of cp/mv as write target.
+- Write policy manager guards against non-dict settings before update.
+- CLI saves/restores terminal title using xterm title stack (push/pop).
+- Mermaid plugin strips markdown bold/italic from labels.
+- Vega-Lite plugin supports gradient color scales and log axis.
+- Feedback drain improved with `asyncio.sleep(0)` yields at loop boundaries
+  and second-chance drain before break decisions.
+- Feedback monitor cancelled before direct queue reads to prevent item loss.
+- Test suite refactored: reduced verbosity, fixed isolation issues, aligned
+  with new guard and validation behaviors.
+
+### Fixed
+- `apply_diff_atomically` null return now handled gracefully in CLI applicator.
+- Diff error extraction checks `message` key before `error` fallback.
+- Duplicate detector skips lines already repeated in original file.
+- AST symbol formatting filters null base class entries.
+- Import node type coverage expanded in treesitter_converter for cross-language
+  compatibility.
+
+
 ## [0.6.2.1] - 2025-07-17
 
 ### Added
