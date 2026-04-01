@@ -65,6 +65,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const scanTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const progressIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const [accurateTokenCounts, setAccurateTokenCounts] = useState<Record<string, { count: number; timestamp: number }>>({});
+  const progressPollTimerRef = useRef<NodeJS.Timeout | null>(null);
   const accurateCountTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastProcessedSelectionRef = useRef<string>('');
   const accurateTokenCountsRef = useRef(accurateTokenCounts);
@@ -330,7 +331,8 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     return () => clearTimeout(timeoutId);
   }, [checkedKeys]);
 
-  // Get accurate token counts for selected files
+  // Get accurate token counts for selected files  
+  // Note: updateAccurateTokens is unused (callers use debouncedUpdateAccurateTokens)
   const updateAccurateTokens = useCallback((checkedKeys) => {
     console.log('updateAccurateTokens called with:', checkedKeys.length, 'keys');
     debouncedGetAccurateCounts(checkedKeys);
@@ -388,12 +390,15 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     }
   }, 1000), [folders, debouncedGetAccurateCounts]);
 
-  // Cleanup timeouts on unmount
+  // Cleanup debounce timers on unmount and when dependencies change
   useEffect(() => {
     return () => {
       if (accurateCountTimeoutRef.current) clearTimeout(accurateCountTimeoutRef.current);
+      // Cancel any pending debounced calls to prevent leaked timers
+      debouncedUpdateAccurateTokens.cancel?.();
+      getAccurateTokenCounts.cancel?.();
     };
-  }, []);
+  }, [debouncedUpdateAccurateTokens, getAccurateTokenCounts]);
 
   // Debounced accurate token updates - completely non-blocking
   useEffect(() => {
@@ -417,12 +422,22 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     return () => {
       if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
       if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
+      if (progressPollTimerRef.current) clearTimeout(progressPollTimerRef.current);
     };
   }, []);
 
   // One-time setup for folder progress checking
   useEffect(() => {
     const checkFolderProgress = async () => {
+      // Cancel any previously scheduled poll to prevent parallel chains
+      if (progressPollTimerRef.current) {
+        clearTimeout(progressPollTimerRef.current);
+        progressPollTimerRef.current = null;
+      }
+      if (document.hidden) {
+        progressPollTimerRef.current = setTimeout(checkFolderProgress, 2000);
+        return;
+      }
       try {
         console.log('Checking folder progress...');
         const response = await fetch('/folder-progress');
@@ -438,7 +453,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
             });
 
             // Only schedule another check if scanning is still active
-            setTimeout(checkFolderProgress, 1000);
+            progressPollTimerRef.current = setTimeout(checkFolderProgress, 1000);
           } else {
             // Scanning completed on the server — act as a fallback in case
             // the WebSocket scan_complete message was missed.
@@ -457,8 +472,13 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     console.log('isScanning changed:', isScanning);
     if (isScanning) {
       // Delay progress polling to avoid blocking initial render
-      setTimeout(() => checkFolderProgress(), 2000);
+      progressPollTimerRef.current = setTimeout(() => checkFolderProgress(), 2000);
     }
+
+    return () => {
+      if (progressPollTimerRef.current) clearTimeout(progressPollTimerRef.current);
+      progressPollTimerRef.current = null;
+    };
   }, [isScanning]);
 
   // ─── File-tree WebSocket: incremental updates without full rescan ───
@@ -507,8 +527,14 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
             return;
           }
 
-          // Skip external paths
-          if (filePath.startsWith('[external]')) return;
+          // External paths have a nested structure on the server that
+          // doesn't match the flat broadcast format, so incremental
+          // insert won't work.  Trigger a full refetch instead.
+          if (filePath.startsWith('[external]')) {
+            console.log(`📂 FILE_TREE_WS: External ${type} — ${filePath}, triggering refetch`);
+            if (fetchFoldersRef.current) fetchFoldersRef.current();
+            return;
+          }
 
           console.log(`📂 FILE_TREE_WS: ${type} — ${filePath} (${tokenCount ?? 0} tokens)`);
 
@@ -588,6 +614,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const fetchFolders = useCallback(async () => {
     // Don't block the main thread - use MessageChannel for true async
     const channel = new MessageChannel();
+    const closePorts = () => { try { channel.port1.close(); channel.port2.close(); } catch {} };
     channel.port1.onmessage = async () => {
       try {
         // Build URL with project_path parameter if we have a current project
@@ -657,6 +684,8 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       } catch (error) {
         setScanError(error instanceof Error ? error.message : 'Unknown error');
         setIsScanning(false);
+      } finally {
+        closePorts();
       }
     };
 

@@ -45,6 +45,9 @@ export const ServerStatusProvider: React.FC<{ children: ReactNode }> = ({
 
   const checkHealth = useCallback(async () => {
     try {
+      // Skip health checks when tab is hidden to avoid wasting connections
+      if (document.hidden) return;
+
       const controller = new AbortController();
       // 12-second timeout: boto3 Bedrock calls can block the event loop for
       // several seconds during streaming.  A 5s timeout caused false
