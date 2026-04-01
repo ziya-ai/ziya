@@ -101,10 +101,11 @@ class TypeScriptHandler(LanguageHandler):
                         logger.error(f"TypeScript syntax validation failed for {file_path}: {error_msg}")
                         return False, error_msg
 
-                    # Only non-syntax diagnostics (unresolved imports, missing
-                    # types) — fall through to basic validation.
-                    logger.debug(f"tsc reported non-syntax diagnostics for {file_path}, falling back to basic validation")
-                    raise FileNotFoundError("tsc context insufficient, fall back")
+                    # Only non-syntax diagnostics (unresolved imports, missing types).
+                    # tsc confirmed the syntax is valid — no need to fall back to
+                    # heuristic validation which produces false positives on JSX/TSX.
+                    logger.debug(f"tsc reported only non-syntax diagnostics for {file_path} (TS2xxx+), syntax is valid")
+                    return True, None
                 
                 # Additional verification: check for common issues
                 issues = cls._check_common_issues(original_content, modified_content)
@@ -125,10 +126,13 @@ class TypeScriptHandler(LanguageHandler):
                 logger.error(f"Basic TypeScript validation failed for {file_path}: {error}")
                 return False, error
             
-            # TypeScript-specific checks
+            # TypeScript-specific checks — advisory only in fallback mode.
+            # The bracket-matching validation above is the structural gate;
+            # these heuristic checks produce too many false positives on
+            # .tsx files (JSX angle brackets misread as generics, any usage).
             ts_issues = cls._check_typescript_specific_issues(modified_content)
             if ts_issues:
-                return False, f"TypeScript issues: {'; '.join(ts_issues)}"
+                logger.debug(f"TypeScript heuristic warnings (non-fatal): {'; '.join(ts_issues[:5])}")
             
             return True, None
     

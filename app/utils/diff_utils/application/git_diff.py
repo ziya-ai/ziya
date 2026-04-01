@@ -823,7 +823,8 @@ def apply_diff_atomically(file_path: str, git_diff: str) -> Dict[str, Any]:
             has_duplicates, duplicates = handler_class.detect_duplicates(original_content, modified_content)
             if has_duplicates:
                 logger.warning(f"Duplicate code detected in {file_path}: {', '.join(duplicates)}")
-                return {"status": "error", "details": {"type": "duplicate_code", "duplicates": duplicates}}
+                # Advisory only — false positives from keyword matching (e.g. 'if' blocks)
+                # are common in large TSX files.  Don't block diff application.
         except ImportError:
             logger.debug("Language handlers not available for validation")
         except Exception as e:

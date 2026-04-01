@@ -3,7 +3,8 @@ Tests for CLI diff applicator error handling.
 
 Guards against regressions of:
   1. Error message propagation — when language validation fails, the actual
-     error message (stored under "message" key) must be displayed to the user,
+     error message (stored under the "message" key in the result details)
+     must be displayed to the user,
      not a generic "Unknown error".
 """
 
@@ -44,7 +45,8 @@ class TestErrorMessagePropagation(unittest.TestCase):
             }
         }
 
-        with mock.patch('app.utils.cli_diff_applicator.apply_diff_atomically', return_value=error_result), \
+        # Patch at the source — _apply_diff imports from git_diff inside the method
+        with mock.patch('app.utils.diff_utils.application.git_diff.apply_diff_atomically', return_value=error_result), \
              mock.patch.dict(os.environ, {"ZIYA_USER_CODEBASE_DIR": "/tmp"}):
             success, message = applicator._apply_diff(diff)
 
@@ -69,7 +71,7 @@ class TestErrorMessagePropagation(unittest.TestCase):
             }
         }
 
-        with mock.patch('app.utils.cli_diff_applicator.apply_diff_atomically', return_value=error_result), \
+        with mock.patch('app.utils.diff_utils.application.git_diff.apply_diff_atomically', return_value=error_result), \
              mock.patch.dict(os.environ, {"ZIYA_USER_CODEBASE_DIR": "/tmp"}):
             success, message = applicator._apply_diff(diff)
 
@@ -88,7 +90,7 @@ class TestErrorMessagePropagation(unittest.TestCase):
             "details": {"type": "something"}
         }
 
-        with mock.patch('app.utils.cli_diff_applicator.apply_diff_atomically', return_value=error_result), \
+        with mock.patch('app.utils.diff_utils.application.git_diff.apply_diff_atomically', return_value=error_result), \
              mock.patch.dict(os.environ, {"ZIYA_USER_CODEBASE_DIR": "/tmp"}):
             success, message = applicator._apply_diff(diff)
 
