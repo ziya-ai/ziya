@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2.3] - 2026-04-01
+
+### Added
+- Shell server executes all commands with `shell=False` — Python-side pipeline
+  orchestrator handles pipes, `&&`/`||`/`;` chaining, env var expansion, tilde
+  expansion, glob patterns, and command substitution, eliminating shell injection
+  and environment manipulation risks.
+- Document file extraction (PDF, DOCX, XLSX, PPTX) in `file_read` tool — routes
+  through text extractor with offset/max_lines support instead of reading raw bytes.
+- External paths persisted to project storage and restored on server restart,
+  surviving across `ziya` restarts without re-adding.
+- Plain-text paste in chat input — strips rich HTML from web pages that bloats
+  token counts and loses whitespace from `<pre>` blocks.
+- `white-space: normal` on block elements in message content for proper
+  paragraph-break newlines when copying from chat.
+- New test suites: shell `shell=False` execution, TypeScript validation false
+  positives, document extraction, document token counting, external path
+  persistence, external path cache, conversation token counting, copy/paste
+  whitespace, plain-text paste.
+
+### Changed
+- Duplicate code detection in diff pipeline is now advisory (does not block
+  diff application) — reduces false positives from keyword matching in large
+  TSX files.
+- JavaScript handler filters reserved keywords (`if`, `for`, `while`, etc.)
+  from function detection; semicolon heuristic warnings are non-fatal.
+- TypeScript handler trusts tsc syntax analysis when only non-syntax diagnostics
+  (TS2xxx+) are reported — no fallback to heuristic validation. Heuristic checks
+  in fallback mode are advisory only.
+- Token estimation now counts `tool_result` content and `tool_use` input JSON,
+  preventing underestimation when tool calls are present.
+- Skip file-type multiplier for document files in background token calculation
+  (extracted text is already real token count).
+- `add_external_path_to_cache` uses `get_project_root()` for consistent cache
+  key resolution.
+- Accurate token count endpoint uses `resolve_external_path()` for correct
+  file resolution.
+
+### Fixed
+- Frontend resource leaks: consolidated progress poll timers, cancel debounced
+  calls on unmount, close MessageChannel ports in finally block.
+- Background tab optimizations: skip health checks, delegate polling, and
+  WebSocket message processing when `document.hidden`.
+- Token calculation cache cleared when folder data changes (stale totals).
+- `X-Project-Root` header sent in add-explicit-paths requests for correct
+  cache targeting.
+- Removed `treeData` from effect dependency array to break clear→set loop.
+- External path `file_added` WebSocket events trigger full refetch instead of
+  broken incremental insert.
+- Menu label text consistency ("Move to folder", "Move to project").
+- Test mock paths in `test_cli_diff_applicator` corrected to patch at source.
+
+### Removed
+- `frontend/.babelrc` — unused Babel configuration.
+
 ## [0.6.2.2] - 2025-07-22
 
 ### Added
