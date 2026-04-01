@@ -438,6 +438,21 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   white-space: pre-wrap;
 }
 
+/* Reset white-space on block-level elements produced by the markdown renderer
+   so the browser's clipboard serializer inserts proper paragraph-break newlines
+   when copying. The parent's pre-wrap is needed for inline code spans and raw
+   text, but <p>, <li>, headings, and blockquotes never contain intentional
+   multi-space sequences — normal whitespace handling is correct for them.
+   Code blocks already carry their own white-space: pre styling. */
+.message .message-content p,
+.message .message-content li,
+.message .message-content h1, .message .message-content h2,
+.message .message-content h3, .message .message-content h4,
+.message .message-content h5, .message .message-content h6,
+.message .message-content blockquote {
+  white-space: normal;
+}
+
 .dark .message.human {
   background-color: #1f1f1f;
   color: #e6e6e6;

@@ -762,23 +762,33 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
           onInput={handleInput}
           onKeyDown={handleKeyDown}
           onPaste={async (e) => {
-            // Handle pasted images
             const items = e.clipboardData?.items;
-            if (!items) return;
-            
             const imageFiles: File[] = [];
-            for (const item of Array.from(items)) {
-              if (item.type.startsWith('image/')) {
-                const file = item.getAsFile();
-                if (file) imageFiles.push(file);
+            if (items) {
+              for (const item of Array.from(items)) {
+                if (item.type.startsWith('image/')) {
+                  const file = item.getAsFile();
+                  if (file) imageFiles.push(file);
+                }
               }
             }
             
             if (imageFiles.length > 0) {
+              // Handle pasted images
               e.preventDefault();
               const dt = new DataTransfer();
               imageFiles.forEach(f => dt.items.add(f));
               await processImageFiles(dt.files);
+            } else {
+              // Force plain-text paste to strip rich HTML from web pages.
+              // Without this, Chrome inserts styled HTML (spans, tables,
+              // inline CSS) that bloats token counts and loses whitespace
+              // from <pre> blocks (e.g. build logs).
+              const plain = e.clipboardData?.getData('text/plain');
+              if (plain) {
+                e.preventDefault();
+                document.execCommand('insertText', false, plain);
+              }
             }
           }}
           style={{ 
