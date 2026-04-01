@@ -416,7 +416,7 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
       { key: 'fork', label: 'Fork', icon: <AntCopyOutlined />, onClick: (e) => handleAntAction(onFork, e.domEvent) },
       { key: 'compress', label: 'Compress', icon: <AntCompressOutlined />, onClick: (e) => handleAntAction(onCompress, e.domEvent) },
       {
-        key: 'move', label: 'Move to', icon: <AntFolderOutlined />, onClick: (e) => {
+        key: 'move', label: 'Move to folder', icon: <AntFolderOutlined />, onClick: (e) => {
           e.domEvent.stopPropagation();
           onOpenMoveMenu && onOpenMoveMenu(nodeId, e.domEvent.currentTarget as HTMLElement);
         }
@@ -426,7 +426,7 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
           onToggleGlobal && onToggleGlobal(nodeId);
         }
       },
-      { key: 'move-project', label: 'Move to project…', icon: <AntSwapOutlined />, onClick: (e) => {
+      { key: 'move-project', label: 'Move to project', icon: <AntSwapOutlined />, onClick: (e) => {
           e.domEvent.stopPropagation();
           onMoveToProject && onMoveToProject(nodeId, e.domEvent.currentTarget as HTMLElement);
         }
@@ -451,7 +451,7 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
       { key: 'configure', label: 'Configuration', icon: <AntSettingOutlined />, onClick: (e) => handleAntAction(onConfigure, e.domEvent) },
       { key: 'pin', label: isPinned ? 'Unpin' : 'Pin to Top', icon: <AntPushpinOutlined />, onClick: (e) => handleAntAction(onPin, e.domEvent) },
       {
-        key: 'move', label: 'Move to', icon: <AntFolderOutlined />, onClick: (e) => {
+        key: 'move', label: 'Move to folder', icon: <AntFolderOutlined />, onClick: (e) => {
           e.domEvent.stopPropagation();
           onOpenMoveMenu && onOpenMoveMenu(nodeId, e.domEvent.currentTarget as HTMLElement);
         }
@@ -461,7 +461,7 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
           onToggleGlobal && onToggleGlobal(nodeId);
         }
       },
-      { key: 'move-project', label: 'Move to project…', icon: <AntSwapOutlined />, onClick: (e) => {
+      { key: 'move-project', label: 'Move to project', icon: <AntSwapOutlined />, onClick: (e) => {
           e.domEvent.stopPropagation();
           onMoveToProject && onMoveToProject(nodeId, e.domEvent.currentTarget as HTMLElement);
         }
