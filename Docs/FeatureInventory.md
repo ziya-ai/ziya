@@ -113,6 +113,7 @@
 | Feature | Detail |
 |---|---|
 | **Image input** | Drag/drop, paste from clipboard, or image button; supported on Claude 3.x/4.x, Nova Pro/Lite/Premier, Gemini |
+| **Plain-text paste** | Pasting from web pages forces plain text — strips rich HTML (styled spans, tables, inline CSS) that bloats token counts and loses whitespace |
 | **PDF input** | Native reading; loaded as context for the model |
 | **Word (DOCX) input** | Native reading |
 | **Excel (XLSX) input** | Native reading |

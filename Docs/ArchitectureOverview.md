@@ -192,6 +192,10 @@ Files selected by the user are sent in the chat payload as relative paths. The s
 
 External paths (outside the project root) can be added via `POST /api/add-explicit-paths`. These are tracked in `_explicit_external_paths` (a server-memory set) and in the folder cache under a `[external]` key. The security check in `apply_changes` uses `is_path_explicitly_allowed()` to permit writes only to the project root or explicitly added external paths.
 
+The `[external]` data is stored in the same `_folder_cache` entry that `/api/folders` reads from. The cache key is resolved via `get_project_root()` (request-scoped ContextVar → `ZIYA_USER_CODEBASE_DIR` → cwd), so `POST /api/add-explicit-paths` requests must include the `X-Project-Root` header to ensure the write targets the correct cache entry. On the frontend, WebSocket `file_added` events for `[external]` paths trigger a full `fetchFolders` refetch rather than incremental tree insertion, because the flat broadcast path format doesn't match the nested `{children}` structure the server builds for external directories.
+
+The `[external]` data is stored in the same `_folder_cache` entry that `/api/folders` reads from. The cache key is resolved via `get_project_root()` (request-scoped ContextVar → `ZIYA_USER_CODEBASE_DIR` → cwd), so `POST /api/add-explicit-paths` requests must include the `X-Project-Root` header to ensure the write targets the correct cache entry. On the frontend side, WebSocket `file_added` events for `[external]` paths trigger a full `fetchFolders` refetch rather than incremental tree insertion, because the flat broadcast path format doesn't match the nested `{children}` structure the server builds for external directories.
+
 ---
 
 ## Diff Application Pipeline
@@ -210,6 +214,8 @@ Each hunk is tracked independently through the pipeline. The result reports per-
 After applying a diff, the pipeline runs a **language-specific validator** (`app/utils/diff_utils/language_handlers/`) to catch syntax errors before writing to disk. Handlers exist for Python, TypeScript, JavaScript, Java, C++, and Rust.
 
 The TypeScript handler uses `tsc` when available (preferring a project-local `node_modules/.bin/tsc`). Because tsc cannot validate isolated files (missing imports, tsconfig context), the handler passes `--isolatedModules --noResolve` and only treats **syntax errors** (TS1xxx) as hard failures. Import/type resolution errors (TS2xxx+) fall back to basic bracket-matching validation. For `.tsx` files, the handler uses the correct file extension and `--jsx react-jsx` so JSX syntax is parsed correctly.
+
+When tsc reports only non-syntax diagnostics (TS2xxx+), the handler trusts tsc's syntax analysis and returns valid — it does not fall back to heuristic validation.  When tsc is completely unavailable, the fallback path uses bracket-matching as the structural gate; additional heuristic checks (semicolon usage, angle bracket balance, `any` type usage) are logged as debug warnings but do not block diff application, since they produce too many false positives on real-world TSX/JSX files.
 
 ---
 
