@@ -9,6 +9,7 @@ import subprocess
 import sys
 import os
 import re
+import glob
 import time
 import shlex
 from typing import Dict, Any, Optional
@@ -116,6 +117,133 @@ class ShellServer:
         print(f"Write patterns: {self.wp_manager.policy.get('allowed_write_patterns', [])}", file=sys.stderr)
         print(f"Interpreters: {self.wp_manager.policy.get('allowed_interpreters', [])}", file=sys.stderr)
         
+    def _expand_and_tokenize(self, cmd_segment: str) -> list:
+        """Expand shell features in Python and tokenize into an args list.
+
+        Handles environment variables, tilde expansion, and glob patterns
+        so that subprocess can be called with shell=False.
+        """
+        # Expand environment variables ($VAR, ${VAR}) before tokenizing
+        expanded = os.path.expandvars(cmd_segment)
+
+        try:
+            tokens = shlex.split(expanded)
+        except ValueError as e:
+            # Malformed quoting — fall back to naive whitespace split
+            print(f"shlex.split failed ({e}), falling back to split()", file=sys.stderr)
+            tokens = expanded.split()
+
+        if not tokens:
+            return tokens
+
+        # Apply tilde expansion and glob expansion per-token (after splitting)
+        tokens = [os.path.expanduser(t) for t in tokens]
+        result = [tokens[0]]
+        for arg in tokens[1:]:
+            if any(ch in arg for ch in ('*', '?', '[')):
+                matches = glob.glob(arg)
+                if matches:
+                    result.extend(sorted(matches))
+                else:
+                    # No matches — pass the literal pattern (matches bash behavior)
+                    result.append(arg)
+            else:
+                result.append(arg)
+
+        return result
+
+    def _resolve_substitutions(self, cmd_segment: str, timeout: float, cwd: str) -> str:
+        """Resolve $(...) and backtick command substitutions by executing them."""
+        import re as _re
+
+        def _run_substitution(inner_cmd: str) -> str:
+            args = self._expand_and_tokenize(inner_cmd)
+            if not args:
+                return ""
+            try:
+                r = subprocess.run(
+                    args, shell=False, capture_output=True, text=True,
+                    timeout=timeout,
+                    cwd=cwd if cwd and os.path.isdir(cwd) else None,
+                )
+                return r.stdout.rstrip("\n")
+            except Exception as exc:
+                print(f"Substitution failed for '{inner_cmd}': {exc}", file=sys.stderr)
+                return ""
+
+        # Replace $(...) — outermost only (non-greedy, no nested parens)
+        result = _re.sub(
+            r'\$\(([^)]+)\)',
+            lambda m: _run_substitution(m.group(1)),
+            cmd_segment,
+        )
+        # Replace `...`
+        result = _re.sub(
+            r'`([^`]+)`',
+            lambda m: _run_substitution(m.group(1)),
+            result,
+        )
+        return result
+
+    def _execute_pipeline(self, command: str, timeout: float, cwd: str) -> subprocess.CompletedProcess:
+        """Execute a command pipeline with shell=False for all subprocess calls.
+
+        Handles pipes (|), conditional chaining (&&, ||), and sequential
+        execution (;) by orchestrating individual subprocess.run() calls.
+        """
+        effective_cwd = cwd if cwd and os.path.isdir(cwd) else None
+        segments = self._split_by_shell_operators(command)
+
+        last_result = None
+        accumulated_stdout = ""
+        accumulated_stderr = ""
+
+        for idx, (operator, cmd_segment) in enumerate(segments):
+            # Resolve command substitutions first
+            resolved = self._resolve_substitutions(cmd_segment, timeout, cwd)
+            args = self._expand_and_tokenize(resolved)
+            if not args:
+                continue
+
+            # Conditional chaining: skip based on previous result
+            if operator == "&&" and last_result and last_result.returncode != 0:
+                continue
+            if operator == "||" and last_result and last_result.returncode == 0:
+                continue
+
+            stdin_data = None
+            if operator == "|" and last_result:
+                stdin_data = last_result.stdout
+
+            last_result = subprocess.run(
+                args, shell=False, capture_output=True, text=True,
+                timeout=timeout, cwd=effective_cwd, input=stdin_data,
+            )
+
+            # Check if the next segment will pipe from this one
+            next_is_pipe = (idx + 1 < len(segments) and segments[idx + 1][0] == "|")
+            if operator == "|" or next_is_pipe:
+                # In a pipe, only keep stderr; stdout feeds the next stage
+                accumulated_stderr += last_result.stderr or ""
+            else:
+                accumulated_stdout += last_result.stdout or ""
+                accumulated_stderr += last_result.stderr or ""
+
+        if last_result is None:
+            return subprocess.CompletedProcess(
+                args=command, returncode=1,
+                stdout="", stderr="No executable segments",
+            )
+
+        # For pipes, the final stage's stdout is the pipeline output
+        if any(op == "|" for op, _ in segments):
+            accumulated_stdout += last_result.stdout or ""
+
+        return subprocess.CompletedProcess(
+            args=command, returncode=last_result.returncode,
+            stdout=accumulated_stdout, stderr=accumulated_stderr,
+        )
+
     def _split_by_shell_operators(self, command: str) -> list[tuple[str, str]]:
         """
         Split a command by shell operators while preserving the operators.
@@ -471,16 +599,9 @@ class ShellServer:
                     print(f"Executing command: {command}", file=sys.stderr)
                     if cwd and os.path.isdir(cwd):
                         print(f"Working directory: {cwd}", file=sys.stderr)
-                    
-                    result = subprocess.run(
-                        command,
-                        shell=True,
-                        capture_output=True,
-                        text=True,
-                        timeout=timeout,
-                        cwd=cwd if cwd and os.path.isdir(cwd) else None
-                    )
-                    
+
+                    result = self._execute_pipeline(command, timeout, cwd)
+
                     # Format output to be more shell-like
                     output = f"$ {command}\n"
                     if result.stdout:

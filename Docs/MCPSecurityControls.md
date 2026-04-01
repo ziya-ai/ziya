@@ -39,9 +39,11 @@ Tool responses are validated for hidden character smuggling (Unicode zero-width 
 
 ### 2. Tool Overreach
 
-**Module:** `app/mcp_servers/shell_server.py` — command allowlist
+**Module:** `app/mcp_servers/shell_server.py` — command allowlist and secure execution
 
 The shell server maintains an allowlist of permitted commands (117 patterns). Commands not on the list are rejected before execution.
+
+All subprocess calls use `shell=False`. The server parses shell features (pipes, `&&`/`||`/`;` chaining, environment variable and tilde expansion, glob patterns, and command substitution) in Python and orchestrates individual `subprocess.run(args_list, shell=False)` calls. This eliminates the risk of shell environment manipulation (PATH hijacking, LD_PRELOAD injection, malicious shell config files) and command injection.
 
 **Module:** `app/mcp_servers/write_policy.py` — `ShellWriteChecker`
 
