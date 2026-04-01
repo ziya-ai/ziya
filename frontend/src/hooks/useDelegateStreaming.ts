@@ -198,6 +198,11 @@ export function useDelegateStreaming({
     ws.onmessage = (event) => {
       receivedData = true;
       if (staleTimer) { clearTimeout(staleTimer); staleTimer = null; }
+      // When the tab is hidden, skip processing to avoid flooding the
+      // React state update queue with accumulated WS messages.  Content
+      // will be refreshed from the server when the user returns.
+      if (document.hidden) return;
+
       try {
         const chunk = JSON.parse(event.data);
         const ctype = chunk.type;
@@ -330,6 +335,8 @@ export function useDelegateStreaming({
 
       ws.onmessage = (event) => {
         receivedData = true;
+        if (document.hidden) return;
+
         try {
           const chunk = JSON.parse(event.data);
           if (chunk.type === 'text') {
