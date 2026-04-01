@@ -20,6 +20,7 @@ class ProjectSettings(BaseModel):
     defaultSkillIds: List[str] = []
     writePolicy: Optional[WritePolicy] = None
     contextManagement: Optional[ContextManagementSettings] = None
+    externalPaths: List[str] = []
 
 class Project(BaseModel):
     id: str

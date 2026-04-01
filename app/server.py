@@ -4272,6 +4272,21 @@ async def clear_external_paths():
                 del entry['data']['[external]']
                 removed += 1
     logger.info(f"🗑️ Cleared external paths from {removed} cache entries")
+
+    # Also clear persisted external paths from the project
+    try:
+        from app.storage.projects import ProjectStorage
+        from app.utils.paths import get_ziya_home
+        from app.context import get_project_root
+        ps = ProjectStorage(get_ziya_home())
+        project = ps.get_by_path(get_project_root())
+        if project and project.settings.externalPaths:
+            from app.models.project import ProjectUpdate, ProjectSettings
+            ps.update(project.id, ProjectUpdate(settings=ProjectSettings(externalPaths=[])))
+            logger.info(f"💾 Cleared persisted external paths from project {project.id}")
+    except Exception as e:
+        logger.warning(f"Failed to clear persisted external paths: {e}")
+
     return {"cleared": removed}
 
 @app.post("/file")
@@ -4570,7 +4585,27 @@ async def api_add_explicit_paths(request: AddExplicitPathsRequest):
         except Exception as e:
             logger.error(f"Error adding path {path}: {e}")
             errors.append(f"Error adding {path}: {str(e)}")
-    
+
+    # Persist external paths to the project so they survive server restart
+    if added_paths:
+        try:
+            from app.storage.projects import ProjectStorage
+            from app.utils.paths import get_ziya_home
+            ps = ProjectStorage(get_ziya_home())
+            project = ps.get_by_path(user_codebase_dir)
+            if project:
+                existing = set(project.settings.externalPaths or [])
+                new_external = [p for p in added_paths
+                                if not p.startswith(user_codebase_dir + os.sep)]
+                if new_external and not existing.issuperset(new_external):
+                    from app.models.project import ProjectUpdate, ProjectSettings
+                    merged = sorted(existing | set(new_external))
+                    ps.update(project.id, ProjectUpdate(
+                        settings=ProjectSettings(externalPaths=merged)))
+                    logger.info(f"💾 Persisted {len(new_external)} external path(s) to project {project.id}")
+        except Exception as e:
+            logger.warning(f"Failed to persist external paths to project: {e}")
+
     return {
         "added_count": len(added_paths),
         "added_paths": added_paths,
@@ -4649,8 +4684,11 @@ def add_external_path_to_cache(full_path: str) -> bool:
     """
     global _folder_cache, _cache_lock
     
-    # Get the current workspace directory to determine which cache entry to use
-    user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+    # Use the request-scoped project root so the cache key matches what
+    # api_get_folders reads (the project_path query parameter resolves the
+    # same way).  Falls back to env var / cwd for non-request contexts.
+    from app.context import get_project_root
+    user_codebase_dir = get_project_root()
     user_codebase_dir = os.path.abspath(user_codebase_dir)
     real_codebase = os.path.realpath(user_codebase_dir)
     
@@ -5268,6 +5306,9 @@ async def api_get_folders(refresh: bool = False, project_path: str = Query(None)
         if not os.path.isdir(user_codebase_dir):
             logger.error(f"Codebase path is not a directory: {user_codebase_dir}")
             return {"error": f"Path is not a directory: {user_codebase_dir}"}
+
+        # Restore persisted external paths into server-side caches
+        _restore_external_paths_for_project(user_codebase_dir)
             
         # Test basic access
         try:
@@ -5310,6 +5351,9 @@ async def api_get_folders(refresh: bool = False, project_path: str = Query(None)
         result = get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth, synchronous=refresh)
         
         # Log the structure we're returning
+        has_external = '[external]' in result if isinstance(result, dict) else False
+        logger.info(f"📂 api_get_folders: {len(result) if isinstance(result, dict) else 0} top-level keys, "
+                     f"has_external={has_external}, cache_key={user_codebase_dir}")
         logger.debug("=== FOLDER STRUCTURE BEING RETURNED ===")
         log_folder_contents(result, max_depth=2)
         logger.debug("=== END FOLDER STRUCTURE ===")
@@ -5350,6 +5394,41 @@ async def api_get_folders(refresh: bool = False, project_path: str = Query(None)
     except Exception as e:
         logger.error(f"Error in api_get_folders: {e}")
         return {"error": f"Unexpected error: {str(e)}"}
+
+
+_restored_projects: set = set()  # track which projects have been restored this session
+
+
+def _restore_external_paths_for_project(project_root: str) -> None:
+    """Re-populate server-side external path caches from persisted project data.
+
+    Called once per project per server session (on first /api/folders request).
+    """
+    global _explicit_external_paths, _restored_projects
+    abs_root = os.path.abspath(project_root)
+    if abs_root in _restored_projects:
+        return
+    _restored_projects.add(abs_root)
+
+    try:
+        from app.storage.projects import ProjectStorage
+        from app.utils.paths import get_ziya_home
+        ps = ProjectStorage(get_ziya_home())
+        project = ps.get_by_path(abs_root)
+        if not project or not project.settings.externalPaths:
+            return
+
+        restored = 0
+        for ext_path in project.settings.externalPaths:
+            if os.path.exists(ext_path) and ext_path not in _explicit_external_paths:
+                _explicit_external_paths.add(ext_path)
+                add_external_path_to_cache(ext_path)
+                restored += 1
+
+        if restored:
+            logger.info(f"📂 Restored {restored} persisted external path(s) for project {project.id}")
+    except Exception as e:
+        logger.warning(f"Failed to restore external paths: {e}")
 
 @app.post('/api/set-model')
 async def set_model(request: SetModelRequest):
@@ -5874,14 +5953,16 @@ async def get_accurate_token_counts(request: AccurateTokenCountRequest) -> Dict[
 
         import os
         
-        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+        from app.context import get_project_root
+        user_codebase_dir = get_project_root()
         logger.info(f"Accurate token count requested for {len(request.file_paths)} files")
         if not user_codebase_dir:
             raise ValueError("ZIYA_USER_CODEBASE_DIR not set")
         
+        from app.utils.file_utils import resolve_external_path
         results = {}
         for file_path in request.file_paths:
-            full_path = os.path.join(user_codebase_dir, file_path)
+            full_path = resolve_external_path(file_path, user_codebase_dir)
             if os.path.exists(full_path) and os.path.isfile(full_path):
                 accurate_count = get_accurate_token_count(full_path)
                 # Get the estimated count for comparison
