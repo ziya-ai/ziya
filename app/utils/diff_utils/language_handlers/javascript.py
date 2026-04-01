@@ -373,6 +373,12 @@ class JavaScriptHandler(LanguageHandler):
         function_bodies = {}
         lines = content.splitlines()
         
+        reserved_keywords = {
+            'if', 'for', 'while', 'switch', 'catch', 'with', 'return',
+            'else', 'try', 'finally', 'do', 'in', 'of', 'new', 'typeof',
+            'instanceof', 'void', 'delete', 'throw', 'yield', 'await'
+        }
+
         # Find function declarations
         for i, line in enumerate(lines):
             # Function declarations
@@ -397,6 +403,8 @@ class JavaScriptHandler(LanguageHandler):
             match = re.search(r'([a-zA-Z_$][a-zA-Z0-9_$]*)\s*\([^)]*\)\s*{', line)
             if match:
                 func_name = match.group(1)
+                if func_name in reserved_keywords:
+                    continue
                 body = cls._extract_body_from_position(lines, i)
                 if body:
                     function_bodies[func_name] = body
@@ -471,13 +479,23 @@ class JavaScriptHandler(LanguageHandler):
         # Check for common JavaScript syntax errors
         issues = []
         
-        # Check for missing semicolons. JS/TS uses ASI so this is best-effort.
-        # We only flag lines that look like complete statements, not continuation
-        # lines inside multi-line expressions, type annotations, import/export
-        # blocks, template literals, etc.
+        # Check for missing semicolons — advisory only.
+        # JS/TS uses ASI and TypeScript / JSX have many valid patterns that
+        # don't end with semicolons (spread syntax, trailing comments after
+        # semicolons, decorator lines, etc.).  We log these as warnings but
+        # do NOT fail validation on them — the bracket check above is the
+        # real structural validation.
         lines = content.splitlines()
+        semicolon_warnings = []
         for i, line in enumerate(lines):
-            line = line.strip()
+            stripped = line.strip()
+            # Strip trailing inline comments so `foo: string; // comment`
+            # is correctly seen as ending with `;`.
+            code_line = re.sub(r'\s*//.*$', '', stripped)
+            # Also strip trailing block comments like /* ... */
+            code_line = re.sub(r'\s*/\*.*?\*/\s*$', '', code_line).rstrip()
+            line = code_line
+
             if (line and not line.endswith(';') and not line.endswith('{') and
                 not line.endswith('}') and not line.endswith(':') and
                 not line.startswith('//') and not line.startswith('/*') and
@@ -488,10 +506,21 @@ class JavaScriptHandler(LanguageHandler):
                 not line.endswith('?') and not line.endswith('=>') and
                 not line.endswith('(') and not line.endswith('[') and
                 not re.match(r'^(import|export)\b', line) and
-                not re.match(r'^(declare|abstract|async|type|interface|enum)\b', line) and
-                not re.match(r'^[a-zA-Z_$][a-zA-Z0-9_$]*$', line)):  # bare identifier = continuation line
-                issues.append(f"Possible missing semicolon at line {i+1}")
+                not re.match(r'^(declare|abstract|async|type|interface|enum|namespace|module)\b', line) and
+                not re.match(r'^[a-zA-Z_$][a-zA-Z0-9_$]*$', line) and  # bare identifier = continuation
+                not re.match(r'^\.\.\.', line) and  # spread/rest syntax
+                not re.match(r'^@', line) and  # decorators
+                not re.match(r'^<', line) and  # JSX opening tag
+                not re.match(r'^</\w', line) and  # JSX closing tag
+                not line.endswith('>') and  # JSX / generic closing
+                not line.endswith('`') and  # template literal boundary
+                not re.match(r'^\s*$', line)):  # empty after comment strip
+                semicolon_warnings.append(f"Possible missing semicolon at line {i+1}")
         
+        # Log semicolon warnings but don't fail — ASI and TS/JSX make these unreliable
+        if semicolon_warnings:
+            logger.debug(f"Semicolon heuristic warnings (non-fatal): {'; '.join(semicolon_warnings[:5])}")
+
         # Check for invalid variable names
         invalid_var_matches = re.finditer(r'\b(var|let|const)\s+([0-9][a-zA-Z0-9_$]*)', content)
         for match in invalid_var_matches:
