@@ -529,6 +529,9 @@ export const MUIFileExplorer = () => {
       console.log('MUI Folders updated, converting to tree data');
       const sortedData = sortTreeData(convertToTreeData(folders as any));
 
+      // Clear token calculation cache when folder data changes —
+      // cached totals from before this data arrived are stale.
+      tokenCalculationCache.current.clear();
       setTreeData(sortedData);
       setHasLoadedData(true);
       setIsInitialLoad(false);
@@ -827,9 +830,12 @@ export const MUIFileExplorer = () => {
     try {
       const isDir = browseEntries.find(e => e.path === path)?.is_dir;
 
+      const projectPath = (window as any).__ZIYA_CURRENT_PROJECT_PATH__;
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (projectPath) headers['X-Project-Root'] = projectPath;
       const response = await fetch('/api/add-explicit-paths', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           paths: [path],
           // Files always go directly to context
@@ -882,9 +888,12 @@ export const MUIFileExplorer = () => {
     const onlyFiles = selectedEntries.every(e => !e.is_dir);
 
     try {
+      const projectPath = (window as any).__ZIYA_CURRENT_PROJECT_PATH__;
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (projectPath) headers['X-Project-Root'] = projectPath;
       const response = await fetch('/api/add-explicit-paths', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           paths: Array.from(selectedPaths),
           // Files always go to context, directories respect addMode
@@ -1244,7 +1253,8 @@ export const MUIFileExplorer = () => {
       // Update the reference to the current accurate counts
       lastAccurateCountsRef.current = { ...accurateTokenCounts };
     }
-  }, [accurateTokenCounts, setTreeData, treeData]);
+    // Do NOT include treeData — that creates a clear→setTreeData→clear loop.
+  }, [accurateTokenCounts, setTreeData]);
 
   // Listen for accurate token counts update events
   useEffect(() => {

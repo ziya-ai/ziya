@@ -79,6 +79,9 @@ export function useDelegatePolling(
     const pid = projectIdRef.current;
     if (!pid) return;
     
+    // Skip polling when tab is hidden to avoid piling up fetch requests
+    if (document.hidden) return;
+
     // Prevent re-entrant polls — if the previous cycle is still fetching
     // (e.g. slow getChat for large conversations), skip this tick entirely.
     if (pollInFlightRef.current) return;
