@@ -1121,8 +1121,17 @@ def start_background_token_calculation(directory: str, ignored_patterns: List[Tu
                         if content:
                             token_count = len(encoding.encode(content))
                             if token_count <= 50000:  # skip huge files
-                                multiplier = get_file_type_multiplier(file_path)
-                                adjusted_count = int(token_count * multiplier)
+                                # For document files (PDF, DOCX, etc.), read_file_content
+                                # already extracts text, so the token count IS the real
+                                # count — don't apply the file-type multiplier which is
+                                # designed for raw file sizes, not extracted text.
+                                _, ext = os.path.splitext(file_path.lower())
+                                is_doc = ext in {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'}
+                                if is_doc:
+                                    adjusted_count = token_count
+                                else:
+                                    multiplier = get_file_type_multiplier(file_path)
+                                    adjusted_count = int(token_count * multiplier)
                                 
                                 # Store relative path
                                 rel_path = os.path.relpath(file_path, directory)

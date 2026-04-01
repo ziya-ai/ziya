@@ -140,6 +140,28 @@ class FileReadTool(BaseMCPTool):
         if not resolved.is_file():
             return {"error": True, "message": f"Not a file: {path_str}"}
 
+        # Route document files (PDF, DOCX, XLSX, PPTX) through the
+        # document extractor instead of reading raw bytes as text.
+        try:
+            from app.utils.document_extractor import is_document_file, extract_document_text
+            if is_document_file(str(resolved)):
+                extracted = extract_document_text(str(resolved))
+                if extracted is not None:
+                    lines = extracted.splitlines(keepends=True)
+                    total_lines = len(lines)
+                    start = max(0, offset - 1)
+                    end = (start + max_lines) if max_lines else total_lines
+                    selected = lines[start:end]
+                    content = "".join(selected)
+                    truncated = end < total_lines
+                    meta = f"{total_lines} total lines (extracted from document)"
+                    if truncated:
+                        meta += f", showing lines {start + 1}–{min(end, total_lines)}"
+                    return {"content": content, "metadata": meta, "path": path_str}
+                logger.warning(f"Document extraction failed for {path_str}, falling back to raw text read")
+        except ImportError:
+            pass
+
         try:
             text = resolved.read_text(encoding="utf-8", errors="replace")
         except Exception as exc:
