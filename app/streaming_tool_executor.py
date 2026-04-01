@@ -1397,8 +1397,16 @@ class StreamingToolExecutor:
             logger.debug(f"   Messages: {len(conversation)}, max_tokens: {provider_config.max_output_tokens}")
             total_chars = sum(
                 len(msg.get('content', '')) if isinstance(msg.get('content'), str)
-                else sum(len(b.get('text', '')) for b in msg.get('content', []) if isinstance(b, dict) and b.get('type') == 'text')
+                else sum(
+                    len(b.get('text', '')) if b.get('type') == 'text'
+                    else len(b.get('content', '')) if b.get('type') == 'tool_result' and isinstance(b.get('content'), str)
+                    else len(json.dumps(b.get('input', {}))) if b.get('type') == 'tool_use'
+                    else 0
+                    for b in msg.get('content', [])
+                    if isinstance(b, dict)
+                )
                 for msg in conversation
+                if isinstance(msg, dict)
             )
             logger.debug(f"   Total conversation size: {total_chars:,} chars across {len(conversation)} messages")
 
@@ -1538,12 +1546,27 @@ class StreamingToolExecutor:
                                             estimated_tokens += len(content) // 4
                                     elif isinstance(content, list):
                                         for block in content:
-                                            if block.get('type') == 'text':
+                                            if not isinstance(block, dict):
+                                                continue
+                                            block_type = block.get('type')
+                                            if block_type == 'text':
                                                 text = block.get('text', '')
                                                 if has_calibration:
                                                     estimated_tokens += calibrator.estimate_tokens(text, model_family=estimation_model_family)
                                                 else:
                                                     estimated_tokens += len(text) // 4
+                                            elif block_type == 'tool_result':
+                                                # Tool result content is a string with the full result text
+                                                tr_content = block.get('content', '')
+                                                if isinstance(tr_content, str):
+                                                    if has_calibration:
+                                                        estimated_tokens += calibrator.estimate_tokens(tr_content, model_family=estimation_model_family)
+                                                    else:
+                                                        estimated_tokens += len(tr_content) // 4
+                                            elif block_type == 'tool_use':
+                                                # Tool use input is a dict serialized to JSON
+                                                input_json = json.dumps(block.get('input', {}))
+                                                estimated_tokens += len(input_json) // 4
                                 
                                 # ALSO include system content if present
                                 if system_content:
