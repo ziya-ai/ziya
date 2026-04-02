@@ -4310,12 +4310,13 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         })}</p>;
                     }
 
-                    // Filter out truly empty text tokens, but preserve standalone
-                    // newline tokens ("\n").  These appear between inline-styled
-                    // elements (em, strong, code) when each source line is fully
-                    // wrapped in markup — e.g. verse/poetry in blockquotes.
-                    // Keeping them lets the 'text' case convert them to <br/>.
-                    const filteredPTokens = pTokens.filter(t => t.type !== 'text' || (t as TokenWithText).text.trim() !== '' || (t as TokenWithText).text === '\n');
+                    // Filter out genuinely empty text tokens (text === ""), but
+                    // preserve whitespace-only tokens like " " that serve as
+                    // separators between inline elements (em, strong, codespan).
+                    // Also preserve standalone newline tokens ("\n") that appear
+                    // between inline-styled elements in verse/poetry — the
+                    // 'text' case converts these to <br/>.
+                    const filteredPTokens = pTokens.filter(t => t.type !== 'text' || (t as TokenWithText).text !== '' || (t as TokenWithText).text === '\n');
                     if (filteredPTokens.length === 0) return null; // Don't render empty paragraphs
                     return <p key={sk}>{renderTokens(filteredPTokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</p>;
 
