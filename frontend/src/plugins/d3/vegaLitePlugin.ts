@@ -441,6 +441,42 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
       console.log('🔧 VEGA-PREPROCESS: Starting comprehensive preprocessing');
 
+      // Fix 0.05: Swap datum/field in primary/secondary encoding channels
+      // Vega-Lite requires the primary channel (x, y) to carry the field reference
+      // and the secondary channel (x2, y2) to hold the datum value.  LLMs frequently
+      // generate lollipop charts with the pattern x:{datum:0}, x2:{field:"val"} which
+      // crashes the Vega-Lite compiler ("Cannot destructure property 'aggregate' of 'i'").
+      const fixDatumFieldSwap = (encoding: any) => {
+        if (!encoding) return;
+        const pairs: [string, string][] = [['x', 'x2'], ['y', 'y2']];
+        for (const [primary, secondary] of pairs) {
+          const prim = encoding[primary];
+          const sec = encoding[secondary];
+          if (prim && sec && 'datum' in prim && 'field' in sec) {
+            console.log(`🔧 DATUM-SWAP-FIX: Swapping __MATH_INLINE_42__{secondary}:{field} to satisfy Vega-Lite channel requirements`);
+            encoding[primary] = sec;
+            encoding[secondary] = prim;
+          }
+        }
+      };
+
+      // Apply to top-level encoding
+      fixDatumFieldSwap(spec.encoding);
+
+      // Apply to each layer
+      if (spec.layer && Array.isArray(spec.layer)) {
+        spec.layer.forEach((layer: any) => fixDatumFieldSwap(layer.encoding));
+      }
+      // Apply to concat/facet sub-specs
+      if (spec.hconcat) spec.hconcat.forEach((s: any) => {
+        fixDatumFieldSwap(s.encoding);
+        if (s.layer) s.layer.forEach((l: any) => fixDatumFieldSwap(l.encoding));
+      });
+      if (spec.vconcat) spec.vconcat.forEach((s: any) => {
+        fixDatumFieldSwap(s.encoding);
+        if (s.layer) s.layer.forEach((l: any) => fixDatumFieldSwap(l.encoding));
+      });
+
       // Fix 0.1: Repair malformed gradient objects in mark properties
       // LLMs generate invalid gradient syntax like: {"#4ecdc4": "linear", "x1": 1, "stops": [...]}
       // Vega-Lite expects: {"gradient": "linear", "x1": 0, "y1": 0, "x2": 0, "y2": 1, "stops": [...]}
@@ -1622,19 +1658,42 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
     // Fix 8: Handle arc/pie charts with invalid color schemes (hex instead of scheme name)
     const fixInvalidColorSchemeInArcs = (spec: any): any => {
-      if (!spec.mark || (spec.mark !== 'arc' && spec.mark.type !== 'arc')) {
-        return spec;
+      // Fix invalid color scheme (hex color instead of scheme name).
+      // LLMs frequently put a hex color like "#ff6b6b" in the scheme field.
+      // Vega-Lite expects a named scheme (e.g. "viridis", "category10").
+      // This must run on top-level encoding AND on each layer's encoding,
+      // since layered specs (arc + text label) don't have spec.mark at the
+      // top level.
+      const fixHexSchemeInEncoding = (encoding: any, dataLength: number) => {
+        if (!encoding) return;
+        ['color', 'fill', 'stroke'].forEach(channel => {
+          const channelSpec = encoding[channel];
+          if (channelSpec?.scale?.scheme &&
+              typeof channelSpec.scale.scheme === 'string' &&
+              channelSpec.scale.scheme.startsWith('#')) {
+            console.log(`🔧 ARC-COLOR-FIX: Converting invalid hex scheme "${channelSpec.scale.scheme}" to color range in ${channel} channel`);
+            const hexColor = channelSpec.scale.scheme;
+            delete channelSpec.scale.scheme;
+            channelSpec.scale.range = generateColorPalette(hexColor, dataLength);
+          }
+        });
+      };
+
+      const dataLength = spec.data?.values?.length || 8;
+      // Top-level encoding
+      fixHexSchemeInEncoding(spec.encoding, dataLength);
+      // Layer encodings
+      if (spec.layer && Array.isArray(spec.layer)) {
+        spec.layer.forEach((layer: any) => {
+          fixHexSchemeInEncoding(layer.encoding, layer.data?.values?.length || dataLength);
+        });
       }
-
-      // Fix invalid color scheme (hex color instead of scheme name)
-      if (spec.encoding?.color?.scale?.scheme && typeof spec.encoding.color.scale.scheme === 'string' &&
-        spec.encoding.color.scale.scheme.startsWith('#')) {
-        console.log('🔧 ARC-COLOR-FIX: Converting invalid hex color scheme to proper color range');
-        const hexColor = spec.encoding.color.scale.scheme;
-        delete spec.encoding.color.scale.scheme;
-
-        // Generate a color palette based on the provided hex color
-        spec.encoding.color.scale.range = generateColorPalette(hexColor, spec.data?.values?.length || 8);
+      // Concat sub-specs
+      if (spec.hconcat) {
+        spec.hconcat.forEach((s: any) => fixHexSchemeInEncoding(s.encoding, s.data?.values?.length || dataLength));
+      }
+      if (spec.vconcat) {
+        spec.vconcat.forEach((s: any) => fixHexSchemeInEncoding(s.encoding, s.data?.values?.length || dataLength));
       }
 
       return spec;
@@ -4385,15 +4444,22 @@ export const vegaLitePlugin: D3RenderPlugin = {
         const vegaSvg = renderContainer.querySelector('svg') as SVGSVGElement;
 
 
+        // Only create one observer per renderContainer
+        if ((renderContainer as any)._vegaResizeObserver) {
+          return;
+        }
+
         if (vegaEmbedDiv || vegaSvg) {
           const targetElement = vegaEmbedDiv || vegaSvg;
 
+          let resizeRafId: number | null = null;
           const vegaResizeObserver = new ResizeObserver((entries) => {
+            if (resizeRafId !== null) return;
+            resizeRafId = requestAnimationFrame(() => {
+              resizeRafId = null;
             for (const entry of entries) {
               const actualHeight = entry.contentRect.height;
               const actualWidth = entry.contentRect.width;
-
-              console.log(`Vega-Lite element resized: ${actualWidth}x${actualHeight}`);
 
               // Update parent containers
               let parent = container.parentElement;
@@ -4401,22 +4467,21 @@ export const vegaLitePlugin: D3RenderPlugin = {
                 const parentElement = parent as HTMLElement;
                 const currentHeight = parentElement.getBoundingClientRect().height;
 
-                console.log(`Parent ${parentElement.className}: current=${currentHeight}, needed=${actualHeight + 40}`);
-
                 if (currentHeight < actualHeight + 40) {
                   parentElement.style.height = `${actualHeight + 40}px`;
                   parentElement.style.minHeight = `${actualHeight + 40}px`;
                   parentElement.style.overflow = 'visible';
-                  console.log(`Updated parent ${parentElement.className} height to ${actualHeight + 40}px`);
                 }
 
                 parent = parent.parentElement;
               }
             }
+            });
           });
 
           vegaResizeObserver.observe(targetElement);
-          console.log('Vega-Lite resize observer attached to:', targetElement.tagName, targetElement.className);
+          (renderContainer as any)._vegaResizeObserver = vegaResizeObserver;
+          renderContainer.setAttribute('data-vega-ro', '1');
         }
       };
 
@@ -4904,40 +4969,44 @@ ${svgData}`;
         const svgElement = container.querySelector('svg');
         const vegaEmbedDiv = container.querySelector('.vega-embed') as HTMLElement;
 
-        // Fix SVG scaling when content is smaller than container
-        const svg = container.querySelector('svg');
-        const embedDiv = container.querySelector('.vega-embed') as HTMLElement;
+        // Determine upfront whether the spec has explicit dimensions.
+        // When it does, the SVG attributes must be preserved — stripping
+        // them causes height:100% to collapse to 0px on auto-height parents.
+        const hasExplicitWidth = vegaSpec.width && vegaSpec.width > 0;
+        const hasExplicitHeight = vegaSpec.height && vegaSpec.height > 0;
 
-        if (svg && embedDiv) {
-          const containerRect = embedDiv.getBoundingClientRect();
-          const svgRect = svg.getBoundingClientRect();
+        // Fix SVG scaling when content is smaller than container
+        // Skip for charts with explicit dimensions — Vega-Lite already
+        // rendered them at the correct size.
+        if (!hasExplicitWidth && !hasExplicitHeight && svgElement && vegaEmbedDiv) {
+          const containerRect = vegaEmbedDiv.getBoundingClientRect();
+          const svgRect = svgElement.getBoundingClientRect();
 
           // Only scale if SVG is significantly smaller than container
-          const scaleX = containerRect.width / svgRect.width;
-          const scaleY = containerRect.height / svgRect.height;
-          const scale = Math.min(scaleX, scaleY);
+          const scaleX = svgRect.width > 0 ? containerRect.width / svgRect.width : 1;
+          const scaleY = svgRect.height > 0 ? containerRect.height / svgRect.height : 1;
+          const scale = Math.min(scaleX, scaleY) || 1;
 
           if (scale > 1.2) { // Only scale if there's significant wasted space
             const finalScale = Math.min(scale, 2.5); // Cap scaling
-            svg.style.transform = `scale(${finalScale})`;
-            svg.style.transformOrigin = 'center center';
+            svgElement.style.transform = `scale(${finalScale})`;
+            svgElement.style.transformOrigin = 'center center';
             console.log(`Scaled SVG by ${finalScale}x to reduce wasted space`);
           }
         }
 
         // Fix SVG to fill vega-embed container properly
-        const svgEl = container.querySelector('svg');
-        const embedContainer = container.querySelector('.vega-embed') as HTMLElement;
+        // Only strip SVG intrinsic dimensions for auto-sized charts.
+        // Charts with explicit width/height must keep their attributes
+        // so the SVG doesn't collapse to 0px height.
+        if (!hasExplicitWidth && !hasExplicitHeight && svgElement && vegaEmbedDiv) {
+          svgElement.style.width = '100%';
+          svgElement.style.height = '100%';
+          svgElement.removeAttribute('width');
+          svgElement.removeAttribute('height');
+          svgElement.setAttribute('preserveAspectRatio', 'xMidYMid meet');
 
-        if (svgEl && embedContainer) {
-          // Make SVG fill the container
-          svgEl.style.width = '100%';
-          svgEl.style.height = '100%';
-          svgEl.removeAttribute('width');
-          svgEl.removeAttribute('height');
-          svgEl.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-
-          console.log('Made SVG responsive to fill vega-embed container');
+          console.log('Made SVG responsive to fill vega-embed container (auto-sized chart)');
         }
 
         // Critical fix: Ensure vega-embed div doesn't exceed parent width
@@ -4947,9 +5016,6 @@ ${svgData}`;
         }
 
         if (svgElement) {
-          // Only apply responsive sizing if the chart doesn't have explicit dimensions
-          const hasExplicitWidth = vegaSpec.width && vegaSpec.width > 0;
-          const hasExplicitHeight = vegaSpec.height && vegaSpec.height > 0;
 
           if (!hasExplicitWidth) {
             svgElement.style.width = '100%';
@@ -4970,8 +5036,6 @@ ${svgData}`;
         }
 
         if (vegaEmbedDiv) {
-          // Only apply responsive width if not explicitly set
-          const hasExplicitWidth = vegaSpec.width && vegaSpec.width > 0;
 
           if (!hasExplicitWidth) {
             vegaEmbedDiv.style.width = '100%';
@@ -5193,12 +5257,15 @@ ${svgData}`;
 
       // During streaming or with incomplete JSON, don't show errors unless forced
       // CRITICAL: Don't suppress errors when forceRender is true - user explicitly wants to see what's wrong
+      // Also don't suppress when the spec is a fully-formed object — the error is real.
+      const specIsCompleteObject = spec.$schema && (spec.data || spec.datasets) &&
+        (spec.mark || spec.layer || spec.vconcat || spec.hconcat || spec.facet || spec.repeat);
       const shouldSuppressError = (
         (!spec.forceRender && (
           (spec.isStreaming && !spec.isMarkdownBlockClosed) ||
           (spec.isStreaming && isIncompleteDefinition)
         )) ||
-        (!spec.definition || spec.definition.trim().length === 0) ||
+        (!spec.definition && !specIsCompleteObject) ||
         (isStreamingError && !spec.forceRender)
       );
 
