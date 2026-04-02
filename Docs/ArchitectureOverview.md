@@ -1,3 +1,29 @@
+## Frontend Background Stability
+
+When the browser tab is hidden (e.g., screen locked, other tab focused), the
+frontend suspends or throttles all background activity to prevent crashes:
+
+| Background process | Guard |
+|---|---|
+| Server health polling (`ServerStatusContext`) | Skips when `document.hidden` |
+| Conversation sync (`syncWithServer`, 30s) | Skips when `document.hidden` |
+| Delegate status polling (`useDelegatePolling`, 3s) | Skips when `document.hidden` |
+| Folder scan progress polling | Skips when `document.hidden` |
+| Conversation GC (5min) | Skips when `document.hidden` |
+| Delegate WebSocket streaming | Drops messages when `document.hidden` |
+| MarkdownRenderer MutationObserver | Disconnects when `document.hidden` |
+
+Additional resource management:
+- **ResizeObserver feedback prevention** — Vega-Lite chart ResizeObservers use
+  `requestAnimationFrame` throttling and a single-instance guard to prevent
+  the DOM-mutation→observation→DOM-mutation feedback loop.
+- **Save queue coalescing** — `queueSave` serializes IndexedDB writes via a
+  promise chain; only changed conversations are synced to the server.
+- **State updater purity** — `setConversations` updaters avoid side-effect
+  logging that would allocate objects proportional to total conversation count.
+
+---
+
 ## Project Startup Performance
 
 On page load or browser refresh, Ziya restores the most recently used project
