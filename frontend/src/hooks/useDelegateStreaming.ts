@@ -75,21 +75,34 @@ export function useDelegateStreaming({
   // effects don't re-fire on every unrelated conversation change
   // (message adds, server-sync updates, mute toggles, etc.).
   const delegateKey = useMemo(() => {
-    const conv = conversations.find(c => c.id === conversationId);
+    // Use a for-loop to avoid .find() creating closures over the full array
+    let conv: any = null;
+    for (const c of conversations) { if (c.id === conversationId) { conv = c; break; } }
     if (!conv?.delegateMeta) return 'none';
     const dm = conv.delegateMeta as any;
     return `${conversationId}:${dm.status || ''}:${dm.plan_id || ''}`;
-  }, [conversationId, conversations]);
+  }, [conversationId, conversations]); // conversations ref changes trigger recalc, but string result is stable
 
   const siblingKey = useMemo(() => {
-    const conv = conversations.find(c => c.id === conversationId);
-    const planId = (conv?.delegateMeta as any)?.plan_id;
+    // Fast scan: only extract the minimum data needed for the key
+    let planId: string | undefined;
+    for (const c of conversations) {
+      if (c.id === conversationId) {
+        planId = (c.delegateMeta as any)?.plan_id;
+        break;
+      }
+    }
     if (!planId) return 'no-plan';
-    const siblings = conversations.filter(c => {
+    // Build key string without intermediate array allocations
+    let key = '';
+    for (const c of conversations) {
       const dm = c.delegateMeta as any;
-      return dm?.plan_id === planId && dm?.role === 'delegate' && c.id !== conversationId;
-    });
-    return siblings.map(s => `${s.id}:${(s.delegateMeta as any)?.status}`).join('|');
+      if (dm?.plan_id === planId && dm?.role === 'delegate' && c.id !== conversationId) {
+        if (key) key += '|';
+        key += `${c.id}:${dm.status || ''}`;
+      }
+    }
+    return key || 'no-siblings';
   }, [conversationId, conversations]);
 
   useEffect(() => {

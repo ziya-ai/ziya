@@ -356,7 +356,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                   <Dropdown
                     dropdownRender={() => <AntActionMenu
                       isFolder={isFolder}
-                      nodeId={nodeId} isTaskPlanFolder={isTaskPlanFolder} 
+                      nodeId={nodeId} isTaskPlanFolder={isTaskPlanFolder}
                       delegateStatus={delegateStatus} onDelegateRetry={props.onDelegateRetry} onDelegateSkip={props.onDelegateSkip}
                       onSwarmRecovery={props.onSwarmRecovery}
                       onEdit={onEdit} onDelete={onDelete} onFork={onFork} onCompress={onCompress} onExport={onExport}
@@ -421,12 +421,14 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
           onOpenMoveMenu && onOpenMoveMenu(nodeId, e.domEvent.currentTarget as HTMLElement);
         }
       },
-      { key: 'global-toggle', label: isGlobalItem ? '📌 This project only' : '🌐 Share across projects', icon: <AntGlobalOutlined />, onClick: (e) => {
+      {
+        key: 'global-toggle', label: isGlobalItem ? '📌 This project only' : '🌐 Share across projects', icon: <AntGlobalOutlined />, onClick: (e) => {
           e.domEvent.stopPropagation();
           onToggleGlobal && onToggleGlobal(nodeId);
         }
       },
-      { key: 'move-project', label: 'Move to project', icon: <AntSwapOutlined />, onClick: (e) => {
+      {
+        key: 'move-project', label: 'Move to project', icon: <AntSwapOutlined />, onClick: (e) => {
           e.domEvent.stopPropagation();
           onMoveToProject && onMoveToProject(nodeId, e.domEvent.currentTarget as HTMLElement);
         }
@@ -456,12 +458,14 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
           onOpenMoveMenu && onOpenMoveMenu(nodeId, e.domEvent.currentTarget as HTMLElement);
         }
       },
-      { key: 'global-toggle', label: isGlobalItem ? '📌 This project only' : '🌐 Share across projects', icon: <AntGlobalOutlined />, onClick: (e) => {
+      {
+        key: 'global-toggle', label: isGlobalItem ? '📌 This project only' : '🌐 Share across projects', icon: <AntGlobalOutlined />, onClick: (e) => {
           e.domEvent.stopPropagation();
           onToggleGlobal && onToggleGlobal(nodeId);
         }
       },
-      { key: 'move-project', label: 'Move to project', icon: <AntSwapOutlined />, onClick: (e) => {
+      {
+        key: 'move-project', label: 'Move to project', icon: <AntSwapOutlined />, onClick: (e) => {
           e.domEvent.stopPropagation();
           onMoveToProject && onMoveToProject(nodeId, e.domEvent.currentTarget as HTMLElement);
         }
@@ -473,6 +477,69 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
 
   return <AntMenu items={items} />;
 };
+
+// Sort comparator extracted so both full-rebuild and sort-only fast path share it.
+function sortComparator(a: any, b: any, taskPlanBoost: Map<string, number>): number {
+  if (a.isPinned && !b.isPinned) return -1;
+  if (!a.isPinned && b.isPinned) return 1;
+
+  const aDel = a.delegateMeta;
+  const bDel = b.delegateMeta;
+  if (aDel && bDel) {
+    if (aDel.role === 'orchestrator' && bDel.role !== 'orchestrator') return -1;
+    if (bDel.role === 'orchestrator' && aDel.role !== 'orchestrator') return 1;
+    return (a.conversation?.lastAccessedAt ?? 0) - (b.conversation?.lastAccessedAt ?? 0);
+  }
+
+  const getTime = (item: any) => {
+    if (item.folder) return item.lastActivityTime > 0 ? item.lastActivityTime : item.createdAt;
+    const ct = item.conversation?.lastAccessedAt ?? 0;
+    const boost = item.conversation?.id ? (taskPlanBoost.get(item.conversation.id) || 0) : 0;
+    return Math.max(ct, boost);
+  };
+  const aT = getTime(a), bT = getTime(b);
+  if (aT > 0 && bT > 0) return bT - aT;
+  if (aT > 0) return -1;
+  if (bT > 0) return 1;
+
+  if (a.folder && !b.folder) return -1;
+  if (!a.folder && b.folder) return 1;
+  if (!a.folder && !b.folder) {
+    const aA = a.conversation?.lastAccessedAt ?? 0;
+    const bA = b.conversation?.lastAccessedAt ?? 0;
+    if (aA > 0 && bA > 0) return bA - aA;
+    if (aA > 0) return -1;
+    if (bA > 0) return 1;
+    return a.conversation?.id?.localeCompare(b.conversation?.id) || 0;
+  }
+  return 0;
+}
+
+// Re-anchor TaskPlan folders immediately after their source conversation.
+// Sorting may separate them; this restores adjacency.
+function reanchorTaskPlanFolders(
+  items: any[],
+  anchoredIds: Set<string>,
+  folderMap: Map<string, any>,
+  _depth = 0,
+): void {
+  if (_depth > 20 || anchoredIds.size === 0) return;
+  for (const fid of anchoredIds) {
+    const fn = folderMap.get(fid);
+    const srcId = fn?.taskPlan?.source_conversation_id;
+    if (!srcId) continue;
+    const srcIdx = items.findIndex(n => n.id === `conv-${srcId}`);
+    const curIdx = items.findIndex(n => n.id === fid);
+    if (srcIdx !== -1 && curIdx !== -1 && curIdx !== srcIdx + 1) {
+      items.splice(curIdx, 1);
+      const ns = items.findIndex(n => n.id === `conv-${srcId}`);
+      items.splice(ns + 1, 0, fn);
+    }
+  }
+  for (const item of items) {
+    if (item.children?.length) reanchorTaskPlanFolders(item.children, anchoredIds, folderMap, _depth + 1);
+  }
+}
 
 // Virtualization: flattened node for react-window rendering
 interface FlatNode {
@@ -2160,35 +2227,142 @@ const MUIChatHistory = () => {
     };
     input.click();
   };
-
   // Build tree data from folders and conversations
   // Stability refs to prevent unnecessary rebuilds
   const lastTreeDataInputsRef = useRef<number>(0);
+  const lastSortHashRef = useRef<number>(0);
   const lastTreeDataRef = useRef<any[]>([]);
+  // Refs for sort-only fast path: reuse structure, only re-sort
+  const lastAnchoredIdsRef = useRef<Set<string>>(new Set());
+  const lastFolderMapRef = useRef<Map<string, any>>(new Map());
+  const lastTaskPlanBoostRef = useRef<Map<string, number>>(new Map());
 
   const treeDataRaw = useMemo(() => {
-    // Use a lightweight numeric hash instead of JSON.stringify.
-    // JSON.stringify of all folder/conversation metadata was allocating
-    // multi-MB strings on every useMemo evaluation — a major source of
-    // memory pressure during idle re-renders.
-    let h = 0x811c9dc5; // FNV-1a offset basis
-    const fnv = (s: string) => {
-      for (let i = 0; i < s.length; i++) {
-        h ^= s.charCodeAt(i);
-        h = Math.imul(h, 0x01000193);
-      }
-    };
-    folders.forEach(f => { fnv(f.id || ''); fnv(f.name || ''); fnv(f.parentId || ''); fnv(f.isGlobal ? 'g' : ''); fnv(f.taskPlan?.source_conversation_id || ''); });
-    conversations.forEach(c => { fnv(c.id || ''); fnv(c.title || ''); fnv(c.folderId || ''); fnv(c.isActive === false ? '0' : '1'); fnv(String(c.lastAccessedAt || 0)); fnv(c.isGlobal ? 'g' : ''); fnv(c.delegateMeta?.status || ''); });
-    pinnedFolders.forEach(id => fnv(id));
-    const inputHash = h >>> 0; // unsigned 32-bit
+    // During project switch, conversation/folder arrays are transitional
+    // (mix of old + new project data). Return cached tree to avoid
+    // rendering a broken hierarchy that flashes nonsensical state.
+    if (isProjectSwitching) return lastTreeDataRef.current;
 
-    // If inputs haven't changed, return cached result
-    if (inputHash === lastTreeDataInputsRef.current && lastTreeDataRef.current.length > 0) {
+    // Two-level hash: structural (folder/conversation identity) vs sort
+    // (activity times that only affect display order).  When only sort
+    // fields change we skip the expensive tree assembly and only re-sort.
+    const fnv1a = () => {
+      let h = 0x811c9dc5;
+      return {
+        add(s: string) {
+          for (let i = 0; i < s.length; i++) {
+            h ^= s.charCodeAt(i);
+            h = Math.imul(h, 0x01000193);
+          }
+        },
+        value() { return h >>> 0; }
+      };
+    };
+
+    // Structural hash: identity, titles, folder placement, delegate status
+    const sh = fnv1a();
+    folders.forEach(f => { sh.add(f.id || ''); sh.add(f.name || ''); sh.add(f.parentId || ''); sh.add(f.isGlobal ? 'g' : ''); sh.add(f.taskPlan?.source_conversation_id || ''); });
+    conversations.forEach(c => { sh.add(c.id || ''); sh.add(c.title || ''); sh.add(c.folderId || ''); sh.add(c.isActive === false ? '0' : '1'); sh.add(c.isGlobal ? 'g' : ''); sh.add(c.delegateMeta?.status || ''); });
+    const structuralHash = sh.value();
+
+    // Sort hash: activity times and pin state that only affect ordering
+    const oh = fnv1a();
+    conversations.forEach(c => { oh.add(String(c.lastAccessedAt || 0)); });
+    pinnedFolders.forEach(id => oh.add(id));
+    const sortHash = oh.value();
+
+    // Fast exit: nothing changed at all
+    if (structuralHash === lastTreeDataInputsRef.current
+      && sortHash === lastSortHashRef.current
+      && lastTreeDataRef.current.length > 0) {
       return lastTreeDataRef.current;
     }
-    lastTreeDataInputsRef.current = inputHash;
 
+    // ── Sort-only fast path ─────────────────────────────────────────
+    // Structure unchanged but activity times shifted → reuse tree
+    // structure, just update activity times and re-sort in place.
+    if (structuralHash === lastTreeDataInputsRef.current
+      && lastTreeDataRef.current.length > 0) {
+      const convMap = new Map(conversations.map(c => [c.id, c]));
+      const tree = lastTreeDataRef.current;
+      const anchoredFolderIds = lastAnchoredIdsRef.current;
+      const folderMap = lastFolderMapRef.current;
+
+      // Refresh conversation references and folder activity times
+      const refreshNode = (node: any) => {
+        if (node.conversation) {
+          const fresh = convMap.get(node.conversation.id);
+          if (fresh) node.conversation = fresh;
+        }
+        if (node.folder && node.children) {
+          let maxTime = 0;
+          for (const child of node.children) {
+            refreshNode(child);
+            const t = child.conversation?.lastAccessedAt || child.lastActivityTime || 0;
+            if (t > maxTime) maxTime = t;
+          }
+          node.lastActivityTime = maxTime;
+          node.isPinned = pinnedFolders.has(node.id);
+        }
+        if (!node.folder && !node.conversation && node.children) {
+          node.children.forEach(refreshNode);
+        }
+      };
+      tree.forEach(refreshNode);
+
+      // Rebuild taskPlanBoost from refreshed data
+      const taskPlanBoost = new Map<string, number>();
+      for (const fid of anchoredFolderIds) {
+        const fn = folderMap.get(fid);
+        const srcId = fn?.taskPlan?.source_conversation_id;
+        if (!srcId) continue;
+        const activity = fn.lastActivityTime || 0;
+        if (activity > (taskPlanBoost.get(srcId) || 0)) {
+          taskPlanBoost.set(srcId, activity);
+        }
+      }
+      lastTaskPlanBoostRef.current = taskPlanBoost;
+
+      // Re-sort (reuses sortNodes/reanchor defined below via closure)
+      const resortNodes = (nodes: any[]): any[] => {
+        if (!nodes) return [];
+        return nodes.sort((a, b) => sortComparator(a, b, taskPlanBoost));
+      };
+      const resortRecursive = (nodes: any[], _d = 0): any[] => {
+        if (_d > 20) return nodes;
+        const sorted = resortNodes(nodes);
+        sorted.forEach(n => { if (n.children?.length) n.children = resortRecursive(n.children, _d + 1); });
+        return sorted;
+      };
+      resortRecursive(tree);
+
+      // Re-anchor TaskPlan folders after sort
+      if (anchoredFolderIds.size > 0) {
+        const reanchor = (items: any[], _d = 0) => {
+          if (_d > 20) return;
+          for (const fid of anchoredFolderIds) {
+            const fn = folderMap.get(fid);
+            const srcId = fn?.taskPlan?.source_conversation_id;
+            if (!srcId) continue;
+            const srcIdx = items.findIndex(n => n.id === `conv-${srcId}`);
+            const curIdx = items.findIndex(n => n.id === fid);
+            if (srcIdx !== -1 && curIdx !== -1 && curIdx !== srcIdx + 1) {
+              items.splice(curIdx, 1);
+              const ns = items.findIndex(n => n.id === `conv-${srcId}`);
+              items.splice(ns + 1, 0, fn);
+            }
+          }
+          for (const item of items) { if (item.children?.length) reanchor(item.children, _d + 1); }
+        };
+        reanchor(tree);
+      }
+
+      lastSortHashRef.current = sortHash;
+      lastTreeDataRef.current = tree;
+      return tree;
+    }
+
+    // ── Full rebuild ────────────────────────────────────────────────
     const folderMap = new Map();
     folders.forEach(folder => {
       folderMap.set(folder.id, {
@@ -2367,100 +2541,14 @@ const MUIChatHistory = () => {
       return total;
     };
 
-    // Debug log to check folder structure
-    console.debug('Built folder structure:',
-      rootItems.map(item => ({
-        id: item.id, name: item.name, childCount: item.children?.length || 0, isFolder: !!item.folder
-      }))
-    );
 
     // Apply roll-up before sorting
     rootItems.forEach(item => { if (item.folder) rollUpConversationCount(item); });
 
-    // Sort each level - folders first, then conversations
-    const sortNodes = (nodes: any[]): any[] => {
-      if (!nodes) return [];
-      return nodes.sort((a, b) => {
-        // Pinned folders come first
-        if (a.isPinned && !b.isPinned) return -1;
-        if (!a.isPinned && b.isPinned) return 1;
-
-        // Delegate conversations: orchestrator first, then delegates in creation order
-        const aDel = a.delegateMeta;
-        const bDel = b.delegateMeta;
-        if (aDel && bDel) {
-          // Orchestrator always first
-          if (aDel.role === 'orchestrator' && bDel.role !== 'orchestrator') return -1;
-          if (bDel.role === 'orchestrator' && aDel.role !== 'orchestrator') return 1;
-          // Both delegates — sort by createdAt (insertion order) ascending
-          const aTime = a.conversation?.lastAccessedAt ?? 0;
-          const bTime = b.conversation?.lastAccessedAt ?? 0;
-          return aTime - bTime;
-        }
-
-        // Get activity times for both items
-        const getActivityTime = (item: any) => {
-          if (item.folder) {
-            return item.lastActivityTime > 0 ? item.lastActivityTime : item.createdAt;
-          } else {
-            const convTime = item.conversation?.lastAccessedAt ?? 0;
-            // Boost source conversations so the parent + TaskPlan group
-            // sorts by the newest activity across all members.
-            const convId = item.conversation?.id;
-            const boost = convId ? (taskPlanBoost.get(convId) || 0) : 0;
-            return Math.max(convTime, boost);
-          }
-        };
-
-        const aTime = getActivityTime(a);
-        const bTime = getActivityTime(b);
-
-        // If both have activity times, sort by most recent first
-        if (aTime > 0 && bTime > 0) {
-          return bTime - aTime;
-        }
-
-        // If only one has activity time, it comes first
-        if (aTime > 0 && bTime === 0) return -1;
-        if (bTime > 0 && aTime === 0) return 1;
-
-        // If neither has activity time, fall back to type-based sorting
-        // Folders come before conversations as a tiebreaker
-        if (a.folder && b.folder) {
-          return 0; // Equal priority, will be handled by creation time below
-        } else if (a.folder && !b.folder) {
-          return -1; // Folder before conversation when no activity
-        } else if (!a.folder && b.folder) {
-          return 1; // Conversation after folder when no activity
-        }
-
-        // Sort conversations by last accessed time (most recent first)
-        if (!a.folder && !b.folder) {
-          const aActivityTime = a.conversation?.lastAccessedAt ?? 0;
-          const bActivityTime = b.conversation?.lastAccessedAt ?? 0;
-
-          // If both have activity time, sort by that
-          if (aActivityTime > 0 && bActivityTime > 0) {
-            return bActivityTime - aActivityTime;
-          }
-
-          // If only one has activity time, it comes first
-          if (aActivityTime > 0 && bActivityTime === 0) return -1;
-          if (bActivityTime > 0 && aActivityTime === 0) return 1;
-
-          // If neither has activity time, sort by creation time (ID-based for now)
-          // This keeps newly created conversations in a stable order without jumping to top
-          return a.conversation?.id?.localeCompare(b.conversation?.id) || 0;
-        }
-
-        return 0;
-      });
-    };
-
-    // Apply sorting to all levels
+    // Sort using extracted comparator shared with the fast path
     const sortRecursive = (nodes: any[], _depth = 0): any[] => {
       if (_depth > 20) return nodes;
-      const sorted = sortNodes(nodes);
+      const sorted = nodes.sort((a, b) => sortComparator(a, b, taskPlanBoost));
       sorted.forEach(node => {
         if (node.children && node.children.length > 0) {
           node.children = sortRecursive(node.children, _depth + 1);
@@ -2471,34 +2559,16 @@ const MUIChatHistory = () => {
 
     let result = sortRecursive(rootItems);
 
-    // Post-sort: re-anchor TaskPlan folders immediately after their source
-    // conversation. Sorting may have separated them.  Recurse so anchoring
-    // works when the source conversation lives inside a folder.
-    if (anchoredFolderIds.size > 0) {
-      const reanchor = (items: any[], _depth = 0) => {
-        if (_depth > 20) return;
-        for (const fid of anchoredFolderIds) {
-          const folderNode = folderMap.get(fid);
-          const sourceConvId = folderNode?.taskPlan?.source_conversation_id;
-          if (!sourceConvId) continue;
-          const srcIdx = items.findIndex(n => n.id === `conv-${sourceConvId}`);
-          const curIdx = items.findIndex(n => n.id === fid);
-          if (srcIdx !== -1 && curIdx !== -1 && curIdx !== srcIdx + 1) {
-            items.splice(curIdx, 1);
-            const newSrcIdx = items.findIndex(n => n.id === `conv-${sourceConvId}`);
-            items.splice(newSrcIdx + 1, 0, folderNode);
-          }
-        }
-        for (const item of items) {
-          if (item.children?.length) reanchor(item.children, _depth + 1);
-        }
-      };
-      reanchor(result);
-    }
+    // Re-anchor TaskPlan folders that sorting separated from their source
+    reanchorTaskPlanFolders(result, anchoredFolderIds, folderMap);
+
+    // Save refs for sort-only fast path on next render
+    lastAnchoredIdsRef.current = anchoredFolderIds;
+    lastFolderMapRef.current = folderMap;
 
     lastTreeDataRef.current = result;
     return result;
-  }, [conversations, folders, pinnedFolders]); // eslint-disable-line react-hooks/exhaustive-deps -- currentConversationId used only for debug logging; including it would force tree rebuild on every switch
+  }, [conversations, folders, pinnedFolders, isProjectSwitching]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Debounce treeData updates: during startup, conversations change 4+ times
   // in rapid succession. Only rebuild the flattened tree once things settle.
@@ -2512,8 +2582,8 @@ const MUIChatHistory = () => {
     } else {
       treeDataTimerRef.current = setTimeout(() => setTreeData(treeDataRaw), 300);
     }
-  // treeData.length intentionally included so the "immediate vs debounce"
-  // decision re-evaluates when the tree transitions from empty to populated
+    // treeData.length intentionally included so the "immediate vs debounce"
+    // decision re-evaluates when the tree transitions from empty to populated
   }, [treeDataRaw, treeData.length]);
 
   // Virtualization: flatten visible tree nodes
@@ -2952,7 +3022,7 @@ const MUIChatHistory = () => {
                     display: 'flex', alignItems: 'center', gap: '4px', mt: 0.25
                   }}>
                     📁 {result.projectName}
-                </Typography>
+                  </Typography>
                 )}
                 {result.matches.slice(0, 3).map((match, idx) => (
                   <Box
