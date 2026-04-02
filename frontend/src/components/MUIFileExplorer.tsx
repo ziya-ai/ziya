@@ -1232,28 +1232,12 @@ export const MUIFileExplorer = () => {
 
   // Clear token calculation cache when accurate counts change
   useLayoutEffect(() => {
-    // Only run if we have accurate token counts
-    // Clear cache immediately when accurate counts change
+    // Clear cached totals so tree nodes recompute on next render.
+    // A state key bump forces React.memo nodes to re-evaluate without
+    // cloning the entire treeData array (which was the old approach and
+    // caused full-tree re-renders even when nothing visually changed).
     tokenCalculationCache.current.clear();
-
-    const accurateCountsKeys = Object.keys(accurateTokenCounts);
-    if (accurateCountsKeys.length > 0 &&
-      JSON.stringify(accurateCountsKeys) !== JSON.stringify(Object.keys(lastAccurateCountsRef.current))) {
-      console.log('Accurate token counts changed, clearing calculation cache');
-
-      // Clear the calculation cache
-      tokenCalculationCache.current.clear();
-
-      // Force a re-render by updating tree data
-      if (treeData.length > 0) {
-        // Create a shallow copy to trigger re-render without expensive deep copy
-        setTreeData([...treeData]);
-      }
-
-      // Update the reference to the current accurate counts
-      lastAccurateCountsRef.current = { ...accurateTokenCounts };
-    }
-    // Do NOT include treeData — that creates a clear→setTreeData→clear loop.
+    lastAccurateCountsRef.current = { ...accurateTokenCounts };
   }, [accurateTokenCounts, setTreeData]);
 
   // Listen for accurate token counts update events
