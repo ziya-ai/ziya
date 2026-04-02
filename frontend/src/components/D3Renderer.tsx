@@ -269,6 +269,21 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             } catch (e) {
                 console.warn('Error cleaning up D3:', e);
             }
+
+            // Disconnect ResizeObservers that plugins store on container elements
+            try {
+                for (const el of [d3ContainerRef.current, vegaContainerRef.current]) {
+                    if (!el) continue;
+                    const ro = (el as any)._vegaResizeObserver;
+                    if (ro) { ro.disconnect(); delete (el as any)._vegaResizeObserver; }
+                    el.querySelectorAll('[data-vega-ro]').forEach((child: Element) => {
+                        const cro = (child as any)._vegaResizeObserver;
+                        if (cro) { cro.disconnect(); delete (child as any)._vegaResizeObserver; }
+                    });
+                }
+            } catch (e) {
+                console.warn('Error cleaning up ResizeObservers:', e);
+            }
         };
     }, []);
 
@@ -1169,6 +1184,27 @@ ${svgData}`;
                             maxHeight: containerStyles.maxHeight
                         }}
                     />
+                    {/* Error display for d3/plugin render path (mirrors vegaContainerRef branch) */}
+                    {renderError && !isStreaming && isMarkdownBlockClosed && !hasSuccessfulRender && (
+                        <pre style={{
+                            padding: '16px',
+                            margin: '8px',
+                            backgroundColor: isDarkMode ? '#2a1215' : '#fff1f0',
+                            border: `1px solid ${isDarkMode ? '#5c2223' : '#ffa39e'}`,
+                            borderRadius: '4px',
+                            color: isDarkMode ? '#ff4d4f' : '#cf1322',
+                            whiteSpace: 'pre-wrap',
+                            wordWrap: 'break-word',
+                            maxHeight: '200px',
+                            overflowY: 'auto',
+                            fontSize: '14px',
+                            lineHeight: '1.5',
+                            fontFamily: 'monospace'
+                        }}>
+                            <strong>Error:</strong>
+                            {errorDetails.map((line, i) => <div key={i}>{line}</div>)}
+                        </pre>
+                    )}
                 </>
             ) : (
                 <div
