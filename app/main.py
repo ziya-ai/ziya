@@ -476,6 +476,8 @@ def start_server(args):
             
             logger.info("=== STARTUP PHASE 3: Starting Server ===")
             # Use uvicorn directly instead of langchain_cli.serve()
+            # Set the terminal window/tab title to "Ziya:<port>"
+            print(f"\033]0;Ziya:{args.port}\007", end="", flush=True)
             uvicorn.run(app, host="0.0.0.0", port=args.port)
             
         except ValueError as e:
