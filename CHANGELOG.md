@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2.4] - 2026-04-10
+
+### Added
+- Terminal window/tab title set to `Ziya:<port>` on server startup via ANSI OSC escape sequence.
+- D3Renderer displays an error panel on the d3/plugin render path (mirrors the vega-embed branch).
+- Vega-Lite preprocessing fix 0.05: swap `datum`/`field` in primary/secondary encoding channels,
+  fixing lollipop charts that crash with "Cannot destructure property 'aggregate' of 'i'".
+- Unit tests for paragraph token filter, delegate streaming, and Vega-Lite preprocessing.
+
+### Changed
+- Chat history tree rebuild split into structural vs. sort hashes; activity-time-only changes
+  now use a sort-only fast path that avoids full tree reconstruction.
+- `sortComparator` and `reanchorTaskPlanFolders` extracted as module-level helpers shared between
+  the full-rebuild and sort-only paths.
+- `useDelegateStreaming` key memos use `for`-loops instead of `.find()`/`.filter()` to reduce
+  closure allocations over the full conversations array.
+- `MUIFileExplorer` token cache clear simplified: removes JSON.stringify key comparison and
+  shallow-copy `setTreeData` that caused unnecessary full-tree re-renders.
+- Vega-Lite color scheme hex fix now applies to `layer`/`concat` sub-specs and `fill`/`stroke`
+  channels, not just top-level `color`.
+- Vega-Lite SVG scaling skips attribute stripping for charts with explicit `width`/`height`
+  to prevent height collapsing to 0px.
+- Vega-Lite error suppression treats fully-formed spec objects as real errors (no longer
+  suppresses errors when `$schema` + `data`/`mark` are present).
+- Chat history tree guarded against returning transitional data during project switch.
+
+### Fixed
+- Tab-hidden background stability: conversation GC skips when `document.hidden`.
+- `setConversations` wrapped in `React.startTransition` during project switch to avoid
+  blocking paint frames with large conversation list updates.
+- Stale conversation data cleared immediately when switching to a new project.
+- Verbose debug log removed from `markConversationAsRead` state updater (eliminated per-render
+  object allocation proportional to total conversation count).
+- Vega-Lite `ResizeObserver` now created only once per render container (singleton guard)
+  with `requestAnimationFrame` throttling to break DOM-mutation→observation feedback loops.
+- `ResizeObserver` instances stored on container elements are disconnected in D3Renderer
+  cleanup effect to prevent memory leaks.
+- Paragraph token filter preserves whitespace-only separator tokens (e.g. `" "` between
+  `em`/`strong`/`codespan`) while still discarding truly empty string tokens.
+
 ## [0.6.2.3] - 2026-04-01
 
 ### Added
