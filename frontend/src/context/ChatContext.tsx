@@ -796,15 +796,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     hasUnreadResponse: false
                 }];
 
-            console.log('After update:', {
-                updatedConversation: updatedConversations.find(c => c.id === conversationId),
-                allConversations: updatedConversations.map(c => ({
-                    id: c.id,
-                    hasUnreadResponse: c.hasUnreadResponse,
-                    isCurrent: c.id === currentConversationId
-                }))
-            });
-
             queueSave(updatedConversations, { changedIds: [conversationId] }).catch(console.error);
 
             return updatedConversations;
@@ -1824,6 +1815,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
             setIsProjectSwitching(true);
             console.log('🔄 PROJECT_SWITCH: Set isProjectSwitching = true for', projectId);
         }
+        
+        // Immediately clear stale data from the previous project so the UI
+        // shows an empty/loading state rather than a mix of old and new data.
+        if (serverSyncedForProject.current !== projectId) {
+            setConversations([]);
+        }
 
         // Migrate conversations without a projectId to the current project
         const migrateUntaggedConversations = async (conversations: Conversation[], projectId: string): Promise<Conversation[]> => {
@@ -2108,7 +2105,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 }
 
                 // 6. Update React state — only if something actually changed
-                setConversations(prev => {
+                // Wrap in startTransition so this potentially large state
+                // update (hundreds of conversations) doesn't block user
+                // interaction or paint frames during project switches.
+                React.startTransition(() => { setConversations(prev => {
                     // Don't let a stale sync cycle resurrect a conversation that
                     // was deleted in this tab between when this sync started and now.
                     // If an id is in mergedProjectConvs but absent from both prev
@@ -2144,7 +2144,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         if (!changed) return prev; // No-op, avoid re-render
                     }
                     return safeConvs;
-                });
+                }); });
 
                 // 7. Update current conversation if it doesn't exist in merged set
                 // For periodic polls: NEVER change currentConversationId — it's
@@ -2262,6 +2262,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
         const GC_INTERVAL_MS = 5 * 60 * 1000; // every 5 minutes
 
         const runGc = () => {
+            // Skip GC when tab is hidden to avoid IndexedDB I/O and state updates in background
+            if (document.hidden) return;
+
             const protectedIds = new Set<string>(streamingConversationsRef.current);
             if (currentConversationRef.current) protectedIds.add(currentConversationRef.current);
             const { kept, purgedIds } = gcEmptyConversations(
