@@ -131,7 +131,7 @@ Ziya's visualization suite is the most comprehensive of any AI coding assistant.
 |---|---|
 | **Mermaid** | Flowcharts, sequence diagrams, ER diagrams, Gantt, state machines |
 | **Graphviz** | Dependency graphs, call graphs, complex networks |
-| **VegaLite** | Data charts, plots, statistical visualizations |
+| **VegaLite** | Data charts, plots, statistical visualizations. Preprocessing fixes: encoding datum/field swaps, fold transform mismatches, gradient repair, log scale corrections, arc label enhancement, grouped bar fix, and 20+ other LLM-generated spec normalizations. |
 | **DrawIO** | Architecture diagrams, system design, exportable `.drawio` files |
 | **MathML / KaTeX** | Inline and display math (`$...$` / `$$...$$`) |
 | **HTML mockups** | Interactive UI previews in an isolated iframe; inherits theme; CSS isolated |
