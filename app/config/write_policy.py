@@ -295,6 +295,12 @@ class WritePolicyManager:
 
         for safe in self._policy.get('safe_write_paths', []):
             if safe.startswith('/'):
+                # Resolve the safe path too so symlinks like /tmp -> /private/tmp
+                # are handled correctly on macOS.
+                safe_resolved = os.path.realpath(safe.rstrip('/'))
+                if resolved.startswith(safe_resolved + os.sep) or resolved == safe_resolved:
+                    return True
+                # Also check the literal (non-resolved) form for non-symlink cases
                 if resolved.startswith(safe) or resolved == safe.rstrip('/'):
                     return True
             else:
