@@ -86,6 +86,7 @@ from app.utils.conversation_exporter import export_conversation_for_paste
 # Session management API routers
 from app.api import projects, contexts, skills, chats, tokens
 from app.api import delegates as delegates_api
+from app.api import memory as memory_api
 from app.utils.paths import get_ziya_home
 from app.utils.logging_utils import logger as app_logger
 
@@ -621,7 +622,7 @@ class _PollingAccessFilter(_logging.Filter):
     """Filter routine polling GETs from uvicorn access log."""
     _quiet = {'/chats?', '/chat-groups', '/skills', '/contexts', '/api/config', '/ws/',
               '/folder-progress', '/model-capabilities', '/current-model', '/static/',
-              '/delegate-status',}
+              '/delegate-status', '/bulk-sync',}
     # UUID pattern for individual chat GETs: /chats/<uuid>
     _chat_get_re = __import__('re').compile(r'/chats/[0-9a-f]{8}-[0-9a-f]{4}-.*" [23]')
     def filter(self, record: _logging.LogRecord) -> bool:
@@ -683,6 +684,9 @@ async def feedback_websocket(websocket: WebSocket, conversation_id: str):
             except WebSocketDisconnect:
                 logger.debug(f"🔄 FEEDBACK: WebSocket disconnected for {conversation_id}")
                 break
+    except WebSocketDisconnect:
+        # Client disconnected before entering the receive loop (page reload race)
+        logger.debug(f"🔄 FEEDBACK: Client disconnected early for {conversation_id}")
     finally:
         # Clean up connection
         if conversation_id in active_feedback_connections:
@@ -700,10 +704,8 @@ async def file_tree_websocket(websocket: WebSocket):
     """WebSocket endpoint for real-time file tree update notifications."""
     logger.debug("🔄 FILE_TREE: WebSocket connection attempt")
     await websocket.accept()
-    logger.debug("🔄 FILE_TREE: WebSocket connected")
-    
-    # Register this connection
     active_file_tree_connections.add(websocket)
+    logger.debug("🔄 FILE_TREE: WebSocket connected")
     
     try:
         # Send initial connection confirmation
@@ -720,11 +722,14 @@ async def file_tree_websocket(websocket: WebSocket):
             except WebSocketDisconnect:
                 logger.debug("🔄 FILE_TREE: WebSocket disconnected")
                 break
+    except WebSocketDisconnect:
+        # Client disconnected before or during the initial send — this is
+        # normal during page reloads and browser navigation.
+        logger.debug("🔄 FILE_TREE: Client disconnected early (race during page load)")
     finally:
         # Clean up connection
-        if websocket in active_file_tree_connections:
-            active_file_tree_connections.remove(websocket)
-            logger.debug(f"🔄 FILE_TREE: Connection removed, {len(active_file_tree_connections)} remaining")
+        active_file_tree_connections.discard(websocket)
+        logger.debug(f"🔄 FILE_TREE: Connection removed, {len(active_file_tree_connections)} remaining")
 
 @app.websocket("/ws/delegate-stream/{conversation_id}")
 async def delegate_stream_websocket(websocket: WebSocket, conversation_id: str):
@@ -746,6 +751,9 @@ async def delegate_stream_websocket(websocket: WebSocket, conversation_id: str):
             await websocket.receive_text()
     except WebSocketDisconnect:
         logger.debug(f"📡 DELEGATE_STREAM: WebSocket disconnected for {conversation_id[:8]}")
+    except Exception:
+        # Connection errors (e.g. client vanished without close frame) are expected
+        logger.debug(f"📡 DELEGATE_STREAM: Connection lost for {conversation_id[:8]}")
     finally:
         await disconnect(conversation_id, websocket)
 
@@ -980,6 +988,7 @@ app.include_router(skills.router)
 app.include_router(chats.router)
 app.include_router(tokens.router)
 app.include_router(delegates_api.router)
+app.include_router(memory_api.router)
 app_logger.info("Session management API routes loaded")
 
 # Import and include model routes
@@ -3362,6 +3371,9 @@ async def root(request: Request):
             if 'frontend' in config and 'formatters' in config['frontend']:
                 formatter_scripts.extend(config['frontend']['formatters'])
         
+        # Deduplicate while preserving order — duplicate script tags cause
+        # fatal SyntaxError from const redeclaration in formatter JS files
+        formatter_scripts = list(dict.fromkeys(formatter_scripts))
         # Log detailed information about templates
         logger.info(f"Rendering index.html using custom template loader")
         
@@ -4142,6 +4154,7 @@ async def update_dynamic_tools(request: Request):
     Called by frontend when file selection changes.
     """
     try:
+        from starlette.requests import ClientDisconnect
         body = await request.json()
         files = body.get('files', [])
 
@@ -4171,6 +4184,10 @@ async def update_dynamic_tools(request: Request):
             "message": f"Loaded {len(newly_loaded)} new tools, {len(active_tools)} total active"
         })
 
+    except ClientDisconnect:
+        # Browser cancelled the request during page navigation — harmless.
+        logger.debug("Dynamic tools update: client disconnected before body was read")
+        return JSONResponse({"message": "Client disconnected"}, status_code=499)
     except Exception as e:
         logger.error(f"Error updating dynamic tools: {e}", exc_info=True)
         return JSONResponse({"error": str(e)}, status_code=500)
