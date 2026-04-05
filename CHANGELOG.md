@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2.5] - 2026-04-05
+
+### Added
+- Persistent memory system with mind-map tree and auto-maintenance — retains domain
+  facts, architecture decisions, vocabulary, and lessons learned across sessions.
+- MCP tools: `memory_search`, `memory_save`, `memory_propose`, `memory_context`,
+  `memory_expand` for structured knowledge management.
+- Memory prompt injection into system message for session continuity.
+- REST API endpoints for memory CRUD operations.
+- CLI `/reset` command: clears history, files, and all session state.
+- Frontend `RootErrorBoundary` component for top-level crash recovery.
+- Frontend copy-conversation-to-project (in addition to move).
+- Chat history tree cycle detection with comprehensive tests.
+- Frontend save debounce tests.
+- `POST /chats/repair-timestamps` endpoint to fix historical timestamp inflation.
+- Diff test runner and variable shadow false-negative test case.
+- Competitive analysis document (vs Claude Code).
+
+### Changed
+- Frontend save debouncing: coalesce rapid-fire saves during streaming into single
+  IndexedDB writes with dual-write timer for dirty conversation batching.
+- MarkdownRenderer and TokenCountDisplay refactored for performance.
+- Folder management improvements with better drag-drop handling.
+- Prism language loader: retry and error handling on dynamic imports.
+- IndexedDB connection management improvements.
+- Delegate polling refinements for tab-hidden scenarios.
+- CLI `/clear` now only clears message history (removed `/c` alias).
+- Architecture, Capabilities, Enterprise, and Feature Inventory docs updated for
+  memory system, state eviction, and WebSocket hardening.
+
+### Fixed
+- Touch-on-read timestamp inflation: `GET /chats/{id}` no longer mutates
+  `lastActiveAt`, preventing sync loop from inflating timestamps.
+- WebSocket disconnect races on page reload in feedback, file_tree, and
+  delegate_stream endpoints.
+- Network vs credential errors: AWS validation now detects connectivity issues
+  and shows NETWORK ERROR instead of misleading credentials error.
+- Memory leaks: bounded state eviction for tool states, context manager, file
+  state manager, usage tracker, and stream metrics.
+- macOS /tmp symlink: resolve safe_write_paths through realpath so writes to
+  /tmp/* are correctly allowed.
+- MCP shutdown: graceful cleanup, downgraded log levels, ProcessLookupError handling.
+- Removed over-aggressive fake tool call detection heuristic.
+- /bulk-sync added to quiet polling filter.
+
 ## [0.6.2.4] - 2026-04-10
 
 ### Added
