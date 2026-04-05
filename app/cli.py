@@ -438,9 +438,10 @@ class CLI:
                     '/rm', '/remove',
                     '/shell',
                     '/files', '/ls', '/f',
-                    '/clear', '/c',
+                    '/clear',
                     '/model', '/m',
                     '/quit', '/q', '/exit',
+                    '/reset',
                     '/suspend', '/resume',
                     '/help', '/h'
                 ], ignore_case=True, sentence=True, match_middle=True)
@@ -1421,6 +1422,7 @@ class CLI:
                  /shell git <op>    Allow a git operation (e.g. add, commit, push, all)
                  Append 'save' to persist: /shell add git save
   /clear         Clear conversation history
+  /reset         Clear history, files, and all session state
   /tune <key> <val> Adjust session settings:
                  /tune iterations <n>  Max tool iterations (default: 200)
   /model <name>  Switch model
@@ -1494,6 +1496,25 @@ class CLI:
         
         elif command == '/tune':
             self._handle_tune(arg)
+
+        elif command == '/clear':
+            count = len(self.history)
+            self.history.clear()
+            print(f"\033[32m✓ Cleared {count} messages from history\033[0m")
+
+        elif command == '/reset':
+            hist_count = len(self.history)
+            file_count = len(self.files)
+            self.history.clear()
+            self.files.clear()
+            self.conversation_id = f"cli_{os.getpid()}_{id(self)}"
+            self._session_start_time = None
+            self._session_shell_commands = None
+            self._session_yolo = False
+            self._session_timeout = None
+            self._partial_response = ""
+            print(f"\033[32m✓ Session reset\033[0m")
+            print(f"\033[90m  Cleared {hist_count} messages, {file_count} files\033[0m")
 
         else:
             print(f"\033[90mUnknown command: {command}\033[0m")
