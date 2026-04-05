@@ -154,6 +154,80 @@ See the **Nova Web Grounding** section below for the concrete built-in implement
 
 ---
 
+### Frontend Formatter Scripts (JavaScript)
+
+ConfigProviders can inject JavaScript files into the frontend to customize tool output rendering. These scripts are loaded as `<script>` tags via the Jinja template and must follow specific rules to avoid fatal crashes.
+
+#### How It Works
+
+1. A `ConfigProvider.get_defaults()` returns a `frontend.formatters` list of script URLs
+2. The server deduplicates and passes them to `index.html` as `formatter_scripts`
+3. Each script is loaded as a `<script src="...">` tag after the inline `FormatterRegistry` initialization
+4. Scripts register themselves by calling `window.FormatterRegistry.register(formatterObject)`
+
+#### Script Requirements
+
+**All formatter scripts MUST be wrapped in an IIFE** (Immediately Invoked Function Expression):
+
+```javascript
+;(function() {
+    const MY_MAPPINGS = { /* ... */ };
+
+    const myFormatter = {
+        formatterId: 'my-org-formatter',
+        priority: 100,
+        canFormat(toolName) { return toolName in MY_MAPPINGS; },
+        format(toolName, result, options) { /* ... */ },
+        enhanceHeader(toolName, baseHeader, args) { return null; }
+    };
+
+    if (typeof window !== 'undefined' && window.FormatterRegistry) {
+        window.FormatterRegistry.register(myFormatter);
+    }
+})();
+```
+
+**Why this is mandatory:** Browser script tags execute in the global scope. If a formatter script declares `const MY_VAR = ...` at the top level and the script is loaded twice (which happens due to browser caching, template re-rendering, or duplicate entries in the formatter list), the second evaluation throws:
+
+```
+SyntaxError: Identifier 'MY_VAR' has already been declared
+```
+
+This is a **parse-time error that cannot be caught** by `try-catch` or error boundaries. It kills the JavaScript execution context and crashes the entire application with a white screen. The IIFE wrapper scopes all `const`/`let` declarations to the function body, making double-loading harmless.
+
+#### Build System Guidance
+
+If your build pipeline compiles TypeScript formatters to JavaScript:
+
+- **`tsc` with `--module None`** produces top-level declarations — you MUST post-process the output to wrap in an IIFE
+- **`tsc` with `--module CommonJS`** produces `exports.xxx` assignments that fail silently in the browser — not usable without bundling
+- **Recommended**: compile with `--module None` then wrap:
+
+```python
+# In your build script, after tsc compilation:
+with open(output_js, 'r') as f:
+    content = f.read()
+if not content.strip().startswith('(function()'):
+    content = f'(function() {{\n{content}\n}})();'
+with open(output_js, 'w') as f:
+    f.write(content)
+```
+
+#### Registration Deduplication
+
+The `FormatterRegistry.register()` method deduplicates by `formatterId` — calling `register()` with the same `formatterId` twice is a no-op. This means double-loaded scripts that are properly IIFE-wrapped will safely re-register without side effects.
+
+#### Debugging
+
+If the app crashes with a white screen, check the browser console for `SyntaxError: Identifier ... has already been declared`. Run `getCrashLog()` in the console after reload to see persisted crash details including stack traces.
+
+Common causes:
+- Formatter JS not wrapped in IIFE
+- Duplicate entries in `config['frontend']['formatters']` from the ConfigProvider
+- Pre-compiled JS file used without IIFE wrapping (the build script's TSC path wraps automatically, but the pre-compiled copy path may not)
+
+---
+
 ### DataRetentionProvider
 
 Enforces organisation-specific data retention policies. When multiple providers register, the most restrictive (shortest) TTL per category wins.
