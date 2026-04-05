@@ -256,7 +256,7 @@ Please set up your AWS credentials using one of these methods:
         auth_provider = get_active_auth_provider()
         
         if auth_provider and auth_provider.is_auth_error(error_msg):
-            return False, auth_provider.get_credential_help_message()
+            return False, auth_provider.get_credential_help_message(error_context=error_msg)
             
         # Standard error detection for non-Amazon environments
         if "ExpiredToken" in error_msg:
@@ -268,8 +268,19 @@ Please set up your AWS credentials using one of these methods:
         elif "NoCredentialProviders" in error_msg:
             return False, "⚠️ AWS CREDENTIALS ERROR: No AWS credentials found. Please set up your AWS credentials."
         else:
-            # Generic error message for other cases
-            return False, f"⚠️ AWS CREDENTIALS ERROR: {e}. Please check your AWS credentials and try again."
+            # Check for network/connectivity errors before falling back to generic credentials message
+            network_indicators = ["i/o timeout", "dial tcp", "connection refused", "no such host",
+                                  "network is unreachable", "connection timed out", "timed out",
+                                  "timeout", "unreachable", "name resolution"]
+            error_lower = error_msg.lower()
+            if any(indicator in error_lower for indicator in network_indicators):
+                return False, (
+                    f"⚠️ NETWORK ERROR: Could not reach the credentials provider.\n\n"
+                    f"  Detail: {e}\n\n"
+                    f"If you are on a corporate network, check that your VPN is connected."
+                )
+            else:
+                return False, f"⚠️ AWS CREDENTIALS ERROR: {e}. Please check your AWS credentials and try again."
 
 def debug_aws_credentials():
     """Debug function to print AWS credential information."""

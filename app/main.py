@@ -434,10 +434,14 @@ def start_server(args):
                 if not valid:
                     # Print clear error message and exit immediately
                     print("\n" + "=" * 80)
-                    print(f"⚠️  AUTHENTICATION ERROR")
+                    if "NETWORK ERROR" in message:
+                        print(f"⚠️  NETWORK ERROR")
+                    else:
+                        print(f"⚠️  AUTHENTICATION ERROR")
                     print("=" * 80)
                     print(f"\n{message}\n")
-                    print("Please fix your AWS credentials and try again.")
+                    if "NETWORK ERROR" not in message:
+                        print("Please fix your AWS credentials and try again.")
                     print("=" * 80 + "\n")
                     logger.error(f"AWS credentials check failed: {message}")
                     sys.exit(1)
