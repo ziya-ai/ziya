@@ -67,6 +67,13 @@ export function useDelegatePolling(
   // Guard against re-entrant poll calls (previous poll still in-flight)
   const pollInFlightRef = useRef(false);
 
+  // Derive a stable boolean for whether any active task plans exist.
+  // Used as an effect dependency to start/stop the polling interval
+  // without re-creating it on every unrelated folders change.
+  const hasActivePlans = folders.some(
+    f => f.taskPlan && !new Set(['completed', 'completed_partial', 'cancelled']).has(f.taskPlan.status)
+  );
+
   // Snapshot folders into a ref so the interval callback doesn't
   // create a new closure (and new interval) every time folders change.
   const foldersRef = useRef(folders);
@@ -223,9 +230,14 @@ export function useDelegatePolling(
   }, [setConversations, setFolders]);
 
   useEffect(() => {
+    // Only start the polling interval when active TaskPlan folders exist.
+    // This avoids a 3s timer firing hundreds of times during normal
+    // (non-swarm) usage with hundreds of conversations.
+    if (!hasActivePlans) return;
+
     const id = setInterval(poll, POLL_INTERVAL_MS);
     // Run immediately on mount so first update doesn't wait 3s
     poll();
     return () => clearInterval(id);
-  }, [poll]);
+  }, [poll, hasActivePlans]);
 }

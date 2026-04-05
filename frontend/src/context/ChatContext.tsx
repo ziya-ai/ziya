@@ -95,6 +95,7 @@ interface ChatContext {
     moveChatToGroup: (chatId: string, groupId: string | null) => Promise<void>;
     toggleConversationGlobal: (conversationId: string) => Promise<void>;
     moveConversationToProject: (conversationId: string, targetProjectId: string) => Promise<void>;
+    copyConversationToProject: (conversationId: string, targetProjectId: string) => Promise<void>;
     moveFolderToProject: (folderId: string, targetProjectId: string) => Promise<void>;
     toggleFolderGlobal: (folderId: string) => Promise<void>;
     setChatContexts: (chatId: string, contextIds: string[], skillIds: string[], additionalFiles: string[], additionalPrompt: string | null) => Promise<void>;
@@ -198,7 +199,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [dynamicTitleLength, setDynamicTitleLength] = useState<number>(50); // Default reasonable length
     const processedModelChanges = useRef<Set<string>>(new Set());
     const saveQueue = useRef<Promise<void>>(Promise.resolve());
-    const otherProjectConvsCache = useRef<{convs: any[], timestamp: number}>({convs: [], timestamp: 0});  // BUGFIX: Cache other-project convos to avoid reading ALL from DB on every save
+    const otherProjectConvsCache = useRef<{ convs: any[], timestamp: number }>({ convs: [], timestamp: 0 });  // BUGFIX: Cache other-project convos to avoid reading ALL from DB on every save
+    const saveDebounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const pendingSaveConversations = useRef<Conversation[] | null>(null);
+    const pendingSaveChangedIds = useRef<Set<string>>(new Set());
+    const dualWriteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const pendingDirtyIdsRef = useRef<Set<string>>(new Set());
 
     const KNOWN_SERVER_IDS_MAX = 5000; // Cap to prevent unbounded growth during idle polling
 
@@ -219,6 +225,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     // Conversations confirmed present on the server (used to distinguish imports from server-deletions)
     const knownServerConversationIds = useRef<Set<string>>(new Set());
     const dirtyConversationIds = useRef<Set<string>>(new Set());
+    const recentlyFetchedFullIds = useRef<Set<string>>(new Set());
     const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null);
     const lastManualScrollTime = useRef<number>(0);
     const manualScrollCooldownActive = useRef<boolean>(false);
@@ -380,7 +387,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const removeStreamingConversation = useCallback((id: string) => {
         // CRITICAL: Check if this is the CURRENT conversation
         const isCurrentConv = id === currentConversationId;
-        
+
         // Guard against broadcast loops: each streaming-ended broadcast triggers
         // listeners which call this function again. Use a ref to dedup.
         if (removedStreamingIds.current.has(id)) {
@@ -444,6 +451,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         retryCount?: number;
         isRecoveryAttempt?: boolean;
         changedIds?: string[];
+        _bypassDebounce?: boolean;
     } = {}) => {
         // Skip all persistence in ephemeral mode
         if (isEphemeralMode) {
@@ -466,6 +474,42 @@ export function ChatProvider({ children }: ChatProviderProps) {
         if (initTime > 0 && Date.now() - initTime < 5000) {
             console.debug('📝 INIT_GUARD: Skipping save during startup settle window');
             return Promise.resolve();
+        }
+
+        // DEBOUNCE: Coalesce rapid-fire saves when specific conversations changed.
+        // During streaming, addMessageToConversation fires queueSave on every SSE
+        // chunk. Without debouncing, each save reads ALL conversations from IndexedDB
+        // (due to shell guard), merges, and writes them all back — potentially
+        // hundreds of full IDB write cycles per second. This coalesces into one
+        // save per 300ms window, accumulating changedIds across calls.
+        const SAVE_DEBOUNCE_MS = 300;
+        if (options.changedIds && options.changedIds.length > 0
+            && !options._bypassDebounce
+            && !options.isRecoveryAttempt) {
+            // Accumulate changed IDs and keep the latest conversations snapshot
+            options.changedIds.forEach(id => pendingSaveChangedIds.current.add(id));
+            pendingSaveConversations.current = conversations;
+
+            if (saveDebounceTimer.current) {
+                clearTimeout(saveDebounceTimer.current);
+            }
+
+            return new Promise<void>((resolve) => {
+                saveDebounceTimer.current = setTimeout(() => {
+                    saveDebounceTimer.current = null;
+                    const pendingConvs = pendingSaveConversations.current;
+                    const pendingIds = Array.from(pendingSaveChangedIds.current);
+                    pendingSaveConversations.current = null;
+                    pendingSaveChangedIds.current = new Set();
+
+                    if (pendingConvs) {
+                        queueSave(pendingConvs, { ...options, changedIds: pendingIds, _bypassDebounce: true })
+                            .then(resolve, resolve);
+                    } else {
+                        resolve();
+                    }
+                }, SAVE_DEBOUNCE_MS);
+            });
         }
 
         // CRITICAL FIX: Filter out corrupted conversations before any processing
@@ -509,7 +553,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // never substitute React state for IndexedDB when state contains
             // shell conversations (messages stripped to first+last only).
             // Writing shells back to IndexedDB would destroy full message data.
-            const CACHE_TTL_MS = 60_000;
+            const CACHE_TTL_MS = 300_000; // 5 minutes — reduces full IDB reads during idle polling
             let allDbConversations: Conversation[];
             const reactStateHasShells = validatedConversations.some(c => (c as any)._isShell);
             if (reactStateHasShells) {
@@ -547,13 +591,23 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     };
                 }
             }
-            
+
             // Build merged list: start with DB as base, overlay our changes
             const mergedMap = new Map<string, Conversation>();
-            
-            // 1. Load everything from DB (preserves other tabs' writes)
-            allDbConversations.forEach(c => mergedMap.set(c.id, c));
-            
+
+            // 1. Load everything from DB (preserves other tabs' writes).
+            //    Skip conversations that came from the otherProjectConvsCache
+            //    with stripped messages (messages: []) — writing them back to
+            //    IDB would destroy their full message history.
+            allDbConversations.forEach(c => {
+                // Cache-sourced entries have messages: [] and belong to other
+                // projects.  Never let them overwrite IDB's full data.
+                const isCacheStripped = Array.isArray(c.messages) && c.messages.length === 0
+                    && c.projectId && c.projectId !== currentProject?.id && !c.isGlobal;
+                if (isCacheStripped) return; // Skip — IDB already has full data
+                mergedMap.set(c.id, c);
+            });
+
             // 2. Overlay ONLY the conversations this tab actually changed
             //    (identified by changedIds). For these, our version wins.
             if (changedIdSet.size > 0) {
@@ -570,8 +624,25 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     }
                 });
             }
-            
+
             const finalConversations = Array.from(mergedMap.values());
+
+            // Guard: never regress the active conversation's message count.
+            // The active conversation is authoritative in React state; if the
+            // merged version has fewer messages (e.g. from a stale dual-write
+            // round-trip), preserve the React state version.
+            const liveActiveId = currentConversationRef?.current;
+            if (liveActiveId) {
+                const liveConv = conversationsRef.current.find((c: any) => c.id === liveActiveId);
+                const mergedIdx = finalConversations.findIndex(c => c.id === liveActiveId);
+                if (liveConv && mergedIdx >= 0) {
+                    const liveMsgCount = liveConv.messages?.length || 0;
+                    const mergedMsgCount = finalConversations[mergedIdx].messages?.length || 0;
+                    if (liveMsgCount > mergedMsgCount) {
+                        finalConversations[mergedIdx] = { ...liveConv, _version: Date.now() };
+                    }
+                }
+            }
 
             // Save all conversations - but don't throw if it fails
             try {
@@ -592,39 +663,52 @@ export function ChatProvider({ children }: ChatProviderProps) {
             if (currentProject?.id) {
                 const dirty = dirtyConversationIds.current;
                 if (dirty.size > 0) {
-                    // Include ALL dirty conversations, not just current project's.
-                    // Moved conversations have a different projectId but still need syncing.
-                    const dirtyConvs = finalConversations.filter(
-                        c => dirty.has(c.id) && c.isActive !== false
-                    );
+                    // Accumulate dirty IDs and debounce the server push.
+                    // During streaming, queueSave fires on every chunk — batching
+                    // prevents dozens of redundant bulk-sync requests per second.
+                    dirty.forEach(id => pendingDirtyIdsRef.current.add(id));
                     dirtyConversationIds.current = new Set();
-                    Promise.resolve().then(async () => {
+
+                    if (dualWriteTimerRef.current) clearTimeout(dualWriteTimerRef.current);
+                    const capturedProjectId = currentProject.id;
+                    dualWriteTimerRef.current = setTimeout(async () => {
+                        dualWriteTimerRef.current = null;
+                        const batchIds = new Set(pendingDirtyIdsRef.current);
+                        pendingDirtyIdsRef.current.clear();
+                        // Read the CURRENT React state at fire time, not the
+                        // stale snapshot from when the timer was set.  The old
+                        // code captured `finalConversations` at set-time, which
+                        // could be many messages behind by the time the 2s
+                        // debounce expires — causing the server to receive a
+                        // conversation with only the first message.
+                        const dirtyConvs = conversationsRef.current.filter(
+                            (c: any) => batchIds.has(c.id) && c.isActive !== false
+                        ) as Conversation[];
+                        if (dirtyConvs.length === 0) return;
                         try {
-                            // Group dirty conversations by their projectId
-                            // so each gets synced to the correct server directory
                             const byProject = new Map<string, any[]>();
                             dirtyConvs.forEach(c => {
-                                const pid = c.projectId || currentProject.id;
+                                const pid = c.projectId || capturedProjectId;
                                 if (!byProject.has(pid)) byProject.set(pid, []);
                                 byProject.get(pid)!.push(c);
                             });
-                            
+
                             for (const [pid, convs] of byProject) {
                                 const chatsToSync = convs.map(c =>
                                     syncApi.conversationToServerChat(c, pid)
                                 );
                                 await syncApi.bulkSync(pid, chatsToSync);
-                                console.log(`📡 DUAL_WRITE: Synced ${chatsToSync.length} conversations to project ${pid}`);
+                                console.debug(`📡 DUAL_WRITE: Synced ${chatsToSync.length} conversations to project ${pid}`);
                             }
                         } catch (e) {
                             console.warn('📡 DUAL_WRITE: Server sync failed (non-fatal):', e);
                         }
-                    });
+                    }, 2000); // 2-second debounce batches streaming writes
                 }
             }
         });
         return saveQueue.current;
-    }, [isEphemeralMode, currentProject?.id]);
+    }, [isEphemeralMode, currentProject?.id]); // conversationsRef and currentConversationRef are refs — stable identity, no dep needed
 
     // Helper function to merge conversations during healing
     const mergeConversationsForHealing = useCallback((expected: Conversation[], actual: Conversation[]) => {
@@ -700,12 +784,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
         // If adding message to non-current conversation, don't trigger any scroll
         if (conversationId !== currentConversationId) {
-            console.log('📝 Adding message to non-current conversation - scroll preservation mode');
+            console.debug('📝 Adding message to non-current conversation - scroll preservation mode');
         }
 
-        // dynamicTitleLength from state - updated only by UI components
-        // Debug logging to see when messages are added
-        console.log('📝 Adding message:', { role: message.role, conversationId: targetConversationId, titleLength: dynamicTitleLength });
+        // Diagnostic: trace who is calling addMessageToConversation during idle.
+        // TODO: Remove this console.trace once the idle-spam caller is identified.
+        console.trace('📝 addMessageToConversation called:', { role: message.role, conversationId: targetConversationId });
+        console.debug('📝 Adding message:', { role: message.role, conversationId: targetConversationId });
 
         // Check if this is an assistant message and if it appears incomplete
         if (message.role === 'assistant' && message.content) {
@@ -745,6 +830,31 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             const isFirstMessage = existingConversation?.messages.length === 0;
 
+            // DUPLICATE GUARD: If a message with the same role + content already
+            // exists in the conversation, skip it.  This breaks feedback loops
+            // that replay the entire message history through addMessageToConversation.
+            // Intentionally ignores _timestamp — replayed messages may carry a
+            // fresh timestamp even though the content is identical.
+            if (existingConversation && existingConversation.messages.length > 0) {
+                const msgs = existingConversation.messages;
+                const isDuplicate = msgs.some(
+                    m => m.role === message.role && m.content === message.content
+                );
+                if (isDuplicate) {
+                    // Trace only once to avoid flooding the console further
+                    if (!(window as any).__dupGuardTraced) {
+                        (window as any).__dupGuardTraced = true;
+                        console.warn('🛑 DUPLICATE_GUARD: Blocked duplicate message:', {
+                            role: message.role,
+                            convId: conversationId.substring(0, 8),
+                            existingMsgCount: msgs.length,
+                        });
+                        console.trace('🛑 DUPLICATE_GUARD: Call stack (logged once)');
+                    }
+                    return prevConversations;
+                }
+            }
+
             // CRITICAL FIX: Determine if this is a non-current conversation dynamically
             // Don't trust the caller's isNonCurrentConversation - compute it from current state
             // This handles concurrent conversations and user switching mid-stream
@@ -752,14 +862,14 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // even when this callback was captured before the user switched conversations.
             const actuallyNonCurrent = conversationId !== currentConversationRef.current;
 
-            console.log('Message processing:', {
+            console.debug('Message processing:', {
                 messageRole: message.role,
                 targetConversationId: conversationId,
                 currentConversationId,
                 isNonCurrentConversation: actuallyNonCurrent
             });
             const shouldMarkUnread = message.role === 'assistant' && actuallyNonCurrent;
-            console.log('Message add check:', {
+            console.debug('Message add check:', {
                 willMarkUnread: shouldMarkUnread,
                 reason: shouldMarkUnread ? 'AI message to non-current conversation' : 'Not marking unread'
             });
@@ -1152,8 +1262,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 let loaded = false;
                 if (convEntry._isShell) {
                     try {
-                        const allFull = await db.getConversations();
-                        const fullConv = allFull.find(c => c.id === conversationId);
+                        // Use single-record read if available, fall back to
+                        // full read only as last resort.  The full read
+                        // deserializes the entire conversations blob which
+                        // causes OOM with 200+ conversations.
+                        const fullConv = typeof db.getConversation === 'function'
+                            ? await db.getConversation(conversationId)
+                            : (await db.getConversations()).find(c => c.id === conversationId);
                         if (fullConv?.messages?.length > 0 &&
                             fullConv.messages.length >= (convEntry.messages?.length || 0)) {
                             setConversations(prev => prev.map(c =>
@@ -1511,17 +1626,23 @@ export function ChatProvider({ children }: ChatProviderProps) {
         // Load current messages immediately when conversation changes, regardless of folder state
         // Only update if messages actually changed to prevent scroll jumps
         if (currentConversationId && conversations.length > 0) {
-            const messages = conversations.find(c => c.id === currentConversationId)?.messages ?? null;
-            if (messages === null) return;
+            const conv = conversations.find(c => c.id === currentConversationId);
+            if (!conv) return;
+            const messages = conv.messages;
+            if (!messages) return;
 
             // PERFORMANCE FIX: Replace expensive JSON.stringify (18ms) with fast checks
-            // Reduces comparison from O(n*m) to O(1) for most cases
+            // Uses _version as a fast proxy: if the conversation object wasn't replaced
+            // by SERVER_SYNC (reference preservation), messages is the same reference.
             setCurrentMessages(prev => {
+                // Fast path: identical array reference means nothing changed
+                if (messages === prev) return prev;
+
                 const messagesChanged =
                     messages.length !== prev.length ||
-                    messages !== prev ||
                     (messages.length > 0 && prev.length > 0 &&
-                        messages[messages.length - 1] !== prev[prev.length - 1]);
+                        (messages[messages.length - 1] !== prev[prev.length - 1] ||
+                            messages[0] !== prev[0]));
 
                 if (!messagesChanged) return prev;
                 console.log('📝 Messages changed for conversation:', currentConversationId);
@@ -1549,14 +1670,14 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 _version: Date.now(),
                 hasUnreadResponse: false
             }]);
-            
+
             // Set the new conversation as current if we don't have one yet
             if (!currentConversationId) {
                 setCurrentConversationId(newId);
                 setCurrentMessages([]);
                 console.log('✅ EPHEMERAL MODE: Set initial conversation');
             }
-            
+
             setIsInitialized(true);
             isRecovering.current = false;
             return;
@@ -1656,8 +1777,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
             const activeId = getTabState('ZIYA_CURRENT_CONVERSATION_ID') || savedConversations[0]?.id;
             if (activeId) {
                 try {
-                    const allFull = await db.getConversations();
-                    const fullConv = allFull.find(c => c.id === activeId);
+                    const fullConv = typeof db.getConversation === 'function'
+                        ? await db.getConversation(activeId)
+                        : (await db.getConversations()).find(c => c.id === activeId);
                     if (fullConv && fullConv.messages.length > 0) {
                         setConversations(prev => prev.map(c =>
                             c.id === activeId ? { ...c, messages: fullConv.messages, _isShell: false, _fullMessageCount: undefined } : c
@@ -1777,6 +1899,26 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     ? folders.filter(f => f.projectId === projectId || f.isGlobal)
                     : folders;  // Show all only if no project loaded
 
+                // Repair circular parentId references — clear the parentId of
+                // any folder whose ancestor chain forms a cycle.  Without this,
+                // treeDataRaw re-detects the same cycles on every render, which
+                // floods the console and wastes CPU.
+                for (const f of projectFolders) {
+                    if (!f.parentId) continue;
+                    const visited = new Set<string>([f.id]);
+                    let cur: string | null | undefined = f.parentId;
+                    while (cur) {
+                        if (visited.has(cur)) {
+                            console.warn(`🔧 CYCLE_REPAIR: Clearing parentId of "${f.name}" (${f.id}) to break cycle`);
+                            f.parentId = null;
+                            db.saveFolder(f).catch(e => console.warn('Cycle repair persist failed:', e));
+                            break;
+                        }
+                        visited.add(cur);
+                        cur = projectFolders.find(pf => pf.id === cur)?.parentId;
+                    }
+                }
+
                 setFolders(projectFolders);
                 console.log(`✅ Folders loaded for project ${projectId}: ${projectFolders.length} of ${folders.length} total`);
             } catch (error) {
@@ -1815,12 +1957,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
             setIsProjectSwitching(true);
             console.log('🔄 PROJECT_SWITCH: Set isProjectSwitching = true for', projectId);
         }
-        
+
         // Immediately clear stale data from the previous project so the UI
         // shows an empty/loading state rather than a mix of old and new data.
         if (serverSyncedForProject.current !== projectId) {
             setConversations([]);
         }
+        recentlyFetchedFullIds.current.clear();
 
         // Migrate conversations without a projectId to the current project
         const migrateUntaggedConversations = async (conversations: Conversation[], projectId: string): Promise<Conversation[]> => {
@@ -1861,388 +2004,451 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 }
 
                 try {
-                // 1. Fetch from server
-                // Use summaries (no messages) for polling — only fetch full data on version mismatch
-                const serverChats = await syncApi.listChats(projectId, false);
-                console.debug(`📡 SERVER_SYNC: Got ${serverChats.length} chat summaries from server`);
+                    // 1. Fetch from server
+                    // Use summaries (no messages) for polling — only fetch full data on version mismatch
+                    const serverChats = await syncApi.listChats(projectId, false);
+                    console.debug(`📡 SERVER_SYNC: Got ${serverChats.length} chat summaries from server`);
 
-                // 2. Load current IndexedDB state
-                let allConversations: Conversation[];
-                try {
-                    allConversations = await db.getConversations();
-                } catch (dbErr) {
-                    console.warn('📡 SERVER_SYNC: IndexedDB unavailable, using server as sole source:', dbErr);
-                    // IDB is broken (stale connections, blocked upgrade, etc.)
-                    // Fall through with empty local state so server data still gets applied.
-                    allConversations = [];
-                }
+                    // 2. Load current IndexedDB state
+                    let allConversations: Conversation[];
+                    try {
+                        allConversations = await db.getConversations();
+                    } catch (dbErr) {
+                        console.warn('📡 SERVER_SYNC: IndexedDB unavailable, using server as sole source:', dbErr);
+                        // IDB is broken (stale connections, blocked upgrade, etc.)
+                        // Fall through with empty local state so server data still gets applied.
+                        allConversations = [];
+                    }
 
-                // 2a. Migrate untagged conversations (only on first sync)
-                if (serverSyncedForProject.current !== projectId) {
-                    allConversations = await migrateUntaggedConversations(allConversations, projectId);
-                }
-                serverSyncedForProject.current = projectId;
+                    // 2a. Migrate untagged conversations (only on first sync)
+                    if (serverSyncedForProject.current !== projectId) {
+                        allConversations = await migrateUntaggedConversations(allConversations, projectId);
+                    }
+                    serverSyncedForProject.current = projectId;
 
-                const localProjectConvs = allConversations.filter((c: any) => c.projectId === projectId || c.isGlobal);
+                    const localProjectConvs = allConversations.filter((c: any) => c.projectId === projectId || c.isGlobal);
 
-                // 2b. Detect conversations that need full fetch:
-                //     - Server-only (new from another instance)
-                //     - Server version newer than local (updated from another instance)
-                const localMap = new Map(localProjectConvs.map((c: any) => [c.id, c]));
-                const needFullFetch: string[] = [];
+                    // 2b. Detect conversations that need full fetch:
+                    //     - Server-only (new from another instance)
+                    //     - Server version newer than local (updated from another instance)
+                    const localMap = new Map(localProjectConvs.map((c: any) => [c.id, c]));
+                    const needFullFetch: string[] = [];
 
-                for (const sc of serverChats) {
-                    const local = localMap.get(sc.id);
-                    if (!local) {
-                        needFullFetch.push(sc.id);
-                    } else {
-                        // Always fetch full data if server has delegate metadata
-                        // or folder assignment that local is missing
-                        const serverHasDelegateMeta = sc.delegateMeta && !local.delegateMeta;
-                        const serverHasFolder = (sc.groupId || sc.folderId) && !local.folderId;
-                        if (serverHasDelegateMeta || serverHasFolder) {
-                            needFullFetch.push(sc.id);
+                    // The conversation the user is actively viewing/editing is
+                    // authoritative in React state.  Full-fetching it from the
+                    // server during periodic polling overwrites IDB with stale
+                    // data, creating a window where a crash loses unsaved messages.
+                    // Only skip during polling — initial project switches
+                    // (isActualProjectSwitch) need to fetch everything.
+                    const activeConvId = isActualProjectSwitch ? null : currentConversationRef.current;
+
+                    for (const sc of serverChats) {
+                        const local = localMap.get(sc.id);
+                        if (!local) {
+                            // Skip if we already fetched full data this session
+                            // (React.startTransition may not have committed yet)
+                            if (!recentlyFetchedFullIds.current.has(sc.id)) {
+                                needFullFetch.push(sc.id);
+                            }
+                        } else if (sc.id === activeConvId) {
+                            // Skip full-fetch for the active conversation during
+                            // periodic polling.  React state has the latest messages;
+                            // fetching stale server data just creates merge risk.
+                            // Metadata (delegateMeta, title) is updated via summary.
                             continue;
-                        }
-                        const serverVer = (sc as any)._version || sc.lastActiveAt || 0;
-                        const localVer = (local as any)._version || local.lastAccessedAt || 0;
-                        if (serverVer > localVer) {
-                            needFullFetch.push(sc.id);
-                        }
-                    }
-                }
-
-                // Fetch full data only for conversations that are new or updated
-                const fullFetchMap = new Map<string, any>();
-                if (needFullFetch.length > 0) {
-                    console.log(`📡 SERVER_SYNC: Fetching full data for ${needFullFetch.length} new/updated conversation(s)`);
-                    const results = await Promise.allSettled(
-                        needFullFetch.map(id => syncApi.getChat(projectId, id))
-                    );
-                    results.forEach((result, i) => {
-                        if (result.status === 'fulfilled' && result.value) {
-                            fullFetchMap.set(needFullFetch[i], result.value);
-                        }
-                    });
-                }
-
-                // 3. Three-way merge: use _version to determine winner, keep all unique
-                const mergedMap = new Map<string, any>();
-
-                // Start with local conversations
-                localProjectConvs.forEach((conv: any) => {
-                    mergedMap.set(conv.id, conv);
-                });
-
-                // Merge server conversations
-                serverChats.forEach((sc: any) => {
-                    const local = mergedMap.get(sc.id);
-                    const serverVersion = sc._version || 0;
-                    const localVersion = local?._version || 0;
-                    
-                    if (!local) {
-                        // Server-only conversation — use full-fetched data if available
-                        const full = fullFetchMap.get(sc.id);
-
-                        // Skip empty "New Conversation" shells from the server.
-                        // These are stale empties that the GC purged locally;
-                        // re-importing them defeats the cleanup.
-                        const isEmptyShell = sc.title === 'New Conversation'
-                            && (!full?.messages || full.messages.length === 0);
-                        if (isEmptyShell) return;
-
-                        if (full) {
-                            mergedMap.set(sc.id, {
-                                ...full,
-                                _isShell: false,
-                                _fullMessageCount: undefined,
-                                projectId: full.projectId || projectId,
-                                folderId: full.groupId || full.folderId || sc.groupId || sc.folderId || null,
-                                delegateMeta: full.delegateMeta || null,
-                                lastAccessedAt: full.lastAccessedAt || full.lastActiveAt,
-                                isActive: full.isActive !== false,
-                                _version: full._version || Date.now(),
-                            });
-                        }
-                        // Full fetch failed — add as metadata-only with _version: 0
-                        // so it appears in the sidebar immediately, and the low version
-                        // ensures a full fetch is retried on the next sync cycle.
-                        if (!full && !isEmptyShell) {
-                            mergedMap.set(sc.id, {
-                                id: sc.id,
-                                title: sc.title || 'Loading...',
-                                messages: [],
-                                projectId: sc.projectId || projectId,
-                                folderId: sc.groupId || sc.folderId || null,
-                                lastAccessedAt: sc.lastActiveAt || 0,
-                                isActive: true,
-                                _version: 0,
-                            });
-                        }
-                    } else if (serverVersion > localVersion) {
-                        // Server is newer — use full-fetched data if available,
-                        // otherwise update metadata only from summary
-                        const full = fullFetchMap.get(sc.id);
-                        if (full) {
-                            // Message-count guard: if the server has fewer
-                            // messages than local, keep local messages but
-                            // update metadata from server.  This prevents
-                            // partial syncs from destroying conversation history.
-                            const localMsgCount = local.messages?.length || 0;
-                            const serverMsgCount = full.messages?.length || 0;
-                            if (serverMsgCount < localMsgCount && localMsgCount > 2) {
-                                console.warn(`🛡️ SYNC_GUARD: Keeping ${localMsgCount} local messages for ${sc.id?.substring(0, 8)} (server had ${serverMsgCount})`);
-                                full.messages = local.messages;
-                            }
-                            mergedMap.set(sc.id, {
-                                ...full,
-                                _isShell: false,
-                                _fullMessageCount: undefined,
-                                projectId: full.projectId || projectId,
-                                folderId: full.groupId || full.folderId || null,
-                                delegateMeta: full.delegateMeta || null,
-                                lastAccessedAt: full.lastAccessedAt || full.lastActiveAt,
-                                isActive: full.isActive !== false,
-                                _version: full._version || Date.now(),
-                            });
                         } else {
-                            // Summary-only update (full fetch wasn't needed or failed)
-                            mergedMap.set(sc.id, {
-                                ...local,
-                                title: sc.title || local.title,
-                                projectId: sc.projectId || local.projectId || projectId,
-                                folderId: sc.groupId || sc.folderId || local.folderId || null,
-                                lastActiveAt: sc.lastActiveAt || local.lastActiveAt,
-                                _version: serverVersion,
-                            });
-                        }
-                    }
-                });
-
-                const mergedProjectConvs = Array.from(mergedMap.values());
-
-                // Preserve in-memory messages that were lazy-loaded during
-                // this session but may not have been persisted to IDB yet.
-                // Without this, the setConversations(mergedProjectConvs) call
-                // below would overwrite lazy-loaded data with empty messages,
-                // causing the "No messages" bug to recur after each sync cycle.
-                setConversations(prev => {
-                    // This is read inside the updater below, not used here.
-                    // We capture it now to close over the correct prev.
-                    return prev;
-                });
-
-                // Record all IDs the server currently knows about.
-                serverChats.forEach((sc: any) => knownServerConversationIds.current.add(sc.id));
-
-                // Prune to prevent unbounded growth during idle polling.
-                // Keep the most recent IDs (those the server just told us about)
-                // and drop the oldest accumulated entries.
-                if (knownServerConversationIds.current.size > KNOWN_SERVER_IDS_MAX) {
-                    const currentServerIds = new Set(serverChats.map((sc: any) => sc.id));
-                    knownServerConversationIds.current = currentServerIds;
-                    console.debug(`🧹 Pruned knownServerConversationIds: was > ${KNOWN_SERVER_IDS_MAX}, reset to ${currentServerIds.size}`);
-                }
-
-                // 3b. Detect locally-present conversations that the server no longer has.
-                // This means another instance deleted them — mark inactive locally.
-                // CRITICAL: Only consider conversations that are old enough to have been
-                // synced. Recently-created or recently-modified conversations may simply
-                // not have reached the server yet (bulk-sync is async/non-blocking).
-                const SYNC_GRACE_PERIOD_MS = 60_000; // 60 seconds
-                const now = Date.now();
-                const serverIdSet = new Set(serverChats.map((sc: any) => sc.id));
-                const deletedIds: string[] = [];
-                for (let i = mergedProjectConvs.length - 1; i >= 0; i--) {
-                    const conv = mergedProjectConvs[i];
-                    if (conv.isActive !== false && conv.messages?.length > 0 && !serverIdSet.has(conv.id)) {
-                        // Only remove if previously seen on server — never remove freshly imported conversations.
-                        if (knownServerConversationIds.current.has(conv.id)) {
-                            console.log(`📡 SERVER_SYNC: "${conv.title}" (${conv.id.substring(0, 8)}) removed from server — removing locally`);
-                            deletedIds.push(conv.id);
-                            mergedProjectConvs.splice(i, 1);
-                        }
-                    }
-                }
-
-                // 4. Push local-only / newer-local conversations to server (non-blocking)
-                const chatsToSync = mergedProjectConvs
-                    .filter(c => {
-                        // Don't push conversations we just marked as deleted
-                        if (deletedIds.includes(c.id)) return false;
-                        // Don't push inactive (deleted) conversations back to server
-                        if (c.isActive === false) return false;
-                        const sc = serverChats.find(sc => sc.id === c.id);
-                        if (!sc) return true; // local-only, needs push
-                        // Only push if local has a _version AND it's strictly greater than server's
-                        // If server has no _version (old data), compare lastActiveAt instead
-                        const serverVer = (sc as any)._version || sc.lastActiveAt || 0;
-                        const localVer = (c as any)._version || c.lastAccessedAt || 0;
-                        return localVer > serverVer;
-                    })
-                    .map((c: any) => syncApi.conversationToServerChat(c, projectId));
-                if (chatsToSync.length > 0) {
-                    syncApi.bulkSync(projectId, chatsToSync).catch(e =>
-                        console.warn('📡 SERVER_SYNC: Push to server failed (non-fatal):', e)
-                    );
-                }
-
-                // 5. Update IndexedDB with merged data
-                // Only write if something actually changed to avoid churning IndexedDB on idle polls
-                const conversationsChanged = mergedProjectConvs.length !== localProjectConvs.length ||
-                    mergedProjectConvs.some(mc => {
-                        const local = localProjectConvs.find((l: any) => l.id === mc.id);
-                        return !local || (mc._version || 0) > (local._version || 0);
-                    });
-                if (conversationsChanged) {
-                    // Exclude global conversations from otherProjectConvs — they are
-                    // already included in mergedProjectConvs via the localProjectConvs
-                    // filter (c.isGlobal), so including them here creates duplicates.
-                    const otherProjectConvs = allConversations.filter((c: any) =>
-                        c.projectId !== projectId && !c.isGlobal
-                    );
-                    await db.saveConversations([...mergedProjectConvs, ...otherProjectConvs]);
-                }
-
-                // 6. Update React state — only if something actually changed
-                // Wrap in startTransition so this potentially large state
-                // update (hundreds of conversations) doesn't block user
-                // interaction or paint frames during project switches.
-                React.startTransition(() => { setConversations(prev => {
-                    // Don't let a stale sync cycle resurrect a conversation that
-                    // was deleted in this tab between when this sync started and now.
-                    // If an id is in mergedProjectConvs but absent from both prev
-                    // (current React state) and the server list, it was just deleted locally.
-                    const prevIds = new Set(prev.map((p: any) => p.id));
-                    const safeConvs = mergedProjectConvs.filter((mc: any) =>
-                        prevIds.has(mc.id) || serverIdSet.has(mc.id)
-                    );
-
-                    // Preserve in-memory messages that were lazy-loaded during
-                    // this session but not yet persisted to IDB.  Without this,
-                    // mergedProjectConvs (built from IDB+server) would overwrite
-                    // lazy-loaded messages with empty arrays.
-                    for (const mc of safeConvs) {
-                        const mcMsgCount = mc.messages?.length || 0;
-                        {
-                            const inMemory = prev.find((p: any) => p.id === mc.id);
-                            const inMemoryCount = inMemory?.messages?.length || 0;
-                            // Preserve in-memory messages when they have MORE content
-                            // than the merged version (prevents partial/stale data from overwriting)
-                            if (inMemoryCount > mcMsgCount) {
-                                console.warn(`🛡️ SYNC_GUARD: Preserving ${inMemoryCount} in-memory messages for ${mc.id?.substring(0, 8)} (merged had ${mcMsgCount})`);
-                                mc.messages = inMemory.messages;
+                            // Always fetch full data if server has delegate metadata
+                            // or folder assignment that local is missing
+                            const serverHasDelegateMeta = sc.delegateMeta && !local.delegateMeta;
+                            const serverHasFolder = (sc.groupId || sc.folderId) && !local.folderId;
+                            if (serverHasDelegateMeta || serverHasFolder) {
+                                needFullFetch.push(sc.id);
+                                continue;
+                            }
+                            const serverVer = (sc as any)._version || sc.lastActiveAt || 0;
+                            // Shell conversations have _version: undefined, making them
+                            // appear stale on every sync cycle. Treat them as current to
+                            // prevent repeated full fetches before lazy-load completes.
+                            const localVer = (local as any)._isShell ? Infinity : ((local as any)._version || local.lastAccessedAt || 0);
+                            if (serverVer > localVer) {
+                                needFullFetch.push(sc.id);
                             }
                         }
                     }
 
-                    if (prev.length === safeConvs.length) {
-                        const changed = safeConvs.some((mc: any) => {
-                            const existing = prev.find(p => p.id === mc.id);
-                            return !existing || (mc._version || 0) > (existing._version || 0);
+                    // Fetch full data only for conversations that are new or updated
+                    const fullFetchMap = new Map<string, any>();
+                    if (needFullFetch.length > 0) {
+                        console.log(`📡 SERVER_SYNC: Fetching full data for ${needFullFetch.length} new/updated conversation(s)`);
+                        const results = await Promise.allSettled(
+                            // Each fetched ID is recorded so subsequent cycles don't re-fetch
+                            needFullFetch.map(id => syncApi.getChat(projectId, id))
+                        );
+                        results.forEach((result, i) => {
+                            if (result.status === 'fulfilled' && result.value) {
+                                fullFetchMap.set(needFullFetch[i], result.value);
+                            }
                         });
-                        if (!changed) return prev; // No-op, avoid re-render
+                        // Mark all attempted IDs to prevent re-fetch before state commits
+                        needFullFetch.forEach(id => recentlyFetchedFullIds.current.add(id));
                     }
-                    return safeConvs;
-                }); });
 
-                // 7. Update current conversation if it doesn't exist in merged set
-                // For periodic polls: NEVER change currentConversationId — it's
-                // a per-tab view concern that only changes on explicit user actions.
-                //
-                // For actual project switches: relocate to a conversation that
-                // belongs to the new project.  The old conversation from the
-                // previous project is irrelevant and confusing if left visible.
-                if (isActualProjectSwitch) {
-                    const currentId = currentConversationRef.current;
-                    // Check if the current conversation belongs to the new project
-                    // (or is global, which is visible everywhere).
-                    const currentConv = mergedProjectConvs.find(c => c.id === currentId);
-                    const belongsToNewProject = currentConv &&
-                        (currentConv.isGlobal || currentConv.projectId === projectId);
+                    // 3. Three-way merge: use _version to determine winner, keep all unique
+                    const mergedMap = new Map<string, any>();
 
-                    if (!belongsToNewProject) {
-                        // Try to restore the saved conversation for this project
-                        const savedId = loadProjectConversationId(projectId);
-                        const savedExists = savedId && mergedProjectConvs.some(c => c.id === savedId);
+                    // Start with local conversations
+                    localProjectConvs.forEach((conv: any) => {
+                        mergedMap.set(conv.id, conv);
+                    });
 
-                        if (savedExists) {
-                            console.log(`🔄 PROJECT_SWITCH: Restoring saved conversation ${savedId} for project ${projectId}`);
-                            setCurrentConversationId(savedId!);
-                            setTabState('ZIYA_CURRENT_CONVERSATION_ID', savedId!);
-                        } else if (mergedProjectConvs.length > 0) {
-                            // Fall back to most recently accessed conversation in the new project
-                            const mostRecent = mergedProjectConvs.reduce((a, b) =>
-                                (b.lastAccessedAt || 0) > (a.lastAccessedAt || 0) ? b : a
-                            );
-                            console.log(`🔄 PROJECT_SWITCH: Selecting most recent conversation "${mostRecent.title}" for project ${projectId}`);
-                            setCurrentConversationId(mostRecent.id);
-                            setTabState('ZIYA_CURRENT_CONVERSATION_ID', mostRecent.id);
-                        }
-                        // else: no conversations in this project — user will create one
-                    }
-                }
+                    // Merge server conversations
+                    serverChats.forEach((sc: any) => {
+                        const local = mergedMap.get(sc.id);
+                        const serverVersion = sc._version || 0;
+                        const localVersion = local?._version || 0;
 
-                // 8. Sync folders with server (same merge pattern)
-                try {
-                    const serverFolders = await folderSyncApi.listServerFolders(projectId);
-                    const localFolders = await db.getFolders();
-                    const localProjectFolders = localFolders.filter(
-                        f => f.projectId === projectId || f.isGlobal
-                    );
+                        if (!local) {
+                            // Server-only conversation — use full-fetched data if available
+                            const full = fullFetchMap.get(sc.id);
 
-                    const folderMap = new Map<string, ConversationFolder>();
-                    localProjectFolders.forEach(f => folderMap.set(f.id, f));
-                    serverFolders.forEach(sf => {
-                        const effectiveProjectId = sf.projectId || projectId;
+                            // Skip empty "New Conversation" shells from the server.
+                            // These are stale empties that the GC purged locally;
+                            // re-importing them defeats the cleanup.
+                            const isEmptyShell = sc.title === 'New Conversation'
+                                && (!full?.messages || full.messages.length === 0);
+                            if (isEmptyShell) return;
 
-                        // Skip server folders that were moved to another project.
-                        // Check the full (unfiltered) local set — if IndexedDB already
-                        // has this folder under a different project, the server copy is stale.
-                        const fullLocalEntry = localFolders.find(f => f.id === sf.id);
-                        if (fullLocalEntry && fullLocalEntry.projectId && fullLocalEntry.projectId !== projectId && !fullLocalEntry.isGlobal) {
-                            return; // stale server entry for a moved folder — skip
-                        }
-                        const local = folderMap.get(sf.id);
-                        if (serverFolderWins(local, sf)) {
-                            folderMap.set(sf.id, { ...sf, projectId: effectiveProjectId });
+                            if (full) {
+                                mergedMap.set(sc.id, {
+                                    ...full,
+                                    _isShell: false,
+                                    _fullMessageCount: undefined,
+                                    projectId: full.projectId || projectId,
+                                    folderId: full.groupId || full.folderId || sc.groupId || sc.folderId || null,
+                                    delegateMeta: full.delegateMeta || null,
+                                    lastAccessedAt: full.lastAccessedAt || full.lastActiveAt,
+                                    isActive: full.isActive !== false,
+                                    _version: full._version || Date.now(),
+                                });
+                            }
+                            // Full fetch failed — add as metadata-only with _version: 0
+                            // so it appears in the sidebar immediately, and the low version
+                            // ensures a full fetch is retried on the next sync cycle.
+                            if (!full && !isEmptyShell) {
+                                mergedMap.set(sc.id, {
+                                    id: sc.id,
+                                    title: sc.title || 'Loading...',
+                                    messages: [],
+                                    projectId: sc.projectId || projectId,
+                                    folderId: sc.groupId || sc.folderId || null,
+                                    lastAccessedAt: sc.lastActiveAt || 0,
+                                    isActive: true,
+                                    _version: 0,
+                                });
+                            }
+                        } else if (serverVersion > localVersion) {
+                            // Server is newer — use full-fetched data if available,
+                            // otherwise update metadata only from summary
+                            const full = fullFetchMap.get(sc.id);
+                            if (full) {
+                                // Message-count guard: if the server has fewer
+                                // messages than local, keep local messages but
+                                // update metadata from server.  This prevents
+                                // partial syncs from destroying conversation history.
+                                const localMsgCount = local.messages?.length || 0;
+                                const serverMsgCount = full.messages?.length || 0;
+                                if (serverMsgCount < localMsgCount && localMsgCount > 2) {
+                                    console.warn(`🛡️ SYNC_GUARD: Keeping ${localMsgCount} local messages for ${sc.id?.substring(0, 8)} (server had ${serverMsgCount})`);
+                                    full.messages = local.messages;
+                                }
+                                mergedMap.set(sc.id, {
+                                    ...full,
+                                    _isShell: false,
+                                    _fullMessageCount: undefined,
+                                    projectId: full.projectId || projectId,
+                                    folderId: full.groupId || full.folderId || null,
+                                    delegateMeta: full.delegateMeta || null,
+                                    lastAccessedAt: full.lastAccessedAt || full.lastActiveAt,
+                                    isActive: full.isActive !== false,
+                                    _version: full._version || Date.now(),
+                                });
+                            } else {
+                                // Summary-only update (full fetch wasn't needed or failed)
+                                mergedMap.set(sc.id, {
+                                    ...local,
+                                    title: sc.title || local.title,
+                                    projectId: sc.projectId || local.projectId || projectId,
+                                    folderId: sc.groupId || sc.folderId || local.folderId || null,
+                                    lastActiveAt: sc.lastActiveAt || local.lastActiveAt,
+                                    _version: serverVersion,
+                                });
+                            }
                         }
                     });
-                    const mergedFolders = Array.from(folderMap.values()).filter(f => f.projectId === projectId || f.isGlobal);
 
-                    const localOnly = mergedFolders.filter(
-                        f => !serverFolders.some(sf => sf.id === f.id)
-                    );
-                    if (localOnly.length > 0) {
-                        folderSyncApi.bulkSyncFolders(projectId, localOnly).catch(e =>
-                            console.warn('📡 SERVER_SYNC: Folder push failed:', e)
+                    const mergedProjectConvs = Array.from(mergedMap.values());
+
+                    // Record all IDs the server currently knows about.
+                    serverChats.forEach((sc: any) => knownServerConversationIds.current.add(sc.id));
+
+                    // Prune to prevent unbounded growth during idle polling.
+                    // Keep the most recent IDs (those the server just told us about)
+                    // and drop the oldest accumulated entries.
+                    if (knownServerConversationIds.current.size > KNOWN_SERVER_IDS_MAX) {
+                        const currentServerIds = new Set(serverChats.map((sc: any) => sc.id));
+                        knownServerConversationIds.current = currentServerIds;
+                        console.debug(`🧹 Pruned knownServerConversationIds: was > ${KNOWN_SERVER_IDS_MAX}, reset to ${currentServerIds.size}`);
+                    }
+
+                    // Prune recentlyFetchedFullIds to prevent unbounded growth during idle polling
+                    if (recentlyFetchedFullIds.current.size > KNOWN_SERVER_IDS_MAX) {
+                        recentlyFetchedFullIds.current.clear();
+                    }
+
+                    // 3b. Detect locally-present conversations that the server no longer has.
+                    // This means another instance deleted them — mark inactive locally.
+                    // CRITICAL: Only consider conversations that are old enough to have been
+                    // synced. Recently-created or recently-modified conversations may simply
+                    // not have reached the server yet (bulk-sync is async/non-blocking).
+                    const SYNC_GRACE_PERIOD_MS = 60_000; // 60 seconds
+                    const now = Date.now();
+                    const serverIdSet = new Set(serverChats.map((sc: any) => sc.id));
+                    const deletedIds: string[] = [];
+                    for (let i = mergedProjectConvs.length - 1; i >= 0; i--) {
+                        const conv = mergedProjectConvs[i];
+                        if (conv.isActive !== false && conv.messages?.length > 0 && !serverIdSet.has(conv.id)) {
+                            // Only remove if previously seen on server — never remove freshly imported conversations.
+                            if (knownServerConversationIds.current.has(conv.id)) {
+                                console.log(`📡 SERVER_SYNC: "${conv.title}" (${conv.id.substring(0, 8)}) removed from server — removing locally`);
+                                deletedIds.push(conv.id);
+                                mergedProjectConvs.splice(i, 1);
+                            }
+                        }
+                    }
+
+                    // 4. Push local-only / newer-local conversations to server (non-blocking)
+                    const chatsToSync = mergedProjectConvs
+                        .filter(c => {
+                            // Don't push conversations we just marked as deleted
+                            if (deletedIds.includes(c.id)) return false;
+                            // Don't push inactive (deleted) conversations back to server
+                            if (c.isActive === false) return false;
+                            const sc = serverChats.find(sc => sc.id === c.id);
+                            if (!sc) return true; // local-only, needs push
+                            // Only push if local has a _version AND it's strictly greater than server's
+                            // If server has no _version (old data), compare lastActiveAt instead
+                            const serverVer = (sc as any)._version || sc.lastActiveAt || 0;
+                            const localVer = (c as any)._version || c.lastAccessedAt || 0;
+                            return localVer > serverVer;
+                        })
+                        .map((c: any) => syncApi.conversationToServerChat(c, projectId));
+                    if (chatsToSync.length > 0) {
+                        syncApi.bulkSync(projectId, chatsToSync).catch(e =>
+                            console.warn('📡 SERVER_SYNC: Push to server failed (non-fatal):', e)
                         );
                     }
 
-                    // Only write if something actually changed
-                    const foldersChanged = mergedFolders.length !== localProjectFolders.length ||
-                        mergedFolders.some(mf => {
-                            const local = localProjectFolders.find(l => l.id === mf.id);
-                            return !local || (mf.updatedAt || 0) > (local.updatedAt || 0);
+                    // 5. Update IndexedDB with merged data
+                    // Only write if something actually changed to avoid churning IndexedDB on idle polls
+                    const conversationsChanged = mergedProjectConvs.length !== localProjectConvs.length ||
+                        mergedProjectConvs.some(mc => {
+                            const local = localProjectConvs.find((l: any) => l.id === mc.id);
+                            return !local || (mc._version || 0) > (local._version || 0);
                         });
-                    if (foldersChanged) {
-                        await Promise.all(mergedFolders.map(f => db.saveFolder(f)));
+                    if (conversationsChanged) {
+                        // Protect the active conversation's messages in the IDB write.
+                        // React state is authoritative for the conversation the user is
+                        // actively editing.  Without this, the IDB write (built from
+                        // stale IDB + stale server data) regresses the active
+                        // conversation's message history, and a subsequent crash loses
+                        // all messages that existed only in React state.
+                        const liveActiveId = currentConversationRef.current;
+                        if (liveActiveId) {
+                            const liveConv = conversationsRef.current.find(c => c.id === liveActiveId);
+                            const mergedConv = mergedProjectConvs.find(c => c.id === liveActiveId);
+                            if (liveConv && mergedConv) {
+                                const liveMsgCount = liveConv.messages?.length || 0;
+                                const mergedMsgCount = mergedConv.messages?.length || 0;
+                                if (liveMsgCount > mergedMsgCount) {
+                                    mergedConv.messages = liveConv.messages;
+                                    mergedConv._version = Math.max(liveConv._version || 0, mergedConv._version || 0);
+                                }
+                            }
+                        }
+                        // Exclude global conversations from otherProjectConvs — they are
+                        // already included in mergedProjectConvs via the localProjectConvs
+                        // filter (c.isGlobal), so including them here creates duplicates.
+                        const otherProjectConvs = allConversations.filter((c: any) =>
+                            c.projectId !== projectId && !c.isGlobal
+                        );
+                        await db.saveConversations([...mergedProjectConvs, ...otherProjectConvs]);
                     }
 
-                    setFolders(prev => {
-                        const changed = mergedFolders.some(mf => {
-                            const existing = prev.find(p => p.id === mf.id);
-                            return !existing || (mf.updatedAt || 0) > (existing.updatedAt || 0);
-                        });
-                        return (prev.length !== mergedFolders.length || changed) ? mergedFolders : prev;
-                    });
-                } catch (e) {
-                    console.warn('📡 SERVER_SYNC: Folder sync failed:', e);
-                }
+                    // 6. Update React state — only if something actually changed
+                    // Wrap in startTransition so this potentially large state
+                    // update (hundreds of conversations) doesn't block user
+                    // interaction or paint frames during project switches.
+                    // PERF: Build a lookup map from prev to preserve object
+                    // references for unchanged conversations (avoids re-render cascade).
+                    React.startTransition(() => {
+                        setConversations(prev => {
+                            try {
+                                const prevMap = new Map(prev.map(c => [c.id, c]));
+                                // Don't let a stale sync cycle resurrect a conversation that
+                                // was deleted in this tab between when this sync started and now.
+                                // If an id is in mergedProjectConvs but absent from both prev
+                                // (current React state) and the server list, it was just deleted locally.
+                                const prevIds = new Set(prev.map((p: any) => p.id));
+                                const safeConvs = mergedProjectConvs.filter((mc: any) =>
+                                    prevIds.has(mc.id) || serverIdSet.has(mc.id)
+                                );
 
-            } catch (syncError) {
-                console.error('📡 SERVER_SYNC: Error syncing with server:', syncError);
-            }
+                                // Preserve in-memory messages that were lazy-loaded during
+                                // this session but not yet persisted to IDB.  Without this,
+                                // mergedProjectConvs (built from IDB+server) would overwrite
+                                // lazy-loaded messages with empty arrays.
+                                for (const mc of safeConvs) {
+                                    const mcMsgCount = mc.messages?.length || 0;
+                                    const inMemory = prevMap.get(mc.id);
+                                    const inMemoryCount = inMemory?.messages?.length || 0;
+                                    // Preserve in-memory messages for the active conversation
+                                    // when counts match OR in-memory has more.  Same count
+                                    // doesn't guarantee same content — React state is
+                                    // authoritative for the conversation the user is editing.
+                                    const isActive = mc.id === currentConversationRef.current;
+                                    if (inMemoryCount > mcMsgCount || (isActive && inMemoryCount > 0 && inMemoryCount >= mcMsgCount)) {
+                                        mc.messages = inMemory.messages;
+                                    }
+                                }
+
+                                // PERF: Reuse prev object references for conversations whose
+                                // _version and message count haven't changed.  This prevents
+                                // downstream useMemo/useEffect from detecting spurious changes
+                                // (treeDataRaw, currentMessages, etc.).
+                                let anyReferenceChanged = prev.length !== safeConvs.length;
+                                const result = safeConvs.map((mc: any) => {
+                                    const existing = prevMap.get(mc.id);
+                                    if (existing &&
+                                        (mc._version || 0) <= (existing._version || 0) &&
+                                        (mc.messages?.length || 0) <= (existing.messages?.length || 0) &&
+                                        mc.title === existing.title &&
+                                        mc.folderId === existing.folderId &&
+                                        mc.isGlobal === existing.isGlobal &&
+                                        mc.delegateMeta?.status === existing.delegateMeta?.status &&
+                                        mc.hasUnreadResponse === existing.hasUnreadResponse) {
+                                        return existing; // Reuse reference — no downstream re-render
+                                    }
+                                    anyReferenceChanged = true;
+                                    return mc;
+                                });
+                                return anyReferenceChanged ? result : prev;
+                            } catch (mergeErr) {
+                                // If the merge logic throws (malformed server data, corrupt IDB,
+                                // undefined property access), return prev unchanged rather than
+                                // letting the error propagate to the root and kill the React tree.
+                                console.error('📡 SERVER_SYNC: Merge failed inside setConversations, state unchanged:', mergeErr);
+                                return prev;
+                            }
+                        });
+                    });
+
+                    // 7. Update current conversation if it doesn't exist in merged set
+                    // For periodic polls: NEVER change currentConversationId — it's
+                    // a per-tab view concern that only changes on explicit user actions.
+                    //
+                    // For actual project switches: relocate to a conversation that
+                    // belongs to the new project.  The old conversation from the
+                    // previous project is irrelevant and confusing if left visible.
+                    if (isActualProjectSwitch) {
+                        const currentId = currentConversationRef.current;
+                        // Check if the current conversation belongs to the new project
+                        // (or is global, which is visible everywhere).
+                        const currentConv = mergedProjectConvs.find(c => c.id === currentId);
+                        const belongsToNewProject = currentConv &&
+                            (currentConv.isGlobal || currentConv.projectId === projectId);
+
+                        if (!belongsToNewProject) {
+                            // Try to restore the saved conversation for this project
+                            const savedId = loadProjectConversationId(projectId);
+                            const savedExists = savedId && mergedProjectConvs.some(c => c.id === savedId);
+
+                            if (savedExists) {
+                                console.log(`🔄 PROJECT_SWITCH: Restoring saved conversation ${savedId} for project ${projectId}`);
+                                setCurrentConversationId(savedId!);
+                                setTabState('ZIYA_CURRENT_CONVERSATION_ID', savedId!);
+                            } else if (mergedProjectConvs.length > 0) {
+                                // Fall back to most recently accessed conversation in the new project
+                                const mostRecent = mergedProjectConvs.reduce((a, b) =>
+                                    (b.lastAccessedAt || 0) > (a.lastAccessedAt || 0) ? b : a
+                                );
+                                console.log(`🔄 PROJECT_SWITCH: Selecting most recent conversation "${mostRecent.title}" for project ${projectId}`);
+                                setCurrentConversationId(mostRecent.id);
+                                setTabState('ZIYA_CURRENT_CONVERSATION_ID', mostRecent.id);
+                            }
+                            // else: no conversations in this project — user will create one
+                        }
+                    }
+
+                    // 8. Sync folders with server (same merge pattern)
+                    try {
+                        const serverFolders = await folderSyncApi.listServerFolders(projectId);
+                        const localFolders = await db.getFolders();
+                        const localProjectFolders = localFolders.filter(
+                            f => f.projectId === projectId || f.isGlobal
+                        );
+
+                        const folderMap = new Map<string, ConversationFolder>();
+                        localProjectFolders.forEach(f => folderMap.set(f.id, f));
+                        serverFolders.forEach(sf => {
+                            const effectiveProjectId = sf.projectId || projectId;
+
+                            // Skip server folders that were moved to another project.
+                            // Check the full (unfiltered) local set — if IndexedDB already
+                            // has this folder under a different project, the server copy is stale.
+                            const fullLocalEntry = localFolders.find(f => f.id === sf.id);
+                            if (fullLocalEntry && fullLocalEntry.projectId && fullLocalEntry.projectId !== projectId && !fullLocalEntry.isGlobal) {
+                                return; // stale server entry for a moved folder — skip
+                            }
+                            const local = folderMap.get(sf.id);
+                            if (serverFolderWins(local, sf)) {
+                                folderMap.set(sf.id, { ...sf, projectId: effectiveProjectId });
+                            }
+                        });
+                        const mergedFolders = Array.from(folderMap.values()).filter(f => f.projectId === projectId || f.isGlobal);
+
+                        const localOnly = mergedFolders.filter(
+                            f => !serverFolders.some(sf => sf.id === f.id)
+                        );
+                        if (localOnly.length > 0) {
+                            folderSyncApi.bulkSyncFolders(projectId, localOnly).catch(e =>
+                                console.warn('📡 SERVER_SYNC: Folder push failed:', e)
+                            );
+                        }
+
+                        // Only write if something actually changed
+                        const foldersChanged = mergedFolders.length !== localProjectFolders.length ||
+                            mergedFolders.some(mf => {
+                                const local = localProjectFolders.find(l => l.id === mf.id);
+                                return !local || (mf.updatedAt || 0) > (local.updatedAt || 0);
+                            });
+                        if (foldersChanged) {
+                            await Promise.all(mergedFolders.map(f => db.saveFolder(f)));
+                        }
+
+                        setFolders(prev => {
+                            const changed = mergedFolders.some(mf => {
+                                const existing = prev.find(p => p.id === mf.id);
+                                return !existing || (mf.updatedAt || 0) > (existing.updatedAt || 0);
+                            });
+                            return (prev.length !== mergedFolders.length || changed) ? mergedFolders : prev;
+                        });
+                    } catch (e) {
+                        console.warn('📡 SERVER_SYNC: Folder sync failed:', e);
+                    }
+
+                } catch (syncError) {
+                    console.error('📡 SERVER_SYNC: Error syncing with server:', syncError);
+                }
             } finally {
                 setIsProjectSwitching(false);
             }
@@ -2306,10 +2512,18 @@ export function ChatProvider({ children }: ChatProviderProps) {
         const merged = new Map<string, Conversation>();
 
         // Add all local conversations first
-        local.forEach(conv => merged.set(conv.id, conv));
+        local.forEach(conv => {
+            if (!conv?.id) return; // Skip null/undefined/corrupt entries
+            merged.set(conv.id, {
+                ...conv,
+                title: conv.title || 'Untitled',
+                messages: conv.messages || [],
+            });
+        });
 
         // Merge remote conversations only if newer
         remote.forEach(remoteConv => {
+            if (!remoteConv?.id) return; // Skip null/undefined/corrupt entries
             const localConv = merged.get(remoteConv.id);
             if (!localConv) {
                 merged.set(remoteConv.id, {
@@ -2353,7 +2567,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
             try {
                 const projectConvs = (await db.getConversations())
                     .filter(c => c.projectId === currentProject?.id || c.isGlobal);
-                setConversations(prev => mergeConversations(prev, projectConvs));
+                setConversations(prev => {
+                    try { return mergeConversations(prev, projectConvs); }
+                    catch (e) { console.error('📡 Cross-tab merge failed:', e); return prev; }
+                });
             } catch (err) {
                 console.error('📡 Sync: Failed to reload conversations:', err);
             }
@@ -2652,11 +2869,21 @@ export function ChatProvider({ children }: ChatProviderProps) {
             return updated;
         });
 
-        // If the moved conversation was the active one, switch away so the
-        // user isn't left with a stale currentConversationId pointing at a
-        // conversation that no longer exists in this project's visible list.
+        // If the moved conversation was the active one, switch to the most
+        // recent remaining conversation rather than creating a new empty one.
         if (currentConversationId === conversationId && targetProjectId !== sourceProjectId) {
-            startNewChat();
+            const remaining = conversationsRef.current.filter(
+                c => c.id !== conversationId && c.isActive !== false &&
+                     (c.projectId === sourceProjectId || c.isGlobal)
+            );
+            if (remaining.length > 0) {
+                const mostRecent = remaining.reduce((a, b) =>
+                    (b.lastAccessedAt || 0) > (a.lastAccessedAt || 0) ? b : a);
+                setCurrentConversationId(mostRecent.id);
+                setTabState('ZIYA_CURRENT_CONVERSATION_ID', mostRecent.id);
+            } else {
+                startNewChat();
+            }
         }
 
         // Server-side move: push to target first, THEN delete from source.
@@ -2693,6 +2920,52 @@ export function ChatProvider({ children }: ChatProviderProps) {
             console.error(`📡 Move: conversation ${conversationId} not found in state — server-side move skipped!`);
         }
     }, [currentProject?.id, queueSave, currentConversationId, startNewChat]);
+
+    const copyConversationToProject = useCallback(async (conversationId: string, targetProjectId: string) => {
+        const sourceProjectId = currentProject?.id;
+
+        // Read fresh state via updater to avoid stale closure
+        let capturedConv: Conversation | undefined;
+        setConversations(prev => {
+            capturedConv = prev.find(c => c.id === conversationId);
+            return prev; // No mutation — just reading
+        });
+
+        if (!capturedConv) {
+            console.error(`📡 Copy: conversation ${conversationId} not found in state`);
+            return;
+        }
+
+        // Create a duplicate with a new ID for the target project
+        const newId = uuidv4();
+        const copiedConversation: Conversation = {
+            ...capturedConv,
+            id: newId,
+            projectId: targetProjectId,
+            isGlobal: false,
+            folderId: null, // Don't carry folder assignment across projects
+            _version: Date.now(),
+            lastAccessedAt: Date.now(),
+        };
+
+        // Persist the copy to IndexedDB (it belongs to another project so
+        // it won't appear in the current filtered list, but needs to be in IDB
+        // so it shows up when the user switches to the target project).
+        const allConversations = await db.getConversations();
+        await db.saveConversations([...allConversations, copiedConversation]);
+        console.log(`📡 Copy: saved copy ${newId.substring(0, 8)} to IndexedDB`);
+
+        // Push the copy to the target project on the server
+        if (targetProjectId) {
+            try {
+                const serverChat = syncApi.conversationToServerChat(copiedConversation, targetProjectId);
+                await syncApi.bulkSync(targetProjectId, [serverChat]);
+                console.log(`📡 Copy: pushed conversation copy to project ${targetProjectId}`);
+            } catch (e) {
+                console.warn('📡 Copy: server sync failed (non-fatal):', e);
+            }
+        }
+    }, [currentProject?.id]);
 
     const moveFolderToProject = useCallback(async (folderId: string, targetProjectId: string) => {
         const sourceProjectId = currentProject?.id;
@@ -2762,9 +3035,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 for (const conv of conversationsInFolder) {
                     fetch(`/api/v1/projects/${sourceProjectId}/chats/${conv.id}`, {
                         method: 'DELETE', headers
-                    }).catch(() => {});
+                    }).catch(() => { });
                 }
-                folderSyncApi.deleteServerFolder(sourceProjectId, folderId).catch(() => {});
+                folderSyncApi.deleteServerFolder(sourceProjectId, folderId).catch(() => { });
             } catch (e) {
                 console.warn('📡 FolderMove: server sync failed (non-fatal):', e);
             }
@@ -2824,6 +3097,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         moveChatToGroup,
         toggleConversationGlobal,
         moveConversationToProject,
+        copyConversationToProject,
         moveFolderToProject,
         toggleFolderGlobal,
         setChatContexts,
@@ -2949,69 +3223,70 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 isTopToBottom={isTopToBottom}
                 setIsTopToBottom={setIsTopToBottom}
             >
-            <ConversationListProvider
-                conversations={conversations}
-                setConversations={setConversations}
-                folders={folders}
-                setFolders={setFolders}
-                currentFolderId={currentFolderId}
-                setCurrentFolderId={setCurrentFolderId}
-                folderFileSelections={folderFileSelections}
-                setFolderFileSelections={setFolderFileSelections}
-                createFolder={createFolder}
-                updateFolder={updateFolder}
-                deleteFolder={deleteFolder}
-                moveConversationToFolder={moveConversationToFolder}
-                moveChatToGroup={moveChatToGroup}
-                toggleConversationGlobal={toggleConversationGlobal}
-                moveConversationToProject={moveConversationToProject}
-                moveFolderToProject={moveFolderToProject}
-                toggleFolderGlobal={toggleFolderGlobal}
-                dbError={dbError}
-                isProjectSwitching={isProjectSwitching}
-                isLoadingConversation={isLoadingConversation}
-            >
-            <ActiveChatProvider
-                currentConversationId={currentConversationId}
-                currentMessages={currentMessages}
-                currentDisplayMode={conversations.find(c => c.id === currentConversationId)?.displayMode ?? 'pretty'}
-                setCurrentConversationId={setCurrentConversationId}
-                addMessageToConversation={addMessageToConversation}
-                loadConversation={loadConversation}
-                loadConversationAndScrollToMessage={loadConversationAndScrollToMessage}
-                startNewChat={startNewChat}
-                editingMessageIndex={editingMessageIndex}
-                setEditingMessageIndex={setEditingMessageIndex}
-                isStreaming={isStreaming}
-                setIsStreaming={setIsStreaming}
-                streamingConversations={streamingConversations}
-                addStreamingConversation={addStreamingConversation}
-                removeStreamingConversation={removeStreamingConversation}
-                streamedContentMap={streamedContentMap}
-                setStreamedContentMap={setStreamedContentMap}
-                reasoningContentMap={reasoningContentMap}
-                setReasoningContentMap={setReasoningContentMap}
-                getProcessingState={getProcessingState}
-                updateProcessingState={updateProcessingState}
-                dynamicTitleLength={dynamicTitleLength}
-                setDynamicTitleLength={setDynamicTitleLength}
-                lastResponseIncomplete={lastResponseIncomplete}
-                setDisplayMode={setDisplayMode}
-                toggleMessageMute={toggleMessageMute}
-                setChatContexts={setChatContexts}
-                throttlingRecoveryData={throttlingRecoveryData}
-                setThrottlingRecoveryData={setThrottlingRecoveryData}
-            >
-            <StreamingProvider
-                isStreaming={isStreaming}
-                isStreamingAny={isStreamingAny}
-                currentConversationId={currentConversationId}
-                streamingConversations={streamingConversations}
-            >
-                {children}
-            </StreamingProvider>
-            </ActiveChatProvider>
-            </ConversationListProvider>
+                <ConversationListProvider
+                    conversations={conversations}
+                    setConversations={setConversations}
+                    folders={folders}
+                    setFolders={setFolders}
+                    currentFolderId={currentFolderId}
+                    setCurrentFolderId={setCurrentFolderId}
+                    folderFileSelections={folderFileSelections}
+                    setFolderFileSelections={setFolderFileSelections}
+                    createFolder={createFolder}
+                    updateFolder={updateFolder}
+                    deleteFolder={deleteFolder}
+                    moveConversationToFolder={moveConversationToFolder}
+                    moveChatToGroup={moveChatToGroup}
+                    toggleConversationGlobal={toggleConversationGlobal}
+                    moveConversationToProject={moveConversationToProject}
+                    copyConversationToProject={copyConversationToProject}
+                    moveFolderToProject={moveFolderToProject}
+                    toggleFolderGlobal={toggleFolderGlobal}
+                    dbError={dbError}
+                    isProjectSwitching={isProjectSwitching}
+                    isLoadingConversation={isLoadingConversation}
+                >
+                    <ActiveChatProvider
+                        currentConversationId={currentConversationId}
+                        currentMessages={currentMessages}
+                        currentDisplayMode={conversations.find(c => c.id === currentConversationId)?.displayMode ?? 'pretty'}
+                        setCurrentConversationId={setCurrentConversationId}
+                        addMessageToConversation={addMessageToConversation}
+                        loadConversation={loadConversation}
+                        loadConversationAndScrollToMessage={loadConversationAndScrollToMessage}
+                        startNewChat={startNewChat}
+                        editingMessageIndex={editingMessageIndex}
+                        setEditingMessageIndex={setEditingMessageIndex}
+                        isStreaming={isStreaming}
+                        setIsStreaming={setIsStreaming}
+                        streamingConversations={streamingConversations}
+                        addStreamingConversation={addStreamingConversation}
+                        removeStreamingConversation={removeStreamingConversation}
+                        streamedContentMap={streamedContentMap}
+                        setStreamedContentMap={setStreamedContentMap}
+                        reasoningContentMap={reasoningContentMap}
+                        setReasoningContentMap={setReasoningContentMap}
+                        getProcessingState={getProcessingState}
+                        updateProcessingState={updateProcessingState}
+                        dynamicTitleLength={dynamicTitleLength}
+                        setDynamicTitleLength={setDynamicTitleLength}
+                        lastResponseIncomplete={lastResponseIncomplete}
+                        setDisplayMode={setDisplayMode}
+                        toggleMessageMute={toggleMessageMute}
+                        setChatContexts={setChatContexts}
+                        throttlingRecoveryData={throttlingRecoveryData}
+                        setThrottlingRecoveryData={setThrottlingRecoveryData}
+                    >
+                        <StreamingProvider
+                            isStreaming={isStreaming}
+                            isStreamingAny={isStreamingAny}
+                            currentConversationId={currentConversationId}
+                            streamingConversations={streamingConversations}
+                        >
+                            {children}
+                        </StreamingProvider>
+                    </ActiveChatProvider>
+                </ConversationListProvider>
             </ScrollProvider>
         </chatContext.Provider>
     );

@@ -150,6 +150,17 @@ body.dark {
   color: #ffffff;
 }
 
+/* Auth error banner — dark mode overrides */
+body.dark .auth-error-banner {
+  --auth-error-bg: linear-gradient(135deg, #2a1215 0%, #2a1a10 100%);
+  --auth-error-border: #58181c;
+  --auth-error-accent: #dc4446;
+  --auth-error-text: #e8c4c4;
+  --auth-error-heading: #f5706c;
+  --auth-error-muted: #8c8c8c;
+  --auth-error-detail: #e8a0a0;
+}
+
 /* Dark mode link styling for readability */
 body.dark a {
   color: #58a6ff;
@@ -2423,4 +2434,16 @@ body:not(.dark) .token.attr-name {
   background: #2b2111;
   border-color: #594214;
   color: #d8bd75;
+}
+
+/* Auto-added file badge */
+.auto-added-badge {
+  cursor: default;
+  user-select: none;
+  box-shadow: 0 0 0 1.5px #fff;
+  transition: transform 0.15s ease;
+}
+
+.dark .auto-added-badge {
+  box-shadow: 0 0 0 1.5px #141414;
 }

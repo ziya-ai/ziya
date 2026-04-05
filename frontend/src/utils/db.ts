@@ -457,10 +457,22 @@ class ConversationDB implements DB {
             const store = tx.objectStore(STORE_NAME);
 
             return new Promise<void>((resolve, reject) => {
+                const self = this;
                 // Read-before-write guard: within the same readwrite
-                // transaction, check if any conversation would lose
+                // transaction, check if any conversation would lose 
                 // messages.  Catches TOCTOU races from direct callers
                 // (rename, delete, fork) that bypass queueSave.
+                //
+                // MEMORY SAFETY: Skip when dataset is large.  store.get('current')
+                // deserializes the entire blob; with 200+ conversations this
+                // doubles peak memory and causes OOM.  queueSave already does
+                // message-count protection, so this guard only matters for
+                // direct callers that operate on small datasets.
+                if (uniqueConversations.length > 200) {
+                    performWrite();
+                    return;
+                }
+
                 const guardRequest = store.get('current');
                 guardRequest.onerror = () => {
                     // Cannot read — skip guard, proceed with write
@@ -470,29 +482,34 @@ class ConversationDB implements DB {
                     const idbConversations: Conversation[] =
                         Array.isArray(guardRequest.result) ? guardRequest.result : [];
                     if (idbConversations.length > 0) {
-                        const idbMsgCounts = new Map<string, { count: number; msgs: any[] }>();
+                        // Count-only map: do NOT retain message array references.
+                        // Holding refs prevents GC of the deserialized IDB blob.
+                        const idbMsgCounts = new Map<string, number>();
                         for (const c of idbConversations) {
                             if (c?.id && c.messages?.length) {
-                                idbMsgCounts.set(c.id, { count: c.messages.length, msgs: c.messages });
+                                idbMsgCounts.set(c.id, c.messages.length);
                             }
                         }
                         for (const conv of uniqueConversations) {
-                            const prev = idbMsgCounts.get(conv.id);
-                            if (!prev) continue;
+                            const prevCount = idbMsgCounts.get(conv.id);
+                            if (!prevCount) continue;
                             const nextCount = conv.messages?.length || 0;
-                            if (prev.count > nextCount && prev.count > 2) {
+                            if (prevCount > nextCount && prevCount > 2) {
+                                // Regression detected — lazily find this conversation's messages
+                                const idbConv = idbConversations.find(c => c.id === conv.id);
+                                if (!idbConv?.messages) continue;
                                 console.warn(
-                                    `🛡️ IDB_WRITE_GUARD: Preserving ${prev.count} IDB messages ` +
+                                    `🛡️ IDB_WRITE_GUARD: Preserving ${prevCount} IDB messages ` +
                                     `for ${conv.id.substring(0, 8)} (caller had ${nextCount})`
                                 );
-                                conv.messages = prev.msgs;
+                                conv.messages = idbConv.messages;
                             }
                         }
                     }
                     performWrite();
                 };
 
-                const performWrite = () => {
+                function performWrite() {
                 const conversationsToSave = uniqueConversations.map(conv => ({
                     ...conv,
                     _version: conv._version || Date.now(),  // BUGFIX: preserve existing _version instead of overwriting all
@@ -513,8 +530,8 @@ class ConversationDB implements DB {
 
                 // BUGFIX: Throttle localStorage backup to once per 30s (was serializing ALL convos on every save!)
                 const now = Date.now();
-                if (now - this.lastBackupTime > 30000) {
-                    this.lastBackupTime = now;
+                if (now - self.lastBackupTime > 30000) {
+                    self.lastBackupTime = now;
                     // localStorage backup removed — server dual-write
                     // (bulkSync to ~/.ziya/projects/{pid}/chats/) is the
                     // backup mechanism. localStorage has a ~5MB quota that
@@ -707,13 +724,16 @@ class ConversationDB implements DB {
 
                     // Strip messages — keep only the first and last for preview/timestamp.
                     // Mark as shell with original count so save paths can detect and protect.
-                    const shells = conversations.map(conv => ({
+                    const shells = conversations
+                    .filter(conv => conv && conv.id && typeof conv.id === 'string')
+                    .map(conv => ({
                         ...conv,
                         messages: conv.messages?.length > 0
                             ? [conv.messages[0], ...(conv.messages.length > 1 ? [conv.messages[conv.messages.length - 1]] : [])]
                             : [],
                         _isShell: true,
                         _fullMessageCount: conv.messages?.length || 0,
+                        title: conv.title || 'Untitled',
                     }));
                     resolve(shells);
                 };

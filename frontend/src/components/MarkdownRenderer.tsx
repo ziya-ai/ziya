@@ -1373,7 +1373,13 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     const forceRenderRef = useRef<boolean>(false);
 
     // Use a stable ID that doesn't change on re-renders
-    const diffId = useRef<string>(elementId || stableDiffId(diff)).current;
+    // BUT: must update when elementId changes (e.g. conversation switch reuses
+    // this component with a new conversation-scoped elementId).
+    const diffIdRef = useRef<string>(elementId || stableDiffId(diff));
+    if (elementId && diffIdRef.current !== elementId) {
+        diffIdRef.current = elementId;
+    }
+    const diffId = diffIdRef.current;
 
     // Flag to prevent rendering during streaming
     const isStreamingRef = useRef<boolean>(false);
@@ -2302,6 +2308,13 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
     const [isReversible, setIsReversible] = useState(false);
     const [isUndoing, setIsUndoing] = useState(false);
     const [appliedDiff, setAppliedDiff] = useState<string>('');
+
+    // Re-check applied state when the diff identity changes (e.g. conversation switch
+    // reuses this component instance with a new conversation-scoped diffElementId).
+    useEffect(() => {
+        setIsApplied(window.appliedDiffsRegistry?.has(diffElementId) ?? false);
+    }, [diffElementId]);
+
     const [instanceHunkStatusMap, setInstanceHunkStatusMap] = useState<Map<string, HunkStatus>>(new Map());
     const statusUpdateCounterRef = useRef<number>(0);
     const isStreamingRef = useRef<boolean>(false);
@@ -2726,10 +2739,19 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode, superseded 
     const chatContextRef = useRef<any>(null);
     const { checkedKeys, addFilesToContext } = useFolderContext();
     const { currentProject } = useProject();
-    // Generate a stable ID scoped to the current conversation so that the
-    // same diff content in two different conversations gets distinct registry
-    // keys, preventing applied-state from leaking across conversations.
-    const [diffId] = useState(() => `${currentConversationId}:${stableDiffId(token.text)}`);
+    // Generate an ID scoped to the current conversation so that the same diff
+    // content in two different conversations gets distinct registry keys.
+    // useState initializer only runs on mount — if React reuses this component
+    // instance across a conversation switch (same stableTokenKey), the old
+    // conversation ID would stick.  The effect below detects the mismatch and
+    // recomputes, preventing applied-state from leaking across conversations.
+    const computedDiffId = `${currentConversationId}:${stableDiffId(token.text)}`;
+    const [diffId, setDiffId] = useState(computedDiffId);
+    useEffect(() => {
+        if (diffId !== computedDiffId) {
+            setDiffId(computedDiffId);
+        }
+    }, [computedDiffId]);
     const contentRef = useRef<string | null>(null);
     const [isCheckingFiles, setIsCheckingFiles] = useState(false);
     const hasCheckedFilesRef = useRef(false);
@@ -2758,7 +2780,7 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode, superseded 
                     const currentFiles = Array.from(checkedKeys).map(String);
                     const response = checkFilesInContext(referencedFiles, currentFiles);
                     if (response.missingFiles.length > 0) {
-                        await addFilesToContext(response.missingFiles);
+                        await addFilesToContext(response.missingFiles, { isAutoAdd: true });
                         setMissingFilesList(response.missingFiles);
                         setNeedsContextEnhancement(true);
                     }
@@ -2806,7 +2828,7 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode, superseded 
                 if (missingFiles.length > 0) {
 
                     // Add files to context using the proper context method
-                    await addFilesToContext(missingFiles);
+                    await addFilesToContext(missingFiles, { isAutoAdd: true });
 
                     // Instead of interrupting, show enhancement overlay
                     setMissingFilesList(missingFiles);
@@ -2924,28 +2946,65 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode, superseded 
     // Show context enhancement overlay when files are missing
     const contextEnhancementOverlay = (isCheckingFiles || needsContextEnhancement) ? (
         <div style={{
-            position: 'relative', width: '100%',
-            backgroundColor: needsContextEnhancement ? 'rgba(255,193,7,0.9)' : 'rgba(0,0,0,0.7)',
-            color: needsContextEnhancement ? '#000' : 'white',
-            padding: '12px', textAlign: 'center',
+            position: 'relative',
+            width: '100%',
+            backgroundColor: needsContextEnhancement
+                ? (autoAddDiffFiles
+                    ? (isDarkMode ? 'rgba(23,125,220,0.15)' : 'rgba(24,144,255,0.08)')
+                    : 'rgba(255,193,7,0.9)')
+                : 'rgba(0,0,0,0.7)',
+            color: needsContextEnhancement
+                ? (autoAddDiffFiles
+                    ? (isDarkMode ? '#7ec8f2' : '#096dd9')
+                    : '#000')
+                : 'white',
+            padding: '10px 14px',
+            textAlign: 'center',
+            border: needsContextEnhancement && autoAddDiffFiles
+                ? `1px solid ${isDarkMode ? 'rgba(23,125,220,0.3)' : 'rgba(24,144,255,0.2)'}`
+                : 'none',
             borderRadius: '4px'
         }}>
             {isCheckingFiles ? (
                 '🔄 Checking context...'
             ) : needsContextEnhancement ? (
-                <div>
-                    <div style={{ marginBottom: '8px' }}>
-                        ⚠️ This diff references files not in context: <strong>{missingFilesList.join(', ')}</strong>
+                autoAddDiffFiles ? (
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, fontSize: 13 }}>
+                        <span style={{
+                            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                            width: 18, height: 18, borderRadius: '50%',
+                            backgroundColor: isDarkMode ? '#177ddc' : '#1890ff',
+                            color: '#fff', fontSize: 10, fontWeight: 700, flexShrink: 0,
+                        }}>A</span>
+                        <span>
+                            Auto-added <strong>{missingFilesList.length}</strong> file{missingFilesList.length !== 1 ? 's' : ''} to context
+                            ({missingFilesList.join(', ')})
+                            — available for subsequent queries.
+                            <span style={{ opacity: 0.7 }}> Remove via the <strong style={{
+                                display: 'inline-flex', alignItems: 'center', gap: 2,
+                            }}><span style={{
+                                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                                width: 12, height: 12, borderRadius: '50%',
+                                backgroundColor: isDarkMode ? '#177ddc' : '#1890ff',
+                                color: '#fff', fontSize: 8, fontWeight: 700, verticalAlign: 'middle',
+                            }}>A</span> button</strong> in the Files panel.</span>
+                        </span>
                     </div>
-                    <Button
-                        type="primary"
-                        size="small"
-                        onClick={addMissingFilesToContext}
-                        style={{ backgroundColor: '#52c41a', borderColor: '#52c41a' }}
-                    >
-                        Add Files to Context
-                    </Button>
-                </div>
+                ) : (
+                    <div>
+                        <div style={{ marginBottom: '8px' }}>
+                            ⚠️ This diff references files not in context: <strong>{missingFilesList.join(', ')}</strong>
+                        </div>
+                        <Button
+                            type="primary"
+                            size="small"
+                            onClick={addMissingFilesToContext}
+                            style={{ backgroundColor: '#52c41a', borderColor: '#52c41a' }}
+                        >
+                            Add Files to Context
+                        </Button>
+                    </div>
+                )
             ) : null}
         </div>
     ) : null;
@@ -2985,7 +3044,13 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, inde
     const lastValidDiffRef = useRef<string | null>(null);
     const { isDarkMode } = useTheme();
     const initialFileTitleRef = useRef<string | null>(null);
+    // Track the conversation-scoped elementId. Must update when the parent
+    // DiffToken recomputes its diffId after a conversation switch, otherwise
+    // child DiffView / ApplyChangesButton keep using the old conversation's ID.
     const stableElementIdRef = useRef(elementId);
+    if (elementId && stableElementIdRef.current !== elementId) {
+        stableElementIdRef.current = elementId;
+    }
     const isStreamingRef = useRef<boolean>(false);
     const streamingContentRef = useRef<string>(token.text || '');
     const parseTimeoutRef = useRef<number | null>(null);
@@ -3301,6 +3366,15 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
     // Normalize the language identifier
     const normalizedLang = useMemo(() => {
         if (!token.lang) return 'plaintext';
+
+        // Safety net: reject language tags that are clearly not real identifiers
+        const lt = token.lang.trim();
+        if (/[.\s,;!?()]/.test(lt) || lt.length > 60 || /[A-Z]/.test(lt) || lt.endsWith('.')) {
+            // camelCase/PascalCase words (setTimeout, cancelAnimationFrame)
+            // are JS identifiers, not language names — Prism langs are lowercase
+            return 'plaintext';
+        }
+
         // Map 'typescript jsx' to 'tsx' since we know tsx highlighting works
         if (token.lang === 'typescript jsx') {
             return 'tsx';
@@ -4806,6 +4880,36 @@ const markedOptions = {
     pedantic: false
 };
 
+// Shared LaTeX copy handler — single document listener instead of one per
+// MathRenderer instance.  Each instance registers via the Map; the listener
+// walks up from the selection anchor to find the owning element.
+
+const _mathCopyRegistry = new Map<HTMLElement, { math: string; displayMode: boolean }>();
+let _mathCopyListenerInstalled = false;
+
+function _installMathCopyListener() {
+    if (_mathCopyListenerInstalled) return;
+    _mathCopyListenerInstalled = true;
+
+    document.addEventListener('copy', (e: ClipboardEvent) => {
+        const selection = window.getSelection();
+        if (!selection) return;
+
+        let node: Node | null = selection.anchorNode;
+        while (node) {
+            if (node instanceof HTMLElement && _mathCopyRegistry.has(node)) {
+                const { math, displayMode } = _mathCopyRegistry.get(node)!;
+                e.preventDefault();
+                const delimiter = displayMode ? '$$' : '$';
+                e.clipboardData?.setData('text/plain', `${delimiter}${math}${delimiter}`);
+                message.success('LaTeX copied to clipboard');
+                return;
+            }
+            node = node.parentNode;
+        }
+    });
+}
+
 // Math rendering component
 const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, displayMode }) => {
     const [katex, setKatex] = useState<any>(null);
@@ -4826,27 +4930,13 @@ const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, 
         loadKatex();
     }, []);
 
-    // Add copy handler to preserve raw LaTeX syntax
+    // Register with the shared copy handler instead of per-instance listener
     useEffect(() => {
-        const handleCopy = (e: ClipboardEvent) => {
-            const selection = window.getSelection();
-            if (!selection || !mathRef.current) return;
-
-            // Check if the selection is within this math element
-            if (mathRef.current.contains(selection.anchorNode)) {
-                e.preventDefault();
-
-                // Preserve raw LaTeX with appropriate delimiters
-                const delimiter = displayMode ? '$$' : '$';
-                const latexWithDelimiters = `${delimiter}${math}${delimiter}`;
-
-                e.clipboardData?.setData('text/plain', latexWithDelimiters);
-                message.success('LaTeX copied to clipboard');
-            }
-        };
-
-        document.addEventListener('copy', handleCopy);
-        return () => document.removeEventListener('copy', handleCopy);
+        _installMathCopyListener();
+        const el = mathRef.current;
+        if (!el) return;
+        _mathCopyRegistry.set(el, { math, displayMode });
+        return () => { _mathCopyRegistry.delete(el); };
     }, [math, displayMode]);
 
     if (isLoading || !katex) {
@@ -4971,8 +5061,48 @@ const normalizeIndentedDiffs = (content: string): string => {
     return result.join('\n');
 };
 
+// Shared throttle-button observer (module singleton).
+// Previously each MarkdownRenderer mounted its own MutationObserver +
+// 4 document-level listeners.  This singleton installs ONE observer on
+// document.body and ONE set of event listeners; the latest scanFn is
+// called on mutations/events so the active component always handles it.
+
+let _throttleObserverInstalled = false;
+let _throttleObserver: MutationObserver | null = null;
+let _throttleScanFn: (() => void) | null = null;
+
+function _installThrottleObserver(scanFn: () => void) {
+    _throttleScanFn = scanFn;
+    if (_throttleObserverInstalled) return;
+    _throttleObserverInstalled = true;
+
+    let _timer: ReturnType<typeof setTimeout> | null = null;
+    const debouncedScan = () => {
+        if (_timer) return;
+        _timer = setTimeout(() => { _timer = null; _throttleScanFn?.(); }, 300);
+    };
+
+    const handleThrottleEvent = () => {
+        setTimeout(() => _throttleScanFn?.(), 50);
+        setTimeout(() => _throttleScanFn?.(), 200);
+    };
+    document.addEventListener('throttlingError', handleThrottleEvent as EventListener);
+    document.addEventListener('throttleButtonRendered', handleThrottleEvent as EventListener);
+
+    _throttleObserver = new MutationObserver(debouncedScan);
+    _throttleObserver.observe(document.body, { childList: true, subtree: true });
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            _throttleObserver?.disconnect();
+        } else {
+            _throttleObserver?.observe(document.body, { childList: true, subtree: true });
+            setTimeout(() => _throttleScanFn?.(), 100);
+        }
+    });
+}
+
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply, isStreaming: externalStreaming = false, forceRender = false, isSubRender = false, onOpenShellConfig }) => {
-    const { isStreaming } = useStreamingContext();
     const { isDarkMode } = useTheme();
     const containerRef = useRef<HTMLDivElement>(null);
 
@@ -4985,7 +5115,6 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
     // State for the tokens that are currently displayed with stable reference
     const [displayTokens, setDisplayTokens] = useState<(Tokens.Generic | TokenWithText)[]>([]);
-    const isStreamingState = isStreaming;
 
     // Memoize the parsing of markdown into tokens.
     // This is critical for stability - we need to ensure tokens don't change unnecessarily
@@ -5236,7 +5365,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             }
 
             // Don't process empty or whitespace-only markdown during streaming
-            if (isStreamingState && (!processedMarkdown || processedMarkdown.trim() === '')) {
+            if (externalStreaming && (!processedMarkdown || processedMarkdown.trim() === '')) {
                 return previousTokensRef.current.length > 0 ? previousTokensRef.current : [];
             }
 
@@ -5249,7 +5378,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                     /<TOOL_SENTINEL>[\s\S]*?<\/TOOL_SENTINEL>/,
                     formattedToolCall
                 );
-            } else if (isStreamingState && processedMarkdown.includes('<TOOL_SENTINEL>')) {
+            } else if (externalStreaming && processedMarkdown.includes('<TOOL_SENTINEL>')) {
                 // During streaming, if we have an incomplete tool call, don't try to parse it yet
                 // This prevents showing malformed content while the tool call is being streamed
                 const incompleteToolMatch = processedMarkdown.match(/<TOOL_SENTINEL>[\s\S]*$/);
@@ -5437,9 +5566,17 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                                     const hasLatex = /\\[a-zA-Z]+/.test(p1); // \frac, \sqrt, \alpha, etc.
                                     const hasMathSymbols = /[∫∑∏√∞≠≤≥±∓∈∉⊂⊃∪∩αβγδεζηθικλμνξοπρστυφχψω]/.test(p1);
                                     const hasComplexMath = /[{}^_]/.test(p1) && p1.length > 2; // Subscripts, superscripts, braces
+                                    // Single-letter variable names: $A$, $c$, $x$ — universally math notation
+                                    const isSingleVariable = /^[A-Za-z]$/.test(p1.trim());
+                                    // Algebraic expressions: content with letters AND math operators
+                                    // e.g. $Sc/r$, $a + b$, $x = 0$, $|\mu| < 1$
+                                    const hasAlgebraicNotation = /[A-Za-z]/.test(p1) &&
+                                        /[/=<>+*|]/.test(p1) &&
+                                        // Exclude URL-like or path-like strings
+                                        !/^https?:/.test(p1.trim()) && !p1.includes('://');
 
-                                    // Be more conservative - only process if it really looks like math
-                                    return (hasLatex || hasMathSymbols || hasComplexMath) ? `⟨MATH_INLINE:${p1.trim()}⟩` : match;
+                                    return (hasLatex || hasMathSymbols || hasComplexMath || isSingleVariable || hasAlgebraicNotation)
+                                        ? `⟨MATH_INLINE:${p1.trim()}⟩` : match;
                                 }
                             );
                         } catch (mathError) {
@@ -5517,6 +5654,41 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 }
             );
 
+            // Fix code fences with invalid language tags.
+            // LLMs sometimes produce fences like 
+            // ```unmount. or ```after where
+            // a stray word ends up as the "language" identifier.  marked.js
+            // treats any text after ``` on the same line as a language tag,
+            // which swallows all subsequent content into a bogus code block.
+            //
+            // Valid language tags are short alphanumeric identifiers, optionally
+            // with hyphens/colons (e.g. "diff", "vega-lite", "tool:mcp_xyz").
+            // Anything containing periods at the end, spaces, or unreasonable
+            // length is not a real language — strip it so the content isn't lost.
+            processedMarkdown = processedMarkdown.replace(
+                /^(```)([^\n`]+)$/gm,
+                (_match, backticks, langTag) => {
+                    const trimmed = langTag.trim();
+                    if (!trimmed) return _match;
+                    // Tool fences (tool:mcp_xxx|Header|syntax) are our own format —
+                    // always valid regardless of spaces/emoji in the display header.
+                    if (trimmed.startsWith('tool:')) return _match;
+
+                    // Allow legitimate patterns: alphanumeric, hyphens, underscores,
+                    // colons (tool:), pipes (tool labels), dots (draw.io)
+                    const isValidLangTag = /^[a-zA-Z][a-zA-Z0-9._:|\-]*$/.test(trimmed)
+                        && trimmed.length <= 60
+                        && !/\.\s*$/.test(trimmed)   // rejects "unmount."
+                        && !/\s/.test(trimmed);        // rejects "Skip GC when..."
+                    if (isValidLangTag) return _match;
+                    // Invalid tag — push the text into the code block body
+                    // instead of letting marked treat it as a language
+                    console.debug('🔧 Fence lang fix: stripped invalid language tag:', trimmed);
+                    return backticks + '\n' + trimmed;
+                }
+            );
+
+
             const lexedTokens = marked.lexer(processedMarkdown, markedOptions);
             return lexedTokens as (Tokens.Generic | TokenWithText)[] || [];
         } catch (error) {
@@ -5528,7 +5700,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             // Fallback to rendering the raw markdown in a code block on error
             return [{ type: 'code', lang: 'text', text: markdown }] as TokenWithText[];
         }
-    }, [markdown, externalStreaming, isStreamingState]);
+    }, [markdown, externalStreaming]);
 
     // Cleanup timeout on unmount
     useEffect(() => {
@@ -5544,18 +5716,22 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 // Throttle display updates during streaming to ~5fps
                 clearTimeout(parseTimeoutRef.current);
                 parseTimeoutRef.current = setTimeout(() => {
-                    setDisplayTokens(lexedTokens);
+                    setDisplayTokens(prev =>
+                        prev.length === lexedTokens.length && prev.every((t, i) => t === lexedTokens[i]) ? prev : lexedTokens
+                    );
                 }, 200);
             } else {
                 // Immediate update when not streaming (final render)
-                setDisplayTokens(lexedTokens);
+                setDisplayTokens(prev =>
+                    prev.length === lexedTokens.length && prev.every((t, i) => t === lexedTokens[i]) ? prev : lexedTokens
+                );
             }
         }
     }, [lexedTokens, externalStreaming]);
 
     // Only memoize the rendered content when not streaming or when streaming completes
     const renderedContent = useMemo(() => {
-        return renderTokens(displayTokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig);
+        return renderTokens(displayTokens, enableCodeApply, isDarkMode, isSubRender, externalStreaming, thinkingContentRef, onOpenShellConfig);
     }, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender]); // Use forceRender to trigger re-renders
 
     // Attach event listeners to throttle retry buttons after render
@@ -5715,31 +5891,12 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
     // Setup MutationObserver to watch for dynamically added throttle buttons
     useLayoutEffect(() => {
-        let observer: MutationObserver | null = null;
-        // Listen for throttling error events to trigger immediate attachment
-        const handleThrottlingError = (event: CustomEvent) => {
-            console.log('🚨 THROTTLING_ERROR event received, scanning for buttons');
-            // Wait a tick for React to render the new content
-            setTimeout(() => {
-                scanAndAttachHandlers();
-            }, 50);
-            setTimeout(() => {
-                scanAndAttachHandlers();
-            }, 200);
-            setTimeout(() => {
-                scanAndAttachHandlers();
-            }, 500);
-        };
+        // Shared singleton handles MutationObserver + throttle event listeners
+        _installThrottleObserver(scanAndAttachHandlers);
 
-        document.addEventListener('throttlingError', handleThrottlingError as EventListener);
-        document.addEventListener('throttleButtonRendered', handleThrottlingError as EventListener);
-
-        if (!containerRef.current) return;
-
-        // Listen for throttling recovery data
+        // Recovery data listener remains per-instance (writes to component state)
         const handleThrottlingRecoveryData = (event: CustomEvent) => {
             const { conversationId, toolResults, partialContent } = event.detail;
-
             if (conversationId && toolResults) {
                 console.log('📦 RECOVERY_DATA: Storing tool results for conversation:', conversationId);
                 const next = new Map(throttlingRecoveryData);
@@ -5747,87 +5904,13 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 setThrottlingRecoveryData(next);
             }
         };
-
         document.addEventListener('throttlingRecoveryData', handleThrottlingRecoveryData as EventListener);
 
-        // Debounced observer callback — during streaming the container
-        // mutates on every chunk, but throttle-retry buttons only appear
-        // after a throttling error.  Batch mutations to avoid hammering
-        // querySelectorAll on every text node insertion.
-        let observerTimer: ReturnType<typeof setTimeout> | null = null;
-        const debouncedObserverCallback = () => {
-            if (observerTimer) return; // Already scheduled
-            observerTimer = setTimeout(() => {
-                observerTimer = null;
-                scanAndAttachHandlers();
-            }, 300);
-        };
-
-        observer = new MutationObserver((_mutations) => {
-            debouncedObserverCallback();
-            /* Original per-mutation scanning removed — the debounced
-               scanAndAttachHandlers above covers all cases without
-               doing a full DOM scan on every streaming chunk.
-            mutations.forEach((mutation) => {
-                mutation.addedNodes.forEach((node) => {
-                    if (node.nodeType === Node.ELEMENT_NODE) {
-                        const element = node as Element;
-
-                        // Check if this node or its children contain throttle buttons
-                        const buttons = element.classList?.contains('throttle-retry-button')
-                            ? [element]
-                            : Array.from(element.querySelectorAll?.('.throttle-retry-button') || []);
-
-                        buttons.forEach((button: Element) => {
-                            if (!attachedHandlersRef.current.has(button)) {
-                                attachThrottleRetryHandler(button as HTMLButtonElement);
-                                attachedHandlersRef.current.add(button);
-                            }
-                        });
-                    }
-                });
-            });
-            */
-        });
-
-        // Start observing
-        let initialScanTimer: ReturnType<typeof setTimeout> | undefined;
-        if (containerRef.current) {
-            const container = containerRef.current!;
-            observer.observe(container as Node, {
-                childList: true,
-                subtree: true
-            });
-
-            // Single deferred scan instead of three overlapping timeouts
-            initialScanTimer = setTimeout(scanAndAttachHandlers, 200);
-        }
-
-        // Disconnect observer when tab is hidden to reduce idle overhead.
-        // Reconnect on visibility change so we don't miss mutations while visible.
-        const handleVisibilityChange = () => {
-            if (document.hidden) {
-                observer?.disconnect();
-            } else if (containerRef.current && observer) {
-                observer.observe(containerRef.current as Node, {
-                    childList: true,
-                    subtree: true
-                });
-                // Scan once on return in case mutations happened while hidden
-                setTimeout(scanAndAttachHandlers, 100);
-            }
-        };
-        document.addEventListener('visibilitychange', handleVisibilityChange);
+        const initialScanTimer = setTimeout(scanAndAttachHandlers, 200);
 
         return () => {
-            observer?.disconnect();
-            observer = null;
-            document.removeEventListener('visibilitychange', handleVisibilityChange);
-            if (observerTimer) clearTimeout(observerTimer);
-            if (initialScanTimer !== undefined) clearTimeout(initialScanTimer);
-            document.removeEventListener('throttlingError', handleThrottlingError as EventListener);
+            clearTimeout(initialScanTimer);
             document.removeEventListener('throttlingRecoveryData', handleThrottlingRecoveryData as EventListener);
-            document.removeEventListener('throttleButtonRendered', handleThrottlingError as EventListener);
             attachedHandlersRef.current.clear();
         };
     }, [currentConversationId]);

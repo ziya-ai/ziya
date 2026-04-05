@@ -28,7 +28,9 @@ export interface FolderContextType {
   scanError: string | null;
   getFolderTokenCount: (path: string, folderData: Folders) => number;
   accurateTokenCounts: Record<string, { count: number; timestamp: number }>;
-  addFilesToContext: (filePaths: string[]) => Promise<void>;
+  addFilesToContext: (filePaths: string[], options?: { isAutoAdd?: boolean }) => Promise<void>;
+  autoAddedFiles: Set<string>;
+  removeAutoAddedFiles: () => { removedCount: number; tokensRecovered: number };
 }
 
 const FolderContext = createContext<FolderContextType | undefined>(undefined);
@@ -48,6 +50,17 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       return [];
     }
   });
+  // Heritage tracking: files that were auto-added by the diff context system
+  const [autoAddedFiles, setAutoAddedFiles] = useState<Set<string>>(() => {
+    try {
+      const saved = getTabState('ZIYA_AUTO_ADDED_FILES');
+      return saved ? new Set(JSON.parse(saved)) : new Set();
+    } catch {
+      return new Set();
+    }
+  });
+  const autoAddedFilesRef = useRef(autoAddedFiles);
+  autoAddedFilesRef.current = autoAddedFiles;
 
   const [searchValue, setSearchValue] = useState('');
   const [expandedKeys, setExpandedKeys] = useState<React.Key[]>(() => {
@@ -490,6 +503,60 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let isUnmounting = false;
 
+    // ── Batch incoming file-tree events ──────────────────────────────
+    // Operations like git checkout / npm install / builds send dozens of
+    // events in rapid succession.  Processing each one synchronously
+    // (shallow-copy folders + full convertToTreeData) overwhelms the
+    // main thread and freezes / crashes the tab.
+    //
+    // Instead, accumulate events and flush once per animation frame.
+    // This collapses 50 rapid events into a single folders update + one
+    // tree rebuild.
+    type PendingEvent = { type: string; filePath: string; tokenCount: number };
+    let pendingEvents: PendingEvent[] = [];
+    let flushRafId: number | null = null;
+
+    const flushPendingEvents = () => {
+      flushRafId = null;
+      if (pendingEvents.length === 0) return;
+
+      // Snapshot and clear before the setState
+      const batch = pendingEvents;
+      pendingEvents = [];
+
+      setFolders((prev) => {
+        if (!prev) return prev;
+        const updated = { ...prev };
+
+        for (const evt of batch) {
+          if (evt.type === 'file_added') {
+            insertIntoFolders(updated, evt.filePath, evt.tokenCount);
+          } else if (evt.type === 'file_modified') {
+            updateTokenInFolders(updated, evt.filePath, evt.tokenCount);
+          } else if (evt.type === 'file_deleted') {
+            removeFromFolders(updated, evt.filePath);
+          }
+        }
+
+        // Single tree rebuild for the entire batch
+        try {
+          const treeNodes = convertToTreeData(updated);
+          setTreeData(treeNodes);
+        } catch (e) {
+          console.warn('📂 FILE_TREE_WS: tree rebuild error:', e);
+        }
+
+        return updated;
+      });
+    };
+
+    const enqueueEvent = (type: string, filePath: string, tokenCount: number) => {
+      pendingEvents.push({ type, filePath, tokenCount });
+      if (flushRafId === null) {
+        flushRafId = requestAnimationFrame(flushPendingEvents);
+      }
+    };
+
     const connect = () => {
       if (isUnmounting) return;
       ws = new WebSocket(wsUrl);
@@ -536,29 +603,9 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
             return;
           }
 
-          console.log(`📂 FILE_TREE_WS: ${type} — ${filePath} (${tokenCount ?? 0} tokens)`);
-
-          setFolders((prev) => {
-            if (!prev) return prev;
-            const updated = { ...prev };
-
-            if (type === 'file_added') {
-              insertIntoFolders(updated, filePath, tokenCount ?? 0);
-            } else if (type === 'file_modified') {
-              updateTokenInFolders(updated, filePath, tokenCount ?? 0);
-            } else if (type === 'file_deleted') {
-              removeFromFolders(updated, filePath);
-            }
-
-            try {
-              const treeNodes = convertToTreeData(updated);
-              setTreeData(treeNodes);
-            } catch (e) {
-              console.warn('📂 FILE_TREE_WS: tree rebuild error:', e);
-            }
-
-            return updated;
-          });
+          // Batch into the next animation frame instead of processing
+          // each event synchronously (prevents freeze on bulk file changes)
+          enqueueEvent(type, filePath, tokenCount ?? 0);
         } catch (e) {
           console.warn('📂 FILE_TREE_WS: message error:', e);
         }
@@ -582,6 +629,8 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     return () => {
       isUnmounting = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (flushRafId !== null) cancelAnimationFrame(flushRafId);
+      flushPendingEvents(); // flush any remaining events before disconnect
       if (ws && ws.readyState <= WebSocket.OPEN) {
         ws.close();
       }
@@ -888,7 +937,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   }, []);
 
   // Function to programmatically add files to context
-  const addFilesToContext = useCallback(async (filePaths: string[]) => {
+  const addFilesToContext = useCallback(async (filePaths: string[], options?: { isAutoAdd?: boolean }) => {
     try {
       // Validate paths before adding — extractAllFilesFromDiff can produce garbage
       // paths from malformed diff content (e.g. code fragments concatenated with filenames)
@@ -915,12 +964,69 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         return newKeys;
       });
 
+      // Track auto-added heritage when the option is set
+      if (options?.isAutoAdd) {
+        setAutoAddedFiles(prev => {
+          const next = new Set(prev);
+          validPaths.forEach(p => next.add(p));
+          setTabState('ZIYA_AUTO_ADDED_FILES', JSON.stringify([...next]));
+          return next;
+        });
+      }
+
       console.log('📁 CONTEXT: Files added to context successfully');
     } catch (error) {
       console.error('Error adding files to context:', error);
       throw error;
     }
   }, [setCheckedKeys]);
+
+  // Remove all auto-added files from context and return stats
+  const removeAutoAddedFiles = useCallback((): { removedCount: number; tokensRecovered: number } => {
+    const currentAutoAdded = autoAddedFilesRef.current;
+    if (currentAutoAdded.size === 0) return { removedCount: 0, tokensRecovered: 0 };
+
+    // Calculate tokens that will be recovered
+    let tokensRecovered = 0;
+    currentAutoAdded.forEach(filePath => {
+      const accurate = accurateTokenCounts[filePath];
+      if (accurate && accurate.count > 0) {
+        tokensRecovered += accurate.count;
+      } else if (folders) {
+        const estimated = getFolderTokenCount(filePath, folders);
+        if (estimated > 0) tokensRecovered += estimated;
+      }
+    });
+
+    const removedCount = currentAutoAdded.size;
+
+    // Remove from checked keys
+    setCheckedKeys(prev => {
+      const filtered = prev.filter(key => !currentAutoAdded.has(String(key)));
+      setTabState('ZIYA_CHECKED_FOLDERS', JSON.stringify(filtered));
+      return filtered;
+    });
+
+    // Clear the auto-added set
+    setAutoAddedFiles(new Set());
+    setTabState('ZIYA_AUTO_ADDED_FILES', JSON.stringify([]));
+
+    console.log(`📁 CONTEXT: Removed ${removedCount} auto-added files, recovered ~${tokensRecovered} tokens`);
+    return { removedCount, tokensRecovered };
+  }, [accurateTokenCounts, folders, getFolderTokenCount, setCheckedKeys]);
+
+  // Prune auto-added entries that are no longer in checked keys
+  useEffect(() => {
+    const checkedSet = new Set(checkedKeys.map(String));
+    setAutoAddedFiles(prev => {
+      const pruned = new Set([...prev].filter(f => checkedSet.has(f)));
+      if (pruned.size !== prev.size) {
+        setTabState('ZIYA_AUTO_ADDED_FILES', JSON.stringify([...pruned]));
+        return pruned;
+      }
+      return prev;
+    });
+  }, [checkedKeys]);
 
   const contextValue = useMemo(() => ({
     folders,
@@ -938,9 +1044,11 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     scanError,
     accurateTokenCounts,
     addFilesToContext,
+    autoAddedFiles,
+    removeAutoAddedFiles,
     // Remove forceRefreshCounter from dependencies to prevent unnecessary re-renders
   }), [folders, treeData, checkedKeys, searchValue, expandedKeys, isScanning,
-    scanProgress, scanError, accurateTokenCounts, addFilesToContext]);
+    scanProgress, scanError, accurateTokenCounts, addFilesToContext, autoAddedFiles, removeAutoAddedFiles]);
 
   return (
     <FolderContext.Provider value={contextValue}>
@@ -973,6 +1081,8 @@ export const useFolderContext = () => {
       getFolderTokenCount: () => 0,
       accurateTokenCounts: {} as Record<string, { count: number; timestamp: number }>,
       addFilesToContext: async () => { },
+      autoAddedFiles: new Set<string>(),
+      removeAutoAddedFiles: () => ({ removedCount: 0, tokensRecovered: 0 }),
     };
   }
   return context;

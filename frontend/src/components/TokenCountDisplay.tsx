@@ -8,20 +8,19 @@ import { ModelSettings } from './ModelConfigModal';
 import { useActiveChat } from '../context/ActiveChatContext';
 import { useConversationList } from '../context/ConversationListContext';
 import { CheckCircleOutlined, CloseCircleOutlined, DashboardOutlined } from '@ant-design/icons';
-
 // Global request deduplication cache
 const activeRequests = new Map<string, Promise<any>>();
 
 const getTokenCount = async (text: string): Promise<number> => {
     // Create a cache key based on the text content
     const cacheKey = `token-count-${text.length}-${text.substring(0, 100)}`;
-    
+
     // If there's already an active request for this text, return the same promise
     if (activeRequests.has(cacheKey)) {
         console.debug('Reusing existing token count request');
-        return activeRequests.get(cacheKey);
+        return activeRequests.get(cacheKey)!.catch(() => 0);
     }
-    
+
     try {
         const requestPromise = fetch('/api/token-count', {
             method: 'POST',
@@ -35,22 +34,18 @@ const getTokenCount = async (text: string): Promise<number> => {
             const data = await response.json();
             return data.token_count;
         });
-        
+
         // Cache the promise
         activeRequests.set(cacheKey, requestPromise);
-        
+
         // Clean up cache when request completes
         requestPromise.finally(() => activeRequests.delete(cacheKey));
-        
+
         return requestPromise;
     } catch (error) {
         // Clean up cache on error
         activeRequests.delete(cacheKey);
-        message.error({
-            content: error instanceof Error ? error.message : 'An unknown error occurred',
-            duration: 5
-        });
-        console.error('Error getting token count:', error);
+        console.warn('Error getting token count:', error);
         return 0;
     }
 };
@@ -97,7 +92,7 @@ export const TokenCountDisplay = memo(() => {
     const lastTokenCalcRunRef = useRef<number>(0);
     const [cacheHealth, setCacheHealth] = useState<any>(null);
     const [showTelemetryModal, setShowTelemetryModal] = useState(false);
-    
+
     const tokenLimit = modelLimits.max_input_tokens || modelLimits.token_limit || 4096;
     const warningThreshold = useMemo(() => Math.floor(tokenLimit * 0.7), [tokenLimit]);
     const dangerThreshold = useMemo(() => Math.floor(tokenLimit * 0.9), [tokenLimit]);
@@ -192,6 +187,11 @@ export const TokenCountDisplay = memo(() => {
         };
 
         checkAstEnabled();
+
+        return () => {
+            isMounted = false;
+            if (pollForCompletion) clearInterval(pollForCompletion);
+        };
     }, [fetchAstResolutions]);
 
     // Check MCP status and fetch token costs
@@ -234,7 +234,6 @@ export const TokenCountDisplay = memo(() => {
 
         return () => {
             isMounted = false;
-            if (pollForCompletion) clearInterval(pollForCompletion);
         };
     }, []);
 
@@ -329,7 +328,7 @@ export const TokenCountDisplay = memo(() => {
             const response = await fetch('/api/telemetry/cache-health');
             const data = await response.json();
             setCacheHealth(data);
-            
+
             // Show warning if cache is broken
             if (data.health_summary && !data.health_summary.cache_working) {
                 console.warn('🚨 CACHE HEALTH: Cache is not working properly');
@@ -383,7 +382,7 @@ export const TokenCountDisplay = memo(() => {
                 const response = await fetch('/api/current-model', {
                     signal: abortController.signal
                 });
-                
+
                 if (!response.ok) {
                     throw new Error('Failed to fetch current model settings');
                 }
@@ -433,7 +432,7 @@ export const TokenCountDisplay = memo(() => {
 
     // Listen for model settings changes
     useEffect(() => {
-    const handleModelSettingsChange = async (event: CustomEvent) => {
+        const handleModelSettingsChange = async (event: CustomEvent) => {
             // CRITICAL FIX: Prevent redundant fetches when switching conversations
             const now = Date.now();
             if (now - modelCapabilitiesFetchRef.current < 2000) {
@@ -446,7 +445,7 @@ export const TokenCountDisplay = memo(() => {
 
             try {
                 const detail = event.detail;
-                
+
                 // Check if we have direct settings/capabilities structure
                 if (detail?.settings && detail?.capabilities) {
                     const { settings, capabilities } = detail;
@@ -458,7 +457,7 @@ export const TokenCountDisplay = memo(() => {
                     });
                     return;
                 }
-                
+
                 // Check if we have capabilities directly on the detail (from model change)
                 if (detail?.capabilities || detail?.token_limit || detail?.max_input_tokens) {
                     const tokenLimit = detail.capabilities?.token_limit || detail.token_limit || detail.max_input_tokens || 4096;
@@ -469,18 +468,18 @@ export const TokenCountDisplay = memo(() => {
                     });
                     return;
                 }
-                
-                // Fallback: fetch fresh data from API
-                    const response = await fetch('/api/current-model');
-                    if (!response.ok) throw new Error(`Failed to fetch model settings: ${response.status}`);
-                    const data = await response.json();
 
-                    const tokenLimit = data.capabilities?.token_limit || data.settings?.max_input_tokens || 4096;
-                    setModelLimits({
-                        token_limit: tokenLimit,
-                        max_input_tokens: data.settings.max_input_tokens || tokenLimit,
-                        max_output_tokens: data.settings.max_output_tokens
-                    });
+                // Fallback: fetch fresh data from API
+                const response = await fetch('/api/current-model');
+                if (!response.ok) throw new Error(`Failed to fetch model settings: ${response.status}`);
+                const data = await response.json();
+
+                const tokenLimit = data.capabilities?.token_limit || data.settings?.max_input_tokens || 4096;
+                setModelLimits({
+                    token_limit: tokenLimit,
+                    max_input_tokens: data.settings.max_input_tokens || tokenLimit,
+                    max_output_tokens: data.settings.max_output_tokens
+                });
             } catch (error) {
                 console.error('Error updating token limits:', error);
             }
@@ -495,43 +494,43 @@ export const TokenCountDisplay = memo(() => {
 
     const combinedTokenCount = totalTokenCount + chatTokenCount + (astEnabled ? astTokenCount : 0) + (mcpEnabled && mcpServerCount > 0 ? mcpTokenCount : 0);
 
-  // Optimized token calculation with better debouncing
+    // Optimized token calculation with better debouncing
     const performTokenCalculation = useCallback(() => {
         // Helper to recursively calculate total tokens for a folder, using accurate counts when available
         // This matches the logic used by the file explorer tree
         const calculateFolderTotal = (path: string, folderData: any): number => {
             if (!folderData) return 0;
-            
+
             // Navigate to the folder in the structure
             let current = folderData;
             const parts = path.split('/').filter(p => p.length > 0);
-            
+
             for (const part of parts) {
                 if (!current || !current[part]) {
                     return 0;
                 }
                 current = current[part];
-                
+
                 // If not the last part, descend into children
                 if (parts.indexOf(part) < parts.length - 1) {
                     current = current.children;
                     if (!current) return 0;
                 }
             }
-            
+
             // If it's a file, use accurate count if available
             if (!current.children) {
                 const accurateData = accurateTokenCounts[path];
                 return (accurateData && accurateData.count > 0) ? accurateData.count : (current.token_count || 0);
             }
-            
+
             // For directories, recursively sum all children using accurate counts
             let total = 0;
             const children = current.children || {};
-            
+
             for (const [childName, childNode] of Object.entries(children) as [string, any][]) {
                 const childPath = path ? `${path}/${childName}` : childName;
-                
+
                 if (childNode.children) {
                     // Subdirectory - recurse
                     total += calculateFolderTotal(childPath, folderData);
@@ -544,10 +543,10 @@ export const TokenCountDisplay = memo(() => {
                     }
                 }
             }
-            
+
             return total;
         };
-        
+
         console.log('Token calculation triggered');
         if (!folders) return;
 
@@ -556,12 +555,12 @@ export const TokenCountDisplay = memo(() => {
             const currentFolder = currentFolderId ? chatFolders.find(f => f.id === currentFolderId) : null;
 
             let total = 0;
-      
-      // Use a more efficient calculation approach
-      const checkedSet = new Set(checkedKeys.map(String));
+
+            // Use a more efficient calculation approach
+            const checkedSet = new Set(checkedKeys.map(String));
             const details: { [key: string]: number } = {};
             let accurateFileCount = 0;
-            
+
             // Helper to check if a path's parent is already checked (to avoid double-counting)
             const hasCheckedParent = (path: string): boolean => {
                 const parts = path.split('/');
@@ -573,7 +572,7 @@ export const TokenCountDisplay = memo(() => {
                 }
                 return false;
             };
-            
+
             // Use getFolderTokenCount for each checked path
             checkedKeys.forEach(key => {
                 const path = String(key);
@@ -581,15 +580,15 @@ export const TokenCountDisplay = memo(() => {
                     tokenDetailsRef.current = {};
                     return;
                 }
-                
+
                 // Skip this path if its parent is already checked
                 if (hasCheckedParent(path)) {
                     return;
                 }
-                
+
                 // Use recursive calculation that matches file explorer logic
                 let tokens = calculateFolderTotal(path, folders);
-                
+
                 // Skip tool-backed files (marked as -1) from total count
                 if (tokens === -1) {
                     details[path] = -1; // Mark but don't add to total
@@ -603,7 +602,7 @@ export const TokenCountDisplay = memo(() => {
 
             tokenDetailsRef.current = details;
             setTotalTokenCount(total);
-            
+
             // Log accuracy info
             if (accurateFileCount > 0 && accurateFileCount % 5 === 0) {
                 console.log(`Using accurate token counts for ${accurateFileCount} files`);
@@ -620,7 +619,7 @@ export const TokenCountDisplay = memo(() => {
         if (tokenCalculationTimeoutRef.current) {
             clearTimeout(tokenCalculationTimeoutRef.current);
         }
-        
+
         // Schedule calculation for later - don't block UI
         tokenCalculationTimeoutRef.current = setTimeout(() => {
             performTokenCalculation();
@@ -715,12 +714,12 @@ export const TokenCountDisplay = memo(() => {
         // Only update tokens if we have messages
         if (hasMessagesChanged(currentMessages)) {
             console.debug('Updating chat tokens for conversation:', currentConversationId);
-        // Debounce token updates to avoid blocking UI during conversation switch
-        const timeoutId = setTimeout(() => {
-            updateChatTokens();
-        }, 1500);
+            // Debounce token updates to avoid blocking UI during conversation switch
+            const timeoutId = setTimeout(() => {
+                updateChatTokens();
+            }, 1500);
 
-        return () => clearTimeout(timeoutId);
+            return () => clearTimeout(timeoutId);
         }
     }, [currentMessages, updateChatTokens, currentConversationId, hasMessagesChanged, isStreaming]);
 
@@ -735,7 +734,7 @@ export const TokenCountDisplay = memo(() => {
                 getTokenCount(allText).then(tokens => setChatTokenCount(tokens));
             }
         };
-        
+
         window.addEventListener('messagesMutedChanged', handleMuteChange as EventListener);
         return () => window.removeEventListener('messagesMutedChanged', handleMuteChange as EventListener);
     }, [currentConversationId]);
@@ -746,7 +745,7 @@ export const TokenCountDisplay = memo(() => {
                 updateChatTokens();
             }
         };
-        
+
         window.addEventListener('conversationsUpdated', handleConversationUpdate);
         return () => window.removeEventListener('conversationsUpdated', handleConversationUpdate);
     }, [currentMessages, updateChatTokens]);
@@ -775,25 +774,25 @@ export const TokenCountDisplay = memo(() => {
     // Helper to get file token display with accuracy indicator
     const getFileTokenDisplay = () => {
         const accurateCount = Object.keys(accurateTokenCounts).length;
-        
+
         // Check if we have any tool-backed files (marked as -1)
         const hasToolBackedFiles = Object.values(tokenDetailsRef.current).some(count => count === -1);
-        
+
         const selectedFiles = checkedKeys.filter(key => {
             const keyStr = String(key);
-            return keyStr.includes('.') && !keyStr.endsWith('/') && 
-                   keyStr.split('/').pop()?.includes('.');
+            return keyStr.includes('.') && !keyStr.endsWith('/') &&
+                keyStr.split('/').pop()?.includes('.');
         }).length;
-        
+
         const isFullyAccurate = selectedFiles > 0 && accurateCount === selectedFiles;
         const hasAnyAccurate = accurateCount > 0;
-        
+
         return `${totalTokenCount.toLocaleString()}${hasToolBackedFiles ? '(*)' : ''}${isFullyAccurate ? '✓' : (hasAnyAccurate ? '~' : '')}`;
     };
 
     // Build breakdown items (Files, MCP, AST, Chat)
     const breakdownItems: React.ReactElement[] = [];
-    
+
     // Always show Files
     breakdownItems.push(
         <Tooltip key="files" title="Tokens from selected files">
@@ -802,7 +801,7 @@ export const TokenCountDisplay = memo(() => {
             </span>
         </Tooltip>
     );
-    
+
     // Add MCP if enabled and has non-builtin servers
     if (mcpEnabled && mcpServerCount > 0) {
         breakdownItems.push(
@@ -813,7 +812,7 @@ export const TokenCountDisplay = memo(() => {
             </Tooltip>
         );
     }
-    
+
     // Add AST if enabled
     if (astEnabled && astTokenCount > 0) {
         const astComponent = astResolutionsLoaded ? (
@@ -852,14 +851,14 @@ export const TokenCountDisplay = memo(() => {
                 {astResolutionLoading && <span style={{ marginLeft: '4px' }}>⟳</span>}
             </span>
         );
-        
+
         breakdownItems.push(
             <Tooltip key="ast" title="AST tokens - click to change resolution">
                 {astComponent}
             </Tooltip>
         );
     }
-    
+
     // Always show Chat
     breakdownItems.push(
         <Tooltip key="chat" title="Tokens from chat history">
@@ -872,13 +871,13 @@ export const TokenCountDisplay = memo(() => {
     // Only refresh cache health when modal is open
     useEffect(() => {
         if (!showTelemetryModal) return;
-        
+
         // Fetch immediately when modal opens
         fetchCacheHealth();
-        
+
         // Then refresh every 10 seconds while modal is open
         const interval = setInterval(fetchCacheHealth, 10000);
-        
+
         return () => clearInterval(interval);
     }, [fetchCacheHealth, showTelemetryModal]);
 
@@ -890,15 +889,15 @@ export const TokenCountDisplay = memo(() => {
                 `⚠️ Cache Issues Detected (${cacheHealth.health_summary?.issues_detected} conversations)`
         }>
             {cacheHealth.health_summary?.cache_working ? (
-                <CheckCircleOutlined style={{ marginLeft: '8px', color: '#52c41a', cursor: 'pointer' }} 
+                <CheckCircleOutlined style={{ marginLeft: '8px', color: '#52c41a', cursor: 'pointer' }}
                     onClick={() => setShowTelemetryModal(true)} />
             ) : (
-                <CloseCircleOutlined style={{ 
-                    marginLeft: '8px', 
-                    color: '#ff4d4f', 
+                <CloseCircleOutlined style={{
+                    marginLeft: '8px',
+                    color: '#ff4d4f',
                     cursor: 'pointer',
                     animation: 'pulse 2s infinite'
-                }} 
+                }}
                     onClick={() => setShowTelemetryModal(true)} />
             )}
         </Tooltip>
@@ -960,7 +959,7 @@ export const TokenCountDisplay = memo(() => {
                         </span>
                     </Tooltip>
                 </div>
-                
+
                 {/* Breakdown row */}
                 <div style={{
                     display: 'flex',
@@ -971,7 +970,7 @@ export const TokenCountDisplay = memo(() => {
                 }}>
                     {breakdownItems}
                 </div>
-                
+
                 <Tooltip title={`${combinedTokenCount.toLocaleString()} of ${tokenLimit.toLocaleString()} maximum input tokens used`} mouseEnterDelay={0.5}>
                     <div>
                         <Progress
@@ -991,187 +990,187 @@ export const TokenCountDisplay = memo(() => {
     return (
         <>
             <div className="token-display-container">
-            <div className="token-display" style={{ padding: '0 8px' }}>
-                {tokenDisplay}
-                
-                {/* Add cache health and telemetry controls */}
-                <div style={{ 
-                    display: 'flex', 
-                    justifyContent: 'flex-end', 
-                    alignItems: 'center',
-                    padding: '4px 8px',
-                    gap: '8px'
-                }}>
-                    {cacheHealthIndicator}
-                    
-                    <Tooltip title="Open Telemetry Dashboard">
-                        <DashboardOutlined 
-                            style={{ cursor: 'pointer', color: '#1890ff', fontSize: '14px' }}
-                            onClick={() => setShowTelemetryModal(true)}
-                        />
-                    </Tooltip>
-                </div>
-            </div>
-            
-            {/* Telemetry Modal */}
-            <Modal
-                title="Cache & Throttling Telemetry"
-                open={showTelemetryModal}
-                onCancel={() => setShowTelemetryModal(false)}
-                width={1200}
-                footer={null}
-                styles={{
-                    body: { 
-                        maxHeight: '70vh', 
-                        overflow: 'auto',
-                        backgroundColor: isDarkMode ? '#141414' : '#ffffff'
-                    }
-                }}
-            >
-                {cacheHealth && (
-                    <div>
-                        {/* Health Alert */}
-                        {!cacheHealth.health_summary?.cache_working && (
-                            <div style={{
-                                backgroundColor: '#fff1f0',
-                                border: '1px solid #ffa39e',
-                                borderRadius: '4px',
-                                padding: '12px',
-                                marginBottom: '16px'
-                            }}>
-                                <div style={{ fontWeight: 'bold', color: '#cf1322', marginBottom: '8px' }}>
-                                    🚨 Cache Issues Detected
-                                </div>
-                                <div style={{ fontSize: '13px', color: '#434343' }}>
-                                    {cacheHealth.health_summary.issues_detected} conversation(s) with cache problems. 
-                                    Caching may be disabled or broken, leading to increased throttling.
-                                </div>
-                            </div>
-                        )}
+                <div className="token-display" style={{ padding: '0 8px' }}>
+                    {tokenDisplay}
 
-                        {/* Global Stats Grid */}
-                        <div style={{ 
-                            display: 'grid', 
-                            gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-                            gap: '16px',
-                            marginBottom: '24px'
-                        }}>
-                            <div style={{ 
-                                padding: '16px', 
-                                backgroundColor: isDarkMode ? '#1f1f1f' : '#fafafa',
-                                borderRadius: '4px'
-                            }}>
-                                <div style={{ fontSize: '12px', color: '#8c8c8c' }}>Cache Efficiency</div>
-                                <div style={{ 
-                                    fontSize: '24px', 
-                                    fontWeight: 'bold',
-                                    color: cacheHealth.global_stats?.overall_cache_efficiency > 50 ? '#52c41a' : '#ff4d4f'
-                                }}>
-                                    {cacheHealth.global_stats?.overall_cache_efficiency?.toFixed(1)}%
-                                </div>
-                            </div>
+                    {/* Add cache health and telemetry controls */}
+                    <div style={{
+                        display: 'flex',
+                        justifyContent: 'flex-end',
+                        alignItems: 'center',
+                        padding: '4px 8px',
+                        gap: '8px'
+                    }}>
+                        {cacheHealthIndicator}
 
-                            <div style={{ 
-                                padding: '16px', 
-                                backgroundColor: isDarkMode ? '#1f1f1f' : '#fafafa',
-                                borderRadius: '4px'
-                            }}>
-                                <div style={{ fontSize: '12px', color: '#8c8c8c' }}>Cost Savings</div>
-                                <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#52c41a' }}>
-                                    {cacheHealth.global_stats?.estimated_cost_savings_pct?.toFixed(1)}%
-                                </div>
-                                <div style={{ fontSize: '11px', color: '#8c8c8c', marginTop: '4px' }}>
-                                    {cacheHealth.global_stats?.total_cached_tokens?.toLocaleString()} tokens cached
-                                </div>
-                            </div>
-
-                            <div style={{ 
-                                padding: '16px', 
-                                backgroundColor: isDarkMode ? '#1f1f1f' : '#fafafa',
-                                borderRadius: '4px'
-                            }}>
-                                <div style={{ fontSize: '12px', color: '#8c8c8c' }}>Throttle Events</div>
-                                <div style={{ 
-                                    fontSize: '24px', 
-                                    fontWeight: 'bold',
-                                    color: cacheHealth.health_summary?.throttle_pressure === 'high' ? '#ff4d4f' :
-                                           cacheHealth.health_summary?.throttle_pressure === 'medium' ? '#faad14' : '#52c41a'
-                                }}>
-                                    {cacheHealth.global_stats?.total_throttle_events}
-                                </div>
-                                <div style={{ fontSize: '11px', color: '#8c8c8c', marginTop: '4px' }}>
-                                    Pressure: {cacheHealth.health_summary?.throttle_pressure?.toUpperCase()}
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* Recent Conversations Table */}
-                        <div style={{ marginTop: '24px' }}>
-                            <h3>Recent Conversations</h3>
-                            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
-                                <thead>
-                                    <tr style={{ borderBottom: '2px solid #d9d9d9' }}>
-                                        <th style={{ padding: '8px', textAlign: 'left' }}>ID</th>
-                                        <th style={{ padding: '8px', textAlign: 'right' }}>Iterations</th>
-                                        <th style={{ padding: '8px', textAlign: 'right' }}>Fresh</th>
-                                        <th style={{ padding: '8px', textAlign: 'right' }}>Cached</th>
-                                        <th style={{ padding: '8px', textAlign: 'center' }}>Efficiency</th>
-                                        <th style={{ padding: '8px', textAlign: 'center' }}>Throttles</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {cacheHealth.conversations?.slice(0, 10).map((conv: any) => (
-                                        <tr key={conv.conversation_id} style={{ 
-                                            borderBottom: '1px solid #f0f0f0',
-                                            backgroundColor: conv.has_cache_issue ? 'rgba(255, 77, 79, 0.05)' : 'transparent'
-                                        }}>
-                                            <td style={{ padding: '8px' }}>
-                                                <code style={{ fontSize: '10px' }}>
-                                                    {conv.conversation_id.substring(0, 12)}...
-                                                </code>
-                                            </td>
-                                            <td style={{ padding: '8px', textAlign: 'right' }}>{conv.iteration_count}</td>
-                                            <td style={{ padding: '8px', textAlign: 'right' }}>
-                                                {conv.fresh_tokens.toLocaleString()}
-                                            </td>
-                                            <td style={{ padding: '8px', textAlign: 'right', color: conv.cached_tokens > 0 ? '#52c41a' : '#ff4d4f' }}>
-                                                {conv.cached_tokens.toLocaleString()}
-                                                {conv.has_cache_issue && (
-                                                    <span style={{ marginLeft: '4px' }}>⚠️</span>
-                                                )}
-                                            </td>
-                                            <td style={{ padding: '8px', textAlign: 'center' }}>
-                                                <span style={{ 
-                                                    color: conv.cache_efficiency > 50 ? '#52c41a' : 
-                                                           conv.cache_efficiency > 20 ? '#faad14' : '#ff4d4f'
-                                                }}>
-                                                    {conv.cache_efficiency.toFixed(1)}%
-                                                </span>
-                                            </td>
-                                            <td style={{ padding: '8px', textAlign: 'center' }}>
-                                                <span style={{ 
-                                                    color: conv.throttle_count === 0 ? '#52c41a' : 
-                                                           conv.throttle_count < 3 ? '#faad14' : '#ff4d4f'
-                                                }}>
-                                                    {conv.throttle_count > 0 ? `${conv.throttle_count}x` : '✓'}
-                                                </span>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
+                        <Tooltip title="Open Telemetry Dashboard">
+                            <DashboardOutlined
+                                style={{ cursor: 'pointer', color: '#1890ff', fontSize: '14px' }}
+                                onClick={() => setShowTelemetryModal(true)}
+                            />
+                        </Tooltip>
                     </div>
-                )}
-            </Modal>
-            
-            <style>{`
+                </div>
+
+                {/* Telemetry Modal */}
+                <Modal
+                    title="Cache & Throttling Telemetry"
+                    open={showTelemetryModal}
+                    onCancel={() => setShowTelemetryModal(false)}
+                    width={1200}
+                    footer={null}
+                    styles={{
+                        body: {
+                            maxHeight: '70vh',
+                            overflow: 'auto',
+                            backgroundColor: isDarkMode ? '#141414' : '#ffffff'
+                        }
+                    }}
+                >
+                    {cacheHealth && (
+                        <div>
+                            {/* Health Alert */}
+                            {!cacheHealth.health_summary?.cache_working && (
+                                <div style={{
+                                    backgroundColor: '#fff1f0',
+                                    border: '1px solid #ffa39e',
+                                    borderRadius: '4px',
+                                    padding: '12px',
+                                    marginBottom: '16px'
+                                }}>
+                                    <div style={{ fontWeight: 'bold', color: '#cf1322', marginBottom: '8px' }}>
+                                        🚨 Cache Issues Detected
+                                    </div>
+                                    <div style={{ fontSize: '13px', color: '#434343' }}>
+                                        {cacheHealth.health_summary.issues_detected} conversation(s) with cache problems.
+                                        Caching may be disabled or broken, leading to increased throttling.
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Global Stats Grid */}
+                            <div style={{
+                                display: 'grid',
+                                gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                                gap: '16px',
+                                marginBottom: '24px'
+                            }}>
+                                <div style={{
+                                    padding: '16px',
+                                    backgroundColor: isDarkMode ? '#1f1f1f' : '#fafafa',
+                                    borderRadius: '4px'
+                                }}>
+                                    <div style={{ fontSize: '12px', color: '#8c8c8c' }}>Cache Efficiency</div>
+                                    <div style={{
+                                        fontSize: '24px',
+                                        fontWeight: 'bold',
+                                        color: cacheHealth.global_stats?.overall_cache_efficiency > 50 ? '#52c41a' : '#ff4d4f'
+                                    }}>
+                                        {cacheHealth.global_stats?.overall_cache_efficiency?.toFixed(1)}%
+                                    </div>
+                                </div>
+
+                                <div style={{
+                                    padding: '16px',
+                                    backgroundColor: isDarkMode ? '#1f1f1f' : '#fafafa',
+                                    borderRadius: '4px'
+                                }}>
+                                    <div style={{ fontSize: '12px', color: '#8c8c8c' }}>Cost Savings</div>
+                                    <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#52c41a' }}>
+                                        {cacheHealth.global_stats?.estimated_cost_savings_pct?.toFixed(1)}%
+                                    </div>
+                                    <div style={{ fontSize: '11px', color: '#8c8c8c', marginTop: '4px' }}>
+                                        {cacheHealth.global_stats?.total_cached_tokens?.toLocaleString()} tokens cached
+                                    </div>
+                                </div>
+
+                                <div style={{
+                                    padding: '16px',
+                                    backgroundColor: isDarkMode ? '#1f1f1f' : '#fafafa',
+                                    borderRadius: '4px'
+                                }}>
+                                    <div style={{ fontSize: '12px', color: '#8c8c8c' }}>Throttle Events</div>
+                                    <div style={{
+                                        fontSize: '24px',
+                                        fontWeight: 'bold',
+                                        color: cacheHealth.health_summary?.throttle_pressure === 'high' ? '#ff4d4f' :
+                                            cacheHealth.health_summary?.throttle_pressure === 'medium' ? '#faad14' : '#52c41a'
+                                    }}>
+                                        {cacheHealth.global_stats?.total_throttle_events}
+                                    </div>
+                                    <div style={{ fontSize: '11px', color: '#8c8c8c', marginTop: '4px' }}>
+                                        Pressure: {cacheHealth.health_summary?.throttle_pressure?.toUpperCase()}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Recent Conversations Table */}
+                            <div style={{ marginTop: '24px' }}>
+                                <h3>Recent Conversations</h3>
+                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                                    <thead>
+                                        <tr style={{ borderBottom: '2px solid #d9d9d9' }}>
+                                            <th style={{ padding: '8px', textAlign: 'left' }}>ID</th>
+                                            <th style={{ padding: '8px', textAlign: 'right' }}>Iterations</th>
+                                            <th style={{ padding: '8px', textAlign: 'right' }}>Fresh</th>
+                                            <th style={{ padding: '8px', textAlign: 'right' }}>Cached</th>
+                                            <th style={{ padding: '8px', textAlign: 'center' }}>Efficiency</th>
+                                            <th style={{ padding: '8px', textAlign: 'center' }}>Throttles</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {cacheHealth.conversations?.slice(0, 10).map((conv: any) => (
+                                            <tr key={conv.conversation_id} style={{
+                                                borderBottom: '1px solid #f0f0f0',
+                                                backgroundColor: conv.has_cache_issue ? 'rgba(255, 77, 79, 0.05)' : 'transparent'
+                                            }}>
+                                                <td style={{ padding: '8px' }}>
+                                                    <code style={{ fontSize: '10px' }}>
+                                                        {conv.conversation_id.substring(0, 12)}...
+                                                    </code>
+                                                </td>
+                                                <td style={{ padding: '8px', textAlign: 'right' }}>{conv.iteration_count}</td>
+                                                <td style={{ padding: '8px', textAlign: 'right' }}>
+                                                    {conv.fresh_tokens.toLocaleString()}
+                                                </td>
+                                                <td style={{ padding: '8px', textAlign: 'right', color: conv.cached_tokens > 0 ? '#52c41a' : '#ff4d4f' }}>
+                                                    {conv.cached_tokens.toLocaleString()}
+                                                    {conv.has_cache_issue && (
+                                                        <span style={{ marginLeft: '4px' }}>⚠️</span>
+                                                    )}
+                                                </td>
+                                                <td style={{ padding: '8px', textAlign: 'center' }}>
+                                                    <span style={{
+                                                        color: conv.cache_efficiency > 50 ? '#52c41a' :
+                                                            conv.cache_efficiency > 20 ? '#faad14' : '#ff4d4f'
+                                                    }}>
+                                                        {conv.cache_efficiency.toFixed(1)}%
+                                                    </span>
+                                                </td>
+                                                <td style={{ padding: '8px', textAlign: 'center' }}>
+                                                    <span style={{
+                                                        color: conv.throttle_count === 0 ? '#52c41a' :
+                                                            conv.throttle_count < 3 ? '#faad14' : '#ff4d4f'
+                                                    }}>
+                                                        {conv.throttle_count > 0 ? `${conv.throttle_count}x` : '✓'}
+                                                    </span>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
+                </Modal>
+
+                <style>{`
                 @keyframes pulse {
                     0%, 100% { opacity: 1; }
                     50% { opacity: 0.5; }
                 }
             `}</style>
-        </div>
+            </div>
         </>
     );
 });
