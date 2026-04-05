@@ -1089,6 +1089,105 @@ class DiffRegressionTest(unittest.TestCase):
         """Test fixing misplaced closing brace in drawioEnhancer.ts"""
         self.run_diff_test('drawio_enhancer_brace_fix')
 
+    def test_variable_shadow_false_negative(self):
+        """Test that multi-hunk diffs applied to already-modified files don't produce false FAILED hunks.
+
+        Regression test for a variable-shadow bug: the distinctive-line search loop
+        `for i, file_line in enumerate(original_lines)` shadowed the outer hunk
+        iteration variable `i`, causing hunk_id_mapping lookups in the full-file-search
+        fallback to use a file-line index (~6000) instead of the hunk index (2).
+        This made hunk 4 remain PENDING and get incorrectly reported as FAILED.
+        """
+        # Forward apply test — original -> expected (standard path)
+        self.run_diff_test('variable_shadow_false_negative')
+
+    def test_variable_shadow_false_negative_already_applied(self):
+        """Verify that applying the variable_shadow diff to an already-modified file
+        correctly detects all hunks as applied (no false FAILED).
+
+        This is the exact scenario that triggered the variable-shadow bug:
+        system_patch writes all content but only marks some hunks as SUCCEEDED,
+        then difflib sees the already-applied file and must detect hunk 4
+        (the large overlay replacement) as already applied via the full-file-search
+        fallback — which previously failed due to the shadowed loop variable `i`.
+
+        This test calls run_difflib_stage directly with a partially-completed
+        pipeline to replicate the exact failure conditions.
+        """
+        test_case = 'variable_shadow_false_negative'
+        metadata, original, diff, expected = self.load_test_case(test_case)
+
+        # Start with the EXPECTED (post-apply) content — simulates system_patch
+        # having already written all changes to disk
+        test_file_path = os.path.join(self.temp_dir, metadata['target_file'])
+        os.makedirs(os.path.dirname(test_file_path), exist_ok=True)
+        from app.utils.diff_utils.pipeline.diff_pipeline import (
+            DiffPipeline, HunkStatus, HunkTracker, PipelineStage,
+        )
+        from app.utils.diff_utils.pipeline.pipeline_manager import run_difflib_stage
+
+        with open(test_file_path, 'w', encoding='utf-8') as f:
+            f.write(expected)
+
+        # Build a pipeline where hunks 2 and 3 are SUCCEEDED (system_patch),
+        # hunks 1 and 4 are still PENDING — creating the discontiguous
+        # mapping {1:1, 2:4} that triggers the shadow bug.
+        pipeline = DiffPipeline(test_file_path, diff)
+        for hunk_id in (1, 2, 3, 4):
+            pipeline.result.hunks[hunk_id] = HunkTracker(
+                hunk_id=hunk_id,
+                hunk_data={'number': hunk_id, 'old_start': 1},
+                status=HunkStatus.PENDING,
+                current_stage=PipelineStage.INIT,
+            )
+        pipeline.update_hunk_status(2, PipelineStage.SYSTEM_PATCH, HunkStatus.SUCCEEDED)
+        pipeline.update_hunk_status(3, PipelineStage.SYSTEM_PATCH, HunkStatus.SUCCEEDED)
+
+        # Build a diff containing ONLY hunks 1 and 4 (the pending ones).
+        # This simulates what the pipeline passes to difflib after system_patch.
+        diff_lines = diff.strip().split('\n')
+        header = diff_lines[:3]  # diff --git, ---, +++
+        pending_diff_hunks = []
+        current_hunk_lines = []
+        hunk_number = 0
+        for line in diff_lines[3:]:
+            if line.startswith('@@'):
+                if current_hunk_lines and hunk_number in (1, 4):
+                    pending_diff_hunks.extend(current_hunk_lines)
+                current_hunk_lines = [line]
+                hunk_number += 1
+            elif current_hunk_lines:
+                current_hunk_lines.append(line)
+        if current_hunk_lines and hunk_number in (1, 4):
+            pending_diff_hunks.extend(current_hunk_lines)
+        pending_diff = '\n'.join(header + pending_diff_hunks) + '\n'
+
+        # Run ONLY the difflib stage with file_was_modified=True
+        modified_lines = expected.splitlines(True)
+        run_difflib_stage(
+            pipeline=pipeline,
+            file_path=test_file_path,
+            git_diff=pending_diff,
+            original_lines=modified_lines,
+            file_was_modified=True,
+        )
+
+        # Hunk 4 must NOT be FAILED — its content IS in the file
+        hunk4_status = pipeline.result.hunks[4].status
+        self.assertNotEqual(
+            hunk4_status, HunkStatus.FAILED,
+            f"Hunk 4 status is {hunk4_status.value}. "
+                         f"This is the variable-shadow regression: hunk 4 was incorrectly "
+                         f"reported as FAILED because the inner enumerate(original_lines) "
+                         f"loop shadowed the outer hunk loop variable.")
+
+        # Hunk 1 should also be detected correctly
+        hunk1_status = pipeline.result.hunks[1].status
+        self.assertIn(
+            hunk1_status,
+            (HunkStatus.SUCCEEDED, HunkStatus.ALREADY_APPLIED),
+            f"Hunk 1 should be detected as applied, got {hunk1_status.value}",
+        )
 
 
 # Dynamically generate test methods for all test case directories
