@@ -23,6 +23,10 @@ class FileState:
     last_seen_content: List[str] # Content as of last query
     last_context_submission_content: List[str] # Content as of last context submission
 
+# Limits for conversation state retention
+_MAX_CONVERSATIONS = 20           # Keep at most 20 conversations in memory
+_CONVERSATION_TTL_SECONDS = 3600  # Evict conversations not accessed for 1 hour
+
 class FileStateManager:
     """Manages file states and changes within a conversation context"""
     
@@ -30,6 +34,7 @@ class FileStateManager:
         self.state_file = os.path.join(os.path.expanduser("~"), ".ziya", "file_states.json")
         self.conversation_states: Dict[str, Dict[str, FileState]] = {}
         self.conversation_diffs: Dict[str, List[Dict[str, Any]]] = {}
+        self._conversation_access_times: Dict[str, float] = {}
         self._lock = threading.Lock()
         self._load_state()
         
@@ -90,6 +95,9 @@ class FileStateManager:
     def _save_state(self):
         """Save file states to disk."""
         try:
+            # Evict before saving to prevent the on-disk file from growing unboundedly
+            self._evict_stale_conversations()
+
             os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
             data = {}
 
@@ -140,8 +148,46 @@ class FileStateManager:
         temp_convs = [conv_id for conv_id in self.conversation_states.keys() if conv_id.startswith('precision_')]
         for conv_id in temp_convs:
             del self.conversation_states[conv_id]
+            self._conversation_access_times.pop(conv_id, None)
+            self.conversation_diffs.pop(conv_id, None)
         if temp_convs:
             logger.info(f"Cleaned up {len(temp_convs)} temporary conversations from memory")
+
+    def _touch_conversation(self, conversation_id: str):
+        """Update the access time for a conversation."""
+        self._conversation_access_times[conversation_id] = time.time()
+
+    def _evict_stale_conversations(self):
+        """
+        Evict conversations that exceed the max count or TTL.
+        Called automatically when conversations are accessed or created.
+        """
+        now = time.time()
+
+        # Phase 1: evict by TTL
+        expired = [
+            cid for cid, t in self._conversation_access_times.items()
+            if (now - t) > _CONVERSATION_TTL_SECONDS
+        ]
+        for cid in expired:
+            self.conversation_states.pop(cid, None)
+            self.conversation_diffs.pop(cid, None)
+            self._conversation_access_times.pop(cid, None)
+        if expired:
+            logger.info(f"♻️ Evicted {len(expired)} expired conversations (TTL={_CONVERSATION_TTL_SECONDS}s)")
+
+        # Phase 2: evict oldest if still over the cap
+        overflow = len(self.conversation_states) - _MAX_CONVERSATIONS
+        if overflow > 0:
+            sorted_convs = sorted(
+                self._conversation_access_times.items(),
+                key=lambda x: x[1]
+            )
+            for cid, _ in sorted_convs[:overflow]:
+                self.conversation_states.pop(cid, None)
+                self.conversation_diffs.pop(cid, None)
+                self._conversation_access_times.pop(cid, None)
+            logger.info(f"♻️ Evicted {overflow} oldest conversations (max={_MAX_CONVERSATIONS})")
     
     def initialize_conversation(self, conversation_id: str, files: Dict[str, str], force_reset: bool = False) -> None:
         """
@@ -153,6 +199,10 @@ class FileStateManager:
             force_reset: If True, completely reset the conversation state. 
                         If False (default), preserve existing state and only add new files.
         """
+        # Evict stale conversations before adding new ones
+        self._evict_stale_conversations()
+        self._touch_conversation(conversation_id)
+
         # Check if conversation already exists
         if conversation_id in self.conversation_states and not force_reset:
             logger.info(f"Conversation {conversation_id} already exists with {len(self.conversation_states[conversation_id])} files, updating with {len(files)} files")
@@ -193,6 +243,7 @@ class FileStateManager:
                 diff_record['exchanges_ago'] = diff_record.get('exchanges_ago', 0) + 1
             self._save_state()
         
+        self._touch_conversation(conversation_id)
         if conversation_id not in self.conversation_states:
             return {}
             
@@ -292,6 +343,7 @@ class FileStateManager:
 
     def get_annotated_content(self, conversation_id: str, file_path: str) -> Tuple[List[str], bool]:
         """Get content with line state annotations"""
+        self._touch_conversation(conversation_id)
         state = self.conversation_states.get(conversation_id, {}).get(file_path)
         if not state:
             return [], False
