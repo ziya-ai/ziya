@@ -56,6 +56,13 @@ BUILTIN_TOOL_CATEGORIES: Dict[str, Dict[str, any]] = {
         "requires_dependencies": [],
         "tools": [],
     },
+    "memory": {
+        "name": "Structured Memory",
+        "description": "Persistent memory across sessions — search, save, and propose memories",
+        "enabled_by_default": True,
+        "requires_dependencies": [],
+        "tools": [],
+    },
 }
 
 
@@ -138,6 +145,19 @@ def get_skill_tools() -> List[Type[BaseMCPTool]]:
         return []
 
 
+def get_memory_tools() -> List[Type[BaseMCPTool]]:
+    """Get structured memory tools."""
+    try:
+        from app.mcp.tools.memory_tools import (
+            MemorySearchTool, MemorySaveTool, MemoryProposeTool,
+            MemoryContextTool, MemoryExpandTool
+        )
+        return [MemorySearchTool, MemorySaveTool, MemoryProposeTool, MemoryContextTool, MemoryExpandTool]
+    except ImportError as e:
+        logger.warning(f"Could not import memory tools: {e}")
+        return []
+
+
 def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
     """Get builtin tools for a specific category."""
     tool_getters = {
@@ -147,6 +167,7 @@ def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
         "ast": get_ast_tools,
         "nova_grounding": get_nova_grounding_tools,
         "skills": get_skill_tools,
+        "memory": get_memory_tools,
     }
 
     getter = tool_getters.get(category)

@@ -131,6 +131,17 @@ class PrecisionPromptSystem:
                 except Exception as e:
                     pass  # Non-fatal — skill catalog is advisory
 
+            # Inject persistent memory context so the model is informed
+            # by knowledge from prior sessions.
+            if messages and messages[0]["role"] == "system":
+                try:
+                    from app.utils.memory_prompt import get_memory_prompt_section
+                    memory_section = get_memory_prompt_section()
+                    if memory_section:
+                        messages[0]["content"] += memory_section
+                except Exception as e:
+                    pass  # Non-fatal — memory is advisory
+
             # Inject skill prompts and other per-request additions (e.g. from
             # activeSkillPrompts on the frontend) into the system message.
             if system_prompt_addition and messages and messages[0]["role"] == "system":
