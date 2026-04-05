@@ -429,8 +429,8 @@ class MCPClient:
         if self._sdk_exit_stack:
             try:
                 await self._sdk_exit_stack.aclose()
-            except Exception as e:
-                logger.error(f"Error closing remote MCP session: {e}")
+            except Exception:
+                logger.debug(f"Remote MCP session closed during shutdown (server: {self.server_config.get('name', 'unknown')})")
             finally:
                 self._sdk_session = None
                 self._sdk_exit_stack = None
@@ -442,10 +442,15 @@ class MCPClient:
                 self.process.terminate()
                 await asyncio.wait_for(self.process.wait(), timeout=5)
             except asyncio.TimeoutError:
-                self.process.kill()
-                await self.process.wait()
-            except Exception as e:
-                logger.error(f"Error disconnecting from MCP server: {str(e)}")
+                try:
+                    self.process.kill()
+                    await self.process.wait()
+                except ProcessLookupError:
+                    pass  # already exited
+            except (ProcessLookupError, OSError):
+                pass  # process already exited from SIGINT
+            except Exception:
+                logger.debug(f"MCP server process cleanup (server: {self.server_config.get('name', 'unknown')})")
             finally:
                 self.process = None
                 self.is_connected = False
