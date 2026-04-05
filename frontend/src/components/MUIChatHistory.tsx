@@ -356,7 +356,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                   <Dropdown
                     dropdownRender={() => <AntActionMenu
                       isFolder={isFolder}
-                      nodeId={nodeId} isTaskPlanFolder={isTaskPlanFolder}
+                      nodeId={nodeId} isTaskPlanFolder={isTaskPlanFolder} onCopyToProject={props.onCopyToProject}
                       delegateStatus={delegateStatus} onDelegateRetry={props.onDelegateRetry} onDelegateSkip={props.onDelegateSkip}
                       onSwarmRecovery={props.onSwarmRecovery}
                       onEdit={onEdit} onDelete={onDelete} onFork={onFork} onCompress={onCompress} onExport={onExport}
@@ -392,7 +392,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     </div>
   );
 });
-const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress, onExport, onOpenMoveMenu, onToggleGlobal, onMoveToProject, isGlobalItem, onConfigure, onPin, isPinned, onCreateSubfolder, isTaskPlanFolder, onSwarmRecovery, delegateStatus, onDelegateRetry, onDelegateSkip }) => {
+const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress, onExport, onOpenMoveMenu, onToggleGlobal, onMoveToProject, onCopyToProject, isGlobalItem, onConfigure, onPin, isPinned, onCreateSubfolder, isTaskPlanFolder, onSwarmRecovery, delegateStatus, onDelegateRetry, onDelegateSkip }) => {
   const handleAntAction = (actionCallback: (id: string) => void, originalEvent?: React.MouseEvent | Event) => {
     originalEvent?.stopPropagation();
     actionCallback(nodeId);
@@ -433,6 +433,12 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
           onMoveToProject && onMoveToProject(nodeId, e.domEvent.currentTarget as HTMLElement);
         }
       },
+      {
+        key: 'copy-project', label: 'Copy to project', icon: <AntCopyOutlined />, onClick: (e) => {
+          e.domEvent.stopPropagation();
+          onCopyToProject && onCopyToProject(nodeId, e.domEvent.currentTarget as HTMLElement);
+        }
+      },
       { key: 'export', label: 'Export', icon: <AntExportOutlined />, onClick: (e) => handleAntAction(onExport, e.domEvent) },
       { type: 'divider' as const },
       { key: 'delete', label: 'Delete', icon: <DeleteOutlined />, onClick: (e) => handleAntAction(onDelete, e.domEvent), danger: true }
@@ -468,6 +474,12 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
         key: 'move-project', label: 'Move to project', icon: <AntSwapOutlined />, onClick: (e) => {
           e.domEvent.stopPropagation();
           onMoveToProject && onMoveToProject(nodeId, e.domEvent.currentTarget as HTMLElement);
+        }
+      },
+      {
+        key: 'copy-project', label: 'Copy to project', icon: <AntCopyOutlined />, onClick: (e) => {
+          e.domEvent.stopPropagation();
+          onCopyToProject && onCopyToProject(nodeId, e.domEvent.currentTarget as HTMLElement);
         }
       },
       { type: 'divider' as const },
@@ -639,7 +651,8 @@ const MoveToFolderMenu = ({
   }, [folders, nodeId, isMovingFolder]);
 
   // Recursive function to render folder menu items
-  const renderFolderItems = (parentId = null, level = 0) => {
+  const renderFolderItems = (parentId = null, level = 0): React.ReactNode => {
+    if (level > 20) return null;
     const foldersInLevel = (foldersByParent.get(parentId) || []).slice().sort((a, b) => a.name.localeCompare(b.name));
 
     return foldersInLevel.map(folder => (
@@ -761,6 +774,7 @@ const MUIChatHistory = () => {
     moveConversationToProject,
     moveFolderToProject,
     toggleFolderGlobal,
+    copyConversationToProject,
     folders,
     setFolders,
     currentFolderId,
@@ -800,8 +814,9 @@ const MUIChatHistory = () => {
   const [moveToProjectMenuState, setMoveToProjectMenuState] =
     useState<{
       anchorEl: null | HTMLElement;
-      nodeId: null | string
-    }>({ anchorEl: null, nodeId: null });
+      nodeId: null | string;
+      mode: 'move' | 'copy';
+    }>({ anchorEl: null, nodeId: null, mode: 'move' });
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportConversationId, setExportConversationId] = useState<string | null>(null);
   const [showHealthDebug, setShowHealthDebug] = useState(false);
@@ -1061,26 +1076,41 @@ const MUIChatHistory = () => {
 
   // Handle opening the move-to-project menu
   const handleOpenMoveToProjectMenu = (nodeId: string, anchorEl: HTMLElement) => {
-    setMoveToProjectMenuState({ anchorEl, nodeId });
+    setMoveToProjectMenuState({ anchorEl, nodeId, mode: 'move' });
+  };
+
+  // Handle opening the copy-to-project menu
+  const handleOpenCopyToProjectMenu = (nodeId: string, anchorEl: HTMLElement) => {
+    setMoveToProjectMenuState({ anchorEl, nodeId, mode: 'copy' });
   };
 
   // Handle moving a conversation to another project
   const handleMoveToProject = async (nodeId: string, targetProjectId: string) => {
     const targetProject = projects.find(p => p.id === targetProjectId);
     const targetName = targetProject?.name || 'Unknown';
+    const isMove = moveToProjectMenuState.mode === 'move';
 
     // Check if this is a folder (folder IDs exist in the folders array)
     const isFolder = folders.some(f => f.id === nodeId);
     if (isFolder) {
-      await moveFolderToProject(nodeId, targetProjectId);
-      message.success(`Folder moved to project "${targetName}"`);
-      setMoveToProjectMenuState({ anchorEl: null, nodeId: null });
+      if (isMove) {
+        await moveFolderToProject(nodeId, targetProjectId);
+        message.success(`Folder moved to project "${targetName}"`);
+      } else {
+        message.info('Folder copy is not yet supported');
+      }
+      setMoveToProjectMenuState({ anchorEl: null, nodeId: null, mode: 'move' });
       return;
     }
 
-    await moveConversationToProject(nodeId, targetProjectId);
-    message.success(`Moved to project "${targetName}"`);
-    setMoveToProjectMenuState({ anchorEl: null, nodeId: null });
+    if (isMove) {
+      await moveConversationToProject(nodeId, targetProjectId);
+      message.success(`Moved to project "${targetName}"`);
+    } else {
+      await copyConversationToProject(nodeId, targetProjectId);
+      message.success(`Copied to project "${targetName}"`);
+    }
+    setMoveToProjectMenuState({ anchorEl: null, nodeId: null, mode: 'move' });
   };
 
   // Handle moving a conversation to a folder
@@ -1688,14 +1718,15 @@ const MUIChatHistory = () => {
       }
 
       // Also expand any parent folders
-      const expandParentFolders = (targetFolderId: string) => {
+      const expandParentFolders = (targetFolderId: string, _depth = 0) => {
+        if (_depth > 20) return;
         const folder = folders.find(f => f.id === targetFolderId);
         if (folder?.parentId) {
           const parentId = folder.parentId;
           if (!expandedNodes.includes(parentId)) {
             setExpandedNodes(prev => [...prev, parentId]);
           }
-          expandParentFolders(parentId); // Recursively expand parents
+          expandParentFolders(parentId, _depth + 1);
         }
       };
       expandParentFolders(folderId);
@@ -2238,10 +2269,41 @@ const MUIChatHistory = () => {
   const lastTaskPlanBoostRef = useRef<Map<string, number>>(new Map());
 
   const treeDataRaw = useMemo(() => {
+    // PRE-RENDER CHECKPOINT: Write to localStorage BEFORE the expensive
+    // tree build so we can diagnose stack overflows that kill the JS engine
+    // before any error handler can fire.
+    try {
+      localStorage.setItem('ZIYA_TREE_BUILD_CHECKPOINT', JSON.stringify({
+        timestamp: new Date().toISOString(),
+        conversationCount: conversations.length,
+        folderCount: folders.length,
+        phase: 'start',
+      }));
+    } catch {}
+
+    // PRE-RENDER CHECKPOINT: Write to localStorage BEFORE the expensive
+    // tree build so we can diagnose stack overflows that kill the JS engine
+    // before any error handler can fire.
+    try {
+      localStorage.setItem('ZIYA_TREE_BUILD_CHECKPOINT', JSON.stringify({
+        timestamp: new Date().toISOString(),
+        conversationCount: conversations.length,
+        folderCount: folders.length,
+        phase: 'start',
+      }));
+    } catch {}
+
     // During project switch, conversation/folder arrays are transitional
     // (mix of old + new project data). Return cached tree to avoid
     // rendering a broken hierarchy that flashes nonsensical state.
     if (isProjectSwitching) return lastTreeDataRef.current;
+
+    // Filter null/undefined entries that can slip in from corrupt IDB data
+    // or cross-tab sync races.  A single null entry in the forEach causes
+    // a TypeError that kills the React tree (useMemo runs during render,
+    // errors propagate above all error boundaries).
+    const safeFolders = folders.filter(Boolean);
+    const safeConversations = conversations.filter(Boolean);
 
     // Two-level hash: structural (folder/conversation identity) vs sort
     // (activity times that only affect display order).  When only sort
@@ -2261,13 +2323,13 @@ const MUIChatHistory = () => {
 
     // Structural hash: identity, titles, folder placement, delegate status
     const sh = fnv1a();
-    folders.forEach(f => { sh.add(f.id || ''); sh.add(f.name || ''); sh.add(f.parentId || ''); sh.add(f.isGlobal ? 'g' : ''); sh.add(f.taskPlan?.source_conversation_id || ''); });
-    conversations.forEach(c => { sh.add(c.id || ''); sh.add(c.title || ''); sh.add(c.folderId || ''); sh.add(c.isActive === false ? '0' : '1'); sh.add(c.isGlobal ? 'g' : ''); sh.add(c.delegateMeta?.status || ''); });
+    safeFolders.forEach(f => { sh.add(f.id || ''); sh.add(f.name || ''); sh.add(f.parentId || ''); sh.add(f.isGlobal ? 'g' : ''); sh.add(f.taskPlan?.source_conversation_id || ''); });
+    safeConversations.forEach(c => { sh.add(c.id || ''); sh.add(c.title || ''); sh.add(c.folderId || ''); sh.add(c.isActive === false ? '0' : '1'); sh.add(c.isGlobal ? 'g' : ''); sh.add(c.delegateMeta?.status || ''); });
     const structuralHash = sh.value();
 
     // Sort hash: activity times and pin state that only affect ordering
     const oh = fnv1a();
-    conversations.forEach(c => { oh.add(String(c.lastAccessedAt || 0)); });
+    safeConversations.forEach(c => { oh.add(String(c.lastAccessedAt || 0)); });
     pinnedFolders.forEach(id => oh.add(id));
     const sortHash = oh.value();
 
@@ -2283,56 +2345,121 @@ const MUIChatHistory = () => {
     // structure, just update activity times and re-sort in place.
     if (structuralHash === lastTreeDataInputsRef.current
       && lastTreeDataRef.current.length > 0) {
+      try {
+        localStorage.setItem('ZIYA_TREE_BUILD_CHECKPOINT', JSON.stringify({
+          timestamp: new Date().toISOString(), phase: 'sort-only-start',
+          conversationCount: conversations.length, folderCount: folders.length,
+        }));
+      } catch {}
+      try {
+        localStorage.setItem('ZIYA_TREE_BUILD_CHECKPOINT', JSON.stringify({
+          timestamp: new Date().toISOString(), phase: 'sort-only-start',
+          conversationCount: conversations.length, folderCount: folders.length,
+        }));
+      } catch {}
       const convMap = new Map(conversations.map(c => [c.id, c]));
-      const tree = lastTreeDataRef.current;
       const anchoredFolderIds = lastAnchoredIdsRef.current;
       const folderMap = lastFolderMapRef.current;
 
-      // Refresh conversation references and folder activity times
-      const refreshNode = (node: any) => {
+      // Shallow-copy each node so we never mutate the previous render's
+      // tree.  Mutating in place violates React's immutability contract
+      // and causes inconsistent renders during concurrent updates
+      // (e.g. streaming + SERVER_SYNC firing in the same frame).
+      const cloneNode = (node: any, _depth = 0): any => {
+        if (_depth > 30) return { ...node, children: [] };
+
+        // Check if the conversation reference actually changed
+        let conversationChanged = false;
         if (node.conversation) {
           const fresh = convMap.get(node.conversation.id);
-          if (fresh) node.conversation = fresh;
+          if (fresh && fresh !== node.conversation) {
+            conversationChanged = true;
+          }
         }
-        if (node.folder && node.children) {
+
+        // Recurse into children first to see if any changed
+        let newChildren = node.children;
+        if (node.children) {
+          newChildren = node.children.map((c: any) => cloneNode(c, _depth + 1));
+        }
+        const childrenChanged = newChildren !== node.children &&
+          newChildren.some((c: any, i: number) => c !== node.children[i]);
+
+        // Recompute folder activity time if this is a folder with children
+        let newActivityTime = node.lastActivityTime;
+        let activityChanged = false;
+        if (node.folder && newChildren) {
           let maxTime = 0;
-          for (const child of node.children) {
-            refreshNode(child);
+          for (const child of newChildren) {
             const t = child.conversation?.lastAccessedAt || child.lastActivityTime || 0;
             if (t > maxTime) maxTime = t;
           }
-          node.lastActivityTime = maxTime;
-          node.isPinned = pinnedFolders.has(node.id);
+          if (maxTime !== node.lastActivityTime) {
+            newActivityTime = maxTime;
+            activityChanged = true;
+          }
         }
-        if (!node.folder && !node.conversation && node.children) {
-          node.children.forEach(refreshNode);
+
+        const pinChanged = node.folder && (pinnedFolders.has(node.id) !== node.isPinned);
+
+        // If nothing changed, reuse the original node reference
+        if (!conversationChanged && !childrenChanged && !activityChanged && !pinChanged) {
+          return node;
         }
+
+        // Something changed — create a shallow copy with only the changed fields
+        const copy = { ...node };
+        if (conversationChanged) {
+          copy.conversation = convMap.get(node.conversation.id);
+        }
+        if (childrenChanged) {
+          copy.children = newChildren;
+        }
+        if (activityChanged) {
+          copy.lastActivityTime = newActivityTime;
+        }
+        if (pinChanged) {
+          copy.isPinned = pinnedFolders.has(node.id);
+        }
+        return copy;
       };
-      tree.forEach(refreshNode);
+      const tree = lastTreeDataRef.current.map(cloneNode);
+      try {
+        localStorage.setItem('ZIYA_TREE_BUILD_CHECKPOINT', JSON.stringify({
+          timestamp: new Date().toISOString(), phase: 'sort-only-cloned',
+          treeLength: tree.length,
+        }));
+      } catch {}
 
       // Rebuild taskPlanBoost from refreshed data
       const taskPlanBoost = new Map<string, number>();
       for (const fid of anchoredFolderIds) {
-        const fn = folderMap.get(fid);
-        const srcId = fn?.taskPlan?.source_conversation_id;
+        const origFn = folderMap.get(fid);
+        const srcId = origFn?.taskPlan?.source_conversation_id;
         if (!srcId) continue;
-        const activity = fn.lastActivityTime || 0;
+        // Find the cloned version in the new tree for accurate activity time
+        const findNode = (items: any[], _depth = 0): any => {
+          if (_depth > 30) return null;
+          for (const n of items) {
+            if (n.id === fid) return n;
+            if (n.children) { const f = findNode(n.children, _depth + 1); if (f) return f; }
+          }
+          return null;
+        };
+        const clonedFn = findNode(tree);
+        const activity = clonedFn?.lastActivityTime || origFn?.lastActivityTime || 0;
         if (activity > (taskPlanBoost.get(srcId) || 0)) {
           taskPlanBoost.set(srcId, activity);
         }
       }
       lastTaskPlanBoostRef.current = taskPlanBoost;
 
-      // Re-sort (reuses sortNodes/reanchor defined below via closure)
-      const resortNodes = (nodes: any[]): any[] => {
-        if (!nodes) return [];
-        return nodes.sort((a, b) => sortComparator(a, b, taskPlanBoost));
-      };
+      // Sort the cloned arrays (safe — we own these copies)
       const resortRecursive = (nodes: any[], _d = 0): any[] => {
         if (_d > 20) return nodes;
-        const sorted = resortNodes(nodes);
-        sorted.forEach(n => { if (n.children?.length) n.children = resortRecursive(n.children, _d + 1); });
-        return sorted;
+        nodes.sort((a, b) => sortComparator(a, b, taskPlanBoost));
+        nodes.forEach(n => { if (n.children?.length) n.children = resortRecursive(n.children, _d + 1); });
+        return nodes;
       };
       resortRecursive(tree);
 
@@ -2341,15 +2468,15 @@ const MUIChatHistory = () => {
         const reanchor = (items: any[], _d = 0) => {
           if (_d > 20) return;
           for (const fid of anchoredFolderIds) {
-            const fn = folderMap.get(fid);
-            const srcId = fn?.taskPlan?.source_conversation_id;
+            const origFn = folderMap.get(fid);
+            const srcId = origFn?.taskPlan?.source_conversation_id;
             if (!srcId) continue;
             const srcIdx = items.findIndex(n => n.id === `conv-${srcId}`);
             const curIdx = items.findIndex(n => n.id === fid);
             if (srcIdx !== -1 && curIdx !== -1 && curIdx !== srcIdx + 1) {
-              items.splice(curIdx, 1);
+              const [moved] = items.splice(curIdx, 1);
               const ns = items.findIndex(n => n.id === `conv-${srcId}`);
-              items.splice(ns + 1, 0, fn);
+              items.splice(ns + 1, 0, moved);
             }
           }
           for (const item of items) { if (item.children?.length) reanchor(item.children, _d + 1); }
@@ -2364,7 +2491,7 @@ const MUIChatHistory = () => {
 
     // ── Full rebuild ────────────────────────────────────────────────
     const folderMap = new Map();
-    folders.forEach(folder => {
+    safeFolders.forEach(folder => {
       folderMap.set(folder.id, {
         id: folder.id,
         name: folder.name,
@@ -2379,7 +2506,7 @@ const MUIChatHistory = () => {
     });
 
     // Add conversations to their respective folders in the map
-    const activeConversations = conversations.filter(conv => conv.isActive !== false);
+    const activeConversations = safeConversations.filter(conv => conv.isActive !== false);
 
     // Map conv.id → tree node, for reparenting TaskPlan folders under source conversation
     const convNodeMap = new Map<string, any>();
@@ -2387,7 +2514,7 @@ const MUIChatHistory = () => {
     // Debug: Log if current conversation is missing from active list
     if (currentConversationId && !activeConversations.find(c => c.id === currentConversationId)) {
       console.error('🚨 HISTORY_CORRUPTION: Current conversation missing from active list:', currentConversationId);
-      console.error('🚨 Current conversation state:', conversations.find(c => c.id === currentConversationId));
+      console.error('🚨 Current conversation state:', safeConversations.find(c => c.id === currentConversationId));
     }
 
     activeConversations.forEach(conv => {
@@ -2416,9 +2543,26 @@ const MUIChatHistory = () => {
 
     // The nodes in folderMap now contain their conversation children
     const rootItems: any[] = [];
-    folders.forEach(folder => {
+    safeFolders.forEach(folder => {
       const node = folderMap.get(folder.id); // Get the node (which now includes conversation children)
-      if (folder.parentId && folder.parentId !== folder.id && folderMap.has(folder.parentId)) {
+      // Detect ancestor cycles: walk up the parentId chain and ensure
+      // we never revisit a folder.  Mutual cycles like A→B→A would
+      // cause circular children references that crash cloneNode.
+      let hasCycle = false;
+      if (folder.parentId && folder.parentId !== folder.id) {
+        const visited = new Set<string>([folder.id]);
+        let cur: string | null | undefined = folder.parentId;
+        while (cur) {
+          if (visited.has(cur)) { hasCycle = true; break; }
+          visited.add(cur);
+          const ancestor = folders.find(f => f.id === cur);
+          cur = ancestor?.parentId;
+        }
+        if (hasCycle) {
+          console.error(`🔄 CYCLE: Folder "${folder.name}" (${folder.id}) → parent ${folder.parentId} creates a cycle. Placing at root.`);
+        }
+      }
+      if (!hasCycle && folder.parentId && folder.parentId !== folder.id && folderMap.has(folder.parentId)) {
         const parentNode = folderMap.get(folder.parentId);
         // Ensure parentNode.children is initialized
         if (!parentNode.children) parentNode.children = [];
@@ -2479,7 +2623,7 @@ const MUIChatHistory = () => {
       }
       return false;
     };
-    folders.forEach(folder => {
+    safeFolders.forEach(folder => {
       const sourceConvId = folder.taskPlan?.source_conversation_id;
       if (!sourceConvId) return;
       const folderNode = folderMap.get(folder.id);
@@ -2491,11 +2635,12 @@ const MUIChatHistory = () => {
     // Deduplicate: anchored folders may appear twice (once from folder tree
     // building, once from anchoring).  Keep only the anchored position.
     if (anchoredFolderIds.size > 0) {
-      const removeDupes = (items: any[], seen: Set<string>) => {
+      const removeDupes = (items: any[], seen: Set<string>, _depth = 0) => {
+        if (_depth > 30) return;
         for (let i = items.length - 1; i >= 0; i--) {
           if (!items[i]) continue;
           // Process children first so the deeper (anchored) copy is found first
-          if (items[i].children) removeDupes(items[i].children, seen);
+          if (items[i].children) removeDupes(items[i].children, seen, _depth + 1);
           if (items[i].folder && anchoredFolderIds.has(items[i].id)) {
             if (seen.has(items[i].id)) {
               items.splice(i, 1);
@@ -2562,11 +2707,27 @@ const MUIChatHistory = () => {
     // Re-anchor TaskPlan folders that sorting separated from their source
     reanchorTaskPlanFolders(result, anchoredFolderIds, folderMap);
 
-    // Save refs for sort-only fast path on next render
+    // Save refs for sort-only fast path on next render.
+    // Without storing the hashes, the fast-exit and sort-only paths
+    // never activate — every render triggers a full O(N·M) rebuild.
     lastAnchoredIdsRef.current = anchoredFolderIds;
     lastFolderMapRef.current = folderMap;
+    lastTreeDataInputsRef.current = structuralHash;
+    lastSortHashRef.current = sortHash;
 
     lastTreeDataRef.current = result;
+
+    // POST-RENDER CHECKPOINT: If we get here, the tree built successfully
+    try {
+      localStorage.setItem('ZIYA_TREE_BUILD_CHECKPOINT', JSON.stringify({
+        timestamp: new Date().toISOString(),
+        conversationCount: conversations.length,
+        folderCount: folders.length,
+        phase: 'complete',
+        nodeCount: result.length,
+      }));
+    } catch {}
+
     return result;
   }, [conversations, folders, pinnedFolders, isProjectSwitching]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -2576,15 +2737,14 @@ const MUIChatHistory = () => {
   const treeDataTimerRef = useRef<ReturnType<typeof setTimeout>>();
   useEffect(() => {
     if (treeDataTimerRef.current) clearTimeout(treeDataTimerRef.current);
-    // If tree is empty, update immediately (first paint). Otherwise debounce.
-    if (treeData.length === 0) {
+    // If tree is empty OR the raw reference is identical (useMemo cache hit),
+    // update immediately. Otherwise debounce to coalesce rapid changes.
+    if (treeData.length === 0 || treeDataRaw === treeData) {
       setTreeData(treeDataRaw);
     } else {
-      treeDataTimerRef.current = setTimeout(() => setTreeData(treeDataRaw), 300);
+      treeDataTimerRef.current = setTimeout(() => setTreeData(treeDataRaw), 150);
     }
-    // treeData.length intentionally included so the "immediate vs debounce"
-    // decision re-evaluates when the tree transitions from empty to populated
-  }, [treeDataRaw, treeData.length]);
+  }, [treeDataRaw]);
 
   // Virtualization: flatten visible tree nodes
   const expandedSet = useMemo(() => new Set(expandedNodes.map(String)), [expandedNodes]);
@@ -3212,6 +3372,7 @@ const MUIChatHistory = () => {
                       onSwarmRecovery={isTaskPlanFolder ? handleSwarmRecovery : undefined}
                       onOpenMoveMenu={handleOpenMoveMenu} onToggleGlobal={handleToggleGlobal}
                       onMoveToProject={handleOpenMoveToProjectMenu}
+                      onCopyToProject={handleOpenCopyToProjectMenu}
                       onCreateSubfolder={handleCreateSubfolder}
                       isEditing={isEditingNode} editValue={editValue}
                       onEditChange={handleEditChange} onEditSubmit={handleEditSubmit}
@@ -3275,7 +3436,7 @@ const MUIChatHistory = () => {
         <MoveToProjectMenu
           anchorEl={moveToProjectMenuState.anchorEl}
           open={Boolean(moveToProjectMenuState.anchorEl)}
-          onClose={() => setMoveToProjectMenuState({ anchorEl: null, nodeId: null })}
+          onClose={() => setMoveToProjectMenuState({ anchorEl: null, nodeId: null, mode: 'move' })}
           projects={projects}
           currentProjectId={currentProject?.id}
           onMoveToProject={handleMoveToProject}

@@ -7,6 +7,7 @@ import { Folders } from '../utils/types';
 import { debounce } from 'lodash';
 import { message } from 'antd';
 import { convertToTreeData } from '../utils/folderUtil';
+import Tooltip from '@mui/material/Tooltip';
 import { getFileIcon, getFolderIcon } from '../utils/fileIcons';
 
 // MUI imports
@@ -41,6 +42,7 @@ import InsertDriveFileIcon from '@mui/icons-material/InsertDriveFile';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import SearchIcon from '@mui/icons-material/Search';
 import ClearIcon from '@mui/icons-material/Clear';
+
 
 // TypeScript interfaces
 interface TreeNodeData {
@@ -94,7 +96,9 @@ export const MUIFileExplorer = () => {
     scanProgress,
     scanError,
     getFolderTokenCount,
-    accurateTokenCounts
+    accurateTokenCounts,
+    autoAddedFiles,
+    removeAutoAddedFiles
   } = useFolderContext();
 
   const { isDarkMode } = useTheme();
@@ -332,15 +336,41 @@ export const MUIFileExplorer = () => {
           </IconButton>
 
           {/* Checkbox */}
-          <Checkbox
-            checked={isChecked}
-            indeterminate={isIndeterminate}
-            onClick={handleCheck}
-            size="small"
-            sx={{ p: 0.25, mr: 0.5, ml: 0 }}
-            id={`checkbox-${node.key}`}
-            name={`checkbox-${node.key}`}
-          />
+          <span style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
+            <Checkbox
+              checked={isChecked}
+              indeterminate={isIndeterminate}
+              onClick={handleCheck}
+              size="small"
+              sx={{ p: 0.25, mr: 0.5, ml: 0 }}
+              id={`checkbox-${node.key}`}
+              name={`checkbox-${node.key}`}
+            />
+            {/* Auto-added badge */}
+            {!hasChildren && autoAddedFiles.has(String(node.key)) && (
+              <Tooltip title="Auto-added from diff context" arrow placement="top">
+                <span
+                  className="auto-added-badge"
+                  style={{
+                    position: 'absolute',
+                    top: -2,
+                    right: 2,
+                    width: 14,
+                    height: 14,
+                    borderRadius: '50%',
+                    backgroundColor: isDarkMode ? '#177ddc' : '#1890ff',
+                    color: '#fff',
+                    fontSize: 9,
+                    fontWeight: 700,
+                    lineHeight: '14px',
+                    textAlign: 'center',
+                    pointerEvents: 'auto',
+                    zIndex: 1,
+                  }}
+                >A</span>
+              </Tooltip>
+            )}
+          </span>
 
           {/* Icon */}
           {hasChildren ?
@@ -1367,6 +1397,66 @@ export const MUIFileExplorer = () => {
 
       <Box sx={{ mb: 1, flexShrink: 0 }}>
         <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+          {/* Auto-added files removal button */}
+          {autoAddedFiles.size > 0 && (() => {
+            // Pre-calculate tokens for the button label
+            let totalAutoTokens = 0;
+            autoAddedFiles.forEach(filePath => {
+              const accurate = accurateTokenCounts[filePath];
+              if (accurate && accurate.count > 0) {
+                totalAutoTokens += accurate.count;
+              } else if (folders) {
+                const estimated = getFolderTokenCount(filePath, folders);
+                if (estimated > 0) totalAutoTokens += estimated;
+              }
+            });
+            return (
+              <Tooltip
+                title={
+                  <div>
+                    <div style={{ fontWeight: 600, marginBottom: 4 }}>Auto-added files:</div>
+                    {[...autoAddedFiles].map(f => {
+                      const parts = f.split('/');
+                      return <div key={f} style={{ fontSize: 11 }}>• {parts[parts.length - 1]}</div>;
+                    })}
+                  </div>
+                }
+                arrow
+              >
+                <Button
+                  variant="outlined"
+                  size="small"
+                  onClick={() => {
+                    const { removedCount, tokensRecovered } = removeAutoAddedFiles();
+                    if (removedCount > 0) {
+                      message.success(
+                        `Removed ${removedCount} auto-added file${removedCount !== 1 ? 's' : ''}, ` +
+                        `recovered ~${formatNumber(tokensRecovered)} tokens`
+                      );
+                    }
+                  }}
+                  sx={{
+                    fontSize: '0.75rem',
+                    textTransform: 'none',
+                    borderColor: isDarkMode ? '#177ddc' : '#1890ff',
+                    color: isDarkMode ? '#177ddc' : '#1890ff',
+                    '&:hover': {
+                      borderColor: isDarkMode ? '#3c9ae8' : '#40a9ff',
+                      backgroundColor: isDarkMode ? 'rgba(23,125,220,0.1)' : 'rgba(24,144,255,0.06)',
+                    },
+                  }}
+                >
+                  <span className="auto-added-badge" style={{
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    width: 16, height: 16, borderRadius: '50%',
+                    backgroundColor: isDarkMode ? '#177ddc' : '#1890ff',
+                    color: '#fff', fontSize: 10, fontWeight: 700, marginRight: 6,
+                  }}>A</span>
+                  Remove {autoAddedFiles.size} auto-added (~{formatNumber(totalAutoTokens)} tok)
+                </Button>
+              </Tooltip>
+            );
+          })()}
           <Button
             variant="outlined"
             startIcon={<RefreshIcon />}

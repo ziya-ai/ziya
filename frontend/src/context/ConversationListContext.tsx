@@ -29,6 +29,7 @@ export interface ConversationListContextValue {
   moveChatToGroup: (chatId: string, groupId: string | null) => Promise<void>;
   toggleConversationGlobal: (conversationId: string) => Promise<void>;
   moveConversationToProject: (conversationId: string, targetProjectId: string) => Promise<void>;
+  copyConversationToProject: (conversationId: string, targetProjectId: string) => Promise<void>;
   moveFolderToProject: (folderId: string, targetProjectId: string) => Promise<void>;
   toggleFolderGlobal: (folderId: string) => Promise<void>;
   dbError: string | null;
@@ -58,6 +59,7 @@ export const ConversationListProvider: React.FC<
       moveChatToGroup: value.moveChatToGroup,
       toggleConversationGlobal: value.toggleConversationGlobal,
       moveConversationToProject: value.moveConversationToProject,
+      copyConversationToProject: value.copyConversationToProject,
       moveFolderToProject: value.moveFolderToProject,
       toggleFolderGlobal: value.toggleFolderGlobal,
       dbError: value.dbError,
@@ -78,7 +80,7 @@ export const ConversationListProvider: React.FC<
       value.createFolder, value.updateFolder, value.deleteFolder,
       value.moveConversationToFolder, value.moveChatToGroup,
       value.toggleConversationGlobal, value.moveConversationToProject,
-      value.moveFolderToProject, value.toggleFolderGlobal,
+      value.copyConversationToProject, value.moveFolderToProject, value.toggleFolderGlobal,
     ]
   );
 

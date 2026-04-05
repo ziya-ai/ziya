@@ -541,6 +541,58 @@ function showError(errorDetail: string, conversationId: string, addMessageToConv
         // Check if this is an authentication error that should have a retry button
         const isAuthError = errorType === 'authentication_error' || errorDetail.includes('credential') || errorDetail.includes('mwinit') || errorDetail.includes('AWS credentials');
 
+        // Auth errors get a prominent, immediately-visible banner instead of the
+        // generic collapsed <details> block.  Extract an actionable hint from the
+        // raw error text so the user doesn't have to parse URL soup.
+        if (isAuthError) {
+            // Try to extract the actionable sentence from the raw error.
+            // Common patterns: "You may need to authenticate by running mwinit."
+            //                  "Please refresh your credentials"
+            //                  "Run: mwinit"
+            let actionHint = '';
+            const hintPatterns = [
+                /You may need to[^.]*\./i,
+                /Please\s+(?:run|refresh|renew|authenticate)[^.]*\./i,
+                /Run:\s*\S+/i,
+                /credentials have expired[^.]*/i,
+                /AWS credentials[^.]*/i,
+            ];
+            for (const pattern of hintPatterns) {
+                const match = errorDetail.match(pattern);
+                if (match) { actionHint = match[0].trim(); break; }
+            }
+            if (!actionHint) {
+                actionHint = errorDetail.includes('mwinit')
+                    ? 'Your credentials have expired. Run mwinit to re-authenticate.'
+                    : 'Your AWS credentials have expired or are invalid. Please refresh them and retry.';
+            }
+
+            const authMessage: Message = {
+                role: 'assistant',
+                content: `<div class="auth-error-banner" style="margin: 16px 0; padding: 16px 20px; background: var(--auth-error-bg, linear-gradient(135deg, #fff2f0 0%, #fff7f0 100%)); border: 1px solid var(--auth-error-border, #ffccc7); border-left: 4px solid var(--auth-error-accent, #ff4d4f); border-radius: 6px; color: var(--auth-error-text, #434343);">
+<div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
+<span style="font-size: 24px;">🔐</span>
+<span style="font-size: 16px; font-weight: 600; color: var(--auth-error-heading, #cf1322);">Authentication Required</span>
+</div>
+<div style="font-size: 14px; line-height: 1.6; margin-bottom: 16px;">
+${escapeHtml(actionHint)}
+</div>
+<div style="display: flex; align-items: center; gap: 12px;">
+<button class="auth-error-retry-button" data-conversation-id="${conversationId}" style="padding: 10px 24px; background-color: #1890ff; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='#40a9ff'" onmouseout="this.style.backgroundColor='#1890ff'">🔄 Retry Request</button>
+</div>
+<details style="margin-top: 14px; border-top: 1px solid var(--auth-error-border, #ffd6cc); padding-top: 10px;">
+<summary style="cursor: pointer; font-size: 12px; color: var(--auth-error-muted, #8c8c8c);">Technical details</summary>
+<div style="margin-top: 8px; white-space: pre-wrap; font-family: monospace; font-size: 12px; color: var(--auth-error-detail, #8c1f1f); max-height: 200px; overflow-y: auto;">
+${safeDetail}
+</div>
+</details>
+</div>`,
+                _timestamp: Date.now()
+            };
+            addMessageToConversation(authMessage, conversationId);
+            return;
+        }
+
         // Show inline as a collapsible message
         const errorMessage: Message = {
             role: 'assistant',  // CRITICAL: Use 'assistant' role so message renders (system messages are filtered in Conversation.tsx:206)
@@ -688,15 +740,17 @@ export const sendPayload = async (
     // time), we coalesce updates into one setState per animation frame.
     // `currentContent` is the source of truth; React only needs the latest
     // snapshot once per frame.
-    let _streamRafId: number | null = null;
     let _streamFallbackId: ReturnType<typeof setTimeout> | null = null;
+    // Minimum interval between React state updates during streaming.
+    // Each flush creates a new Map and triggers a full re-render of the
+    // conversation view (including markdown re-parse of ALL accumulated
+    // content).  At rAF cadence (16ms) with large responses this
+    // saturates the CPU.  150ms ≈ 7 flushes/sec — visually smooth
+    // while giving React + layout 90% of the CPU back.
+    const FLUSH_MIN_INTERVAL_MS = 150;
 
     const _doFlush = () => {
-        _streamRafId = null;
-        if (_streamFallbackId !== null) {
-            clearTimeout(_streamFallbackId);
-            _streamFallbackId = null;
-        }
+        _streamFallbackId = null;
         const snapshot = currentContent;
         setStreamedContentMap(prev => {
             if (prev.get(conversationId) === snapshot) return prev; // no-op
@@ -709,20 +763,8 @@ export const sendPayload = async (
     const flushStreamedContent = () => {
         // Guard against post-abort flushes — once aborted, no more React state updates
         if (isAborted) return;
-
-        if (_streamRafId !== null || _streamFallbackId !== null) return; // already scheduled
-        _streamRafId = requestAnimationFrame(() => {
-            _doFlush();
-        });
-        // Fallback: if rAF is throttled (tab not focused, browser deprioritized),
-        // ensure content still flushes within 250ms so the UI doesn't freeze
-        // during long tool chains even when the tab isn't fully active.
-        _streamFallbackId = setTimeout(() => {
-            if (_streamRafId !== null) {
-                cancelAnimationFrame(_streamRafId);
-            }
-            _doFlush();
-        });
+        if (_streamFallbackId !== null) return; // already scheduled
+        _streamFallbackId = setTimeout(_doFlush, FLUSH_MIN_INTERVAL_MS);
     };
 
     // Store original params but also track accumulated content for retry
@@ -1260,6 +1302,19 @@ export const sendPayload = async (
 
                 showError(errorMessage, targetConversationId, addMessageToConversation, currentContent.length > 0 ? 'warning' : 'error', errorResponse.error);
                 errorOccurred = true;
+
+                // For auth errors, skip the partial-content "[Response interrupted]" message.
+                // The auth banner is self-contained with a retry button; adding a second
+                // message creates orphan content that the retry handler can't clean up,
+                // leaving stale error text visible after a successful retry.
+                if (errorResponse.error === 'authentication_error') {
+                    setStreamedContentMap((prev: Map<string, string>) => {
+                        const next = new Map(prev);
+                        next.delete(targetConversationId);
+                        return next;
+                    });
+                    return;
+                }
                 // Don't return here - let the stream finish naturally but prevent further content processing
 
                 // If we have accumulated content, add it to the conversation before removing the stream
@@ -2700,14 +2755,12 @@ export const sendPayload = async (
             try { await _wakeLock.release(); } catch (_) { /* may already be released */ }
             _wakeLock = null;
         }
-        // Cancel any pending rAF to prevent setState after cleanup
-        if (_streamRafId !== null) {
-            cancelAnimationFrame(_streamRafId);
-            _streamRafId = null;
-        }
+        // Flush any pending content so the final snapshot reaches React
+        // before the streaming map entry is deleted by removeStreamingConversation.
         if (_streamFallbackId !== null) {
             clearTimeout(_streamFallbackId);
             _streamFallbackId = null;
+            _doFlush();
         }
         setIsStreaming(false);
         removeStreamingConversation(conversationId);
