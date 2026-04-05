@@ -34,7 +34,13 @@ from app.utils.logging_utils import logger
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _resolve_and_validate(relative_path: str, workspace_path: str) -> Path:
+def _get_safe_write_paths() -> list:
+    """Return the safe_write_paths from the current write policy."""
+    from app.config.write_policy import get_write_policy_manager
+    return get_write_policy_manager().policy.get("safe_write_paths", [])
+
+
+def _resolve_and_validate(relative_path: str, workspace_path: str, allowed_absolute_prefixes: list = None) -> Path:
     """
     Resolve *relative_path* against *workspace_path* and ensure the result
     does not escape the workspace via ``..`` traversal.
@@ -54,15 +60,38 @@ def _resolve_and_validate(relative_path: str, workspace_path: str) -> Path:
     base = Path(workspace_path).resolve()
     resolved = (base / cleaned).resolve()
 
-    # Final containment check (handles symlinks too)
+    # Final containment check — allow absolute paths whose resolved form
+    # falls under one of the explicitly allowed prefixes (e.g. /tmp/).
     try:
         resolved.relative_to(base)
     except ValueError:
+        if allowed_absolute_prefixes and os.path.isabs(cleaned):
+            resolved = Path(cleaned).resolve()
+            if _is_under_allowed_prefix(resolved, allowed_absolute_prefixes):
+                return resolved
         raise ValueError(
             f"resolved path escapes project root: {resolved} is not under {base}"
         )
 
     return resolved
+
+
+def _is_under_allowed_prefix(resolved: Path, prefixes: list) -> bool:
+    """Return True if *resolved* falls under any of the allowed absolute prefixes."""
+    resolved_str = str(resolved)
+    for prefix in prefixes:
+        if not prefix.startswith("/"):
+            continue
+        # Resolve the prefix too so symlinks like /tmp -> /private/tmp
+        # are handled correctly on macOS.
+        prefix_resolved = str(Path(prefix.rstrip("/")).resolve())
+        if resolved_str.startswith(prefix_resolved + "/") or resolved_str == prefix_resolved:
+            return True
+        # Also check the literal (non-resolved) form
+        literal = prefix.rstrip("/")
+        if resolved_str.startswith(literal + "/") or resolved_str == literal:
+            return True
+    return False
 
 
 def _get_project_root(kwargs: Dict[str, Any]) -> str:
@@ -131,7 +160,7 @@ class FileReadTool(BaseMCPTool):
         offset: int = kwargs.get("offset") or 1
 
         try:
-            resolved = _resolve_and_validate(path_str, project_root)
+            resolved = _resolve_and_validate(path_str, project_root, allowed_absolute_prefixes=_get_safe_write_paths())
         except ValueError as e:
             return {"error": True, "message": str(e)}
 
@@ -246,7 +275,7 @@ class FileWriteTool(BaseMCPTool):
         patch: Optional[str] = kwargs.get("patch")
 
         try:
-            resolved = _resolve_and_validate(path_str, project_root)
+            resolved = _resolve_and_validate(path_str, project_root, allowed_absolute_prefixes=_get_safe_write_paths())
         except ValueError as e:
             return {"error": True, "message": str(e)}
 
@@ -373,7 +402,7 @@ class FileListTool(BaseMCPTool):
         max_entries: int = kwargs.get("max_entries", 200)
 
         try:
-            resolved = _resolve_and_validate(path_str, project_root)
+            resolved = _resolve_and_validate(path_str, project_root, allowed_absolute_prefixes=_get_safe_write_paths())
         except ValueError as e:
             return {"error": True, "message": str(e)}
 
