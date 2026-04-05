@@ -79,6 +79,28 @@ class TestResolveAndValidate:
         result = _resolve_and_validate(".", workspace)
         assert result == Path(workspace).resolve()
 
+    def test_absolute_tmp_rejected_without_prefixes(self, workspace):
+        """Absolute /tmp path rejected when no allowed prefixes are given."""
+        with pytest.raises(ValueError, match="escapes project root"):
+            _resolve_and_validate("/tmp/test.py", workspace)
+
+    def test_absolute_tmp_allowed_with_prefixes(self, workspace):
+        """Absolute /tmp path allowed when /tmp/ is in allowed prefixes."""
+        result = _resolve_and_validate("/tmp/test.py", workspace, allowed_absolute_prefixes=["/tmp/"])
+        assert str(result).endswith("test.py")
+        # On macOS /tmp -> /private/tmp; verify resolution is consistent
+        assert result == Path("/tmp/test.py").resolve()
+
+    def test_absolute_non_allowed_prefix_rejected(self, workspace):
+        """Absolute path outside allowed prefixes is still rejected."""
+        with pytest.raises(ValueError, match="escapes project root"):
+            _resolve_and_validate("/etc/passwd", workspace, allowed_absolute_prefixes=["/tmp/"])
+
+    def test_relative_path_unaffected_by_prefixes(self, workspace):
+        """Relative paths still resolve against workspace regardless of prefixes."""
+        result = _resolve_and_validate("src/main.py", workspace, allowed_absolute_prefixes=["/tmp/"])
+        assert result == Path(workspace) / "src" / "main.py"
+
 
 # ── FileReadTool ───────────────────────────────────────────────────
 

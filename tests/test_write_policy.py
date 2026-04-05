@@ -253,3 +253,21 @@ class TestSingleton:
         effective = pm.get_effective_policy()
         effective["safe_write_paths"].append("/hacked/")
         assert "/hacked/" not in pm._policy["safe_write_paths"]
+
+
+# ── Symlink resolution for safe paths (macOS /tmp → /private/tmp) ──
+
+class TestSymlinkResolution:
+
+    def test_resolved_tmp_path_allowed(self, pm, project_root):
+        """On macOS, /tmp resolves to /private/tmp. Both must be allowed."""
+        resolved = os.path.realpath("/tmp")
+        assert pm.is_write_allowed(f"{resolved}/scratch.txt", project_root)
+
+    def test_private_tmp_allowed_explicitly(self, pm, project_root):
+        """Even if /private/tmp is passed directly, it should match /tmp/ safe path."""
+        assert pm.is_write_allowed("/private/tmp/test.py", project_root)
+
+    def test_resolved_var_tmp_allowed(self, pm, project_root):
+        resolved = os.path.realpath("/var/tmp")
+        assert pm.is_write_allowed(f"{resolved}/output.log", project_root)
