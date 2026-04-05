@@ -61,6 +61,10 @@ class GlobalUsageTracker:
             usage.timestamp = time.time()
             self.conversation_usages[conversation_id].append(usage)
             
+            # Cap per-conversation list to prevent unbounded growth
+            if len(self.conversation_usages[conversation_id]) > 500:
+                self.conversation_usages[conversation_id] = self.conversation_usages[conversation_id][-500:]
+            
             # Cleanup old conversations (keep last 100)
             if len(self.conversation_usages) > 100:
                 # Remove oldest conversation
@@ -932,7 +936,11 @@ class StreamingToolExecutor:
             chunk_size = len(json.dumps(event_data))
             stream_metrics['events_sent'] += 1
             stream_metrics['bytes_sent'] += chunk_size
-            stream_metrics['chunk_sizes'].append(chunk_size)
+            # Keep only the last 100 chunk sizes to avoid unbounded list growth
+            chunk_sizes = stream_metrics['chunk_sizes']
+            chunk_sizes.append(chunk_size)
+            if len(chunk_sizes) > 100:
+                del chunk_sizes[:len(chunk_sizes) - 100]
             
             if stream_metrics['events_sent'] % 100 == 0:
                 logger.info(f"📊 Stream metrics: {stream_metrics['events_sent']} events, "
@@ -1908,42 +1916,11 @@ class StreamingToolExecutor:
                             # Inside a code fence the model may legitimately quote error strings
                             if code_block_tracker.get('in_block'):
                                 _hallucination_match = None
-                                # Detect fake tool calls: model writes JSON resembling
-                                # a tool invocation instead of using the tool_use API.
-                                # Heuristic: if the text inside a code block contains 3+
-                                # quoted keys that match parameter names of any single
-                                # loaded tool, it's almost certainly a hallucinated call.
-                                if not hasattr(self, '_tool_param_sets'):
-                                    # Build once: set of param name sets per tool
-                                    self._tool_param_sets = []
-                                    for _td in tools:
-                                        _sk = set()
-                                        _schema = getattr(_td, 'args_schema', None)
-                                        if _schema and hasattr(_schema, 'schema'):
-                                            try:
-                                                _sk = set(_schema.schema().get('properties', {}).keys())
-                                            except Exception:
-                                                pass
-                                        if not _sk and hasattr(_td, 'args') and isinstance(_td.args, dict):
-                                            _sk = set(_td.args.keys())
-                                        if len(_sk) >= 3:
-                                            self._tool_param_sets.append(_sk)
-                                # Check tail for quoted keys matching a tool's params
-                                _quoted_keys = set(_re.findall(r'"(\w+)"\s*:', _tail))
-                                if len(_quoted_keys) >= 3:
-                                    for _param_set in self._tool_param_sets:
-                                        _overlap = _quoted_keys & _param_set
-                                        if len(_overlap) >= 3:
-                                            logger.info(
-                                                f"🚨 FAKE_TOOL_CALL: Detected {len(_overlap)} "
-                                                f"tool param keys in code block: {_overlap}"
-                                            )
-                                            _hallucination_match = True
-                                            break
                             if _hallucination_match:
+                                _pattern_desc = getattr(_hallucination_match, 'pattern', 'fake_tool_call') if _hallucination_match is not True else 'fake_tool_call'
                                 logger.warning(
                                     f"🚨 HALLUCINATION_BACKEND: Model generating fake tool output! "
-                                    f"Pattern: {_hallucination_match.pattern}, will retry"
+                                    f"Pattern: {_pattern_desc}, will retry"
                                 )
                                 # Strip contaminated tail from assistant_text
                                 _last_para = assistant_text.rfind('\n\n')

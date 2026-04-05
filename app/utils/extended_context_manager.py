@@ -7,9 +7,15 @@ to use it for subsequent requests.
 """
 
 from typing import Dict, Optional
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from app.utils.logging_utils import logger
+
+
+# Bounds for per-conversation state retention
+_MAX_CONTEXT_STATES = 50
+_CONTEXT_STATE_TTL = 7200  # 2 hours
 
 
 @dataclass
@@ -28,8 +34,30 @@ class ExtendedContextManager:
     
     def __init__(self):
         self._conversation_states: Dict[str, ExtendedContextState] = {}
+        self._access_times: Dict[str, float] = {}
         self._global_extended_context_enabled = False
         self._global_extended_context_reason = None
+
+    def _evict_stale(self):
+        """Remove expired or overflow entries."""
+        now = time.time()
+        expired = [
+            cid for cid, t in self._access_times.items()
+            if (now - t) > _CONTEXT_STATE_TTL
+        ]
+        for cid in expired:
+            self._conversation_states.pop(cid, None)
+            self._access_times.pop(cid, None)
+        if expired:
+            logger.info(f"♻️ ExtendedContextManager: evicted {len(expired)} expired entries")
+
+        overflow = len(self._conversation_states) - _MAX_CONTEXT_STATES
+        if overflow > 0:
+            oldest = sorted(self._access_times.items(), key=lambda x: x[1])
+            for cid, _ in oldest[:overflow]:
+                self._conversation_states.pop(cid, None)
+                self._access_times.pop(cid, None)
+            logger.info(f"♻️ ExtendedContextManager: evicted {overflow} overflow entries")
     
     def is_using_extended_context(self, conversation_id: str) -> bool:
         """Check if a conversation is using extended context."""
@@ -54,6 +82,8 @@ class ExtendedContextManager:
         Returns:
             str: User notification message about extended context activation
         """
+        self._evict_stale()
+        self._access_times[conversation_id] = time.time()
         self._conversation_states[conversation_id] = ExtendedContextState(
             conversation_id=conversation_id,
             is_using_extended=True,
@@ -125,6 +155,7 @@ class ExtendedContextManager:
         """Clear extended context state for a conversation."""
         if conversation_id in self._conversation_states:
             del self._conversation_states[conversation_id]
+            self._access_times.pop(conversation_id, None)
             logger.info(f"Cleared extended context state for conversation {conversation_id}")
 
 
