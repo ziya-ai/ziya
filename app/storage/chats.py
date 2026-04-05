@@ -192,11 +192,4 @@ class ChatStorage(BaseStorage[Chat]):
         for chat in self.list():
             if skill_id in chat.skillIds:
                 chat.skillIds.remove(skill_id)
-                self._write_json(self._chat_file(chat.id), chat.model_dump())
-    
-    def touch(self, chat_id: str) -> None:
-        """Update lastActiveAt timestamp."""
-        chat = self.get(chat_id)
-        if chat:
-            chat.lastActiveAt = int(time.time() * 1000)
             self._write_json(self._chat_file(chat_id), chat.model_dump())

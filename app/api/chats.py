@@ -285,15 +285,17 @@ async def bulk_sync_chats(project_id: str, data: ChatBulkSync):
             results["errors"].append({"id": chat_data.id, "error": str(e)})
     
     return results
-
 @router.get("/api/v1/projects/{project_id}/chats/{chat_id}", response_model=Chat)
 async def get_chat(project_id: str, chat_id: str):
-    """Get full chat including messages."""
+    """Get full chat including messages.
+
+    This is a pure read — it does not update any timestamps.
+    lastActiveAt is only bumped by actual mutations (add_message, update, bulk-sync).
+    """
     storage = get_chat_storage(project_id)
     chat = storage.get(chat_id)
     
     if chat:
-        storage.touch(chat_id)
         return chat
 
     # Chat not in this project — check if it's a global chat in another project
@@ -366,3 +368,64 @@ async def add_message(project_id: str, chat_id: str, message_data: Message):
         raise HTTPException(status_code=404, detail="Chat not found")
     
     return chat
+
+
+# ── Timestamp repair ───────────────────────────────────────────────
+
+@router.post("/api/v1/projects/{project_id}/chats/repair-timestamps")
+async def repair_timestamps(project_id: str, dry_run: bool = Query(True)):
+    """
+    Repair inflated lastActiveAt / lastAccessedAt / _version timestamps.
+
+    The touch-on-read bug caused these to jump to "now" whenever the sync
+    loop fetched a conversation.  This endpoint resets them to the latest
+    message timestamp in any chat where the gap exceeds 1 hour.
+
+    Runs as dry_run=true by default; pass dry_run=false to apply.
+    """
+    THRESHOLD_MS = 3600 * 1000  # 1 hour
+
+    storage = get_chat_storage(project_id)
+    if not storage.chats_dir.exists():
+        return {"scanned": 0, "repaired": 0, "repairs": []}
+
+    repaired = 0
+    scanned = 0
+    repairs = []
+
+    for chat_file in storage.chats_dir.glob("*.json"):
+        if chat_file.name.startswith("_"):
+            continue
+        scanned += 1
+
+        data = storage._read_json(chat_file)
+        if not data:
+            continue
+
+        messages = data.get("messages", [])
+        if not messages:
+            continue
+
+        last_msg_ts = max(
+            m.get("_timestamp", m.get("timestamp", 0)) for m in messages
+        )
+        if last_msg_ts == 0:
+            continue
+
+        changed = False
+        fixed_fields = []
+        for field in ("lastActiveAt", "lastAccessedAt", "_version"):
+            val = data.get(field, 0) or 0
+            if (val - last_msg_ts) > THRESHOLD_MS:
+                fixed_fields.append(field)
+                data[field] = last_msg_ts
+                changed = True
+
+        if changed:
+            title = (data.get("title") or "Untitled")[:60]
+            repairs.append({"id": data.get("id"), "title": title, "fields": fixed_fields})
+            if not dry_run:
+                storage._write_json(chat_file, data)
+            repaired += 1
+
+    return {"scanned": scanned, "repaired": repaired, "dry_run": dry_run, "repairs": repairs}
