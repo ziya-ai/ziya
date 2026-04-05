@@ -15,6 +15,16 @@ _tool_execution_counter = 0
 _consecutive_timeouts = 0
 _conversation_tool_states: Dict[str, Any] = {}
 
+_MAX_TOOL_STATES = 50
+
+def _evict_old_tool_states():
+    """Keep _conversation_tool_states bounded."""
+    if len(_conversation_tool_states) > _MAX_TOOL_STATES:
+        # Remove oldest entries (insertion order in Python 3.7+)
+        excess = len(_conversation_tool_states) - _MAX_TOOL_STATES
+        for key in list(_conversation_tool_states.keys())[:excess]:
+            del _conversation_tool_states[key]
+
 from app.utils.logging_utils import logger
 
 # Import conversation management tools
