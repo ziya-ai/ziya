@@ -45,6 +45,12 @@ const languageMap: { [key: string]: string } = {
     'html': 'markup'
 };
 
+// Precompute the set of language names we recognise (keys + values of languageMap).
+// Used as a fast gate before attempting dynamic imports.
+const recognisedLanguages = new Set<string>(
+    [...Object.keys(languageMap), ...Object.values(languageMap)]
+);
+
 // Languages that depend on 'clike' - based on Prism.js source
 const clikeDependentLanguages = new Set([
     'c', 'cpp', 'csharp', 'java', 'objectivec', 'swift', 'kotlin', 'scala',
@@ -148,8 +154,12 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
         return Promise.resolve();
     }
 
-    // Check if we've already attempted to load this language
-    if (attemptedLoads.has(mappedLanguage)) {
+    // Only attempt loading languages we explicitly support (via languageMap)
+    // or that Prism already has registered (e.g. loaded by a dependency).
+    // This prevents futile dynamic-import attempts for stray words like
+    // "setTimeout", "cancelAnimationFrame", "unmount" that LLMs accidentally
+    // place after code fences.
+    if (!recognisedLanguages.has(mappedLanguage) && !prismInstance?.languages?.[mappedLanguage]) {
         return Promise.resolve();
     }
 
@@ -159,11 +169,15 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
         return Promise.resolve();
     }
 
-    const prism = await loadPrismCore();
-    if (!prism) {
-        // Throw error so caller knows loading failed
-        throw new Error('Failed to load Prism core');
+    // Check if we've already attempted to load this language.
+    // This MUST be checked and set BEFORE any await, otherwise concurrent
+    // callers all pass the check before any of them reach the add().
+    if (attemptedLoads.has(mappedLanguage)) {
+        // If a load is still in flight, return that promise so the caller
+        // awaits completion rather than resolving immediately with no grammar.
+        return loadingPromises[language] || loadingPromises[mappedLanguage] || Promise.resolve();
     }
+    attemptedLoads.add(mappedLanguage);
 
     // Special handling for "typescript jsx" format
     if (language.includes(' ')) {
@@ -172,12 +186,18 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
         return;
     }
 
-    attemptedLoads.add(mappedLanguage);
     console.debug(`Loading language: ${mappedLanguage}`);
 
-    // Create a loading promise for this language
+    // Create the loading promise SYNCHRONOUSLY before any await.
+    // This ensures concurrent callers see loadingPromises[language]
+    // and return the same promise instead of creating parallel load chains.
     loadingPromises[language] = (async () => {
         try {
+            // Synchronous fast-path: skip the async import when Prism is already initialised
+            const prism = prismInstance || await loadPrismCore();
+            if (!prism) {
+                throw new Error('Failed to load Prism core');
+            }
             // Always ensure core languages are loaded first
             if (!window.Prism?.languages?.javascript ||
                 Object.keys(window.Prism?.languages?.javascript || {}).length === 0) {

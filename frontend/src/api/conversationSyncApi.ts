@@ -65,6 +65,23 @@ export async function getChat(projectId: string, chatId: string): Promise<Server
 }
 
 export async function bulkSync(projectId: string, chats: ServerChat[]): Promise<BulkSyncResult> {
+  // Chunk large payloads to avoid 413 Request Entity Too Large.
+  // With 500+ conversations carrying full message bodies, a single
+  // POST can easily exceed the server's 20MB request limit.
+  const CHUNK_SIZE = 50;
+  if (chats.length > CHUNK_SIZE) {
+    const aggregate: BulkSyncResult = { created: 0, updated: 0, skipped: 0, errors: [] };
+    for (let i = 0; i < chats.length; i += CHUNK_SIZE) {
+      const chunk = chats.slice(i, i + CHUNK_SIZE);
+      const result = await bulkSync(projectId, chunk);
+      aggregate.created += result.created;
+      aggregate.updated += result.updated;
+      aggregate.skipped += result.skipped;
+      aggregate.errors.push(...result.errors);
+    }
+    return aggregate;
+  }
+
   const res = await fetch(`${BASE}/${projectId}/chats/bulk-sync`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...projectHeaders() },

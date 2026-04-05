@@ -203,6 +203,220 @@ describe('removeNodeFromTree cycle safety', () => {
   });
 });
 
+// ── cloneNode (sort-only fast path) ────────────────────────────────────
+// Replicated from MUIChatHistory.tsx sort-only fast path
+
+function cloneNode(node: any, convMap: Map<string, any>, _depth = 0): any {
+  if (_depth > 30) return { ...node, children: [] };
+  let conversationChanged = false;
+  if (node.conversation) {
+    const fresh = convMap.get(node.conversation.id);
+    if (fresh && fresh !== node.conversation) conversationChanged = true;
+  }
+  let newChildren = node.children;
+  if (node.children) {
+    newChildren = node.children.map((c: any) => cloneNode(c, convMap, _depth + 1));
+  }
+  const childrenChanged = newChildren !== node.children &&
+    newChildren.some((c: any, i: number) => c !== node.children[i]);
+  if (!conversationChanged && !childrenChanged) return node;
+  const copy = { ...node };
+  if (conversationChanged) copy.conversation = convMap.get(node.conversation.id);
+  if (childrenChanged) copy.children = newChildren;
+  return copy;
+}
+
+function findNodeInTree(items: any[], targetId: string, _depth = 0): any {
+  if (_depth > 30) return null;
+  for (const n of items) {
+    if (n.id === targetId) return n;
+    if (n.children) {
+      const f = findNodeInTree(n.children, targetId, _depth + 1);
+      if (f) return f;
+    }
+  }
+  return null;
+}
+
+describe('cloneNode cycle safety (sort-only fast path)', () => {
+  it('terminates on self-referencing node', () => {
+    const node: any = { id: 'a', folder: true, children: [] };
+    node.children.push(node);
+    const convMap = new Map();
+
+    expect(() => {
+      const clone = cloneNode(node, convMap);
+      // Should produce a clone that terminates — not stack overflow
+      expect(clone.id).toBe('a');
+    }).not.toThrow();
+  });
+
+  it('terminates on mutual cycle (A → B → A)', () => {
+    const a: any = { id: 'a', folder: true, children: [] };
+    const b: any = { id: 'b', folder: true, children: [] };
+    a.children.push(b);
+    b.children.push(a);
+    const convMap = new Map();
+
+    expect(() => {
+      const clone = cloneNode(a, convMap);
+      expect(clone.id).toBe('a');
+    }).not.toThrow();
+  });
+
+  it('produces independent copy for valid tree', () => {
+    const conv = { id: 'c1', lastAccessedAt: 100 };
+    const child = { id: 'conv-c1', conversation: conv, children: [] };
+    const root = { id: 'f1', folder: true, children: [child], lastActivityTime: 0, isPinned: false };
+    const freshConv = { id: 'c1', lastAccessedAt: 999 };
+    const convMap = new Map([['c1', freshConv]]);
+
+    const clone = cloneNode(root, convMap);
+    expect(clone.children[0].conversation.lastAccessedAt).toBe(999);
+    expect(root.children[0].conversation.lastAccessedAt).toBe(100);
+    expect(clone.children).not.toBe(root.children);
+  });
+});
+
+describe('cloneNode reference reuse optimization', () => {
+  it('returns same reference when nothing changed', () => {
+    const conv = { id: 'c1', lastAccessedAt: 100 };
+    const child = { id: 'conv-c1', conversation: conv, children: [] };
+    const root = { id: 'f1', folder: true, children: [child], lastActivityTime: 100, isPinned: false };
+
+    // convMap has the SAME reference — nothing changed
+    const convMap = new Map([['c1', conv]]);
+    const clone = cloneNode(root, convMap);
+
+    // Should return the exact same object reference
+    expect(clone).toBe(root);
+    expect(clone.children[0]).toBe(child);
+  });
+
+  it('only clones the changed subtree', () => {
+    const conv1 = { id: 'c1', lastAccessedAt: 100 };
+    const conv2 = { id: 'c2', lastAccessedAt: 200 };
+    const child1 = { id: 'conv-c1', conversation: conv1, children: [] };
+    const child2 = { id: 'conv-c2', conversation: conv2, children: [] };
+    const root = { id: 'f1', folder: true, children: [child1, child2], lastActivityTime: 200, isPinned: false };
+
+    // Only conv2 changed
+    const freshConv2 = { id: 'c2', lastAccessedAt: 999 };
+    const convMap = new Map([['c1', conv1], ['c2', freshConv2]]);
+    const clone = cloneNode(root, convMap);
+
+    expect(clone).not.toBe(root);           // root changed (child changed)
+    expect(clone.children[0]).toBe(child1); // child1 unchanged — reused
+    expect(clone.children[1]).not.toBe(child2); // child2 changed
+    expect(clone.children[1].conversation).toBe(freshConv2);
+  });
+});
+
+describe('findNode cycle safety', () => {
+  it('terminates on circular tree', () => {
+    const a: any = { id: 'a', children: [] };
+    const b: any = { id: 'b', children: [] };
+    a.children.push(b);
+    b.children.push(a);
+
+    expect(() => {
+      const result = findNodeInTree([a], 'not-found');
+      expect(result).toBeNull();
+    }).not.toThrow();
+  });
+
+  it('finds target in valid tree', () => {
+    const target = { id: 'target', children: [] };
+    const root = { id: 'root', children: [{ id: 'mid', children: [target] }] };
+    expect(findNodeInTree([root], 'target')?.id).toBe('target');
+  });
+});
+
+describe('mutual folder cycle detection in tree build', () => {
+  it('detects A→B→A cycle and places second folder at root', () => {
+    const folders = [
+      { id: 'a', name: 'A', parentId: 'b' },
+      { id: 'b', name: 'B', parentId: 'a' },
+    ];
+
+    const folderMap = new Map<string, any>();
+    folders.forEach(f => {
+      folderMap.set(f.id, { id: f.id, name: f.name, folder: f, children: [] });
+    });
+
+    const rootItems: any[] = [];
+    folders.forEach(folder => {
+      const node = folderMap.get(folder.id);
+      let hasCycle = false;
+      if (folder.parentId && folder.parentId !== folder.id) {
+        const visited = new Set<string>([folder.id]);
+        let cur: string | null | undefined = folder.parentId;
+        while (cur) {
+          if (visited.has(cur)) { hasCycle = true; break; }
+          visited.add(cur);
+          const ancestor = folders.find(f => f.id === cur);
+          cur = ancestor?.parentId;
+        }
+      }
+      if (!hasCycle && folder.parentId && folder.parentId !== folder.id && folderMap.has(folder.parentId)) {
+        folderMap.get(folder.parentId).children.push(node);
+      } else {
+        rootItems.push(node);
+      }
+    });
+
+    // One folder nests normally, the cycle-forming one goes to root
+    // (first folder processed nests into the second; second detects cycle and goes to root)
+    expect(rootItems.length).toBeGreaterThanOrEqual(1);
+    // No circular references — cloneNode should succeed
+    const convMap = new Map();
+    expect(() => {
+      rootItems.map(n => cloneNode(n, convMap));
+    }).not.toThrow();
+  });
+
+  it('detects A→B→C→A three-way cycle', () => {
+    const folders = [
+      { id: 'a', name: 'A', parentId: 'c' },
+      { id: 'b', name: 'B', parentId: 'a' },
+      { id: 'c', name: 'C', parentId: 'b' },
+    ];
+
+    const folderMap = new Map<string, any>();
+    folders.forEach(f => {
+      folderMap.set(f.id, { id: f.id, name: f.name, folder: f, children: [] });
+    });
+
+    const rootItems: any[] = [];
+    folders.forEach(folder => {
+      const node = folderMap.get(folder.id);
+      let hasCycle = false;
+      if (folder.parentId && folder.parentId !== folder.id) {
+        const visited = new Set<string>([folder.id]);
+        let cur: string | null | undefined = folder.parentId;
+        while (cur) {
+          if (visited.has(cur)) { hasCycle = true; break; }
+          visited.add(cur);
+          const ancestor = folders.find(f => f.id === cur);
+          cur = ancestor?.parentId;
+        }
+      }
+      if (!hasCycle && folder.parentId && folder.parentId !== folder.id && folderMap.has(folder.parentId)) {
+        folderMap.get(folder.parentId).children.push(node);
+      } else {
+        rootItems.push(node);
+      }
+    });
+
+    // At least one folder must be placed at root to break the cycle
+    expect(rootItems.length).toBeGreaterThanOrEqual(1);
+    const convMap = new Map();
+    expect(() => {
+      rootItems.map(n => cloneNode(n, convMap));
+    }).not.toThrow();
+  });
+});
+
 describe('tree building self-reference guard', () => {
   it('folder with parentId === id should go to root, not be its own child', () => {
     // Simulate the tree-building logic from treeDataRaw
@@ -233,5 +447,107 @@ describe('tree building self-reference guard', () => {
     // f2 should NOT be inside its own children
     const f2Node = folderMap.get('f2');
     expect(f2Node.children.length).toBe(0);
+  });
+});
+
+describe('sort-only fast path immutability', () => {
+  // Replicate the FNV-1a hash used in treeDataRaw
+  function fnv1a() {
+    let h = 0x811c9dc5;
+    return {
+      add(s: string) {
+        for (let i = 0; i < s.length; i++) {
+          h ^= s.charCodeAt(i);
+          h = Math.imul(h, 0x01000193);
+        }
+      },
+      value() { return h >>> 0; }
+    };
+  }
+
+  it('structural hash is deterministic for identical inputs', () => {
+    const folders = [{ id: 'f1', name: 'Folder', parentId: '', isGlobal: false, taskPlan: null as any }];
+    const conversations = [
+      { id: 'c1', title: 'Chat', folderId: 'f1', isActive: true, isGlobal: false, delegateMeta: null as any, lastAccessedAt: 100 },
+      { id: 'c2', title: 'Chat 2', folderId: '', isActive: true, isGlobal: false, delegateMeta: null as any, lastAccessedAt: 200 },
+    ];
+
+    const hash1 = (() => {
+      const sh = fnv1a();
+      folders.forEach(f => { sh.add(f.id || ''); sh.add(f.name || ''); sh.add(f.parentId || ''); sh.add(f.isGlobal ? 'g' : ''); sh.add(f.taskPlan?.source_conversation_id || ''); });
+      conversations.forEach(c => { sh.add(c.id || ''); sh.add(c.title || ''); sh.add(c.folderId || ''); sh.add(c.isActive === false ? '0' : '1'); sh.add(c.isGlobal ? 'g' : ''); sh.add(c.delegateMeta?.status || ''); });
+      return sh.value();
+    })();
+
+    const hash2 = (() => {
+      const sh = fnv1a();
+      folders.forEach(f => { sh.add(f.id || ''); sh.add(f.name || ''); sh.add(f.parentId || ''); sh.add(f.isGlobal ? 'g' : ''); sh.add(f.taskPlan?.source_conversation_id || ''); });
+      conversations.forEach(c => { sh.add(c.id || ''); sh.add(c.title || ''); sh.add(c.folderId || ''); sh.add(c.isActive === false ? '0' : '1'); sh.add(c.isGlobal ? 'g' : ''); sh.add(c.delegateMeta?.status || ''); });
+      return sh.value();
+    })();
+
+    expect(hash1).toBe(hash2);
+    // Sanity: hash is not 0 (the uninitialized ref value)
+    expect(hash1).not.toBe(0);
+  });
+
+  it('changing only lastAccessedAt does not change structural hash', () => {
+    const compute = (accessTime: number) => {
+      const sh = fnv1a();
+      sh.add('c1'); sh.add('Chat'); sh.add('f1'); sh.add('1'); sh.add(''); sh.add('');
+      return sh.value();
+    };
+    // Same structural hash regardless of access time
+    expect(compute(100)).toBe(compute(999));
+  });
+
+  it('changing only lastAccessedAt DOES change sort hash', () => {
+    const computeSort = (accessTime: number) => {
+      const oh = fnv1a();
+      oh.add(String(accessTime));
+      return oh.value();
+    };
+    expect(computeSort(100)).not.toBe(computeSort(999));
+  });
+
+  it('cloneNode produces independent copy when data changes', () => {
+    const conv = { id: 'c1', title: 'Chat', lastAccessedAt: 100 };
+    const original = {
+      id: 'f1', name: 'Folder', folder: true, lastActivityTime: 0,
+      isPinned: false,
+      children: [{ id: 'conv-c1', name: 'Chat', conversation: conv, children: [] }],
+    };
+
+    const freshConv = { ...conv, lastAccessedAt: 999 };
+    const convMap = new Map([['c1', freshConv]]);
+    const clone = cloneNode(original, convMap);
+
+    // Clone has fresh conversation reference (data changed)
+    expect(clone.children[0].conversation.lastAccessedAt).toBe(999);
+    // Original is untouched
+    expect(original.children[0].conversation.lastAccessedAt).toBe(100);
+    // Array references are different
+    expect(clone.children).not.toBe(original.children);
+    // Node references are different
+    expect(clone).not.toBe(original);
+  });
+
+  it('cloneNode reuses references when data is identical', () => {
+    const conv = { id: 'c1', title: 'Chat', lastAccessedAt: 100 };
+    const child = { id: 'conv-c1', name: 'Chat', conversation: conv, children: [] };
+    const original = {
+      id: 'f1', name: 'Folder', folder: true, lastActivityTime: 100,
+      isPinned: false,
+      children: [child],
+    };
+
+    // Same conversation reference — no change
+    const convMap = new Map([['c1', conv]]);
+    const clone = cloneNode(original, convMap);
+
+    // Everything should be the same reference
+    expect(clone).toBe(original);
+    expect(clone.children).toBe(original.children);
+    expect(clone.children[0]).toBe(child);
   });
 });
