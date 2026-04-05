@@ -259,6 +259,24 @@ Ziya provides a full terminal interface alongside the web UI. All commands use t
 | `ziya review [--staged\|--diff] [FILES...]` | Code review with optional custom prompt |
 | `ziya explain [FILES...] [--prompt "..."]` | Explain code from files or stdin |
 
+### In-Session Commands
+
+Inside `ziya chat`, the following slash commands are available:
+
+| Command | Description |
+|---|---|
+| `/add <file\|dir>` | Add files or directories to conversation context |
+| `/rm <file\|pattern>` | Remove files from context |
+| `/files` | List files currently in context |
+| `/shell <subcommand>` | Manage shell command allowlist (`add`, `rm`, `reset`, `yolo`, `git`, `timeout`) |
+| `/tune <key> <val>` | Adjust session settings (e.g. `/tune iterations 50`) |
+| `/model [name]` | Switch model or open interactive model picker |
+| `/clear` | Clear conversation history |
+| `/reset` | Clear history, context files, and all session state |
+| `/suspend` | Save session and exit |
+| `/resume` | Restore a previous session |
+| `/help` | Show command reference |
+
 ### Piping
 
 Any command that accepts content also reads from stdin, so standard Unix piping works:

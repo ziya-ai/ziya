@@ -14,6 +14,12 @@ frontend suspends or throttles all background activity to prevent crashes:
 | MarkdownRenderer MutationObserver | Disconnects when `document.hidden` |
 
 Additional resource management:
+- **Singleton event listener pattern** — MathRenderer LaTeX copy handlers and
+  MarkdownRenderer throttle-button observers use module-level singletons
+  instead of per-instance `document.addEventListener` calls.  Each component
+  instance registers/unregisters via a lightweight registry; a single document
+  listener delegates to the relevant instance.  Keeps listener count O(1)
+  instead of O(N messages × M math expressions).
 - **ResizeObserver feedback prevention** — Vega-Lite chart ResizeObservers use
   `requestAnimationFrame` throttling and a single-instance guard to prevent
   the DOM-mutation→observation→DOM-mutation feedback loop.
@@ -69,6 +75,7 @@ FastAPI Server  (app/server.py)
     │   ├─ file_read / file_write / file_list
     │   ├─ nova_web_search  ────────────────────► AWS Bedrock (Nova converse API)
     │   └─ architecture shapes / diagram tools
+    │   └─ memory_search / memory_save / memory_propose  (~/.ziya/memory/)
     │
     ├─ Plugin System  (app/plugins/)
     │   ├─ AuthProvider
@@ -80,6 +87,7 @@ FastAPI Server  (app/server.py)
     │
     └─ Local Storage  (~/.ziya/)
         ├─ projects/         (contexts, skills, settings per project)
+        ├─ memory/           (persistent structured memory across sessions)
         └─ models.json       (optional user model allowlist)
 ```
 
@@ -286,6 +294,7 @@ A defense-in-depth guard prevents shell data from being written back to persiste
 | Fast-path disable | `queueSave()` cache logic | Disables the `otherProjectConvsCache` optimization when shells are present, forcing a full IndexedDB read |
 | Write guard | `db._saveConversationsWithLock()` | Rejects any conversation where `_isShell && messages.length < _fullMessageCount` |
 | Flag clearing | Lazy-load and server sync | `_isShell` is cleared when full messages are loaded |
+| Save debounce | `queueSave()` debounce block | When `changedIds` is provided, coalesces saves within a 300ms window to prevent rapid-fire IDB writes during streaming |
 
 The markers are transient (never persisted to IndexedDB or the server). They exist only in React state during the window between shell load and full data load.
 
@@ -308,6 +317,19 @@ Beyond shell detection, a separate defense layer prevents *any* merge or sync op
 
 The threshold of `> 2` messages allows shell conversations (which legitimately have only first+last) to be freely replaced, while protecting any conversation with meaningful history.
 
+### Read-Purity of Chat Endpoints
+
+The `GET /chats/{chat_id}` endpoint is a pure read — it does **not** update
+`lastActiveAt` or any other timestamp.  `lastActiveAt` is only bumped by
+actual mutations: `add_message`, `update`, and `bulk-sync`.
+
+This is a deliberate design choice.  The periodic SERVER_SYNC loop full-fetches
+conversations via this endpoint when it detects version mismatches.  If the GET
+had a side effect of touching `lastActiveAt`, every synced conversation would
+appear "just used", corrupting the sort order in the sidebar.  The same
+`lastActiveAt` field drives data-retention expiry, so a touch-on-read would also
+prevent old unused conversations from being cleaned up by the retention policy.
+
 #### Known Limitation: Direct IDB Writers
 
 Several UI paths (`ChatHistory.tsx` rename/delete, `MUIChatHistory.tsx` rename/delete/fork) call `db.saveConversations()` directly, bypassing `queueSave`. These write the entire conversations array as a single IDB record. If `queueSave` is also running (e.g., from streaming), the two writes are serialized by `navigator.locks` but read stale data — a TOCTOU (Time-of-Check-to-Time-of-Use) race. The IDB read-before-write guard mitigates the most dangerous outcome (message loss) by preserving higher message counts from the existing IDB record. Metadata changes (title, folder) from the losing writer may still be lost and require a retry. A future refactor should route all conversation mutations through `queueSave`.
@@ -328,6 +350,19 @@ The chat sidebar (`MUIChatHistory`) computes a tree from conversations and folde
 
 **Root cause:** `setConversations` is a raw `useState` setter called from 40+ locations. Many of these paths — server sync, cross-tab BroadcastChannel, delegate polling, lazy loading — can introduce conversations with null or undefined `title` fields. The validation in `queueSave` only runs on the persistence path, not on all state-setting paths. The defensive measures above ensure the rendering layer is resilient regardless of what data enters state.
 
+### Tree Rebuild Caching (FNV Hash Fast Paths)
+
+The `treeDataRaw` useMemo in `MUIChatHistory` uses two FNV-1a hashes to skip expensive work:
+
+| Hash | Inputs | Purpose |
+|---|---|---|
+| Structural hash | folder IDs, names, parentIds, conversation IDs, titles, folderIds, delegate status | If unchanged → return cached tree (zero work) |
+| Sort hash | conversation lastAccessedAt, pinned folder set | If only this changed → sort-only fast path (shallow-copy + re-sort, skip full rebuild) |
+
+Both hashes MUST be stored in refs (`lastTreeDataInputsRef`, `lastSortHashRef`) at the end of every code path (full rebuild AND sort-only). If either ref is not updated, subsequent renders see a hash mismatch and fall through to a full O(N×M) rebuild — which with hundreds of conversations causes main-thread stalls and crashes during streaming.
+
+The sort-only fast path creates **shallow copies** of all tree nodes (via `cloneNode`) before mutating. This is essential because `treeData` React state may still hold references to the previous tree — mutating in place violates React's immutability contract and causes inconsistent renders during concurrent updates (e.g. streaming + SERVER_SYNC poll in the same frame).
+
 ### Circular Folder Reference Protection
 
 The sidebar tree is built from folders with `parentId` references. If a folder's `parentId` equals its own `id` (self-reference) or two folders reference each other (mutual cycle), the tree-building code creates a circular data structure. Six recursive functions then hit infinite recursion → stack overflow → page crash. This is the most common cause of "entire page crashes" because the crash occurs inside `useMemo` during render, bypassing all error boundaries.
@@ -342,3 +377,81 @@ The sidebar tree is built from folders with `parentId` references. If a folder's
 | Depth limits | `flattenVisibleNodes`, `rollUpConversationCount`, `sortRecursive`, `removeNodeFromTree`, `anchorFolder`, `reanchor` | All recursive functions cap at depth 20 |
 | Visited-set | `flattenVisibleNodes` | Tracks seen node IDs to break cycles even within the depth limit |
 | Error boundary | `MUIChatHistory.tsx` export wrapper | `ChatHistoryErrorBoundary` catches any residual crashes and shows a retry button |
+
+---
+
+### Server Memory Management
+
+Several server-side data structures track per-conversation state across requests. Without bounds, these grow unboundedly over long server sessions and can reach multiple GB.
+
+**Bounded structures:**
+
+| Structure | Location | Eviction Strategy |
+|---|---|---|
+| `FileStateManager.conversation_states` | `app/utils/file_state_manager.py` | LRU cap (20 conversations) + TTL (1 hour). Eviction runs on every `initialize_conversation()` and `_save_state()` call. Each conversation stores 4 copies of every selected file's content for change tracking. |
+| `ExtendedContextManager._conversation_states` | `app/utils/extended_context_manager.py` | LRU cap (50 entries) + TTL (2 hours). Eviction runs on `activate_extended_context()`. |
+| `GlobalUsageTracker.conversation_usages` | `app/streaming_tool_executor.py` | 100-conversation cap (evicts oldest on overflow). Per-conversation list capped at 500 `IterationUsage` entries. |
+| `stream_metrics['chunk_sizes']` | `app/streaming_tool_executor.py` | Rolling window of last 100 entries per stream. |
+
+**Per-request structures** (garbage collected when the request ends):
+
+| Structure | Scope | Notes |
+|---|---|---|
+| `conversation` list in `stream_with_tools()` | Single request | Grows over tool iterations (up to 200). Includes full assistant text + tool results per iteration. |
+| `StreamingToolExecutor` instance | Single request | Created per-request, not cached. All instance state (`_tool_param_sets`, `_content_optimizer`, etc.) dies with the request. |
+
+**Tuning:** The constants `_MAX_CONVERSATIONS` (default 20) and `_CONVERSATION_TTL_SECONDS` (default 3600) in `file_state_manager.py` control the primary memory bound. Increase `_MAX_CONVERSATIONS` to support more concurrent active conversations at the cost of higher baseline memory.
+
+---
+
+## Structured Memory System
+
+Ziya maintains a persistent knowledge store across sessions so the model
+behaves like a colleague who was in every previous meeting.  The system is
+local-first (all data in `~/.ziya/memory/`), human-owned (approve/edit/delete),
+and invisible when working correctly.
+
+### Phase 0 — Flat Store
+
+All memories live in a single JSON file (`memories.json`).  Each entry has:
+- **content**: A distilled principle or fact (not raw transcript)
+- **layer**: `domain_context`, `architecture`, `lexicon`, `decision`,
+  `active_thread`, `process`, `preference`, `negative_constraint`
+- **tags**: Free-form keywords for search
+- **status**: `active`, `pending`, `deprecated`, `archived`
+- **scope**: Optional project-path weighting
+
+### Tools
+
+The model interacts with memory through three builtin MCP tools:
+
+| Tool | Purpose |
+|---|---|
+| `memory_search` | Keyword/tag/layer search across the flat store |
+| `memory_save` | Direct save (user-initiated via `/remember`) |
+| `memory_propose` | Agent proposes a memory for later user approval |
+| `memory_context` | Browse mind-map handles — omit node_id for root overview |
+| `memory_expand` | Load all memories under a node and its descendants |
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/v1/memory` | GET | Status overview (counts, pending proposals) |
+| `/api/v1/memory/search` | GET | Search memories by keyword/tag/layer |
+| `/api/v1/memory/all` | GET | List all active memories |
+| `/api/v1/memory` | POST | Save a new memory |
+| `/api/v1/memory/{id}` | PUT | Edit a memory |
+| `/api/v1/memory/{id}` | DELETE | Delete a memory |
+| `/api/v1/memory/proposals` | GET | List pending proposals |
+| `/api/v1/memory/proposals/{id}/approve` | POST | Approve a proposal |
+| `/api/v1/memory/proposals/approve-all` | POST | Approve all proposals |
+| `/api/v1/memory/proposals/{id}` | DELETE | Dismiss a proposal |
+| `/api/v1/memory/mindmap` | GET | Full mind-map tree |
+| `/api/v1/memory/mindmap/{node_id}` | GET | Node with children context |
+| `/api/v1/memory/mindmap` | POST | Create/update a mind-map node |
+| `/api/v1/memory/mindmap/{node_id}` | DELETE | Delete node (children reparented) |
+| `/api/v1/memory/mindmap/{node_id}/expand` | POST | All memories under node tree |
+
+See `design/structured-memory-system.md` for the full design rationale,
+research foundation, and roadmap for Phases 1–3.

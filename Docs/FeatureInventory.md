@@ -206,6 +206,8 @@ Ziya's visualization suite is the most comprehensive of any AI coding assistant.
 | **Git integration** | `ziya review --staged` / `--diff` for git-aware code review |
 | **Pipe composition** | `cat error.log \| ziya ask "what's wrong?"`, `git diff \| ziya review` |
 | **Session shell commands** | Per-session allowlist overrides; `/shell git add`, `/shell git all`, etc. |
+| **Clear history** | `/clear` — wipe conversation history, keep files and session state |
+| **Full session reset** | `/reset` — clear history, context files, conversation ID, and all session overrides (shell, yolo, timeout); fresh start without restarting the process |
 
 ---
 
