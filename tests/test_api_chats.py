@@ -7,6 +7,7 @@ Covers:
   - Single chat CRUD
   - Chat group CRUD
   - Version conflict resolution
+  - Timestamp repair endpoint
 """
 
 import json
@@ -245,6 +246,21 @@ class TestSingleChatCRUD:
         assert resp.status_code == 200
         assert resp.json()["title"] == "My Chat"
 
+    def test_get_chat_does_not_mutate_timestamps(self, client):
+        """Reading a chat via GET must not bump lastActiveAt.
+
+        This is critical: the sync loop full-fetches conversations via this
+        endpoint, and a side-effecting read would make old conversations
+        appear recently active, corrupting sort order.
+        """
+        tc, pid = client
+        tc.post(f"/api/v1/projects/{pid}/chats/bulk-sync",
+                json={"chats": [_make_chat("c1", "Stable Chat", version=1000)]})
+        original = tc.get(f"/api/v1/projects/{pid}/chats/c1").json()["lastActiveAt"]
+        time.sleep(0.05)
+        after_read = tc.get(f"/api/v1/projects/{pid}/chats/c1").json()["lastActiveAt"]
+        assert after_read == original, "GET must not update lastActiveAt"
+
     def test_get_nonexistent_chat_404(self, client):
         tc, pid = client
         resp = tc.get(f"/api/v1/projects/{pid}/chats/nonexistent")
@@ -318,6 +334,111 @@ class TestChatGroups:
         # Chat should now be ungrouped (groupId == null)
         chat = tc.get(f"/api/v1/projects/{pid}/chats/c1").json()
         assert chat["groupId"] is None
+
+
+# ── Timestamp Repair ───────────────────────────────────────────────
+
+class TestTimestampRepair:
+
+    def _write_inflated_chat(self, client, chat_id, title, msg_time, inflated_time):
+        """Write a chat with timestamps inflated beyond the last message."""
+        tc, pid = client
+        chat = {
+            "id": chat_id,
+            "title": title,
+            "messages": [{"id": "m1", "role": "human", "content": "hi", "timestamp": msg_time}],
+            "createdAt": msg_time,
+            "lastActiveAt": inflated_time,
+            "lastAccessedAt": inflated_time,
+            "_version": inflated_time,
+        }
+        tc.post(f"/api/v1/projects/{pid}/chats/bulk-sync", json={"chats": [chat]})
+
+    def test_dry_run_does_not_modify(self, client):
+        tc, pid = client
+        msg_time = 1700000000000
+        inflated = msg_time + 10 * 3600 * 1000  # 10 hours later
+        self._write_inflated_chat(client, "inflated-1", "Old Chat", msg_time, inflated)
+
+        resp = tc.post(f"/api/v1/projects/{pid}/chats/repair-timestamps?dry_run=true")
+        result = resp.json()
+        assert result["repaired"] == 1
+        assert result["dry_run"] is True
+
+        # Verify the chat was NOT modified
+        chat = tc.get(f"/api/v1/projects/{pid}/chats/inflated-1").json()
+        assert chat["lastActiveAt"] == inflated
+
+    def test_apply_repairs_timestamps(self, client):
+        tc, pid = client
+        msg_time = 1700000000000
+        inflated = msg_time + 10 * 3600 * 1000  # 10 hours later
+        self._write_inflated_chat(client, "inflated-2", "Old Chat", msg_time, inflated)
+
+        resp = tc.post(f"/api/v1/projects/{pid}/chats/repair-timestamps?dry_run=false")
+        result = resp.json()
+        assert result["repaired"] == 1
+        assert result["dry_run"] is False
+        assert result["repairs"][0]["fields"] == ["lastActiveAt", "lastAccessedAt", "_version"]
+
+        # Verify the chat WAS repaired
+        chat = tc.get(f"/api/v1/projects/{pid}/chats/inflated-2").json()
+        assert chat["lastActiveAt"] == msg_time
+
+    def test_no_repair_needed(self, client):
+        """Chats whose timestamps match their last message are untouched."""
+        tc, pid = client
+        tc.post(f"/api/v1/projects/{pid}/chats/bulk-sync",
+                json={"chats": [_make_chat("healthy", "Good Chat", messages=[_make_message()])]})
+
+        resp = tc.post(f"/api/v1/projects/{pid}/chats/repair-timestamps?dry_run=true")
+        result = resp.json()
+        assert result["repaired"] == 0
+
+    def test_idempotent(self, client):
+        """Running repair twice produces zero changes on the second run."""
+        tc, pid = client
+        msg_time = 1700000000000
+        inflated = msg_time + 10 * 3600 * 1000
+        self._write_inflated_chat(client, "idem-1", "Old Chat", msg_time, inflated)
+
+        # First repair
+        tc.post(f"/api/v1/projects/{pid}/chats/repair-timestamps?dry_run=false")
+
+        # Second repair — should find nothing
+        resp = tc.post(f"/api/v1/projects/{pid}/chats/repair-timestamps?dry_run=true")
+        assert resp.json()["repaired"] == 0
+
+    def test_only_inflated_fields_repaired(self, client):
+        """If only _version is inflated, only that field is repaired."""
+        tc, pid = client
+        msg_time = 1700000000000
+        inflated = msg_time + 10 * 3600 * 1000
+        chat = {
+            "id": "partial-inflate",
+            "title": "Partial",
+            "messages": [{"id": "m1", "role": "human", "content": "hi", "timestamp": msg_time}],
+            "createdAt": msg_time,
+            "lastActiveAt": msg_time,       # OK
+            "lastAccessedAt": msg_time,     # OK
+            "_version": inflated,            # Inflated
+        }
+        tc.post(f"/api/v1/projects/{pid}/chats/bulk-sync", json={"chats": [chat]})
+
+        resp = tc.post(f"/api/v1/projects/{pid}/chats/repair-timestamps?dry_run=false")
+        result = resp.json()
+        assert result["repaired"] == 1
+        assert result["repairs"][0]["fields"] == ["_version"]
+
+    def test_empty_conversations_skipped(self, client):
+        """Chats with no messages are not flagged for repair."""
+        tc, pid = client
+        chat = _make_chat("empty", "Empty")
+        chat["lastActiveAt"] = 9999999999999  # Absurdly high but no messages
+        tc.post(f"/api/v1/projects/{pid}/chats/bulk-sync", json={"chats": [chat]})
+
+        resp = tc.post(f"/api/v1/projects/{pid}/chats/repair-timestamps?dry_run=true")
+        assert resp.json()["repaired"] == 0
 
 
 # ── Error handling ─────────────────────────────────────────────────

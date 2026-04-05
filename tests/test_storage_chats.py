@@ -6,7 +6,6 @@ Covers:
   - list_summaries preserves _version
   - add_message appends and updates lastActiveAt
   - remove_context_from_all_chats / remove_skill_from_all_chats
-  - touch updates timestamp
   - Atomic write safety (tmp file cleanup on error)
   - Corrupt JSON handling (returns None, doesn't crash)
   - Group filtering in list()
@@ -275,22 +274,6 @@ class TestRemoveReferences:
         assert "s1" not in storage.get(c1.id).skillIds
         assert "s2" in storage.get(c1.id).skillIds
         assert "s1" not in storage.get(c2.id).skillIds
-
-
-# ── Touch ──────────────────────────────────────────────────────────
-
-class TestTouch:
-
-    def test_touch_updates_timestamp(self, storage, sample_chat):
-        original = sample_chat.lastActiveAt
-        time.sleep(0.05)
-        storage.touch(sample_chat.id)
-        reloaded = storage.get(sample_chat.id)
-        assert reloaded.lastActiveAt > original
-
-    def test_touch_nonexistent_is_noop(self, storage):
-        # Should not raise
-        storage.touch("nonexistent-id")
 
 
 # ── Base storage edge cases ────────────────────────────────────────
