@@ -1,0 +1,6 @@
+{
+  "description": "Regression test for variable-shadow bug in difflib stage. When a multi-hunk diff has some hunks already applied by system_patch, the difflib stage's distinctive-line search loop (for i, file_line in enumerate(original_lines)) shadows the outer hunk iteration variable i, causing hunk_id_mapping lookups to fail and the wrong hunk to be marked as already_applied. The real pending hunk remains PENDING and is incorrectly reported as FAILED.",
+  "target_file": "src/component.tsx",
+  "expected_to_fail": false,
+  "notes": "The original file IS the expected file — all hunks are already applied. The diff should be detected as fully already-applied with status=success and changes_written=false. Before the fix, hunk 4 was incorrectly marked FAILED due to variable shadowing."
+}
