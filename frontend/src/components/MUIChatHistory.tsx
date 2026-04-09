@@ -217,7 +217,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
         boxSizing: 'border-box',
         cursor: 'default',
         borderRadius: 4,
-        padding: `4px 8px 4px ${12 + (depth || 0) * 20}px`,
+        padding: `4px 8px 4px ${12 + (depth || 0) * 20 + (!isFolder && (depth || 0) > 0 ? 10 : 0)}px`,
         transition: 'background-color 0.15s',
         backgroundColor: props.isCurrentItem
           ? (isDarkMode ? '#177ddc' : '#e6f7ff')
