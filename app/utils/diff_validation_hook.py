@@ -81,6 +81,8 @@ class DiffValidationHook:
     
     def read_file_for_context(self, file_path: str) -> Optional[str]:
         """Read file content to add to model context."""
+        if not file_path:
+            return None
         codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
         if not codebase_dir:
             return None

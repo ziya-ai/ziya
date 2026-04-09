@@ -1,0 +1,7 @@
+{
+    "target_file": "Component.tsx",
+    "description": "Diff context missing a comment line between 'return <div' and 'key={...}' causes difflib to insert the replacement line without removing the original, creating duplicate JSX attributes. Reproduces TS17001 error from Conversation.tsx fix where data-message-index={index} was not replaced by data-message-index={actualIndex}.",
+    "date_added": "2025-07-13",
+    "expected_to_fail": false,
+    "notes": "Passes in normal pipeline mode (system patch handles the context mismatch). Fails in --force-difflib mode, demonstrating that the difflib fallback inserts instead of replacing when context lines are missing. This is a known difflib limitation."
+}
