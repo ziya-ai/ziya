@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.4.1] - 2026-04-09
+
+### Added
+- **Headless diagram rendering API**: `POST /api/render-diagram` renders Mermaid,
+  Graphviz, Vega-Lite, DrawIO, and packet diagrams to PNG or SVG server-side using
+  a headless Chromium instance driven by Playwright. Produces pixel-perfect output
+  through the same D3Renderer pipeline, plugins, and post-render enhancers as the
+  chat UI.
+- New frontend route `/render` (DiagramRenderPage) serves as the Playwright render
+  harness, accepting specs via URL hash, `postMessage`, or `window.__renderDiagram`.
+- Playwright added as an optional dependency (`pip install ziya[render]`).
+- Sidebar panels (Files, Contexts, History) show a loading spinner during project
+  switches instead of stale data from the previous project.
+- Release task now includes Slack notification step and changelog cross-referencing.
+- Test suites: headless diagram renderer (unit + integration), mermaid viewBox
+  trimming and container-width scaling, double-tilde strikethrough tokenizer,
+  orphan bare fence stripping.
+
+### Fixed
+- **Mermaid diagrams rendering too small**: ViewBox trimming reclaims wasted space
+  when Mermaid's layout engine allocates a viewBox >10% wider than actual content.
+  Width clamping now uses the real container width instead of a hardcoded 900px max,
+  so diagrams fill available space without overflowing.
+- **Single-tilde false-positive strikethrough**: Conversational tildes like `~32px`
+  or `~10px` were rendered as strikethrough. The marked.js GFM `del` tokenizer is
+  now overridden to require double tildes (`~~text~~`) only.
+- **Orphan bare fences swallowing code blocks**: When the LLM emits a stray bare
+  ``` before a real code fence (e.g. ```bash), the orphan is now detected and
+  stripped so the actual code block renders correctly.
+- **Stale sidebar during project switch**: File tree, contexts tab, and chat
+  history panels displayed data from the previous project during switches. All
+  three panels now blank immediately and show a spinner until the new project loads.
+- **Loading overlay on global conversations**: Global-scoped conversations that
+  survive project switches no longer show a loading overlay during the transition.
+- **IDB lazy-load accepting corrupted shells**: IndexedDB lazy-loading now rejects
+  shell records and corrupted 2-message stubs, falling through to server fetch
+  to retrieve complete conversation data.
+- **Chat history indentation**: Non-folder conversation items nested under folders
+  now have additional left padding (10px) for visual distinction from folder rows.
+
+### Changed
+- Mermaid flowchart default padding increased from 15 to 20 and nodeSpacing from
+  50 to 60 for improved readability.
+- Project switch detection combines `isLoadingProject` and `isProjectSwitching`
+  signals for earlier UI response.
+- Frontend JSX indentation in index.tsx normalized to consistent 4-space nesting.
+
 ## [0.6.2.8] - 2026-04-09
 
 ### Added
