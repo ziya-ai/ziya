@@ -54,6 +54,8 @@ class Memory(BaseModel):
     status: str = "active"
     scope: MemoryScope = Field(default_factory=MemoryScope)
     related: List[str] = Field(default_factory=list)
+    importance: float = Field(default=0.5, description="0.0-1.0 importance score; decays over time")
+    relations: Dict[str, List[str]] = Field(default_factory=dict, description="Typed relations: supports, contradicts, elaborates, depends_on → [memory_ids]")
 
 
 class MemoryProposal(BaseModel):

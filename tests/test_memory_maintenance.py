@@ -38,8 +38,7 @@ def storage(tmp_path):
 @pytest.fixture
 def patch_storage(storage):
     with patch("app.storage.memory.get_memory_storage", return_value=storage):
-        with patch("app.utils.memory_maintenance.get_memory_storage", return_value=storage):
-            yield storage
+        yield storage
 
 
 def _populate_node_with_memories(storage, node_id: str, count: int, common_tag: str, extra_tag: str = None):

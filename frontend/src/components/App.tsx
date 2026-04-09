@@ -34,6 +34,7 @@ const MCPRegistryModal = React.lazy(() => import("./MCPRegistryModal"));
 const ExportConversationModal = React.lazy(() => import("./ExportConversationModal"));
 // Lazy load the Conversation component
 const Conversation = React.lazy(() => import("./Conversation"));
+const MemoryBrowser = React.lazy(() => import("./MemoryBrowser"));
 const AstStatusIndicator = React.lazy(() => import("./AstStatusIndicator"));
 const GraphPanel = React.lazy(() => import("./ConversationGraph/GraphPanel"));
 
@@ -139,6 +140,7 @@ export const App: React.FC = () => {
     const [showMCPStatus, setShowMCPStatus] = useState(false);
     const [showMCPRegistry, setShowMCPRegistry] = useState(false);
     const [showExportModal, setShowExportModal] = useState(false);
+    const [showMemoryBrowser, setShowMemoryBrowser] = useState(false);
     const [mcpEnabled, setMcpEnabled] = useState(false);
 
     const {
@@ -299,6 +301,11 @@ export const App: React.FC = () => {
             if (e.ctrlKey && e.shiftKey && e.key === 'G') {
                 e.preventDefault();
                 setGraphPanelOpen(prev => !prev);
+                    }
+                    // Ctrl+Shift+M → Memory Browser
+                    if (e.ctrlKey && e.shiftKey && e.key === 'M') {
+                        e.preventDefault();
+                        setShowMemoryBrowser(prev => !prev);
             }
         };
         window.addEventListener('keydown', handleKeyDown);
@@ -458,6 +465,9 @@ export const App: React.FC = () => {
                                     </>
                                 )}
                                 <Tooltip title="New Chat">
+                                    <Button onClick={() => setShowMemoryBrowser(true)}>🧠</Button>
+                                </Tooltip>
+                                <Tooltip title="New Chat">
                                     <Button icon={<PlusOutlined />} onClick={() => startNewChat()} />
                                 </Tooltip>
                             </div>
@@ -535,6 +545,12 @@ export const App: React.FC = () => {
                     <Suspense fallback={null}>
                         <ExportConversationModal visible={showExportModal} onClose={() => setShowExportModal(false)} />
                     </Suspense>
+
+                    {showMemoryBrowser && <Suspense fallback={null}>
+                        <MemoryBrowser
+                            visible={showMemoryBrowser}
+                            onClose={() => setShowMemoryBrowser(false)} />
+                    </Suspense>}
 
                     <div style={{
                         position: 'fixed',
