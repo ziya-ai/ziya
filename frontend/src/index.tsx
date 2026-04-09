@@ -23,6 +23,9 @@ import { QuestionProvider } from "./context/QuestionContext";
 import { ServerStatusProvider } from './context/ServerStatusContext';
 import { ProjectProvider } from './context/ProjectContext';
 
+// Lazy-load the render harness — only needed for headless diagram export
+const DiagramRenderPage = React.lazy(() => import('./components/DiagramRenderPage'));
+
 // hide unhandled promise rejections from making console spam
 window.addEventListener('unhandledrejection', (event) => {
     // Suppress extension context errors
@@ -88,7 +91,7 @@ function startWhiteScreenDetector() {
                     while (log.length > 20) log.shift();
                     localStorage.setItem('ZIYA_CRASH_LOG', JSON.stringify(log));
                     console.error('💥 WHITE SCREEN DETECTED — crash data saved to ZIYA_CRASH_LOG');
-                } catch {}
+                } catch { }
                 consecutiveEmpty = 0;
             }
         } else {
@@ -115,7 +118,7 @@ setTimeout(startWhiteScreenDetector, 3000);
                 try { return JSON.stringify(a)?.slice(0, 500); } catch { return String(a); }
             }).join(' '));
             while (buffer.length > 20) buffer.shift();
-        } catch {}
+        } catch { }
         return origError.apply(console, args);
     };
 })();
@@ -152,29 +155,37 @@ root.render(
     <ConfigProvider>
         <ThemeProvider>
             <ServerStatusProvider>
-              <RootErrorBoundary>
-                <ProjectProvider>  
-                    <ChatProvider>
-                        <FolderProvider>
-                            <QuestionProvider>
-                            <BrowserRouter>
-                                <Routes>
-                                    <Route path="/" element={<App />} />
-                                    <Route
-                                    path="/info"
-                                    element={<SystemInfo />}
-                                    />
-                                    <Route
-                                    path="/debug"
-                                    element={<Debug />}
-                                    />
-                                </Routes>
-                            </BrowserRouter>
-                            </QuestionProvider>
-                        </FolderProvider>
-                    </ChatProvider>
-                </ProjectProvider>
-              </RootErrorBoundary>
+                <RootErrorBoundary>
+                    <ProjectProvider>
+                        <ChatProvider>
+                            <FolderProvider>
+                                <QuestionProvider>
+                                    <BrowserRouter>
+                                        <Routes>
+                                            <Route path="/" element={<App />} />
+                                            <Route
+                                                path="/render"
+                                                element={
+                                                    <React.Suspense fallback={<div>Loading…</div>}>
+                                                        <DiagramRenderPage />
+                                                    </React.Suspense>
+                                                }
+                                            />
+                                            <Route
+                                                path="/info"
+                                                element={<SystemInfo />}
+                                            />
+                                            <Route
+                                                path="/debug"
+                                                element={<Debug />}
+                                            />
+                                        </Routes>
+                                    </BrowserRouter>
+                                </QuestionProvider>
+                            </FolderProvider>
+                        </ChatProvider>
+                    </ProjectProvider>
+                </RootErrorBoundary>
             </ServerStatusProvider>
         </ThemeProvider>
     </ConfigProvider>
