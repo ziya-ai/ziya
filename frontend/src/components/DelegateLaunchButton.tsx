@@ -145,8 +145,7 @@ const DelegateLaunchButton: React.FC<DelegateLaunchButtonProps> = ({
           folderSyncApi.listServerFolders(pid),
         ]);
         // Merge new server chats into IndexedDB
-        const existing = await db.getConversations();
-        const existingIds = new Set(existing.map(c => c.id));
+        const existingIds = new Set(conversations.map(c => c.id));
         const newChats = serverChats
           .filter(sc => !existingIds.has(sc.id))
           .map(sc => ({
@@ -161,7 +160,8 @@ const DelegateLaunchButton: React.FC<DelegateLaunchButtonProps> = ({
             hasUnreadResponse: false,
           }));
         if (newChats.length > 0) {
-          await db.saveConversations([...existing, ...newChats]);
+          // Write only new chats — no need to read+rewrite all existing
+          await Promise.all(newChats.map(c => db.saveConversation(c as any)));
         }
         // Merge new folders
         const existingFolders = await db.getFolders();

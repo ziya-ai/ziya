@@ -303,14 +303,25 @@ export const StreamedContent: React.FC<{}> = () => {
             removeStreamingConversation(currentConversationId);
             setIsStreaming(false);
 
-            // Prevent jarring scroll jumps when streaming ends
-            // Preserve current scroll position
+            // Handle scroll position when streaming ends:
+            // - If user was at the active end, scroll to the new end after DOM settles
+            // - If user was scrolled away, restore their position if it shifted
             const container = document.querySelector('.chat-container') as HTMLElement;
             if (container) {
+                const scrollHeight = container.scrollHeight;
+                const clientHeight = container.clientHeight;
                 const currentScrollTop = container.scrollTop;
+                const wasAtEnd = isTopToBottom
+                    ? (scrollHeight - currentScrollTop - clientHeight) < 50
+                    : currentScrollTop < 50;
+
                 setTimeout(() => {
-                    // Restore scroll position if it changed unexpectedly
-                    if (Math.abs(container.scrollTop - currentScrollTop) > 10) {
+                    if (wasAtEnd) {
+                        // User was following — keep them at the end
+                        container.scrollTop = isTopToBottom
+                            ? container.scrollHeight - container.clientHeight
+                            : 0;
+                    } else if (Math.abs(container.scrollTop - currentScrollTop) > 10) {
                         container.scrollTop = currentScrollTop;
                     }
                 }, 100);

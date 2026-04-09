@@ -965,59 +965,43 @@ const DiffControls = memo(({
             }}>{fileTitle}</div>
             {displayMode === 'pretty' && (
                 <>
-                    <Tooltip title={showLineNumbers ? "Hide Line Numbers" : "Show Line Numbers"}>
-                        <Button
-                            type={showLineNumbers ? "primary" : "default"}
-                            size="small"
-                            icon={<NumberOutlined />}
-                            onClick={() => onLineNumbersChange(!showLineNumbers)}
-                            style={{
-                                padding: '0 8px',
-                                minWidth: '32px',
-                                height: '24px'
-                            }}
-                        />
-                    </Tooltip>
+                    <Button
+                        type={showLineNumbers ? "primary" : "default"}
+                        size="small"
+                        icon={<NumberOutlined />}
+                        onClick={() => onLineNumbersChange(!showLineNumbers)}
+                        title={showLineNumbers ? "Hide Line Numbers" : "Show Line Numbers"}
+                        style={{ padding: '0 8px', minWidth: '32px', height: '24px' }}
+                    />
                 </>
             )}
             {/* Unified/Split view toggle button - only show in pretty mode */}
             {displayMode === 'pretty' && (
-                <Tooltip title={viewType === 'unified' ? "Split View" : "Unified View"}>
-                    <Button
-                        type={viewType === 'split' ? "primary" : "default"}
-                        size="small"
-                        icon={<SplitCellsOutlined />}
-                        onClick={() => {
-                            const newViewType = viewType === 'unified' ? 'split' : 'unified';
-                            window.diffViewType = newViewType;
-                            onViewTypeChange(newViewType);
-                        }}
-                        style={{
-                            padding: '0 8px',
-                            minWidth: '32px',
-                            height: '24px',
-                            marginRight: '8px'
-                        }}
-                    />
-                </Tooltip>
-            )}
-            <Tooltip title={displayMode === 'raw' ? "Switch to Pretty View" : "Switch to Raw View"}>
                 <Button
-                    type="default"
+                    type={viewType === 'split' ? "primary" : "default"}
                     size="small"
-                    icon={displayMode === 'raw' ? <EyeOutlined /> : <FileTextOutlined />}
+                    icon={<SplitCellsOutlined />}
                     onClick={() => {
-                        const newMode = displayMode === 'pretty' ? 'raw' : 'pretty';
-                        window.diffDisplayMode = newMode;
-                        handleDisplayModeChange(newMode);
+                        const newViewType = viewType === 'unified' ? 'split' : 'unified';
+                        window.diffViewType = newViewType;
+                        onViewTypeChange(newViewType);
                     }}
-                    style={{
-                        padding: '0 8px',
-                        minWidth: '32px',
-                        height: '24px'
-                    }}
+                    title={viewType === 'unified' ? "Split View" : "Unified View"}
+                    style={{ padding: '0 8px', minWidth: '32px', height: '24px', marginRight: '8px' }}
                 />
-            </Tooltip>
+            )}
+            <Button
+                type="default"
+                size="small"
+                icon={displayMode === 'raw' ? <EyeOutlined /> : <FileTextOutlined />}
+                onClick={() => {
+                    const newMode = displayMode === 'pretty' ? 'raw' : 'pretty';
+                    window.diffDisplayMode = newMode;
+                    handleDisplayModeChange(newMode);
+                }}
+                title={displayMode === 'raw' ? "Switch to Pretty View" : "Switch to Raw View"}
+                style={{ padding: '0 8px', minWidth: '32px', height: '24px' }}
+            />
         </div>
     );
 });
@@ -2078,36 +2062,33 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                 }
 
                                 return (
-                                    <Tooltip key={hunkId} title={statusTooltip}>
-                                        <div
-                                            className="hunk-status-indicator"
-                                            style={{
-                                                display: 'inline-flex',
-                                                height: '28px !important',
-                                                lineHeight: '28px !important',
-                                                verticalAlign: 'middle',
-                                                marginTop: '4px',
-                                                backgroundColor: isDarkMode ? 'rgba(0,0,0,0.2)' : 'rgba(0,0,0,0.05)',
-                                                color: statusColor,
-                                                border: `1px solid ${statusColor}`,
-                                                // Add a subtle border to match the hunk styling
-                                                boxShadow: status ? `0 0 0 1px ${statusColor}` : 'none'
-                                            }}
-                                            onClick={() => {
-                                                // Create a more specific selector that includes the diff element ID
-                                                // to ensure we're targeting the correct hunk in the correct diff
-                                                const diffContainer = document.getElementById(`diff-view-wrapper-${elementId}`);
-                                                const hunkElement = diffContainer ?
-                                                    diffContainer.querySelector(`#${hunkRef}`) :
-                                                    document.getElementById(hunkRef);
-                                                if (hunkElement) {
-                                                    hunkElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                                }
-                                            }}
-                                        >
-                                            {status ? statusIcon : hunkId}
-                                        </div>
-                                    </Tooltip>
+                                    <div
+                                        key={hunkId}
+                                        className="hunk-status-indicator"
+                                        title={statusTooltip}
+                                        style={{
+                                            display: 'inline-flex',
+                                            height: '28px !important',
+                                            lineHeight: '28px !important',
+                                            verticalAlign: 'middle',
+                                            marginTop: '4px',
+                                            backgroundColor: isDarkMode ? 'rgba(0,0,0,0.2)' : 'rgba(0,0,0,0.05)',
+                                            color: statusColor,
+                                            border: `1px solid ${statusColor}`,
+                                            boxShadow: status ? `0 0 0 1px ${statusColor}` : 'none'
+                                        }}
+                                        onClick={() => {
+                                            const diffContainer = document.getElementById(`diff-view-wrapper-${elementId}`);
+                                            const hunkElement = diffContainer ?
+                                                diffContainer.querySelector(`#${hunkRef}`) :
+                                                document.getElementById(hunkRef);
+                                            if (hunkElement) {
+                                                hunkElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                            }
+                                        }}
+                                    >
+                                        {status ? statusIcon : hunkId}
+                                    </div>
                                 );
                             })}
                         </span>
@@ -4871,6 +4852,7 @@ interface MarkdownRendererProps {
     forceRender?: boolean;
     isSubRender?: boolean; // Add flag to prevent infinite recursion
     onOpenShellConfig?: () => void;
+    role?: 'human' | 'assistant' | 'system';
 }
 
 // Configure marked options
@@ -5077,7 +5059,21 @@ function _installThrottleObserver(scanFn: () => void) {
     _throttleObserverInstalled = true;
 
     let _timer: ReturnType<typeof setTimeout> | null = null;
-    const debouncedScan = () => {
+    const debouncedScan = (records?: MutationRecord[]) => {
+        // Only scan when a throttle/auth-error button was actually added to the DOM.
+        // Scanning on every mutation causes a feedback loop: scan → setState → render
+        // → DOM mutation → scan again, spinning the CPU indefinitely.
+        if (records && records.length > 0) {
+            const relevant = records.some(r =>
+                Array.from(r.addedNodes).some(n => {
+                    if (n.nodeType !== Node.ELEMENT_NODE) return false;
+                    const el = n as Element;
+                    return el.matches('.throttle-retry-button, .auth-error-retry-button') ||
+                           el.querySelector('.throttle-retry-button, .auth-error-retry-button') !== null;
+                })
+            );
+            if (!relevant) return;
+        }
         if (_timer) return;
         _timer = setTimeout(() => { _timer = null; _throttleScanFn?.(); }, 300);
     };
@@ -5102,7 +5098,7 @@ function _installThrottleObserver(scanFn: () => void) {
     });
 }
 
-export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply, isStreaming: externalStreaming = false, forceRender = false, isSubRender = false, onOpenShellConfig }) => {
+export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply, isStreaming: externalStreaming = false, forceRender = false, isSubRender = false, onOpenShellConfig, role }) => {
     const { isDarkMode } = useTheme();
     const containerRef = useRef<HTMLDivElement>(null);
 
@@ -5122,6 +5118,12 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         if (!markdown?.trim()) {
             clearTimeout(parseTimeoutRef.current);
             return previousTokensRef.current.length > 0 ? previousTokensRef.current : [];
+        }
+
+        // Large human messages (>100KB) render as plain text.
+        // Pasted documents cause multi-second main thread blocks from O(N²) preprocessing.
+        if (role === 'human' && markdown.length > 100000) {
+            return [{ type: 'code', lang: 'text', text: markdown }] as TokenWithText[];
         }
 
         try {
@@ -5341,6 +5343,17 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                                 fi = closeIdx + 1;
                                 continue;
                             }
+
+                            // Content doesn't look like markdown — keep the entire
+                            // fenced block intact and skip past the closing fence.
+                            // Without this, the closing bare ``` is re-examined as
+                            // a new orphan opener whose trailing content "looks like
+                            // markdown", causing it to be stripped.
+                            fenceOutput.push(fLine);
+                            fenceOutput.push(...innerLines);
+                            fenceOutput.push(fenceLines[closeIdx]);
+                            fi = closeIdx + 1;
+                            continue;
                         } else {
                             const remainingContent = fenceLines.slice(fi + 1).join('\n').trim();
                             const remainingIsMarkdown = /\*\*|^#{1,6}\s|^\d+\.|^[-*]\s/m.test(remainingContent);
@@ -5631,9 +5644,13 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 (_match, _nl, leaked, nextFence) => {
                     const trimmed = leaked.trim();
                     if (!trimmed || trimmed.length > 120) return _match;
-                    // Legitimate prose between code blocks has blank-line separation;
-                    // leaks are directly abutting the fence with no blank line.
-                    if (leaked.includes('\n\n')) return _match;
+                    // Legitimate prose between code blocks has blank-line separation.
+                    // Check _nl+leaked because the blank line's first \n can land in
+                    // group 1 (after ```), making the \n\n invisible to group 2 alone.
+                    if ((_nl + leaked).includes('\n\n')) return _match;
+                    // If the captured "leak" contains a fence marker, the regex matched
+                    // across a code-block boundary — not an actual leak. Leave it alone.
+                    if (leaked.includes('```')) return _match;
                     console.debug('🔧 Fence fix (mid): reabsorbed leaked content:', trimmed);
                     return trimmed + '\n```\n\n' + nextFence;
                 }
@@ -5649,6 +5666,9 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                     if (!trimmed || trimmed.length > 120) {
                         return _match; // Too long to be a leak — leave it alone
                     }
+                    // Same two guards as Pass 1
+                    if ((newline + leaked).includes('\n\n')) return _match;
+                    if (leaked.includes('```')) return _match;
                     console.debug('🔧 Fence fix (tail): reabsorbed leaked content:', trimmed);
                     return trimmed + '\n```';
                 }
@@ -5919,7 +5939,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     return isMultiFileDiff && !isSubRender && displayTokens.length === 1 && displayTokens[0].type === 'code' && (displayTokens[0] as TokenWithText).lang === 'diff' ?
         renderMultiFileDiff(displayTokens[0] as TokenWithText, 0, enableCodeApply, isDarkMode, onOpenShellConfig) :
         <div ref={containerRef}>{renderedContent}</div>;
-}, (prevProps, nextProps) => prevProps.markdown === nextProps.markdown && prevProps.enableCodeApply === nextProps.enableCodeApply);
+}, (prevProps, nextProps) => prevProps.markdown === nextProps.markdown && prevProps.enableCodeApply === nextProps.enableCodeApply && prevProps.role === nextProps.role);
 // Note: forceRender prop is intentionally not included in the memo comparison to ensure re-rendering during streaming
 
 const cleanDiffContent = (content: string): string => {

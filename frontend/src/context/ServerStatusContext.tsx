@@ -63,7 +63,7 @@ export const ServerStatusProvider: React.FC<{ children: ReactNode }> = ({
 
       if (res.ok) {
         consecutiveFailures.current = 0;
-        setIsServerReachable(true);
+        setIsServerReachable(prev => prev ? prev : true);
       } else {
         consecutiveFailures.current += 1;
         if (consecutiveFailures.current >= FAILURE_THRESHOLD) {

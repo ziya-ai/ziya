@@ -165,7 +165,6 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
 
     // Check if either the original language or mapped language is already loaded
     if (loadedLanguages.has(language) || loadedLanguages.has(mappedLanguage)) {
-        console.debug(`Skipping already loaded language: ${mappedLanguage}`);
         return Promise.resolve();
     }
 

@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, memo, useRef, useMemo } from 'react';
-import { FixedSizeList } from 'react-window';
+import { FixedSizeList, ListProps as ReactWindowListProps } from 'react-window';
 import { message, Modal, Form, Spin, Input, Switch, Dropdown, Menu as AntMenu } from 'antd';
 import { ConversationHealthDebugModal } from './ConversationHealthDebug';
 import ExportConversationModal from './ExportConversationModal';
@@ -325,7 +325,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                   <PushPinIcon fontSize="small" color="primary" sx={{ ml: 0.5, fontSize: 14 }} />
                 )}
                 {isGlobalItem && (
-                  <Tooltip title="Visible in all projects"><PublicIcon fontSize="small" color="info" sx={{ ml: 0.5, fontSize: 14 }} /></Tooltip>
+                  isHovered ? <Tooltip title="Visible in all projects"><PublicIcon fontSize="small" color="info" sx={{ ml: 0.5, fontSize: 14 }} /></Tooltip> : <PublicIcon fontSize="small" color="info" sx={{ ml: 0.5, fontSize: 14 }} />
                 )}
                 {isFolder && conversationCount > 0 && (
                   <Typography variant="caption" sx={{ ml: 0.5, color: 'text.secondary' }}>({conversationCount})</Typography>
@@ -343,34 +343,42 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                   transition: 'opacity 0.2s ease-in-out'
                 }}>
                   {isFolder && !isTaskPlanFolder && (
-                    <Tooltip title="New chat in this folder">
-                      <IconButton
-                        size="small"
-                        onClick={(e) => { e.stopPropagation(); onAddChat(nodeId); }}
-                        sx={{ p: 0.5, mr: 0.5 }} // Added margin right
-                      >
-                        <AddIcon fontSize="small" sx={{ fontSize: '16px' }} />
-                      </IconButton>
-                    </Tooltip>
+                      isHovered ? (
+                        <Tooltip title="New chat in this folder">
+                          <IconButton
+                            size="small"
+                            onClick={(e) => { e.stopPropagation(); onAddChat(nodeId); }}
+                            sx={{ p: 0.5, mr: 0.5 }}
+                          >
+                            <AddIcon fontSize="small" sx={{ fontSize: '16px' }} />
+                          </IconButton>
+                        </Tooltip>
+                      ) : null
                   )}
-                  <Dropdown
-                    dropdownRender={() => <AntActionMenu
-                      isFolder={isFolder}
-                      nodeId={nodeId} isTaskPlanFolder={isTaskPlanFolder} onCopyToProject={props.onCopyToProject}
-                      delegateStatus={delegateStatus} onDelegateRetry={props.onDelegateRetry} onDelegateSkip={props.onDelegateSkip}
-                      onSwarmRecovery={props.onSwarmRecovery}
-                      onEdit={onEdit} onDelete={onDelete} onFork={onFork} onCompress={onCompress} onExport={onExport}
-                      onOpenMoveMenu={onOpenMoveMenu}
-                      onToggleGlobal={onToggleGlobal} onMoveToProject={onMoveToProject} isGlobalItem={isGlobalItem}
-                      onConfigure={onConfigure} onPin={onPin} isPinned={isPinned} onCreateSubfolder={onCreateSubfolder}
-                    />}
-                    trigger={['click']}
-                    placement="bottomRight"
-                  >
-                    <IconButton size="small" sx={{ p: 0.5 }} onClick={e => e.stopPropagation()} >
-                      <MoreVertIcon fontSize="small" sx={{ fontSize: '16px' }} />
-                    </IconButton>
-                  </Dropdown>
+                    {isHovered ? (
+                      <Dropdown
+                        dropdownRender={() => <AntActionMenu
+                          isFolder={isFolder}
+                          nodeId={nodeId} isTaskPlanFolder={isTaskPlanFolder} onCopyToProject={props.onCopyToProject}
+                          delegateStatus={delegateStatus} onDelegateRetry={props.onDelegateRetry} onDelegateSkip={props.onDelegateSkip}
+                          onSwarmRecovery={props.onSwarmRecovery}
+                          onEdit={onEdit} onDelete={onDelete} onFork={onFork} onCompress={onCompress} onExport={onExport}
+                          onOpenMoveMenu={onOpenMoveMenu}
+                          onToggleGlobal={onToggleGlobal} onMoveToProject={onMoveToProject} isGlobalItem={isGlobalItem}
+                          onConfigure={onConfigure} onPin={onPin} isPinned={isPinned} onCreateSubfolder={onCreateSubfolder}
+                        />}
+                        trigger={['click']}
+                        placement="bottomRight"
+                      >
+                        <IconButton size="small" sx={{ p: 0.5 }} onClick={e => e.stopPropagation()} >
+                          <MoreVertIcon fontSize="small" sx={{ fontSize: '16px' }} />
+                        </IconButton>
+                      </Dropdown>
+                    ) : (
+                      <IconButton size="small" sx={{ p: 0.5, opacity: 0, pointerEvents: 'none' }}>
+                        <MoreVertIcon fontSize="small" sx={{ fontSize: '16px' }} />
+                      </IconButton>
+                    )}
                 </Box>
               </Box>
             )}
@@ -799,6 +807,11 @@ const MUIChatHistory = () => {
   const chatHistoryRef = useRef<HTMLDivElement>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState<string>('');
+  const virtualListRef = useRef<FixedSizeList>(null);
+  // When set, the next flatNodes change scrolls to this node instead of the
+  // current conversation.  Used after folder creation so the user sees the
+  // new folder rather than being yanked to the active chat.
+  const scrollToNodeIdRef = useRef<string | null>(null);
   const [pinnedFolders, setPinnedFolders] = useState<Set<string>>(new Set());
   const [newFolderDialogOpen, setNewFolderDialogOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
@@ -1145,7 +1158,7 @@ const MUIChatHistory = () => {
       if (conversationToMove && conversationToMove.isActive === false) {
         console.warn('🔧 DEFENSIVE: Conversation was marked inactive, restoring to active before move');
         conversationToMove.isActive = true;
-        await db.saveConversations(conversations);
+        await db.saveConversation(conversationToMove);
       }
 
       console.log('🔧 Calling moveConversationToFolder with:', { conversationId: cleanConversationId, folderId });
@@ -1768,8 +1781,9 @@ const MUIChatHistory = () => {
           } : conv
         );
 
-        // Persist to IndexedDB before updating state
-        await db.saveConversations(updatedConversations);
+        // Persist only the changed conversation to IndexedDB
+        const changed = updatedConversations.find(c => c.id === conversationId);
+        if (changed) await db.saveConversation(changed);
 
         // Update state after successful save
         setConversations(updatedConversations);
@@ -1850,14 +1864,10 @@ const MUIChatHistory = () => {
               }
 
               // Remove from IndexedDB entirely so no sync path re-pushes it
+              await db.deleteConversation(conversationId);
               const updatedConversations = conversations.filter(
                 (conv: any) => conv.id !== conversationId
               );
-              await db.saveConversations(updatedConversations);
-
-              // Then update React state
-              setConversations(updatedConversations);
-
               // If the deleted conversation was active, switch to another existing
               // one rather than creating a new one. Do NOT call startNewChat here —
               // its stale conversations closure would write the deleted conversation
@@ -1940,7 +1950,8 @@ const MUIChatHistory = () => {
           const updatedConversations = conversations.filter(
             c => !c.folderId || !allFolderIds.has(c.folderId)
           );
-          await db.saveConversations(updatedConversations);
+          const toDelete = conversations.filter(c => c.folderId && allFolderIds.has(c.folderId));
+          await Promise.all(toDelete.map(c => db.deleteConversation(c.id)));
           setConversations(updatedConversations);
 
           await deleteFolder(nodeId);
@@ -1977,8 +1988,8 @@ const MUIChatHistory = () => {
       // Add the forked conversation to the list
       const updatedConversations = [...conversations, forkedConversation];
 
-      // Save to database
-      await db.saveConversations(updatedConversations);
+      // Save only the new forked conversation to database
+      await db.saveConversation(forkedConversation);
 
       // Update state
       setConversations(updatedConversations);
@@ -2107,6 +2118,9 @@ const MUIChatHistory = () => {
       // Create a new subfolder with default name and settings
       const createdFolderId = await createFolder('New Folder', parentFolderId);
       const newFolderId = String(createdFolderId);
+
+      // Tell the scroll effect to focus on the new folder instead of the active conversation
+      scrollToNodeIdRef.current = newFolderId;
 
       // Ensure parent folder is expanded to show the new subfolder
       if (!expandedNodes.includes(parentFolderId)) {
@@ -2750,6 +2764,53 @@ const MUIChatHistory = () => {
   const expandedSet = useMemo(() => new Set(expandedNodes.map(String)), [expandedNodes]);
   const flatNodes = useMemo(() => flattenVisibleNodes(treeData, expandedSet), [treeData, expandedSet]);
 
+  // Priority scroll: when scrollToNodeIdRef is set (e.g. after folder creation),
+  // scroll to that node instead of the current conversation.
+  useEffect(() => {
+    const targetId = scrollToNodeIdRef.current;
+    if (!targetId || !virtualListRef.current) return;
+    const rowIndex = flatNodes.findIndex(n => n.id === targetId);
+    if (rowIndex !== -1) {
+      virtualListRef.current.scrollToItem(rowIndex, 'smart');
+      scrollToNodeIdRef.current = null; // consume — one-shot
+    }
+    // If the node isn't visible yet (expand hasn't propagated), keep the ref
+    // so the next flatNodes change can pick it up.
+  }, [flatNodes]);
+
+  useEffect(() => {
+    if (!currentConversationId || !virtualListRef.current || scrollToNodeIdRef.current) return;
+    const targetNodeId = `conv-${currentConversationId}`;
+    const rowIndex = flatNodes.findIndex(n => n.id === targetNodeId);
+    console.log('🔍 SCROLL_EFFECT:', { hasRef: !!virtualListRef.current, targetNodeId, rowIndex, flatNodesLen: flatNodes.length });
+    if (rowIndex === -1) return;
+    virtualListRef.current.scrollToItem(rowIndex, 'smart');
+  }, [currentConversationId, flatNodes]);
+
+  useEffect(() => {
+    if (!currentConversationId || !virtualListRef.current || scrollToNodeIdRef.current) return;
+    const targetNodeId = `conv-${currentConversationId}`;
+    const timer = setTimeout(() => {
+      if (!virtualListRef.current) return;
+      const rowIndex = flatNodes.findIndex(n => n.id === targetNodeId);
+      console.log('🔍 SCROLL_TIMEOUT:', { hasRef: !!virtualListRef.current, targetNodeId, rowIndex, flatNodesLen: flatNodes.length });
+      if (rowIndex !== -1) virtualListRef.current.scrollToItem(rowIndex, 'smart');
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [currentConversationId]);
+
+  // After search clears and tree becomes visible again, scroll to active conversation
+  useEffect(() => {
+    if (searchQuery || !currentConversationId || !virtualListRef.current) return;
+    const timer = setTimeout(() => {
+      if (!virtualListRef.current) return;
+      const targetNodeId = `conv-${currentConversationId}`;
+      const rowIndex = flatNodes.findIndex(n => n.id === targetNodeId);
+      if (rowIndex !== -1) virtualListRef.current.scrollToItem(rowIndex, 'smart');
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [searchQuery, currentConversationId, flatNodes]);
+
   // Precompute indent guide continuation flags for each visible row.
   // guides[i][d] === true means "a sibling at depth d exists below row i",
   // so a vertical guide line should be drawn at that indent level.
@@ -2989,6 +3050,8 @@ const MUIChatHistory = () => {
             // Create new folder
             const newFolderId = await createFolder(values.name, currentFolderId);
 
+            scrollToNodeIdRef.current = String(newFolderId);
+
             // Ensure parent folder is expanded when creating a subfolder
             if (currentFolderId && !expandedNodes.includes(currentFolderId)) {
               setExpandedNodes(prev => [...prev, currentFolderId]);
@@ -3027,6 +3090,26 @@ const MUIChatHistory = () => {
   };
 
   // renderVirtualRow is defined inline in the FixedSizeList below
+
+  const highlightSnippet = useCallback((text: string, query: string) => {
+    if (!query || !text) return <>{text}</>;
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const parts = text.split(new RegExp(`(${escaped})`, 'gi'));
+    return (
+      <>
+        {parts.map((part, i) =>
+          part.toLowerCase() === query.toLowerCase()
+            ? <mark key={i} style={{
+                backgroundColor: isDarkMode ? '#b8860b' : '#fff176',
+                color: isDarkMode ? '#fff' : '#000',
+                borderRadius: '2px',
+                padding: '0 1px'
+              }}>{part}</mark>
+            : part
+        )}
+      </>
+    );
+  }, [isDarkMode]);
 
   return isLoading && !currentConversationId ? (
     <Box sx={{
@@ -3092,7 +3175,9 @@ const MUIChatHistory = () => {
             <IconButton
               size="small"
               onClick={async () => {
-                await createFolder('New Folder', currentFolderId);
+                const newId = await createFolder('New Folder', currentFolderId);
+                // Focus the virtual list on the new folder
+                scrollToNodeIdRef.current = String(newId);
                 message.success('Folder created');
               }}
               sx={{
@@ -3146,6 +3231,7 @@ const MUIChatHistory = () => {
                       // Small delay to let project switch settle before loading conversation
                       await new Promise(resolve => setTimeout(resolve, 300));
                     }
+                    (window as any).__ziyaSearchHighlight = searchQuery;
                     await loadConversationAndScrollToMessage(
                       result.conversationId, firstMatchIndex);
                     setSearchQuery('');
@@ -3203,6 +3289,7 @@ const MUIChatHistory = () => {
                           // Small delay to let project switch settle before loading conversation
                           await new Promise(resolve => setTimeout(resolve, 300));
                         }
+                        (window as any).__ziyaSearchHighlight = searchQuery;
                         await loadConversationAndScrollToMessage(
                           result.conversationId, match.messageIndex);
                         setSearchQuery('');
@@ -3225,7 +3312,7 @@ const MUIChatHistory = () => {
                         whiteSpace: 'pre-wrap'
                       }}
                     >
-                      {match.snippet}
+                      {highlightSnippet(match.snippet, searchQuery)}
                     </Typography>
                   </Box>
                 ))}
@@ -3270,6 +3357,7 @@ const MUIChatHistory = () => {
             <FixedSizeList
               height={treeContainerHeight}
               width="100%"
+              ref={virtualListRef}
               itemCount={flatNodes.length}
               itemSize={VIRTUAL_ROW_HEIGHT}
               overscanCount={8}
