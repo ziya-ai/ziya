@@ -4862,6 +4862,31 @@ const markedOptions = {
     pedantic: false
 };
 
+// Override the GFM 'del' (strikethrough) tokenizer to require double tildes (~~).
+// By default, marked also matches single tildes (~text~), which causes false
+// positives when tildes are used conversationally (e.g. "~32px", "~10px").
+marked.use({
+    extensions: [{
+        name: 'del',
+        level: 'inline' as const,
+        start(src: string) {
+            return src.match(/~~(?=[^\s~])/)?.index;
+        },
+        tokenizer(src: string) {
+            const match = src.match(/^~~(?=[^\s~])([\s\S]*?[^\s~])~~(?=[^~]|$)/);
+            if (match) {
+                return {
+                    type: 'del',
+                    raw: match[0],
+                    text: match[1],
+                    tokens: this.lexer.inlineTokens(match[1]),
+                };
+            }
+            return undefined;
+        },
+    }],
+});
+
 // Shared LaTeX copy handler — single document listener instead of one per
 // MathRenderer instance.  Each instance registers via the Map; the listener
 // walks up from the selection anchor to find the owning element.
@@ -5321,6 +5346,19 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                                 fi = closeIdx + 1;
                                 continue;
                             }
+
+                        // Orphan fence detection: if the inner content starts with
+                        // a code fence opening (e.g. ```bash), the outer bare fence
+                        // is an orphan separator — strip it so the real block renders.
+                        const firstNonBlank = innerLines.findIndex(function(l) {
+                            return l.trim().length > 0;
+                        });
+                        if (firstNonBlank >= 0 && /^`{3,}\S/.test(innerLines[firstNonBlank])) {
+                            fenceOutput.push(...innerLines);
+                            fenceOutput.push(fenceLines[closeIdx]);
+                            fi = closeIdx + 1;
+                            continue;
+                        }
 
                             const looksLikeMarkdown = /\*\*|^#{1,6}\s|^\d+\.|^[-*]\s|^>\s/m.test(innerContent);
                             const looksLikeCode = innerContent.split('\n').some(l => {
