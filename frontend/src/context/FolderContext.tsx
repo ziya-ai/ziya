@@ -50,6 +50,11 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       return [];
     }
   });
+  // Ref-mirror so cleanupCheckedKeys can read latest checkedKeys without
+  // being listed as a dep (which causes a new function ref on every key change,
+  // re-triggering the cleanup effect and creating an infinite 2s loop).
+  const checkedKeysRef = useRef<React.Key[]>([]);
+  useEffect(() => { checkedKeysRef.current = checkedKeys; }, [checkedKeys]);
   // Heritage tracking: files that were auto-added by the diff context system
   const [autoAddedFiles, setAutoAddedFiles] = useState<Set<string>>(() => {
     try {
@@ -119,6 +124,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   }, [currentProject]);
   
   const cleanupCheckedKeys = useCallback(async () => {
+    const checkedKeys = checkedKeysRef.current;
     if (!folders || checkedKeys.length === 0) return;
 
     // Use ref to get the LATEST project path (prevents stale closures)
@@ -168,7 +174,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     } catch (error) {
       console.warn('Failed to cleanup checked keys:', error);
     }
-  }, [folders, checkedKeys, setCheckedKeys, currentProject]);
+  }, [folders, setCheckedKeys, currentProject]);
 
   // Run cleanup when folders are loaded
   useEffect(() => {

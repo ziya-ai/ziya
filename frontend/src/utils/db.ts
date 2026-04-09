@@ -36,6 +36,9 @@ interface DB {
     db: IDBDatabase | null;
     init(): Promise<void>;
     saveConversations(conversations: Conversation[]): Promise<void>;
+    saveConversation(conversation: Conversation): Promise<void>;
+    getConversation(id: string): Promise<Conversation | null>;
+    deleteConversation(id: string): Promise<void>;
     getConversations(): Promise<Conversation[]>;
     getConversationShells(): Promise<Conversation[]>;
     exportConversations(): Promise<string>;
@@ -55,6 +58,8 @@ class ConversationDB implements DB {
     private lastBackupTime = 0;  // BUGFIX: Throttle localStorage backups
     private lastKnownVersion: number = 0;
     private connectionAttempts = 0;
+    /** True after the one-time migration from bulk 'current' key to per-record storage. */
+    private migrated = false;
     private _pendingMigrationData: Conversation[] | null = null;
     private initializing = false;
     private initPromise: Promise<void> | null = null;
@@ -191,7 +196,14 @@ class ConversationDB implements DB {
                             console.warn('Retention purge failed (non-fatal):', err);
                         });
 
-                        resolve();
+                        // Migrate from bulk 'current' key to per-record storage.
+                        // Must complete before callers read/write.
+                        this._migrateBulkToPerRecord().then(() => {
+                            resolve();
+                        }).catch(err => {
+                            console.warn('Migration from bulk storage failed (non-fatal):', err);
+                            resolve(); // Don't block init — old format still works
+                        });
 
                     };
 
@@ -239,6 +251,68 @@ class ConversationDB implements DB {
             this.initializing = false;
             throw error;
         }
+    }
+
+    /**
+     * One-time migration: split the single 'current' array record into
+     * individual per-conversation records keyed by conversation ID.
+     *
+     * Old format: store has one record  { key: 'current', value: Conversation[] }
+     * New format: store has N records   { key: conv.id,   value: Conversation }
+     *
+     * After migration the 'current' key is deleted.  All subsequent
+     * reads/writes use per-ID keys.
+     */
+    private async _migrateBulkToPerRecord(): Promise<void> {
+        if (this.migrated) return;
+        if (!this.db) return;
+
+        const tx = this.db.transaction([STORE_NAME], 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+
+        return new Promise<void>((resolve, reject) => {
+            const getReq = store.get('current');
+
+            getReq.onerror = () => {
+                // No 'current' key — already migrated or fresh DB
+                this.migrated = true;
+                resolve();
+            };
+
+            getReq.onsuccess = () => {
+                const bulk = getReq.result;
+                if (!Array.isArray(bulk) || bulk.length === 0) {
+                    // Nothing to migrate (fresh DB, or already migrated)
+                    this.migrated = true;
+                    resolve();
+                    return;
+                }
+
+                console.log(`🔄 MIGRATION: Splitting ${bulk.length} conversations from bulk 'current' key to per-record storage`);
+
+                let written = 0;
+                for (const conv of bulk) {
+                    if (!conv?.id) continue;
+                    store.put(conv, conv.id);
+                    written++;
+                }
+
+                // Delete the old bulk record
+                store.delete('current');
+
+                console.log(`✅ MIGRATION: Wrote ${written} per-record entries, deleted 'current' key`);
+                this.migrated = true;
+            };
+
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => {
+                console.error('Migration transaction failed:', tx.error);
+                // Mark as migrated anyway to prevent retry loops — the old
+                // format still works, we'll try again on next restart.
+                this.migrated = true;
+                reject(tx.error);
+            };
+        });
     }
 
     private validateConversations(conversations: Conversation[]): boolean {
@@ -339,6 +413,24 @@ class ConversationDB implements DB {
 
         if (navigator.locks) {
             return navigator.locks.request('ziya-db-write', async _lock => {
+                // FAST PATH: small batch with no shells — skip dedup/getAll overhead
+                const hasShells = conversations.some(c => (c as any)._isShell);
+                const allHaveIds = conversations.every(c => c?.id);
+                if (allHaveIds && !hasShells && conversations.length <= 10) {
+                    const tx = this.db!.transaction([STORE_NAME], 'readwrite');
+                    const store = tx.objectStore(STORE_NAME);
+                    return new Promise<void>((resolve, reject) => {
+                        tx.oncomplete = () => resolve();
+                        tx.onerror = () => reject(tx.error);
+                        tx.onabort = () => reject(new Error('Transaction aborted'));
+                        for (const conv of conversations) {
+                            const stripped = { ...conv } as any;
+                            delete stripped._isShell;
+                            delete stripped._fullMessageCount;
+                            store.put({ ...stripped, _version: conv._version || Date.now() }, conv.id);
+                        }
+                    });
+                }
                 try {
                     return await this._saveConversationsWithLock(conversations);
                 } catch (error) {
@@ -457,62 +549,11 @@ class ConversationDB implements DB {
             const store = tx.objectStore(STORE_NAME);
 
             return new Promise<void>((resolve, reject) => {
-                const self = this;
-                // Read-before-write guard: within the same readwrite
-                // transaction, check if any conversation would lose 
-                // messages.  Catches TOCTOU races from direct callers
-                // (rename, delete, fork) that bypass queueSave.
-                //
-                // MEMORY SAFETY: Skip when dataset is large.  store.get('current')
-                // deserializes the entire blob; with 200+ conversations this
-                // doubles peak memory and causes OOM.  queueSave already does
-                // message-count protection, so this guard only matters for
-                // direct callers that operate on small datasets.
-                if (uniqueConversations.length > 200) {
-                    performWrite();
-                    return;
-                }
+                console.debug('📝 Conversations being saved:', uniqueConversations.length);
 
-                const guardRequest = store.get('current');
-                guardRequest.onerror = () => {
-                    // Cannot read — skip guard, proceed with write
-                    performWrite();
-                };
-                guardRequest.onsuccess = () => {
-                    const idbConversations: Conversation[] =
-                        Array.isArray(guardRequest.result) ? guardRequest.result : [];
-                    if (idbConversations.length > 0) {
-                        // Count-only map: do NOT retain message array references.
-                        // Holding refs prevents GC of the deserialized IDB blob.
-                        const idbMsgCounts = new Map<string, number>();
-                        for (const c of idbConversations) {
-                            if (c?.id && c.messages?.length) {
-                                idbMsgCounts.set(c.id, c.messages.length);
-                            }
-                        }
-                        for (const conv of uniqueConversations) {
-                            const prevCount = idbMsgCounts.get(conv.id);
-                            if (!prevCount) continue;
-                            const nextCount = conv.messages?.length || 0;
-                            if (prevCount > nextCount && prevCount > 2) {
-                                // Regression detected — lazily find this conversation's messages
-                                const idbConv = idbConversations.find(c => c.id === conv.id);
-                                if (!idbConv?.messages) continue;
-                                console.warn(
-                                    `🛡️ IDB_WRITE_GUARD: Preserving ${prevCount} IDB messages ` +
-                                    `for ${conv.id.substring(0, 8)} (caller had ${nextCount})`
-                                );
-                                conv.messages = idbConv.messages;
-                            }
-                        }
-                    }
-                    performWrite();
-                };
-
-                function performWrite() {
                 const conversationsToSave = uniqueConversations.map(conv => ({
                     ...conv,
-                    _version: conv._version || Date.now(),  // BUGFIX: preserve existing _version instead of overwriting all
+                    _version: conv._version || Date.now(),
                     messages: conv.messages.map(msg => ({
                         ...msg,
                         _timestamp: msg._timestamp || Date.now()
@@ -521,44 +562,36 @@ class ConversationDB implements DB {
                     isActive: conv.isActive !== false
                 }));
 
-                console.debug('📝 Conversations being saved:', conversationsToSave.map(c => ({
-                    id: c.id.substring(0, 8),
-                    title: c.title,
-                    messageCount: c.messages.length,
-                    isActive: c.isActive
-                })));
+                // Write each conversation as its own record with per-record guard
+                for (const conv of conversationsToSave) {
+                    const guardReq = store.get(conv.id);
+                    guardReq.onsuccess = () => {
+                        const existing = guardReq.result;
+                        // Per-record message-count guard
+                        if (existing?.id && existing.messages?.length > conv.messages?.length
+                            && existing.messages.length > 2) {
+                            console.warn(
+                                `🛡️ IDB_WRITE_GUARD: Preserving ${existing.messages.length} messages ` +
+                                `for ${conv.id.substring(0, 8)} (caller had ${conv.messages?.length || 0})`
+                            );
+                            store.put({ ...conv, messages: existing.messages }, conv.id);
+                        } else {
+                            store.put(conv, conv.id);
+                        }
+                    };
+                    guardReq.onerror = () => {
+                        // Can't read existing — write anyway
+                        store.put(conv, conv.id);
+                    };
+                }
 
-                // BUGFIX: Throttle localStorage backup to once per 30s (was serializing ALL convos on every save!)
-                const now = Date.now();
-                if (now - self.lastBackupTime > 30000) {
-                    self.lastBackupTime = now;
-                    // localStorage backup removed — server dual-write
-                    // (bulkSync to ~/.ziya/projects/{pid}/chats/) is the
-                    // backup mechanism. localStorage has a ~5MB quota that
-                    // overflows with large conversation histories.
-                }  // end throttle check
-
-                const putRequest = store.put(conversationsToSave, 'current');
-
-                putRequest.onsuccess = () => {
-                    console.debug('Save operation completed successfully:', {
-                        savedCount: conversationsToSave.length,
-                        savedIds: conversationsToSave.map(c => c.id)
-                    });
-                    saveCompleted = true;
-                };
-
-                putRequest.onerror = () => {
-                    console.error('Save operation failed:', putRequest.error);
-                    reject(putRequest.error);
-                };
+                // Also clean up legacy 'current' key if it still exists
+                // (belt-and-suspenders alongside migration)
+                try { store.delete('current'); } catch { /* ignore */ }
 
                 tx.oncomplete = () => {
-                    console.debug('Transaction completed');
-                    if (!saveCompleted) {
-                        reject(new Error('Transaction completed but save operation did not complete'));
-                        return;
-                    }
+                    saveCompleted = true;
+                    console.debug('Save completed:', conversationsToSave.length, 'conversations');
                     resolve();
                 };
 
@@ -573,7 +606,6 @@ class ConversationDB implements DB {
                     console.error('Transaction aborted');
                     reject(new Error('Transaction was aborted'));
                 };
-                }; // end performWrite
             });
         } finally {
             this.saveInProgress = false;
@@ -598,6 +630,103 @@ class ConversationDB implements DB {
         return [];
     }
 
+    /**
+     * Read a single conversation by ID.  O(1) with per-record storage.
+     */
+    async getConversation(id: string): Promise<Conversation | null> {
+        if (!this.db || !this.db.objectStoreNames.contains(STORE_NAME)) {
+            try { await this.init(); } catch { return null; }
+            if (!this.db) return null;
+        }
+
+        const readFn = async (): Promise<Conversation | null> => {
+            const tx = this.db!.transaction([STORE_NAME], 'readonly');
+            const store = tx.objectStore(STORE_NAME);
+            return new Promise((resolve) => {
+                const request = store.get(id);
+                request.onsuccess = () => {
+                    const result = request.result;
+                    // Validate it's actually a conversation object (not the
+                    // legacy 'current' array or some other artifact)
+                    if (result && result.id && Array.isArray(result.messages)) {
+                        resolve(result);
+                    } else {
+                        resolve(null);
+                    }
+                };
+                request.onerror = () => resolve(null);
+            });
+        };
+
+        if (navigator.locks) {
+            return navigator.locks.request('ziya-db-read', () => readFn());
+        }
+        return readFn();
+    }
+
+    /**
+     * Write a single conversation.  Includes a per-record message-count
+     * guard to prevent regressions.
+     */
+    async saveConversation(conversation: Conversation): Promise<void> {
+        if (!this.db || !this.db.objectStoreNames.contains(STORE_NAME)) {
+            try { await this.init(); } catch { throw new Error('Database not initialized'); }
+            if (!this.db) throw new Error('Database not initialized');
+        }
+
+        const writeFn = async (): Promise<void> => {
+            const tx = this.db!.transaction([STORE_NAME], 'readwrite');
+            const store = tx.objectStore(STORE_NAME);
+
+            // Per-record guard: check existing message count before overwriting
+            const getReq = store.get(conversation.id);
+            getReq.onsuccess = () => {
+                const existing = getReq.result;
+                if (existing?.messages?.length > conversation.messages?.length
+                    && existing.messages.length > 2) {
+                    console.warn(
+                        `🛡️ SAVE_GUARD: Preserving ${existing.messages.length} messages ` +
+                        `for ${conversation.id.substring(0, 8)} (caller had ${conversation.messages?.length || 0})`
+                    );
+                    conversation = { ...conversation, messages: existing.messages };
+                }
+                store.put(conversation, conversation.id);
+            };
+            getReq.onerror = () => {
+                // Can't read existing — write anyway
+                store.put(conversation, conversation.id);
+            };
+
+            return new Promise<void>((resolve, reject) => {
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        };
+
+        if (navigator.locks) {
+            return navigator.locks.request('ziya-db-write', () => writeFn());
+        }
+        return writeFn();
+    }
+
+    /**
+     * Delete a single conversation by ID.
+     */
+    async deleteConversation(id: string): Promise<void> {
+        if (!this.db || !this.db.objectStoreNames.contains(STORE_NAME)) {
+            try { await this.init(); } catch { return; }
+            if (!this.db) return;
+        }
+
+        const tx = this.db.transaction([STORE_NAME], 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        store.delete(id);
+
+        return new Promise<void>((resolve, reject) => {
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+        });
+    }
 
     async getConversations(): Promise<Conversation[]> {
         if (!this.db || !this.db.objectStoreNames.contains(STORE_NAME)) {
@@ -650,41 +779,29 @@ class ConversationDB implements DB {
         const store = tx.objectStore(STORE_NAME);
 
         return new Promise<Conversation[]>((resolve, reject) => {
-            const request = store.get('current');
+            const request = store.getAll();
 
             request.onsuccess = () => {
-                // Only log in development mode and with less frequency
-                if (process.env.NODE_ENV === 'development' && Math.random() < 0.1) { // Only log ~10% of the time
-                    console.debug('Successfully retrieved conversations from database');
+                const allRecords = request.result || [];
+                // getAll() returns every record in the store.  Filter to
+                // valid conversation objects — skip legacy 'current' array
+                // (if migration hasn't run yet) and any other artifacts.
+                const conversations: Conversation[] = [];
+                for (const record of allRecords) {
+                    if (!record || typeof record !== 'object') continue;
+                    if (Array.isArray(record)) continue;
+                    if (record.id && typeof record.id === 'string' && Array.isArray(record.messages)) {
+                        conversations.push(record);
+                    }
                 }
-                const conversations = Array.isArray(request.result) ? request.result : [];
 
                 if (conversations.length > 0) {
-                    // Detect corrupt data: a single record with no id indicates
-                    // the stored value was corrupted (e.g. by a failed save that
-                    // wrote an incomplete object).  Treat as empty so callers
-                    // can fall back to server data instead of showing nothing.
-                    if (conversations.length === 1 && !conversations[0]?.id) {
-                        console.warn('🔧 IDB_CORRUPT: Found single record with no id — treating as empty');
-                        // Clear the corrupt record (fire-and-forget)
-                        store.put([], 'current');
-                        resolve([]);
-                        return;
-                    }
-
-                    const validConversations = conversations.filter(conv =>
-                        conv && this.validateConversations([conv])
-                    );
-
-                    if (validConversations.length > 0) {
-                        resolve(validConversations);
-                        return;
-                    }
+                    resolve(conversations);
+                } else {
+                    this.restoreFromBackup().then(backup =>
+                        resolve(backup.length > 0 ? backup : [])
+                    ).catch(() => resolve([]));
                 }
-                // No valid conversations found - try backup BEFORE resolving empty
-                this.restoreFromBackup().then(backupConversations => {
-                    resolve(backupConversations.length > 0 ? backupConversations : []);
-                }).catch(() => resolve([]));
             };
 
             request.onerror = () => {
@@ -704,40 +821,44 @@ class ConversationDB implements DB {
             try { await this.init(); } catch { return []; }
             if (!this.db) return [];
         }
-
         const readFn = async (): Promise<Conversation[]> => {
             const tx = this.db!.transaction([STORE_NAME], 'readonly');
             const store = tx.objectStore(STORE_NAME);
-            return new Promise<Conversation[]>((resolve) => {
-                const request = store.get('current');
-                request.onsuccess = () => {
-                    let conversations: Conversation[] = Array.isArray(request.result) ? request.result : [];
+            const shells: Conversation[] = [];
 
-                    // Mirror the corrupt-record check from getConversations.
-                    // A single entry with no id means the store value was
-                    // corrupted — treat as empty so the startup IDB_REPAIR
-                    // logic in ChatContext can detect and fix it cleanly.
-                    if (conversations.length === 1 && !conversations[0]?.id) {
-                        console.warn('🔧 IDB_CORRUPT: Shell read found corrupt record — treating as empty');
-                        conversations = [];
+            return new Promise<Conversation[]>((resolve) => {
+                const cursorReq = store.openCursor();
+
+                cursorReq.onsuccess = () => {
+                    const cursor = cursorReq.result;
+                    if (!cursor) {
+                        // Cursor exhausted — return collected shells
+                        resolve(shells);
+                        return;
                     }
 
-                    // Strip messages — keep only the first and last for preview/timestamp.
-                    // Mark as shell with original count so save paths can detect and protect.
-                    const shells = conversations
-                    .filter(conv => conv && conv.id && typeof conv.id === 'string')
-                    .map(conv => ({
+                    const conv = cursor.value;
+
+                    // Skip non-conversation records (legacy bulk array, artifacts)
+                    if (!conv?.id || typeof conv.id !== 'string' || !Array.isArray(conv.messages)) {
+                        cursor.continue();
+                        return;
+                    }
+
+                    // Build shell: keep only first + last message for preview
+                    shells.push({
                         ...conv,
                         messages: conv.messages?.length > 0
                             ? [conv.messages[0], ...(conv.messages.length > 1 ? [conv.messages[conv.messages.length - 1]] : [])]
                             : [],
                         _isShell: true,
                         _fullMessageCount: conv.messages?.length || 0,
-                        title: conv.title || 'Untitled',
-                    }));
-                    resolve(shells);
+                    } as Conversation);
+
+                    cursor.continue();
                 };
-                request.onerror = () => resolve([]);
+
+                cursorReq.onerror = () => resolve([]);
             });
         };
 
@@ -797,11 +918,19 @@ class ConversationDB implements DB {
         try {
             const tx = this.db.transaction([STORE_NAME], 'readonly');
             const store = tx.objectStore(STORE_NAME);
-            const request = store.get('current');
+            const request = store.getAll();
             return new Promise((resolve, reject) => {
                 request.onsuccess = () => {
-                    const conversations = Array.isArray(request.result) ? request.result : [];
-                    const activeConversations = conversations.filter(conv => conv.isActive !== false);
+                    const allRecords = request.result || [];
+                    // Filter to valid conversation objects
+                    const activeConversations = allRecords.filter(record =>
+                        record &&
+                        !Array.isArray(record) &&
+                        record.id &&
+                        typeof record.id === 'string' &&
+                        Array.isArray(record.messages) &&
+                        record.isActive !== false
+                    );
 
                     // Also export folders to maintain hierarchy
                     this.getFolders().then(folders => {
@@ -1002,24 +1131,19 @@ class ConversationDB implements DB {
                 }
             }
 
-            // Merge conversations, keeping existing ones if IDs conflict
-            const mergedConversations = [...existingConversations, ...validConversations];
-
-            console.log(`💾 IMPORT: Final merge - ${existingConversations.length} existing + ${validConversations.length} new = ${mergedConversations.length} total`);
-
-            // Start a transaction
+            // Write imported conversations as individual records
             const tx = this.db.transaction([STORE_NAME], 'readwrite');
             const store = tx.objectStore(STORE_NAME);
 
-            return new Promise((resolve, reject) => {
-                const request = store.put(mergedConversations, 'current');
+            for (const conv of validConversations) {
+                store.put(conv, conv.id);
+            }
 
-                request.onsuccess = () => {
-                    console.log(`✅ IMPORT COMPLETE: Saved ${mergedConversations.length} total conversations`);
+            return new Promise((resolve, reject) => {
+                tx.oncomplete = () => {
+                    console.log(`✅ IMPORT COMPLETE: Wrote ${validConversations.length} conversations`);
                     resolve();
                 };
-
-                request.onerror = () => reject(request.error);
 
                 tx.onerror = () => {
                     console.error('❌ Import transaction failed:', tx.error);
@@ -1122,31 +1246,24 @@ class ConversationDB implements DB {
         const store = tx.objectStore(STORE_NAME);
 
         return new Promise((resolve, reject) => {
-            const getRequest = store.get('current');
+            const getRequest = store.get(conversationId);
 
             getRequest.onsuccess = () => {
-                const conversations = Array.isArray(getRequest.result) ? getRequest.result : [];
-                let found = false;
+                const conv = getRequest.result;
+                if (!conv?.id) {
+                    resolve(false);
+                    return;
+                }
 
                 // Log the conversation being moved
                 console.log('Moving conversation to folder:', { conversationId, folderId });
 
-                const updatedConversations = conversations.map(conv => {
-                    if (conv.id === conversationId) {
-                        found = true;
-                        return { ...conv, folderId, _version: Date.now() };
-                    }
-                    return conv;
-                });
-
-                // Only update if the conversation was found
-                if (found) {
-                    const putRequest = store.put(updatedConversations, 'current');
-                    putRequest.onsuccess = () => resolve(true);
-                    putRequest.onerror = () => reject(putRequest.error);
-                } else {
-                    resolve(false);
-                }
+                const putRequest = store.put(
+                    { ...conv, folderId, _version: Date.now() },
+                    conversationId
+                );
+                putRequest.onsuccess = () => resolve(true);
+                putRequest.onerror = () => reject(putRequest.error);
             };
 
             getRequest.onerror = () => reject(getRequest.error);
@@ -1236,10 +1353,10 @@ class ConversationDB implements DB {
                 console.log('Database deleted successfully');
                 try {
                     // Reset internal state
-                    this.lastSavedData = null;
                     this.lastKnownVersion = 0;
                     this.initPromise = null;
                     this.saveInProgress = false;
+                    this.migrated = false;
 
                     // Reinitialize the database
                     await this.init();
