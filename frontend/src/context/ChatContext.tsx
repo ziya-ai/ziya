@@ -129,7 +129,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [isInitialized, setIsInitialized] = useState(false);
     const [userHasScrolled, setUserHasScrolled] = useState(false);
     const [currentConversationId, setCurrentConversationId] = useState<string>('');
-    const [currentMessages, setCurrentMessages] = useState<Message[]>([]);
+    const currentMessagesRef = useRef<Message[]>([]);
     const currentConversationRef = useRef<string>('');
     const conversationIdRestored = useRef(false);
 
@@ -220,6 +220,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const streamingConversationsRef = useRef(streamingConversations);
 
     const removedStreamingIds = useRef<Set<string>>(new Set());
+    // Module-level sync guard — persists across effect re-runs
+    const syncInProgressRef = useRef<boolean>(false);
     // Track which project has been server-synced to avoid duplicate syncs
     const serverSyncedForProject = useRef<string | null>(null);
     // Conversations confirmed present on the server (used to distinguish imports from server-deletions)
@@ -538,16 +540,42 @@ export function ChatProvider({ children }: ChatProviderProps) {
         if (options.changedIds) {
             options.changedIds.forEach(id => dirtyConversationIds.current.add(id));
         }
+        // Declare here so the fast path below can reference them without TDZ.
+        const changedIdSet = new Set(options.changedIds || []);
+        const { skipValidation = false, isRecoveryAttempt = false } = options;
+
+        // FAST PATH: bypass saveQueue entirely for per-message saves.
+        // Chaining onto saveQueue even with an early return still adds
+        // a .then() callback that must resolve — with 940 rapid calls
+        // this creates a Promise chain that pegs the CPU for minutes.
+        const _fastPathIds = new Set(options.changedIds || []);
+        if (_fastPathIds.size > 0 && !options.isRecoveryAttempt && !options.skipValidation) {
+            if (!(window as any).__fastPathTraced) {
+                (window as any).__fastPathTraced = true;
+                console.trace('📋 FAST_PATH caller:', options.changedIds);
+                setTimeout(() => { (window as any).__fastPathTraced = false; }, 100);
+            }
+            const toWrite = validatedConversations.filter(c => _fastPathIds.has(c.id));
+            if (toWrite.length > 0) {
+                await db.saveConversations(toWrite);
+                if (options.changedIds && options.changedIds.length > 0) {
+                    projectSync.post('conversations-changed', { ids: options.changedIds });
+                }
+            }
+            return Promise.resolve();
+        }
+
 
         saveQueue.current = saveQueue.current.then(async () => {
-            const { skipValidation = false, retryCount = 0, isRecoveryAttempt = false } = options;
+            console.trace('📋 saveQueue.then called, changedIds:', options.changedIds?.length, 'bypassDebounce:', options._bypassDebounce);
+            const { retryCount = 0 } = options;
             const maxRetries = 3;
 
             // Pre-save validation
             const activeCount = validatedConversations.filter(c => c.isActive).length;
             console.debug(`Saving ${validatedConversations.length} conversations (${activeCount} active)`);
 
-            const changedIdSet = new Set(options.changedIds || []);
+            // changedIdSet, skipValidation, isRecoveryAttempt already declared above
 
             // Use cached other-project conversations when possible, BUT
             // never substitute React state for IndexedDB when state contains
@@ -646,7 +674,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             // Save all conversations - but don't throw if it fails
             try {
-                await db.saveConversations(finalConversations);
+                // Only write the conversations that actually changed to avoid
+                // cloning all 674 conversations (with full message arrays) on
+                // every save — the old behaviour caused OOM with large histories.
+                if (changedIdSet.size > 0) {
+                    const changedOnly = finalConversations.filter(c => changedIdSet.has(c.id));
+                    await db.saveConversations(changedOnly);
+                } else {
+                    await db.saveConversations(finalConversations);
+                }
                 // Notify other same-project tabs about the change
                 if (options.changedIds && options.changedIds.length > 0) {
                     projectSync.post('conversations-changed', { ids: options.changedIds });
@@ -682,7 +718,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         // debounce expires — causing the server to receive a
                         // conversation with only the first message.
                         const dirtyConvs = conversationsRef.current.filter(
-                            (c: any) => batchIds.has(c.id) && c.isActive !== false
+                            (c: any) => batchIds.has(c.id) && c.isActive !== false && !c._isShell
                         ) as Conversation[];
                         if (dirtyConvs.length === 0) return;
                         try {
@@ -782,6 +818,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
             return;
         }
 
+        // Temporary: unconditional trace to identify spam caller
+        if (!(window as any).__addMsgTraced) {
+            (window as any).__addMsgTraced = true;
+            console.trace('📝 addMessageToConversation first call stack');
+            setTimeout(() => { (window as any).__addMsgTraced = false; }, 100);
+        }
+
         // If adding message to non-current conversation, don't trigger any scroll
         if (conversationId !== currentConversationId) {
             console.debug('📝 Adding message to non-current conversation - scroll preservation mode');
@@ -789,8 +832,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
         // Diagnostic: trace who is calling addMessageToConversation during idle.
         // TODO: Remove this console.trace once the idle-spam caller is identified.
-        console.trace('📝 addMessageToConversation called:', { role: message.role, conversationId: targetConversationId });
-        console.debug('📝 Adding message:', { role: message.role, conversationId: targetConversationId });
 
         // Check if this is an assistant message and if it appears incomplete
         if (message.role === 'assistant' && message.content) {
@@ -813,8 +854,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         `Queueing lazy-load before message append.`
                     );
                     // Fire-and-forget: load full messages then re-add this message
-                    db.getConversations().then(allFull => {
-                        const full = allFull.find(c => c.id === conversationId);
+                    (db.getConversation(conversationId)).then(full => {
                         if (full?.messages?.length > existingConversation.messages.length) {
                             setConversations(prev => prev.map(c =>
                                 c.id === conversationId
@@ -862,17 +902,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // even when this callback was captured before the user switched conversations.
             const actuallyNonCurrent = conversationId !== currentConversationRef.current;
 
-            console.debug('Message processing:', {
-                messageRole: message.role,
-                targetConversationId: conversationId,
-                currentConversationId,
-                isNonCurrentConversation: actuallyNonCurrent
-            });
             const shouldMarkUnread = message.role === 'assistant' && actuallyNonCurrent;
-            console.debug('Message add check:', {
-                willMarkUnread: shouldMarkUnread,
-                reason: shouldMarkUnread ? 'AI message to non-current conversation' : 'Not marking unread'
-            });
             const updatedConversations = existingConversation
                 ? prevConversations.map(conv => {
                     if (conv.id === conversationId) {
@@ -1086,7 +1116,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 }
 
                 setConversations([...updatedConversations, newConversation]);
-                setCurrentMessages([]);
                 setCurrentConversationId(newId);
 
                 try {
@@ -1098,7 +1127,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
             } catch (saveError) {
                 console.error('Failed to save new conversation, creating in memory:', saveError);
                 setConversations([...updatedConversations, newConversation]);
-                setCurrentMessages([]);
                 setCurrentConversationId(newId);
                 try {
                     setTabState('ZIYA_CURRENT_CONVERSATION_ID', newId);
@@ -1451,39 +1479,49 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // Load the conversation first
             await loadConversation(conversationId);
 
-            // Wait for the conversation to be loaded and rendered
-            await new Promise(resolve => setTimeout(resolve, 100));
-
-            // Find the message element and scroll to it
-            const scrollToMessage = () => {
+            // Retry scrolling with backoff — lazy-load may still be in progress
+            const tryScroll = (attempt: number) => {
                 const chatContainer = document.querySelector('.chat-container') as HTMLElement;
-                if (!chatContainer) return false;
-
-                // Find all message elements
-                const messageElements = chatContainer.querySelectorAll('.message');
-
-                if (messageIndex < messageElements.length) {
-                    const targetMessage = messageElements[messageIndex] as HTMLElement;
-
-                    // Scroll to the message with smooth behavior
+                const allIndexed = chatContainer?.querySelectorAll('[data-message-index]');
+                console.log('🔍 tryScroll attempt', attempt, 'container:', !!chatContainer, 'indexed msgs:', allIndexed?.length, 'looking for index:', messageIndex, 'searchTerm:', (window as any).__ziyaSearchHighlight);
+                if (!chatContainer) {
+                    if (attempt < 10) setTimeout(() => tryScroll(attempt + 1), 150 * (attempt + 1));
+                    return;
+                }
+                const targetMessage = chatContainer.querySelector(
+                    `[data-message-index="${messageIndex}"]`
+                ) as HTMLElement | null;
+                if (targetMessage) {
                     targetMessage.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-                    // Add highlight effect
                     targetMessage.style.transition = 'background-color 0.5s ease';
                     targetMessage.style.backgroundColor = isDarkMode ? 'rgba(24, 144, 255, 0.2)' : 'rgba(24, 144, 255, 0.1)';
-
-                    setTimeout(() => {
-                        targetMessage.style.backgroundColor = '';
-                    }, 2000);
-
-                    return true;
+                    setTimeout(() => { targetMessage.style.backgroundColor = ''; }, 2000);
+                    // Highlight search term within the target message
+                    const searchTerm = (window as any).__ziyaSearchHighlight;
+                    if (searchTerm) {
+                        const escaped = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                        const walk = (node: Node) => {
+                            if (node.nodeType === Node.TEXT_NODE) {
+                                const text = node.textContent || '';
+                                if (text.toLowerCase().includes(searchTerm.toLowerCase())) {
+                                    const span = document.createElement('span');
+                                    span.innerHTML = text.replace(new RegExp(`(${escaped})`, 'gi'),
+                                        `<mark style="background:${isDarkMode ? '#b8860b' : '#fff176'};color:${isDarkMode ? '#fff' : '#000'};border-radius:2px;padding:0 1px">$1</mark>`);
+                                    node.parentNode?.replaceChild(span, node);
+                                }
+                            } else if (node.nodeType === Node.ELEMENT_NODE && !['SCRIPT','STYLE','CODE','PRE'].includes((node as Element).tagName)) {
+                                Array.from(node.childNodes).forEach(walk);
+                            }
+                        };
+                        Array.from(targetMessage.childNodes).forEach(walk);
+                        setTimeout(() => { (window as any).__ziyaSearchHighlight = null; }, 10000);
+                    }
+                } else if (attempt < 20) {
+                    setTimeout(() => tryScroll(attempt + 1), 200);
                 }
-                return false;
             };
-
-            // Try scrolling multiple times with delays to ensure rendering is complete
-            setTimeout(scrollToMessage, 200);
-            setTimeout(scrollToMessage, 500);
+            setTimeout(() => tryScroll(0), 300);
+            setTimeout(() => tryScroll(0), 100);
         } catch (error) {
             console.error('Error loading conversation and scrolling to message:', error);
             throw error;
@@ -1622,33 +1660,31 @@ export function ChatProvider({ children }: ChatProviderProps) {
         }
     }, [queueSave]);
 
-    useEffect(() => {
-        // Load current messages immediately when conversation changes, regardless of folder state
-        // Only update if messages actually changed to prevent scroll jumps
-        if (currentConversationId && conversations.length > 0) {
-            const conv = conversations.find(c => c.id === currentConversationId);
-            if (!conv) return;
-            const messages = conv.messages;
-            if (!messages) return;
-
-            // PERFORMANCE FIX: Replace expensive JSON.stringify (18ms) with fast checks
-            // Uses _version as a fast proxy: if the conversation object wasn't replaced
-            // by SERVER_SYNC (reference preservation), messages is the same reference.
-            setCurrentMessages(prev => {
-                // Fast path: identical array reference means nothing changed
-                if (messages === prev) return prev;
-
-                const messagesChanged =
-                    messages.length !== prev.length ||
-                    (messages.length > 0 && prev.length > 0 &&
-                        (messages[messages.length - 1] !== prev[prev.length - 1] ||
-                            messages[0] !== prev[0]));
-
-                if (!messagesChanged) return prev;
-                console.log('📝 Messages changed for conversation:', currentConversationId);
-                return messages;
-            });
-        }
+    // Derive currentMessages synchronously — no useState/useEffect needed.
+    // The previous useEffect called setCurrentMessages on every render,
+    // which scheduled a new React commit even when returning prev,
+    // creating a 33 commits/sec render loop.
+    const currentMessages = useMemo(() => {
+        if (!currentConversationId || conversations.length === 0) return currentMessagesRef.current;
+        const conv = conversations.find(c => c.id === currentConversationId);
+        if (!conv?.messages) return currentMessagesRef.current;
+        const messages = conv.messages;
+        const prev = currentMessagesRef.current;
+        // Fast path: identical array reference
+        if (messages === prev) return prev;
+        // Length change is definitive
+        if (messages.length !== prev.length) { currentMessagesRef.current = messages; return messages; }
+        if (messages.length === 0) return prev;
+        // Compare by id (preferred) or content+role (fallback for legacy messages)
+        const lastNew = messages[messages.length - 1];
+        const lastOld = prev[prev.length - 1];
+        const lastSame = (lastNew.id && lastOld.id) ? lastNew.id === lastOld.id
+            : lastNew.content === lastOld.content && lastNew.role === lastOld.role;
+        const firstSame = (messages[0].id && prev[0].id) ? messages[0].id === prev[0].id
+            : messages[0].content === prev[0].content && messages[0].role === prev[0].role;
+        if (lastSame && firstSame) return prev;
+        currentMessagesRef.current = messages;
+        return messages;
     }, [conversations, currentConversationId]);
 
     // Enhanced initialization with corruption detection and recovery
@@ -1674,7 +1710,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // Set the new conversation as current if we don't have one yet
             if (!currentConversationId) {
                 setCurrentConversationId(newId);
-                setCurrentMessages([]);
                 console.log('✅ EPHEMERAL MODE: Set initial conversation');
             }
 
@@ -1752,7 +1787,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             if (gcPurged.length > 0) {
                 console.log(`🗑️ Startup GC: removing ${gcPurged.length} stale empty conversation(s)`);
                 setConversations(gcKept);
-                db.saveConversations(gcKept).catch(e => console.warn('Startup GC save failed:', e));
+                queueSave(gcKept, { changedIds: gcPurged }).catch(e => console.warn('Startup GC save failed:', e));
             }
 
             // CRITICAL: Verify the restored currentConversationId exists in loaded conversations
@@ -1936,7 +1971,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
     useEffect(() => {
         if (!isInitialized || !currentProject?.id) return;
         if (isEphemeralMode) return;
-
         const projectId = currentProject.id;
 
         // Detect whether this is an actual project switch (vs a periodic poll
@@ -1978,12 +2012,16 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 return c;
             });
 
-            await db.saveConversations(migrated);
+                    // Only save the migrated conversations (not shells) to avoid clobbering full data
+                    const migratedNonShells = migrated.filter(c => !(c as any)._isShell);
+                    if (migratedNonShells.length > 0) await db.saveConversations(migratedNonShells);
             console.log('✅ MIGRATION: Conversations tagged with projectId');
             return migrated;
         };
 
         const syncWithServer = async () => {
+            if (syncInProgressRef.current) return;
+            syncInProgressRef.current = true;
             // Outer try-finally guarantees setIsProjectSwitching(false) runs
             // even when an early-return guard exits before the inner try block.
             // Without this, the switching flag stays true and the chat-selection
@@ -2012,7 +2050,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     // 2. Load current IndexedDB state
                     let allConversations: Conversation[];
                     try {
-                        allConversations = await db.getConversations();
+                        // Use shells (metadata only) for sync — we only need versions/ids
+                        // Loading full message arrays for all 695 conversations causes OOM
+                        allConversations = await db.getConversationShells();
                     } catch (dbErr) {
                         console.warn('📡 SERVER_SYNC: IndexedDB unavailable, using server as sole source:', dbErr);
                         // IDB is broken (stale connections, blocked upgrade, etc.)
@@ -2062,7 +2102,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             const serverHasDelegateMeta = sc.delegateMeta && !local.delegateMeta;
                             const serverHasFolder = (sc.groupId || sc.folderId) && !local.folderId;
                             if (serverHasDelegateMeta || serverHasFolder) {
-                                needFullFetch.push(sc.id);
+                                if (!recentlyFetchedFullIds.current.has(sc.id)) {
+                                    needFullFetch.push(sc.id);
+                                }
                                 continue;
                             }
                             const serverVer = (sc as any)._version || sc.lastActiveAt || 0;
@@ -2071,6 +2113,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             // prevent repeated full fetches before lazy-load completes.
                             const localVer = (local as any)._isShell ? Infinity : ((local as any)._version || local.lastAccessedAt || 0);
                             if (serverVer > localVer) {
+                                // Skip if we already fetched this conversation this session
+                                if (recentlyFetchedFullIds.current.has(sc.id)) {
+                                    continue;
+                                }
                                 needFullFetch.push(sc.id);
                             }
                         }
@@ -2143,7 +2189,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                     folderId: sc.groupId || sc.folderId || null,
                                     lastAccessedAt: sc.lastActiveAt || 0,
                                     isActive: true,
-                                    _version: 0,
+                                _version: serverVersion,
                                 });
                             }
                         } else if (serverVersion > localVersion) {
@@ -2202,7 +2248,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
                     // Prune recentlyFetchedFullIds to prevent unbounded growth during idle polling
                     if (recentlyFetchedFullIds.current.size > KNOWN_SERVER_IDS_MAX) {
-                        recentlyFetchedFullIds.current.clear();
+                        // Delete oldest half instead of clearing entirely to avoid re-fetching everything
+                        const ids = Array.from(recentlyFetchedFullIds.current);
+                        ids.slice(0, Math.floor(ids.length / 2)).forEach(id => recentlyFetchedFullIds.current.delete(id));
                     }
 
                     // 3b. Detect locally-present conversations that the server no longer has.
@@ -2216,7 +2264,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     const deletedIds: string[] = [];
                     for (let i = mergedProjectConvs.length - 1; i >= 0; i--) {
                         const conv = mergedProjectConvs[i];
-                        if (conv.isActive !== false && conv.messages?.length > 0 && !serverIdSet.has(conv.id)) {
+                        if (conv.isActive !== false && !serverIdSet.has(conv.id)) {
                             // Only remove if previously seen on server — never remove freshly imported conversations.
                             if (knownServerConversationIds.current.has(conv.id)) {
                                 console.log(`📡 SERVER_SYNC: "${conv.title}" (${conv.id.substring(0, 8)}) removed from server — removing locally`);
@@ -2250,11 +2298,14 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
                     // 5. Update IndexedDB with merged data
                     // Only write if something actually changed to avoid churning IndexedDB on idle polls
-                    const conversationsChanged = mergedProjectConvs.length !== localProjectConvs.length ||
-                        mergedProjectConvs.some(mc => {
-                            const local = localProjectConvs.find((l: any) => l.id === mc.id);
-                            return !local || (mc._version || 0) > (local._version || 0);
-                        });
+                    const localVersionMap = new Map(localProjectConvs.map((l: any) => [l.id, l._version || 0]));
+                    const changedConvs = mergedProjectConvs.filter(mc => {
+                        const localVer = localVersionMap.get(mc.id);
+                        // New conversation (not in local) or version bumped
+                        return localVer === undefined || (mc._version || 0) > localVer;
+                    });
+                    const conversationsChanged = changedConvs.length > 0;
+
                     if (conversationsChanged) {
                         // Protect the active conversation's messages in the IDB write.
                         // React state is authoritative for the conversation the user is
@@ -2275,13 +2326,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                 }
                             }
                         }
-                        // Exclude global conversations from otherProjectConvs — they are
-                        // already included in mergedProjectConvs via the localProjectConvs
-                        // filter (c.isGlobal), so including them here creates duplicates.
-                        const otherProjectConvs = allConversations.filter((c: any) =>
-                            c.projectId !== projectId && !c.isGlobal
-                        );
-                        await db.saveConversations([...mergedProjectConvs, ...otherProjectConvs]);
+                        // Only write current-project conversations — other-project records
+                        // already exist in IDB with full message data.  Only write the
+                        // conversations that actually changed — writing all 674 every 30s
+                        // causes OOM from cloning every message array.
+                        const nonShells = changedConvs.filter(c => !(c as any)._isShell);
+                        if (nonShells.length > 0) await db.saveConversations(nonShells);
                     }
 
                     // 6. Update React state — only if something actually changed
@@ -2451,6 +2501,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 }
             } finally {
                 setIsProjectSwitching(false);
+                syncInProgressRef.current = false;
             }
         };
         syncWithServer();
@@ -2951,8 +3002,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         // Persist the copy to IndexedDB (it belongs to another project so
         // it won't appear in the current filtered list, but needs to be in IDB
         // so it shows up when the user switches to the target project).
-        const allConversations = await db.getConversations();
-        await db.saveConversations([...allConversations, copiedConversation]);
+        await db.saveConversation(copiedConversation);
         console.log(`📡 Copy: saved copy ${newId.substring(0, 8)} to IndexedDB`);
 
         // Push the copy to the target project on the server
