@@ -354,6 +354,7 @@ async def get_mcp_status():
             "config_path": config_info["config_path"],
             "config_exists": config_info["config_exists"],
             "config_search_paths": config_info["search_paths"],
+            "config_error": config_info.get("config_error"),
             "server_configs": server_configs,
             "token_costs": {
                 "servers": server_token_costs,
