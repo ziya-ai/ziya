@@ -16,6 +16,33 @@ DEFAULT_MODELS = {
     "anthropic": "claude-sonnet-4-6"
 }
 
+# Lightweight models used for background tasks (memory extraction,
+# summarization, classification).  These should be the cheapest
+# available model per endpoint.  Override per-category via
+# ZIYA_{CATEGORY}_MODEL env var.
+# Default models for lightweight service tasks (extraction, classification).
+# Each endpoint maps to its cheapest capable model.
+DEFAULT_SERVICE_MODELS = {
+    "bedrock": "us.amazon.nova-lite-v1:0",
+    "google": "gemini-2.0-flash-lite",
+    "openai": "gpt-4.1-mini",
+    "anthropic": "claude-haiku-4-5-20251001",
+}
+
+# Category-specific overrides.  Memory extraction needs a model that
+# reliably follows nuanced prompt instructions (session-artifact vs
+# durable knowledge).  Cheap models produce garbage that requires an
+# ever-growing regex compensating layer.  Prefer instruction-following
+# strength over cost here — the volume is low (once per conversation).
+SERVICE_MODEL_OVERRIDES: dict[str, dict[str, str]] = {
+    "memory_extraction": {
+        "bedrock": "us.anthropic.claude-3-5-haiku-20241022-v1:0",
+        "google": "gemini-2.0-flash",       # flash (not lite) for extraction
+        "openai": "gpt-4.1-mini",           # already strong enough
+        "anthropic": "claude-haiku-4-5-20251001",
+    },
+}
+
 # Default regions for specific models
 MODEL_DEFAULT_REGIONS = {
     # Add more model-specific defaults as needed
