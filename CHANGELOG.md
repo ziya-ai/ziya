@@ -5,6 +5,113 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2.8] - 2026-04-09
+
+### Added
+- Structured memory system with opportunistic decay (archive after 90 days of low
+  importance), auto-promotion of proposals on search hit, and MemoryBrowser UI
+  (Ctrl+Shift+M shortcut).
+- Memory comparator for deduplication and conflict detection across memory store.
+- Memory extractor for post-conversation knowledge distillation.
+- Memory activation directive injected into system prompt for session continuity.
+- Session context injection (project root, CWD, timestamps) into system prompt.
+- Service model resolver for lightweight background tasks with per-category
+  overrides (memory extraction, classification, summarization).
+- CLI auto-continue: detect truncated responses and resume without user intervention.
+- `build:profile` npm script with source maps and React profiling aliases.
+- MCP config error tracking and user-facing error display in MCPStatusModal.
+- Diff test case for context mismatch insertion.
+- Frontend and backend tests for config error reporting, model resolver, memory
+  comparator, memory extractor, and MCP tool permission refresh.
+
+### Changed
+- `ZIYA_RETENTION_OVERRIDE_DAYS=0` now disables all plugin-provided TTLs.
+- Slash command parsing allows `//` as non-command input.
+- Rich syntax highlighting in terminal markdown renderer.
+- Architecture overview documentation updated.
+- Frontend build artifacts regenerated.
+
+### Fixed
+- Diff application safety: verify file line matches expected removal before applying
+  surgical change; bail out to original lines on context offset to prevent corruption.
+- Null file_path guard in diff_validation_hook.
+- Bulk-sync bypasses retention check to prevent delete-recreate loop.
+- IndexedDB write optimization: fast path bypasses saveQueue for single-chat saves;
+  write only changed conversations instead of full clone.
+- `currentMessages` converted to ref to avoid re-renders on every streaming chunk.
+- FolderContext ref-mirror breaks infinite cleanup loop caused by checkedKeys dependency.
+- DelegateLaunchButton avoids read-all-then-write-all pattern for new chats.
+- Progressive message rendering disabled (show all messages immediately).
+
+### Performance
+- Frontend rendering and IndexedDB write optimization across ChatContext, db.ts,
+  Conversation, MUIChatHistory, MarkdownRenderer, and StreamedContent components.
+
+## [0.6.2.7] - 2025-05-05 (in progress)
+
+### Fixed
+- **Performance: Ant Design useAlign storm** — DiffControls Tooltips replaced with native `title=` attributes; ChatTreeItem Dropdown lazy-mounted on hover; MessageActions Tooltips gated behind HoverMessageActions — eliminates hundreds of rc-trigger positioning calculations on every render
+- **Performance: Large human message O(N²) parsing** — MarkdownRenderer accepts `role` prop; human messages >100KB render as plain text
+- **Performance: 33 commits/sec render loop** — `currentMessages` was derived via `useEffect` + `setState` which created an infinite cascade (`conversations` changed → effect ran → `setCurrentMessages` → React committed → effect re-ran). Replaced with `useMemo` + ref-based comparison — zero setState calls, zero cascading renders
+- **Performance: ServerStatusContext spurious commits** — health check called `setIsServerReachable(true)` unconditionally on every successful poll; changed to functional updater that bails out when already `true`
+- **Performance: syncWithServer writing all conversations** — 30-second sync was writing all 674 conversations to IDB even when only 3 changed; now filters to only changed conversations via version-map comparison
+- **Performance: Shell write spam** — `syncWithServer` IDB write path now filters out shell conversations before calling `db.saveConversations`, eliminating 299 per-cycle SAVE_GUARD warnings
+- **Performance: Singleton event listeners** — MathRenderer LaTeX copy handlers and MarkdownRenderer throttle-button observers consolidated from per-instance `document.addEventListener` calls to module-level singletons with lightweight registries
+- **Performance: syncWithServer OOM** — replaced `db.getConversations()` with `db.getConversationShells()` in sync path
+- **Performance: Concurrent sync storm** — `syncInProgressRef` useRef guard persists across effect re-runs; fixes 1047 concurrent sync cycles
+- **Search: sidebar scroll** to active conversation after selecting search result
+- **Search: message scroll** targets correct index using `data-message-index` with window offset correction  
+- **Search: content highlighting** via DOM text-node walk on target message
+- **Search: snippet highlighting** in search results panel
+
+
+## [0.6.2.6] - 2025-05-04
+
+### Fixed
+- **Retention policy**: `ZIYA_RETENTION_OVERRIDE_DAYS=0` now correctly disables retention
+  enforcement instead of being silently ignored, preventing Amazon enterprise 90-day policy
+  from deleting conversations on every sync cycle.
+- **Retention delete loop**: `bulk_sync_chats` no longer calls `storage.get()` (which
+  triggers expiry checks mid-sync), breaking a delete→recreate loop for recently-expired chats.
+- **Save path TDZ crash**: `performWrite` was a `const` referenced before initialization;
+  fixed with `function performWrite()` declaration + `const self = this` capture.
+- **Save OOM / IDB lockup**: `queueSave` fast path now completely bypasses
+  `saveQueue.current.then()` for per-message saves with `changedIds`, eliminating
+  Promise chain accumulation (was causing 20-second CPU lockups with 940-deep chains).
+- **Other-project shell writes**: Sync cycle no longer writes all 725 conversations
+  (706 other-project shells + 19 current) to IDB on every 30-second cycle — only
+  current-project conversations are written.
+- **Server sync loop**: Conversations with `serverHasDelegateMeta || serverHasFolder`
+  now respect `recentlyFetchedFullIds` cache; failed full-fetches store `serverVer`
+  instead of `_version: 0`, preventing 227-conversation refetch storm every cycle.
+- **Concurrent sync cycles**: `syncWithServer._running` guard prevents multiple overlapping
+  sync cycles from stacking during rapid project switches or network delays.
+- **Stuck conversation spinner**: Overlay now always clears after 500ms on conversation
+  switch, even when both old and new conversations have 0 messages (identical `currentMessages`
+  reference prevented the hide-overlay effect from firing).
+- **Empty conversation cleanup**: Removed `conv.messages?.length > 0` guard from local
+  deletion logic so server-deleted conversations are pruned from React state and IDB.
+  `knownServerConversationIds` provides equivalent protection against premature deletion.
+- **CLI code block indentation**: `rich.Markdown` adds panel padding to code blocks;
+  now rendered via `rich.Syntax` directly, preserving syntax highlighting without indent.
+- **`data-message-index` accuracy**: Fixed window offset calculation so attribute stores
+  raw message array index (`windowOffset + displayIndex`) rather than display index,
+  enabling accurate `querySelector('[data-message-index]')` targeting for search navigation.
+- **Tooltip/Dropdown `useAlign` storm**: `ChatTreeItem` Dropdown and `MessageActions`
+  Tooltips now only mount on hover, eliminating 1000+ `useAlign` Promise chain calls
+  per render cycle that were causing CPU lockups.
+- **Search result highlights**: Matched search terms now highlighted in result snippets.
+- **Sidebar scroll after search**: Sidebar scrolls to active conversation after search
+  result selection clears the search panel.
+
+### Changed
+- `db.saveConversations` has a small-batch fast path (≤10 conversations, no shells)
+  that bypasses `_saveConversationsWithLock` deduplication for direct IDB puts.
+- `MUIChatHistory` conversation delete now uses `db.deleteConversation` (single-record
+  delete) instead of saving the full filtered array.
+- `MUIChatHistory` fork conversation now uses `db.saveConversation` (single-record write).
+- Startup GC uses `queueSave` with `changedIds` instead of direct `db.saveConversations`.
+
 ## [0.6.2.5] - 2026-04-05
 
 ### Added
