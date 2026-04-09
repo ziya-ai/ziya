@@ -57,6 +57,9 @@ class MCPManager:
         self.builtin_server_definitions = self._get_builtin_server_definitions()
         self.is_initialized = False
         
+        # Stores a user-facing error message when the config file fails to parse
+        self.config_error: Optional[str] = None
+
         # Tool caching to eliminate redundant get_all_tools calls
         self._tools_cache: Optional[List[MCPTool]] = None
         self._tools_cache_timestamp: float = 0
@@ -162,7 +165,8 @@ class MCPManager:
         return {
             "config_path": self.config_path,
             "config_exists": self.config_path and Path(self.config_path).exists() if self.config_path else False,
-            "search_paths": getattr(self, 'config_search_paths', [])
+            "search_paths": getattr(self, 'config_search_paths', []),
+            "config_error": self.config_error,
         }
 
     def refresh_config_path(self):
@@ -202,14 +206,17 @@ class MCPManager:
             try:
                 with open(self.config_path, 'r') as f:
                     user_config_data = json.load(f)
+                self.config_error = None  # Clear any previous error on successful parse
             except json.JSONDecodeError as e:
                 logger.error(f"Invalid JSON in MCP config file {self.config_path}: {e}")
                 logger.error(f"Line {e.lineno}, Column {e.colno}: {e.msg}")
                 logger.warning("Skipping malformed config file, using built-in defaults only")
+                self.config_error = f"Syntax error in {self.config_path} — line {e.lineno}, column {e.colno}: {e.msg}"
                 user_config_data = {}
             except Exception as e:
                 logger.error(f"Error reading MCP config from {self.config_path}: {e}")
                 logger.warning("Skipping unreadable config file, using built-in defaults only")
+                self.config_error = f"Failed to read {self.config_path}: {e}"
                 user_config_data = {}
             
             try:

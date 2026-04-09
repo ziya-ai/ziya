@@ -357,7 +357,12 @@ def get_effective_retention_policy() -> DataRetentionPolicy:
     if override_env:
         try:
             override_days = float(override_env)
-            if override_days > 0:
+            if override_days == 0:
+                # 0 means "no retention limit" — disables all plugin-provided TTLs
+                return DataRetentionPolicy(
+                    policy_reason="retention-disabled: ZIYA_RETENTION_OVERRIDE_DAYS=0",
+                )
+            elif override_days > 0:
                 override_td = timedelta(days=override_days)
                 for field_name in ttl_fields:
                     current = merged_kwargs.get(field_name)

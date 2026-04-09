@@ -71,6 +71,7 @@ interface MCPStatus {
     config_path?: string;
     config_exists?: boolean;
     config_search_paths?: string[];
+    config_error?: string;
     server_configs?: Record<string, { 
         enabled: boolean;
         description?: string;
@@ -166,8 +167,8 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
         }
     }, [visible]);
 
-    const fetchMCPStatus = async () => {
-        setLoading(true);
+    const fetchMCPStatus = async (silent: boolean = false) => {
+        if (!silent) setLoading(true);
         try {
             const response = await fetch('/api/mcp/status');
             if (response.ok) {
@@ -191,7 +192,7 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
         } catch (error) {
             console.error('Failed to fetch MCP status:', error);
         } finally {
-            setLoading(false);
+            if (!silent) setLoading(false);
         }
     };
 
@@ -313,6 +314,8 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
             if (response.ok) {
                 message.success(`Permission for ${toolName} updated.`);
                 fetchPermissions();
+                // Refresh full status so token_costs.server_details (enabled_tools, enabled_tokens) updates
+                fetchMCPStatus(true);
             } else {
                 message.error('Failed to update permission.');
             }
@@ -554,6 +557,26 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                         </Col>
                     </Row>
                     
+                    {/* Config parse error banner */}
+                    {status.config_error && (
+                        <Alert
+                            message="MCP Configuration Error"
+                            description={
+                                <div>
+                                    <div>{status.config_error}</div>
+                                    <div style={{ fontSize: '12px', marginTop: '8px', opacity: 0.8 }}>
+                                        Fix the JSON syntax error and click <strong>Reload Config</strong> to retry.
+                                        Only built-in servers are available until the config file is corrected.
+                                    </div>
+                                </div>
+                            }
+                            type="error"
+                            showIcon
+                            icon={<WarningOutlined />}
+                            style={{ marginBottom: 0 }}
+                        />
+                    )}
+
                     {/* Builtin Tools Section */}
                     <div>
                         <Divider orientation="left">
