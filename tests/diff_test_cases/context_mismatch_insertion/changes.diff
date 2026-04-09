@@ -1,0 +1,9 @@
+diff --git a/Component.tsx b/Component.tsx
+--- a/Component.tsx
++++ b/Component.tsx
+@@ -64,7 +64,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOp
+                    return <div
+                        key={`message-${msg.id || index}`}
+-                        data-message-index={index}
++                        data-message-index={actualIndex}
+                        className={`message ${msg.role || ''}${msg.muted ? ' muted' : ''}${needsResponse

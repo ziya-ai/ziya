@@ -57,6 +57,12 @@ def apply_surgical_changes(original_lines: List[str], hunk: Dict[str, Any], posi
         if i in removed_map:
             # Replace with added line, preserving file's trailing comment/content
             if added_idx < len(added_lines):
+                # Verify the file line actually matches what we expect to remove.
+                # If context is offset (e.g. diff omitted a line), position+i
+                # points at the wrong line and we'd corrupt the file.
+                file_norm = normalize_line_for_comparison(original_lines[file_idx])
+                if file_norm != removed_norm[removed_map[i]]:
+                    return original_lines
                 file_line = original_lines[file_idx]
                 removed_line = removed_lines[removed_map[i]]
                 added_line = added_lines[added_idx]
@@ -830,6 +836,7 @@ def apply_diff_with_difflib_hybrid_forced(
                             remove_pos = fuzzy_best_pos
                             found_match = True
                             fuzzy_match_applied = True
+                            h['_context_mismatch'] = True
                         
                         if not found_match:
                             # LAST RESORT: If we still can't find a match but we're confident about the position,
