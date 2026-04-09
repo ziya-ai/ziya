@@ -23,6 +23,10 @@ Additional resource management:
 - **ResizeObserver feedback prevention** — Vega-Lite chart ResizeObservers use
   `requestAnimationFrame` throttling and a single-instance guard to prevent
   the DOM-mutation→observation→DOM-mutation feedback loop.
+- **Derived state via useMemo** — `currentMessages` is computed synchronously
+  during render via `useMemo` with a ref-based previous-value comparison,
+  not via `useEffect` + `setState`.  The latter creates a render loop because
+  every `setState` triggers a new commit which re-runs the effect.
 - **Save queue coalescing** — `queueSave` serializes IndexedDB writes via a
   promise chain; only changed conversations are synced to the server.
 - **State updater purity** — `setConversations` updaters avoid side-effect
@@ -423,7 +427,7 @@ All memories live in a single JSON file (`memories.json`).  Each entry has:
 
 ### Tools
 
-The model interacts with memory through three builtin MCP tools:
+The model interacts with memory through five builtin MCP tools:
 
 | Tool | Purpose |
 |---|---|
@@ -455,3 +459,160 @@ The model interacts with memory through three builtin MCP tools:
 
 See `design/structured-memory-system.md` for the full design rationale,
 research foundation, and roadmap for Phases 1–3.
+
+### Memory Browser UI
+
+The frontend includes an interactive **Memory Browser** (`frontend/src/components/MemoryBrowser.tsx`) accessible via the 🧠 button in the header bar or the keyboard shortcut `Ctrl+Shift+M`.  It exposes the full memory architecture through five tabs:
+
+| Tab | Purpose |
+|---|---|
+| 📊 Dashboard | Stat cards (total, proposals, domains, cross-links, review items), layer distribution ring chart, top-5 most important memories |
+| 🌐 Knowledge Graph | Force-directed SVG visualization of mind-map nodes (large circles) and individual memories (colored dots).  Nodes are draggable; links show parent-child, cross-links, and memory refs.  Importance maps to node size/glow, layer maps to color. Click a memory node to jump to it in the Explorer tab. |
+| 📚 Explorer | Searchable, filterable list of all memories with inline edit, delete, and real-time search.  Memories show layer badge, importance stars, freshness label, and tags. |
+| 💡 Proposals | Review queue for pending memory proposals.  Each card shows content, layer, tags, and age.  Approve individually or in batch. |
+| 🩺 Health | Stale memories (90+ days unaccessed), oversized mind-map nodes (12+ memories that should split), orphan memories (not linked to any node), and a "Run Maintenance" button that triggers cell division and cross-link discovery. |
+
+The API layer (`frontend/src/api/memoryApi.ts`) provides typed wrappers around all `/api/v1/memory` endpoints with shared constants for layer colors, labels, and icons.
+
+### Behavioral Activation
+
+The memory system uses a two-zone prompting strategy to ensure the model
+actively uses memory tools rather than ignoring them:
+
+1. **Activation directive** (position 0 in system prompt) — a brief
+   "IMPORTANT:" message priming the model to use memories silently and
+   propose new ones.  Placed at the very start of the system message
+   where attention weight is highest.
+2. **Full behavioral guidance** (end of system prompt) — detailed rules
+   for when to search, save, and propose.  Includes imperative triggers
+   like "This is not optional" and "At the end of a substantive
+   conversation, review what was discussed and propose any facts worth
+   retaining."
+
+### Search Ranking (ByteRover-informed)
+
+Memory search uses a composite score combining three factors:
+
+$$\text{score} = \text{keyword\_match} \times (0.5 + \text{importance}) \times (0.3 + 0.7 \times \text{recency})$$
+
+- **keyword_match**: 3 for tag hit, 2 for content hit, 1 for layer hit
+- **importance**: 0.0–1.0, starts at 0.5, bumps +0.05 on each retrieval (caps at 1.0)
+- **recency**: exponential decay `exp(-0.01 × days_since_access)`, half-life ~70 days
+
+Memories that are frequently retrieved naturally become "core" knowledge
+(importance → 1.0), while stale memories decay in ranking without being deleted.
+
+### Auto-Maintenance (Phase 2)
+
+Every `memory_save` call triggers automatic maintenance:
+
+1. **Auto-placement** — the new memory is filed into the best-matching
+   mind-map node by tag overlap.
+2. **Cell division** — if the target node now exceeds 12 memories, the
+   strongest tag cluster is split into a new child node.
+3. **Cross-link discovery** — nodes in different branches sharing ≥2
+   tags get bidirectional cross-links.
+
+Additional maintenance endpoints:
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/v1/memory/review` | GET | Stale memories (>90 days), oversized nodes, orphans |
+| `/api/v1/memory/maintenance` | POST | Full maintenance pass across all nodes |
+
+### Performance
+
+- **Read cache** — `MemoryStorage` caches the parsed memories list in
+  memory, keyed by file mtime.  Subsequent searches within the same
+  conversation skip disk I/O and ALE decryption.  Invalidated
+  automatically on any write.
+- **Retrieval escalation** — when keyword search returns empty and a
+  mind-map exists, the out-of-domain response directs the model to try
+  `memory_context` (tree browsing) before giving up.
+
+### Post-Conversation Memory Extraction
+
+After each substantive conversation (3+ human turns), a background task
+automatically extracts domain facts, decisions, vocabulary, and lessons
+from the conversation — without any user action or awareness.
+
+The extraction pipeline:
+
+1. **Strip artifacts** — tool results, code blocks, diffs, base64 blobs,
+   and REWIND markers are removed.  Only the human/assistant discourse
+   remains (~5-10% of original token count).
+2. **Call extraction model** — the stripped conversation is sent to a
+   lightweight service model via the `ServiceModelResolver`.  The model
+   used depends on the active endpoint (Nova Lite for Bedrock, Flash
+   Lite for Google, GPT-4.1-mini for OpenAI, Haiku for Anthropic).
+   Existing memories are summarized in the prompt so the model avoids
+   re-extracting known facts.
+3. **Deduplicate** — candidates are compared against the existing store
+   using tag overlap + significant-word overlap.  Near-duplicates are
+   filtered out.
+4. **LLM-guided comparison** — for each surviving candidate, the system
+   finds the top-5 most similar existing memories (by tag + word overlap)
+   and asks a cheap service model to classify: **ADD** (genuinely new),
+   **UPDATE** (supersedes/contradicts/consolidates an existing memory),
+   or **NOOP** (semantic duplicate).  UPDATE replaces the target memory's
+   content while preserving its ID, importance, and access history.
+   Inspired by Mem0's two-phase extract→compare pipeline.
+5. **Classify and save** — high-confidence extractions in most layers
+   are auto-saved.  Only `decision` and `active_thread` go to the
+   proposal queue (decisions are high-stakes; active threads go stale).
+
+Project association is **structural, not textual** — the extraction
+pipeline stamps `Memory.scope.project_paths` from the request context.
+Memory content names domain concepts (documents, systems, APIs) but
+does not redundantly embed "in the X project" in every fact.  The
+extraction model is deliberately NOT told the project name — when it
+was, it embedded the label in content despite instructions not to.
+The conversation itself contains enough context for the model to name
+specific documents, systems, and people organically.
+
+### Auto-Promotion
+
+Proposals are promoted to the active memory store automatically when
+`memory_search` finds no active memories but a proposal matches the
+query.  A search hit is strong evidence the knowledge is needed, so the
+proposal is promoted on the spot and returned as a result.
+
+The auto-save layer list includes architecture, negative_constraint,
+preference, and process (in addition to lexicon and domain_context).
+High-confidence extractions in these layers skip the proposal queue entirely.
+
+### Service Model Resolver
+
+Subsystems that need a cheap model call (memory extraction, future
+summarization, classification) use `ServiceModelResolver`
+(`app/services/model_resolver.py`) instead of hardcoding a provider.
+
+Resolution order:
+1. **Env var override** — `ZIYA_{CATEGORY}_MODEL` (e.g.
+   `ZIYA_MEMORY_EXTRACTION_MODEL=us.amazon.nova-micro-v1:0`)
+2. **Per-category endpoint override** — `ZIYA_{CATEGORY}_ENDPOINT`
+   allows routing e.g. extraction through a local model while the
+   primary model uses Bedrock
+3. **Plugin config** — `ServiceModelProvider.get_service_model_config()`
+4. **Endpoint-aware default** — picks the cheapest model for the
+   active endpoint
+5. **Bedrock fallback** — if the endpoint is unknown
+
+Default lightweight models per endpoint:
+
+| Endpoint | Default Service Model |
+|---|---|
+| bedrock | `us.amazon.nova-lite-v1:0` |
+| google | `gemini-2.0-flash-lite` |
+| openai | `gpt-4.1-mini` |
+| anthropic | `claude-haiku-4-5-20251001` |
+| local | `llama3.2:3b` (via Ollama at `localhost:11434`) |
+
+**Configuration:**
+
+| Variable | Default | Description |
+|---|---|---|
+| `ZIYA_MEMORY_EXTRACTION_MODEL` | (per-endpoint) | Override extraction model |
+| `ZIYA_MEMORY_EXTRACTION_ENDPOINT` | (active endpoint) | Override extraction endpoint |
+| `ZIYA_MEMORY_EXTRACTION_REGION` | `us-east-1` | AWS region (Bedrock only) |
+| `ZIYA_LOCAL_MODEL_URL` | `http://localhost:11434/v1` | URL for local model API |
