@@ -213,6 +213,39 @@ Rendered diagrams include **Open** (popup with zoom/pan), **Save** (SVG download
 
 **Skip-edge rerouting**: For Mermaid diagrams with feedback/control-loop edges that span multiple nodes, a post-render rerouter automatically arcs those paths above or below intermediate nodes instead of drawing them straight through. Arcs are nested by skip distance — shorter-range arcs sit closer to the node row, longer-range arcs arc further out — so overlapping edges remain visually distinct even when several skip edges share the same side.
 
+### Headless Diagram Export (API)
+
+Diagrams can be rendered to PNG or SVG images server-side via the REST API, enabling integration with external services like Slack, CI pipelines, or documentation generators.
+
+The headless renderer uses Playwright to drive a real Chromium instance through the same frontend rendering pipeline as the chat UI — including all post-render enhancers (edge rerouting, theme application, layout fixes). This guarantees pixel-perfect output.
+
+**Setup** (optional dependency):
+```bash
+pip install playwright && playwright install chromium
+```
+
+**API**:
+```bash
+curl -X POST http://localhost:6969/api/render-diagram \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "mermaid",
+    "definition": "graph LR\n  A-->B-->C",
+    "theme": "dark",
+    "format": "png"
+  }' \
+  --output diagram.png
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `type` | string | required | `mermaid`, `graphviz`, `vega-lite`, `drawio`, `packet`, etc. |
+| `definition` | string | required | Diagram source text or JSON spec |
+| `theme` | `dark`\|`light` | `light` | Color theme |
+| `format` | `png`\|`svg` | `png` | Output format (SVG falls back to PNG for canvas renderers) |
+| `width` | int | auto | Explicit width in pixels |
+| `height` | int | auto | Explicit height in pixels |
+
 ---
 
 ## Thinking Mode
