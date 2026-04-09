@@ -19,7 +19,8 @@ class PrecisionPromptSystem:
                       files: List[str],
                       question: str,
                       chat_history: List[Dict[str, Any]] = None,
-                      system_prompt_addition: str = "") -> List:
+                      system_prompt_addition: str = "",
+                      conv_start_ts: float = None) -> List:
         """
         Drop-in replacement for the original build_messages function.
         
@@ -108,9 +109,50 @@ class PrecisionPromptSystem:
                     role = 'system' if msg.type == 'system' else ('user' if msg.type == 'human' else 'assistant')
                     messages.append({"role": role, "content": msg.content})
 
+            # Inject memory activation directive near the TOP of the system
+            # message where it has the most attention weight.  The full memory
+            # context (facts, handles, behavioral rules) is appended later;
+            # this brief directive primes the model to actually use it.
+            if messages and messages[0]["role"] == "system":
+                try:
+                    from app.utils.memory_prompt import get_memory_activation_directive
+                    directive = get_memory_activation_directive()
+                    if directive:
+                        messages[0]["content"] = directive + messages[0]["content"]
+                except Exception:
+                    pass  # Non-fatal
+
             # Inject project-specific fileio write policy instructions into
             # the system message.  This runs per-request (not cached in the
             # template) so different projects get accurate instructions.
+            if messages and messages[0]["role"] == "system":
+                try:
+                    import datetime
+                    from app.context import get_project_root_or_none
+                    project_root = get_project_root_or_none()
+                    cwd = os.getcwd()
+                    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z").strip()
+
+                    conv_start = None
+                    if conv_start_ts is not None:
+                        try:
+                            conv_start = datetime.datetime.fromtimestamp(conv_start_ts / 1000).strftime("%Y-%m-%d %H:%M:%S")
+                        except (ValueError, OSError, TypeError):
+                            pass
+
+                    parts = ["\n\n## Session Context\n"]
+                    if project_root:
+                        parts.append(f"<CurrentProjectRoot value=\"{project_root}\" />")
+                    parts.append(f"<CurrentWorkingDirectory value=\"{cwd}\" />")
+                    parts.append(f"<CurrentDateTime value=\"{now}\" />")
+                    if conv_start:
+                        parts.append(f"<ConversationStartTime value=\"{conv_start}\" />")
+                    parts.append("")
+
+                    messages[0]["content"] = "\n".join(parts) + messages[0]["content"]
+                except Exception:
+                    pass  # Non-fatal
+
             if messages and messages[0]["role"] == "system":
                 try:
                     from app.utils.fileio_prompt import get_fileio_prompt_section
