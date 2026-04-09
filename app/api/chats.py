@@ -235,7 +235,10 @@ async def bulk_sync_chats(project_id: str, data: ChatBulkSync):
     
     for chat_data in data.chats:
         try:
-            existing = storage.get(chat_data.id)
+            # Read without retention check — bulk-sync should not trigger
+            # deletion of expired chats mid-sync (causes a delete→recreate loop).
+            raw = storage._read_json(storage._chat_file(chat_data.id))
+            existing = Chat(**raw) if raw else None
             
             if existing:
                 # Use _version (frontend's authoritative version counter) for

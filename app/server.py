@@ -221,6 +221,15 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
         else:
             processed_chat_history.append(msg)
 
+    # Extract conversation start timestamp from first message
+    conv_start_ts = None
+    for msg in processed_chat_history:
+        if isinstance(msg, dict):
+            ts = msg.get('_timestamp')
+            if ts:
+                conv_start_ts = ts
+                break
+
     # Use precision system for 100% equivalence
     messages = precision_system.build_messages(
         request_path=request_path,
@@ -228,7 +237,8 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
         files=files,
         question=question,
         chat_history=processed_chat_history,
-        system_prompt_addition=system_prompt_addition
+        system_prompt_addition=system_prompt_addition,
+        conv_start_ts=conv_start_ts
     )
 
     logger.debug(f"🎯 PRECISION_SYSTEM: Built {len(messages)} messages with {len(files)} files preserved")
@@ -847,19 +857,24 @@ async def chat_endpoint(request: Request):
                             logger.warning(f"Failed to parse images from message: {msg[2][:100] if len(msg[2]) > 100 else msg[2]}")
                     
                     if role in ['human', 'user']:
-                        chat_history.append({'type': 'human', 'content': content, 'images': images})
+                        chat_history.append({'type': 'human', 'content': content, 'images': images,
+                                             '_timestamp': None})
                     elif role in ['assistant', 'ai']:
-                        chat_history.append({'type': 'ai', 'content': content, 'images': images})
+                        chat_history.append({'type': 'ai', 'content': content, 'images': images,
+                                             '_timestamp': None})
                 elif isinstance(msg, dict):
                     # Already in dict format
                     role = msg.get('role', msg.get('type', 'user'))
                     content = msg.get('content', '')
                     images = msg.get('images')
+                    msg_ts = msg.get('_timestamp') or msg.get('timestamp')
                     if role and content:
                         if role in ['human', 'user']:
-                            chat_history.append({'type': 'human', 'content': content, 'images': images})
+                            chat_history.append({'type': 'human', 'content': content, 'images': images,
+                                                 '_timestamp': msg_ts})
                         elif role in ['assistant', 'ai']:
-                            chat_history.append({'type': 'ai', 'content': content, 'images': images})
+                            chat_history.append({'type': 'ai', 'content': content, 'images': images,
+                                                 '_timestamp': msg_ts})
             
             logger.info(f"🔍 CHAT_ENDPOINT: Built chat_history with {len(chat_history)} entries")
 
@@ -2000,6 +2015,39 @@ async def stream_chunks(body):
                 # Always send done message at the end
                 # Log complete response at INFO level before sending done marker
                 if accumulated_content and accumulated_content.strip():
+                    # Fire-and-forget: extract memories from the conversation
+                    # in the background. Never blocks the stream completion.
+                    try:
+                        from app.utils.memory_extractor import run_post_conversation_extraction
+                        # Resolve project name/path for memory scoping.
+                        # project_root is already in scope from the request body.
+                        _mem_project_name = None
+                        _mem_project_path = project_root
+                        if _mem_project_path:
+                            try:
+                                from app.storage.projects import ProjectStorage
+                                _ps = ProjectStorage(get_ziya_home())
+                                _proj = _ps.get_by_path(_mem_project_path)
+                                _mem_project_name = _proj.name if _proj else None
+                            except Exception:
+                                pass
+                        # Build a lightweight message list from the LangChain
+                        # messages used for this request (already in scope).
+                        extraction_messages = []
+                        for m in messages:
+                            role = getattr(m, 'type', getattr(m, 'role', 'unknown'))
+                            content = getattr(m, 'content', '')
+                            if isinstance(content, str) and content.strip():
+                                extraction_messages.append({"role": role, "content": content})
+                        asyncio.create_task(
+                            run_post_conversation_extraction(
+                                extraction_messages, conversation_id,
+                                project_name=_mem_project_name,
+                                project_path=_mem_project_path)
+                        )
+                    except Exception as mem_err:
+                        logger.debug(f"Memory extraction dispatch failed (non-fatal): {mem_err}")
+
                     logger.info("=" * 80)
                     logger.info(f"🤖 COMPLETE MODEL RESPONSE ({len(accumulated_content)} characters):")
                     logger.info(accumulated_content)

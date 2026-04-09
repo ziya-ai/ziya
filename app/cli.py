@@ -689,9 +689,24 @@ class CLI:
             
             # If no diffs, we're done
             if '```diff' not in response:
-                # Clean up validation hook
-                validation_hook = None
-                return response
+                # Check if response looks incomplete (truncated mid-thought)
+                stripped = response.rstrip()
+                looks_incomplete = (
+                    stripped.endswith(':') or
+                    stripped.endswith('...') or
+                    (len(stripped) > 100 and not stripped[-1] in '.!?)')
+                )
+                if looks_incomplete:
+                    print("\033[90m[trace] response looks incomplete, auto-continuing\033[0m", file=sys.stderr)
+                    messages.append(AIMessage(content=response))
+                    messages.append(HumanMessage(content="[System: Your response appears incomplete. Please continue where you left off.]"))
+                    continuation = await self._run_with_tools_from_messages(messages, stream)
+                    validation_hook = None
+                    return response + continuation
+                else:
+                    # Clean up validation hook
+                    validation_hook = None
+                    return response
             
             # Validate diffs using FULL apply pipeline (dry-run)
             print(f"\033[90m[trace] starting validate_and_enhance\033[0m", file=sys.stderr)
@@ -752,6 +767,8 @@ class CLI:
                             # Inject current file content for each failed file
                             for fp, status, _ in self.diff_applicator.diff_results:
                                 if status == "failed":
+                                    if not fp:
+                                        continue
                                     file_content = validation_hook.read_file_for_context(fp)
                                     if file_content:
                                         lang = validation_hook._detect_language(fp)
@@ -1371,7 +1388,7 @@ class CLI:
                     continue
                 
                 # Commands
-                if user_input.startswith('/'):
+                if user_input.startswith('/') and not user_input.startswith('//'):
                     if not await self._handle_command(user_input):
                         break
                     continue
