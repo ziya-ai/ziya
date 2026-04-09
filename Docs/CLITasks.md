@@ -90,10 +90,11 @@ The project ships with a `sweep` task in `.ziya/tasks.yaml` that runs autonomous
 1. Survey all staged/unstaged changes
 2. Group them into Conventional Commit categories
 3. Commit each group (with confirmation)
-4. Create/update CHANGELOG.md
+4. Verify & update CHANGELOG.md (cross-references git diff for completeness)
 5. Minor version bump across all version files
 6. Annotated git tag
-7. Push commits and tags
+7. Notify #ziya-dev Slack channel (version + changelog)
+8. Push commits and tags
 
 It does **not** ask for confirmation at any step. If something goes wrong, it stops and reports the error.
 
