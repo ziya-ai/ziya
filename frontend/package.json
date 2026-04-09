@@ -43,6 +43,7 @@
   "scripts": {
     "start": "craco start",
     "build": "craco build && npm run copy-to-templates && npm run fix-jinja-templates",
+    "build:profile": "GENERATE_SOURCEMAP=true REACT_APP_PROFILE=true craco build --profile && npm run copy-to-templates && npm run fix-jinja-templates",
     "copy-to-templates": "rm -rf ../templates/* && cp -r build/* ../templates",
     "fix-jinja-templates": "node -e \"const fs=require('fs');const f='../templates/index.html';let h=fs.readFileSync(f,'utf8');h=h.replace(/!function\\(\\)\\{try\\{formatter_script,safe\\}catch\\(r\\)\\{console\\.error\\(.*?\\)\\}\\}\\(\\)/g,'');h=h.replace(/<\\/body>/,'{% if formatter_scripts %}{% for formatter_script in formatter_scripts %}<script src=\\\"{{ formatter_script|safe }}\\\" onerror=\\\"console.warn(\\'Formatter load error\\');\\\"></script>{% endfor %}{% endif %}</body>');fs.writeFileSync(f,h)\"",
     "test": "craco test",
