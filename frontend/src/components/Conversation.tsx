@@ -153,6 +153,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     const {
         isLoadingConversation,
         isProjectSwitching,
+        conversations,
     } = useConversationList();
     const {
         isTopToBottom,
@@ -175,6 +176,9 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     const projectCtx = useProject();
     activeChatRef.current = activeChat;
     convListRef.current = convList;
+
+    // Earliest possible signal that a project switch is happening
+    const isSwitchingProject = projectCtx.isLoadingProject || isProjectSwitching;
     scrollRef.current = scrollCtx;
     folderRef.current = folderCtx;
     projectRef.current = projectCtx;
@@ -269,16 +273,28 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     useEffect(() => {
         if (prevConversationRef.current !== currentConversationId) {
             prevConversationRef.current = currentConversationId;
-            // Show overlay immediately via DOM (bypasses React render batching)
-            if (switchOverlayRef.current) {
+            // Show overlay immediately via DOM (bypasses React render batching).
+            // Skip for global conversations during project switch — they remain
+            // visible across projects and don't need a loading transition.
+            const skipOverlay = isSwitchingProject && currentConvIsGlobalRef.current;
+            if (switchOverlayRef.current && !skipOverlay) {
                 switchOverlayRef.current.style.display = 'flex';
             }
         }
-    }, [currentConversationId, isProjectSwitching]);
+    }, [currentConversationId, isSwitchingProject]);
 
-    // Hide overlay when project switch completes (for global conversations that don't change)
+    // Show overlay immediately when project switch starts (even before conversation changes)
+    // but only if the current conversation is NOT global-scoped
     useEffect(() => {
-        if (!isProjectSwitching && switchOverlayRef.current) {
+        if (isSwitchingProject && !currentConvIsGlobalRef.current && switchOverlayRef.current) {
+            switchOverlayRef.current.style.display = 'flex';
+        }
+    }, [isSwitchingProject]);
+
+    // Hide overlay when project switch completes
+    useEffect(() => {
+        if (!isSwitchingProject && switchOverlayRef.current &&
+            switchOverlayRef.current.style.display !== 'none') {
             requestAnimationFrame(() => {
                 requestAnimationFrame(() => {
                     if (switchOverlayRef.current) {
@@ -287,7 +303,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                 });
             });
         }
-    }, [isProjectSwitching]);
+    }, [isSwitchingProject]);
 
     // Hide overlay after messages have rendered
     useEffect(() => {
@@ -367,6 +383,11 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                 recordManualScroll();
         }
     }, [isCurrentlyStreaming, streamingConversations, currentConversationId, recordManualScroll]);
+
+    // Global conversations survive project switches — don't blank them
+    const currentConvIsGlobal = conversations.find(c => c.id === currentConversationId)?.isGlobal === true;
+    const currentConvIsGlobalRef = useRef(currentConvIsGlobal);
+    currentConvIsGlobalRef.current = currentConvIsGlobal;
 
 
     return (

@@ -1297,8 +1297,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         const fullConv = typeof db.getConversation === 'function'
                             ? await db.getConversation(conversationId)
                             : (await db.getConversations()).find(c => c.id === conversationId);
-                        if (fullConv?.messages?.length > 0 &&
-                            fullConv.messages.length >= (convEntry.messages?.length || 0)) {
+                        // Accept IDB data only if it has strictly more messages
+                        // than the shell AND isn't itself a shell.  If IDB has
+                        // exactly 2 messages (first+last) it was likely corrupted
+                        // by a prior shell-write bug — fall through to server.
+                        const idbUsable = fullConv?.messages?.length > 0
+                            && !(fullConv as any)._isShell
+                            && fullConv.messages.length > (convEntry.messages?.length || 0)
+                            && (fullConv.messages.length > 2 || !(convEntry as any)._isShell);
+                        if (idbUsable) {
                             setConversations(prev => prev.map(c =>
                                 c.id === conversationId
                                     ? { ...c, messages: fullConv.messages, _isShell: false, _fullMessageCount: undefined }
@@ -1307,6 +1314,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             loaded = true;
                             console.log(`✅ Lazy-loaded ${fullConv.messages.length} messages from IDB`);
                         }
+                        if (!loaded) console.log(`⚠️ IDB has ${fullConv?.messages?.length || 0} messages — trying server`);
                     } catch (err) {
                         console.warn('⚠️ IDB lazy-load failed:', err);
                     }
@@ -1815,7 +1823,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     const fullConv = typeof db.getConversation === 'function'
                         ? await db.getConversation(activeId)
                         : (await db.getConversations()).find(c => c.id === activeId);
-                    if (fullConv && fullConv.messages.length > 0) {
+                    const idbIsShell = fullConv && (
+                        (fullConv as any)._isShell ||
+                        ((fullConv as any)._fullMessageCount && fullConv.messages.length < (fullConv as any)._fullMessageCount)
+                    );
+                    if (fullConv && fullConv.messages.length > 0 && !idbIsShell) {
                         setConversations(prev => prev.map(c =>
                             c.id === activeId ? { ...c, messages: fullConv.messages, _isShell: false, _fullMessageCount: undefined } : c
                         ));
