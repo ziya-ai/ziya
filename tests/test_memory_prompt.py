@@ -28,6 +28,31 @@ def patch_storage(storage):
         yield storage
 
 
+class TestActivationDirective:
+
+    def test_empty_store_directive(self, patch_storage):
+        from app.utils.memory_prompt import get_memory_activation_directive
+        directive = get_memory_activation_directive()
+        assert "IMPORTANT" in directive
+        assert "memory_propose" in directive
+
+    def test_populated_store_directive(self, patch_storage):
+        from app.models.memory import Memory
+        patch_storage.save(Memory(content="fact 1"))
+        patch_storage.save(Memory(content="fact 2"))
+        from app.utils.memory_prompt import get_memory_activation_directive
+        directive = get_memory_activation_directive()
+        assert "2 facts stored" in directive
+        assert "never announce recall" in directive
+
+    def test_disabled_returns_empty(self, patch_storage):
+        import os
+        with patch.dict(os.environ, {"ZIYA_ENABLE_MEMORY": "false"}):
+            from app.utils.memory_prompt import get_memory_activation_directive
+            directive = get_memory_activation_directive()
+            assert directive == ""
+
+
 class TestMemoryPrompt:
 
     def test_empty_store_has_guidance(self, patch_storage):
@@ -36,6 +61,14 @@ class TestMemoryPrompt:
         assert "Persistent Memory" in section
         assert "memory_propose" in section
         assert "No memories stored yet" in section
+
+    def test_behavioral_guidance_requires_self_contained(self, patch_storage):
+        """Behavioral guidance must instruct the model to make memories self-contained."""
+        from app.utils.memory_prompt import get_memory_prompt_section
+        section = get_memory_prompt_section()
+        assert "SELF-CONTAINED" in section
+        assert "the document" in section.lower() or "unresolved references" in section.lower()
+        assert "multiple projects" in section.lower()
 
     def test_memories_appear_grouped(self, patch_storage):
         patch_storage.save(Memory(content="OBP has 512MB RAM", layer="architecture", tags=["obp"]))

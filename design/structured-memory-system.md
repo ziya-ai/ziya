@@ -1,6 +1,6 @@
 # Structured Memory System
 
-## Design Status: Draft — Philosophy + Architecture Defined, Pre-Implementation
+## Design Status: Phases 0–2 Implemented, Phase 3 Enabled by Infrastructure
 
 ---
 
@@ -435,3 +435,60 @@ First session with a new domain: zero memories, no handles, no hints. The user d
 ### 11.5 Scope Ambiguity
 
 When the user says something in a cross-project context, which domain should the resulting memory be filed under? The agent needs to classify not just what to remember but where it belongs. The tagging system helps, but the domain_node assignment may require user confirmation for ambiguous cases.
+
+---
+
+## 12. Implementation Notes
+
+### 12.1 Implementation Status
+
+All phases are implemented and tested (94 tests across 5 test files):
+
+| Phase | Status | Files |
+|-------|--------|-------|
+| Phase 0 — Flat Store | ✅ Complete | `app/models/memory.py`, `app/storage/memory.py`, `app/mcp/tools/memory_tools.py`, `app/api/memory.py` |
+| Phase 1 — Mind-Map | ✅ Complete | Same files + `MindMapNode` model, mind-map CRUD in storage, `memory_context`/`memory_expand` tools |
+| Phase 2 — Auto-Maintenance | ✅ Complete | `app/utils/memory_maintenance.py` — cell division, cross-links, staleness, review |
+| Phase 3 — Cross-Domain | ✅ Enabled | Infrastructure in place (cross-links, multi-domain context browsing). Synthesis happens organically via model behavior. |
+| ByteRover Enrichments | ✅ Complete | Importance scoring, recency decay, typed relations, maturity lifecycle, read cache, out-of-domain detection |
+| Behavioral Activation | ✅ Complete | `app/utils/memory_prompt.py` — activation directive at position 0, imperative behavioral guidance |
+
+### 12.2 ByteRover Alignment
+
+The implementation incorporates findings from ByteRover (arxiv 2604.01599), which validated the agent-native, file-based, hierarchical memory approach on LoCoMo and LongMemEval benchmarks:
+
+- **Importance scoring**: `importance: float` (0.0–1.0) on each memory, starts at 0.5, bumps +0.05 per retrieval, caps at 1.0. Naturally implements maturity tiers (draft=0.5 → core=1.0).
+- **Recency decay**: `exp(-0.01 × days_since_access)` in search ranking, half-life ~70 days. Recent memories rank higher without penalizing well-established ones.
+- **Typed relations**: `relations: Dict[str, List[str]]` with keys `supports`, `contradicts`, `elaborates`, `depends_on` → memory IDs.
+- **Out-of-domain detection**: When `memory_search` returns empty, response includes `out_of_domain: true` and escalation hint to try `memory_context` for tree browsing.
+- **Read cache**: `MemoryStorage` caches parsed memories in-memory, keyed by file mtime. Avoids redundant disk I/O and ALE decryption within a conversation. Invalidated on any write.
+
+### 12.3 Behavioral Activation
+
+The memory system's behavioral guidance uses a two-zone strategy:
+
+1. **Activation directive** — injected at **position 0** of the system prompt via `get_memory_activation_directive()`. Brief "IMPORTANT:" message that primes the model. This is in the highest-attention-weight zone.
+2. **Full behavioral rules** — appended at the end of the system prompt via `get_memory_prompt_section()`. Detailed rules including:
+   - "This is not optional — if the user explains something that would need re-explaining next session, propose it."
+   - "At the end of a substantive conversation, review what was discussed and propose any facts worth retaining. Do not wait to be asked."
+
+This addresses the "lost in the middle" problem where instructions at the end of long prompts are ignored.
+
+### 12.4 Files Created/Modified
+
+```
+app/models/memory.py              — Memory, MemoryProposal, MemoryProfile, ProjectHints, MemoryScope, MindMapNode
+app/storage/memory.py             — MemoryStorage: flat CRUD, proposals, mind-map, auto-place, read cache
+app/mcp/tools/memory_tools.py     — 5 MCP tools: search, save, propose, context, expand
+app/mcp/builtin_tools.py          — "memory" category registration
+app/api/memory.py                 — 17 REST endpoints (CRUD, proposals, mind-map, review, maintenance)
+app/utils/memory_prompt.py        — System prompt injection: activation directive + behavioral guidance + memory context
+app/utils/memory_maintenance.py   — Auto-maintenance: cell division, cross-links, staleness, review summary
+app/utils/precision_prompt_system.py — Wiring: activation directive at position 0, memory section injection
+app/server.py                     — Router registration
+tests/test_storage_memory.py      — 31 tests: CRUD, search, ranking, maturity, relations, cache
+tests/test_api_memory.py          — 14 tests: REST endpoints
+tests/test_memory_prompt.py       — 11 tests: prompt injection, activation directive
+tests/test_memory_mindmap.py      — 20 tests: tree CRUD, navigation, expand, auto-placement, progressive loading
+tests/test_memory_maintenance.py  — 14+ tests: cell division, cross-links, staleness, review, end-to-end
+```

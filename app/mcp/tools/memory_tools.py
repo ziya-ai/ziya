@@ -54,6 +54,8 @@ class MemorySearchTool(BaseMCPTool):
         query = kwargs.get("query", "")
         tags = kwargs.get("tags")
         layer = kwargs.get("layer")
+        if isinstance(tags, str):
+            tags = [t.strip() for t in tags.split(",") if t.strip()]
         limit = kwargs.get("limit", 10)
 
         if not query and not tags and not layer:
@@ -62,18 +64,89 @@ class MemorySearchTool(BaseMCPTool):
         from app.storage.memory import get_memory_storage
         store = get_memory_storage()
 
+        # Opportunistic decay: archive memories that have never been
+        # useful.  A memory earns importance through retrieval (+0.05
+        # per search hit, starting at 0.5).  If after 90 days it's
+        # still at or below its initial importance AND hasn't been
+        # accessed, it's noise — archive it so it stops polluting
+        # search results.  Archived memories are preserved (not
+        # deleted) and can be restored via the Memory Browser.
+        try:
+            _DECAY_THRESHOLD_DAYS = 90
+            _DECAY_IMPORTANCE_CEILING = 0.5  # initial default importance
+            today = time.strftime("%Y-%m-%d")
+            for mem in store.list_memories(status="active"):
+                try:
+                    days_since = (time.mktime(time.strptime(today, "%Y-%m-%d"))
+                                  - time.mktime(time.strptime(mem.last_accessed, "%Y-%m-%d"))) / 86400
+                except (ValueError, OverflowError):
+                    days_since = 0
+                if days_since >= _DECAY_THRESHOLD_DAYS and mem.importance <= _DECAY_IMPORTANCE_CEILING:
+                    mem.status = "archived"
+                    store.save(mem)
+                    logger.info(f"🗑️ Archived stale memory {mem.id} (importance={mem.importance:.2f}, "
+                                f"last_accessed={mem.last_accessed}): {mem.content[:60]}")
+        except Exception as e:
+            logger.debug(f"Memory decay check failed (non-fatal): {e}")
+
+        # Search active memories
         if query:
             results = store.search(query, limit=limit)
         else:
             results = store.list_memories(layer=layer, tags=tags)[:limit]
 
         if not results:
-            return {"content": "No memories found matching your search.", "count": 0}
+            # Before giving up, check if any proposals match the query.
+            # A search hit on a proposal is strong evidence the knowledge
+            # is needed — auto-promote it to the active store.
+            promoted = []
+            if query:
+                proposals = store.list_proposals()
+                q_lower = query.lower()
+                for p in proposals:
+                    content_match = q_lower in p.content.lower()
+                    tag_match = any(q_lower in t.lower() for t in (p.tags or []))
+                    if content_match or tag_match:
+                        mem = store.approve_proposal(p.id)
+                        if mem:
+                            promoted.append(mem)
+                            logger.info(f"🧠 Auto-promoted proposal {p.id} on search hit: {p.content[:60]}")
+                if promoted:
+                    # Return the promoted memories as results
+                    formatted = []
+                    for mem in promoted:
+                        entry = f"[{mem.id}] ({mem.layer}) {mem.content}"
+                        if mem.tags:
+                            entry += f"  tags: {', '.join(mem.tags)}"
+                        formatted.append(entry)
+                    return {
+                        "content": "\n\n".join(formatted),
+                        "count": len(promoted),
+                        "auto_promoted": len(promoted),
+                    }
+
+            # Out-of-domain detection with escalation hint
+            has_mindmap = len(store.list_mindmap_nodes()) > 0
+            return {
+                "content": (
+                    "No memories found matching your search. "
+                    "This topic is outside the stored knowledge — " +
+                    (
+                        "try `memory_context` to browse the mind-map tree for related topics. "
+                        if has_mindmap else ""
+                    ) +
+                    "Consider using `memory_propose` if the user shares relevant facts."
+                ),
+                "count": 0,
+                "out_of_domain": True,
+            }
 
         # Touch last_accessed on retrieved memories
         today = time.strftime("%Y-%m-%d")
         for mem in results:
             mem.last_accessed = today
+            # Maturity boost: repeated retrieval increases importance (caps at 1.0)
+            mem.importance = min(1.0, mem.importance + 0.05)
             store.save(mem)
 
         formatted = []
@@ -127,6 +200,13 @@ class MemorySaveTool(BaseMCPTool):
 
         tags = kwargs.get("tags", [])
         layer = kwargs.get("layer", "domain_context")
+        if isinstance(tags, str):
+            tags = [t.strip() for t in tags.split(",") if t.strip()]
+
+        # Capture project context from the request environment
+        import os
+        project_path = kwargs.pop("_workspace_path", None) or os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
+        project_label = project_path.rstrip("/").split("/")[-1] if project_path else None
 
         from app.storage.memory import get_memory_storage
         from app.models.memory import Memory
@@ -138,6 +218,8 @@ class MemorySaveTool(BaseMCPTool):
             layer=layer,
             learned_from="explicit_save",
         )
+        if project_path:
+            memory.scope.project_paths = [project_path]
         saved = store.save(memory)
 
         # Phase 2: Auto-place in mind-map + cell division + cross-links
@@ -186,6 +268,12 @@ class MemoryProposeTool(BaseMCPTool):
 
         tags = kwargs.get("tags", [])
         layer = kwargs.get("layer", "domain_context")
+        if isinstance(tags, str):
+            tags = [t.strip() for t in tags.split(",") if t.strip()]
+
+        # Capture project context
+        import os
+        project_path = kwargs.pop("_workspace_path", None) or os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
 
         from app.storage.memory import get_memory_storage
         from app.models.memory import MemoryProposal
@@ -197,6 +285,8 @@ class MemoryProposeTool(BaseMCPTool):
             layer=layer,
             learned_from="observation",
         )
+        if project_path:
+            proposal.scope = {"project_paths": [project_path]}
         store.add_proposal(proposal)
         pending_count = len(store.list_proposals())
         return {

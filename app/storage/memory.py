@@ -5,7 +5,9 @@ Phase 0: Single file (~/.ziya/memory/memories.json) with full CRUD.
 Profile and project hints stored alongside.  ALE encryption-aware
 via the same BaseStorage pattern used by chats and skills.
 """
+import math
 import json
+import re
 import time
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -14,6 +16,28 @@ from app.utils.logging_utils import logger
 from app.models.memory import (
     Memory, MemoryProposal, MemoryProfile, ProjectHints, MindMapNode
 )
+
+
+# -- Module-level helpers (used by MemoryStorage.search) ---------------------
+
+# Word tokenizer: split on non-alphanumeric, drop short/stop words
+_STOP_WORDS = frozenset({
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "need", "dare", "ought",
+    "used", "to", "of", "in", "for", "on", "with", "at", "by", "from",
+    "as", "into", "through", "during", "before", "after", "above",
+    "below", "between", "out", "off", "over", "under", "again",
+    "further", "then", "once", "that", "this", "these", "those",
+    "and", "but", "or", "nor", "not", "so", "very", "just",
+    "about", "also", "than", "other", "some", "such", "only",
+})
+
+
+def _tokenize(text: str) -> List[str]:
+    """Split text into searchable tokens, dropping stop words and short fragments."""
+    words = re.findall(r'[a-z0-9_]+', text.lower())
+    return [w for w in words if len(w) > 2 and w not in _STOP_WORDS]
 
 
 class MemoryStorage:
@@ -25,6 +49,10 @@ class MemoryStorage:
             memory_dir = get_ziya_home() / "memory"
         self._dir = Path(memory_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
+        # In-memory cache to avoid re-reading/decrypting on every search.
+        # Invalidated on any write operation.
+        self._memories_cache: Optional[List[dict]] = None
+        self._memories_cache_mtime: float = 0
 
     # -- File paths ----------------------------------------------------------
 
@@ -82,15 +110,32 @@ class MemoryStorage:
     # -- Flat store ----------------------------------------------------------
 
     def _load_memories(self) -> List[dict]:
+        # Return cached data if the file hasn't changed
+        try:
+            mtime = self._memories_file.stat().st_mtime if self._memories_file.exists() else 0
+        except OSError:
+            mtime = 0
+        if self._memories_cache is not None and mtime == self._memories_cache_mtime:
+            return self._memories_cache
+
         data = self._read_json(self._memories_file)
         if isinstance(data, list):
+            self._memories_cache = data
+            self._memories_cache_mtime = mtime
             return data
         if isinstance(data, dict) and "memories" in data:
+            self._memories_cache = data["memories"]
+            self._memories_cache_mtime = mtime
             return data["memories"]
+        self._memories_cache = []
+        self._memories_cache_mtime = mtime
         return []
 
     def _save_memories(self, memories: List[dict]) -> None:
         self._write_json(self._memories_file, memories)
+        # Invalidate cache so next read picks up the write
+        self._memories_cache = None
+        self._memories_cache_mtime = 0
 
     def list_memories(
         self,
@@ -109,28 +154,6 @@ class MemoryStorage:
                 continue
             results.append(Memory(**m))
         return results
-
-    def search(self, query: str, limit: int = 20) -> List[Memory]:
-        """Keyword search across content, tags, and layer."""
-        q = query.lower()
-        raw = self._load_memories()
-        scored: List[tuple] = []
-        for m in raw:
-            if m.get("status") not in (None, "active"):
-                continue
-            score = 0
-            content = m.get("content", "").lower()
-            tags = " ".join(m.get("tags", [])).lower()
-            if q in content:
-                score += 2
-            if q in tags:
-                score += 3
-            if q in m.get("layer", ""):
-                score += 1
-            if score > 0:
-                scored.append((score, m))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [Memory(**m) for _, m in scored[:limit]]
 
     def get(self, memory_id: str) -> Optional[Memory]:
         for m in self._load_memories():
@@ -163,6 +186,85 @@ class MemoryStorage:
         self._save_memories(memories)
         logger.info(f"🗑️ Memory deleted: {memory_id}")
         return True
+
+    def search(self, query: str, limit: int = 20) -> List[Memory]:
+        """Multi-signal search across content, tags, and layer.
+
+        Scoring combines:
+        - Word overlap with IDF weighting (rare words score higher)
+        - Tag matches (weighted 3× vs content words)
+        - Exact phrase match bonus
+        - Importance × recency decay
+        """
+        raw = self._load_memories()
+        active = [m for m in raw if m.get("status") in (None, "active")]
+        if not active:
+            return []
+
+        # Tokenize query
+        q_lower = query.lower()
+        q_tokens = _tokenize(q_lower)
+        if not q_tokens:
+            return []
+
+        # Build IDF table: words appearing in fewer memories are more discriminating
+        doc_freq: Dict[str, int] = {}
+        for m in active:
+            words = set(_tokenize(m.get("content", "").lower()))
+            words.update(t.lower() for t in m.get("tags", []))
+            for w in words:
+                doc_freq[w] = doc_freq.get(w, 0) + 1
+        n_docs = len(active)
+
+        today = time.strftime("%Y-%m-%d")
+        scored: List[tuple] = []
+
+        for m in active:
+            content_lower = m.get("content", "").lower()
+            content_tokens = set(_tokenize(content_lower))
+            mem_tags = {t.lower() for t in m.get("tags", [])}
+
+            # Signal 1: Word overlap with IDF weighting
+            word_score = 0.0
+            for qt in q_tokens:
+                if qt in content_tokens:
+                    df = doc_freq.get(qt, 1)
+                    idf = math.log(n_docs / df) + 1.0
+                    word_score += idf
+
+            # Signal 2: Tag matches (high-signal, curated)
+            tag_score = 0.0
+            for qt in q_tokens:
+                for tag in mem_tags:
+                    if qt == tag or qt in tag:
+                        tag_score += 3.0
+                        break
+
+            # Signal 3: Exact phrase match bonus
+            phrase_score = 5.0 if q_lower in content_lower else 0.0
+
+            # Signal 4: Layer match (minor)
+            layer_score = 1.0 if q_lower in m.get("layer", "") else 0.0
+
+            raw_score = word_score + tag_score + phrase_score + layer_score
+            if raw_score <= 0:
+                continue
+
+            # Apply importance × recency decay
+            importance = m.get("importance", 0.5)
+            last_accessed = m.get("last_accessed", today)
+            try:
+                days_since = (time.mktime(time.strptime(today, "%Y-%m-%d"))
+                              - time.mktime(time.strptime(last_accessed, "%Y-%m-%d"))) / 86400
+            except (ValueError, OverflowError):
+                days_since = 0
+            recency = math.exp(-0.01 * max(days_since, 0))  # half-life ~70 days
+            final_score = raw_score * (0.5 + importance) * (0.3 + 0.7 * recency)
+            scored.append((final_score, m))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [Memory(**m) for _, m in scored[:limit]]
+
 
     def count(self) -> Dict[str, int]:
         """Return counts by layer and status."""
