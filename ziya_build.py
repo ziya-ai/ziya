@@ -149,7 +149,12 @@ def main():
                 else:
                     print("Frontend dependencies up to date, skipping npm install.")
 
-                subprocess.run(["npm", "run", "build"], cwd=str(frontend_project_dir), check=True, shell=sys.platform == "win32")
+                build_script = "build"
+                if os.environ.get("ZIYA_BUILD_PROFILE") == "1":
+                    build_script = "build:profile"
+                    print("🔍 Profile build: source maps + React profiling enabled")
+
+                subprocess.run(["npm", "run", build_script], cwd=str(frontend_project_dir), check=True, shell=sys.platform == "win32")
                 
                 # Mark build as successful
                 success_marker.touch()
