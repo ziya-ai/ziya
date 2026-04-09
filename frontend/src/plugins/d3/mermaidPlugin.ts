@@ -435,8 +435,8 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             flowchart: {
                 htmlLabels: true,
                 curve: 'basis',
-                padding: 15,
-                nodeSpacing: 50,
+                padding: 20,
+                nodeSpacing: 60,
                 rankSpacing: 50,
                 diagramPadding: 8,
             },
@@ -574,6 +574,29 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
         const svgElement = wrapper.querySelector('svg');
         if (!svgElement) {
             throw new Error('Failed to get SVG element after rendering');
+        }
+
+        // Trim the viewBox to the actual content bounding box.
+        // Mermaid's layout engine sometimes allocates a viewBox much wider
+        // than the rendered content, leaving large empty margins that waste
+        // space when the SVG is scaled to fit the container.
+        try {
+            const svgG = svgElement as unknown as SVGGraphicsElement;
+            const bbox = svgG.getBBox();
+            const vb = svgElement.getAttribute('viewBox');
+            if (vb && bbox.width > 0 && bbox.height > 0) {
+                const pad = 16;
+                const newVB = `${bbox.x - pad} ${bbox.y - pad} ${bbox.width + pad * 2} ${bbox.height + pad * 2}`;
+                const [, , oldW] = vb.split(/\s+/).map(Number);
+                const trimmedW = bbox.width + pad * 2;
+                // Only trim if we'd reclaim at least 10% of the width
+                if (oldW > 0 && trimmedW < oldW * 0.9) {
+                    svgElement.setAttribute('viewBox', newVB);
+                    console.log(`📐 VIEWBOX-TRIM: ${vb} → ${newVB} (reclaimed ${((1 - trimmedW / oldW) * 100).toFixed(0)}% width)`);
+                }
+            }
+        } catch (e) {
+            console.warn('VIEWBOX-TRIM: Could not read SVG bounding box:', e);
         }
 
 
@@ -1314,8 +1337,10 @@ function applyEffectiveFontScaling(svgElement: SVGElement, mermaidWrapper: HTMLE
     let newWidth = vbW * targetViewBoxScale;
     let newHeight = vbH * targetViewBoxScale;
 
-    // Clamp to reasonable sizes
-    const maxWidth = 900;
+    // Clamp to container width so the diagram fills available space
+    // without overflowing. Fall back to a reasonable default.
+    const containerWidth = mermaidWrapper.closest('.d3-container')?.clientWidth || mermaidWrapper.parentElement?.clientWidth || 0;
+    const maxWidth = containerWidth > 200 ? containerWidth - 20 : 900;
     const minWidth = 100;
     if (newWidth > maxWidth) {
         const ratio = maxWidth / newWidth;
