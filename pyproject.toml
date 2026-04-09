@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ziya"
-version = "0.6.2.8"
+version = "0.6.4.0"
 description = "Self-hosted AI workbench for code, architecture, and operations. Rich visualizations (Graphviz, Mermaid, Vega-Lite, DrawIO), diff application with per-hunk tracking, parallel AI agents, MCP tool integration, enterprise plugin system."
 authors = ["Dan Cohn <chroma@gmail.com>",
            "Vishnu Krishnaprasad <vishnukool@gmail.com>"]
@@ -66,9 +66,11 @@ uv = "^0.9.6"
 filelock = ">=3.20.1"
 prompt-toolkit = "^3.0.48"
 rich = "^14.0.0"
+playwright = {version = "^1.52.0", optional = true}
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.3"
+pytest-playwright = {version = "^0.7.0", optional = true}
 
 [tool.poetry.group.pcap.dependencies]
 # Optional: Network packet analysis tools
@@ -78,6 +80,7 @@ scapy = ">=2.6.2"
 local = ["torch"]
 tokens = ["tiktoken"]
 all = ["torch", "tiktoken", "numba", "transformers"]
+render = ["playwright"]
 
 [tool.poetry.scripts]
 ziya = 'app.ziya_exec:ziya'

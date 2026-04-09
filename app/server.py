@@ -1011,6 +1011,10 @@ app_logger.info("Session management API routes loaded")
 from app.routes.graph_routes import router as graph_router
 app.include_router(graph_router)
 
+# Headless diagram rendering (requires optional Playwright dependency)
+from app.routes.diagram_routes import router as diagram_router
+app.include_router(diagram_router)
+
 # Disabled duplicate routers - server.py already defines all these routes
 # The route modules were attempting to forward to @app decorated functions which doesn't work
 # from app.routes.model_routes import router as model_router
