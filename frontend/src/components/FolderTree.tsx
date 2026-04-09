@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef, lazy, Suspense } from 'react';
-import { Tabs, message } from 'antd';
+import { Tabs, message, Spin } from 'antd';
 import { useFolderContext, FolderProvider } from '../context/FolderContext';
 import { useConversationList } from '../context/ConversationListContext';
 import { useActiveChat } from '../context/ActiveChatContext';
@@ -29,7 +29,7 @@ const ACTIVE_TAB_KEY = 'ZIYA_ACTIVE_TAB';
 
 export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => {
     // We only need minimal context now since MUIFileExplorer handles its own state
-    const { contexts, activeContextIds } = useProject();
+    const { contexts, activeContextIds, isLoadingProject } = useProject();
     // Extract only the specific values needed from ChatContext
     // to prevent unnecessary re-renders
     const [modelId, setModelId] = useState<string>('');
@@ -38,9 +38,11 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
     // Extract only the specific values needed from ChatContext
     // This reduces re-renders when unrelated ChatContext values change
     // (e.g., streamedContentMap changes during streaming won't trigger FolderTree re-renders)
-    const { createFolder, currentFolderId } = useConversationList();
+    const { createFolder, currentFolderId, isProjectSwitching } = useConversationList();
     const { startNewChat } = useActiveChat();
     const { isScanning, scanError } = useFolderContext();
+    // Blank the panel as soon as either the project API call or the full sync is in progress
+    const isSwitchingProject = isLoadingProject || isProjectSwitching;
     const [panelWidth, setPanelWidth] = useState<number>(300);
     const [modelDisplayName, setModelDisplayName] = useState<string>('');
 
@@ -208,9 +210,18 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                         ),
                         children: (
                             <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', height: '100%' }}>
-                                <ActiveContextBar />
-                                <MUIFileExplorer />
-                                {(isScanning || scanError) && <div style={{ opacity: 0.6, pointerEvents: 'none', position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1 }} />}
+                                {isSwitchingProject ? (
+                                    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', flexDirection: 'column', gap: 12, opacity: 0.7 }}>
+                                        <Spin size="large" />
+                                        <span style={{ fontSize: 13 }}>Switching project…</span>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <ActiveContextBar />
+                                        <MUIFileExplorer />
+                                        {(isScanning || scanError) && <div style={{ opacity: 0.6, pointerEvents: 'none', position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1 }} />}
+                                    </>
+                                )}
                             </div>
                         )
                     },
@@ -224,8 +235,17 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                         ),
                         children: (
                             <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-                                <ActiveContextBar />
-                                <ContextsTab />
+                                {isSwitchingProject ? (
+                                    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', flexDirection: 'column', gap: 12, opacity: 0.7 }}>
+                                        <Spin size="large" />
+                                        <span style={{ fontSize: 13 }}>Switching project…</span>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <ActiveContextBar />
+                                        <ContextsTab />
+                                    </>
+                                )}
                             </div>
                         )
                     },
@@ -239,8 +259,17 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                         ),
                         children: (
                             <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-                                <ActiveContextBar />
-                                <MUIChatHistory />
+                                {isSwitchingProject ? (
+                                    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', flexDirection: 'column', gap: 12, opacity: 0.7 }}>
+                                        <Spin size="large" />
+                                        <span style={{ fontSize: 13 }}>Switching project…</span>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <ActiveContextBar />
+                                        <MUIChatHistory />
+                                    </>
+                                )}
                             </div>
                         )
                     },
