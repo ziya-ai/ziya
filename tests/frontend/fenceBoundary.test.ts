@@ -83,6 +83,43 @@ describe('Fence leak reabsorption regexes', () => {
             expect(match).not.toBeNull();
         });
     });
+
+    it('should strip orphan bare fence when inner content starts with a code fence', () => {
+        // Exact pattern from the bug: LLM emits a stray bare ``` before a ```bash block
+        const input = [
+            'Want to test installing it?',
+            '```',
+            '',
+            '```bash',
+            'pip install amzn-ziya --upgrade --version',
+            '```',
+        ].join('\n');
+
+        const result = stripBareProseFences(input);
+
+        expect(result).toContain('```bash');
+        expect(result).toContain('pip install amzn-ziya --upgrade --version');
+
+        const bareFences = result.split('\n').filter(l => /^`{3,}\s*$/.test(l));
+        expect(bareFences.length).toBe(1);
+    });
+
+    it('should strip orphan bare fence even with blank lines before inner fence', () => {
+        const input = [
+            '```',
+            '',
+            '',
+            '```python',
+            'print("hello")',
+            '```',
+        ].join('\n');
+
+        const result = stripBareProseFences(input);
+        expect(result).toContain('```python');
+        expect(result).toContain('print("hello")');
+        const bareFences = result.split('\n').filter(l => /^`{3,}\s*$/.test(l));
+        expect(bareFences.length).toBe(1);
+    });
 });
 
 /**
@@ -142,6 +179,17 @@ describe('Fix 4: bare fence prose stripping', () => {
                     const innerContent = innerLines.join('\n').trim();
 
                     if (!innerContent) {
+                        fi = closeIdx + 1;
+                        continue;
+                    }
+
+                    // Orphan fence detection: inner content starts with a code fence opening
+                    const firstNonBlank = innerLines.findIndex(function(l) {
+                        return l.trim().length > 0;
+                    });
+                    if (firstNonBlank >= 0 && /^`{3,}\S/.test(innerLines[firstNonBlank])) {
+                        fenceOutput.push(...innerLines);
+                        fenceOutput.push(fenceLines[closeIdx]);
                         fi = closeIdx + 1;
                         continue;
                     }
@@ -269,5 +317,42 @@ describe('Fix 4: bare fence prose stripping', () => {
         expect(result).toContain('```\nplain log output here\n```');
         // Markdown after code block preserved
         expect(result).toContain('### Summary with **bold**');
+    });
+
+    it('should strip orphan bare fence when inner content starts with a code fence', () => {
+        // Exact pattern from the bug: LLM emits a stray bare ``` before a ```bash block
+        const input = [
+            'Want to test installing it?',
+            '```',
+            '',
+            '```bash',
+            'pip install amzn-ziya --upgrade --version',
+            '```',
+        ].join('\n');
+
+        const result = stripBareProseFences(input);
+
+        expect(result).toContain('```bash');
+        expect(result).toContain('pip install amzn-ziya --upgrade --version');
+
+        const bareFences = result.split('\n').filter(l => /^`{3,}\s*$/.test(l));
+        expect(bareFences.length).toBe(1);
+    });
+
+    it('should strip orphan bare fence even with blank lines before inner fence', () => {
+        const input = [
+            '```',
+            '',
+            '',
+            '```python',
+            'print("hello")',
+            '```',
+        ].join('\n');
+
+        const result = stripBareProseFences(input);
+        expect(result).toContain('```python');
+        expect(result).toContain('print("hello")');
+        const bareFences = result.split('\n').filter(l => /^`{3,}\s*$/.test(l));
+        expect(bareFences.length).toBe(1);
     });
 });
