@@ -29,9 +29,9 @@ class ChatStorage(BaseStorage[Chat]):
 
     def _is_chat_expired(self, chat: Chat) -> bool:
         """Check whether a chat has exceeded the retention policy TTL."""
-        # Use lastActiveAt (milliseconds) — convert to epoch seconds.
         last_active_epoch = chat.lastActiveAt / 1000.0
         return self.enforcer.is_expired(last_active_epoch, "conversation_data")
+        return result
     
     def _chat_file(self, chat_id: str) -> Path:
         return self.chats_dir / f"{chat_id}.json"

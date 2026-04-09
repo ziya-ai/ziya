@@ -1364,6 +1364,7 @@ class StreamingToolExecutor:
             tools_executed_this_iteration = False  # Track if tools were executed in this iteration
             blocked_tools_this_iteration = 0  # Track blocked tools to prevent runaway loops
             commands_this_iteration = []  # Track commands executed in this specific iteration
+            last_stop_reason = None  # Track whether model was cut off (max_tokens) or finished (end_turn)
             empty_tool_calls_this_iteration = 0  # Track empty tool calls in this iteration
             continuation_happened = False  # Track if code block continuation occurred
             
@@ -1692,12 +1693,25 @@ class StreamingToolExecutor:
                                                 if block.get('type') == 'text':
                                                     chat_tokens += len(block.get('text', '')) // 4
                                     
-                                    # Subtract fixed costs (baseline + chat) to get file-only tokens
-                                    # This allows calibrator to learn pure file tokenization rate
-                                    file_only_tokens = max(1, calibration_tokens - baseline_overhead - chat_tokens)
+                                    # Exact file token count derived from Bedrock cache.
+                                    # The system prompt = boilerplate + file contents.
+                                    # Bedrock returns exact token count for the full prompt
+                                    # via cache_read/cache_creation. We know the char ratio
+                                    # of files within the prompt, so we can extract file
+                                    # tokens directly — no heuristics.
+                                    cache_read = iteration_usage.cache_read_tokens or 0
+                                    cache_creation = iteration_usage.cache_write_tokens or 0
+                                    system_prompt_tokens = cache_read + cache_creation
+                                    system_chars = max(1, len(system_content or ''))
+                                    file_chars = sum(len(c) for c in file_contents.values())
+                                    file_ratio = min(1.0, file_chars / system_chars) if system_chars > 0 else 0.5
+                                    file_only_tokens = max(1, int(system_prompt_tokens * file_ratio))
 
-                                    logger.debug(f"📊 CALIBRATION: Total={calibration_tokens:,}, Baseline={baseline_overhead:,}, "
-                                               f"Chat={chat_tokens:,}, File-only={file_only_tokens:,}")
+                                    logger.debug(f"📊 CALIBRATION: SysPrompt={system_prompt_tokens:,} tokens "
+                                               f"(cache_read={cache_read:,}, cache_create={cache_creation:,}), "
+                                               f"FileChars={file_chars:,}/{system_chars:,} ({file_ratio:.1%}), "
+                                               f"File-only={file_only_tokens:,} tokens")
+
                                     
                                     # Record actual token usage for calibration
                                     calibrator.record_actual_usage(
@@ -2700,6 +2714,7 @@ Please retry the tool call with valid JSON. Ensure:
 
                     elif chunk['type'] == 'message_stop':
                         # Flush any remaining content from buffers before stopping  
+                        last_stop_reason = chunk.get('stop_reason', 'end_turn')
                         # Flush block opening buffer first
                         if hasattr(self, '_block_opening_buffer') and self._block_opening_buffer:
                             assistant_text += self._block_opening_buffer
@@ -3126,12 +3141,29 @@ Please retry the tool call with valid JSON. Ensure:
                         # End the stream gracefully instead of attempting another API call.
                         supports_prefill = self.model_config.get('supports_assistant_prefill', True)
                         if not supports_prefill and not tools_executed_this_iteration:
-                            logger.info(
-                                f"🛑 NO_PREFILL_END: Model doesn't support prefill, "
-                                f"ending stream after text-only response (continuation={continuation_happened})"
-                            )
-                            yield {'type': 'stream_end'}
-                            break
+                            if last_stop_reason == 'max_tokens' and iteration < max_iterations - 1:
+                                # Model was cut off mid-response — inject a user
+                                # message so the non-prefill model can continue.
+                                logger.info(
+                                    f"🔄 MAX_TOKENS_CONTINUE: Model hit max_tokens on non-prefill model, "
+                                    f"injecting continuation prompt (iteration {iteration})"
+                                )
+                                conversation.append({
+                                    "role": "assistant",
+                                    "content": assistant_text
+                                })
+                                conversation.append({
+                                    "role": "user",
+                                    "content": "[System: Your previous response was cut off due to length limits. Continue exactly where you left off.]"
+                                })
+                                continue
+                            else:
+                                logger.info(
+                                    f"🛑 NO_PREFILL_END: Model doesn't support prefill, "
+                                    f"ending stream after text-only response (continuation={continuation_happened}, stop_reason={last_stop_reason})"
+                                )
+                                yield {'type': 'stream_end'}
+                                break
 
                         # CRITICAL: Detect stable short responses to prevent infinite loops
                         # If the response is very short (< 50 chars) and we're repeating iterations

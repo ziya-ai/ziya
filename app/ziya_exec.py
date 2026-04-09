@@ -35,7 +35,40 @@ def frontend_install():
 
 
 def frontend_build():
-    subprocess.run(["npm", "run", "build"], cwd="frontend")
+    import sys
+    symbols = "--symbols" in sys.argv
+    env = os.environ.copy() if symbols else None
+    if symbols:
+        env["GENERATE_SOURCEMAP"] = "true"
+        print("🗺️  Building with source maps enabled...")
+    subprocess.run(["npm", "run", "build"], cwd="frontend", env=env)
+    if symbols:
+        _deploy_sourcemaps()
+
+
+def _deploy_sourcemaps():
+    """Copy built JS files + source maps to installed package location."""
+    import glob
+    import shutil
+    import site
+
+    build_js = os.path.join("frontend", "build", "static", "js")
+    if not os.path.exists(build_js):
+        print("❌ No build output found at frontend/build/static/js")
+        return
+
+    # Find installed package location
+    for site_dir in site.getsitepackages() + [site.getusersitepackages()]:
+        installed_js = os.path.join(site_dir, "app", "templates", "static", "js")
+        if os.path.exists(installed_js):
+            for f in glob.glob(os.path.join(build_js, "main.*")):
+                dest = os.path.join(installed_js, os.path.basename(f))
+                shutil.copy2(f, dest)
+                print(f"✅ Deployed: {os.path.basename(f)}")
+            print("🗺️  Source maps deployed to installed package")
+            return
+    print("⚠️  Could not find installed package location — copy manually:")
+    print(f"   cp frontend/build/static/js/main.* <site-packages>/app/templates/static/js/")
 
 
 def ziya():

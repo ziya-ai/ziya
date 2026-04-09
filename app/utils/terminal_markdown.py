@@ -2,6 +2,9 @@
 
 import re
 from rich.console import Console
+from rich.syntax import Syntax
+from rich.markdown import CodeBlock
+from rich.text import Text
 from rich.markdown import Markdown
 
 
@@ -101,5 +104,18 @@ class StreamingMarkdownRenderer:
         text = text.rstrip("\n")
         if not text:
             return
-        md = Markdown(text)
-        self.console.print(md)
+        # Detect pure code blocks and render them without rich's default
+        # Panel padding, which adds a leading space to every line.
+        lines = text.split("\n")
+        fence_match = re.match(r"^(`{3,}|~{3,})(\w*)", lines[0]) if lines else None
+        if fence_match and len(lines) >= 2:
+            lang = fence_match.group(2) or "text"
+            # Strip opening and closing fence lines
+            closing = fence_match.group(1)
+            code_lines = lines[1:]
+            if code_lines and code_lines[-1].strip() == closing:
+                code_lines = code_lines[:-1]
+            code = "\n".join(code_lines)
+            self.console.print(Syntax(code, lang, theme="monokai", background_color="default", word_wrap=True))
+        else:
+            self.console.print(Markdown(text))
