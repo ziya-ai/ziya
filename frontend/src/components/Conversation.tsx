@@ -461,7 +461,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
 
                     return <div
                         // Use message ID as key instead of index
-                        key={`message-${msg.id || index}`}
+                        key={`message-${msg.id || actualIndex}`}
                         data-message-index={actualIndex}
                         className={`message ${msg.role || ''}${msg.muted ? ' muted' : ''}${needsResponse
                             ? ' needs-response' : ''

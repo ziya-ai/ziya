@@ -43,6 +43,8 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
     const { isScanning, scanError } = useFolderContext();
     // Blank the panel as soon as either the project API call or the full sync is in progress
     const isSwitchingProject = isLoadingProject || isProjectSwitching;
+    // Distinguish initial load from an actual switch for the spinner label
+    const switchingLabel = (isLoadingProject && projectContext.currentProject === null) ? 'Loading…' : 'Switching project…';
     const [panelWidth, setPanelWidth] = useState<number>(300);
     const [modelDisplayName, setModelDisplayName] = useState<string>('');
 
@@ -213,7 +215,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                                 {isSwitchingProject ? (
                                     <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', flexDirection: 'column', gap: 12, opacity: 0.7 }}>
                                         <Spin size="large" />
-                                        <span style={{ fontSize: 13 }}>Switching project…</span>
+                                        <span style={{ fontSize: 13 }}>{switchingLabel}</span>
                                     </div>
                                 ) : (
                                     <>
@@ -238,7 +240,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                                 {isSwitchingProject ? (
                                     <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', flexDirection: 'column', gap: 12, opacity: 0.7 }}>
                                         <Spin size="large" />
-                                        <span style={{ fontSize: 13 }}>Switching project…</span>
+                                        <span style={{ fontSize: 13 }}>{switchingLabel}</span>
                                     </div>
                                 ) : (
                                     <>
@@ -262,7 +264,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                                 {isSwitchingProject ? (
                                     <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', flexDirection: 'column', gap: 12, opacity: 0.7 }}>
                                         <Spin size="large" />
-                                        <span style={{ fontSize: 13 }}>Switching project…</span>
+                                        <span style={{ fontSize: 13 }}>{switchingLabel}</span>
                                     </div>
                                 ) : (
                                     <>

@@ -2700,9 +2700,33 @@ const MUIChatHistory = () => {
       return total;
     };
 
+    // Roll up lastActivityTime from subfolders into parent folders.
+    // After the tree is assembled, each folder's lastActivityTime only
+    // reflects its direct conversation children.  Walk bottom-up so that
+    // nested subfolder activity propagates all the way to the root.
+    // Without this, a folder 2+ levels above the active conversation
+    // won't sort to the top because its lastActivityTime is stale.
+    const rollUpLastActivityTime = (node: any, _depth = 0): number => {
+      if (_depth > 20) return 0;
+      if (!node.folder) return 0;
+      let maxTime = node.lastActivityTime || 0;
+      if (node.children) {
+        for (const child of node.children) {
+          if (child.folder) {
+            const childTime = rollUpLastActivityTime(child, _depth + 1);
+            if (childTime > maxTime) maxTime = childTime;
+          } else if (child.conversation) {
+            const convTime = child.conversation.lastAccessedAt || 0;
+            if (convTime > maxTime) maxTime = convTime;
+          }
+        }
+      }
+      node.lastActivityTime = maxTime;
+      return maxTime;
+    };
 
     // Apply roll-up before sorting
-    rootItems.forEach(item => { if (item.folder) rollUpConversationCount(item); });
+    rootItems.forEach(item => { if (item.folder) { rollUpConversationCount(item); rollUpLastActivityTime(item); } });
 
     // Sort using extracted comparator shared with the fast path
     const sortRecursive = (nodes: any[], _depth = 0): any[] => {
