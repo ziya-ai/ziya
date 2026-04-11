@@ -63,6 +63,28 @@ function rollUpConversationCount(node: any, _depth = 0): number {
   return total;
 }
 
+// ── rollUpLastActivityTime ─────────────────────────────────────────────
+// Replicated from MUIChatHistory.tsx
+
+function rollUpLastActivityTime(node: any, _depth = 0): number {
+  if (_depth > 20) return 0;
+  if (!node.folder) return 0;
+  let maxTime = node.lastActivityTime || 0;
+  if (node.children) {
+    for (const child of node.children) {
+      if (child.folder) {
+        const childTime = rollUpLastActivityTime(child, _depth + 1);
+        if (childTime > maxTime) maxTime = childTime;
+      } else if (child.conversation) {
+        const convTime = child.conversation.lastAccessedAt || 0;
+        if (convTime > maxTime) maxTime = convTime;
+      }
+    }
+  }
+  node.lastActivityTime = maxTime;
+  return maxTime;
+}
+
 // ── sortRecursive ──────────────────────────────────────────────────────
 
 function sortRecursive(nodes: any[], _depth = 0): any[] {
@@ -174,6 +196,98 @@ describe('rollUpConversationCount cycle safety', () => {
 
     const count = rollUpConversationCount(tree);
     expect(count).toBe(7); // 2 + 5
+  });
+});
+
+describe('rollUpLastActivityTime', () => {
+  it('propagates activity from direct conversation children', () => {
+    const node: any = {
+      id: 'f1', folder: true, lastActivityTime: 0,
+      children: [
+        { id: 'conv-c1', conversation: { id: 'c1', lastAccessedAt: 500 }, children: [] },
+        { id: 'conv-c2', conversation: { id: 'c2', lastAccessedAt: 800 }, children: [] },
+      ]
+    };
+    const result = rollUpLastActivityTime(node);
+    expect(result).toBe(800);
+    expect(node.lastActivityTime).toBe(800);
+  });
+
+  it('propagates activity from nested subfolders (2 levels deep)', () => {
+    const grandchild: any = {
+      id: 'f-inner', folder: true, lastActivityTime: 0,
+      children: [
+        { id: 'conv-c1', conversation: { id: 'c1', lastAccessedAt: 9999 }, children: [] },
+      ]
+    };
+    const root: any = {
+      id: 'f-root', folder: true, lastActivityTime: 0,
+      children: [grandchild]
+    };
+
+    const result = rollUpLastActivityTime(root);
+    expect(result).toBe(9999);
+    expect(root.lastActivityTime).toBe(9999);
+    expect(grandchild.lastActivityTime).toBe(9999);
+  });
+
+  it('propagates activity from deeply nested hierarchy (3+ levels)', () => {
+    const level3: any = {
+      id: 'f3', folder: true, lastActivityTime: 0,
+      children: [
+        { id: 'conv-deep', conversation: { id: 'deep', lastAccessedAt: 42000 }, children: [] },
+      ]
+    };
+    const level2: any = {
+      id: 'f2', folder: true, lastActivityTime: 0,
+      children: [level3]
+    };
+    const level1: any = {
+      id: 'f1', folder: true, lastActivityTime: 100, // has some old direct activity
+      children: [
+        level2,
+        { id: 'conv-old', conversation: { id: 'old', lastAccessedAt: 100 }, children: [] },
+      ]
+    };
+
+    const result = rollUpLastActivityTime(level1);
+    expect(result).toBe(42000);
+    expect(level1.lastActivityTime).toBe(42000);
+    expect(level2.lastActivityTime).toBe(42000);
+    expect(level3.lastActivityTime).toBe(42000);
+  });
+
+  it('picks the max across sibling subfolders', () => {
+    const folderA: any = {
+      id: 'fa', folder: true, lastActivityTime: 0,
+      children: [{ id: 'conv-a', conversation: { id: 'a', lastAccessedAt: 300 }, children: [] }]
+    };
+    const folderB: any = {
+      id: 'fb', folder: true, lastActivityTime: 0,
+      children: [{ id: 'conv-b', conversation: { id: 'b', lastAccessedAt: 700 }, children: [] }]
+    };
+    const root: any = {
+      id: 'f-root', folder: true, lastActivityTime: 0,
+      children: [folderA, folderB]
+    };
+
+    rollUpLastActivityTime(root);
+    expect(root.lastActivityTime).toBe(700);
+  });
+
+  it('terminates on self-referencing folder', () => {
+    const node: any = { id: 'a', folder: true, lastActivityTime: 50, children: [] };
+    node.children.push(node);
+
+    expect(() => {
+      const result = rollUpLastActivityTime(node);
+      expect(result).toBeGreaterThanOrEqual(50);
+    }).not.toThrow();
+  });
+
+  it('returns 0 for empty folder', () => {
+    const node: any = { id: 'empty', folder: true, lastActivityTime: 0, children: [] };
+    expect(rollUpLastActivityTime(node)).toBe(0);
   });
 });
 
