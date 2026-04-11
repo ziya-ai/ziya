@@ -5,6 +5,126 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.4.2] - 2026-04-11
+
+### Added
+- **Visual diagram feedback tool**: `render_diagram` builtin tool renders diagram
+  specs (Mermaid, Graphviz, Vega-Lite, DrawIO, packet, etc.) server-side via the
+  headless Playwright pipeline and returns the resulting PNG as a vision content
+  block. The model can see the rendered output and iteratively refine its diagrams.
+- **Server-rendered conversation export API**: `POST /api/export/rendered` exports
+  conversations with all diagram code blocks rendered to inline SVG/PNG images
+  server-side, enabling CLI exports, API consumers, and plugin targets that lack
+  a browser.
+- **Plugin export targets**: `POST /api/export/to-target` dispatches rendered
+  exports to plugin-registered services (Slack, Quip, wiki, etc.) via the new
+  `ExportProvider` plugin interface (`app/plugins/interfaces.py`).
+- **Force-directed graph plugin**: New D3 visualization plugin for force-directed
+  network layouts using the ```d3``` code fence with `type: "force-directed"`.
+  Supports weighted edges, node grouping, collision avoidance, and configurable
+  styling.
+- **D3 spec parser**: Utility (`d3SpecParser.ts`) parses JS-expression-style
+  D3 specifications with unquoted keys into objects for plugin dispatch.
+- **Bubble and scatter chart support**: `basicChart` plugin now handles
+  `type: "bubble"` and `type: "scatter"` specs with continuous x/y scales
+  and size-mapped radii.
+- **Gantt dateFormat X support**: Mermaid Gantt charts using `dateFormat X`
+  (numeric timestamps) are automatically converted to `YYYY-MM-DD` date format
+  with scaled day offsets for correct rendering.
+- **ThemeContext.setTheme()**: Programmatic theme control method added alongside
+  the existing toggle.
+- Comprehensive test suites for render_diagram tool, conversation exporter, rendered
+  export endpoint, streaming tool executor image handling, force-directed plugin,
+  D3 spec parser, Vega-Lite preprocessing, Mermaid requirement diagrams, basic
+  chart plugin, packet diagrams, save guard metadata merge, thinking parser, chat
+  history tree cycles, and code fence splicing.
+
+### Fixed
+- **Duplicate response after stream error**: When a ValueError occurred mid-stream
+  (after chunks were already sent), the LangChain fallback path replayed the entire
+  conversation, doubling the response in the frontend. Now terminates cleanly if
+  any content has already been streamed.
+- **Stale flush timer causing ghost responses**: A pending `setTimeout` flush
+  could fire after stream cleanup deleted the content from `streamedContentMap`,
+  re-inserting it and causing the response to appear twice. Added
+  `_streamFinalized` guard and explicit timer cancellation before cleanup.
+- **Image tool results stripped by signing metadata**: `strip_signature_metadata()`
+  removed all `_`-prefixed keys, including `_has_image_content`. Now uses an
+  explicit set of signing-specific keys instead of a blanket prefix filter.
+- **Builtin tool Playwright deadlock**: Builtin tools were run via
+  `asyncio.to_thread(_run())` which created a new event loop, deadlocking tools
+  that use Playwright or other async resources bound to the main loop. Now calls
+  `execute()` directly on the event loop.
+- **Image content blocks truncated by sanitizer**: Structured image result lists
+  (base64 content blocks) were being stringified and truncated by the tool result
+  sanitizer. Now skipped for non-string results.
+- **Vega-Lite area charts with fold transforms**: Area marks on categorical
+  (nominal) x-axes with fold transforms failed to render because: (a) area
+  interpolation requires ordered axes (nominal to ordinal conversion), and
+  (b) explicit y-domain combined with fold on enough categories broke the
+  rendering pipeline (domain removed, stack set to null).
+- **Vega-Lite layered charts with mismatched y-axis ranges**: When layers use
+  different y-fields whose data ranges differ by more than 3x, the shared axis
+  clipped one layer entirely. Now auto-adds `resolve.scale.y: 'independent'`
+  with left/right axis orientation.
+- **Vega-Lite bar charts on log scale**: Bars imply a zero baseline but
+  log(0) is negative infinity, producing invisible or broken bars. These are now
+  converted to tick + text layers showing position on the log axis with
+  human-readable labels (12K, 4.5M, 13.8M).
+- **Mermaid requirement diagram properties**: `verifymethod` was incorrectly
+  capitalized to `verifyMethod` (Mermaid's lexer requires lowercase); `id`
+  property was incorrectly quoted (Mermaid expects bare tokens).
+- **Network diagram stub rendering**: The network diagram plugin had placeholder
+  comments instead of actual link/node rendering. Replaced with full
+  implementation including node circles, labels, and edge lines.
+- **Code fence premature closure in diff blocks**: Diff output containing
+  indented backtick lines matched the closing fence pattern under CommonMark
+  rules, splitting a single code block into fragments. The preprocessor now
+  detects these collisions and upgrades the outer fence length.
+- **Code fence concatenated to text without newline**: LLM output sometimes
+  omits the newline before a code fence. Added a regex fix to insert the
+  required blank line.
+- **HTML entity `&#96;` not decoded**: Backtick HTML entities were rendered as
+  literal text instead of being decoded to backtick characters.
+- **Thinking block fence breakout**: Sequential thinking blocks used a fixed
+  4-backtick fence that could be broken by content containing 4+ backticks.
+  Fence length is now dynamically sized to exceed the longest backtick sequence
+  in the content. Removal regex updated to handle variable-length fences.
+- **Save guard blocking metadata updates**: When the save guard blocked a shell
+  conversation write to protect message data, metadata changes (folderId,
+  version, lastAccessedAt, groupId, isGlobal) were also lost. Now performs a
+  separate metadata-only IDB merge transaction for blocked writes.
+- **Project switch blanking active conversation**: On initial page load (not a
+  switch), the project initialization code cleared all conversations, racing
+  with lazy-hydration and destroying full message data. Now only clears on
+  actual project switches.
+- **Active conversation not re-hydrated after sync**: After server sync replaced
+  the conversations array, the active conversation could remain as a 2-message
+  shell. Added post-sync re-hydration from IndexedDB.
+- **Folder sort ignoring nested activity**: Parent folders only reflected
+  lastActivityTime from direct children. Added bottom-up rollup so nested
+  subfolder activity propagates to root for correct sort order.
+- **Conversation move/toggle not updating lastAccessedAt**: Moving a conversation
+  between projects or toggling global scope now updates lastAccessedAt so it
+  sorts correctly in the target location.
+- **FolderTree spinner label on initial load**: Showed "Switching project..."
+  even on first page load. Now shows "Loading..." when no project was loaded.
+- **Message list key collision**: Used loop `index` instead of `actualIndex`
+  for React keys, causing incorrect reconciliation when messages were filtered.
+- **DiagramRenderPage D3Renderer type**: Passed `type="auto"` instead of
+  `type="d3"`, causing plugin lookup failures for explicit D3 specs.
+
+### Changed
+- `SendChatContainer` input maximum height increased from 150px to 50vh,
+  allowing larger code pastes without excessive scrolling.
+- D3Renderer now parses raw string specs through `d3SpecParser` before plugin
+  lookup, so string inputs that were previously rejected now route correctly.
+- MarkdownRenderer pre-parses ```d3``` code fence content into objects
+  before passing to D3Renderer, matching the parsing done for other viz types.
+- Tool result image content blocks are compacted to text summaries in
+  conversation history to prevent context window bloat from base64 data.
+- Frontend assets rebuilt.
+
 ## [0.6.4.1] - 2026-04-09
 
 ### Added
