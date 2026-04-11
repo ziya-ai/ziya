@@ -157,6 +157,7 @@ Ziya's visualization suite is the most comprehensive of any AI coding assistant.
 | **Shell command allowlist** | Configurable per-session and persistently; `/shell add/rm/reset/yolo/git/timeout` commands in CLI; `save` suffix to persist |
 | **YOLO mode** | `/shell yolo` disables the allowlist for the current session (confirmation required) |
 | **Nova Web Grounding** | Built-in web search tool backed by Amazon Nova; Claude calls it autonomously when it needs current web information |
+| **Visual Diagram Feedback** | `render_diagram` builtin tool renders diagrams server-side and returns images as vision content blocks; enables model to see and iteratively fix rendering output |
 | **Per-MCP prettyprint** | Custom output formatting per MCP server via `FormatterProvider` plugin |
 
 ---
