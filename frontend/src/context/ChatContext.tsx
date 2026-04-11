@@ -2000,13 +2000,18 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 saveProjectConversationId(serverSyncedForProject.current!, currentConversationRef.current);
             }
 
-            setIsProjectSwitching(true);
-            console.log('🔄 PROJECT_SWITCH: Set isProjectSwitching = true for', projectId);
+            if (isActualProjectSwitch) {
+                setIsProjectSwitching(true);
+                console.log('🔄 PROJECT_SWITCH: Set isProjectSwitching = true for', projectId);
+            }
         }
 
         // Immediately clear stale data from the previous project so the UI
         // shows an empty/loading state rather than a mix of old and new data.
-        if (serverSyncedForProject.current !== projectId) {
+        // Only clear on ACTUAL project switches — not on initial load.
+        // Clearing on initial load races with the lazy-hydration of the active
+        // conversation in initializeWithRecovery, destroying full message data.
+        if (isActualProjectSwitch) {
             setConversations([]);
         }
         recentlyFetchedFullIds.current.clear();
@@ -2512,6 +2517,32 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     console.error('📡 SERVER_SYNC: Error syncing with server:', syncError);
                 }
             } finally {
+                // Re-hydrate the active conversation if it's still a shell after
+                // sync.  This catches the race where initializeWithRecovery's
+                // lazy-load was clobbered by the sync's setConversations.
+                const activeId = currentConversationRef.current;
+                if (activeId) {
+                    const activeConv = conversationsRef.current.find(c => c.id === activeId);
+                    if (activeConv && ((activeConv as any)._isShell || (activeConv.messages?.length || 0) <= 2)) {
+                        try {
+                            const fullConv = typeof db.getConversation === 'function'
+                                ? await db.getConversation(activeId)
+                                : null;
+                            if (fullConv && fullConv.messages?.length > (activeConv.messages?.length || 0)) {
+                                React.startTransition(() => {
+                                    setConversations(prev => prev.map(c =>
+                                        c.id === activeId
+                                            ? { ...c, messages: fullConv.messages, _isShell: false, _fullMessageCount: undefined }
+                                            : c
+                                    ));
+                                });
+                                console.log(`✅ POST_SYNC: Re-hydrated active conversation with ${fullConv.messages.length} messages`);
+                            }
+                        } catch (e) {
+                            console.warn('⚠️ POST_SYNC: Active conversation re-hydration failed:', e);
+                        }
+                    }
+                }
                 setIsProjectSwitching(false);
                 syncInProgressRef.current = false;
             }
@@ -2888,6 +2919,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     const wasGlobal = conv.isGlobal;
                     return {
                         ...conv,
+                        lastAccessedAt: Date.now(),
                         isGlobal: !wasGlobal,
                         // When un-globaling, pin to current project
                         projectId: wasGlobal ? currentProject?.id : conv.projectId,
@@ -2917,6 +2949,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     return {
                         ...conv,
                         projectId: targetProjectId,
+                        lastAccessedAt: Date.now(),
                         isGlobal: false,
                         _version: Date.now()
                     };
@@ -2954,7 +2987,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         // we remove it from the source, preventing data loss on partial failure.
         if (sourceProjectId && sourceProjectId !== targetProjectId && capturedConv) {
             const serverChat = syncApi.conversationToServerChat(
-                { ...capturedConv, projectId: targetProjectId, isGlobal: false, _version: Date.now() },
+                { ...capturedConv, projectId: targetProjectId, lastAccessedAt: Date.now(), isGlobal: false, _version: Date.now() },
                 targetProjectId
             );
             try {

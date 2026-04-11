@@ -473,6 +473,7 @@ class ConversationDB implements DB {
 
         // CRITICAL: Deduplicate conversations before saving
         const deduped = new Map<string, Conversation>();
+        const shellMetadataUpdates = new Map<string, Conversation>();
         conversations.forEach(conv => {
             // CRITICAL: Strip shell markers before persisting — they are
             // transient metadata that must never reach IndexedDB.
@@ -481,7 +482,9 @@ class ConversationDB implements DB {
             if ((conv as any)._isShell) {
                 const fullCount = (conv as any)._fullMessageCount || 0;
                 if (conv.messages.length < fullCount) {
-                    console.warn(`🛡️ SAVE_GUARD: Blocking shell write for ${conv.id.substring(0, 8)} — has ${conv.messages.length} messages, full count is ${fullCount}`);
+                    console.warn(`🛡️ SAVE_GUARD: Blocking full shell write for ${conv.id.substring(0, 8)} — has ${conv.messages.length} messages, full count is ${fullCount}. Metadata will be merged separately.`);
+                    // Queue a metadata-only merge so folderId/version changes aren't lost
+                    shellMetadataUpdates.set(conv.id, conv);
                     return; // Skip this conversation entirely — IndexedDB already has the full version
                 }
             }
@@ -539,10 +542,33 @@ class ConversationDB implements DB {
         }
 
         try {
-            console.debug('Starting save operation:', {
-                conversationCount: conversations.length,
-                hasActiveConversations: conversations.some(c => c.messages?.length > 0 && c.isActive !== false)
-            });
+            // Merge metadata from blocked shell writes onto existing IDB records.
+            // This ensures folderId, _version, lastAccessedAt etc. are persisted
+            // even when the SAVE_GUARD blocks the full conversation write to
+            // protect against message data loss.
+            if (shellMetadataUpdates.size > 0) {
+                const metaTx = this.db!.transaction([STORE_NAME], 'readwrite');
+                const metaStore = metaTx.objectStore(STORE_NAME);
+                for (const [id, shellConv] of shellMetadataUpdates) {
+                    const getReq = metaStore.get(id);
+                    getReq.onsuccess = () => {
+                        const existing = getReq.result;
+                        if (existing) {
+                            existing.folderId = shellConv.folderId;
+                            existing._version = shellConv._version || existing._version;
+                            existing.lastAccessedAt = shellConv.lastAccessedAt || existing.lastAccessedAt;
+                            existing.groupId = shellConv.groupId !== undefined ? shellConv.groupId : existing.groupId;
+                            existing.isGlobal = shellConv.isGlobal !== undefined ? shellConv.isGlobal : existing.isGlobal;
+                            metaStore.put(existing, id);
+                            console.log(`🔧 SAVE_GUARD: Merged metadata for ${id.substring(0, 8)} (folderId: ${shellConv.folderId})`);
+                        }
+                    };
+                }
+                await new Promise<void>((resolve, reject) => {
+                    metaTx.oncomplete = () => resolve();
+                    metaTx.onerror = () => reject(metaTx.error);
+                });
+            }
 
             const tx = this.db!.transaction([STORE_NAME], 'readwrite');
             console.debug('Transaction created successfully');
@@ -1259,7 +1285,7 @@ class ConversationDB implements DB {
                 console.log('Moving conversation to folder:', { conversationId, folderId });
 
                 const putRequest = store.put(
-                    { ...conv, folderId, _version: Date.now() },
+                    { ...conv, folderId, lastAccessedAt: Date.now(), _version: Date.now() },
                     conversationId
                 );
                 putRequest.onsuccess = () => resolve(true);
