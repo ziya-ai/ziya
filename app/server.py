@@ -425,6 +425,13 @@ async def lifespan(app: FastAPI):
     # MCP shutdown
     if os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
         try:
+            # Shut down headless diagram renderer if running
+            from app.services.diagram_renderer import shutdown_diagram_renderer
+            await shutdown_diagram_renderer()
+        except Exception as e:
+            logger.debug(f"Diagram renderer shutdown: {e}")
+
+        try:
             from app.mcp.manager import get_mcp_manager
             mcp_manager = get_mcp_manager()
             await mcp_manager.shutdown()
@@ -2067,7 +2074,20 @@ async def stream_chunks(body):
                 
             except ValueError as ve:
                 # Expected error for non-Bedrock endpoints - fall through to LangChain silently
-                logger.debug(f"🚀 DIRECT_STREAMING: {ve} - falling back to LangChain")
+                # BUT only if no content has been streamed yet.  If content was
+                # already yielded (chunk_count > 0), falling through would cause
+                # the LangChain path to replay the entire conversation from
+                # scratch, duplicating everything in the frontend accumulator.
+                if chunk_count > 0:
+                    logger.warning(
+                        f"🚀 DIRECT_STREAMING: ValueError after {chunk_count} chunks "
+                        f"sent — NOT falling through to LangChain: {ve}"
+                    )
+                    yield f"data: {json.dumps({'done': True})}\n\n"
+                    if conversation_id:
+                        await cleanup_stream(conversation_id)
+                    return
+                logger.debug(f"🚀 DIRECT_STREAMING: {ve} (pre-stream) - falling back to LangChain")
             except Exception as e:
                 import traceback
                 error_str = str(e)
@@ -3470,6 +3490,17 @@ async def root(request: Request):
         """
         from fastapi.responses import HTMLResponse
         return HTMLResponse(content=html_content)
+
+@app.get("/render")
+async def render_page(request: Request):
+    """Serve the SPA shell for the /render route.
+
+    React Router handles client-side routing to DiagramRenderPage.
+    This catch-through is required so Playwright (and browsers navigating
+    directly) get index.html instead of a 404.
+    """
+    return await root(request)
+
 
 @app.get("/info")
 async def info_page(request: Request):

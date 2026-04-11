@@ -322,6 +322,65 @@ class ServiceModelProvider(ABC):
         return True
 
 
+class ExportProvider(ABC):
+    """
+    Export target provider interface.
+
+    Plugins implement this to add export targets (Slack, Quip, wiki, etc.)
+    that receive fully-rendered conversation exports with diagrams inlined
+    as images.
+
+    The framework calls ``export()`` with the rendered content after all
+    diagrams have been server-side rendered via the headless Playwright
+    pipeline.  The provider is responsible for uploading/posting to the
+    target service.
+    """
+
+    provider_id: str = "default"
+    priority: int = 0
+
+    @abstractmethod
+    def get_target_info(self) -> Dict[str, Any]:
+        """
+        Return metadata about this export target for the UI.
+
+        Expected keys:
+            id, name, icon, description, url
+        Optional keys:
+            supports_images: bool  (default True)
+            preferred_format: str  'markdown' | 'html' (default 'markdown')
+            max_size: int          max content size in bytes (0 = unlimited)
+        """
+        pass
+
+    @abstractmethod
+    async def export(
+        self,
+        content: str,
+        format_type: str,
+        metadata: Dict[str, Any],
+        images: Optional[Dict[str, bytes]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Export rendered content to the target service.
+
+        Args:
+            content: Fully rendered markdown or HTML with images inlined.
+            format_type: 'markdown' or 'html'.
+            metadata: Export metadata (conversation_id, model, version, etc.).
+            images: Dict of {filename: image_bytes} for targets that need
+                    images uploaded separately (e.g. Slack file uploads).
+
+        Returns:
+            Dict with at least: success (bool), url (Optional[str]), message (str).
+        """
+        pass
+
+    def should_apply(self) -> bool:
+        """Return True if this export target should be available."""
+        return True
+
+
 @dataclass
 class EncryptionPolicy:
     """
