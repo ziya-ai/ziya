@@ -555,6 +555,50 @@ export const vegaLitePlugin: D3RenderPlugin = {
         }
       }
 
+      // Fix 0.25: Area marks with fold transforms on categorical x-axis
+      //
+      // Two issues that commonly co-occur in LLM-generated area charts:
+      //
+      // A) nominal → ordinal: Area marks interpolate between points and
+      //    need an ordered axis.  Convert to 'ordinal' so paths render.
+      //
+      // B) Explicit y-domain + fold: Vega-Lite fails to render area
+      //    paths when an explicit y scale domain is combined with fold
+      //    transforms on categorical (ordinal/nominal) x-axes with
+      //    enough categories.  Remove the explicit domain and let
+      //    Vega-Lite auto-scale; add stack:null so overlapping areas
+      //    are layered rather than stacked.
+      {
+        const markType = typeof spec.mark === 'string' ? spec.mark : spec.mark?.type;
+        const hasFold = spec.transform?.some((t: any) => t.fold);
+        const hasColorEncoding = spec.encoding?.color?.field;
+
+        if (markType === 'area' && hasFold && hasColorEncoding) {
+          // Sub-fix A: nominal → ordinal for area marks
+          if (spec.encoding?.x?.type === 'nominal') {
+            console.log('🔧 AREA-FOLD-FIX: Converting x-axis from nominal to ordinal for area mark');
+            spec.encoding.x.type = 'ordinal';
+          }
+
+          // Sub-fix B: remove explicit y-domain that breaks area paths
+          const yEnc = spec.encoding?.y;
+          if (yEnc?.scale?.domain && (spec.encoding?.x?.type === 'ordinal' || spec.encoding?.x?.type === 'nominal')) {
+            console.log(`🔧 AREA-FOLD-FIX: Removing explicit y-domain ${JSON.stringify(yEnc.scale.domain)} that breaks area rendering with fold+categorical x`);
+            delete yEnc.scale.domain;
+            // Clean up empty scale object
+            if (yEnc.scale && Object.keys(yEnc.scale).length === 0) {
+              delete yEnc.scale;
+            }
+          }
+
+          // Sub-fix C: disable default stacking for overlapping areas
+          if (yEnc && yEnc.stack !== false && yEnc.stack !== null) {
+            console.log('🔧 AREA-FOLD-FIX: Disabling stacking for area+fold chart');
+            yEnc.stack = null;
+          }
+        }
+      }
+
       // Fix 0.3: Handle row/column faceting with binning where some facets have very few points
       // This causes data to disappear (e.g., Category C with only 2 points)
       // Solution: Auto-convert to overlay layout when sample sizes are too small
@@ -1742,12 +1786,50 @@ export const vegaLitePlugin: D3RenderPlugin = {
         return spec;
       }
 
-      // Check if we have layers with different y-axis fields and scales
-      const yFields = spec.layer.map((layer: any) => layer.encoding?.y?.field).filter(Boolean);
+      // Check layers for different y-axis fields and scales.
+      // Include top-level encoding since layers inherit from it when they
+      // don't define their own y-encoding.
+      const topLevelYField = spec.encoding?.y?.field;
+      const yFields = spec.layer.map((layer: any) =>
+        layer.encoding?.y?.field || topLevelYField
+      ).filter(Boolean);
+      const uniqueYFields = [...new Set(yFields)];
+
       const hasLogScale = spec.layer.some((layer: any) => layer.encoding?.y?.scale?.type === 'log');
       const hasLinearScale = spec.layer.some((layer: any) => !layer.encoding?.y?.scale?.type || layer.encoding?.y?.scale?.type === 'linear');
 
-      if (yFields.length > 1 && hasLogScale && hasLinearScale) {
+      // Detect mismatched scales: log/linear mix OR different fields whose
+      // value ranges differ by more than 3×.  The range check catches specs
+      // like bars plotting "pop" (0–5000) layered with circles plotting
+      // "infra" (0–100) — an explicit domain on one layer constrains the
+      // shared axis and clips the other layer's marks completely.
+      const hasScaleTypeMismatch = hasLogScale && hasLinearScale;
+      const hasRangeMismatch = uniqueYFields.length > 1 && spec.data?.values && (() => {
+        const ranges = uniqueYFields.map((field: string) => {
+          const values = spec.data.values
+            .map((d: any) => d[field])
+            .filter((v: any) => typeof v === 'number' && !isNaN(v));
+          if (values.length === 0) return null;
+          return { field, min: Math.min(...values), max: Math.max(...values) };
+        }).filter(Boolean) as { field: string; min: number; max: number }[];
+
+        if (ranges.length < 2) return false;
+
+        for (let i = 0; i < ranges.length; i++) {
+          for (let j = i + 1; j < ranges.length; j++) {
+            const span1 = ranges[i].max - ranges[i].min || 1;
+            const span2 = ranges[j].max - ranges[j].min || 1;
+            const ratio = Math.max(span1 / span2, span2 / span1);
+            if (ratio > 3) {
+              console.log(`🔧 DUAL-AXIS-FIX: "${ranges[i].field}" (${ranges[i].min}–${ranges[i].max}) and "${ranges[j].field}" (${ranges[j].min}–${ranges[j].max}) differ by ${ratio.toFixed(1)}x`);
+              return true;
+            }
+          }
+        }
+        return false;
+      })();
+
+      if (yFields.length > 1 && (hasScaleTypeMismatch || hasRangeMismatch)) {
         console.log('🔧 DUAL-AXIS-FIX: Detected layered chart with mismatched y-axis scales');
 
         // CRITICAL: Remove problematic domains that cause scale conflicts
@@ -2207,7 +2289,112 @@ export const vegaLitePlugin: D3RenderPlugin = {
       return s;
     };
 
+    // Fix: Bar marks on log scale are fundamentally broken — bars imply a
+    // zero baseline but log(0) = -∞.  Adjusting the domain doesn't help
+    // because the bar length represents distance from a meaningless
+    // baseline.  Convert to tick + text layers: ticks show position on
+    // the log axis, text labels show the human-readable value.
+    const fixBarLogScaleBaseline = (s: any): any => {
+      const markType = typeof s.mark === 'string' ? s.mark : s.mark?.type;
+      if (markType !== 'bar') return s;
+
+      // Identify which axis is quantitative+log
+      let logAxis: 'x' | 'y' | null = null;
+      for (const axis of ['x', 'y'] as const) {
+        const enc = s.encoding?.[axis];
+        if (enc?.type === 'quantitative' && enc?.scale?.type === 'log') {
+          logAxis = axis;
+        }
+      }
+      if (!logAxis) return s;
+
+      const logEnc = s.encoding[logAxis];
+      const field = logEnc.field;
+      if (!field || !s.data?.values) return s;
+
+      const values = s.data.values
+        .map((d: any) => d[field])
+        .filter((v: any) => typeof v === 'number' && v > 0);
+      if (values.length === 0) return s;
+
+      const minVal = Math.min(...values);
+      const maxVal = Math.max(...values);
+      const lowerBound = minVal * 0.3;
+      const upperBound = maxVal * 3;
+
+      // Build human-readable labels
+      const labelledData = s.data.values.map((d: any) => {
+        const v = d[field];
+        let label: string;
+        if (typeof v !== 'number' || v <= 0) label = String(v);
+        else if (v >= 1e9) label = (v / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
+        else if (v >= 1e6) label = (v / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+        else if (v >= 1e3) label = (v / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
+        else label = String(v);
+        return { ...d, _barLogLabel: label };
+      });
+
+      // Compute clean power-of-10 grid values
+      const logLow = Math.floor(Math.log10(lowerBound));
+      const logHigh = Math.ceil(Math.log10(upperBound));
+      const gridValues: number[] = [];
+      for (let exp = logLow; exp <= logHigh; exp++) {
+        const v = Math.pow(10, exp);
+        if (v >= lowerBound && v <= upperBound) gridValues.push(v);
+      }
+
+      const fixedLogEnc = {
+        ...logEnc,
+        scale: { ...logEnc.scale, domain: [lowerBound, upperBound] },
+        axis: {
+          ...(logEnc.axis || {}),
+          values: gridValues,
+          gridDash: [2, 4],
+        },
+      };
+
+      const sharedEncoding = { ...s.encoding, [logAxis]: fixedLogEnc };
+      delete sharedEncoding.size;
+
+      // Label positioning: offset away from the tick mark
+      const labelOffset = logAxis === 'x'
+        ? { dy: -14 }
+        : { dx: 12, align: 'left' as const };
+
+      const result: any = {
+        ...s,
+        data: { values: labelledData },
+        mark: undefined,
+        encoding: undefined,
+        layer: [
+          {
+            mark: { type: 'tick', thickness: 6, size: 40 },
+            encoding: { ...sharedEncoding },
+          },
+          {
+            mark: { type: 'text', fontSize: 11, ...labelOffset },
+            encoding: {
+              ...sharedEncoding,
+              text: { field: '_barLogLabel', type: 'nominal' },
+              color: sharedEncoding.color
+                ? { ...sharedEncoding.color, legend: null }
+                : { value: '#999' },
+            },
+          },
+        ],
+      };
+      delete result.mark;
+
+      console.log(
+        `🔧 BAR-LOG-FIX: Converted bar+log to tick+text layers ` +
+        `(${logAxis}-axis, field: "${field}", range: ${minVal}–${maxVal})`
+      );
+
+      return result;
+    };
+
     fixedSpec = fixAreaLogScaleDomain(fixedSpec);
+    fixedSpec = fixBarLogScaleBaseline(fixedSpec);
 
     // Now preprocess the fixed spec
     vegaSpec = preprocessVegaSpec(fixedSpec);
