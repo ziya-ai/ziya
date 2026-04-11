@@ -7,6 +7,7 @@ import { ThemeProvider as MUIThemeProvider, createTheme } from '@mui/material/st
 interface ThemeContextType {
     isDarkMode: boolean;
     toggleTheme: () => void;
+    setTheme: (mode: 'dark' | 'light') => void;
     themeAlgorithm: ThemeConfig['algorithm'];
 }
 
@@ -72,9 +73,14 @@ export const ThemeProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         setIsDarkMode(!isDarkMode);
     };
 
+    const setTheme = (mode: 'dark' | 'light') => {
+        setIsDarkMode(mode === 'dark');
+    };
+
     const value = {
         isDarkMode,
         toggleTheme,
+        setTheme,
         themeAlgorithm: isDarkMode ? theme.darkAlgorithm : theme.defaultAlgorithm,
     };
 

@@ -208,7 +208,7 @@ export const DiagramRenderPage: React.FC = () => {
                     >
                         <D3Renderer
                             spec={d3Spec}
-                            type="auto"
+                            type="d3"
                             isStreaming={false}
                             forceRender={true}
                             width={spec?.width}

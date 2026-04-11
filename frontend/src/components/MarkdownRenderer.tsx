@@ -29,6 +29,7 @@ import { formatMCPOutput } from '../utils/mcpFormatter';
 import { useProject } from '../context/ProjectContext';
 import { useSendPayload } from '../hooks/useSendPayload';
 import { useStreamingContext } from '../context/StreamingContext';
+import { parseD3Spec } from '../utils/d3SpecParser';
 
 // Lazy-load heavy diagram and mockup renderers.
 // mermaid + vega + d3 + graphviz + drawio together account for ~4 MB of JS that most
@@ -3884,6 +3885,7 @@ const decodeHtmlEntities = (text: string): string => {
         .replace(/&amp;/g, '&')
         .replace(/&quot;/g, '"')
         .replace(/&apos;/g, "'")
+        .replace(/&#96;/g, '`')
         .replace(/&#39;/g, "'")
         .replace(/&#x27;/g, "'")
         .replace(/&#x60;/g, '`')
@@ -4242,8 +4244,28 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                 case 'd3':
                     if (!hasText(tokenWithText)) return null;
+                    // Parse the D3 spec text into an object.
+                    // Unlike other diagram types, D3 specs may use JS expression
+                    // syntax with unquoted keys: ({ type: "force-directed", ... })
+                    let d3Spec: any;
+                    try {
+                        d3Spec = parseD3Spec(tokenWithText.text);
+                        if (d3Spec && !d3Spec.type) {
+                            d3Spec.type = 'd3';
+                        }
+                    } catch (_) {
+                        // Parsing failed — pass the raw string for D3Renderer
+                        // to show as a spec preview during streaming
+                        d3Spec = null;
+                    }
+
                     return (
-                        <LazyD3Renderer key={sk} spec={tokenWithText.text} type="d3" isStreaming={isStreaming} />
+                        <LazyD3Renderer
+                            key={sk}
+                            spec={d3Spec || tokenWithText.text}
+                            type="d3"
+                            isStreaming={isStreaming}
+                        />
                     );
 
                 case 'code':
@@ -5094,7 +5116,7 @@ function _installThrottleObserver(scanFn: () => void) {
                     if (n.nodeType !== Node.ELEMENT_NODE) return false;
                     const el = n as Element;
                     return el.matches('.throttle-retry-button, .auth-error-retry-button') ||
-                           el.querySelector('.throttle-retry-button, .auth-error-retry-button') !== null;
+                        el.querySelector('.throttle-retry-button, .auth-error-retry-button') !== null;
                 })
             );
             if (!relevant) return;
@@ -5257,6 +5279,47 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 console.debug('Tool block preprocessing error (handled):', toolBlockError);
             }
 
+            // Fix: Upgrade fenced code blocks whose content contains lines that
+            // would prematurely close the fence under the commonmark spec.
+            // This commonly happens in `diff` blocks where context lines are
+            // prefixed with a single space: " ```" matches the closing fence
+            // pattern (up to 3 spaces indent + 3+ backticks + nothing else).
+            // We scan for such collisions and increase the outer fence length.
+            {
+                const fenceUpgradeLines = processedMarkdown.split('\n');
+                const fenceUpgradeOutput: string[] = [];
+                let fui = 0;
+                while (fui < fenceUpgradeLines.length) {
+                    const openMatch = fenceUpgradeLines[fui].match(/^(`{3,})(\S.*)?$/);
+                    if (openMatch) {
+                        const outerLen = openMatch[1].length;
+                        // Find the closing fence
+                        let closeIdx = -1;
+                        let maxInnerFence = 0;
+                        for (let fj = fui + 1; fj < fenceUpgradeLines.length; fj++) {
+                            const cl = fenceUpgradeLines[fj].match(/^(`{3,})\s*$/);
+                            if (cl && cl[1].length >= outerLen) { closeIdx = fj; break; }
+                            // Check if this content line looks like a closing fence
+                            // (1-3 spaces indent + backticks + optional spaces)
+                            const innerFence = fenceUpgradeLines[fj].match(/^ {1,3}(`{3,})\s*$/);
+                            if (innerFence) {
+                                maxInnerFence = Math.max(maxInnerFence, innerFence[1].length);
+                            }
+                        }
+                        if (closeIdx !== -1 && maxInnerFence >= outerLen) {
+                            const newLen = maxInnerFence + 1;
+                            const newFence = '`'.repeat(newLen);
+                            const langPart = openMatch[2] || '';
+                            fenceUpgradeLines[fui] = newFence + langPart;
+                            fenceUpgradeLines[closeIdx] = newFence;
+                        }
+                    }
+                    fenceUpgradeOutput.push(fenceUpgradeLines[fui]);
+                    fui++;
+                }
+                processedMarkdown = fenceUpgradeOutput.join('\n');
+            }
+
             // Ensure blank line before code fences in all problematic cases
             // Marked.js requires blank lines before code blocks for proper parsing
 
@@ -5285,6 +5348,11 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
             // Also fix after paragraphs or text that directly precedes code fences
             processedMarkdown = processedMarkdown.replace(/([^\n])\n(\`\`\`[a-zA-Z0-9_-]*)/g, '$1\n\n$2');
+
+            // Fix: Code fence directly concatenated to text with no newline at all
+            // e.g. "some text:```vega-lite" → "some text:\n\n```vega-lite"
+            // LLMs sometimes omit the newline before a code fence entirely
+            processedMarkdown = processedMarkdown.replace(/([^\n\`])(\`{3,}[a-zA-Z][a-zA-Z0-9_-]*)/g, '$1\n\n$2');
 
             // Fix 4: Strip bare code fences that wrap markdown prose instead of code.
             // Models sometimes output bare fences (no language tag) as visual separators
@@ -5347,18 +5415,18 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                                 continue;
                             }
 
-                        // Orphan fence detection: if the inner content starts with
-                        // a code fence opening (e.g. ```bash), the outer bare fence
-                        // is an orphan separator — strip it so the real block renders.
-                        const firstNonBlank = innerLines.findIndex(function(l) {
-                            return l.trim().length > 0;
-                        });
-                        if (firstNonBlank >= 0 && /^`{3,}\S/.test(innerLines[firstNonBlank])) {
-                            fenceOutput.push(...innerLines);
-                            fenceOutput.push(fenceLines[closeIdx]);
-                            fi = closeIdx + 1;
-                            continue;
-                        }
+                            // Orphan fence detection: if the inner content starts with
+                            // a code fence opening (e.g. ```bash), the outer bare fence
+                            // is an orphan separator — strip it so the real block renders.
+                            const firstNonBlank = innerLines.findIndex(function(l) {
+                                return l.trim().length > 0;
+                            });
+                            if (firstNonBlank >= 0 && /^`{3,}\S/.test(innerLines[firstNonBlank])) {
+                                fenceOutput.push(...innerLines);
+                                fenceOutput.push(fenceLines[closeIdx]);
+                                fi = closeIdx + 1;
+                                continue;
+                            }
 
                             const looksLikeMarkdown = /\*\*|^#{1,6}\s|^\d+\.|^[-*]\s|^>\s/m.test(innerContent);
                             const looksLikeCode = innerContent.split('\n').some(l => {
