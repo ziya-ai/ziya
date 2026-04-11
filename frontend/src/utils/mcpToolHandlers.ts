@@ -59,15 +59,18 @@ const sequentialThinkingHandler: ToolHandler = {
     });
     
     if (thinkingContent) {
-      // Escape triple backticks to prevent fence breakout
-      // Strategy: Replace ``` with &#96;&#96;&#96; AND ensure it's preserved through markdown parsing
-      // We need to use a fence length that's longer than any fences in the content
-      let escapedContent = thinkingContent.replace(/```/g, '&#96;&#96;&#96;');
+      // Dynamically size the fence to be longer than any backtick sequence
+      // in the content. This avoids &#96; HTML entities which render as
+      // literal text when fence containment fails or decoding is missed.
+      const maxFenceLen = (thinkingContent.match(/`{3,}/g) || [])
+        .reduce((max: number, m: string) => Math.max(max, m.length), 3);
+      const fence = '`'.repeat(maxFenceLen + 2);
       
-      // Use 4 backticks for the thinking fence to avoid conflicts with 3-backtick fences in content
-      const thinkingDisplay = `\n\`\`\`\`thinking:step-${thoughtNumber}\n🤔 **Thought ${thoughtNumber}/${totalThoughts}**\n\n${escapedContent}\n\`\`\`\`\n\n`;
+      // Raw content goes inside — no entity escaping needed since the fence
+      // is guaranteed longer than any backtick sequence in the content
+      const thinkingDisplay = `\n${fence}thinking:step-${thoughtNumber}\n🤔 **Thought ${thoughtNumber}/${totalThoughts}**\n\n${thinkingContent}\n${fence}\n\n`;
       
-      console.log('🤔 THINKING_START: Created thinking display with 4-backtick fence');
+      console.log(`🤔 THINKING_START: Created thinking display with ${fence.length}-backtick fence`);
       
       context.currentContent.value += thinkingDisplay;
       

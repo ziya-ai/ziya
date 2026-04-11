@@ -793,7 +793,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
           }}
           style={{ 
             minHeight: '50px',
-            maxHeight: '150px',
+            maxHeight: '50vh',
             overflowY: 'auto',
             outline: 'none',
             border: 'none', 

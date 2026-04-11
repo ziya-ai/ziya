@@ -34,5 +34,7 @@ export function removeThinkingTags(content: string): string {
     // Remove both thinking-data and thinking blocks, preserving spacing
     return content
         .replace(/<thinking-data>[\s\S]*?<\/thinking-data>\s*/g, '')
-        .replace(/<thinking>[\s\S]*?<\/thinking>\s*/g, '');
+        .replace(/<thinking>[\s\S]*?<\/thinking>\s*/g, '')
+        // Remove fence-based thinking blocks created by mcpToolHandlers.ts
+        .replace(/(`{4,})thinking:[^\n]*\n[\s\S]*?\1\s*/g, '');
 }
