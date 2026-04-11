@@ -2439,8 +2439,11 @@ Retry with the 'command' parameter included."""
                                         # Inject project path for workspace-scoped routing
                                         if project_root:
                                             args['_workspace_path'] = project_root
-                                        # CRITICAL: Run sync tool in thread to avoid blocking the event loop
-                                        result = await asyncio.wait_for(asyncio.to_thread(builtin_tool._run, **args), timeout=TOOL_EXEC_TIMEOUT)
+                                        # Call the async execute() method directly on the event loop.
+                                        # Going through _run() would create a new event loop via
+                                        # asyncio.run(), which deadlocks tools that use Playwright
+                                        # or other async resources bound to the main loop.
+                                        result = await asyncio.wait_for(builtin_tool.tool_instance.execute(**args), timeout=TOOL_EXEC_TIMEOUT)
                                         
                                         # SECURITY: Sign builtin tool results too
                                         # Builtin tools don't go through MCPClient so we sign here
@@ -2567,7 +2570,20 @@ Please try again or proceed without this tool."""
                                             result_text = f"ERROR: {error_msg}. Please try a different approach or fix the command."
                                    elif isinstance(result, dict) and 'content' in result:
                                         content = result['content']
-                                        if isinstance(content, list) and len(content) > 0:
+                                        # Preserve structured content blocks (e.g. images)
+                                        # so the model receives them via vision capabilities.
+                                        # Detect image content structurally rather than via
+                                        # the _has_image_content flag, which gets stripped by
+                                        # strip_signature_metadata (removes all _-prefixed keys).
+                                        _has_image = isinstance(content, list) and any(
+                                            isinstance(b, dict) and b.get('type') == 'image' for b in content)
+                                        if _has_image:
+                                            result_text = content  # keep as structured list
+                                            # Extract text description for display/sanitization
+                                            text_parts = [b.get('text', '') for b in content if b.get('type') == 'text']
+                                            display_text = ' '.join(text_parts) or f"[Image result from {tool_name}]"
+                                            logger.info(f"🖼️ TOOL_IMAGE_RESULT: Preserving image content blocks for {tool_name}")
+                                        elif isinstance(content, list) and len(content) > 0:
                                             result_text = content[0].get('text', str(result))
                                         else:
                                             result_text = str(result)
@@ -2577,8 +2593,11 @@ Please try again or proceed without this tool."""
                                    # Sanitize tool result for context efficiency:
                                    # runs plugin filters (site-specific) then
                                    # general-purpose transforms (base64, size cap).
-                                   from app.utils.tool_result_sanitizer import sanitize_for_context
-                                   result_text = sanitize_for_context(result_text, tool_name=actual_tool_name, args=args)
+                                   # Skip sanitization for structured image content — the
+                                   # image bytes must not be stripped or truncated.
+                                   if isinstance(result_text, str):
+                                       from app.utils.tool_result_sanitizer import sanitize_for_context
+                                       result_text = sanitize_for_context(result_text, tool_name=actual_tool_name, args=args)
 
                                    tool_results.append({
                                         'tool_id': tool_id,
@@ -2591,17 +2610,38 @@ Please try again or proceed without this tool."""
                                    should_display_to_user = is_verified or (not verification_error)
                                    
                                    if should_display_to_user:
+                                       # For image results, extract display text for the frontend
+                                       if isinstance(result_text, list):
+                                           _display_parts = [b.get('text', '') for b in result_text if b.get('type') == 'text']
+                                           _display_str = ' '.join(_display_parts) or f"[Image from {tool_name}]"
+                                           # Extract base64 data URI for inline frontend display.
+                                           # The image is NOT stored in conversation history
+                                           # (compacted to text summary downstream) — this is
+                                           # purely for the tool_display event so the frontend
+                                           # can render it inline.
+                                           _image_data_uri = None
+                                           for _block in result_text:
+                                               if isinstance(_block, dict) and _block.get('type') == 'image':
+                                                   _src = _block.get('source', {})
+                                                   if _src.get('type') == 'base64' and _src.get('data'):
+                                                       _media = _src.get('media_type', 'image/png')
+                                                       _image_data_uri = f"data:{_media};base64,{_src['data']}"
+                                                       break
+                                       else:
+                                           _display_str = result_text
+
                                        yield {
                                            'type': 'tool_display',
                                            'tool_id': tool_id,
                                            'tool_name': tool_name,
-                                           'result': self._format_tool_result(tool_name, result_text, args),
+                                           'result': self._format_tool_result(tool_name, _display_str, args),
                                            'args': args,
                                            'syntax': self._infer_syntax_hint(tool_name, args),
                                            'verified': is_verified,
                                            'verification_error': verification_error,
                                            'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms",
                                            'is_internal': actual_tool_name in internal_tool_names,
+                                            **({'image_data': _image_data_uri} if isinstance(result_text, list) and _image_data_uri else {}),
                                        }
                                    else:
                                        # Security failure - suppress from user display but log
@@ -2953,7 +2993,23 @@ Please retry the tool call with valid JSON. Ensure:
                     provider_tool_results = []
                     for tool_result in tool_results:
                         raw_result = tool_result['result']
-                        if isinstance(raw_result, str) and '$ ' in raw_result:
+                        # Structured image content (list of content blocks with
+                        # base64 images) was already shown to the model in this
+                        # iteration via tool_result_for_model.  For conversation
+                        # history (sent on every subsequent iteration), replace
+                        # with just the text summary to avoid bloating context
+                        # with hundreds of KB of base64 per diagram.
+                        if isinstance(raw_result, list):
+                            text_parts = [
+                                b.get('text', '') for b in raw_result
+                                if isinstance(b, dict) and b.get('type') == 'text'
+                            ]
+                            raw_result = ' '.join(text_parts) or '[Image result — content delivered inline above]'
+                            logger.info(f"🖼️ CONTEXT_COMPACT: Replaced image content blocks with text summary for conversation history")
+
+                        if isinstance(raw_result, list):
+                            pass  # already in correct format for provider
+                        elif isinstance(raw_result, str) and '$ ' in raw_result:
                             lines = raw_result.split('\n')
                             clean_lines = [line for line in lines if not line.startswith('$ ')]
                             raw_result = '\n'.join(clean_lines).strip()
