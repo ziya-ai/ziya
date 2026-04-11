@@ -63,6 +63,13 @@ BUILTIN_TOOL_CATEGORIES: Dict[str, Dict[str, any]] = {
         "requires_dependencies": [],
         "tools": [],
     },
+    "diagram_render": {
+        "name": "Diagram Render",
+        "description": "Render diagrams to images for visual inspection and iterative refinement",
+        "enabled_by_default": True,
+        "requires_dependencies": [],
+        "tools": [],
+    },
 }
 
 
@@ -135,6 +142,16 @@ def get_nova_grounding_tools() -> List[Type[BaseMCPTool]]:
         return []
 
 
+def get_diagram_render_tools() -> List[Type[BaseMCPTool]]:
+    """Get diagram rendering tools."""
+    try:
+        from app.mcp.tools.diagram_render import RenderDiagramTool
+        return [RenderDiagramTool]
+    except ImportError as e:
+        logger.warning(f"Could not import diagram render tools: {e}")
+        return []
+
+
 def get_skill_tools() -> List[Type[BaseMCPTool]]:
     """Get skill discovery tools."""
     try:
@@ -166,6 +183,7 @@ def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
         "fileio": get_fileio_tools,
         "ast": get_ast_tools,
         "nova_grounding": get_nova_grounding_tools,
+        "diagram_render": get_diagram_render_tools,
         "skills": get_skill_tools,
         "memory": get_memory_tools,
     }

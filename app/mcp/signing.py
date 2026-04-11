@@ -181,6 +181,9 @@ def strip_signature_metadata(result: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(result, dict):
         return result
     
-    # Create a copy without signature metadata
-    cleaned = {k: v for k, v in result.items() if not k.startswith("_")}
+    # Remove only the signing-specific keys. Blanket stripping of all
+    # _-prefixed keys was removing _has_image_content which is needed
+    # downstream for structured image result handling.
+    _SIGNING_KEYS = {'_signature', '_timestamp', '_tool_name', '_arguments', '_conversation_id'}
+    cleaned = {k: v for k, v in result.items() if k not in _SIGNING_KEYS}
     return cleaned

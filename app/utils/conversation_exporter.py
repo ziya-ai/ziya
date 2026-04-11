@@ -9,6 +9,7 @@ import base64
 import re
 import json
 from typing import List, Dict, Any, Optional
+import logging
 from datetime import datetime
 
 
@@ -30,6 +31,8 @@ _VIZ_TYPES = (
     'circuitikz', 'packet', 'drawio', 'designinspector',
 )
 _VIZ_TYPES_RE = '|'.join(_VIZ_TYPES)
+
+logger = logging.getLogger(__name__)
 
 
 def export_conversation_for_paste(
@@ -81,6 +84,130 @@ def export_conversation_for_paste(
         "message_count": len(messages),
         "diagrams_count": len(diagram_by_hash)
     }
+
+def _extract_diagram_specs(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Extract diagram code-fence specs from message content.
+
+    Returns a list of dicts with keys: type, definition, fingerprint.
+    """
+    specs = []
+    viz_pattern = r'```(' + _VIZ_TYPES_RE + r')\n(.*?)```'
+    for msg in messages:
+        content = msg.get('content', '')
+        if not content:
+            continue
+        for match in re.finditer(viz_pattern, content, re.DOTALL):
+            viz_type = match.group(1)
+            source = match.group(2)
+            fp = _viz_fingerprint(source)
+            specs.append({
+                'type': viz_type,
+                'definition': source.strip(),
+                'fingerprint': fp,
+            })
+    return specs
+
+
+async def render_diagrams_server_side(
+    messages: List[Dict[str, Any]],
+    theme: str = 'light',
+    format: str = 'svg',
+    server_port: int = 6969,
+) -> Dict[str, Dict[str, Any]]:
+    """Render all diagrams in messages using the headless Playwright renderer.
+
+    Returns a dict keyed by content fingerprint, matching the
+    ``diagram_by_hash`` structure expected by the embedding functions.
+    Each value has: dataUri, type ('svg'|'png'), sourceHash.
+
+    Falls back gracefully when Playwright is not installed -- returns
+    an empty dict so the exporter produces source-code-only output.
+    """
+    specs = _extract_diagram_specs(messages)
+    if not specs:
+        return {}
+
+    try:
+        from app.services.diagram_renderer import get_diagram_renderer
+    except ImportError:
+        logger.info("Playwright not installed -- diagrams exported as source code")
+        return {}
+
+    try:
+        renderer = await get_diagram_renderer(server_port)
+    except Exception as exc:
+        logger.warning("Could not start headless renderer: %s", exc)
+        return {}
+
+    diagram_by_hash: Dict[str, Dict[str, Any]] = {}
+
+    for spec in specs:
+        fp = spec['fingerprint']
+        if fp in diagram_by_hash:
+            continue  # already rendered (duplicate diagram)
+
+        try:
+            image_bytes = await renderer.render_diagram(
+                {
+                    'type': spec['type'],
+                    'definition': spec['definition'],
+                    'theme': theme,
+                },
+                format=format,
+            )
+
+            if format == 'svg':
+                b64 = base64.b64encode(image_bytes).decode('utf-8')
+                data_uri = f"data:image/svg+xml;base64,{b64}"
+            else:
+                b64 = base64.b64encode(image_bytes).decode('utf-8')
+                data_uri = f"data:image/png;base64,{b64}"
+
+            diagram_by_hash[fp] = {
+                'dataUri': data_uri,
+                'type': format,
+                'sourceHash': fp,
+            }
+            logger.info("Rendered %s diagram (%d bytes)", spec['type'], len(image_bytes))
+        except Exception as exc:
+            logger.warning("Failed to render %s diagram: %s", spec['type'], exc)
+
+    logger.info("Server-side rendering: %d/%d diagrams rendered",
+                len(diagram_by_hash), len(specs))
+    return diagram_by_hash
+
+
+async def export_conversation_rendered(
+    messages: List[Dict[str, Any]],
+    format_type: str = 'markdown',
+    target: str = 'public',
+    theme: str = 'light',
+    version: str = '0.3.8',
+    model: str = 'unknown',
+    provider: str = 'unknown',
+    server_port: int = 6969,
+) -> Dict[str, Any]:
+    """Export a conversation with server-side rendered diagrams.
+
+    Unlike ``export_conversation_for_paste`` (which relies on client-
+    captured data URIs), this function uses the headless Playwright
+    renderer to produce diagram images server-side.  Use this for
+    backend-initiated exports (plugin targets, CLI, API consumers).
+    """
+    diagram_by_hash = await render_diagrams_server_side(
+        messages, theme=theme, format='svg', server_port=server_port,
+    )
+
+    return export_conversation_for_paste(
+        messages=messages,
+        format_type=format_type,
+        target=target,
+        captured_diagrams=list(diagram_by_hash.values()),
+        version=version,
+        model=model,
+        provider=provider,
+    )
+
 
 def _clean_tool_blocks(content: str) -> str:
     """
