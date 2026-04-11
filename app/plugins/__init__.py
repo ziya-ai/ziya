@@ -24,6 +24,7 @@ _tool_validator_providers = []
 _data_retention_providers = []
 _tool_enhancement_providers = []
 _encryption_providers = []
+_export_providers = []
 _initialized = False
 
 def register_auth_provider(provider):
@@ -63,6 +64,17 @@ def register_formatter_provider(provider):
     """Register a formatter provider plugin."""
     _formatter_providers.append(provider)
     logger.debug(f"Registered formatter provider: {getattr(provider, 'formatter_id', 'unknown')}")
+
+def register_export_provider(provider):
+    """
+    Register an export target provider plugin.
+
+    Export providers push rendered conversations (with inline diagrams)
+    to external services like Slack, Quip, or wiki platforms.
+    """
+    _export_providers.append(provider)
+    _export_providers.sort(key=lambda p: getattr(p, 'priority', 0), reverse=True)
+    logger.debug(f"Registered export provider: {getattr(provider, 'provider_id', 'unknown')}")
 
 def register_tool_result_filter_provider(provider):
     """
@@ -261,6 +273,10 @@ def get_registry_providers() -> List:
 def get_formatter_providers() -> List:
     """Get all registered formatter providers."""
     return _formatter_providers.copy()
+
+def get_export_providers() -> List:
+    """Get all registered export providers."""
+    return [p for p in _export_providers if p.should_apply()]
 
 def get_tool_result_filter_providers() -> List:
     """Get all registered tool result filter providers."""
