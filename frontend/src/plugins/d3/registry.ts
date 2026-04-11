@@ -15,6 +15,11 @@ const pluginMetadata: PluginMetadata[] = [
     loader: async () => (await import('./vegaPlugin')).vegaPlugin
   },
   {
+    name: 'force-directed',
+    priority: 5,
+    loader: async () => (await import('./forceDirectedPlugin')).forceDirectedPlugin
+  },
+  {
     name: 'network-diagram',
     priority: 1,
     loader: async () => (await import('./networkDiagram')).networkDiagramPlugin

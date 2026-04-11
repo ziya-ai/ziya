@@ -6,6 +6,7 @@ import { findPluginForSpec, loadPlugin } from '../plugins/d3/registry';
 import { isDiagramDefinitionComplete } from '../utils/diagramUtils';
 import { ContainerSizingManager } from '../utils/containerSizing';
 import { isSafari } from '../utils/browserUtils';
+import { parseD3Spec } from '../utils/d3SpecParser';
 
 type RenderType = 'auto' | 'vega-lite' | 'd3';
 
@@ -381,13 +382,25 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
 
         // Load the appropriate plugin for this spec
         if (!plugin && spec) {
+            // If spec is still a raw string, try parsing it into an object
+            // before plugin lookup.  Plugins check spec.type on an object,
+            // so a string always fails canHandle().
+            if (typeof spec === 'string') {
+                const parsed = parseD3Spec(spec);
+                if (parsed && typeof parsed === 'object') {
+                    spec = parsed;
+                }
+            }
+
             isLoadingPluginRef.current = true;
             console.log('🔧 D3RENDERER: Loading plugin for spec:', spec.type);
             loadedPlugin = await findPluginForSpec(spec);
             isLoadingPluginRef.current = false;
             if (!loadedPlugin) {
                 console.error('🔧 D3RENDERER: No compatible plugin found for spec:', spec);
-                setRenderError('No compatible plugin found for this visualization');
+                const msg = `No compatible plugin found for visualization type "${spec?.type || 'unknown'}"`;
+                setRenderError(msg);
+                setErrorDetails([msg, 'Supported types: force-directed, network, bar, line, mermaid, graphviz, vega-lite, joint, d2, drawio, packet']);
                 setIsLoading(false);
                 return;
             }
