@@ -579,7 +579,8 @@ export function initMermaidEnhancer(): void {
             const [, prop, value] = match;
             // Clean the value and apply proper quoting rules
             const cleanValue = value.replace(/^["']|["']$/g, '');
-            const shouldQuote = ['id', 'text'].includes(prop);
+            // Only quote 'text' — Mermaid's parser expects bare tokens for id/risk/verifymethod
+            const shouldQuote = prop === 'text';
             output.push(`        ${prop}: ${shouldQuote ? `"${cleanValue}"` : cleanValue}`);
           }
           continue;
@@ -637,11 +638,9 @@ export function initMermaidEnhancer(): void {
         return `${prefix}${cleanId}`;
       });
 
-      // Fix verifymethod property name
-      result = result.replace(/verifymethod:/g, 'verifyMethod:');
-
-      // Fix verifymethod values - Mermaid only accepts specific verification types
-      result = result.replace(/verifyMethod:\s*([^}\n]+)/g, (match, method) => {
+      // Fix verifymethod values — Mermaid only accepts specific verification types
+      // Keep the keyword lowercase (Mermaid's lexer requires it)
+      result = result.replace(/verifymethod:\s*([^}\n]+)/g, (match, method) => {
         const methodValue = method.trim().replace(/['"]/g, ''); // Remove quotes
 
         // Mermaid only accepts: Analysis, Demonstration, Inspection, Test
@@ -649,8 +648,7 @@ export function initMermaidEnhancer(): void {
         const isValid = validMethods.some(valid => valid.toLowerCase() === methodValue.toLowerCase());
 
         const finalMethod = isValid ? methodValue : 'Test';
-        console.log(`🔍 REQUIREMENT-VERIFYMETHOD-FIX: "${methodValue}" -> "${finalMethod}"`);
-        return `verifyMethod: ${finalMethod}`;
+        return `verifymethod: ${finalMethod}`;
       });
 
       console.log('🔍 REQUIREMENT-ID-FIX: Processing complete');
@@ -2029,6 +2027,91 @@ export function initMermaidEnhancer(): void {
 
     // Mermaid's gantt parser expects very specific task format
     // The error "Cannot read properties of undefined (reading 'type')" happens when
+    // Handle dateFormat X (Unix timestamps / numeric offsets).
+    // Mermaid's Gantt parser has poor support for dateFormat X with
+    // bare numeric values.  Convert numeric start/end pairs into
+    // relative YYYY-MM-DD tasks where each unit maps to one day.
+    const isDateFormatX = /dateFormat\s+X\s*$/m.test(processedDef);
+    if (isDateFormatX) {
+      console.log('🔍 GANTT-FIX: Detected dateFormat X — converting numeric tasks to dates');
+
+      const lines = processedDef.split('\n');
+      const resultLines: string[] = [];
+      let taskId = 0;
+      // Collect all numeric values to find the baseline offset
+      const allNums: number[] = [];
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.includes(':') || trimmed.startsWith('gantt') ||
+            trimmed.startsWith('title') || trimmed.startsWith('dateFormat') ||
+            trimmed.startsWith('axisFormat') || trimmed.startsWith('section') ||
+            trimmed.startsWith('%%') || trimmed.startsWith('tickInterval')) {
+          continue;
+        }
+        const colonIdx = trimmed.indexOf(':');
+        const parts = trimmed.substring(colonIdx + 1).split(',').map(p => p.trim());
+        for (const p of parts) {
+          const n = parseInt(p, 10);
+          if (!isNaN(n) && /^\d+$/.test(p)) allNums.push(n);
+        }
+      }
+      const baseOffset = allNums.length > 0 ? Math.min(...allNums) : 0;
+      // Scale factor: if max range > 3650, compress so chart stays reasonable
+      const maxRange = allNums.length > 0 ? Math.max(...allNums) - baseOffset : 1;
+      const scale = maxRange > 3650 ? 3650 / maxRange : 1;
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+
+        // Replace dateFormat X with YYYY-MM-DD
+        if (/^\s*dateFormat\s+X\s*$/.test(line)) {
+          resultLines.push(line.replace(/dateFormat\s+X/, 'dateFormat YYYY-MM-DD'));
+          continue;
+        }
+        // Replace axisFormat %s with date format
+        if (/^\s*axisFormat\s+%s\s*$/.test(line)) {
+          resultLines.push(line.replace(/axisFormat\s+%s/, 'axisFormat %Y-%m-%d'));
+          continue;
+        }
+
+        // Skip non-task lines
+        if (!trimmed.includes(':') || trimmed.startsWith('gantt') ||
+            trimmed.startsWith('title') || trimmed.startsWith('dateFormat') ||
+            trimmed.startsWith('axisFormat') || trimmed.startsWith('section') ||
+            trimmed.startsWith('%%') || trimmed.startsWith('tickInterval')) {
+          resultLines.push(line);
+          continue;
+        }
+
+        // Parse task: "TaskName : start, end" or "TaskName : status, id, start, end"
+        const colonIdx = trimmed.indexOf(':');
+        const taskName = trimmed.substring(0, colonIdx).trim();
+        const afterColon = trimmed.substring(colonIdx + 1);
+        const parts = afterColon.split(',').map(p => p.trim());
+
+        // Extract numeric start/end (last two numeric values)
+        const nums = parts.map(p => parseInt(p, 10)).filter(n => !isNaN(n));
+        if (nums.length >= 2) {
+          const rawStart = nums[nums.length - 2];
+          const rawEnd = nums[nums.length - 1];
+          const dayStart = Math.round((rawStart - baseOffset) * scale);
+          const dayDuration = Math.max(1, Math.round((rawEnd - rawStart) * scale));
+          // Convert to date relative to 2024-01-01
+          const startDate = new Date(2024, 0, 1 + dayStart);
+          const yyyy = startDate.getFullYear();
+          const mm = String(startDate.getMonth() + 1).padStart(2, '0');
+          const dd = String(startDate.getDate()).padStart(2, '0');
+          taskId++;
+          resultLines.push(`    ${taskName}    :t${taskId}, ${yyyy}-${mm}-${dd}, ${dayDuration}d`);
+        } else {
+          resultLines.push(line);
+        }
+      }
+
+      console.log('🔍 GANTT-FIX: Converted ' + taskId + ' numeric tasks to date format');
+      return resultLines.join('\n');
+    }
+
     // the task object structure is malformed. Let's ensure proper task format.
 
     // First, ensure we have proper section structure

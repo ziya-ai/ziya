@@ -316,8 +316,10 @@ interface LooseSpec {
   subtitle?: string;
   width?: number;
   bitWidth?: number;
+  bits_per_row?: number;
   fields?: FlatField[];
   sections?: any[];
+  brackets?: any[];
   type?: string;
 }
 
@@ -389,28 +391,146 @@ export function normalizePacketSpec(raw: unknown): PacketSpec | null {
   const title = obj.title || obj.name;
   if (!title) return null;
 
-  const bitWidth = obj.bitWidth || obj.width || 8;
+  const bitWidth = obj.bitWidth || obj.bits_per_row || obj.width || 8;
 
   // Already has sections — accept as-is with aliased fields patched
   if (obj.sections && Array.isArray(obj.sections) && obj.sections.length > 0) {
+    // Detect index-based sections: {label, start, end} pointing into a
+    // fields array.  LLMs frequently generate this instead of the row-based
+    // format the renderer expects.
+    const isIndexBased = obj.sections.every(
+      (s: any) => typeof s.start === 'number' && typeof s.end === 'number' && s.label
+    );
+
+    if (isIndexBased && obj.fields && Array.isArray(obj.fields) && obj.fields.length > 0) {
+      // Build rows from the flat fields, grouped by the index-based sections
+      const allRows = flatFieldsToRows(obj.fields, bitWidth);
+
+      // Map field indices to the row that contains them.
+      // Walk the rows and build a cumulative field-index → row-index map.
+      const fieldToRow: number[] = [];
+      let fieldIdx = 0;
+      for (let rowIdx = 0; rowIdx < allRows.length; rowIdx++) {
+        for (const _ of allRows[rowIdx]) {
+          fieldToRow.push(rowIdx);
+          fieldIdx++;
+        }
+      }
+
+      // Convert top-level brackets from field-index-based to row-index-based.
+      // The renderer expects {start_row, end_row} within a section, but the
+      // input has {start, end} as global field indices.  We convert to global
+      // row indices here; per-section offsetting happens below.
+      const globalBrackets: Array<{
+        label: string; startRow: number; endRow: number; side: 'left' | 'right';
+      }> = [];
+      if (obj.brackets && Array.isArray(obj.brackets)) {
+        for (const br of obj.brackets) {
+          const startFieldIdx = Math.min(br.start ?? 0, obj.fields.length - 1);
+          const endFieldIdx = Math.min((br.end ?? br.start ?? 0), obj.fields.length - 1);
+          globalBrackets.push({
+            label: br.label || '',
+            startRow: fieldToRow[startFieldIdx] ?? 0,
+            endRow: fieldToRow[endFieldIdx] ?? (allRows.length - 1),
+            side: br.side ?? 'right',
+          });
+        }
+      }
+
+      const packetSections: PacketSection[] = obj.sections.map((sec: any) => {
+        const startFieldIdx = Math.min(sec.start ?? 0, obj.fields!.length - 1);
+        const endFieldIdx = Math.min((sec.end ?? sec.start ?? 0), obj.fields!.length - 1);
+        const startRow = fieldToRow[startFieldIdx] ?? 0;
+        const endRow = fieldToRow[endFieldIdx] ?? (allRows.length - 1);
+
+        const sectionRows = allRows.slice(startRow, endRow + 1);
+
+        // Attach brackets whose row-span overlaps this section's rows,
+        // converting global row indices to section-local row indices.
+        const sectionBrackets: PacketBracket[] = [];
+        for (const gb of globalBrackets) {
+          if (gb.endRow >= startRow && gb.startRow <= endRow) {
+            sectionBrackets.push({
+              start_row: Math.max(0, gb.startRow - startRow),
+              end_row: Math.min(sectionRows.length - 1, gb.endRow - startRow),
+              label: gb.label,
+              side: gb.side,
+            });
+          }
+        }
+
+        return {
+          label: sec.label,
+          rows: sectionRows.length > 0 ? sectionRows : [[[sec.label, bitWidth] as [string, number]]],
+          ...(sectionBrackets.length > 0 ? { brackets: sectionBrackets } : {}),
+        };
+      });
+
+      return {
+        type: 'packet',
+        title,
+        subtitle: obj.subtitle,
+        bitWidth,
+        sections: packetSections,
+      };
+    }
+
+    // Sections already in the correct {label, rows} format
+    // Validate each section has rows; convert from fields if missing.
+    const validatedSections = obj.sections.map((sec: any) => {
+      if (sec.rows && Array.isArray(sec.rows) && sec.rows.length > 0) {
+        return sec;
+      }
+      // Section has fields but no rows — convert them
+      if (sec.fields && Array.isArray(sec.fields) && sec.fields.length > 0) {
+        return { ...sec, rows: flatFieldsToRows(sec.fields, bitWidth) };
+      }
+      // Fallback: single-cell placeholder row so the renderer doesn't crash
+      return { ...sec, rows: [[[sec.label || 'Section', bitWidth] as [string, number]]] };
+    });
+
     return {
       type: 'packet',
       title,
       subtitle: obj.subtitle,
       bitWidth,
-      sections: obj.sections,
+      sections: validatedSections,
     };
   }
 
   // Flat fields array → single section with auto-wrapped rows
   if (obj.fields && Array.isArray(obj.fields) && obj.fields.length > 0) {
     const rows = flatFieldsToRows(obj.fields, bitWidth);
+
+    // Convert top-level brackets (field-index-based) to row-based
+    let brackets: PacketBracket[] | undefined;
+    if (obj.brackets && Array.isArray(obj.brackets) && obj.brackets.length > 0) {
+      const fieldToRow: number[] = [];
+      let fi = 0;
+      for (let ri = 0; ri < rows.length; ri++) {
+        for (const _ of rows[ri]) {
+          fieldToRow.push(ri);
+          fi++;
+        }
+      }
+      brackets = obj.brackets.map((br: any) => {
+        const sf = Math.min(br.start ?? 0, obj.fields!.length - 1);
+        const ef = Math.min(br.end ?? br.start ?? 0, obj.fields!.length - 1);
+        return {
+          start_row: fieldToRow[sf] ?? 0,
+          end_row: fieldToRow[ef] ?? (rows.length - 1),
+          label: br.label || '',
+          side: (br.side as 'left' | 'right') ?? 'right',
+        };
+      });
+    }
+
     return {
       type: 'packet',
       title,
       subtitle: obj.subtitle,
       bitWidth,
-      sections: [{ label: title, rows }],
+      sections: [{ label: title, rows, ...(brackets ? { brackets } : {}) }],
     };
   }
 

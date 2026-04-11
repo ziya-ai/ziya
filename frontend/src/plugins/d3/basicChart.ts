@@ -56,12 +56,72 @@ export const basicChartPlugin: D3RenderPlugin = {
                 .append('g')
                 .attr('transform', `translate(${margin.left},${margin.top})`)
 
-            const data = Array.isArray(spec.data) ? spec.data : [];
+            const data: any[] = Array.isArray(spec.data) ? spec.data : [];
+
+            // Bubble charts use continuous x/y scales with size-mapped radii.
+            // Data format: { x: number, y: number, size: number, label?: string }
+            // Scatter charts with x/y data use the same continuous layout.
+            if (spec.type === 'bubble' || (spec.type === 'scatter' && data.length > 0 && data[0].x !== undefined)) {
+                const style = spec.style || {};
+
+                if (style.background) {
+                    svg.append('rect')
+                        .attr('x', -margin.left).attr('y', -margin.top)
+                        .attr('width', width + margin.left + margin.right)
+                        .attr('height', height + margin.top + margin.bottom)
+                        .attr('fill', style.background);
+                }
+
+                const xExtent = d3.extent(data, (d: any) => d.x) as [number, number];
+                const yExtent = d3.extent(data, (d: any) => d.y) as [number, number];
+                const xPad = (xExtent[1] - xExtent[0]) * 0.1 || 1;
+                const yPad = (yExtent[1] - yExtent[0]) * 0.1 || 1;
+
+                const x = d3.scaleLinear()
+                    .domain([xExtent[0] - xPad, xExtent[1] + xPad])
+                    .range([0, width]);
+                const y = d3.scaleLinear()
+                    .domain([yExtent[0] - yPad, yExtent[1] + yPad])
+                    .range([height, 0]);
+                const maxSize = d3.max(data, (d: any) => d.size) || 1;
+                const r = d3.scaleSqrt().domain([0, maxSize]).range([4, 40]);
+
+                svg.append('g').attr('transform', `translate(0,${height})`)
+                    .call(d3.axisBottom(x))
+                    .selectAll('text').style('fill', style.axisColor || null);
+                svg.append('g')
+                    .call(d3.axisLeft(y))
+                    .selectAll('text').style('fill', style.axisColor || null);
+
+                svg.selectAll('circle')
+                    .data(data)
+                    .join('circle')
+                    .attr('cx', (d: any) => x(d.x))
+                    .attr('cy', (d: any) => y(d.y))
+                    .attr('r', (d: any) => r(d.size || 1))
+                    .attr('fill', (d: any) => d.color || style.pointColor || 'steelblue')
+                    .attr('opacity', 0.8)
+                    .attr('stroke', '#fff')
+                    .attr('stroke-width', 1);
+
+                svg.selectAll('.bubble-label')
+                    .data(data.filter((d: any) => d.label))
+                    .join('text')
+                    .attr('class', 'bubble-label')
+                    .attr('x', (d: any) => x(d.x))
+                    .attr('y', (d: any) => y(d.y) - r(d.size || 1) - 4)
+                    .attr('text-anchor', 'middle')
+                    .attr('fill', style.labelColor || '#666')
+                    .attr('font-size', style.fontSize || 11)
+                    .text((d: any) => d.label);
+
+                return;
+            }
 
             // Create scales
             const x = d3.scaleBand()
                 .range([0, width])
-                .domain(spec.data.map((d: any) => d.label))
+                .domain(data.map((d: any) => d.label))
                 .padding(0.1);
 
             const y = d3.scaleLinear()
