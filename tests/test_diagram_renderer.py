@@ -299,7 +299,8 @@ class TestAPIRoute:
             definition="graph LR\n  A-->B",
         )
 
-        with patch("app.routes.diagram_routes.get_diagram_renderer",
+        with patch("app.services.diagram_renderer.get_diagram_renderer",
+                    new_callable=AsyncMock,
                     return_value=mock_renderer):
             response = await render_diagram(request)
 
@@ -321,9 +322,153 @@ class TestAPIRoute:
             format="svg",
         )
 
-        with patch("app.routes.diagram_routes.get_diagram_renderer",
+        with patch("app.services.diagram_renderer.get_diagram_renderer",
+                    new_callable=AsyncMock,
                     return_value=mock_renderer):
             response = await render_diagram(request)
 
         assert response.media_type == "image/svg+xml"
+
+
+# ---------------------------------------------------------------------------
+# Integration tests (require Playwright + running Ziya server)
+# ---------------------------------------------------------------------------
+
+
+def _playwright_installed() -> bool:
+    """Check if playwright and chromium are available."""
+    try:
+        import playwright.async_api  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+_skip_no_playwright = pytest.mark.skipif(
+    not _playwright_installed(),
+    reason="Playwright not installed (pip install playwright && playwright install chromium)",
+)
+
+
+class TestHeadlessRenderIntegration:
+    """Integration tests that launch a real headless browser.
+
+    These require:
+      1. ``pip install playwright && playwright install chromium``
+      2. A running Ziya server on localhost:6969
+
+    Run with: ``pytest tests/test_diagram_renderer.py -m integration -v``
+    """
+
+    @_skip_no_playwright
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_mermaid_renders_svg(self):
+        """Headless render of a mermaid diagram should produce an SVG."""
+        import app.services.diagram_renderer as mod
+        mod._playwright_available = None  # reset cached check
+
+        renderer = await mod.DiagramRenderer.create(server_port=6969)
+        try:
+            result = await renderer.render_diagram(
+                {"type": "mermaid", "definition": "graph LR\n  A-->B-->C"},
+                format="svg",
+            )
+            assert len(result) > 0
+            assert b"<svg" in result or b"\x89PNG" in result  # SVG or PNG fallback
+        finally:
+            await renderer.close()
+
+    @_skip_no_playwright
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_graphviz_renders_png(self):
+        """Headless render of a graphviz diagram should produce a PNG."""
+        import app.services.diagram_renderer as mod
+        mod._playwright_available = None
+
+        renderer = await mod.DiagramRenderer.create(server_port=6969)
+        try:
+            result = await renderer.render_diagram(
+                {"type": "graphviz", "definition": "digraph G { A -> B -> C }"},
+                format="png",
+            )
+            assert len(result) > 100  # Non-trivial PNG
+            assert result[:4] == b"\x89PNG"
+        finally:
+            await renderer.close()
+
+    @_skip_no_playwright
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_dark_theme_renders(self):
+        """Rendering with dark theme should not crash."""
+        import app.services.diagram_renderer as mod
+        mod._playwright_available = None
+
+        renderer = await mod.DiagramRenderer.create(server_port=6969)
+        try:
+            result = await renderer.render_diagram(
+                {
+                    "type": "mermaid",
+                    "definition": "graph TD\n  Start-->End",
+                    "theme": "dark",
+                },
+                format="png",
+            )
+            assert len(result) > 100
+        finally:
+            await renderer.close()
+
+    @_skip_no_playwright
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_render_api_endpoint(self):
+        """The /api/render-diagram POST endpoint should return image bytes."""
+        import httpx
+
+        async with httpx.AsyncClient(base_url="http://localhost:6969") as client:
+            resp = await client.post(
+                "/api/render-diagram",
+                json={
+                    "type": "mermaid",
+                    "definition": "graph LR\n  X-->Y",
+                    "format": "png",
+                },
+                timeout=60,
+            )
+            assert resp.status_code == 200
+            assert resp.headers["content-type"] in ("image/png", "image/svg+xml")
+            assert len(resp.content) > 100
+
+
+class TestExportWithRenderedDiagrams:
+    """Test the conversation export pipeline with server-side diagrams."""
+
+    @pytest.mark.asyncio
+    async def test_render_diagrams_server_side_empty(self):
+        """Messages with no diagrams should return empty dict."""
+        from app.utils.conversation_exporter import render_diagrams_server_side
+
+        result = await render_diagrams_server_side(
+            [{"role": "human", "content": "Hello"}]
+        )
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_export_conversation_rendered_no_diagrams(self):
+        """Rendered export with no diagrams should work like regular export."""
+        from app.utils.conversation_exporter import export_conversation_rendered
+
+        result = await export_conversation_rendered(
+            messages=[
+                {"role": "human", "content": "What is 2+2?"},
+                {"role": "assistant", "content": "The answer is **4**."},
+            ],
+            format_type="markdown",
+        )
+        assert result["content"]
+        assert result["message_count"] == 2
+        assert result["diagrams_count"] == 0
+        assert "**4**" in result["content"]
 
