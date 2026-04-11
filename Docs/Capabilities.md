@@ -213,6 +213,20 @@ Rendered diagrams include **Open** (popup with zoom/pan), **Save** (SVG download
 
 **Skip-edge rerouting**: For Mermaid diagrams with feedback/control-loop edges that span multiple nodes, a post-render rerouter automatically arcs those paths above or below intermediate nodes instead of drawing them straight through. Arcs are nested by skip distance — shorter-range arcs sit closer to the node row, longer-range arcs arc further out — so overlapping edges remain visually distinct even when several skip edges share the same side.
 
+### Visual Diagram Feedback (Builtin Tool)
+
+The `render_diagram` builtin tool renders a diagram specification server-side and returns the resulting image directly as a vision content block, enabling the model to *see* what was rendered and evaluate correctness. This supports an iterative refinement loop:
+
+1. Model defines a diagram spec (mermaid, graphviz, vega-lite, drawio, packet, etc.)
+2. `render_diagram` tool renders it via the headless Playwright pipeline
+3. Model receives the PNG image and analyzes it with vision capabilities
+4. Model identifies rendering issues (missing labels, broken layout, wrong colors)
+5. Model fixes the spec or pipeline code, re-renders, and re-checks
+
+This is particularly useful for validating the rendering pipeline itself — systematically testing each diagram type and fixing any rendering issues discovered.
+
+The tool uses the same headless Chromium renderer as the export API, running through the full frontend D3Renderer pipeline with all plugins and post-render enhancers.
+
 ### Headless Diagram Export (API)
 
 Diagrams can be rendered to PNG or SVG images server-side via the REST API, enabling integration with external services like Slack, CI pipelines, or documentation generators.
@@ -245,6 +259,47 @@ curl -X POST http://localhost:6969/api/render-diagram \
 | `format` | `png`\|`svg` | `png` | Output format (SVG falls back to PNG for canvas renderers) |
 | `width` | int | auto | Explicit width in pixels |
 | `height` | int | auto | Explicit height in pixels |
+
+### Rendered Conversation Export (API)
+
+Conversations can be exported with server-side rendered diagram images via the REST API. This enables plugin export targets (Slack, Quip, wiki), CLI-driven exports, and API consumers to get fully rendered output without a browser.
+
+The pipeline extracts all diagram code blocks (mermaid, graphviz, vega-lite, drawio, packet, etc.) from the conversation, renders each through the headless Playwright pipeline, and embeds the resulting images inline in the exported markdown or HTML.
+
+**API — Server-rendered export**:
+```bash
+curl -X POST http://localhost:6969/api/export/rendered \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [
+      {"role": "human", "content": "Draw an architecture diagram"},
+      {"role": "assistant", "content": "```mermaid\ngraph LR\n  A-->B-->C\n```"}
+    ],
+    "format": "markdown",
+    "theme": "dark"
+  }'
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `messages` | array | required | Conversation messages with role and content |
+| `format` | `markdown`\|`html` | `markdown` | Output format |
+| `theme` | `dark`\|`light` | `light` | Color theme for diagram rendering |
+| `target` | string | `public` | Export target ID (for metadata) |
+| `image_format` | `svg`\|`png` | `svg` | Image format for embedded diagrams |
+
+**API — Export to plugin target**:
+```bash
+curl -X POST http://localhost:6969/api/export/to-target \
+  -H "Content-Type: application/json" \
+  -d '{
+    "messages": [...],
+    "target_id": "slack",
+    "theme": "dark"
+  }'
+```
+
+Plugin export targets are registered via the `ExportProvider` interface. See `app/plugins/interfaces.py` for the contract.
 
 ---
 
