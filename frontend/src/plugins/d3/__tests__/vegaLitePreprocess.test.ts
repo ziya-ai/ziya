@@ -512,3 +512,332 @@ describe('Lollipop chart preprocessing (integration)', () => {
     expect(pointEnc.color.field).toBe('miles');
   });
 });
+
+// ── Fix: Layered charts with mismatched y-axis ranges ───────────────────────
+// Replicates the logic from fixLayeredChartsWithMismatchedScales.
+// When layers use different y-fields whose data ranges differ by >3×,
+// the fix adds resolve.scale.y = 'independent' so the shared axis
+// doesn't clip one layer's marks.
+
+function fixLayeredChartsWithMismatchedScales(spec: any): any {
+  if (!spec.layer || !Array.isArray(spec.layer) || spec.layer.length < 2) {
+    return spec;
+  }
+
+  const topLevelYField = spec.encoding?.y?.field;
+  const yFields = spec.layer.map((layer: any) =>
+    layer.encoding?.y?.field || topLevelYField
+  ).filter(Boolean);
+  const uniqueYFields = [...new Set(yFields)] as string[];
+
+  const hasLogScale = spec.layer.some((layer: any) => layer.encoding?.y?.scale?.type === 'log');
+  const hasLinearScale = spec.layer.some((layer: any) => !layer.encoding?.y?.scale?.type || layer.encoding?.y?.scale?.type === 'linear');
+
+  const hasScaleTypeMismatch = hasLogScale && hasLinearScale;
+  const hasRangeMismatch = uniqueYFields.length > 1 && spec.data?.values && (() => {
+    const ranges = uniqueYFields.map((field: string) => {
+      const values = spec.data.values
+        .map((d: any) => d[field])
+        .filter((v: any) => typeof v === 'number' && !isNaN(v));
+      if (values.length === 0) return null;
+      return { field, min: Math.min(...values), max: Math.max(...values) };
+    }).filter(Boolean) as { field: string; min: number; max: number }[];
+    if (ranges.length < 2) return false;
+    for (let i = 0; i < ranges.length; i++) {
+      for (let j = i + 1; j < ranges.length; j++) {
+        const span1 = ranges[i].max - ranges[i].min || 1;
+        const span2 = ranges[j].max - ranges[j].min || 1;
+        const ratio = Math.max(span1 / span2, span2 / span1);
+        if (ratio > 3) return true;
+      }
+    }
+    return false;
+  })();
+
+  if (yFields.length > 1 && (hasScaleTypeMismatch || hasRangeMismatch)) {
+    spec.resolve = { ...(spec.resolve || {}), scale: { ...(spec.resolve?.scale || {}), y: 'independent' } };
+    spec.layer.forEach((layer: any, index: number) => {
+      if (layer.encoding?.y) {
+        if (!layer.encoding.y.axis) layer.encoding.y.axis = {};
+        layer.encoding.y.axis.orient = index === 0 ? 'left' : 'right';
+        layer.encoding.y.axis.grid = index === 0;
+      }
+    });
+  }
+  return spec;
+}
+
+describe('fixLayeredChartsWithMismatchedScales', () => {
+  it('adds independent y-scales when layers use different fields with >3× range difference', () => {
+    const spec = {
+      data: {
+        values: [
+          { month: 1, sector: 'A', pop: 200, infra: 5 },
+          { month: 6, sector: 'A', pop: 800, infra: 25 },
+          { month: 12, sector: 'A', pop: 2000, infra: 55 },
+          { month: 24, sector: 'A', pop: 5000, infra: 85 },
+        ],
+      },
+      encoding: {
+        x: { field: 'month', type: 'nominal' },
+        y: { field: 'pop', type: 'quantitative' },
+      },
+      layer: [
+        { mark: 'bar', encoding: { color: { field: 'sector' } } },
+        {
+          mark: { type: 'circle' },
+          encoding: {
+            y: { field: 'infra', type: 'quantitative', scale: { domain: [0, 100] } },
+          },
+        },
+      ],
+    };
+
+    const fixed = fixLayeredChartsWithMismatchedScales(JSON.parse(JSON.stringify(spec)));
+    expect(fixed.resolve?.scale?.y).toBe('independent');
+    // Second layer gets right-side axis
+    expect(fixed.layer[1].encoding.y.axis.orient).toBe('right');
+  });
+
+  it('adds independent y-scales for log/linear mismatch (existing behaviour)', () => {
+    const spec = {
+      data: { values: [{ a: 1, b: 100 }, { a: 10, b: 200 }] },
+      layer: [
+        { mark: 'bar', encoding: { y: { field: 'a', type: 'quantitative', scale: { type: 'log' } } } },
+        { mark: 'line', encoding: { y: { field: 'b', type: 'quantitative' } } },
+      ],
+    };
+
+    const fixed = fixLayeredChartsWithMismatchedScales(JSON.parse(JSON.stringify(spec)));
+    expect(fixed.resolve?.scale?.y).toBe('independent');
+  });
+
+  it('does NOT trigger when layers use the same y-field', () => {
+    const spec = {
+      data: { values: [{ x: 'A', y: 10 }, { x: 'B', y: 20 }] },
+      layer: [
+        { mark: 'bar', encoding: { y: { field: 'y', type: 'quantitative' } } },
+        { mark: 'line', encoding: { y: { field: 'y', type: 'quantitative' } } },
+      ],
+    };
+
+    const fixed = fixLayeredChartsWithMismatchedScales(JSON.parse(JSON.stringify(spec)));
+    expect(fixed.resolve).toBeUndefined();
+  });
+
+  it('does NOT trigger when range difference is small (< 3×)', () => {
+    const spec = {
+      data: { values: [{ a: 10, b: 20 }, { a: 20, b: 30 }] },
+      layer: [
+        { mark: 'bar', encoding: { y: { field: 'a', type: 'quantitative' } } },
+        { mark: 'line', encoding: { y: { field: 'b', type: 'quantitative' } } },
+      ],
+    };
+
+    const fixed = fixLayeredChartsWithMismatchedScales(JSON.parse(JSON.stringify(spec)));
+    expect(fixed.resolve).toBeUndefined();
+  });
+
+  it('does NOT modify single-layer specs', () => {
+    const spec = {
+      layer: [{ mark: 'bar', encoding: { y: { field: 'v', type: 'quantitative' } } }],
+    };
+    const fixed = fixLayeredChartsWithMismatchedScales(JSON.parse(JSON.stringify(spec)));
+    expect(fixed.resolve).toBeUndefined();
+  });
+});
+// ── fixBarLogScaleBaseline ───────────────────────────────────────────────────
+// Replicated from vegaLitePlugin.ts.
+// Bar marks on a log scale are fundamentally broken (bars imply a zero
+// baseline, log(0) = -∞).  The fix converts to tick + text layers.
+
+function fixBarLogScaleBaseline(spec: any): any {
+  const markType = typeof spec.mark === 'string' ? spec.mark : spec.mark?.type;
+  if (markType !== 'bar') return spec;
+
+  let logAxis: 'x' | 'y' | null = null;
+  for (const axis of ['x', 'y'] as const) {
+    const enc = spec.encoding?.[axis];
+    if (enc?.type === 'quantitative' && enc?.scale?.type === 'log') {
+      logAxis = axis;
+    }
+  }
+  if (!logAxis) return spec;
+
+  const logEnc = spec.encoding[logAxis];
+  const field = logEnc.field;
+  if (!field || !spec.data?.values) return spec;
+
+  const values = spec.data.values
+    .map((d: any) => d[field])
+    .filter((v: any) => typeof v === 'number' && v > 0);
+  if (values.length === 0) return spec;
+
+  const minVal = Math.min(...values);
+  const maxVal = Math.max(...values);
+  const lowerBound = minVal * 0.3;
+  const upperBound = maxVal * 3;
+
+  const labelledData = spec.data.values.map((d: any) => {
+    const v = d[field];
+    let label: string;
+    if (typeof v !== 'number' || v <= 0) label = String(v);
+    else if (v >= 1e9) label = (v / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
+    else if (v >= 1e6) label = (v / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+    else if (v >= 1e3) label = (v / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
+    else label = String(v);
+    return { ...d, _barLogLabel: label };
+  });
+
+  const logLow = Math.floor(Math.log10(lowerBound));
+  const logHigh = Math.ceil(Math.log10(upperBound));
+  const gridValues: number[] = [];
+  for (let exp = logLow; exp <= logHigh; exp++) {
+    const v = Math.pow(10, exp);
+    if (v >= lowerBound && v <= upperBound) gridValues.push(v);
+  }
+
+  const fixedLogEnc = {
+    ...logEnc,
+    scale: { ...logEnc.scale, domain: [lowerBound, upperBound] },
+    axis: { ...(logEnc.axis || {}), values: gridValues, gridDash: [2, 4] },
+  };
+
+  const sharedEncoding = { ...spec.encoding, [logAxis]: fixedLogEnc };
+  delete sharedEncoding.size;
+
+  const labelOffset = logAxis === 'x' ? { dy: -14 } : { dx: 12, align: 'left' as const };
+
+  const result: any = {
+    ...spec,
+    data: { values: labelledData },
+    mark: undefined,
+    encoding: undefined,
+    layer: [
+      { mark: { type: 'tick', thickness: 6, size: 40 }, encoding: { ...sharedEncoding } },
+      {
+        mark: { type: 'text', fontSize: 11, ...labelOffset },
+        encoding: {
+          ...sharedEncoding,
+          text: { field: '_barLogLabel', type: 'nominal' },
+          color: sharedEncoding.color ? { ...sharedEncoding.color, legend: null } : { value: '#999' },
+        },
+      },
+    ],
+  };
+  delete result.mark;
+  return result;
+}
+
+describe('fixBarLogScaleBaseline', () => {
+  it('converts horizontal bar+log to tick+text layers (the age comparison bug)', () => {
+    const spec = {
+      mark: { type: 'bar', cornerRadiusTopLeft: 6, cornerRadiusTopRight: 6 },
+      data: {
+        values: [
+          { civ: 'Us', age: 12000, color: 'us' },
+          { civ: 'Them', age: 4500000, color: 'them' },
+          { civ: 'Universe', age: 13800000, color: 'universe' },
+        ],
+      },
+      encoding: {
+        y: { field: 'civ', type: 'nominal' },
+        x: { field: 'age', type: 'quantitative', scale: { type: 'log' } },
+        color: { field: 'color', type: 'nominal' },
+      },
+    };
+
+    const fixed = fixBarLogScaleBaseline(JSON.parse(JSON.stringify(spec)));
+    // Should be converted to layered spec
+    expect(fixed.layer).toBeDefined();
+    expect(fixed.layer).toHaveLength(2);
+    expect(fixed.mark).toBeUndefined();
+    // First layer = tick marks
+    expect(fixed.layer[0].mark.type).toBe('tick');
+    // Second layer = text labels
+    expect(fixed.layer[1].mark.type).toBe('text');
+    // Data should have labels
+    expect(fixed.data.values[0]._barLogLabel).toBe('12K');
+    expect(fixed.data.values[1]._barLogLabel).toBe('4.5M');
+    expect(fixed.data.values[2]._barLogLabel).toBe('13.8M');
+    // Log axis should have clean grid values (powers of 10)
+    const xAxis = fixed.layer[0].encoding.x;
+    expect(xAxis.axis.values).toBeDefined();
+    xAxis.axis.values.forEach((v: number) => {
+      expect(Math.log10(v) % 1).toBeCloseTo(0);
+    });
+  });
+
+  it('converts vertical bar+log to tick+text layers', () => {
+    const spec = {
+      mark: 'bar',
+      data: {
+        values: [
+          { cat: 'A', val: 10 },
+          { cat: 'B', val: 1000 },
+          { cat: 'C', val: 100000 },
+        ],
+      },
+      encoding: {
+        x: { field: 'cat', type: 'nominal' },
+        y: { field: 'val', type: 'quantitative', scale: { type: 'log' } },
+      },
+    };
+
+    const fixed = fixBarLogScaleBaseline(JSON.parse(JSON.stringify(spec)));
+    expect(fixed.layer).toBeDefined();
+    expect(fixed.layer).toHaveLength(2);
+    expect(fixed.layer[0].mark.type).toBe('tick');
+    // Vertical: label offset should use dx (to the right of tick)
+    expect(fixed.layer[1].mark.dx).toBe(12);
+  });
+
+  it('does NOT modify bar charts without log scale', () => {
+    const spec = {
+      mark: 'bar',
+      data: { values: [{ x: 'A', y: 10 }] },
+      encoding: {
+        x: { field: 'x', type: 'nominal' },
+        y: { field: 'y', type: 'quantitative' },
+      },
+    };
+    const fixed = fixBarLogScaleBaseline(JSON.parse(JSON.stringify(spec)));
+    expect(fixed.layer).toBeUndefined();
+    expect(fixed.mark).toBe('bar');
+  });
+
+  it('does NOT modify non-bar marks with log scale', () => {
+    const spec = {
+      mark: 'line',
+      data: { values: [{ x: 1, y: 100 }, { x: 2, y: 10000 }] },
+      encoding: {
+        x: { field: 'x', type: 'quantitative' },
+        y: { field: 'y', type: 'quantitative', scale: { type: 'log' } },
+      },
+    };
+    const fixed = fixBarLogScaleBaseline(JSON.parse(JSON.stringify(spec)));
+    expect(fixed.layer).toBeUndefined();
+    expect(fixed.mark).toBe('line');
+  });
+
+  it('formats labels correctly across magnitude ranges', () => {
+    const spec = {
+      mark: 'bar',
+      data: {
+        values: [
+          { cat: 'a', v: 500 },
+          { cat: 'b', v: 75000 },
+          { cat: 'c', v: 2500000 },
+          { cat: 'd', v: 3200000000 },
+        ],
+      },
+      encoding: {
+        y: { field: 'cat', type: 'nominal' },
+        x: { field: 'v', type: 'quantitative', scale: { type: 'log' } },
+      },
+    };
+    const fixed = fixBarLogScaleBaseline(JSON.parse(JSON.stringify(spec)));
+    const labels = fixed.data.values.map((d: any) => d._barLogLabel);
+    expect(labels).toEqual(['500', '75K', '2.5M', '3.2B']);
+  });
+});
