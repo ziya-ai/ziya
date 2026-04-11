@@ -55,8 +55,10 @@ export const networkDiagramPlugin: D3RenderPlugin = {
             groupCount: spec.groups?.length
         });
         try {
+            // Clear existing content first, then build new SVG
+            d3.select(container).selectAll('*').remove();
+
             const svg = d3.select(container)
-                .selectAll('*').remove()  // Clear existing content
                 .append('svg')
                 .attr('width', spec.width)
                 .attr('height', spec.height)
@@ -83,10 +85,56 @@ export const networkDiagramPlugin: D3RenderPlugin = {
                     .text(d => d.label)
                     .attr('fill', '#666');
             }
-            // Draw links first (rest of the rendering code remains the same)
-            // ... (previous link rendering code)
+
+            const style = (spec as any).style || {};
+
+            // Draw links
+            svg.selectAll('.link')
+                .data(spec.links)
+                .enter()
+                .append('line')
+                .attr('class', 'link')
+                .attr('x1', (l: any) => {
+                    const n = spec.nodes.find((n: any) => n.id === l.source);
+                    return n?.x ?? 0;
+                })
+                .attr('y1', (l: any) => {
+                    const n = spec.nodes.find((n: any) => n.id === l.source);
+                    return n?.y ?? 0;
+                })
+                .attr('x2', (l: any) => {
+                    const n = spec.nodes.find((n: any) => n.id === l.target);
+                    return n?.x ?? 0;
+                })
+                .attr('y2', (l: any) => {
+                    const n = spec.nodes.find((n: any) => n.id === l.target);
+                    return n?.y ?? 0;
+                })
+                .attr('stroke', (l: any) => style.linkColor || '#999')
+                .attr('stroke-opacity', (l: any) => style.linkOpacity ?? 0.6)
+                .attr('stroke-width', (l: any) => l.weight || 1);
+
             // Draw nodes
-            // ... (previous node rendering code)
+            const nodeColors = style.nodeColors || {};
+            const nodeGroups = svg.selectAll('.node')
+                .data(spec.nodes)
+                .enter()
+                .append('g')
+                .attr('class', 'node')
+                .attr('transform', (d: any) => `translate(${d.x ?? 0},${d.y ?? 0})`);
+
+            nodeGroups.append('circle')
+                .attr('r', (d: any) => d.size || 10)
+                .attr('fill', (d: any) => nodeColors[(d as any).group] || d.color || '#69b3a2')
+                .attr('stroke', '#fff')
+                .attr('stroke-width', 1.5);
+
+            nodeGroups.append('text')
+                .attr('dy', (d: any) => -(d.size || 10) - 5)
+                .attr('text-anchor', 'middle')
+                .attr('fill', style.labelColor || '#ccc')
+                .attr('font-size', style.fontSize || 12)
+                .text((d: any) => d.id);
         } catch (error) {
             console.error('Network diagram render error:', error);
             // Clean up on error

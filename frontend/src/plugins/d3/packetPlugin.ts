@@ -142,7 +142,8 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
   // ── Sections ───────────────────────────────────────────────────────────
   pkt.sections.forEach((sec: PacketSection, sectionIdx: number) => {
     const secY = y;
-    const secH = sec.rows.length * L.ROW_H;
+    const secRows = sec.rows ?? [];
+    const secH = secRows.length * L.ROW_H;
     const sectionColor = resolveColor(sec.color, isDarkMode, sectionIdx);
 
     // Section label (left column, vertically centered)
@@ -251,7 +252,7 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
     renderBrackets(leftBrackets, 'left');
 
     // Field rows
-    sec.rows.forEach((row, ri) => {
+    secRows.forEach((row, ri) => {
       const ry = y + ri * L.ROW_H;
       let bitOff = 0;
 
