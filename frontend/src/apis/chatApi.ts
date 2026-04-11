@@ -748,9 +748,13 @@ export const sendPayload = async (
     // saturates the CPU.  150ms ≈ 7 flushes/sec — visually smooth
     // while giving React + layout 90% of the CPU back.
     const FLUSH_MIN_INTERVAL_MS = 150;
+    // Set when the stream completes — prevents stale _doFlush timers from
+    // re-inserting content into streamedContentMap after cleanup deleted it.
+    let _streamFinalized = false;
 
     const _doFlush = () => {
         _streamFallbackId = null;
+        if (_streamFinalized) return; // Stream ended — cleanup already ran
         const snapshot = currentContent;
         setStreamedContentMap(prev => {
             if (prev.get(conversationId) === snapshot) return prev; // no-op
@@ -1920,6 +1924,7 @@ export const sendPayload = async (
 
                     // Format the content
                     const inputForFormatter = unwrappedData.args || storedInput;
+                    const imageDataUri: string | undefined = unwrappedData.image_data;
 
                     const formatted = formatMCPOutput(toolName, displayContent, inputForFormatter, {
                         showInput: false,
@@ -1957,6 +1962,15 @@ export const sendPayload = async (
                         toolResultContent = formatted.content;
                         toolResultDisplay = `${needsExtraNewline ? '\n\n' : '\n'}` +
                             `${resultFence}tool:${toolName}|${displayHeader}|${resultSyntax}\n${toolResultContent}\n${resultFence}\n\n`;
+                    }
+
+                    // Inline image display for diagram render results.
+                    // The image_data field is a base64 data URI sent by the backend
+                    // on the tool_display event — it is NOT stored in conversation
+                    // history or model context (compacted to text summary there).
+                    if (imageDataUri) {
+                        const imgTag = `\n\n<img src="${imageDataUri}" alt="Rendered diagram" style="max-width:100%;border-radius:8px;margin:8px 0;" />\n\n`;
+                        toolResultDisplay = imgTag + toolResultDisplay;
                     }
 
                     // STRATEGY 1: Use tool_id marker (most reliable)
@@ -2670,6 +2684,9 @@ export const sendPayload = async (
 
                 // Even if we detect an error in the final content, save what we have
                 if (errorOccurred && currentContent && currentContent.trim()) {
+                    _streamFinalized = true;
+                    if (_streamFallbackId !== null) { clearTimeout(_streamFallbackId); _streamFallbackId = null; }
+
                     const partialMessage: Message = {
                         role: 'assistant',
                         content: currentContent,
@@ -2688,6 +2705,17 @@ export const sendPayload = async (
                 if (repairedContent !== currentContent) {
                     currentContent = repairedContent;
                     flushStreamedContent();
+                }
+
+                // Cancel any pending flush timer and mark stream as finalized
+                // BEFORE adding the committed message. Without this, a stale
+                // setTimeout can re-insert content into streamedContentMap
+                // after removeStreamingConversation already cleared it,
+                // causing the response to appear twice in the UI.
+                _streamFinalized = true;
+                if (_streamFallbackId !== null) {
+                    clearTimeout(_streamFallbackId);
+                    _streamFallbackId = null;
                 }
 
                 const aiMessage: Message = {
