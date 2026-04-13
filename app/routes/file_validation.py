@@ -32,10 +32,9 @@ async def validate_files(request: FileValidationRequest):
         base_dir = request.projectRoot
         logger.debug(f"🔍 VALIDATE: Using provided project root: {base_dir}")
     else:
-        base_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        from app.context import get_project_root
+        base_dir = get_project_root()
         logger.info(f"🔍 VALIDATE: Using environment project root: {base_dir}")
-    
-    base_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
     
     # Get external directories if any
     include_dirs = os.environ.get("ZIYA_INCLUDE_DIRS", "")

@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 from app.utils.logging_utils import logger
+from app.context import get_project_root
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
@@ -81,7 +82,7 @@ async def create_folder(request: CreateFolderRequest) -> FolderResponse:
         }
         
         # Get the user's codebase directory for storing metadata
-        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        user_codebase_dir = get_project_root()
         folders_file = os.path.join(user_codebase_dir, ".ziya", "folders.json")
         
         # Ensure .ziya directory exists
@@ -153,7 +154,7 @@ async def create_conversation(request: CreateConversationRequest) -> Conversatio
         }
         
         # Get the user's codebase directory for storing metadata
-        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        user_codebase_dir = get_project_root()
         conversations_file = os.path.join(user_codebase_dir, ".ziya", "conversations.json")
         
         # Ensure .ziya directory exists
@@ -195,7 +196,7 @@ async def move_conversation(request: MoveConversationRequest) -> Dict[str, Any]:
     """Move a conversation to a different folder."""
     try:
         # Get the user's codebase directory for storing metadata
-        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        user_codebase_dir = get_project_root()
         conversations_file = os.path.join(user_codebase_dir, ".ziya", "conversations.json")
         
         # Load existing conversations

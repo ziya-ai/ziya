@@ -8,6 +8,7 @@ import os
 import json
 import asyncio
 from typing import Dict, List, Any, Optional, Literal
+from pathlib import Path
 from dataclasses import asdict
 
 from app.mcp.manager import get_mcp_manager
@@ -997,7 +998,6 @@ async def get_mcp_server_details(server_name: str):
 async def get_registry_providers():
     """Get list of available registry providers."""
     from datetime import datetime
-    import asyncio
     try:
         # Force initialize providers like CLI does
         from app.mcp.registry.registry import initialize_registry_providers, get_provider_registry
