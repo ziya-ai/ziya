@@ -34,7 +34,7 @@ class TestPollingAccessFilter:
     # (which loads the entire FastAPI app and takes 30+ seconds).
     _quiet = {'/chats?', '/chat-groups', '/skills', '/contexts', '/api/config', '/ws/',
               '/folder-progress', '/model-capabilities', '/current-model', '/static/',
-              '/delegate-status',}
+              '/delegate-status', '/api/ast/status',}
     _chat_get_re = re.compile(r'/chats/[0-9a-f]{8}-[0-9a-f]{4}-.*" [23]')
 
     @pytest.fixture

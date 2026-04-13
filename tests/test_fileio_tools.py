@@ -203,7 +203,8 @@ class TestFileWriteTool:
         assert result.get("success") is True
         assert "Created" in result["message"]
 
-    def test_patch_mode_replaces_first_occurrence(self, workspace):
+    def test_patch_ambiguous_errors_by_default(self, workspace):
+        """Multiple matches without occurrence= should error, not silently pick one."""
         (Path(workspace) / ".ziya" / "config.txt").write_text("AAA BBB AAA")
         with patch("app.mcp.tools.fileio._check_write_allowed", return_value=""):
             result = run(self.tool.execute(
@@ -212,9 +213,87 @@ class TestFileWriteTool:
                 content="CCC",
                 _workspace_path=workspace,
             ))
+        assert result["error"] is True
+        assert "ambiguous" in result["message"].lower()
+        assert "2 occurrences" in result["message"]
+        # File should be untouched
+        content = (Path(workspace) / ".ziya" / "config.txt").read_text()
+        assert content == "AAA BBB AAA"
+
+    def test_patch_single_match_works_without_occurrence(self, workspace):
+        """A unique match applies cleanly with no occurrence= needed."""
+        (Path(workspace) / ".ziya" / "config.txt").write_text("AAA BBB CCC")
+        with patch("app.mcp.tools.fileio._check_write_allowed", return_value=""):
+            result = run(self.tool.execute(
+                path=".ziya/config.txt",
+                patch="BBB",
+                content="DDD",
+                _workspace_path=workspace,
+            ))
         assert result.get("success") is True
         content = (Path(workspace) / ".ziya" / "config.txt").read_text()
-        assert content == "CCC BBB AAA"  # Only first occurrence replaced
+        assert content == "AAA DDD CCC"
+
+    def test_patch_occurrence_zero_replaces_all(self, workspace):
+        """occurrence=0 replaces every match."""
+        (Path(workspace) / ".ziya" / "config.txt").write_text("AAA BBB AAA CCC AAA")
+        with patch("app.mcp.tools.fileio._check_write_allowed", return_value=""):
+            result = run(self.tool.execute(
+                path=".ziya/config.txt",
+                patch="AAA",
+                content="XXX",
+                occurrence=0,
+                _workspace_path=workspace,
+            ))
+        assert result.get("success") is True
+        assert "replaced 3 of 3" in result["message"]
+        content = (Path(workspace) / ".ziya" / "config.txt").read_text()
+        assert content == "XXX BBB XXX CCC XXX"
+
+    def test_patch_occurrence_specific_nth(self, workspace):
+        """occurrence=2 replaces only the second match."""
+        (Path(workspace) / ".ziya" / "config.txt").write_text("AAA BBB AAA CCC AAA")
+        with patch("app.mcp.tools.fileio._check_write_allowed", return_value=""):
+            result = run(self.tool.execute(
+                path=".ziya/config.txt",
+                patch="AAA",
+                content="XXX",
+                occurrence=2,
+                _workspace_path=workspace,
+            ))
+        assert result.get("success") is True
+        assert "replaced 1 of 3" in result["message"]
+        content = (Path(workspace) / ".ziya" / "config.txt").read_text()
+        assert content == "AAA BBB XXX CCC AAA"
+
+    def test_patch_occurrence_out_of_range(self, workspace):
+        """occurrence=5 when only 2 matches exist should error."""
+        (Path(workspace) / ".ziya" / "config.txt").write_text("AAA BBB AAA")
+        with patch("app.mcp.tools.fileio._check_write_allowed", return_value=""):
+            result = run(self.tool.execute(
+                path=".ziya/config.txt",
+                patch="AAA",
+                content="XXX",
+                occurrence=5,
+                _workspace_path=workspace,
+            ))
+        assert result["error"] is True
+        assert "only 2" in result["message"].lower()
+
+    def test_patch_occurrence_first_explicit(self, workspace):
+        """occurrence=1 explicitly targets the first match."""
+        (Path(workspace) / ".ziya" / "config.txt").write_text("AAA BBB AAA")
+        with patch("app.mcp.tools.fileio._check_write_allowed", return_value=""):
+            result = run(self.tool.execute(
+                path=".ziya/config.txt",
+                patch="AAA",
+                content="CCC",
+                occurrence=1,
+                _workspace_path=workspace,
+            ))
+        assert result.get("success") is True
+        content = (Path(workspace) / ".ziya" / "config.txt").read_text()
+        assert content == "CCC BBB AAA"
 
     def test_patch_mode_target_not_found(self, workspace):
         with patch("app.mcp.tools.fileio._check_write_allowed", return_value=""):

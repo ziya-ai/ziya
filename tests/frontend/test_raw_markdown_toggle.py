@@ -99,9 +99,10 @@ class TestConversationRawMode:
         assert "raw-markdown-view" in conversation_tsx
 
     def test_keyboard_shortcut_registered(self, conversation_tsx):
-        # Should register Ctrl+Shift+U
+        # Should register Ctrl+Shift+U (code may use lowercase comparison)
         assert "Shift" in conversation_tsx
-        assert "'U'" in conversation_tsx or '"U"' in conversation_tsx
+        assert ("'U'" in conversation_tsx or '"U"' in conversation_tsx
+                or "'u'" in conversation_tsx or '"u"' in conversation_tsx)
 
     def test_raw_mode_banner_rendered(self, conversation_tsx):
         assert "raw-mode-banner" in conversation_tsx

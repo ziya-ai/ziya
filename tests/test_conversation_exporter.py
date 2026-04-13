@@ -271,12 +271,11 @@ class TestRenderDiagramsServerSide:
 
         messages = [{"content": "```mermaid\ngraph LR\n  A-->B\n```"}]
 
-        with patch("app.utils.conversation_exporter.get_diagram_renderer",
+        # Patch at the source module since render_diagrams_server_side
+        # imports get_diagram_renderer inline via:
+        #   from app.services.diagram_renderer import get_diagram_renderer
+        with patch("app.services.diagram_renderer.get_diagram_renderer",
                     new=AsyncMock(return_value=mock_renderer)):
-            # Need to patch the import inside the function
-            import app.utils.conversation_exporter as mod
-            original_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') else __import__
-
             result = await render_diagrams_server_side(messages)
 
         # If the import was successful, check the result
@@ -305,7 +304,7 @@ class TestExportConversationRendered:
             {"role": "assistant", "content": "```mermaid\ngraph LR\n  A-->B\n```"},
         ]
 
-        with patch("app.utils.conversation_exporter.get_diagram_renderer",
+        with patch("app.services.diagram_renderer.get_diagram_renderer",
                     new=AsyncMock(return_value=mock_renderer)):
             result = await export_conversation_rendered(
                 messages=messages,
