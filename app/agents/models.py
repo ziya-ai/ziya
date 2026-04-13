@@ -32,7 +32,6 @@ from langchain_classic.agents.format_scratchpad import format_xml
 from langchain_core.messages import HumanMessage
 
 # Import configuration from the central config module
-import app.config.models_config as config
 
 class ModelManager:
     """

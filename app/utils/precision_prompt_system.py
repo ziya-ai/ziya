@@ -130,7 +130,7 @@ class PrecisionPromptSystem:
                     import datetime
                     from app.context import get_project_root_or_none
                     project_root = get_project_root_or_none()
-                    cwd = os.getcwd()
+                    cwd = project_root or os.getcwd()
                     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z").strip()
 
                     conv_start = None

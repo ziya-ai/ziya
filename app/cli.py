@@ -24,6 +24,7 @@ Examples:
 """
 
 import argparse
+import hashlib
 import json
 from datetime import datetime
 import os
@@ -40,9 +41,9 @@ try:
                 existing_logger.setLevel(logging.WARNING)
                 for handler in existing_logger.handlers:
                     handler.setLevel(logging.WARNING)
-            except Exception:
+            except (AttributeError, TypeError, ValueError):
                 pass  # Skip loggers that can't be configured
-except Exception as e:
+except (AttributeError, TypeError, ValueError, RuntimeError) as e:
     print(f"Warning: Could not configure logging: {e}", file=sys.stderr)
 import re
 import signal
@@ -51,7 +52,7 @@ import traceback
 from pathlib import Path
 import sys
 from app.utils.logging_utils import logger
-from typing import Optional, List, Tuple 
+from typing import List, Tuple 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.completion import PathCompleter, WordCompleter, Completer, Completion
@@ -158,7 +159,7 @@ async def select_session() -> Optional[str]:
                     'file_count': len(data.get('files', [])),
                     'message_count': len(data.get('history', []))
                 })
-        except Exception:
+        except (json.JSONDecodeError, OSError, KeyError, ValueError):
             continue
     
     if not session_list:
@@ -170,11 +171,11 @@ async def select_session() -> Optional[str]:
     for session in session_list:
         try:
             started = datetime.fromisoformat(session['start_time']).strftime('%b %d %H:%M')
-        except Exception:
+        except (ValueError, TypeError):
             started = '?'
         try:
             updated = datetime.fromisoformat(session['last_update_time']).strftime('%b %d %H:%M')
-        except Exception:
+        except (ValueError, TypeError):
             updated = started
 
         opener = session.get('opening_statement', '') or ''
@@ -266,7 +267,7 @@ def print_chat_startup_info(args):
             tool_count = len(mcp_mgr._tool_cache) if hasattr(mcp_mgr, '_tool_cache') else 0
             server_count = len(mcp_mgr.clients) if hasattr(mcp_mgr, 'clients') else 0
             print(f"MCP: {server_count} servers, {tool_count} tools")
-    except Exception:
+    except (ImportError, AttributeError, OSError, RuntimeError):
         pass  # Silently skip if MCP not available
     
     print()  # Blank line before prompt
@@ -296,9 +297,9 @@ def setup_env(args):
                     existing_logger.setLevel(target_level)
                     for handler in existing_logger.handlers:
                         handler.setLevel(target_level)
-                except Exception:
+                except (AttributeError, TypeError, ValueError):
                     pass
-    except Exception as e:
+    except (AttributeError, TypeError, ValueError, RuntimeError) as e:
         print(f"Warning: Could not reconfigure logging in setup_env: {e}", file=sys.stderr)
 
     # Shared setup (root dir, AWS, endpoint/model validation, model params, …)
@@ -350,7 +351,7 @@ def get_git_staged_diff() -> Optional[str]:
         result = subprocess.run(['git', 'diff', '--cached'], capture_output=True, text=True)
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         pass
     return None
 
@@ -362,7 +363,7 @@ def get_git_diff() -> Optional[str]:
         result = subprocess.run(['git', 'diff'], capture_output=True, text=True)
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         pass
     return None
 
@@ -424,7 +425,7 @@ class CLI:
             
             return model_instance
             
-        except Exception as e:
+        except Exception as e:  # Intentionally broad: model init can raise credential/import/config/API errors
             self._init_error = str(e)
             return None
     
@@ -457,7 +458,7 @@ class CLI:
                     endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
                     model_names = list(MODEL_CONFIGS.get(endpoint, {}).keys())
                     self.model_completer = WordCompleter(model_names, ignore_case=True)
-                except Exception:
+                except (ImportError, KeyError, AttributeError):
                     self.model_completer = None
             
             def get_completions(self, document: Document, complete_event):
@@ -616,7 +617,7 @@ class CLI:
             if response:
                 self.history.append({'type': 'ai', 'content': response})
             return response
-        except Exception as e:
+        except Exception as e:  # Intentionally broad: must preserve partial response on any failure
             error_str = str(e)
             
             # Preserve partial response that was already streamed to the user
@@ -742,7 +743,7 @@ class CLI:
                         print("\033[90m[trace] entering process_response\033[0m", file=sys.stderr)
                         completed_normally = self.diff_applicator.process_response(full_response)
                         print(f"\033[90m[trace] process_response done, completed_normally={completed_normally}\033[0m", file=sys.stderr)
-                    except Exception as e:
+                    except (OSError, ValueError, RuntimeError, KeyError, IndexError) as e:
                         if os.environ.get('ZIYA_LOG_LEVEL') == 'DEBUG':
                             print(f"\n\033[33mNote: Could not process diffs: {e}\033[0m", file=sys.stderr)
                         break
@@ -1144,7 +1145,7 @@ class CLI:
                             if isinstance(search_args, str):
                                 try:
                                     search_args = json.loads(search_args)
-                                except Exception:
+                                except (json.JSONDecodeError, TypeError, ValueError):
                                     search_args = {}
                             if isinstance(search_args, dict):
                                 query = search_args.get('searchQuery') or search_args.get('query', '')
@@ -1176,7 +1177,7 @@ class CLI:
                                     print(f"\033[90m│\033[0m {line}", flush=True)
                     
                         print(f"\033[36m└─\033[0m", flush=True)
-                    except Exception as e:
+                    except Exception as e:  # Intentionally broad: display errors must not crash the stream
                         # Log and continue — don't crash the stream for a display issue
                         logger.warning(f"Error rendering tool_display chunk: {e}")
                         tool_name = chunk.get('tool_name', 'unknown') if isinstance(chunk, dict) else 'unknown'
@@ -1329,7 +1330,7 @@ class CLI:
                     return (tool_block, tool_name, str(result))
                 else:
                     return (tool_block, tool_name, "Error: MCP manager not available")
-            except Exception as e:
+            except (OSError, RuntimeError, asyncio.TimeoutError, json.JSONDecodeError, ValueError) as e:
                 return (tool_block, tool_name, f"Error: {e}")
         
         return None
@@ -1448,6 +1449,7 @@ class CLI:
 \033[1mDiff Application:\033[0m
   When the AI provides code diffs, you'll be prompted to:
   [a]pply - Apply the diff to your files
+  [A]pply all - Apply this and all remaining diffs
   [s]kip - Skip this diff and continue
   [v]iew - View the full diff content
   [q]uit - Stop processing remaining diffs
@@ -1503,7 +1505,7 @@ class CLI:
                     print(f"  Files: {len(self.files)}, Messages: {len(self.history)}")
                 except FileNotFoundError as e:
                     print(f"\033[33m{e}\033[0m")
-                except Exception as e:
+                except (json.JSONDecodeError, OSError, KeyError, ValueError) as e:
                     print(f"\033[31mFailed to resume: {e}\033[0m")
             else:
                 print("\033[90mResume cancelled\033[0m")
@@ -1853,7 +1855,7 @@ class CLI:
                     print("\033[32m✓ Shell server restarted — changes are live.\033[0m")
                     return
             print("\033[2mRestart Ziya session for changes to take effect.\033[0m")
-        except Exception as e:
+        except (ImportError, OSError, RuntimeError, asyncio.TimeoutError) as e:
             print(f"\033[2mRestart Ziya session for changes to take effect. ({e})\033[0m")
 
     async def _show_model_settings_dialog(self, model_name: str, model_config: dict) -> Optional[dict]:
@@ -2129,7 +2131,7 @@ class CLI:
                 self._model = None  # Force reload
             else:
                 print(f"\n\033[90mCancelled\033[0m")
-        except Exception as e:
+        except (EOFError, KeyboardInterrupt, OSError, RuntimeError, ValueError) as e:
             print(f"\n\033[33mInteractive selection failed: {e}\033[0m")
             print(f"\033[90mCurrent: {current_model}\033[0m")
             print(f"\033[90mUse: /model <name>\033[0m")
@@ -2147,7 +2149,7 @@ async def _initialize_mcp():
             connected = sum(1 for s in status.values() if s.get("connected"))
             tools = sum(s.get("tools", 0) for s in status.values())
             print(f"\033[90mMCP: {connected} servers, {tools} tools\033[0m", file=sys.stderr)
-    except Exception as e:
+    except (ImportError, OSError, RuntimeError, asyncio.TimeoutError) as e:
         print(f"\033[90mMCP initialization skipped: {e}\033[0m", file=sys.stderr)
 
 
@@ -2451,7 +2453,7 @@ def _check_auth_quick(profile: str = None) -> bool:
             # Pass profile explicitly to ensure it's used
             valid, _ = check_aws_credentials(profile_name=profile)
             return valid
-        except Exception:
+        except (ImportError, OSError, RuntimeError, ValueError):
             return False
     elif endpoint == "google":
         return bool(os.environ.get("GOOGLE_API_KEY"))
@@ -2623,7 +2625,7 @@ def main():
         sys.stdout.flush()
         print()
         sys.exit(0)
-    except Exception as e:
+    except Exception as e:  # Intentionally broad: top-level CLI error handler
         # Extract traceback info for better error reporting
         tb = traceback.extract_tb(sys.exc_info()[2])
         sys.stdout.write("\033[23;0t")

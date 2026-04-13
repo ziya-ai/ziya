@@ -28,7 +28,6 @@ def gemini_pro_family_extension(prompt: str, context: dict) -> str:
         str: Modified prompt
     """
     import re
-    from app.utils.logging_utils import logger
     logger.info(f"GEMINI_EXTENSION: Called with prompt length: {len(prompt)}")
     logger.info(f"GEMINI_EXTENSION: Context: {context}")
     

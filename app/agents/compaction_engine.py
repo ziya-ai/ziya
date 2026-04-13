@@ -331,7 +331,11 @@ class CompactionEngine:
         source than the delegate's process narration in its last message.
         """
         import os
-        project_root = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        try:
+            from app.context import get_project_root
+            project_root = get_project_root()
+        except Exception:
+            project_root = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
         combined = []
         total_len = 0
 

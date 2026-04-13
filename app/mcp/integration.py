@@ -6,6 +6,7 @@ including detecting and executing tool calls in model responses.
 """
 
 import asyncio
+import json
 from typing import Optional, Dict, Any, Set, Tuple
 
 from app.utils.logging_utils import logger
