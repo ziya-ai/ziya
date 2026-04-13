@@ -1279,16 +1279,23 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             // Lazy-load messages for conversations that only have summary
             // metadata (e.g. after SERVER_SYNC with empty/corrupt IDB) or
-            // shell data (first+last messages only from startup fast-path).
+            // shell data (first+last messages only from startup fast-path),
+            // or zombie records where a shell was persisted as a complete
+            // conversation (2 messages, _isShell: false, no _fullMessageCount).
+            const isZombieRecord = convEntry?.messages?.length <= 2
+                && !convEntry._isShell
+                && convEntry.title !== 'New Conversation'
+                && convEntry.title !== '';
             const needsLazyLoad = convEntry && (
                 (!convEntry.messages || convEntry.messages.length === 0) ||
-                convEntry._isShell
+                convEntry._isShell ||
+                isZombieRecord
             );
 
             if (needsLazyLoad) {
                 // Try IDB first for shell conversations (IDB has full data)
                 let loaded = false;
-                if (convEntry._isShell) {
+                if (convEntry._isShell || isZombieRecord) {
                     try {
                         // Use single-record read if available, fall back to
                         // full read only as last resort.  The full read
@@ -1327,7 +1334,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             const serverChat = await syncApi.getChat(pid, conversationId);
                             // Only accept server messages if they have MORE than what
                             // we already have locally (prevents partial data overwrite)
-                            if (serverChat?.messages?.length > 0 &&
+                            if (serverChat?.messages?.length > 2 &&
                                 serverChat.messages.length >= (convEntry.messages?.length || 0)) {
                                 setConversations(prev => prev.map(c =>
                                     c.id === conversationId
@@ -1690,7 +1697,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
             : lastNew.content === lastOld.content && lastNew.role === lastOld.role;
         const firstSame = (messages[0].id && prev[0].id) ? messages[0].id === prev[0].id
             : messages[0].content === prev[0].content && messages[0].role === prev[0].role;
-        if (lastSame && firstSame) return prev;
+        if (lastSame && firstSame) {
+            // Mute toggles change neither id nor content/role, so the sampling
+            // heuristic above misses them.  Do a targeted scan before returning stale data.
+            const mutedChanged = messages.some((m, i) => (m.muted ?? false) !== (prev[i]?.muted ?? false));
+            if (!mutedChanged) return prev;
+        }
         currentMessagesRef.current = messages;
         return messages;
     }, [conversations, currentConversationId]);
