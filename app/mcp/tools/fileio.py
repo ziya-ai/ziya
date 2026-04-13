@@ -243,6 +243,20 @@ class FileWriteInput(BaseModel):
             "must already exist."
         ),
     )
+    occurrence: Optional[int] = Field(
+        None,
+        description=(
+            "Which occurrence of 'patch' to replace (1-based).  "
+            "Special values:\n"
+            "  - None (default): replace first occurrence, but error if "
+            "multiple matches exist.  Forces the caller to provide "
+            "enough context for an unambiguous match.\n"
+            "  - 0: replace ALL occurrences.\n"
+            "  - N (positive int): replace only the Nth occurrence "
+            "(1 = first, 2 = second, etc.).\n"
+            "Only used in patch mode."
+        ),
+    )
 
 
 class FileWriteTool(BaseMCPTool):
@@ -260,6 +274,8 @@ class FileWriteTool(BaseMCPTool):
         "  - Patch: set 'patch' to the exact text to find and 'content' to "
         "the replacement.  More token-efficient for small edits to large "
         "files.\n"
+        "  - Patch with occurrence: set 'occurrence' to 0 for all matches, "
+        "or N (1-based) for a specific match.  Default errors on ambiguity.\n"
         "  - Create only: set 'create_only' to true to fail if the file "
         "already exists.\n\n"
         "If a write is blocked, the error includes the list of approved "
@@ -273,6 +289,7 @@ class FileWriteTool(BaseMCPTool):
         content: str = kwargs.get("content", "")
         create_only: bool = kwargs.get("create_only", False)
         patch: Optional[str] = kwargs.get("patch")
+        occurrence: Optional[int] = kwargs.get("occurrence")
 
         try:
             resolved = _resolve_and_validate(path_str, project_root, allowed_absolute_prefixes=_get_safe_write_paths())
@@ -310,19 +327,57 @@ class FileWriteTool(BaseMCPTool):
                 }
 
             count = existing.count(patch)
-            updated = existing.replace(patch, content, 1)
-            resolved.write_text(updated, encoding="utf-8")
 
-            logger.info(
-                f"📝 FILEIO: Patched {path_str} "
-                f"({count} occurrence(s) found, replaced first)"
+            # Determine replacement strategy based on occurrence parameter
+            if occurrence is None:
+                # Default: error on ambiguity to prevent wrong-target patches
+                if count > 1:
+                    return {
+                        "error": True,
+                        "message": (
+                            f"Patch target is ambiguous: found {count} occurrences "
+                            f"in {path_str}.  Include more surrounding context to "
+                            f"uniquely identify the target, or set occurrence=0 "
+                            f"to replace all, or occurrence=N to replace the Nth match."
+                        ),
+                    }
+                updated = existing.replace(patch, content, 1)
+                replaced = 1
+            elif occurrence == 0:
+                # Replace ALL occurrences
+                updated = existing.replace(patch, content)
+                replaced = count
+            else:
+                # Replace the Nth occurrence (1-based)
+                if occurrence > count:
+                    return {
+                        "error": True,
+                        "message": (
+                            f"Requested occurrence {occurrence} but only "
+                            f"{count} occurrence(s) found in {path_str}."
+                        ),
+                    }
+                # Walk through occurrences to find the Nth one
+                updated = existing
+                start = 0
+                for i in range(occurrence):
+                    idx = updated.index(patch, start)
+                    if i == occurrence - 1:
+                        updated = updated[:idx] + content + updated[idx + len(patch):]
+                        break
+                    start = idx + len(patch)
+                replaced = 1
+
+            resolved.write_text(updated, encoding="utf-8")
+            label = (
+                f"replaced {replaced} of {count} occurrence(s)"
+                if count > 1 else
+                f"replaced 1 of 1 occurrence(s)"
             )
+            logger.info(f"📝 FILEIO: Patched {path_str} ({label})")
             return {
                 "success": True,
-                "message": (
-                    f"Patched {path_str} successfully "
-                    f"(replaced 1 of {count} occurrence(s))"
-                ),
+                "message": f"Patched {path_str} successfully ({label})",
                 "path": path_str,
                 "bytes_written": len(updated.encode("utf-8")),
             }

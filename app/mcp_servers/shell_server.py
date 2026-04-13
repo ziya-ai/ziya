@@ -67,6 +67,15 @@ class ShellServer:
             if cmd and cmd not in self.allowed_commands:
                 self.allowed_commands.append(cmd)
 
+        # Add destructive commands (rm, mv, cp, mkdir, etc.) to the allowlist
+        # so they pass the command-name gate.  The write policy checker
+        # (ShellWriteChecker._destructive) validates their *target paths*
+        # against safe_write_paths / allowed_write_patterns, so these are
+        # only permitted when operating on declared-safe areas.
+        for cmd in self.wp_manager.policy.get('destructive_commands', []):
+            if cmd not in self.allowed_commands:
+                self.allowed_commands.append(cmd)
+
         # Add interpreters to command allowlist
         for interp in self.wp_manager.policy.get('allowed_interpreters', []):
             if interp not in self.allowed_commands:
@@ -152,6 +161,50 @@ class ShellServer:
 
         return result
 
+    @staticmethod
+    def _extract_redirections(args: list) -> tuple:
+        """Extract shell-style redirections from tokenized args.
+
+        Returns (cleaned_args, subprocess_kwargs) where subprocess_kwargs
+        contains stdout/stderr overrides for subprocess.run().
+
+        Supported redirections:
+          2>&1           -> stderr=subprocess.STDOUT
+          2>/dev/null    -> stderr=subprocess.DEVNULL
+          >/dev/null     -> stdout=subprocess.DEVNULL
+          1>/dev/null    -> stdout=subprocess.DEVNULL
+        """
+        cleaned = []
+        kwargs = {}
+        skip_next = False
+
+        for i, arg in enumerate(args):
+            if skip_next:
+                skip_next = False
+                continue
+
+            # 2>&1  (may appear as one token or shlex may keep it as-is)
+            if arg == '2>&1':
+                kwargs['stderr'] = subprocess.STDOUT
+            # 2>/dev/null  — single token
+            elif arg == '2>/dev/null':
+                kwargs['stderr'] = subprocess.DEVNULL
+            # 2> /dev/null — split across two tokens
+            elif arg == '2>' and i + 1 < len(args) and args[i + 1] == '/dev/null':
+                kwargs['stderr'] = subprocess.DEVNULL
+                skip_next = True
+            # >/dev/null or 1>/dev/null — single token
+            elif arg in ('>/dev/null', '1>/dev/null'):
+                kwargs['stdout'] = subprocess.DEVNULL
+            # > /dev/null or 1> /dev/null — split across two tokens
+            elif arg in ('>', '1>') and i + 1 < len(args) and args[i + 1] == '/dev/null':
+                kwargs['stdout'] = subprocess.DEVNULL
+                skip_next = True
+            else:
+                cleaned.append(arg)
+
+        return cleaned, kwargs
+
     def _resolve_substitutions(self, cmd_segment: str, timeout: float, cwd: str) -> str:
         """Resolve $(...) and backtick command substitutions by executing them."""
         import re as _re
@@ -204,6 +257,9 @@ class ShellServer:
             args = self._expand_and_tokenize(resolved)
             if not args:
                 continue
+            
+            # Extract redirections (2>&1, >/dev/null, etc.) from args
+            args, redir_kwargs = self._extract_redirections(args)
 
             # Conditional chaining: skip based on previous result
             if operator == "&&" and last_result and last_result.returncode != 0:
@@ -215,9 +271,16 @@ class ShellServer:
             if operator == "|" and last_result:
                 stdin_data = last_result.stdout
 
-            last_result = subprocess.run(
-                args, shell=False, capture_output=True, text=True,
+            # Build subprocess kwargs, letting explicit redirections override defaults
+            run_kwargs = dict(
+                shell=False, capture_output=False, text=True,
                 timeout=timeout, cwd=effective_cwd, input=stdin_data,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            run_kwargs.update(redir_kwargs)
+
+            last_result = subprocess.run(
+                args, **run_kwargs,
             )
 
             # Check if the next segment will pipe from this one
