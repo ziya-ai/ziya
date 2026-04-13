@@ -734,8 +734,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
                     <div style={{
                         padding: '16px',
                         color: colors.contentText,
-                        maxHeight: isExpanded ? 'none' : '400px',
-                        overflow: isExpanded ? 'visible' : 'auto',
+                        overflow: 'auto',
                         fontSize: '14px',
                         lineHeight: '1.3'
                     }}
@@ -749,8 +748,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
                             color: colors.contentText,
                             whiteSpace: 'pre-wrap',
                             wordBreak: 'break-word',
-                            maxHeight: isExpanded ? 'none' : '400px',
-                            overflow: isExpanded ? 'visible' : 'auto'
+                            overflow: 'auto'
                         }}>
                             <code className={`language-${contentLanguage === 'sh' ? 'bash' : contentLanguage}`} dangerouslySetInnerHTML={{ __html: highlightedShellOutput }} />
                         </pre>
@@ -762,8 +760,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
                                 color: colors.contentText,
                                 whiteSpace: 'pre-wrap',
                                 wordBreak: 'break-word',
-                                maxHeight: isExpanded ? 'none' : '400px',
-                                overflow: isExpanded ? 'visible' : 'auto'
+                                overflow: 'auto'
                             }}>
                                 <code dangerouslySetInnerHTML={{ __html: ansiToHtml(cleanContent) }} />
                             </pre>
@@ -774,8 +771,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
                                 color: colors.contentText,
                                 whiteSpace: 'pre-wrap',
                                 wordBreak: 'break-word',
-                                maxHeight: isExpanded ? 'none' : '400px',
-                                overflow: isExpanded ? 'visible' : 'auto'
+                                overflow: 'auto'
                             }}>
                                 {cleanContent}
                             </pre>
@@ -4887,6 +4883,9 @@ const markedOptions = {
 // Override the GFM 'del' (strikethrough) tokenizer to require double tildes (~~).
 // By default, marked also matches single tildes (~text~), which causes false
 // positives when tildes are used conversationally (e.g. "~32px", "~10px").
+// The extensions array overrides the built-in 'del' inline rule by name, but
+// we must also disable the core GFM strikethrough via the tokenizer option
+// to prevent the built-in single-tilde rule from firing first.
 marked.use({
     extensions: [{
         name: 'del',
@@ -4894,7 +4893,7 @@ marked.use({
         start(src: string) {
             return src.match(/~~(?=[^\s~])/)?.index;
         },
-        tokenizer(src: string) {
+        tokenizer(this: any, src: string) {
             const match = src.match(/^~~(?=[^\s~])([\s\S]*?[^\s~])~~(?=[^~]|$)/);
             if (match) {
                 return {
@@ -4907,6 +4906,22 @@ marked.use({
             return undefined;
         },
     }],
+    tokenizer: {
+        // Disable the built-in single-tilde strikethrough rule.
+        // Returning false tells marked to skip this core rule entirely,
+        // letting our extension (which requires ~~) handle all del tokens.
+        del(src: string): any {
+            const match = src.match(/^~~(?=[^\s~])([\s\S]*?[^\s~])~~(?=[^~]|$)/);
+            if (match) {
+                return {
+                    type: 'del',
+                    raw: match[0],
+                    text: match[1],
+                };
+            }
+            return false as any;
+        },
+    },
 });
 
 // Shared LaTeX copy handler — single document listener instead of one per
