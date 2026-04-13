@@ -13,6 +13,111 @@ import { WritePolicy, ContextManagementSettings } from '../types/project';
 
 const { Panel } = Collapse;
 
+/**
+ * Reusable editable tag list for glob patterns and path prefixes.
+ * Supports add, remove (✕), and inline edit (double-click).
+ */
+interface EditableTagListProps {
+    items: string[];
+    onChange: (items: string[]) => void;
+    color: string;
+    placeholder: string;
+    emptyText: string;
+    isDarkMode: boolean;
+    /** Allow comma-separated input to add multiple at once */
+    allowMulti?: boolean;
+}
+
+const EditableTagList: React.FC<EditableTagListProps> = ({
+    items, onChange, color, placeholder, emptyText, isDarkMode, allowMulti = false,
+}) => {
+    const [inputValue, setInputValue] = useState('');
+    const [editingIndex, setEditingIndex] = useState<number | null>(null);
+    const [editingValue, setEditingValue] = useState('');
+    const editRef = useRef<any>(null);
+
+    const addItems = () => {
+        const raw = inputValue.trim();
+        if (!raw) return;
+        const parts = allowMulti ? raw.split(',').map(s => s.trim()).filter(Boolean) : [raw];
+        const fresh = parts.filter(p => !items.includes(p));
+        if (fresh.length > 0) {
+            onChange([...items, ...fresh]);
+            setInputValue('');
+        }
+    };
+
+    const removeItem = (value: string) => {
+        onChange(items.filter(x => x !== value));
+    };
+
+    const startEditing = (index: number) => {
+        setEditingIndex(index);
+        setEditingValue(items[index]);
+        setTimeout(() => editRef.current?.focus(), 0);
+    };
+
+    const commitEdit = () => {
+        if (editingIndex === null) return;
+        const trimmed = editingValue.trim();
+        if (!trimmed) {
+            // Empty value = remove the entry
+            onChange(items.filter((_, i) => i !== editingIndex));
+        } else if (trimmed !== items[editingIndex]) {
+            // Deduplicate: if the new value already exists elsewhere, just remove the old one
+            if (items.some((v, i) => i !== editingIndex && v === trimmed)) {
+                onChange(items.filter((_, i) => i !== editingIndex));
+            } else {
+                onChange(items.map((v, i) => i === editingIndex ? trimmed : v));
+            }
+        }
+        setEditingIndex(null);
+    };
+
+    return (
+        <>
+            <Input.Group compact style={{ marginBottom: 8 }}>
+                <Input
+                    placeholder={placeholder}
+                    value={inputValue}
+                    onChange={e => setInputValue(e.target.value)}
+                    onPressEnter={addItems}
+                    style={{ width: 'calc(100% - 80px)' }}
+                />
+                <Button type="primary" style={{ width: 80 }} onClick={addItems}>Add</Button>
+            </Input.Group>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {items.map((p, idx) => (
+                    editingIndex === idx ? (
+                        <Input
+                            key={`edit-${idx}`}
+                            ref={editRef}
+                            size="small"
+                            value={editingValue}
+                            onChange={e => setEditingValue(e.target.value)}
+                            onPressEnter={commitEdit}
+                            onBlur={commitEdit}
+                            onKeyDown={e => { if (e.key === 'Escape') setEditingIndex(null); }}
+                            style={{ width: 160, fontSize: 12 }}
+                            autoFocus
+                        />
+                    ) : (
+                        <Tag key={p} closable color={color}
+                            onClose={() => removeItem(p)}
+                            style={{ cursor: 'pointer' }}
+                            onDoubleClick={() => startEditing(idx)}
+                            title="Double-click to edit"
+                        >{p}</Tag>
+                    )
+                ))}
+                {items.length === 0 && (
+                    <span style={{ color: '#999', fontSize: 12, fontStyle: 'italic' }}>{emptyText}</span>
+                )}
+            </div>
+        </>
+    );
+};
+
 interface BrowseEntry {
     name: string;
     path: string;
@@ -40,8 +145,6 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
 
     // Write policy state for the project being edited
     const [writePolicy, setWritePolicy] = useState<WritePolicy>({});
-    const [newPattern, setNewPattern] = useState('');
-    const [newWritePath, setNewWritePath] = useState('');
 
     // Context management settings
     const [contextManagement, setContextManagement] = useState<ContextManagementSettings>({ auto_add_diff_files: true });
@@ -419,57 +522,15 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
                             Glob patterns for files the shell may write within this project.
                             Examples: <code>*.md</code>, <code>docs/**</code>, <code>tracker/*.json</code>
                         </div>
-                        <Input.Group compact style={{ marginBottom: 8 }}>
-                            <Input
-                                placeholder="*.md or docs/**"
-                                value={newPattern}
-                                onChange={e => setNewPattern(e.target.value)}
-                                onPressEnter={() => {
-                                    const raw = newPattern.trim();
-                                    if (!raw) return;
-                                    const parts = raw.split(',').map(s => s.trim()).filter(Boolean);
-                                    const existing = writePolicy.allowed_write_patterns || [];
-                                    const fresh = parts.filter(p => !existing.includes(p));
-                                    if (fresh.length > 0) {
-                                        setWritePolicy(prev => ({
-                                            ...prev,
-                                            allowed_write_patterns: [...(prev.allowed_write_patterns || []), ...fresh]
-                                        }));
-                                        setNewPattern('');
-                                    }
-                                }}
-                                style={{ width: 'calc(100% - 80px)' }}
-                            />
-                            <Button type="primary" style={{ width: 80 }} onClick={() => {
-                                const raw = newPattern.trim();
-                                if (!raw) return;
-                                const parts = raw.split(',').map(s => s.trim()).filter(Boolean);
-                                const existing = writePolicy.allowed_write_patterns || [];
-                                const fresh = parts.filter(p => !existing.includes(p));
-                                if (fresh.length > 0) {
-                                    setWritePolicy(prev => ({
-                                        ...prev,
-                                        allowed_write_patterns: [...(prev.allowed_write_patterns || []), ...fresh]
-                                    }));
-                                    setNewPattern('');
-                                }
-                            }}>Add</Button>
-                        </Input.Group>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                            {(writePolicy.allowed_write_patterns || []).map(p => (
-                                <Tag key={p} closable color="purple" onClose={() =>
-                                    setWritePolicy(prev => ({
-                                        ...prev,
-                                        allowed_write_patterns: (prev.allowed_write_patterns || []).filter(x => x !== p)
-                                    }))
-                                }>{p}</Tag>
-                            ))}
-                            {(writePolicy.allowed_write_patterns || []).length === 0 && (
-                                <span style={{ color: '#999', fontSize: 12, fontStyle: 'italic' }}>
-                                    No project-specific patterns — only global policy applies
-                                </span>
-                            )}
-                        </div>
+                        <EditableTagList
+                            items={writePolicy.allowed_write_patterns || []}
+                            onChange={items => setWritePolicy(prev => ({ ...prev, allowed_write_patterns: items }))}
+                            color="purple"
+                            placeholder="*.md or docs/**"
+                            emptyText="No project-specific patterns — only global policy applies"
+                            isDarkMode={isDarkMode}
+                            allowMulti
+                        />
                     </div>
 
                     <Divider style={{ margin: '8px 0' }} />
@@ -479,49 +540,14 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
                         <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
                             Path prefixes writable within this project (added to global defaults like <code>.ziya/</code>, <code>/tmp/</code>).
                         </div>
-                        <Input.Group compact style={{ marginBottom: 8 }}>
-                            <Input
-                                placeholder="build/ or .cache/"
-                                value={newWritePath}
-                                onChange={e => setNewWritePath(e.target.value)}
-                                onPressEnter={() => {
-                                    const v = newWritePath.trim();
-                                    if (v && !(writePolicy.safe_write_paths || []).includes(v)) {
-                                        setWritePolicy(prev => ({
-                                            ...prev,
-                                            safe_write_paths: [...(prev.safe_write_paths || []), v]
-                                        }));
-                                        setNewWritePath('');
-                                    }
-                                }}
-                                style={{ width: 'calc(100% - 80px)' }}
-                            />
-                            <Button type="primary" style={{ width: 80 }} onClick={() => {
-                                const v = newWritePath.trim();
-                                if (v && !(writePolicy.safe_write_paths || []).includes(v)) {
-                                    setWritePolicy(prev => ({
-                                        ...prev,
-                                        safe_write_paths: [...(prev.safe_write_paths || []), v]
-                                    }));
-                                    setNewWritePath('');
-                                }
-                            }}>Add</Button>
-                        </Input.Group>
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                            {(writePolicy.safe_write_paths || []).map(p => (
-                                <Tag key={p} closable color="green" onClose={() =>
-                                    setWritePolicy(prev => ({
-                                        ...prev,
-                                        safe_write_paths: (prev.safe_write_paths || []).filter(x => x !== p)
-                                    }))
-                                }>{p}</Tag>
-                            ))}
-                            {(writePolicy.safe_write_paths || []).length === 0 && (
-                                <span style={{ color: '#999', fontSize: 12, fontStyle: 'italic' }}>
-                                    Using global defaults only
-                                </span>
-                            )}
-                        </div>
+                        <EditableTagList
+                            items={writePolicy.safe_write_paths || []}
+                            onChange={items => setWritePolicy(prev => ({ ...prev, safe_write_paths: items }))}
+                            color="green"
+                            placeholder="build/ or .cache/"
+                            emptyText="Using global defaults only"
+                            isDarkMode={isDarkMode}
+                        />
                     </div>
                 </Space>
             </Modal>

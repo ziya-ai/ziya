@@ -1964,43 +1964,42 @@ const MUIChatHistory = () => {
   };
 
   // Handle forking a conversation
-  const handleForkConversation = async (conversationId: string) => {
+  const handleForkConversation = (conversationId: string) => {
     if (conversationId.startsWith('conv-')) {
       conversationId = conversationId.substring(5);
     }
 
-    try {
-      const conversation = conversations.find(c => c.id === conversationId);
-      if (!conversation) return;
+    const conversation = conversations.find(c => c.id === conversationId);
+    if (!conversation) return;
 
-      // Create a copy of the conversation with a new ID
-      const newId = uuidv4();
-      const forkedConversation: Conversation = {
-        ...conversation,
-        id: newId,
-        title: `Fork: ${conversation.title}`,
-        lastAccessedAt: Date.now(),
-        _version: Date.now(),
-        hasUnreadResponse: false,
-        isActive: true  // Explicitly ensure forked conversations are active
-      };
+    // Create a copy of the conversation with a new ID
+    const newId = uuidv4();
+    const forkedConversation: Conversation = {
+      ...conversation,
+      id: newId,
+      title: `Fork: ${conversation.title}`,
+      lastAccessedAt: Date.now(),
+      _version: Date.now(),
+      hasUnreadResponse: false,
+      isActive: true
+    };
 
-      // Add the forked conversation to the list
-      const updatedConversations = [...conversations, forkedConversation];
+    // Update state synchronously — don't await anything on the click path.
+    // During streaming, the DB write lock is held by debounced saves, and
+    // awaiting it causes the async function to yield while streaming
+    // re-renders thrash the Dropdown overlay, effectively swallowing the action.
+    setConversations(prev => [...prev, forkedConversation]);
 
-      // Save only the new forked conversation to database
-      await db.saveConversation(forkedConversation);
+    // Navigate directly instead of loadConversation (which also awaits and
+    // relies on conversationsRef that hasn't synced yet for the new entry).
+    setCurrentConversationId(newId);
 
-      // Update state
-      setConversations(updatedConversations);
+    message.success('Conversation forked successfully');
 
-      // Switch to the new conversation
-      await loadConversation(newId);
-
-      message.success('Conversation forked successfully');
-    } catch (error) {
-      message.error('Failed to fork conversation');
-    }
+    // Persist to DB in the background — non-blocking
+    db.saveConversation(forkedConversation).catch(err => {
+      console.error('Failed to persist forked conversation:', err);
+    });
   };
 
   // Handle compressing a conversation (placeholder)
