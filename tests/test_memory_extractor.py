@@ -20,6 +20,7 @@ from app.utils.memory_extractor import (
     deduplicate,
     run_post_conversation_extraction,
     AUTO_SAVE_LAYERS,
+    CONDITIONAL_AUTO_SAVE_LAYERS,
     MIN_HUMAN_TURNS,
 )
 
@@ -161,15 +162,27 @@ class TestDeduplicate:
 
 class TestAutoSaveLayers:
 
-    def test_all_high_value_layers_auto_save(self):
-        """Architecture, negative_constraint, preference, and process should all auto-save."""
-        expected = {"lexicon", "domain_context", "architecture",
-                    "negative_constraint", "preference", "process"}
+    def test_unconditional_auto_save_layers(self):
+        """Lexicon and preference should always auto-save regardless of confidence."""
+        expected = {"lexicon", "preference"}
         assert AUTO_SAVE_LAYERS == expected
+
+    def test_conditional_auto_save_layers(self):
+        """Architecture, domain_context, negative_constraint, and process
+        auto-save only when confidence is 'high'."""
+        expected = {"domain_context", "architecture",
+                    "negative_constraint", "process"}
+        assert CONDITIONAL_AUTO_SAVE_LAYERS == expected
 
     def test_active_thread_not_auto_saved(self):
         """active_thread is ephemeral and should NOT be auto-saved."""
         assert "active_thread" not in AUTO_SAVE_LAYERS
+        assert "active_thread" not in CONDITIONAL_AUTO_SAVE_LAYERS
+
+    def test_decision_layer_is_proposed_not_auto_saved(self):
+        """decision layer should go through propose, not auto-save."""
+        assert "decision" not in AUTO_SAVE_LAYERS
+        assert "decision" not in CONDITIONAL_AUTO_SAVE_LAYERS
 
 
 # ── run_post_conversation_extraction ──────────────────────────────

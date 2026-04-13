@@ -48,6 +48,11 @@ def manager(tmp_project):
     """Create a DelegateManager with test project."""
     from app.agents.delegate_manager import DelegateManager, reset_delegate_manager
     reset_delegate_manager()
+    mgr = DelegateManager(
+        project_id="test",
+        project_dir=tmp_project,
+    )
+    return mgr
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +111,7 @@ class TestPostProgressInlineArtifacts:
 
         with patch.object(manager, "_get_chat_storage", return_value=mock_cs), \
              patch("builtins.open", mock_open(read_data=report_content)), \
-             patch("app.agents.delegate_manager.get_project_root", return_value="/fake/root"):
+             patch("app.context.get_project_root", return_value="/fake/root"):
             manager._post_progress_to_source(plan_id, "d1", crystal)
 
         assert len(posted_messages) == 1
@@ -151,14 +156,13 @@ class TestPostProgressInlineArtifacts:
 
         with patch.object(manager, "_get_chat_storage", return_value=mock_cs), \
              patch("builtins.open", side_effect=OSError("No such file")), \
-             patch("app.agents.delegate_manager.get_project_root", return_value="/fake/root"):
+             patch("app.context.get_project_root", return_value="/fake/root"):
             manager._post_progress_to_source(plan_id, "d1", crystal)
 
         assert len(posted_messages) == 1
         content = posted_messages[0].content
         assert "<details>" in content
         assert "could not read" in content
-    return DelegateManager("test-project", tmp_project, max_concurrency=2)
 
 
 @pytest.fixture

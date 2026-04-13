@@ -22,7 +22,7 @@ class TestResolveDefaults:
         with patch.dict(os.environ, {"ZIYA_ENDPOINT": "bedrock"}, clear=False):
             config = resolve_service_model("memory_extraction")
             assert config["endpoint"] == "bedrock"
-            assert "nova-lite" in config["model_id"]
+            assert "haiku" in config["model_id"]  # memory_extraction uses haiku override
 
     def test_google_default(self):
         with patch.dict(os.environ, {"ZIYA_ENDPOINT": "google"}, clear=False):
@@ -106,5 +106,7 @@ class TestEndpointCoverage:
             config = resolve_service_model("memory_extraction")
             # Unknown endpoint → uses bedrock defaults
             assert config["endpoint"] == "some_future_provider"
-            # model_id comes from bedrock defaults since there's no entry for the unknown
-            assert config["model_id"] == _ENDPOINT_DEFAULTS["bedrock"]["default"]["model_id"]
+            # model_id comes from bedrock memory_extraction override since there's no entry for the unknown provider
+            # The resolver falls back to bedrock's category-specific override
+            expected = _ENDPOINT_DEFAULTS["bedrock"].get("memory_extraction", _ENDPOINT_DEFAULTS["bedrock"]["default"])["model_id"]
+            assert config["model_id"] == expected

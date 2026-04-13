@@ -248,7 +248,7 @@ class TestSuccessTracking:
 # -----------------------------------------------------------------------
 
 class TestClientCreation:
-    @patch("app.agents.models.ModelManager._get_persistent_bedrock_client")
+    @patch("app.providers.bedrock_client_cache.get_persistent_bedrock_client")
     def test_get_client_caches(self, mock_get_client, multi_region_config):
         """Client should be created once and cached."""
         mock_get_client.return_value = MagicMock()
@@ -264,7 +264,7 @@ class TestClientCreation:
         router = BedrockRegionRouter(multi_region_config, "ziya", "us-east-1")
         assert router.get_client_for_region("mars-west-1") is None
 
-    @patch("app.agents.models.ModelManager._get_persistent_bedrock_client")
+    @patch("app.providers.bedrock_client_cache.get_persistent_bedrock_client")
     def test_get_client_failure_returns_none(self, mock_get_client, multi_region_config):
         mock_get_client.side_effect = Exception("creds failed")
         router = BedrockRegionRouter(multi_region_config, "ziya", "us-east-1")

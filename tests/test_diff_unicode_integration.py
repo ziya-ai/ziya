@@ -64,6 +64,11 @@ class TestUnicodeIntegration(unittest.TestCase):
         
         modified_content = handle_invisible_unicode(original_content, diff)
         
+        # handle_invisible_unicode returns None when it falls back to standard
+        # handling.  In that case, apply via the standard difflib path.
+        if modified_content is None:
+            modified_content = apply_diff_with_difflib(self.test_file_path, diff)
+        
         with open(self.test_file_path, "w", encoding="utf-8") as f:
             f.write(modified_content)
         
@@ -91,6 +96,9 @@ class TestUnicodeIntegration(unittest.TestCase):
             original_content = f.read()
         
         modified_content = handle_invisible_unicode(original_content, diff)
+        
+        if modified_content is None:
+            modified_content = apply_diff_with_difflib(self.test_file_path, diff)
         
         with open(self.test_file_path, "w", encoding="utf-8") as f:
             f.write(modified_content)

@@ -84,6 +84,7 @@ class TestExternalPathPersistence(unittest.TestCase):
         from app.storage.projects import ProjectStorage
         from app.models.project import ProjectUpdate, ProjectSettings
         import app.server as srv
+        import app.services.folder_service as folder_svc
 
         project_dir = os.path.join(self.tmpdir, "restoretest")
         os.makedirs(project_dir)
@@ -98,7 +99,7 @@ class TestExternalPathPersistence(unittest.TestCase):
 
         # Clear server-side state and restored tracker
         srv._explicit_external_paths.clear()
-        srv._restored_projects.discard(os.path.abspath(project_dir))
+        folder_svc._restored_projects.discard(os.path.abspath(project_dir))
 
         # Mock get_ziya_home at the import location used inside
         # _restore_external_paths_for_project (app.utils.paths)

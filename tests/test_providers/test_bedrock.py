@@ -43,9 +43,8 @@ def mock_bedrock_client():
 @pytest.fixture
 def bedrock_provider(mock_bedrock_client):
     """Create a BedrockProvider with mocked client."""
-    # ModelManager is imported inside BedrockProvider.__init__, so we patch at that scope
-    with patch("app.agents.models.ModelManager") as mock_mm:
-        mock_mm._get_persistent_bedrock_client.return_value = mock_bedrock_client
+    with patch("app.providers.bedrock_client_cache.get_persistent_bedrock_client") as mock_get:
+        mock_get.return_value = mock_bedrock_client
         from app.providers.bedrock import BedrockProvider
         
         provider = BedrockProvider(

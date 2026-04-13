@@ -128,8 +128,10 @@ class TestBasicJsValidationFalsePositives(unittest.TestCase):
 
     # -- Cases that must still be caught --
 
-    def test_missing_semicolon_still_detected(self):
-        self._assert_invalid('const x = 42', 'missing semicolon on const')
+    def test_missing_semicolon_is_advisory_only(self):
+        """Semicolons are no longer hard failures — JS ASI and TS/JSX patterns
+        make semicolon detection too noisy. Validation should still pass."""
+        self._assert_valid('const x = 42', 'missing semicolon is advisory')
 
     def test_mismatched_bracket_detected(self):
         ok, err = JavaScriptHandler._basic_js_validation('function f() { return (1; }')

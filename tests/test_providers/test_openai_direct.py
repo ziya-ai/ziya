@@ -13,11 +13,12 @@ Tests verify:
   9. OpenRouter wiring (same class, different base_url)
 """
 
+import asyncio
 import json
 import os
 import pytest
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from typing import Dict, Any
 
 from app.providers.base import (
@@ -477,6 +478,11 @@ class TestStreamParsing:
 class TestRetryLogic:
     @pytest.mark.asyncio
     async def test_throttle_retried(self, provider):
+        """Throttled requests should be retried with backoff.
+
+        Patches asyncio.sleep so the exponential backoff delays
+        don't cause 8+ seconds of real wall time.
+        """
         call_count = 0
 
         async def mock_create(**kwargs):
@@ -489,26 +495,29 @@ class TestRetryLogic:
         provider.client.chat.completions.create = mock_create
 
         events = []
-        async for event in provider.stream_response(
-            [{"role": "user", "content": "hi"}], None, [], ProviderConfig()
-        ):
-            events.append(event)
+        with patch("app.providers.openai_direct.asyncio.sleep", new_callable=AsyncMock):
+            async for event in provider.stream_response(
+                [{"role": "user", "content": "hi"}], None, [], ProviderConfig()
+            ):
+                events.append(event)
 
         assert call_count == 3
         assert isinstance(events[0], StreamEnd)
 
     @pytest.mark.asyncio
     async def test_throttle_exhausted_yields_error(self, provider):
+        """After max retries, a throttle error event should be yielded."""
         async def mock_create(**kwargs):
             raise Exception("429 too many requests")
 
         provider.client.chat.completions.create = mock_create
 
         events = []
-        async for event in provider.stream_response(
-            [{"role": "user", "content": "hi"}], None, [], ProviderConfig()
-        ):
-            events.append(event)
+        with patch("app.providers.openai_direct.asyncio.sleep", new_callable=AsyncMock):
+            async for event in provider.stream_response(
+                [{"role": "user", "content": "hi"}], None, [], ProviderConfig()
+            ):
+                events.append(event)
 
         assert len(events) == 1
         assert isinstance(events[0], ErrorEvent)
