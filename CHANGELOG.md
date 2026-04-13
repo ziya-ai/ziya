@@ -16,92 +16,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Design Philosophy document** (`Docs/DesignPhilosophy.md`): First-person
-  articulation of the reasoning behind Ziya's architectural choices — context
-  curation vs auto-compaction, enterprise security posture, visual thinking,
-  deliberate competitor isolation, agentic tool philosophy, and incremental
-  refactoring discipline
+### Fixed
+### Changed
+
+## [0.6.4.4] - 2026-04-13
+
+### Added
+- **Server route decomposition**: Extracted route handlers from monolithic
+  server.py (~5000 lines) into dedicated modules — diff_routes.py,
+  folder_routes.py, model_routes.py, token_routes.py, debug_routes.py,
+  misc_routes.py, page_routes.py — and a folder_service.py business logic
+  layer. Reduces server.py to core application setup and middleware.
+- **Streaming executor decomposition**: Extracted message_stop_handler.py,
+  text_delta_processor.py, and tool_execution.py from the monolithic
+  streaming_tool_executor.py, reducing it by ~600 lines while preserving
+  all existing interfaces and behavior.
+- **Design philosophy document** (`Docs/DesignPhilosophy.md`): Articulates
+  the seven engineering principles behind Ziya's architectural decisions —
+  user-controlled context curation, adversarial-input-by-default security
+  posture, thin providers / thick orchestrator, partial success over clean
+  failure, visual output as first-class, incremental refactoring, and
+  transparent self-assessment with honest gap documentation.
+- **Refactoring handoff documents**: `Docs/REFACTORING_HANDOFF.md` and
+  `Docs/REFACTORING_PLAN.md` provide context for the server decomposition
+  work and next steps.
 - **Orchestrator integration test suite** (`tests/test_orchestrator_integration.py`):
   11 tests exercising the full `StreamingToolExecutor.stream_with_tools()` loop
-  end-to-end with a `MockProvider` (scripted `StreamEvent` sequences) and mock
-  tools. Covers: text-only response, single tool call with result feedback,
-  multi-tool sequences, conversation state evolution, system content passthrough,
-  empty-args self-correcting recovery, non-retryable error surfacing, usage metric
-  accumulation, no-provider error handling, stream termination conditions, and
-  event ordering verification. Uses a reusable `MockProvider` pattern that can
-  script arbitrary multi-iteration conversations.
-- **Design philosophy document** (`Docs/DesignPhilosophy.md`): Articulates the
-  seven engineering principles behind Ziya's architectural decisions — user-
-  controlled context curation, adversarial-input-by-default security posture,
-  thin providers / thick orchestrator, partial success over clean failure,
-  visual output as first-class, incremental refactoring, and transparent
-  self-assessment with honest gap documentation
+  end-to-end with a `MockProvider` and mock tools. Covers text-only response,
+  single/multi-tool sequences, conversation state evolution, system content
+  passthrough, error surfacing, usage metric accumulation, and event ordering.
 - **`file_write` occurrence parameter**: Patch mode now supports an `occurrence`
   parameter for targeted multi-match operations — `None` (default) errors on
-  ambiguous matches, `0` replaces all, `N` (1-based) replaces only the Nth match
+  ambiguous matches, `0` replaces all, `N` (1-based) replaces only the Nth match.
+- **CLI "Apply All" diff action**: New `[A]` (uppercase) option in the CLI diff
+  applicator applies all remaining diffs without further prompting. Only shown
+  when more than one diff remains.
+- **Frontend EditableTagList component**: Reusable tag-based editor for glob
+  patterns and path prefixes with add, remove (✕), inline edit (double-click),
+  and comma-separated multi-add. Used in ProjectManagerModal for write policy
+  and context management configuration.
+- **Zombie record detection test suite**: Frontend tests for detecting and
+  recovering large conversations stuck as 2-message shells in IndexedDB.
+- **Streaming decomposition test suites**: Tests for text_delta_processor,
+  message_stop_handler, tool_execution, stream wiring, and usage tracking.
+- **Exception narrowing test suite**: Comprehensive tests verifying specific
+  exception types are caught instead of broad `except Exception`.
+- **Feedback conversation integrity tests**: Tests verifying assistant response
+  text is preserved when user feedback arrives during streaming.
+- **Folder service tests**: Unit tests for the extracted folder service layer.
+- **Shell destructive safe paths tests**: Tests verifying destructive commands
+  are allowed on safe paths but blocked on project files.
 
 ### Fixed
-- **Missing `import os` in delegate manager**: `_post_progress_to_source` crashed
-  with `NameError` when delegates produced artifact files in `.ziya/tasks/`,
-  preventing crystal summaries from being posted to the source conversation
-- **`remove_skill_from_all_chats` NameError**: Used undefined `chat_id` instead
-  of `chat.id`, and wrote every chat file unconditionally instead of only
-  modified ones (matching the pattern used by `remove_context_from_all_chats`)
+- **Narrowed exception handlers across 36 files**: Replaced broad
+  `except Exception` clauses with specific exception types in agents, CLI,
+  MCP client/manager, providers, storage, middleware, config, utils, and
+  extensions. Prevents accidentally swallowing `KeyboardInterrupt`,
+  `SystemExit`, or `MemoryError` and improves debuggability.
+- **Missing `import os` in delegate manager**: `_post_progress_to_source`
+  crashed with `NameError` when delegates produced artifact files in
+  `.ziya/tasks/`, preventing crystal summaries from being posted.
+- **`remove_skill_from_all_chats` NameError**: Used undefined `chat_id`
+  instead of `chat.id`, and wrote every chat file unconditionally.
 - **Model config exports missing from `app.config`**: `MODEL_FAMILIES`,
   `get_supported_parameters`, and `validate_model_parameters` were not
-  re-exported from `app/config/__init__.py`, breaking all 51 model config
-  completeness tests
-- **Post-refactor test suite fixes** (Categories 1–5, ~80 test failures):
-  - `test_delegate_manager.py`: restored truncated `manager` fixture, fixed
-    `get_project_root` mock patch targets
-  - `test_model_routes.py`: rewrote all 7 tests to mock `ModelManager` at actual
-    import locations instead of non-existent `app.server` wrapper functions
-  - `test_mcp_integration.py`: updated attribute access for `SecureMCPTool`
-    metadata dict pattern, fixed enhancement mock targets, made performance
-    tests resilient to uninitialised MCP manager in test environments
-  - `test_apply_state_additional.py`: corrected assertions for no-op diffs where
-    the pipeline reports success but file content is unchanged
-  - `test_fileio_tools.py`: updated patch-mode test for new ambiguity-error
-    default, added 6 tests for `occurrence` parameter
+  re-exported from `app/config/__init__.py`, breaking model config tests.
+- **Post-refactor test suite fixes** (~80 test failures across 5 categories):
+  delegate_manager fixtures, model_routes mock targets, MCP integration
+  attribute access, apply_state assertions, and fileio patch-mode tests
+  updated for ambiguity-error default and occurrence parameter.
 - **Destructive shell commands blocked on declared-safe write areas**: Commands
-  like `rm`, `mkdir`, `mv`, `cp` were unconditionally rejected by the shell
-  command allowlist before the write policy checker could evaluate whether their
-  target paths fell under `safe_write_paths` (`.ziya/`, `/tmp/`) or
-  `allowed_write_patterns`. Destructive commands now pass the allowlist gate so
-  the write policy can make per-path decisions — project source files remain
-  protected while cleanup of scratch directories and temp files works.
-- **Shell server `2>&1` redirections passed as literal arguments**: The shell
-  command executor tokenized commands with `shlex.split` and `shell=False`, so
-  redirection operators like `2>&1` and `>/dev/null` were not interpreted by a
-  shell and instead passed as literal arguments to the subprocess (e.g. pytest
-  received `2>&1` as a filename). Redirections are now extracted from the
-  tokenized args and translated into the equivalent `subprocess.run` kwargs.
-- **Tool result blocks not horizontally scrollable**: Expanded tool result
-  content that exceeded the viewport width was clipped with no scrollbar.
-  The expanded content paths used `overflow: 'visible'` which allowed content
-  to escape the container, while the parent used `overflow: 'hidden'` to clip
-  it — making wide output both unscrollable and invisible. All expanded content
-  blocks now use `overflow: 'auto'` for proper horizontal scrolling.
-
-- **Large conversations stuck as shells (zombie record recovery)**: Conversations
-  where a shell (2 messages, first+last only) was previously written to IndexedDB
-  with `_isShell: false` appeared permanently stuck showing only summary data.
-  Three fixes: (1) the lazy-load trigger now detects "zombie records" —
-  conversations with ≤ 2 messages and a non-trivial title; (2) zombie records
-  now try IDB first before falling back to server fetch, matching the existing
-  shell behavior; (3) server fetch responses must contain > 2 messages to be
-  accepted, preventing 2-message summary data from overwriting local state.
+  like `rm`, `mkdir`, `mv`, `cp` were unconditionally rejected before the
+  write policy checker could evaluate target paths. Now pass the allowlist
+  gate so per-path policy decisions work correctly.
+- **Shell server `2>&1` redirections passed as literal arguments**: Redirection
+  operators tokenized by `shlex.split` were passed as literal args to
+  subprocesses. Now extracted and translated to `subprocess.run` kwargs.
+- **Tool result blocks not horizontally scrollable**: Expanded content that
+  exceeded viewport width was clipped. Fixed to `overflow: 'auto'`.
+- **Large conversations stuck as shells (zombie record recovery)**:
+  Conversations where a shell was written with `_isShell: false` appeared
+  permanently stuck. Three fixes: zombie record detection, IDB-first lazy
+  load, and server fetch validation requiring > 2 messages.
 
 ### Changed
-- **Removed dead `app/tools/` package**: `app/tools/file_tools.py` and
-  `app/tools/__init__.py` were an unused duplicate of `app/mcp/tools/fileio.py`
-  with zero imports anywhere in the codebase
-- **Test suite Category 6 cleanup**: Fixed 8 broken tests across 6 files after
-  major refactor — memory extractor layer config updated for two-tier auto-save
-  design, conversation exporter mock patch paths fixed for inline imports, CLI
-  cancellation tests updated for CancelledError behavior, raw markdown toggle
-  test updated for lowercase key check, JS/TS semicolon test updated for
-  advisory-only mode, and obsolete streaming middleware temp test rewritten.
+- **Removed dead `app/tools/` package**: Unused duplicate of
+  `app/mcp/tools/fileio.py` with zero imports anywhere in the codebase.
+- **Test suite cleanup**: Fixed 8+ broken tests across 6 files after major
+  refactor — memory extractor, conversation exporter, CLI cancellation,
+  raw markdown toggle, JS/TS validation, and streaming middleware tests
+  updated for new module structure.
+- **README updated** with current feature descriptions and project status.
+- **Frontend improvements**: MUIChatHistory fork conversation simplified,
+  MarkdownRenderer edge case handling, ChatContext state hardening,
+  htmlSanitize improvements.
+- **Dependencies updated** in pyproject.toml and poetry.lock.
 
 ## [0.6.4.3] - 2026-04-10
 
