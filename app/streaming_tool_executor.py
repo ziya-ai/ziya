@@ -202,7 +202,7 @@ class StreamingToolExecutor:
                     model_config=self.model_config
                 )
                 logger.debug(f"🔍 Using ModelManager's wrapped bedrock client with extended context support")
-            except Exception as e:
+            except (ImportError, AttributeError, ValueError, KeyError) as e:
                 logger.warning(f"🔍 Could not get wrapped client, falling back to direct client: {e}")
                 # Fallback to direct client creation
                 session = boto3.Session(profile_name=profile_name)
@@ -230,7 +230,7 @@ class StreamingToolExecutor:
                 region=region,
             )
             logger.info(f"StreamingToolExecutor: created {self.provider.provider_name} provider")
-        except Exception as e:
+        except (ImportError, ValueError, TypeError, KeyError, RuntimeError) as e:
             logger.warning(f"StreamingToolExecutor: provider creation failed ({e}), will use legacy path")
             self.provider = None
 
@@ -283,7 +283,7 @@ class StreamingToolExecutor:
                 # Some other object - try to convert
                 try:
                     result['input_schema'] = input_schema.model_json_schema()
-                except Exception:
+                except (AttributeError, TypeError, ValueError):
                     logger.warning(f"🔍 TOOL_SCHEMA: Could not convert input_schema, using fallback")
                     result['input_schema'] = {"type": "object", "properties": {}}
             return result
@@ -315,14 +315,18 @@ class StreamingToolExecutor:
                 logger.debug(f"🔍 TOOL_SCHEMA: Tool '{name}' has dict schema with keys: {list(input_schema.keys())}")
             elif hasattr(input_schema, 'model_json_schema'):
                 # Pydantic class - convert to JSON schema
-                input_schema = input_schema.model_json_schema()
-                logger.debug(f"🔍 TOOL_SCHEMA: Converted Pydantic schema for '{name}'")
+                try:
+                    input_schema = input_schema.model_json_schema()
+                    logger.debug(f"🔍 TOOL_SCHEMA: Converted Pydantic schema for '{name}'")
+                except (AttributeError, TypeError, ValueError):
+                    logger.warning(f"🔍 TOOL_SCHEMA: Failed to convert schema for '{name}', using empty schema")
+                    input_schema = {"type": "object", "properties": {}}
             elif input_schema:
                 # Some other object - try to convert
                 try:
                     input_schema = input_schema.model_json_schema()
                     logger.debug(f"🔍 TOOL_SCHEMA: Converted object schema for '{name}'")
-                except Exception:
+                except (AttributeError, TypeError, ValueError):
                     logger.warning(f"🔍 TOOL_SCHEMA: Failed to convert schema for '{name}', using empty schema")
                     input_schema = {"type": "object", "properties": {}}
             else:
@@ -592,7 +596,7 @@ class StreamingToolExecutor:
                     'tool_name': tool_name,
                     'result': result_text
                 }
-            except Exception as e:
+            except (OSError, RuntimeError, asyncio.TimeoutError, json.JSONDecodeError) as e:
                 logger.error(f"Error executing intercepted tool call: {e}")
                 return None
 
@@ -844,6 +848,543 @@ class StreamingToolExecutor:
             iteration=iteration,
         )
 
+
+    async def _load_and_prepare_tools(self, extra_tools=None):
+        """Load MCP tools, convert schemas, deduplicate, and prepare for provider.
+        
+        Returns:
+            tuple: (all_tools, bedrock_tools, builtin_tool_names, internal_tool_names, optional_only_tools)
+        """
+        from app.mcp.manager import get_mcp_manager
+        mcp_manager = get_mcp_manager()
+        if not mcp_manager.is_initialized:
+            await mcp_manager.initialize()
+        from app.mcp.enhanced_tools import DirectMCPTool, create_secure_mcp_tools
+
+        all_tools = create_secure_mcp_tools()
+        
+        builtin_tool_names = {tool.name for tool in all_tools if isinstance(tool, DirectMCPTool)}
+        internal_tool_names = {
+            tool.name for tool in all_tools
+            if hasattr(tool, 'metadata') and tool.metadata and tool.metadata.get('is_internal')
+        }
+
+        # Merge delegate-injected tools
+        if extra_tools:
+            for tool_instance in extra_tools:
+                direct_tool = DirectMCPTool(tool_instance)
+                all_tools.append(direct_tool)
+                builtin_tool_names.add(direct_tool.name)
+                logger.info(f"🔧 Injected extra tool: {direct_tool.name}")
+        
+        external_count = len(all_tools) - len(builtin_tool_names)
+        logger.info(f"🔧 TOOL_LOADING: {len(all_tools)} tools ({external_count} external, {len(builtin_tool_names)} builtin)")
+        if external_count > 0:
+            external_names = sorted(t.name for t in all_tools if not isinstance(t, DirectMCPTool))
+            logger.info(f"🔧 TOOL_LOADING: External tools: {external_names[:10]}{'...' if len(external_names) > 10 else ''}")
+
+        # Build set of tool names where every input param is optional
+        optional_only_tools: set = set()
+        for _t in all_tools:
+            _schema = getattr(_t, 'InputSchema', None)
+            if _schema is not None:
+                _fields = getattr(_schema, 'model_fields', {})
+                if _fields and all(not f.is_required() for f in _fields.values()):
+                    optional_only_tools.add(getattr(_t, 'name', ''))
+
+        # Convert and deduplicate tools
+        converted_tools = [self._convert_tool_schema(tool) for tool in all_tools]
+        seen_names = set()
+        bedrock_tools = []
+        for tool in converted_tools:
+            tool_name = tool.get('name', 'unknown')
+            if tool_name not in seen_names:
+                seen_names.add(tool_name)
+                if not tool_name.startswith('mcp_') and tool_name not in builtin_tool_names:
+                    tool['name'] = f'mcp_{tool_name}'
+                bedrock_tools.append(tool)
+
+        return all_tools, bedrock_tools, builtin_tool_names, internal_tool_names, optional_only_tools
+
+
+    def _build_conversation_from_messages(self, messages):
+        """Convert input messages (LangChain or dict format) to provider conversation format.
+        
+        Returns:
+            tuple: (conversation, system_content)
+        """
+        conversation = []
+        system_content = None
+
+        for i, msg in enumerate(messages):
+            if hasattr(msg, 'type') and hasattr(msg, 'content'):
+                role = msg.type if msg.type != 'human' else 'user'
+                content = msg.content
+            elif isinstance(msg, str):
+                role = 'user'
+                content = msg
+            else:
+                role = msg.get('role', '')
+                content = msg.get('content', '')
+            
+            if isinstance(content, list):
+                logger.debug(f"🖼️ Message {i} has multi-modal content with {len(content)} blocks")
+            
+            if role == 'system':
+                system_content = content
+            elif role in ('user', 'assistant', 'ai'):
+                bedrock_role = 'assistant' if role == 'ai' else role
+                conversation.append({"role": bedrock_role, "content": content})
+
+        return conversation, system_content
+
+
+    def _should_continue_or_end_stream(self, assistant_text, tools_executed, iteration,
+                                        code_block_tracker, continuation_happened,
+                                        last_stop_reason, blocked_tools_count):
+        """Determine whether to continue iterating or end the stream.
+        
+        Returns:
+            str: 'continue', 'end', or 'end_no_prefill'
+        """
+        if tools_executed:
+            return 'continue'
+        
+        if blocked_tools_count >= 3:
+            logger.warning(f"🔍 RUNAWAY_LOOP_DETECTED: {blocked_tools_count} tools blocked, ending stream")
+            return 'end'
+        
+        if not assistant_text.strip():
+            if iteration >= 100:
+                return 'end'
+            return 'end'  # No tools, no text — done
+        
+        # For non-prefill models, check if we need special handling
+        supports_prefill = self.model_config.get('supports_assistant_prefill', True)
+        if not supports_prefill and not tools_executed:
+            if last_stop_reason == 'max_tokens' and iteration < 199:
+                return 'continue_no_prefill'  # Inject continuation prompt
+            return 'end_no_prefill'
+        
+        # Short stable responses at iteration >= 1 indicate completion
+        if iteration >= 1 and len(assistant_text.strip()) < 50:
+            return 'end'
+        
+        # Still in an incomplete code block — must continue
+        if code_block_tracker.get('in_block'):
+            return 'continue'
+        
+        # Continuation just happened — let model respond naturally
+        if continuation_happened:
+            return 'continue'
+        
+        # Check if there's substantial commentary after last structured content
+        text_after_last_block = self._get_text_after_last_structured_content(assistant_text)
+        word_count = len(text_after_last_block.split()) if text_after_last_block else 0
+        
+        # 20+ words ending with punctuation = complete
+        if word_count >= 20 and text_after_last_block.rstrip().endswith(('.', '!', '?')):
+            return 'end'
+        
+        # Check for continuation hints
+        text_end = assistant_text[-200:].strip()
+        suggests_continuation = (
+            text_end.endswith(':') or
+            assistant_text.endswith('\x60\x60\x60') or
+            (word_count < 20 and not text_after_last_block.rstrip().endswith(('.', '!', '?')))
+        )
+        
+        if suggests_continuation and iteration < 2:
+            return 'continue'
+        
+        return 'end'
+
+
+    def _classify_and_handle_error(self, error, error_str, iteration, tool_results,
+                                    throttle_state, inter_tool_delay, iteration_usages,
+                                    provider_config):
+        """Classify an error and determine handling strategy.
+        
+        Returns:
+            dict with keys:
+                'type': 'throttling'|'read_timeout'|'transient'|'auth'|'generic'
+                'should_retry': bool
+                'delay': float (seconds to wait before retry)
+                'reduced_max_tokens': int or None
+                'error_message': str
+                'error_chunk': dict (the chunk to yield to frontend)
+        """
+        from app.plugins import get_active_auth_provider
+        from app.utils.custom_exceptions import KnownCredentialException
+        
+        is_throttling = any(ind in error_str for ind in [
+            "ThrottlingException", "Too many tokens", "Too many requests", "Rate exceeded"])
+        is_read_timeout = any(ind in error_str for ind in [
+            "Read timed out", "ReadTimeoutError", "Read timeout", "request timed out",
+            "read operation timed out", "ConnectionResetError", "Connection reset by peer"])
+        is_transient = any(ind in error_str for ind in [
+            "internalServerException", "ServiceUnavailableException",
+            "The system encountered an unexpected error"])
+        
+        auth_provider = get_active_auth_provider()
+        is_auth = (
+            isinstance(error, KnownCredentialException) or
+            (auth_provider and auth_provider.is_auth_error(error_str))
+        )
+        
+        if is_auth:
+            error_message = auth_provider.get_credential_help_message() if auth_provider else "AWS credentials have expired."
+            return {
+                'type': 'auth',
+                'should_retry': False,
+                'delay': 0,
+                'reduced_max_tokens': None,
+                'error_message': error_message,
+                'error_chunk': {
+                    'type': 'error', 'error': 'authentication_error',
+                    'error_type': 'authentication_error',
+                    'content': error_message, 'detail': error_str,
+                    'can_retry': True, 'retry_message': error_message
+                }
+            }
+        
+        if not (is_throttling or is_read_timeout or is_transient):
+            return {
+                'type': 'generic',
+                'should_retry': False,
+                'delay': 0,
+                'reduced_max_tokens': None,
+                'error_message': error_str,
+                'error_chunk': {'type': 'error', 'content': f'Error: {error_str}'}
+            }
+        
+        # Update inter-tool delay on throttle
+        old_delay = inter_tool_delay['current']
+        inter_tool_delay['current'] = min(
+            inter_tool_delay['max'],
+            inter_tool_delay['current'] * inter_tool_delay['growth_factor'])
+        inter_tool_delay['last_was_throttled'] = True
+        
+        # Track cache health
+        if iteration_usages:
+            last_usage = iteration_usages[-1]
+            total_processed = last_usage.input_tokens + last_usage.cache_read_tokens
+            if iteration > 0 and total_processed > 10000 and last_usage.cache_read_tokens == 0:
+                throttle_state['cache_working'] = False
+            elif last_usage.cache_read_tokens > 0:
+                throttle_state['cache_working'] = True
+                throttle_state['last_cache_efficiency'] = last_usage.cache_hit_rate
+        
+        throttle_state['retry_count'] += 1
+        
+        # Calculate backoff delay
+        if is_read_timeout:
+            time_delay = min(throttle_state['base_delay'] * (2 ** (throttle_state['retry_count'] - 1)), 15)
+        else:
+            time_delay = min(throttle_state['base_delay'] * (2 ** throttle_state['retry_count']), 30)
+        
+        # Calculate token reduction
+        current_max = provider_config.max_output_tokens
+        if is_read_timeout:
+            reduction = 1.0
+        elif throttle_state['cache_working'] == False:
+            reduction = 0.5
+        elif throttle_state['retry_count'] > 2:
+            reduction = 0.6
+        else:
+            reduction = 0.75
+        
+        reduced_max = max(int(current_max * reduction), 2048)
+        throttle_state['max_output_tokens_override'] = reduced_max
+        
+        should_retry_internally = (
+            (is_read_timeout or is_transient) and
+            throttle_state['retry_count'] <= throttle_state['max_retries']
+        )
+        
+        # Determine error type for frontend
+        if is_transient:
+            error_type = 'transient_service_error'
+            retry_msg = f"AWS service temporarily unavailable after {len(tool_results)} tool execution(s). Retrying..."
+        elif is_read_timeout:
+            error_type = 'throttling_error'
+            retry_msg = f"Connection timed out. Retrying in {time_delay}s... (attempt {throttle_state['retry_count']}/{throttle_state['max_retries']})"
+        else:
+            error_type = 'throttling_error'
+            retry_msg = f"AWS rate limit exceeded after {len(tool_results)} tool execution(s). Please wait before retrying."
+        
+        return {
+            'type': 'read_timeout' if is_read_timeout else ('transient' if is_transient else 'throttling'),
+            'should_retry': should_retry_internally,
+            'delay': time_delay,
+            'reduced_max_tokens': reduced_max,
+            'error_message': retry_msg,
+            'error_chunk': {
+                'type': error_type, 'error': error_type,
+                'detail': error_str,
+                'suggested_wait': 60,
+                'is_token_throttling': "Too many tokens" in error_str,
+                'iteration': iteration,
+                'tools_executed': len(tool_results),
+                'can_retry': True,
+                'retry_message': retry_msg,
+                'is_transient': is_transient,
+            }
+        }
+
+    def _handle_usage_event(
+        self,
+        stream_event,
+        iteration_usage: 'IterationUsage',
+        iteration: int,
+        conversation_id: Optional[str],
+        conversation: List[Dict[str, Any]],
+        system_content,
+        throttle_state: dict,
+    ) -> None:
+        """Process a UsageEvent: update iteration_usage, throttle state, and run calibration.
+
+        This is a pure side-effect method — it mutates *iteration_usage* and
+        *throttle_state* in place and returns nothing.  All calibration and
+        accuracy-tracking logic that previously lived inline in the streaming
+        loop is consolidated here.
+        """
+        # --- Update iteration usage from provider event ---
+        iteration_usage.input_tokens = stream_event.input_tokens or iteration_usage.input_tokens
+        iteration_usage.output_tokens = stream_event.output_tokens or iteration_usage.output_tokens
+        iteration_usage.cache_read_tokens = stream_event.cache_read_tokens or iteration_usage.cache_read_tokens
+        iteration_usage.cache_write_tokens = stream_event.cache_write_tokens or iteration_usage.cache_write_tokens
+
+        total_input = iteration_usage.input_tokens + iteration_usage.cache_read_tokens
+        fresh = iteration_usage.input_tokens
+        cached = iteration_usage.cache_read_tokens
+
+        # --- Logging ---
+        if iteration == 0:
+            logger.info("🔍 METRICS_DEBUG: Usage from provider:")
+            logger.info(f"   input_tokens: {stream_event.input_tokens}")
+            logger.info(f"   output_tokens: {stream_event.output_tokens}")
+            logger.info(f"   cache_read_tokens: {stream_event.cache_read_tokens}")
+            logger.info(f"   cache_write_tokens: {stream_event.cache_write_tokens}")
+        elif cached > 0:
+            throttle_state['cache_working'] = True
+            throttle_state['last_cache_efficiency'] = iteration_usage.cache_hit_rate
+            logger.debug(f"✅ CACHE WORKING: {cached:,} tokens reused")
+
+            # Warn when total tokens approach the model's context limit
+            base_limit = self.model_config.get('token_limit', 200000) if self.model_config else 200000
+            effective_limit = (
+                self.model_config.get('extended_context_limit', base_limit)
+                if self.model_config and self.model_config.get('supports_extended_context')
+                else base_limit
+            )
+            throttle_warn_threshold = int(effective_limit * 0.8)
+            if total_input > throttle_warn_threshold:
+                logger.warning(
+                    f"⚠️  HIGH THROTTLE RISK: Processing {total_input:,} total tokens "
+                    f"(limit: {effective_limit:,}, threshold: {throttle_warn_threshold:,})"
+                )
+                logger.warning(f"   Even though {cached:,} are cached (free),")
+                logger.warning("   they STILL count toward 'Too many tokens' rate limits")
+                logger.warning("   Consider reducing max_output_tokens on retries")
+
+        # --- Accuracy tracking (iteration 0 only) ---
+        if iteration == 0 and conversation_id:
+            self._track_estimation_accuracy(
+                iteration_usage, conversation, system_content,
+                fresh, cached, total_input,
+            )
+
+        # --- Calibration recording (iteration 0 only) ---
+        logger.debug(
+            f"📊 Calibration: iter={iteration}, total_input={total_input:,}, "
+            f"cache_write={iteration_usage.cache_write_tokens:,}"
+        )
+
+        if iteration == 0:
+            self._record_calibration(
+                iteration_usage, conversation_id, conversation,
+                system_content, fresh, cached, total_input,
+            )
+
+    # -- Private helpers for _handle_usage_event --
+
+    def _track_estimation_accuracy(
+        self,
+        iteration_usage: 'IterationUsage',
+        conversation: list,
+        system_content,
+        fresh: int,
+        cached: int,
+        total_input: int,
+    ) -> None:
+        """Compare our token estimate against actual usage from the provider."""
+        try:
+            try:
+                from app.utils.token_calibrator import get_token_calibrator
+                calibrator = get_token_calibrator()
+                has_calibration = True
+            except (ImportError, FileNotFoundError, PermissionError) as e:
+                logger.warning(f"📊 CALIBRATION_UNAVAILABLE: {type(e).__name__}: {e}")
+                calibrator = None
+                has_calibration = False
+            except (OSError, RuntimeError, ValueError) as e:
+                logger.error(f"📊 CALIBRATION_ERROR: Unexpected error loading calibrator: {e}")
+                calibrator = None
+                has_calibration = False
+
+            estimated_tokens = 0
+            estimation_method = "naive (4.0 chars/token)"
+            estimation_model_family = None
+
+            if has_calibration:
+                try:
+                    from app.agents.models import ModelManager
+                    model_id = ModelManager.get_model_id()
+                    if isinstance(model_id, dict):
+                        model_id = list(model_id.values())[0]
+                    endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+                    model_name = os.environ.get("ZIYA_MODEL")
+                    model_config = ModelManager.get_model_config(endpoint, model_name)
+                    estimation_model_family = model_config.get('family', 'claude')
+                except (ImportError, KeyError, AttributeError) as e:
+                    logger.warning(f"📊 ESTIMATE-FAMILY: Failed to get model family: {e}")
+                    estimation_model_family = 'claude'
+
+            # Estimate tokens from conversation messages
+            for msg in conversation:
+                estimated_tokens += self._estimate_message_tokens(
+                    msg, calibrator, has_calibration, estimation_model_family
+                )
+
+            # Include system content
+            if system_content:
+                estimated_tokens += self._estimate_content_tokens(
+                    system_content, calibrator, has_calibration, estimation_model_family
+                )
+
+            # Add baseline overhead
+            if has_calibration and estimation_model_family:
+                try:
+                    baseline_overhead = calibrator.get_baseline_overhead(model_family=estimation_model_family)
+                    if baseline_overhead > 0:
+                        estimated_tokens += baseline_overhead
+                except (KeyError, AttributeError, TypeError):
+                    pass
+
+            # Compare to actual
+            cache_written = iteration_usage.cache_write_tokens
+            actual_tokens = (fresh + cache_written) if cache_written > 0 else total_input
+            error_pct = (abs(estimated_tokens - actual_tokens) / actual_tokens * 100) if actual_tokens > 0 else 0
+
+            logger.debug(
+                f"📊 Calibration: estimated={estimated_tokens:,} actual={actual_tokens:,} "
+                f"error=±{error_pct:.1f}% ({estimation_method}, fresh={fresh:,} cached={cached:,})"
+            )
+        except (ImportError, KeyError, AttributeError, ValueError, ZeroDivisionError) as e:
+            logger.debug(f"Error in accuracy tracking: {e}")
+
+    @staticmethod
+    def _estimate_message_tokens(msg: dict, calibrator, has_calibration: bool, model_family) -> int:
+        """Estimate token count for a single conversation message."""
+        tokens = 0
+        content = msg.get('content', '')
+        if isinstance(content, str):
+            if has_calibration and calibrator:
+                tokens += calibrator.estimate_tokens(content, model_family=model_family)
+            else:
+                tokens += len(content) // 4
+        elif isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get('type')
+                if block_type == 'text':
+                    text = block.get('text', '')
+                    if has_calibration and calibrator:
+                        tokens += calibrator.estimate_tokens(text, model_family=model_family)
+                    else:
+                        tokens += len(text) // 4
+                elif block_type == 'tool_result':
+                    tr_content = block.get('content', '')
+                    if isinstance(tr_content, str):
+                        if has_calibration and calibrator:
+                            tokens += calibrator.estimate_tokens(tr_content, model_family=model_family)
+                        else:
+                            tokens += len(tr_content) // 4
+                elif block_type == 'tool_use':
+                    input_json = json.dumps(block.get('input', {}))
+                    tokens += len(input_json) // 4
+        return tokens
+
+    @staticmethod
+    def _estimate_content_tokens(content, calibrator, has_calibration: bool, model_family) -> int:
+        """Estimate token count for system content (string or list of blocks)."""
+        tokens = 0
+        if isinstance(content, str):
+            if has_calibration and calibrator:
+                tokens += calibrator.estimate_tokens(content, model_family=model_family)
+            else:
+                tokens += len(content) // 4
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get('type') == 'text':
+                    text = block.get('text', '')
+                    if has_calibration and calibrator:
+                        tokens += calibrator.estimate_tokens(text, model_family=model_family)
+                    else:
+                        tokens += len(text) // 4
+        return tokens
+
+    def _record_calibration(
+        self,
+        iteration_usage: 'IterationUsage',
+        conversation_id: Optional[str],
+        conversation: list,
+        system_content,
+        fresh: int,
+        cached: int,
+        total_input: int,
+    ) -> None:
+        """Record actual token usage for future calibration improvement."""
+        try:
+            from app.utils.token_calibrator import get_token_calibrator
+            calibrator = get_token_calibrator()
+
+            file_contents = self._extract_file_contents_from_messages(conversation, system_content)
+            if not file_contents or total_input <= 0:
+                return
+
+            from app.agents.models import ModelManager
+            model_id = ModelManager.get_model_id()
+            if isinstance(model_id, dict):
+                model_id = list(model_id.values())[0]
+
+            endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+            model_name = os.environ.get("ZIYA_MODEL")
+            model_config = ModelManager.get_model_config(endpoint, model_name)
+            model_family = model_config.get('family', 'default')
+
+            # Derive file-only tokens from cache data
+            cache_read = iteration_usage.cache_read_tokens or 0
+            cache_creation = iteration_usage.cache_write_tokens or 0
+            system_prompt_tokens = cache_read + cache_creation
+            system_chars = max(1, len(system_content or ''))
+            file_chars = sum(len(c) for c in file_contents.values())
+            file_ratio = min(1.0, file_chars / system_chars) if system_chars > 0 else 0.5
+            file_only_tokens = max(1, int(system_prompt_tokens * file_ratio))
+
+            calibrator.record_actual_usage(
+                conversation_id=conversation_id,
+                file_contents=file_contents,
+                actual_tokens=file_only_tokens,
+                model_id=str(model_id),
+                model_family=model_family,
+            )
+            logger.debug(f"📊 CALIBRATION: Recorded {len(file_contents)} files for {model_family}")
+        except (ImportError, KeyError, AttributeError, OSError, ValueError) as calib_error:
+            logger.error(f"📊 CALIBRATION ERROR: {calib_error}")
+
     async def stream_with_tools(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None) -> AsyncGenerator[Dict[str, Any], None]:
         # --- Concurrent feedback monitor ---
         # Instead of relying solely on discrete polling points, run a
@@ -897,11 +1438,11 @@ class StreamingToolExecutor:
                                         'feedback_id': data.get('feedback_id', ''),
                                         'message': msg[:80],
                                     })
-                            except Exception as ack_err:
+                            except (OSError, RuntimeError, ConnectionError) as ack_err:
                                 logger.debug(f"Could not send feedback ack: {ack_err}")
                     except asyncio.CancelledError:
                         raise
-                    except Exception as inner_err:
+                    except (OSError, RuntimeError, asyncio.QueueEmpty, KeyError) as inner_err:
                         logger.debug(f"Feedback monitor inner error: {inner_err}")
                         await asyncio.sleep(0.5)
             except asyncio.CancelledError:
@@ -956,104 +1497,18 @@ class StreamingToolExecutor:
                 import app.utils.custom_bedrock as custom_bedrock_module
                 custom_bedrock_module._current_conversation_id = conversation_id
                 logger.debug(f"🔍 EXTENDED_CONTEXT: Set module global conversation_id")
-            except Exception as e:
+            except (ImportError, AttributeError) as e:
                 logger.warning(f"🔍 EXTENDED_CONTEXT: Could not set conversation_id: {e}")
         
-        # Get MCP tools
+        # Load and prepare tools
+        all_tools, bedrock_tools, builtin_tool_names, internal_tool_names, optional_only_tools = await self._load_and_prepare_tools(extra_tools)
+        from app.mcp.enhanced_tools import DirectMCPTool
         from app.mcp.manager import get_mcp_manager
         mcp_manager = get_mcp_manager()
-        if not mcp_manager.is_initialized:
-            await mcp_manager.initialize()
-        from app.mcp.enhanced_tools import DirectMCPTool
 
-        # Get ALL tools (both MCP server tools and builtin tools)
-        from app.mcp.enhanced_tools import create_secure_mcp_tools
-        all_tools = create_secure_mcp_tools()
-        
-        builtin_tool_names = {tool.name for tool in all_tools if isinstance(tool, DirectMCPTool)}
-        # Pre-compute set of internal tool names so tool_start/tool_display
-        # events can carry the flag for frontend display suppression.
-        internal_tool_names = {
-            tool.name for tool in all_tools
-            if hasattr(tool, 'metadata') and tool.metadata and tool.metadata.get('is_internal')
-        }
-
-        # Merge delegate-injected tools (e.g. swarm coordination tools)
-        if extra_tools:
-            for tool_instance in extra_tools:
-                direct_tool = DirectMCPTool(tool_instance)
-                all_tools.append(direct_tool)
-                builtin_tool_names.add(direct_tool.name)
-                logger.info(f"🔧 Injected extra tool: {direct_tool.name}")
-        
-        # Log at INFO so this is always visible in server output
-        external_count = len(all_tools) - len(builtin_tool_names)
-        logger.info(f"🔧 TOOL_LOADING: {len(all_tools)} tools ({external_count} external, {len(builtin_tool_names)} builtin)")
-        if external_count > 0:
-            external_names = sorted(t.name for t in all_tools if not isinstance(t, DirectMCPTool))
-            logger.info(f"🔧 TOOL_LOADING: External tools: {external_names[:10]}{'...' if len(external_names) > 10 else ''}")
-        logger.debug(f"🔍 BUILTIN_TOOLS: {sorted(builtin_tool_names)}")
-        
-        # Convert ALL tools to JSON-serializable format and deduplicate by name
-        # Build set of tool names where every input param is optional (empty {} is a valid call)
-        optional_only_tools: set = set()
-        for _t in all_tools:
-            _schema = getattr(_t, 'InputSchema', None)
-            if _schema is not None:
-                _fields = getattr(_schema, 'model_fields', {})
-                if _fields and all(not f.is_required() for f in _fields.values()):
-                    optional_only_tools.add(getattr(_t, 'name', ''))
-            elif not hasattr(_t, 'InputSchema'):
-                # No schema at all — can't tell, leave it out of the safe set
-                pass
-
-        converted_tools = [self._convert_tool_schema(tool) for tool in all_tools]
-        
-        # Deduplicate tools by name (keep first occurrence)
-        seen_names = set()
-        bedrock_tools = []
-        for tool in converted_tools:
-            tool_name = tool.get('name', 'unknown')
-            if tool_name not in seen_names:
-                seen_names.add(tool_name)
-                # Add mcp_ prefix only for actual MCP tools, not builtin tools
-                if not tool_name.startswith('mcp_') and tool_name not in builtin_tool_names:
-                    tool['name'] = f'mcp_{tool_name}'
-                bedrock_tools.append(tool)
-
-        # Build conversation
-        conversation = []
-        system_content = None
-
-        logger.debug(f"🔍 STREAMING_TOOL_EXECUTOR: Received {len(messages)} messages")
-        for i, msg in enumerate(messages):
-            # Handle both dict format and LangChain message objects
-            if hasattr(msg, 'type') and hasattr(msg, 'content'):
-                # LangChain message object
-                role = msg.type if msg.type != 'human' else 'user'
-                content = msg.content
-            elif isinstance(msg, str):
-                # String format - treat as user message
-                role = 'user'
-                content = msg
-            else:
-                # Dict format
-                role = msg.get('role', '')
-                content = msg.get('content', '')
-            
-            logger.debug(f"🔍 STREAMING_TOOL_EXECUTOR: Message {i}: role={role}, content_length={len(content)}")
-            
-            # CRITICAL: Preserve list content for multi-modal (images)
-            if isinstance(content, list):
-                logger.debug(f"🖼️ STREAMING_TOOL_EXECUTOR: Message {i} has multi-modal content with {len(content)} blocks")
-            
-            if role == 'system':
-                system_content = content
-                logger.debug(f"🔍 STREAMING_TOOL_EXECUTOR: Found system message with {len(content)} characters")
-            elif role in ['user', 'assistant', 'ai']:
-                # Normalize ai role to assistant for Bedrock
-                bedrock_role = 'assistant' if role == 'ai' else role
-                conversation.append({"role": bedrock_role, "content": content})
+        # Build conversation from messages
+        conversation, system_content = self._build_conversation_from_messages(messages)
+        logger.debug(f"🔍 STREAMING_TOOL_EXECUTOR: Built conversation with {len(conversation)} messages")
 
         # Iterative execution with proper tool result handling
         recent_commands = []  # Track recent commands to prevent duplicates
@@ -1111,7 +1566,7 @@ class StreamingToolExecutor:
                     model_family not in calibrator.baselines_measured
                     or current_tool_count != previous_tool_count
                 )
-            except Exception as e:
+            except (ImportError, KeyError, AttributeError) as e:
                 logger.debug(f"Could not check baseline status: {e}")
         
         hallucination_retries = 0
@@ -1173,7 +1628,7 @@ class StreamingToolExecutor:
                                 resp = sync_client.messages.count_tokens(**count_kwargs)
                                 baseline_tokens = resp.input_tokens
                                 logger.info(f"📊 BASELINE: count_tokens API returned {baseline_tokens:,} tokens")
-                        except Exception as ct_err:
+                        except (ImportError, AttributeError, TypeError, RuntimeError) as ct_err:
                             logger.info(f"📊 BASELINE: count_tokens failed ({ct_err}), using JSON size estimate")
                         
                         # Fallback: estimate from JSON size with higher multiplier
@@ -1285,7 +1740,9 @@ class StreamingToolExecutor:
                                 logger.info(f"   System prompt: {len(baseline_system_text):,} chars")
                                 logger.info(f"   MCP tools: {mcp_tool_count}")
                             logger.debug(f"📊 BASELINE: Baseline established, will not run again for {model_family}")
-                except Exception as e:
+                except RuntimeError:
+                    pass  # "Baseline established via estimation" — expected control flow from non-Bedrock path
+                except (ImportError, KeyError, AttributeError, OSError, ValueError) as e:
                     logger.debug(f"📊 BASELINE: Establishment failed (will retry next time): {e}")
                     logger.warning(f"📊 BASELINE: Establishment failed (will retry next time): {e}")
             
@@ -1453,6 +1910,14 @@ class StreamingToolExecutor:
                     'accumulated_content': ''
                 }
                 
+                # Text delta processing state — shared across all text_delta
+                # events within this iteration.
+                from app.text_delta_processor import TextDeltaState
+                _td_state = TextDeltaState(
+                    code_block_tracker=code_block_tracker,
+                    iteration_start_time=iteration_start_time,
+                )
+
                 # Track event count for debugging
                 event_count = 0
 
@@ -1468,266 +1933,11 @@ class StreamingToolExecutor:
 
                     # --- Usage tracking ---
                     if isinstance(stream_event, UsageEvent):
-                        iteration_usage.input_tokens = stream_event.input_tokens or iteration_usage.input_tokens
-                        iteration_usage.output_tokens = stream_event.output_tokens or iteration_usage.output_tokens
-                        iteration_usage.cache_read_tokens = stream_event.cache_read_tokens or iteration_usage.cache_read_tokens
-                        iteration_usage.cache_write_tokens = stream_event.cache_write_tokens or iteration_usage.cache_write_tokens
-                        
-                        # Compute derived values for logging
-                        total_input = iteration_usage.input_tokens + iteration_usage.cache_read_tokens
-                        fresh = iteration_usage.input_tokens
-                        cached = iteration_usage.cache_read_tokens
-                        
-                        # DEBUG: Log ALL fields in metrics to see what we're getting
-                        if iteration == 0:
-                            logger.info(f"🔍 METRICS_DEBUG: Usage from provider:")
-                            logger.info(f"   input_tokens: {stream_event.input_tokens}")
-                            logger.info(f"   output_tokens: {stream_event.output_tokens}")
-                            logger.info(f"   cache_read_tokens: {stream_event.cache_read_tokens}")
-                            logger.info(f"   cache_write_tokens: {stream_event.cache_write_tokens}")
-                        elif cached > 0:
-                            throttle_state['cache_working'] = True
-                            throttle_state['last_cache_efficiency'] = iteration_usage.cache_hit_rate
-                            logger.debug(f"✅ CACHE WORKING: {cached:,} tokens reused")
-                        
-                            # Warn when total tokens approach the model's context limit
-                            base_limit = self.model_config.get('token_limit', 200000) if self.model_config else 200000
-                            effective_limit = self.model_config.get('extended_context_limit', base_limit) if self.model_config and self.model_config.get('supports_extended_context') else base_limit
-                            throttle_warn_threshold = int(effective_limit * 0.8)
-                            if total_input > throttle_warn_threshold:
-                                logger.warning(f"⚠️  HIGH THROTTLE RISK: Processing {total_input:,} total tokens (limit: {effective_limit:,}, threshold: {throttle_warn_threshold:,})")
-                                logger.warning(f"   Even though {cached:,} are cached (free),")
-                                logger.warning(f"   they STILL count toward 'Too many tokens' rate limits")
-                                logger.warning(f"   Consider reducing max_output_tokens on retries")
-                        
-                        # ACCURACY TRACKING: Compare our estimate to actual
-                        if iteration == 0 and conversation_id:  # Only on first iteration
-                            try:
-                                # CRITICAL: Check if we have calibration data available
-                                # If yes, use calibrated estimates; if no, use naive 4.0 baseline
-                                try:
-                                    from app.utils.token_calibrator import get_token_calibrator
-                                    calibrator = get_token_calibrator()
-                                    has_calibration = True
-                                    logger.info(f"📊 ESTIMATE: Loaded calibrator for accuracy check")
-                                except (ImportError, FileNotFoundError, PermissionError) as e:
-                                    logger.warning(f"📊 CALIBRATION_UNAVAILABLE: {type(e).__name__}: {e}")
-                                    calibrator = None
-                                    has_calibration = False
-                                except Exception as e:
-                                    # Log unexpected errors but don't break the flow
-                                    logger.error(f"📊 CALIBRATION_ERROR: Unexpected error loading calibrator: {e}")
-                                    calibrator = None
-                                    has_calibration = False
-                                
-                                # Calculate what we ESTIMATED this would cost
-                                estimated_tokens = 0
-                                estimation_method = "naive (4.0 chars/token)"
-                                
-                                # CRITICAL FIX: Get model_family ONCE before estimation loop
-                                # This ensures calibrated data is used during estimation
-                                estimation_model_family = None
-                                if has_calibration:
-                                    try:
-                                        from app.agents.models import ModelManager
-                                        
-                                        model_id = ModelManager.get_model_id()
-                                        if isinstance(model_id, dict):
-                                            model_id = list(model_id.values())[0]
-                                        
-                                        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
-                                        model_name = os.environ.get("ZIYA_MODEL")
-                                        model_config = ModelManager.get_model_config(endpoint, model_name)
-                                        estimation_model_family = model_config.get('family', 'claude')
-                                        
-                                        logger.info(f"📊 ESTIMATE-FAMILY: Using model_family='{estimation_model_family}' for estimation")
-                                    except Exception as e:
-                                        logger.warning(f"📊 ESTIMATE-FAMILY: Failed to get model family: {e}, using 'claude' as fallback")
-                                        estimation_model_family = 'claude'  # Fallback to claude instead of default
-                                
-                                for msg in conversation:
-                                    content = msg.get('content', '')
-                                    if isinstance(content, str):
-                                        if has_calibration:
-                                            estimated_tokens += calibrator.estimate_tokens(content, model_family=estimation_model_family)
-                                            estimation_method = "calibrated"
-                                        else:
-                                            estimated_tokens += len(content) // 4
-                                    elif isinstance(content, list):
-                                        for block in content:
-                                            if not isinstance(block, dict):
-                                                continue
-                                            block_type = block.get('type')
-                                            if block_type == 'text':
-                                                text = block.get('text', '')
-                                                if has_calibration:
-                                                    estimated_tokens += calibrator.estimate_tokens(text, model_family=estimation_model_family)
-                                                else:
-                                                    estimated_tokens += len(text) // 4
-                                            elif block_type == 'tool_result':
-                                                # Tool result content is a string with the full result text
-                                                tr_content = block.get('content', '')
-                                                if isinstance(tr_content, str):
-                                                    if has_calibration:
-                                                        estimated_tokens += calibrator.estimate_tokens(tr_content, model_family=estimation_model_family)
-                                                    else:
-                                                        estimated_tokens += len(tr_content) // 4
-                                            elif block_type == 'tool_use':
-                                                # Tool use input is a dict serialized to JSON
-                                                input_json = json.dumps(block.get('input', {}))
-                                                estimated_tokens += len(input_json) // 4
-                                
-                                # ALSO include system content if present
-                                if system_content:
-                                    if isinstance(system_content, str):
-                                        if has_calibration:
-                                            estimated_tokens += calibrator.estimate_tokens(system_content, model_family=estimation_model_family)
-                                        else:
-                                            estimated_tokens += len(system_content) // 4
-                                    elif isinstance(system_content, list):
-                                        for block in system_content:
-                                            if (isinstance(block, dict) and block.get('type') == 'text'):
-                                                text = block.get('text', '')
-                                                if has_calibration:
-                                                    estimated_tokens += calibrator.estimate_tokens(text, model_family=estimation_model_family)
-                                                else:
-                                                    estimated_tokens += len(text) // 4
-                                
-                                # Add back overhead that was subtracted during recording
-                                if has_calibration and estimation_model_family:
-                                    try:
-                                        baseline_overhead = calibrator.get_baseline_overhead(
-                                            model_family=estimation_model_family
-                                        )
-                                        if baseline_overhead > 0:
-                                            estimated_tokens += baseline_overhead
-                                            logger.info(f"📊 ESTIMATE_OVERHEAD: Added {baseline_overhead:,} baseline tokens")
-                                        else:
-                                            # No baseline yet, use conservative estimate
-                                            logger.info(f"📊 ESTIMATE_OVERHEAD: No baseline measured yet")
-                                    except Exception as e:
-                                        logger.debug(f"Could not add MCP overhead to estimate: {e}")
-                                
-                                # Compare to actual
-                                # NOTE: actual_tokens here is fresh + cached, which is what matters for throttling
-                                # Otherwise use fresh + cache_read
-                                cache_written = iteration_usage.cache_write_tokens
-                                if cache_written > 0:
-                                    # First request - cache being created
-                                    actual_tokens = fresh + cache_written
-                                else:
-                                    # Subsequent request - using cached content
-                                    actual_tokens = total_input
-                                
-                                estimation_error = abs(estimated_tokens - actual_tokens)
-                                error_pct = (estimation_error / actual_tokens * 100) if actual_tokens > 0 else 0
-                                
-                                logger.debug(
-                                    f"📊 Calibration: estimated={estimated_tokens:,} "
-                                    f"actual={actual_tokens:,} error=±{error_pct:.1f}% "
-                                    f"({estimation_method}, fresh={fresh:,} cached={cached:,})"
-                                )
-                                
-                            except Exception as e:
-                                logger.debug(f"Error in accuracy tracking: {e}")
-                    
-                        # CALIBRATION: Record actual usage for future estimate improvement
-                        # This happens automatically - no user action needed
-                        logger.debug(f"📊 Calibration: iter={iteration}, total_input={total_input:,}, cache_write={iteration_usage.cache_write_tokens:,}")
-                        
-                        if iteration == 0:  # Only on first iteration to get clean baseline
-                            logger.info(f"📊 DEBUG: Entering calibration block (iteration 0)")
-                            try:
-                                logger.info(f"📊 DEBUG: Attempting to import token_calibrator...")
-                                try:
-                                    from app.utils.token_calibrator import get_token_calibrator
-                                except ImportError as import_err:
-                                    logger.error(f"📊 CALIBRATION IMPORT FAILED: {import_err}")
-                                    raise
-                                
-                                logger.info(f"📊 DEBUG: Successfully imported, getting calibrator instance...")
-                                
-                                calibrator = get_token_calibrator()
-                                logger.info(f"📊 DEBUG: Got calibrator instance, extracting file contents...")
-                                
-                                # Extract file contents from the conversation
-                                file_contents = self._extract_file_contents_from_messages(conversation, system_content)
-                                
-                                logger.info(f"📊 DEBUG: Extracted {len(file_contents)} files for calibration, total_input={total_input}")
-                                
-                                if file_contents and total_input > 0:
-                                    logger.info(f"📊 DEBUG: Conditions met, proceeding with calibration...")
-                                    # Get current model info
-                                    from app.agents.models import ModelManager
-                                    
-                                    model_id = ModelManager.get_model_id()
-                                    if isinstance(model_id, dict):
-                                        model_id = list(model_id.values())[0]
-                                    
-                                    endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
-                                    model_name = os.environ.get("ZIYA_MODEL")
-                                    model_config = ModelManager.get_model_config(endpoint, model_name)
-                                    model_family = model_config.get('family', 'default')
-                                    
-                                    # CRITICAL: Use correct token count for calibration
-                                    # CRITICAL: Use TOTAL input (fresh + cached) for throttle-aware calibration
-                                    # Cached tokens are free for billing but STILL count for rate limits
-                                    calibration_tokens = fresh + cached
-                                    if iteration_usage.cache_write_tokens > 0:
-                                        # First iteration: also include cache creation
-                                        calibration_tokens += iteration_usage.cache_write_tokens
-                                    
-                                    logger.debug(f"📊 CALIBRATION: {calibration_tokens:,} tokens from {len(file_contents)} files, {sum(len(c) for c in file_contents.values()):,} chars")
-                                    
-                                    # Get baseline overhead (established on first request)
-                                    baseline_overhead = calibrator.get_baseline_overhead(model_family)
-                                    
-                                    # Estimate chat history tokens (small overhead from conversation)
-                                    chat_tokens = 0
-                                    for msg in conversation:
-                                        content = msg.get('content', '')
-                                        if isinstance(content, str):
-                                            chat_tokens += len(content) // 4
-                                        elif isinstance(content, list):
-                                            for block in content:
-                                                if block.get('type') == 'text':
-                                                    chat_tokens += len(block.get('text', '')) // 4
-                                    
-                                    # Exact file token count derived from Bedrock cache.
-                                    # The system prompt = boilerplate + file contents.
-                                    # Bedrock returns exact token count for the full prompt
-                                    # via cache_read/cache_creation. We know the char ratio
-                                    # of files within the prompt, so we can extract file
-                                    # tokens directly — no heuristics.
-                                    cache_read = iteration_usage.cache_read_tokens or 0
-                                    cache_creation = iteration_usage.cache_write_tokens or 0
-                                    system_prompt_tokens = cache_read + cache_creation
-                                    system_chars = max(1, len(system_content or ''))
-                                    file_chars = sum(len(c) for c in file_contents.values())
-                                    file_ratio = min(1.0, file_chars / system_chars) if system_chars > 0 else 0.5
-                                    file_only_tokens = max(1, int(system_prompt_tokens * file_ratio))
-
-                                    logger.debug(f"📊 CALIBRATION: SysPrompt={system_prompt_tokens:,} tokens "
-                                               f"(cache_read={cache_read:,}, cache_create={cache_creation:,}), "
-                                               f"FileChars={file_chars:,}/{system_chars:,} ({file_ratio:.1%}), "
-                                               f"File-only={file_only_tokens:,} tokens")
-
-                                    
-                                    # Record actual token usage for calibration
-                                    calibrator.record_actual_usage(
-                                        conversation_id=conversation_id,
-                                        file_contents=file_contents,
-                                        actual_tokens=file_only_tokens,  # File tokens only!
-                                        model_id=str(model_id),
-                                        model_family=model_family
-                                    )
-                                    
-                                    logger.debug(f"📊 CALIBRATION: Recorded {len(file_contents)} files for {model_family}")
-                                    
-                            except Exception as calib_error:
-                                logger.error(f"📊 CALIBRATION ERROR: {calib_error}")
-                                import traceback
-                                logger.error(f"📊 CALIBRATION TRACEBACK:\n{traceback.format_exc()}")
+                        self._handle_usage_event(
+                            stream_event, iteration_usage, iteration,
+                            conversation_id, conversation, system_content,
+                            throttle_state,
+                        )
                         continue  # UsageEvent fully handled, next stream_event
 
                     # --- Convert StreamEvent to legacy chunk dict ---
@@ -1857,218 +2067,20 @@ class StreamingToolExecutor:
                             continue
                             
                         if delta.get('type') == 'text_delta':
+                            # Process text delta via extracted helper
+                            from app.text_delta_processor import process_text_delta
                             text = delta.get('text', '')
-                            
-                            # Buffer incomplete code block openings to prevent malformed types
-                            if not hasattr(self, '_block_opening_buffer'):
-                                self._block_opening_buffer = ""
-                            
-                            # Check if we have a buffered incomplete opening
-                            if self._block_opening_buffer:
-                                text = self._block_opening_buffer + text
-                                self._block_opening_buffer = ""
-                            
-                            # Check if text ends with incomplete code block opening
-                            # Only buffer when NOT inside a code block — if we're in a block,
-                            # ``` at the end of a chunk is a closing fence, not an incomplete opening.
-                            if not code_block_tracker.get('in_block') and (
-                                text.endswith('```') or (text.endswith('`') and text[-3:] != '```')):
-                                self._block_opening_buffer = text
-                                continue
-                            elif '```' in text:
-                                # Has opening backticks, check if line is complete
-                                lines = text.split('\n')
-                                last_line = lines[-1]
-                                if last_line.strip().startswith('```') and not last_line.strip().endswith('```'):
-                                    if code_block_tracker.get('in_block'):
-                                        pass  # Inside a block — don't buffer, let it through
-                                    # Buffer the last line, process the rest
-                                    elif len(lines) > 1:
-                                        text = '\n'.join(lines[:-1]) + '\n'
-                                        self._block_opening_buffer = last_line
-                                    else:
-                                        self._block_opening_buffer = text
-                                        continue
-                            
-                            # Per-chunk suppression of fake tool-call syntax.
-                            # Must run BEFORE assistant_text accumulation so
-                            # the hallucination detector doesn't see it.
-                            if '```tool:' in text or '`tool:' in text:
-                                if hasattr(self, '_content_optimizer'):
-                                    remaining = self._content_optimizer.flush_remaining()
-                                    if remaining:
-                                        yield track_yield({
-                                            'type': 'text',
-                                            'content': remaining,
-                                            'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                                        })
-                                continue
-
-                            # Normalize fence spacing so opening fences always
-                            # have a preceding blank line for markdown rendering.
-                            text = self._normalize_fence_spacing(text, code_block_tracker)
-
-                            assistant_text += text
-                            
-                            # HALLUCINATION DETECTION (backend defense-in-depth)
-                            # If the model is generating text that looks like a tool
-                            # security block or fake tool output, stop streaming the
-                            # contaminated text to the frontend immediately.
-
-                            # Skip detection inside code blocks — the model is allowed
-                            # to discuss/quote error messages in diffs and code examples.
-                            import re as _re
-                            _BACKEND_HALLUCINATION_PATTERNS = [
-                                _re.compile(r'SECURITY BLOCK:.{0,200}not allowed', _re.DOTALL),
-                                _re.compile(r'Allowed commands:\s*awk'),
-                            ]
-                            # Check the trailing window of assistant_text (last 500 chars)
-                            _tail = assistant_text[-500:] if len(assistant_text) > 500 else assistant_text
-                            _hallucination_match = next(
-                                (p for p in _BACKEND_HALLUCINATION_PATTERNS if p.search(_tail)), None
-                            )
-                            # Inside a code fence the model may legitimately quote error strings
-                            if code_block_tracker.get('in_block'):
-                                _hallucination_match = None
-                            if _hallucination_match:
-                                _pattern_desc = getattr(_hallucination_match, 'pattern', 'fake_tool_call') if _hallucination_match is not True else 'fake_tool_call'
-                                logger.warning(
-                                    f"🚨 HALLUCINATION_BACKEND: Model generating fake tool output! "
-                                    f"Pattern: {_pattern_desc}, will retry"
-                                )
-                                # Strip contaminated tail from assistant_text
-                                _last_para = assistant_text.rfind('\n\n')
-                                if _last_para > 0:
-                                    _tail_section = assistant_text[_last_para:]
-                                    if _re.search(r'(\$ |ERROR:|SECURITY BLOCK|Allowed commands:|```+tool:)', _tail_section):
-                                        assistant_text = assistant_text[:_last_para].rstrip()
-                                
-                                # Reset code block tracker - its state is contaminated
-                                # by the hallucinated backticks and unreliable
-                                code_block_tracker['in_block'] = False
-                                code_block_tracker['depth'] = 0
-                                code_block_tracker['block_type'] = None
-
+                            _td_state.assistant_text = assistant_text
+                            _td_events = process_text_delta(self, text, _td_state)
+                            for _td_evt in _td_events:
+                                yield track_yield(_td_evt)
+                            # Sync mutable state back to local vars
+                            assistant_text = _td_state.assistant_text
+                            viz_buffer = _td_state.viz_buffer
+                            in_viz_block = _td_state.in_viz_block
+                            if _td_state.hallucination_detected:
                                 hallucination_this_iteration = True
-
-                                yield track_yield({
-                                    'type': 'text',
-                                    'content': '\n\n⚠️ Model attempted to fabricate tool output — retrying…\n\n'
-                                })
-                                break  # Exit stream chunk loop; outer loop will retry
-                            
-                            # Check for fake tool calls in the text and intercept them
-                            # DISABLED: This was causing premature execution of incomplete commands
-                            if False and (('```tool:' in assistant_text and '```' in assistant_text[assistant_text.find('```tool:') + 8:]) or \
-                               ('run_shell_command\n$' in assistant_text and '\n' in assistant_text[assistant_text.find('run_shell_command\n$') + 20:]) or \
-                              (':mcp_run_shell_command\n$' in assistant_text and '\n' in assistant_text[assistant_text.find(':mcp_run_shell_command\n$') + 23:])):
-                                # Extract and execute fake tool calls with multiple patterns
-                                patterns = [
-                                    r'```tool:(mcp_\w+)\n\$\s*([^`]+)```',  # Full markdown blocks only
-                                    r'run_shell_command\n\$\s*([^\n]+)\n',    # Complete lines only
-                                    r':mcp_run_shell_command\n\$\s*([^\n]+)\n' # Complete lines only
-                                ]
-                                
-                                for pattern in patterns:
-                                    if pattern.startswith('```tool:'):
-                                        matches = re.findall(pattern, assistant_text)
-                                        for tool_name, command in matches:
-                                            result = await self._execute_fake_tool(tool_name, command, assistant_text, tool_results, mcp_manager)
-                                            if result:
-                                                yield result
-                                    else:
-                                        matches = re.findall(pattern, assistant_text)
-                                        for command in matches:
-                                            result = await self._execute_fake_tool('mcp_run_shell_command', command, assistant_text, tool_results, mcp_manager)
-                                            if result:
-                                                yield result
-                                for pattern in patterns:
-                                    if re.search(pattern, text):
-                                        logger.warning(f"🚫 Intercepted fake tool call: {pattern}")
-                                        # FLUSH optimizer before skipping fake tool patterns
-                                        if hasattr(self, '_content_optimizer'):
-                                            remaining = self._content_optimizer.flush_remaining()
-                                            if remaining:
-                                                yield track_yield({
-                                                    'type': 'text',
-                                                    'content': remaining,
-                                                    'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                                                })
-                            # Initialize content optimizer if not exists
-                            if not hasattr(self, '_content_optimizer'):
-                                from app.utils.streaming_optimizer import StreamingContentOptimizer
-                                self._content_optimizer = StreamingContentOptimizer()
-                            
-                            
-                            # Check for visualization block boundaries - ensure proper markdown format
-                            viz_patterns = ['```vega-lite', '```mermaid', '```graphviz', '```d3']
-                            has_viz_pattern = any(pattern in text for pattern in viz_patterns) or (viz_buffer and any(pattern in viz_buffer + text for pattern in viz_patterns))
-                            
-                            if has_viz_pattern:
-                                # If we're already in a viz block and see a new opening, send the previous one first
-                                if in_viz_block and any(pattern in text for pattern in viz_patterns):
-                                    # New viz block starting - send accumulated buffer first
-                                    if viz_buffer.strip():
-                                        self._update_code_block_tracker(viz_buffer, code_block_tracker)
-                                        yield track_yield({
-                                            'type': 'text',
-                                            'content': viz_buffer,
-                                            'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                                        })
-                                    viz_buffer = text
-                                    in_viz_block = True
-                                elif not in_viz_block:
-                                    # FLUSH optimizer before starting viz block
-                                    if hasattr(self, '_content_optimizer'):
-                                        remaining = self._content_optimizer.flush_remaining()
-                                        if remaining:
-                                            yield track_yield({
-                                                'type': 'text',
-                                                'content': remaining,
-                                                'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                                            })
-                                    in_viz_block = True
-                                    viz_buffer = text
-                                else:
-                                    viz_buffer += text
-                                continue
-                            elif in_viz_block:
-                                viz_buffer += text
-                                # Check for closing ``` in accumulated buffer
-                                has_closing = any(line.strip() == '```' for line in viz_buffer.split('\n'))
-                                if has_closing:
-                                    # Complete visualization block - send immediately
-                                    self._update_code_block_tracker(viz_buffer, code_block_tracker)
-                                    yield track_yield({
-                                        'type': 'text',
-                                        'content': viz_buffer,
-                                        'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                                    })
-                                    viz_buffer = ""
-                                    in_viz_block = False
-                                continue
-                            
-                            # Use content optimizer to prevent mid-word splits
-                            for optimized_chunk in self._content_optimizer.add_content(text):
-                                self._update_code_block_tracker(optimized_chunk, code_block_tracker)
-                                yield track_yield({
-                                    'type': 'text',
-                                    'content': optimized_chunk,
-                                    'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                                })
-                            # After processing text, if the accumulated content
-                            # ends at a natural break, force-flush so the text
-                            # is visible before the next tool block arrives.
-                            stripped_tail = assistant_text.rstrip()
-                            if stripped_tail and stripped_tail[-1] in '.!?:\n':
-                                leftover = self._content_optimizer.flush_remaining()
-                                if leftover:
-                                    self._update_code_block_tracker(leftover, code_block_tracker)
-                                    yield track_yield({
-                                        'type': 'text',
-                                        'content': leftover,
-                                        'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                                    })
+                                break
                         elif delta.get('type') == 'input_json_delta':
                             # Find tool by index
                             tool_id = None
@@ -2337,393 +2349,44 @@ Retry with the 'command' parameter included."""
                                     if skip_execution:
                                         continue  # Skip to next tool in the content_block_stop processing
                                 
-                                # Execute the tool (already checked for duplicates at collection)
+                                # Execute tool via extracted helper
+                                from app.tool_execution import ToolExecContext, execute_single_tool
+                                _exec_ctx = ToolExecContext(
+                                    tool_id=tool_id,
+                                    tool_name=tool_name,
+                                    actual_tool_name=actual_tool_name,
+                                    args=args,
+                                    all_tools=all_tools,
+                                    internal_tool_names=internal_tool_names,
+                                    mcp_manager=mcp_manager,
+                                    project_root=project_root,
+                                    conversation_id=conversation_id,
+                                    conversation=conversation,
+                                    recent_commands=recent_commands,
+                                    inter_tool_delay=inter_tool_delay,
+                                    iteration_start_time=iteration_start_time,
+                                    track_yield_fn=track_yield,
+                                    drain_feedback_fn=_drain_pending_feedback,
+                                    executor=self,
+                                )
                                 logger.debug(f"🔍 EXECUTING_TOOL: {actual_tool_name} with args {args}")
-                                
-                                # Notify frontend that tool execution is starting
-                                yield {
-                                    'type': 'processing_state',
-                                    'state': 'processing_tools',
-                                    'tool_name': actual_tool_name,
-                                }
-                                # Send tool_start event with complete arguments
-                                yield {
-                                    'type': 'tool_start',
-                                    'tool_id': tool_id,
-                                    'tool_name': tool_name,
-                                    'display_header': self._get_tool_header(tool_name, args),
-                                    'args': args,
-                                    'syntax': self._infer_syntax_hint(tool_name, args),
-                                    'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms",
-                                    'is_internal': actual_tool_name in internal_tool_names,
-                                }
-                                
-                                # Check for user feedback before executing tool
-                                if conversation_id:
-                                    try:
-                                        from app.server import active_feedback_connections
-                                        if conversation_id in active_feedback_connections:
-                                            conns = active_feedback_connections[conversation_id]
-                                            feedback_queue = conns[0]['feedback_queue'] if len(conns) > 0 else None
-                                            if not feedback_queue:
-                                                raise asyncio.QueueEmpty()
-                                            # Check for feedback without blocking
-                                            try:
-                                                feedback_data = feedback_queue.get_nowait()
-                                                if feedback_data.get('type') == 'tool_feedback':
-                                                    feedback_message = feedback_data.get('message', '')
-                                                    logger.info(f"🔄 FEEDBACK_INTEGRATION: Received feedback: {feedback_message}")
-                                                    # If feedback suggests stopping, break out of tool execution
-                                                    if any(stop_word in feedback_message.lower() for stop_word in ['stop', 'halt', 'abort', 'cancel', 'quit']):
-                                                        logger.info(f"🔄 FEEDBACK_INTEGRATION: Feedback indicates stop - ending tool execution")
-                                                        yield track_yield({'type': 'text', 'content': f"\n\n**User feedback received:** {feedback_message}\n**Stopping tool execution as requested.**\n\n"})
-                                                        # Flush any remaining content
-                                                        await asyncio.sleep(0.1)  # Give frontend time to process
-                                                        yield track_yield({'type': 'stream_end'})
-                                                        return
-                                                    else:
-                                                        # Handle directive feedback - add to conversation for model to see
-                                                        logger.info(f"🔄 FEEDBACK_INTEGRATION: Adding directive feedback to conversation: {feedback_message}")
-                                                        
-                                                        # Add user feedback as a message to the conversation
-                                                        conversation.append({
-                                                            "role": "user", 
-                                                            "content": f"[Real-time feedback]: {feedback_message}"
-                                                        })
-                                                        logger.info(f"🔄 FEEDBACK_DELIVERED: Added tool-level feedback to conversation before tool execution")
-                                                        
-                                                        # Acknowledge the feedback to user
-                                                        yield track_yield({
-                                                            'type': 'text', 
-                                                            'content': f"\n\n**Feedback received:** {feedback_message}\n\n"
-                                                        })
-                                                        
-                                                        # Skip the current planned tool and let the model respond to feedback
-                                                        logger.info(f"🔄 FEEDBACK_INTEGRATION: Skipping planned tool to respond to feedback")
-                                                        completed_tools.add(tool_id)
-                                                        tools_executed_this_iteration = True
-                                                        _feedback_received = True
-                                                        continue
-                                            except asyncio.QueueEmpty:
-                                                pass  # No feedback available, continue normally
-                                    except Exception as e:
-                                        logger.debug(f"Error checking feedback: {e}")
-                               
-                                # Execute the tool immediately
-                                try:
-                                   # Timeout for tool execution to prevent server hangs
-                                   TOOL_EXEC_TIMEOUT = int(os.environ.get('TOOL_EXEC_TIMEOUT', '300'))  # 5 min default
-
-                                   from app.utils.tool_audit_log import log_tool_execution
-                                   _tool_start_time = time.time()
-                                   # Import signing and verification functions
-                                   from app.mcp.signing import verify_tool_result, strip_signature_metadata, sign_tool_result
-                                   
-                                   # Check if this is a builtin DirectMCPTool
-                                   logger.debug(f"🔍 BUILTIN_CHECK: Looking for tool '{actual_tool_name}' in {len(all_tools)} tools")
-                                   builtin_tool = None
-                                   if all_tools:
-                                       for tool in all_tools:
-                                           logger.debug(f"🔍 BUILTIN_CHECK: Checking tool {tool.name}, type={type(tool).__name__}, isinstance DirectMCPTool={isinstance(tool, DirectMCPTool)}")
-                                           if isinstance(tool, DirectMCPTool) and tool.name == actual_tool_name:
-                                               builtin_tool = tool
-                                               logger.info(f"🔧 BUILTIN_FOUND: Found builtin tool {actual_tool_name}")
-                                               break
-                                   
-                                   if not builtin_tool:
-                                       logger.debug(f"🔍 BUILTIN_NOT_FOUND: Tool '{actual_tool_name}' not found in builtin tools, routing to MCP manager")
-                                   
-                                   if builtin_tool:
-                                        # Call builtin tool directly
-                                        logger.info(f"🔧 Calling builtin tool directly: {actual_tool_name}")
-                                        # Inject project path for workspace-scoped routing
-                                        if project_root:
-                                            args['_workspace_path'] = project_root
-                                        # Call the async execute() method directly on the event loop.
-                                        # Going through _run() would create a new event loop via
-                                        # asyncio.run(), which deadlocks tools that use Playwright
-                                        # or other async resources bound to the main loop.
-                                        result = await asyncio.wait_for(builtin_tool.tool_instance.execute(**args), timeout=TOOL_EXEC_TIMEOUT)
-                                        
-                                        # SECURITY: Sign builtin tool results too
-                                        # Builtin tools don't go through MCPClient so we sign here
-                                        if result and not isinstance(result, dict):
-                                            # Convert string results to dict format
-                                            result = {"content": [{"type": "text", "text": str(result)}]}
-                                        if result and isinstance(result, dict) and not result.get("error"):
-                                            conversation_id = args.get('conversation_id', 'default')
-                                            result = sign_tool_result(actual_tool_name, args, result, conversation_id)
-                                            logger.debug(f"🔐 Signed builtin tool result for {actual_tool_name}")
-                                   else:
-                                        # Call through MCP manager for external tools
-                                        # Determine which server has this tool
-                                        target_server_name = None
-                                        for tool in all_tools:
-                                            tool_name_check = getattr(tool, 'name', '')
-                                            # Check both with and without mcp_ prefix
-                                            if tool_name_check == actual_tool_name or tool_name_check == f"mcp_{actual_tool_name}":
-                                                # Found the tool, get its server name
-                                                if hasattr(tool, 'metadata') and tool.metadata:
-                                                    target_server_name = tool.metadata.get('server_name')
-                                                    if target_server_name:
-                                                        logger.debug(f"🔍 ROUTING: Found tool {actual_tool_name} belongs to server '{target_server_name}'")
-                                                        break
-                                        
-                                        if not target_server_name:
-                                            logger.warning(f"🔍 ROUTING: Could not determine server for tool {actual_tool_name}, manager will try all servers")
-                                        
-                                        # Inject project path so the MCP manager can route to
-                                        # a workspace-scoped server instance with the correct cwd
-                                        if project_root:
-                                            args['_workspace_path'] = project_root
-                                        # External tools get signed in MCPClient.call_tool automatically
-                                        # Wrap in timeout to prevent indefinite hangs from crashed MCP servers
-                                        result = await asyncio.wait_for(mcp_manager.call_tool(actual_tool_name, args, server_name=target_server_name), timeout=TOOL_EXEC_TIMEOUT)
-                                    
-                                   # Initialize verification tracking variables
-                                   is_verified = False
-                                   verification_error = None
-                                    
-                                   # SECURITY: Verify the result signature before using it
-                                   if result and isinstance(result, dict) and not result.get("error"):
-                                        is_valid, error_message = verify_tool_result(result, actual_tool_name, args)
-                                        # Replace result with corrective error
-                                        is_verified = False
-                                        verification_error = None
-                                    
-                                        if not is_valid:
-                                            logger.error(f"🔐 SECURITY: Tool result verification failed for {actual_tool_name}: {error_message}")
-                                            
-                                            # Record security violation for monitoring
-                                            from app.server import record_verification_result
-                                            record_verification_result(actual_tool_name, False, error_message)
-                                            
-                                            # Create corrective error message for model
-                                            corrective_message = f"""🚨 TOOL CALL REJECTED - SECURITY VERIFICATION FAILED
-
-Tool: {actual_tool_name}
-Reason: {error_message}
-
-This tool call did not execute successfully. The result could not be cryptographically verified.
-
-DO NOT proceed as if this tool executed.
-DO NOT use or reference results from this tool call.
-
-Please try again or proceed without this tool."""
-                                            
-                                            result = {
-                                                "error": True,
-                                                "message": corrective_message
-                                            }
-                                        else:
-                                            is_verified = True
-                                            
-                                            # Record successful verification
-                                            from app.server import record_verification_result
-                                            record_verification_result(actual_tool_name, True)
-                                            
-                                            logger.debug(f"🔐 Verified tool result for {actual_tool_name}")
-                                            
-                                            # Strip signature metadata before processing
-                                            # (keep verification status separate)
-                                            result = strip_signature_metadata(result)
-
-                                   # Audit log the tool execution
-                                   _tool_elapsed = (time.time() - _tool_start_time) * 1000
-                                   log_tool_execution(
-                                       tool_name=actual_tool_name,
-                                       args={k: v for k, v in args.items() if not k.startswith('_')},
-                                       result_status="error" if (isinstance(result, dict) and result.get('error')) else "ok",
-                                       conversation_id=conversation_id or "",
-                                       verified=is_verified,
-                                       error_message=str(result.get('message', ''))[:200] if isinstance(result, dict) and result.get('error') else "",
-                                       duration_ms=_tool_elapsed,
-                                   )
-                                    
-                                    # Add successfully executed command to recent commands for deduplication
-                                   if actual_tool_name == 'run_shell_command' and args.get('command'):
-                                        recent_commands.append(args['command'])
-                                        # Keep only last 20 commands to prevent memory bloat
-                                        recent_commands = recent_commands[-20:]
-                                    
-                                    # Process result
-                                   if isinstance(result, dict) and result.get('error') and result.get('error') != False:
-                                        error_msg = result.get('message', 'Unknown error')
-                                        
-                                        # Check if this is a security verification failure
-                                        if 'SECURITY VERIFICATION FAILED' in error_msg:
-                                            # Use the full corrective message for model
-                                            result_text = error_msg
-                                        elif 'repetitive execution' in error_msg:
-                                            result_text = f"BLOCKED: {error_msg} Previous attempts may have succeeded - check the results above before retrying."
-                                        elif result.get('policy_block') or '🚫 BLOCKED' in error_msg or '🚫 WRITE BLOCKED' in error_msg:
-                                            result_text = (f"POLICY BLOCK (do NOT retry this command): {error_msg}\n"
-                                                          "This command is blocked by shell security policy. "
-                                                          "Use a different approach or an allowed command.")
-                                        elif 'non-zero exit status' in error_msg:
-                                            result_text = f"COMMAND FAILED: {error_msg}. The external tool encountered an error."
-                                        elif 'Content truncated' in error_msg:
-                                            result_text = f"PARTIAL RESULT: {error_msg}. Use start_index parameter to get more content."
-                                        elif 'validation error' in error_msg.lower():
-                                            result_text = f"PARAMETER ERROR: {error_msg}. Check the tool's parameter requirements."
-                                        else:
-                                            result_text = f"ERROR: {error_msg}. Please try a different approach or fix the command."
-                                   elif isinstance(result, dict) and 'content' in result:
-                                        content = result['content']
-                                        # Preserve structured content blocks (e.g. images)
-                                        # so the model receives them via vision capabilities.
-                                        # Detect image content structurally rather than via
-                                        # the _has_image_content flag, which gets stripped by
-                                        # strip_signature_metadata (removes all _-prefixed keys).
-                                        _has_image = isinstance(content, list) and any(
-                                            isinstance(b, dict) and b.get('type') == 'image' for b in content)
-                                        if _has_image:
-                                            result_text = content  # keep as structured list
-                                            # Extract text description for display/sanitization
-                                            text_parts = [b.get('text', '') for b in content if b.get('type') == 'text']
-                                            display_text = ' '.join(text_parts) or f"[Image result from {tool_name}]"
-                                            logger.info(f"🖼️ TOOL_IMAGE_RESULT: Preserving image content blocks for {tool_name}")
-                                        elif isinstance(content, list) and len(content) > 0:
-                                            result_text = content[0].get('text', str(result))
-                                        else:
-                                            result_text = str(result)
-                                   else:
-                                        result_text = str(result)
-
-                                   # Sanitize tool result for context efficiency:
-                                   # runs plugin filters (site-specific) then
-                                   # general-purpose transforms (base64, size cap).
-                                   # Skip sanitization for structured image content — the
-                                   # image bytes must not be stripped or truncated.
-                                   if isinstance(result_text, str):
-                                       from app.utils.tool_result_sanitizer import sanitize_for_context
-                                       result_text = sanitize_for_context(result_text, tool_name=actual_tool_name, args=args)
-
-                                   tool_results.append({
-                                        'tool_id': tool_id,
-                                        'tool_name': tool_name,
-                                        'result': result_text
-                                    })
-
-                                   # SECURITY: Only display to user if verification passed OR if it's a legitimate error
-                                   # Hallucinated results (security failures) are NOT shown to user
-                                   should_display_to_user = is_verified or (not verification_error)
-                                   
-                                   if should_display_to_user:
-                                       # For image results, extract display text for the frontend
-                                       if isinstance(result_text, list):
-                                           _display_parts = [b.get('text', '') for b in result_text if b.get('type') == 'text']
-                                           _display_str = ' '.join(_display_parts) or f"[Image from {tool_name}]"
-                                           # Extract base64 data URI for inline frontend display.
-                                           # The image is NOT stored in conversation history
-                                           # (compacted to text summary downstream) — this is
-                                           # purely for the tool_display event so the frontend
-                                           # can render it inline.
-                                           _image_data_uri = None
-                                           for _block in result_text:
-                                               if isinstance(_block, dict) and _block.get('type') == 'image':
-                                                   _src = _block.get('source', {})
-                                                   if _src.get('type') == 'base64' and _src.get('data'):
-                                                       _media = _src.get('media_type', 'image/png')
-                                                       _image_data_uri = f"data:{_media};base64,{_src['data']}"
-                                                       break
-                                       else:
-                                           _display_str = result_text
-
-                                       yield {
-                                           'type': 'tool_display',
-                                           'tool_id': tool_id,
-                                           'tool_name': tool_name,
-                                           'result': self._format_tool_result(tool_name, _display_str, args),
-                                           'args': args,
-                                           'syntax': self._infer_syntax_hint(tool_name, args),
-                                           'verified': is_verified,
-                                           'verification_error': verification_error,
-                                           'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms",
-                                           'is_internal': actual_tool_name in internal_tool_names,
-                                            **({'image_data': _image_data_uri} if isinstance(result_text, list) and _image_data_uri else {}),
-                                       }
-                                   else:
-                                       # Security failure - suppress from user display but log
-                                       logger.warning(f"🔐 SECURITY: Suppressed unverified tool result from user display: {actual_tool_name}")
-                                   
-                                   # ALWAYS send result to model (either verified result or corrective error)
-                                   yield {
-                                       'type': 'tool_result_for_model',
-                                       'tool_use_id': tool_id,
-                                       'content': result_text
-                                   }
-                                   # Note: Tool result is added to conversation below (line 1905-1924)
-                                                    
-                                   # Adaptive delay between consecutive tool calls within
-                                   # the same iteration.  Collapses toward 0.1s when no
-                                   # throttling is observed, grows when it is.
-                                   delay = inter_tool_delay['current']
-                                   await asyncio.sleep(delay)
-                                   inter_tool_delay['current'] = max(
-                                       inter_tool_delay['min'],
-                                       inter_tool_delay['current'] * inter_tool_delay['decay_factor'],
-                                   )
-                                    
-                                   # Check for feedback that arrived during tool execution
-                                   # Yield first so monitor task can deposit queued items
-                                   await asyncio.sleep(0)
-                                   for fb in _drain_pending_feedback():
-                                       if fb['type'] == 'interrupt':
-                                           yield track_yield({'type': 'text', 'content': '\n\n**User requested stop.**\n\n'})
-                                           yield track_yield({'type': 'stream_end'})
-                                           if _feedback_monitor_task:
-                                               _feedback_monitor_task.cancel()
-                                           return
-                                       fb_msg = fb.get('message', '')
-                                       if any(w in fb_msg.lower() for w in ['stop', 'halt', 'abort', 'cancel', 'quit']):
-                                           yield track_yield({'type': 'text', 'content': f"\n\n**User feedback:** {fb_msg}\n**Stopping execution as requested.**\n\n"})
-                                           yield track_yield({'type': 'stream_end'})
-                                           if _feedback_monitor_task:
-                                               _feedback_monitor_task.cancel()
-                                           return
-                                       logger.info(f"🔄 FEEDBACK_POST_TOOL: Injecting feedback after tool: {fb_msg[:60]}")
-                                       conversation.append({
-                                           "role": "user",
-                                           "content": f"[User feedback]: {fb_msg}"
-                                       })
-                                       yield track_yield({'type': 'text', 'content': f"\n\n**📝 Feedback received:** {fb_msg}\n\n"})
-                                       yield track_yield({
-                                           'type': 'feedback_delivered',
-                                           'message': fb_msg[:80],
-                                       })
-                                       _feedback_received = True
-
-                                   tools_executed_this_iteration = True
-                                   logger.debug(f"🔍 TOOL_EXECUTED_FLAG: Set tools_executed_this_iteration = True for tool {tool_id}")
-                                    
-                                except Exception as e:
-                                    error_msg = f"Tool error: {str(e)}"
-                                    # Distinguish timeout from other errors for better UX
-                                    if isinstance(e, asyncio.TimeoutError):
-                                        error_msg = f"Tool '{actual_tool_name}' timed out after {TOOL_EXEC_TIMEOUT}s. The tool may be unresponsive."
-                                        logger.error(f"⏰ TOOL_TIMEOUT: {actual_tool_name} exceeded {TOOL_EXEC_TIMEOUT}s")
-                                    elif isinstance(e, Exception) and 'cannot schedule new futures after shutdown' in str(e):
-                                        error_msg = f"Tool execution interrupted (server shutting down)"
+                                async for _evt in execute_single_tool(_exec_ctx):
+                                    if _evt.get('type') == '_tool_result':
+                                        tool_results.append({
+                                            'tool_id': _evt['tool_id'],
+                                            'tool_name': _evt['tool_name'],
+                                            'result': _evt['result'],
+                                        })
                                     else:
-                                        error_msg = f"Tool error: {str(e)}"
-
-                                    logger.error(f"🔍 TOOL_EXECUTION_ERROR: {error_msg}")
-                                    tool_results.append({
-                                        'tool_id': tool_id,
-                                        'tool_name': tool_name,
-                                        'result': f"ERROR: {error_msg}. Please try a different approach or fix the command."
-                                    })
-
-                                    # Frontend error display
-                                    yield {'type': 'tool_display', 'tool_name': tool_name, 'result': f"ERROR: {error_msg}"}
-                                    
-                                    # Clean error for model
-                                    yield {
-                                        'type': 'tool_result_for_model',
-                                        'tool_use_id': tool_id,
-                                        'content': f"ERROR: {error_msg}. Please try a different approach or fix the command."
-                                    }
+                                        yield _evt
+                                if _exec_ctx.should_stop_stream:
+                                    if _feedback_monitor_task:
+                                        _feedback_monitor_task.cancel()
+                                    return
+                                if _exec_ctx.feedback_received:
+                                    _feedback_received = True
+                                tools_executed_this_iteration = True
+                                logger.debug(f"🔍 TOOL_EXECUTED_FLAG: Set tools_executed_this_iteration = True for tool {tool_id}")
 
                                 completed_tools.add(tool_id)
                             
@@ -2753,159 +2416,32 @@ Please retry the tool call with valid JSON. Ensure:
                                 tools_executed_this_iteration = True
 
                     elif chunk['type'] == 'message_stop':
-                        # Flush any remaining content from buffers before stopping  
-                        last_stop_reason = chunk.get('stop_reason', 'end_turn')
-                        # Flush block opening buffer first
-                        if hasattr(self, '_block_opening_buffer') and self._block_opening_buffer:
-                            assistant_text += self._block_opening_buffer
-                            self._update_code_block_tracker(self._block_opening_buffer, code_block_tracker)
-                            yield track_yield({
-                                'type': 'text',
-                                'content': self._block_opening_buffer,
-                                'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                            })
-                            self._block_opening_buffer = ""
-                        
-                        if viz_buffer.strip():
-                            self._update_code_block_tracker(viz_buffer, code_block_tracker)
-                            yield track_yield({
-                                'type': 'text',
-                                'content': viz_buffer,
-                                'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                            })
-                        # Flush any remaining content from optimizer
-                        if hasattr(self, '_content_optimizer'):
-                            remaining = self._content_optimizer.flush_remaining()
-                            if remaining:
-                                self._update_code_block_tracker(remaining, code_block_tracker)
-                                yield track_yield({
-                                    'type': 'text',
-                                    'content': remaining,
-                                    'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                                })
-                        if content_buffer.strip():
-                            self._update_code_block_tracker(content_buffer, code_block_tracker)
-                            yield track_yield({
-                                'type': 'text',
-                                'content': content_buffer,
-                                'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                            })
-                        
-                        # Check if code block is still incomplete
-                        # ENHANCED BLOCK COMPLETION CHECK
-                        final_assistant_text = assistant_text.strip()
-                        
-                        # Check for unclosed code blocks using tracker
-                        logger.debug(f"🔍 COMPLETION_CHECK: tracker_in_block={code_block_tracker.get('in_block', False)}")
-                        
-                        continuation_count = 0
-                        max_continuations = 10
-                        continuation_happened = False
-                        
-                        # Generate a stable marker ID for this continuation cycle.
-                        continuation_marker_id = f"continuation_{time.time_ns()}"
-                        
-                        # Embed the rewind marker in the content stream BEFORE
-                        # the first continuation so the frontend can find it when
-                        # a rewind event references it. The frontend strips
-                        # REWIND_MARKER tags during rewind processing.
-                        if code_block_tracker.get('in_block'):
-                            rewind_marker_text = f""
-                            yield track_yield({
-                                'type': 'text',
-                                'content': rewind_marker_text,
-                                'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                            })
-
-                        while code_block_tracker.get('in_block') and continuation_count < max_continuations:
-                            continuation_count += 1
-                            block_type = code_block_tracker.get('block_type', 'code')
-                            logger.info(f"🔄 INCOMPLETE_BLOCK: Detected incomplete {block_type} block, auto-continuing (attempt {continuation_count})")
-                            
-                            # Mark rewind boundary before auto-continuation
-                            assistant_lines = assistant_text.split('\n')
-                            # Remove the incomplete last line - rewind to last complete line
-                            if assistant_lines and assistant_lines[-1].strip():
-                                # Last line is incomplete, remove it
-                                assistant_lines = assistant_lines[:-1]
-                                logger.info(f"🔄 REWIND: Removed incomplete last line, rewinding to line {len(assistant_lines)}")
-                            
-                            last_complete_line = len(assistant_lines)
-                            
-                            rewind_chunk = {
-                                'rewind': True,
-                                'to_marker': continuation_marker_id
-                            }
-                            logger.info(f"🔄 YIELDING_REWIND: Rewinding to line {last_complete_line}")
-                            yield track_yield(rewind_chunk)
-                            
-                            # CRITICAL: Add delay to ensure rewind marker is sent before continuation
-                            await asyncio.sleep(0.1)
-                            
-                            # Send heartbeat before continuation to keep connection alive
-                            yield {
-                                'type': 'heartbeat',
-                                'heartbeat': True,
-                                'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                            }
-                            
-                            await asyncio.sleep(0.1)  # Ensure heartbeat is sent
-                            
-                            continuation_had_content = False
-                            continuation_happened = True
-                            try:
-                                async for continuation_chunk in self._continue_incomplete_code_block(
-                                    conversation, code_block_tracker, system_content, mcp_manager, iteration_start_time, assistant_text
-                                ):
-                                    if continuation_chunk.get('content'):
-                                        continuation_had_content = True
-                                        logger.info(f"🔄 YIELDING_CONTINUATION: {repr(continuation_chunk.get('content', '')[:50])}")
-                                        self._update_code_block_tracker(continuation_chunk['content'], code_block_tracker)
-                                        assistant_text += continuation_chunk['content']
-                                        
-                                        if code_block_tracker['in_block']:
-                                            continuation_chunk['code_block_continuation'] = True
-                                            continuation_chunk['block_type'] = code_block_tracker['block_type']
-                                    
-                                    yield continuation_chunk
-                            except Exception as continuation_error:
-                                logger.error(f"Continuation failed: {continuation_error}")
-                                # Send continuation failure marker
-                                yield {
-                                    'type': 'continuation_failed',
-                                    'reason': str(continuation_error),
-                                    'can_retry': 'ThrottlingException' in str(continuation_error),
-                                    'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                                }
-                                break
-                            
-                            if not continuation_had_content:
-                                logger.info("🔄 CONTINUATION: No content generated, stopping continuation attempts")
-                                break
-                            
-                            # Log tracker state after continuation
-                            logger.info(f"🔄 CONTINUATION_RESULT: After attempt {continuation_count}, in_block={code_block_tracker['in_block']}, had_content={continuation_had_content}")
-                        
-                        # Just break out of chunk processing, handle completion logic below
-                        
-                        # CRITICAL: Record iteration usage BEFORE any error handling
-                        # This ensures we capture usage even if subsequent logic fails
-                        if conversation_id and iteration_usage.input_tokens > 0:
-                            try:
-                                tracker = get_global_usage_tracker()
-                                tracker.record_usage(conversation_id, iteration_usage)
-                                
-                                logger.debug(f"📊 Recorded usage for iteration {iteration}: "
-                                           f"{iteration_usage.input_tokens:,} fresh, "
-                                           f"{iteration_usage.cache_read_tokens:,} cached")
-                            except Exception as tracking_error:
-                                # Don't let tracking errors break the flow
-                                logger.error(f"Error recording usage: {tracking_error}")
-                        elif conversation_id and iteration_usage.input_tokens == 0:
-                            logger.warning(f"⚠️ No usage metrics captured for iteration {iteration}")
-                        elif not conversation_id:
-                            logger.debug(f"No conversation_id, skipping usage tracking")
-                        
+                        # Delegate to extracted handler (Phase 5d)
+                        from app.message_stop_handler import handle_message_stop, MessageStopState
+                        _ms_state = MessageStopState(
+                            assistant_text=assistant_text,
+                            viz_buffer=viz_buffer,
+                            content_buffer=content_buffer,
+                        )
+                        async for _ms_evt in handle_message_stop(
+                            executor=self,
+                            state=_ms_state,
+                            chunk=chunk,
+                            code_block_tracker=code_block_tracker,
+                            conversation=conversation,
+                            system_content=system_content,
+                            mcp_manager=mcp_manager,
+                            iteration_start_time=iteration_start_time,
+                            conversation_id=conversation_id,
+                            iteration_usage=iteration_usage,
+                            iteration=iteration,
+                            track_yield=track_yield,
+                        ):
+                            yield _ms_evt
+                        # Sync mutable state back
+                        assistant_text = _ms_state.assistant_text
+                        last_stop_reason = _ms_state.last_stop_reason
+                        continuation_happened = _ms_state.continuation_happened
                         break
 
                 # MOVED: Log usage metrics AFTER processing all chunks
@@ -3123,6 +2659,15 @@ Please retry the tool call with valid JSON. Ensure:
                             if _feedback_monitor_task:
                                 _feedback_monitor_task.cancel()
                             return
+                        # Ensure assistant's response is in conversation before
+                        # injecting the feedback user message.  The tool-results
+                        # path above already appended tool_result messages, but
+                        # assistant_text (the model's prose) may not be there yet.
+                        if assistant_text.strip() and not any(
+                            m.get('role') == 'assistant' and m.get('content') == assistant_text
+                            for m in conversation[-3:]
+                        ):
+                            conversation.append({"role": "assistant", "content": assistant_text})
                         logger.info(f"🔄 FEEDBACK_PRE_CONTINUE: Injecting feedback before next iteration: {fb_msg[:60]}")
                         conversation.append({"role": "user", "content": f"[User feedback]: {fb_msg}"})
                         yield track_yield({'type': 'text', 'content': f"\n\n**📝 Feedback received:** {fb_msg}\n\n"})
@@ -3166,6 +2711,14 @@ Please retry the tool call with valid JSON. Ensure:
                         combined_feedback = ' '.join(pending_feedback_before_end)
                         logger.info(f"🔄 PRE-END FEEDBACK: Processing {len(pending_feedback_before_end)} feedback message(s) before stream end")
                         
+                        # The model just produced assistant_text in this iteration.
+                        # We must add it to the conversation BEFORE the feedback
+                        # so the model knows what it said and can respond to the
+                        # feedback in context.  Without this, two consecutive user
+                        # messages appear and the model loses its own output.
+                        if assistant_text.strip():
+                            conversation.append({"role": "assistant", "content": assistant_text})
+
                         # Add feedback to conversation
                         conversation.append({
                             "role": "user",
@@ -3349,7 +2902,7 @@ Please retry the tool call with valid JSON. Ensure:
                                 if post_cancel_feedback:
                                     pending_feedback.extend(post_cancel_feedback)
                                     post_cancel_feedback = []
-                            except Exception as queue_error:
+                            except (asyncio.QueueEmpty, asyncio.TimeoutError, OSError, KeyError) as queue_error:
                                 logger.debug(f"Error draining feedback queue: {queue_error}")
                             
                             # If we have pending feedback, send it to the model
@@ -3357,6 +2910,13 @@ Please retry the tool call with valid JSON. Ensure:
                                 combined_feedback = ' '.join(pending_feedback)
                                 logger.info(f"🔄 POST-LOOP FEEDBACK: Processing {len(pending_feedback)} feedback message(s) after tool chain completion")
                                 
+                                # Add the model's current response to conversation
+                                # before the feedback, so the model retains context
+                                # of what it just said.  Without this, feedback is
+                                # injected as a consecutive user message.
+                                if assistant_text.strip():
+                                    conversation.append({"role": "assistant", "content": assistant_text})
+
                                 # Add feedback to conversation
                                 conversation.append({
                                     "role": "user",
@@ -3392,212 +2952,53 @@ Please retry the tool call with valid JSON. Ensure:
                                     # Signal stream completion after feedback response
                                     yield track_yield({'type': 'stream_end'})
                                     return
-                                except Exception as feedback_error:
+                                except (OSError, RuntimeError, asyncio.TimeoutError) as feedback_error:
                                     logger.error(f"Error processing post-loop feedback: {feedback_error}")
-                    except Exception as e:
+                    except (KeyError, OSError, RuntimeError, asyncio.QueueEmpty) as e:
                         logger.debug(f"Error checking post-loop feedback: {e}")
                 
                 # Clean up iteration resources to prevent memory leaks
                 self._cleanup_iteration_resources()
 
-            except Exception as e:
+            except Exception as e:  # Intentionally broad: delegates to _classify_and_handle_error()
+                # which triages throttling, auth, transient, read-timeout, and generic errors
                 error_str = str(e)
                 logger.error(f"Error in stream_with_tools iteration {iteration}: {error_str}", exc_info=True)
                 
-                # Check if this is a throttling or transient service error
-                is_throttling_error = any(indicator in error_str for indicator in [
-                    "ThrottlingException", 
-                    "Too many tokens",
-                    "Too many requests", 
-                    "Rate exceeded",
-                ])
-                
-                # Check for read timeout errors (mid-stream connection drops)
-                is_read_timeout = any(indicator in error_str for indicator in [
-                    "Read timed out",
-                    "ReadTimeoutError",
-                    "Read timeout",
-                    "request timed out",
-                    "read operation timed out",
-                    "ConnectionResetError",
-                    "Connection reset by peer",
-                ])
-
-                # Check for transient AWS service errors that should be retried
-                is_transient_error = any(indicator in error_str for indicator in [
-                    "internalServerException",
-                    "ServiceUnavailableException",
-                    "The system encountered an unexpected error",
-                ])
-                
-                is_throttling = is_throttling_error or is_transient_error or is_read_timeout
-                
-                # Check for authentication/credential errors
-                from app.plugins import get_active_auth_provider
-                from app.utils.custom_exceptions import KnownCredentialException
-
-                auth_provider = get_active_auth_provider()
-                is_auth_error = (
-                    isinstance(e, KnownCredentialException) or
-                    (auth_provider and auth_provider.is_auth_error(error_str))
+                # Classify error and determine handling strategy
+                error_info = self._classify_and_handle_error(
+                    e, error_str, iteration, tool_results,
+                    throttle_state, inter_tool_delay,
+                    iteration_usages, provider_config
                 )
                 
-                if is_throttling:
-                    # Update throttle state based on what we learned
-                    # Grow inter-tool delay on throttle to reduce pressure
-                    old_delay = inter_tool_delay['current']
-                    inter_tool_delay['current'] = min(
-                        inter_tool_delay['max'],
-                        inter_tool_delay['current'] * inter_tool_delay['growth_factor'],
-                    )
-                    inter_tool_delay['last_was_throttled'] = True
-                    logger.warning(f"⏱️  Throttle detected — inter-tool delay: {old_delay:.2f}s → {inter_tool_delay['current']:.2f}s")
-
-                    if len(iteration_usages) > 0:
-                        last_usage = iteration_usages[-1]
-                        
-                        # Check if cache is working
-                        total_input_processed = last_usage.input_tokens + last_usage.cache_read_tokens
-                        if iteration > 0 and total_input_processed > 10000 and last_usage.cache_read_tokens == 0:
-                            throttle_state['cache_working'] = False
-                            logger.error("🚨 THROTTLED + NO CACHE: Cache appears broken!")
-                        elif last_usage.cache_read_tokens > 0:
-                            throttle_state['cache_working'] = True
-                            throttle_state['last_cache_efficiency'] = last_usage.cache_hit_rate
+                if error_info['type'] in ('read_timeout', 'transient') and error_info['should_retry']:
+                    logger.warning(f"🔄 {error_info['type'].upper()}_RETRY: "
+                                  f"Attempt {throttle_state['retry_count']}/{throttle_state['max_retries']}, "
+                                  f"waiting {error_info['delay']}s before retry")
                     
-                    # Calculate intelligent backoff based on cache health and token usage
-                    throttle_state['retry_count'] += 1
-                    
-                    # Exponential time backoff - shorter for read timeouts since they're transient
-                    if is_read_timeout:
-                        time_delay = min(throttle_state['base_delay'] * (2 ** (throttle_state['retry_count'] - 1)), 15)
-                    else:
-                        time_delay = min(throttle_state['base_delay'] * (2 ** throttle_state['retry_count']), 30)
-                    
-                    # CRITICAL: Reduce output tokens to decrease throttle pressure
-                    # Per @animeshx: "more throttled with a higher output token limit"
-                    current_max_tokens = provider_config.max_output_tokens
-                    
-                    # Aggressive reduction strategy - but NOT for read timeouts
-                    # Read timeouts are network issues, not token pressure
-                    if is_read_timeout:
-                        reduction_factor = 1.0  # Don't reduce tokens for timeouts
-                    elif throttle_state['cache_working'] == False:
-                        # Cache is broken - reduce more aggressively
-                        reduction_factor = 0.5  # 50% of original
-                        logger.warning("🔥 CACHE BROKEN: Using aggressive output token reduction")
-                    elif throttle_state['retry_count'] > 2:
-                        # Multiple retries - get more aggressive
-                        reduction_factor = 0.6  # 60% of original
-                    else:
-                        # First retry - moderate reduction
-                        reduction_factor = 0.75  # 75% of original
-                    
-                    reduced_max_tokens = int(current_max_tokens * reduction_factor)
-                    reduced_max_tokens = max(reduced_max_tokens, 2048)  # Never go below 2048
-                    
-                    throttle_state['max_output_tokens_override'] = reduced_max_tokens
-                    logger.warning(f"🔄 INTELLIGENT THROTTLE BACKOFF:")
-                    logger.warning(f"   Retry #{throttle_state['retry_count']}")
-                    logger.warning(f"   Time delay: {min(time_delay, 60)}s")
-                    logger.warning(f"   Output tokens: {current_max_tokens:,} → {reduced_max_tokens:,} ({reduction_factor*100:.0f}%)")
-                    logger.warning(f"   Cache working: {throttle_state['cache_working']}")
-                    logger.warning(f"   Cache efficiency: {throttle_state['last_cache_efficiency']*100:.1f}%")
-                    
-                    # Extract suggested wait time if available
-                    suggested_wait = 60  # Default 60 seconds
-                    if "please wait" in error_str.lower():
-                        # Try to extract time from error message
-                        import re
-                        wait_match = re.search(r'wait (\d+)', error_str.lower())
-                        if wait_match:
-                            suggested_wait = int(wait_match.group(1))
-                    
-                    # Check if this is a token-based throttling (more severe)
-                    is_token_throttling = "Too many tokens" in error_str
-                    
-                    # Determine error type for display
-                    if is_transient_error:
-                        error_type = 'transient_service_error'
-                        retry_message = f"AWS service temporarily unavailable after {len(tool_results)} tool execution(s). Retrying..."
-                    elif is_read_timeout:
-                        error_type = 'throttling_error'
-                        retry_message = f"Connection timed out during streaming. Retrying in {time_delay}s... (attempt {throttle_state['retry_count']}/{throttle_state['max_retries']})"
-                    else:
-                        error_type = 'throttling_error'
-                        retry_message = f"AWS rate limit exceeded after {len(tool_results)} tool execution(s). Please wait {suggested_wait} seconds before retrying."
-                    
-                    # For read timeouts and transient service errors, retry internally instead of yielding to frontend
-                    if (is_read_timeout or is_transient_error) and throttle_state['retry_count'] <= throttle_state['max_retries']:
-                        logger.warning(f"🔄 READ_TIMEOUT_RETRY: Attempt {throttle_state['retry_count']}/{throttle_state['max_retries']}, "
-                                      f"waiting {time_delay}s before retry")
-                        
-                        # Yield a heartbeat so the frontend knows we're still alive
-                        yield {
-                            'type': 'heartbeat',
-                            'heartbeat': True,
-                            'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                        }
-                        
-                        # If we had partial text from this iteration, preserve it
-                        if assistant_text.strip():
-                            logger.info(f"🔄 READ_TIMEOUT_RETRY: Preserving {len(assistant_text)} chars of partial text")
-                            yield {
-                                'type': 'text',
-                                'content': '\n\n⏳ *' + (
-                                    'Service temporarily unavailable' if is_transient_error else 'Connection timed out'
-                                ) + ', retrying...*\n\n',
-                                'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                            }
-                        
-                        await asyncio.sleep(time_delay)
-                        
-                        # Reset iteration-specific state for the retry
-                        self._cleanup_iteration_resources()
-                        
-                        # Don't increment iteration counter - retry the same iteration
-                        continue
-
                     yield {
-                        'type': error_type,
-                        'error': error_type,
-                        'detail': error_str,
-                        'suggested_wait': suggested_wait,
-                        'is_token_throttling': is_token_throttling,
-                        'iteration': iteration,
-                        'tools_executed': len(tool_results),
-                        'can_retry': True,
-                        'retry_message': retry_message,
-                        'is_transient': is_transient_error,
+                        'type': 'heartbeat', 'heartbeat': True,
                         'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
                     }
-                    logger.info(f"🔄 RETRY: Yielded {'transient error' if is_transient_error else 'throttling'} chunk after {len(tool_results)} tools")
-                    return
-                elif is_auth_error:
-                    # For authentication errors, yield a detailed error with helpful message
-                    logger.error(f"Authentication error in iteration {iteration}: {error_str}")
                     
-                    # Extract the most relevant part of the error message
-                    error_message = auth_provider.get_credential_help_message() if auth_provider else "AWS credentials have expired."
+                    if assistant_text.strip():
+                        label = 'Service temporarily unavailable' if error_info['type'] == 'transient' else 'Connection timed out'
+                        yield {
+                            'type': 'text',
+                            'content': f'\n\n⏳ *{label}, retrying...*\n\n',
+                            'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                        }
                     
-                    auth_error_chunk = {
-                        'type': 'error',
-                        'error': 'authentication_error',
-                        'error_type': 'authentication_error',
-                        'content': error_message,
-                        'detail': error_str,
-                        'can_retry': True,
-                        'retry_message': error_message
-                    }
-                    logger.info(f"🔐 AUTH_ERROR: Yielding authentication error chunk: {auth_error_chunk}")
-                    yield auth_error_chunk
-                    logger.info(f"🔐 AUTH_ERROR: Successfully yielded authentication error chunk")
-                    return
-                else:
-                    # For non-throttling errors, yield generic error
-                    logger.error(f"Non-throttling error in iteration {iteration}: {error_str}")
-                    yield {'type': 'error', 'content': f'Error: {error_str}'}
-                    return
+                    await asyncio.sleep(error_info['delay'])
+                    self._cleanup_iteration_resources()
+                    continue  # Retry same iteration
+                
+                # Non-retryable: yield error chunk and return
+                yield error_info['error_chunk']
+                if error_info['type'] == 'auth':
+                    logger.info(f"🔐 AUTH_ERROR: Yielded authentication error chunk")
+                return
         # Stop the feedback monitor
         if _feedback_monitor_task and not _feedback_monitor_task.done():
             _feedback_monitor_task.cancel()
@@ -3624,7 +3025,7 @@ Please retry the tool call with valid JSON. Ensure:
                 if crystal:
                     yield {'type': 'crystal_ready', 'crystal': crystal.model_dump(mode='json')}
                     logger.info(f"💎 Autocompaction complete for {conversation_id}")
-            except Exception as exc:
+            except (ImportError, RuntimeError, ValueError, OSError) as exc:
                 logger.warning(f"💎 Autocompaction failed (non-fatal): {exc}")
 
         # FINAL REPORT: Log comprehensive usage summary
@@ -3907,5 +3308,5 @@ Please retry the tool call with valid JSON. Ensure:
                     'continuation': True
                 }
         
-        except Exception as e:
+        except (OSError, RuntimeError, asyncio.TimeoutError, ValueError) as e:
             logger.error(f"🔄 CONTINUATION: Error in continuation: {e}")
