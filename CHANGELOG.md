@@ -5,9 +5,112 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.4.2] - 2026-04-11
+<!-- ═══════════════════════════════════════════════════════════════════
+  HOW TO ADD ENTRIES:
+  All new changes go in [Unreleased] below. NEVER add to a numbered version.
+  When a release is cut, [Unreleased] is renamed to the new version number
+  and a fresh empty [Unreleased] section is created above it.
+  Versions are listed newest-first (reverse chronological).
+═══════════════════════════════════════════════════════════════════ -->
+
+## [Unreleased]
 
 ### Added
+- **Design Philosophy document** (`Docs/DesignPhilosophy.md`): First-person
+  articulation of the reasoning behind Ziya's architectural choices — context
+  curation vs auto-compaction, enterprise security posture, visual thinking,
+  deliberate competitor isolation, agentic tool philosophy, and incremental
+  refactoring discipline
+- **Orchestrator integration test suite** (`tests/test_orchestrator_integration.py`):
+  11 tests exercising the full `StreamingToolExecutor.stream_with_tools()` loop
+  end-to-end with a `MockProvider` (scripted `StreamEvent` sequences) and mock
+  tools. Covers: text-only response, single tool call with result feedback,
+  multi-tool sequences, conversation state evolution, system content passthrough,
+  empty-args self-correcting recovery, non-retryable error surfacing, usage metric
+  accumulation, no-provider error handling, stream termination conditions, and
+  event ordering verification. Uses a reusable `MockProvider` pattern that can
+  script arbitrary multi-iteration conversations.
+- **Design philosophy document** (`Docs/DesignPhilosophy.md`): Articulates the
+  seven engineering principles behind Ziya's architectural decisions — user-
+  controlled context curation, adversarial-input-by-default security posture,
+  thin providers / thick orchestrator, partial success over clean failure,
+  visual output as first-class, incremental refactoring, and transparent
+  self-assessment with honest gap documentation
+- **`file_write` occurrence parameter**: Patch mode now supports an `occurrence`
+  parameter for targeted multi-match operations — `None` (default) errors on
+  ambiguous matches, `0` replaces all, `N` (1-based) replaces only the Nth match
+
+### Fixed
+- **Missing `import os` in delegate manager**: `_post_progress_to_source` crashed
+  with `NameError` when delegates produced artifact files in `.ziya/tasks/`,
+  preventing crystal summaries from being posted to the source conversation
+- **`remove_skill_from_all_chats` NameError**: Used undefined `chat_id` instead
+  of `chat.id`, and wrote every chat file unconditionally instead of only
+  modified ones (matching the pattern used by `remove_context_from_all_chats`)
+- **Model config exports missing from `app.config`**: `MODEL_FAMILIES`,
+  `get_supported_parameters`, and `validate_model_parameters` were not
+  re-exported from `app/config/__init__.py`, breaking all 51 model config
+  completeness tests
+- **Post-refactor test suite fixes** (Categories 1–5, ~80 test failures):
+  - `test_delegate_manager.py`: restored truncated `manager` fixture, fixed
+    `get_project_root` mock patch targets
+  - `test_model_routes.py`: rewrote all 7 tests to mock `ModelManager` at actual
+    import locations instead of non-existent `app.server` wrapper functions
+  - `test_mcp_integration.py`: updated attribute access for `SecureMCPTool`
+    metadata dict pattern, fixed enhancement mock targets, made performance
+    tests resilient to uninitialised MCP manager in test environments
+  - `test_apply_state_additional.py`: corrected assertions for no-op diffs where
+    the pipeline reports success but file content is unchanged
+  - `test_fileio_tools.py`: updated patch-mode test for new ambiguity-error
+    default, added 6 tests for `occurrence` parameter
+- **Destructive shell commands blocked on declared-safe write areas**: Commands
+  like `rm`, `mkdir`, `mv`, `cp` were unconditionally rejected by the shell
+  command allowlist before the write policy checker could evaluate whether their
+  target paths fell under `safe_write_paths` (`.ziya/`, `/tmp/`) or
+  `allowed_write_patterns`. Destructive commands now pass the allowlist gate so
+  the write policy can make per-path decisions — project source files remain
+  protected while cleanup of scratch directories and temp files works.
+- **Shell server `2>&1` redirections passed as literal arguments**: The shell
+  command executor tokenized commands with `shlex.split` and `shell=False`, so
+  redirection operators like `2>&1` and `>/dev/null` were not interpreted by a
+  shell and instead passed as literal arguments to the subprocess (e.g. pytest
+  received `2>&1` as a filename). Redirections are now extracted from the
+  tokenized args and translated into the equivalent `subprocess.run` kwargs.
+- **Tool result blocks not horizontally scrollable**: Expanded tool result
+  content that exceeded the viewport width was clipped with no scrollbar.
+  The expanded content paths used `overflow: 'visible'` which allowed content
+  to escape the container, while the parent used `overflow: 'hidden'` to clip
+  it — making wide output both unscrollable and invisible. All expanded content
+  blocks now use `overflow: 'auto'` for proper horizontal scrolling.
+
+- **Large conversations stuck as shells (zombie record recovery)**: Conversations
+  where a shell (2 messages, first+last only) was previously written to IndexedDB
+  with `_isShell: false` appeared permanently stuck showing only summary data.
+  Three fixes: (1) the lazy-load trigger now detects "zombie records" —
+  conversations with ≤ 2 messages and a non-trivial title; (2) zombie records
+  now try IDB first before falling back to server fetch, matching the existing
+  shell behavior; (3) server fetch responses must contain > 2 messages to be
+  accepted, preventing 2-message summary data from overwriting local state.
+
+### Changed
+- **Removed dead `app/tools/` package**: `app/tools/file_tools.py` and
+  `app/tools/__init__.py` were an unused duplicate of `app/mcp/tools/fileio.py`
+  with zero imports anywhere in the codebase
+- **Test suite Category 6 cleanup**: Fixed 8 broken tests across 6 files after
+  major refactor — memory extractor layer config updated for two-tier auto-save
+  design, conversation exporter mock patch paths fixed for inline imports, CLI
+  cancellation tests updated for CancelledError behavior, raw markdown toggle
+  test updated for lowercase key check, JS/TS semicolon test updated for
+  advisory-only mode, and obsolete streaming middleware temp test rewritten.
+
+## [0.6.4.3] - 2026-04-10
+
+### Fixed
+- **AST indexing wrong directory on startup**: In browser mode, the AST scanner
+  was indexing the server's launch directory instead of the user's active project.
+  Startup indexing is now deferred until the first request with `X-Project-Root`
+  arrives. CLI mode (where `ZIYA_USER_CODEBASE_DIR` is set) is unaffected.
+
 - **Visual diagram feedback tool**: `render_diagram` builtin tool renders diagram
   specs (Mermaid, Graphviz, Vega-Lite, DrawIO, packet, etc.) server-side via the
   headless Playwright pipeline and returns the resulting PNG as a vision content
@@ -111,6 +214,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   even on first page load. Now shows "Loading..." when no project was loaded.
 - **Message list key collision**: Used loop `index` instead of `actualIndex`
   for React keys, causing incorrect reconciliation when messages were filtered.
+- **AST indexing wrong directory on server start**: The startup AST scan indexed
+  the server's launch directory instead of the user's active project. Deferred
+  indexing in browser mode until the first request provides the actual project root.
 - **DiagramRenderPage D3Renderer type**: Passed `type="auto"` instead of
   `type="d3"`, causing plugin lookup failures for explicit D3 specs.
 
@@ -124,6 +230,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tool result image content blocks are compacted to text summaries in
   conversation history to prevent context window bloat from base64 data.
 - Frontend assets rebuilt.
+
+## [0.6.4.2] - 2026-04-11
+
+*Release notes: see [0.6.4.3] below — content was tagged under the wrong version.*
 
 ## [0.6.4.1] - 2026-04-09
 
