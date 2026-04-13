@@ -54,6 +54,8 @@ class GitHubRegistryProvider(RegistryProvider):
             
             url = f"{self.github_api_base}/repos/{self.registry_repo}/contents/registry.json"
             
+            response = requests.get(url, headers=getattr(self, 'headers', {}))
+
             # Return empty results since no static registry file exists
             if response.status_code == 404:
                 logger.debug(f"GitHub static registry file doesn't exist (expected)")

@@ -13,6 +13,7 @@ from typing import Dict, List, Any, Optional
 
 from app.utils.logging_utils import logger
 from ..validation.validators import is_hunk_already_applied
+from ..application.patch_apply import apply_diff_with_difflib
 from ..core.exceptions import PatchApplicationError
 from ..parsing.diff_parser import extract_target_file_from_diff, split_combined_diff
 from ..validation.validators import is_new_file_creation

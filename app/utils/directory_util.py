@@ -890,13 +890,6 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     # Print completion message to stdout for visibility
     print(f"✅ Folder scan completed: {scan_stats['directories_scanned']} dirs, {scan_stats['files_processed']} files in {total_time:.1f}s")
     
-    # Notify server that folder scan is complete
-    try:
-        from app.server import _mark_folder_scan_complete
-        _mark_folder_scan_complete()
-    except Exception as e:
-        logger.debug(f"Could not notify server of scan completion: {e}")
-    
     if total_time >= max_scan_time:
         logger.warning(f"Folder scan timed out after {max_scan_time}s")
         logger.debug(f"Partial results: {scan_stats['directories_scanned']} dirs, {scan_stats['files_processed']} files")
@@ -1094,7 +1087,7 @@ def start_background_token_calculation(directory: str, ignored_patterns: List[Tu
             from app.utils.tiktoken_compat import tiktoken
             
             if tiktoken is None:
-                return result
+                return
             encoding = tiktoken.get_encoding("cl100k_base")
             should_ignore_fn = parse_gitignore_patterns(ignored_patterns)
             

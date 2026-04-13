@@ -92,25 +92,6 @@ def is_file_deletion(diff_lines: List[str]) -> bool:
 
     return False
 
-    # Additional sanity checks - new files shouldn't have these characteristics
-    has_delete_lines = any(line.startswith('-') and not line.startswith('---') for line in diff_lines)
-    if has_delete_lines:
-        logger.debug("Found delete lines - not a new file creation")
-        return False
-    
-    # Count hunks - new files should only have one hunk
-    hunk_count = sum(1 for line in diff_lines if line.startswith('@@'))
-    if hunk_count > 1:
-        logger.debug(f"Found {hunk_count} hunks - new files should only have one hunk")
-        return False
-
-    # Only consider it a new file if we have both indicators or the zero hunk marker
-    if has_new_file_mode and has_dev_null_source:
-        logger.debug("Confirmed new file creation: has both new file mode and /dev/null source")
-        return True
-
-    logger.debug("No new file indicators found")
-    return False
 
 from functools import lru_cache
 

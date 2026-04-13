@@ -155,7 +155,8 @@ def cleanup_patch_artifacts(base_dir: str, file_path: str) -> None:
         
         # Also clean up .rej files from current working directory
         # (patch command may create them there if run from wrong directory)
-        cwd = os.getcwd()
+        from app.context import get_project_root
+        cwd = get_project_root()
         for pattern in ['*.rej', 'Oops.rej']:
             for artifact in glob.glob(os.path.join(cwd, pattern)):
                 logger.info(f"Removing patch artifact from cwd: {artifact}")
@@ -169,7 +170,8 @@ def cleanup_workspace_artifacts() -> None:
     Clean up .rej files from current working directory that may be left by patch commands.
     """
     try:
-        cwd = os.getcwd()
+        from app.context import get_project_root
+        cwd = get_project_root()
         for pattern in ['*.rej', 'Oops.rej']:
             for artifact in glob.glob(os.path.join(cwd, pattern)):
                 logger.info(f"Removing workspace patch artifact: {artifact}")

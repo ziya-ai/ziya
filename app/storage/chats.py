@@ -31,7 +31,6 @@ class ChatStorage(BaseStorage[Chat]):
         """Check whether a chat has exceeded the retention policy TTL."""
         last_active_epoch = chat.lastActiveAt / 1000.0
         return self.enforcer.is_expired(last_active_epoch, "conversation_data")
-        return result
     
     def _chat_file(self, chat_id: str) -> Path:
         return self.chats_dir / f"{chat_id}.json"
@@ -192,4 +191,4 @@ class ChatStorage(BaseStorage[Chat]):
         for chat in self.list():
             if skill_id in chat.skillIds:
                 chat.skillIds.remove(skill_id)
-            self._write_json(self._chat_file(chat_id), chat.model_dump())
+                self._write_json(self._chat_file(chat.id), chat.model_dump())

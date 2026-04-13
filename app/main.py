@@ -459,7 +459,8 @@ def start_server(args):
             logger.info("=== STARTUP PHASE 2: Server Initialization ===")
             # Import here to avoid circular imports
             import uvicorn
-            from app.server import app, invalidate_folder_cache
+            from app.server import app
+            from app.services.folder_service import invalidate_folder_cache
             
             # Restore the original working directory before starting the server
             os.chdir(original_cwd)

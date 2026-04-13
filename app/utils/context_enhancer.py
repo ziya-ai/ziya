@@ -106,6 +106,14 @@ def is_ast_enabled() -> bool:
 def initialize_ast_if_enabled():
     """Initialize AST capabilities if enabled via environment variable."""
     global _ast_indexing_status
+    # In browser mode, don't eagerly index the server's startup directory.
+    # The ProjectContextMiddleware will trigger indexing for the correct
+    # project root when the first request with X-Project-Root arrives.
+    # In CLI mode, ZIYA_USER_CODEBASE_DIR is set correctly before this runs.
+    if not os.environ.get("ZIYA_USER_CODEBASE_DIR"):
+        logger.info("AST: Deferring indexing until first project request (no ZIYA_USER_CODEBASE_DIR set)")
+        _ast_indexing_status.update({'enabled': True})
+        return
     
     if not is_ast_enabled():
         logger.info(f"AST capabilities not enabled or not available (ZIYA_ENABLE_AST={os.environ.get('ZIYA_ENABLE_AST', 'not set')}, AST_AVAILABLE={AST_AVAILABLE}, is_enabled={is_ast_enabled()})")
@@ -201,7 +209,7 @@ def _broadcast_ast_complete(files_processed: int) -> None:
     """Push an ast_indexing_complete event to all ws/file-tree clients."""
     try:
         import asyncio
-        from app.server import broadcast_file_tree_update
+        from app.services.folder_service import broadcast_file_tree_update
 
         loop = None
         try:

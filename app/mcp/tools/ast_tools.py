@@ -159,7 +159,8 @@ class ASTGetTreeTool(BaseMCPTool):
 
         # --- Specific path ---
         # Resolve to absolute
-        codebase = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        from app.context import get_project_root
+        codebase = get_project_root()
         target = os.path.normpath(os.path.join(codebase, inp.path))
 
         # Directory mode

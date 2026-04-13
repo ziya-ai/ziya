@@ -61,7 +61,7 @@ def _load_tool_enhancements() -> Dict[str, Any]:
         if plugin_enhancements:
             merged.update(plugin_enhancements)
             logger.debug(f"Loaded {len(plugin_enhancements)} tool enhancements from plugin providers")
-    except Exception as e:
+    except (ImportError, AttributeError, TypeError) as e:
         logger.debug(f"No plugin tool enhancements: {e}")
     
     # Source 2: User-local overrides
@@ -73,7 +73,7 @@ def _load_tool_enhancements() -> Dict[str, Any]:
             user_enhancements = data.get("enhancements", {})
             merged.update(user_enhancements)
             logger.debug(f"Loaded {len(user_enhancements)} tool enhancements from {user_path}")
-        except Exception as e:
+        except (json.JSONDecodeError, OSError, KeyError, ValueError) as e:
             logger.warning(f"Failed to load tool enhancements from {user_path}: {e}")
     
     _tool_enhancements = merged
@@ -216,7 +216,7 @@ class DirectMCPTool(BaseTool):
             try:
                 args_schema = tool_instance.InputSchema
                 logger.debug(f"Found InputSchema for {tool_instance.name}: {args_schema}")
-            except Exception as e:
+            except (AttributeError, TypeError) as e:
                 logger.warning(f"Could not get args schema for {tool_instance.name}: {e}")
         
         # Initialize BaseTool with the tool's metadata
@@ -340,7 +340,7 @@ class DirectMCPTool(BaseTool):
                     return str(result)
             else:
                 return str(result)
-        except Exception as e:
+        except Exception as e:  # Intentionally broad: third-party tool code
             logger.error(f"Error executing direct MCP tool {self.name}: {e}")
             return f"❌ Error executing {self.name}: {str(e)}"
 
@@ -475,7 +475,7 @@ class SecureMCPTool(BaseTool):
             # Return formatted result with marker
             return f"{marker}{formatted_result}"
             
-        except Exception as e:
+        except Exception as e:  # Intentionally broad: wraps entire secure tool execution lifecycle
             # Handle any other errors
             registry.fail_execution(execution_id, str(e))
             return f"❌ **Secure Tool Error**: {mcp_tool_name}\n\nAn error occurred during tool execution: {str(e)}"
@@ -671,7 +671,7 @@ async def process_enhanced_triggers(content: str, conversation_id: str) -> str:
                 trigger_text = f"{DIFF_VALIDATION_OPEN}{diff_content}{DIFF_VALIDATION_CLOSE}"
                 modified_content = modified_content.replace(trigger_text, result)
                 
-        except Exception as e:
+        except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as e:
             # Replace the trigger with an error message
             error_message = f"\n\n❌ **Trigger Error**: Failed to process {trigger_type}: {str(e)}\n\n"
             
@@ -905,10 +905,10 @@ def create_secure_mcp_tools() -> List[BaseTool]:
             if conversation_tools_available:
                 logger.info("Adding conversation management tools to secure MCP tools")
                 # TODO: Add conversation management tool integration
-        except Exception as e:
+        except (ImportError, OSError, RuntimeError) as e:
             logger.error(f"Error adding conversation management tools: {e}")
             
-    except Exception as e:
+    except (ImportError, OSError, RuntimeError) as e:
         logger.warning(f"Failed to create secure MCP tools: {str(e)}")
         return []
     

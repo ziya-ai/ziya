@@ -179,7 +179,6 @@ class ContinuationMiddleware(BaseHTTPMiddleware):
         return "continuation_started" in chunk
     def _find_continuation_point(self, text: str) -> Optional[int]:
         """Find appropriate continuation point in text."""
-        import re
         
         # Helper to check if we're inside a code block at a given position
         def is_inside_code_block(text: str, position: int) -> tuple[bool, Optional[str]]:

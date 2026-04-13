@@ -149,7 +149,7 @@ class MCPClient:
                                     logger.debug(f"Found executable for registry service: {command}")
                                     self.logs.append(f"INFO: Found executable: {command}")
                                     break
-                        except Exception as e:
+                        except (OSError, PermissionError) as e:
                             logger.error(f"Error listing installation directory: {e}")
                             self.logs.append(f"ERROR: Cannot list directory: {e}")
             
@@ -291,7 +291,7 @@ class MCPClient:
                                 )
                                 if result.returncode == 0:
                                     current_registry = result.stdout.strip()
-                            except Exception:
+                            except (OSError, subprocess.SubprocessError):
                                 pass
                             
                             print("\n" + "=" * 80, file=sys.stderr)
@@ -378,7 +378,7 @@ class MCPClient:
                                     )
                                     if result.returncode == 0:
                                         current_registry = result.stdout.strip()
-                                except Exception:
+                                except (OSError, subprocess.SubprocessError):
                                     pass
                                 
                                 print("\n" + "=" * 80, file=sys.stderr)
@@ -402,7 +402,7 @@ class MCPClient:
                         
                         if not stdout_output and not stderr_output:
                             self.logs.append("ERROR: No output from server process")
-                    except Exception as e:
+                    except (OSError, ValueError, RuntimeError) as e:
                         logger.error(f"Error reading MCP server output: {e}")
                         self.logs.append(f"ERROR: Failed to read server output - {str(e)}")
                     finally:
@@ -416,7 +416,7 @@ class MCPClient:
             self.logs.append(f"ERROR: Executable not found - {str(e)}")
             self.is_connected = False
             return False
-        except Exception as e:
+        except Exception as e:  # Intentionally broad: subprocess/transport failures vary by OS and server type
             logger.error(f"Error connecting to MCP server: {str(e)}")
             self.logs.append(f"ERROR: Connection failed - {str(e)}")
             self.is_connected = False
@@ -429,7 +429,7 @@ class MCPClient:
         if self._sdk_exit_stack:
             try:
                 await self._sdk_exit_stack.aclose()
-            except Exception:
+            except (OSError, RuntimeError, asyncio.CancelledError):
                 logger.debug(f"Remote MCP session closed during shutdown (server: {self.server_config.get('name', 'unknown')})")
             finally:
                 self._sdk_session = None
@@ -449,7 +449,7 @@ class MCPClient:
                     pass  # already exited
             except (ProcessLookupError, OSError):
                 pass  # process already exited from SIGINT
-            except Exception:
+            except (RuntimeError, BrokenPipeError):
                 logger.debug(f"MCP server process cleanup (server: {self.server_config.get('name', 'unknown')})")
             finally:
                 self.process = None
@@ -517,7 +517,7 @@ class MCPClient:
             logger.info(f"Remote MCP: {server_name} — {len(self.tools)} tools, {len(self.resources)} resources")
             return True
 
-        except Exception as e:
+        except (ImportError, OSError, RuntimeError, asyncio.TimeoutError, ConnectionError) as e:
             logger.error(f"Failed to connect to remote MCP server {server_name}: {e}", exc_info=True)
             self.logs.append(f"ERROR: Remote connection failed — {e}")
             self.is_connected = False
@@ -539,7 +539,7 @@ class MCPClient:
                     )
                     for t in (result.tools if result else [])
                 ]
-            except Exception as e:
+            except (OSError, RuntimeError, AttributeError, TypeError) as e:
                 logger.error(f"Failed to list tools from remote {server_name}: {e}")
 
         if "resources" in self.capabilities:
@@ -549,7 +549,7 @@ class MCPClient:
                     MCPResource(uri=str(r.uri), name=r.name, description=r.description)
                     for r in (result.resources if result else [])
                 ]
-            except Exception as e:
+            except (OSError, RuntimeError, AttributeError, TypeError) as e:
                 logger.error(f"Failed to list resources from remote {server_name}: {e}")
 
         if "prompts" in self.capabilities:
@@ -559,7 +559,7 @@ class MCPClient:
                     MCPPrompt(name=p.name, description=p.description or "")
                     for p in (result.prompts if result else [])
                 ]
-            except Exception as e:
+            except (KeyError, TypeError, ValueError) as e:
                 logger.error(f"Failed to list prompts from remote {server_name}: {e}")
 
     def _is_external_server_healthy(self) -> bool:
@@ -798,7 +798,7 @@ class MCPClient:
                                         )
                                         if result.returncode == 0:
                                             current_registry = result.stdout.strip()
-                                    except Exception:
+                                    except (OSError, subprocess.SubprocessError):
                                         pass
                                     
                                     print("\n" + "=" * 80, file=sys.stderr)
@@ -819,7 +819,7 @@ class MCPClient:
                                     print("  npm config set registry https://registry.npmjs.org/", file=sys.stderr)
                                     print("=" * 80 + "\n", file=sys.stderr)
                                     raise ValueError(f"npm authentication required for MCP server")
-                            except Exception:
+                            except (OSError, ValueError, RuntimeError):
                                 pass  # If we can't read stderr, fall through to generic EOF error
                         
                         logger.error("No response from MCP server (EOF)")
@@ -876,7 +876,7 @@ class MCPClient:
                 }
             except asyncio.CancelledError:
                 raise
-            except Exception as e:
+            except (OSError, json.JSONDecodeError, RuntimeError, ConnectionError) as e:
                 logger.error(f"Error reading from MCP server: {e}")
                 return create_error_response(f"Error reading from MCP server: {str(e)}")
 
@@ -968,7 +968,7 @@ class MCPClient:
         except asyncio.CancelledError:
             raise
             
-        except Exception as e:
+        except (OSError, json.JSONDecodeError, RuntimeError, ConnectionError) as e:
             logger.error(f"Error sending MCP request: {str(e)}")
             return create_error_response(f"Error sending MCP request: {str(e)}")
     
@@ -989,7 +989,7 @@ class MCPClient:
             notification_json = json.dumps(notification) + "\n"
             self.process.stdin.write(notification_json.encode('utf-8'))
             await self.process.stdin.drain()
-        except Exception as e:
+        except (OSError, RuntimeError, BrokenPipeError, ConnectionError) as e:
             logger.error(f"Error sending MCP notification: {str(e)}")
     
     async def _load_server_capabilities(self):
@@ -1070,7 +1070,7 @@ class MCPClient:
             logger.debug(f"Loaded MCP capabilities for {server_name_for_log}: {len(self.resources)} resources, {len(self.tools)} tools, {len(self.prompts)} prompts")
             logger.debug(f"Tool names for {server_name_for_log}: {[tool.name for tool in self.tools]}")
 
-        except Exception as e:
+        except (OSError, RuntimeError, TypeError, json.JSONDecodeError) as e:
             logger.error(f"Error loading MCP server capabilities for {self.server_config.get('name', 'unknown')}: {str(e)}", exc_info=True)
     
     def _validate_and_clean_response(self, result: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -1127,7 +1127,7 @@ class MCPClient:
                 if contents and len(contents) > 0 and isinstance(contents[0], dict):
                     return contents[0].get("text", "")
             return None
-        except Exception as e:
+        except (OSError, RuntimeError, asyncio.TimeoutError, json.JSONDecodeError) as e:
             logger.error(f"Error getting MCP resource {uri} from {self.server_config.get('name', 'unknown')}: {str(e)}")
             return None
     
@@ -1211,7 +1211,7 @@ class MCPClient:
                 self._record_call_result(not result.get("error", False))
                 return result
 
-            except Exception as e:
+            except (OSError, RuntimeError, asyncio.TimeoutError, ConnectionError) as e:
                 logger.error(f"Remote tool call failed for {name}: {e}")
                 self._record_call_result(False)
                 return {"error": True, "message": f"Remote tool call failed: {e}", "code": -32603}
@@ -1317,7 +1317,7 @@ class MCPClient:
             
             return result
             
-        except Exception as e:
+        except (OSError, RuntimeError, asyncio.TimeoutError, json.JSONDecodeError, ConnectionError, ValueError) as e:
             logger.error(f"Error calling MCP tool {name} on {self.server_config.get('name', 'unknown')}: {str(e)}")
             return {
                 "error": True,
@@ -1494,7 +1494,7 @@ class MCPClient:
                             content_parts.append(content["text"])
                 return "\n".join(content_parts)
             return None
-        except Exception as e:
+        except (OSError, RuntimeError, asyncio.TimeoutError, json.JSONDecodeError) as e:
             logger.error(f"Error getting MCP prompt {name} from {self.server_config.get('name', 'unknown')}: {str(e)}")
             return None
     
@@ -1518,6 +1518,6 @@ class MCPClient:
                         break
                 else:
                     break
-        except Exception as e:
+        except (OSError, RuntimeError, asyncio.CancelledError) as e:
             logger.error(f"Error capturing logs for {self.server_config.get('name', 'unknown')}: {e}")
             self.logs.append(f"ERROR: Failed to capture logs - {str(e)}")

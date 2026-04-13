@@ -179,7 +179,8 @@ class ListFoldersAndConversationsTool(BaseMCPTool):
             input_data = self.InputSchema.model_validate(kwargs)
             
             # Get the user's codebase directory
-            user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+            from app.context import get_project_root
+            user_codebase_dir = get_project_root()
             folders_file = os.path.join(user_codebase_dir, ".ziya", "folders.json")
             conversations_file = os.path.join(user_codebase_dir, ".ziya", "conversations.json")
             

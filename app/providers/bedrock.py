@@ -83,7 +83,7 @@ class BedrockProvider(LLMProvider):
             logger.warning(f"BedrockProvider: wrapped client failed ({e}), falling back to direct boto3")
             import boto3
             from botocore.config import Config as BotoConfig
-            self.bedrock = session.client(
+            self.bedrock = boto3.client(
                 "bedrock-runtime",
                 region_name=region,
                 config=BotoConfig(

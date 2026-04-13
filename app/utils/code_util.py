@@ -13,13 +13,13 @@ from app.utils.sanitizer_util import clean_backtick_sequences
 # For backward compatibility
 from app.utils.diff_utils.core.exceptions import PatchApplicationError
 from app.utils.diff_utils.core.utils import clamp, normalize_escapes, calculate_block_similarity
-from app.utils.diff_utils.parsing.diff_parser import parse_unified_diff, parse_unified_diff_exact_plus
+from app.utils.diff_utils.parsing.diff_parser import parse_unified_diff_exact_plus
 from app.utils.diff_utils.parsing.diff_parser import extract_target_file_from_diff, split_combined_diff
 from app.utils.diff_utils.validation.validators import is_new_file_creation, is_hunk_already_applied
 from app.utils.diff_utils.application.patch_apply import apply_diff_with_difflib, apply_diff_with_difflib_hybrid_forced
-from app.utils.diff_utils.application.git_diff import use_git_to_apply_code_diff, correct_git_diff
+from app.utils.diff_utils.application.git_diff import correct_git_diff
 from app.utils.diff_utils.file_ops.file_handlers import create_new_file, cleanup_patch_artifacts
-from app.utils.diff_utils.pipeline import apply_diff_pipeline, DiffPipeline, PipelineStage, HunkStatus, PipelineResult
+from app.utils.diff_utils.pipeline import DiffPipeline, PipelineStage, HunkStatus, PipelineResult
 
 # Define HunkData class for backward compatibility
 
