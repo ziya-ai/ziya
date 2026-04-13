@@ -253,27 +253,32 @@ class CLIDiffApplicator:
         print(f"\033[36m{'─' * 60}\033[0m")
         return total_lines > 15
     
-    def _prompt_user_action(self, show_view: bool = True) -> str:
+    def _prompt_user_action(self, show_view: bool = True, remaining: int = 1) -> str:
         """
         Prompt user for action on current diff.
         
         Returns:
-            User's choice: 'a' (apply), 's' (skip), 'v' (view), 'q' (quit)
+            User's choice: 'a' (apply), 'A' (apply all), 's' (skip), 'v' (view), 'q' (quit)
         """
         while True:
             try:
                 response = input(
                     "\n\033[1mAction:\033[0m "
-                    "\033[32m[a]\033[0mpply / "
+                    "\033[32m[a]\033[0mpply"
+                    + (" / \033[32m[A]\033[0mpply all" if remaining > 1 else "")
+                    + " / "
                     "\033[33m[s]\033[0mkip / "
                     + ("\033[36m[v]\033[0miew full / " if show_view else "")
                     +
                     "\033[31m[q]\033[0muit? "
-                ).strip().lower()
+                ).strip()
                 
+                if response == 'A' and remaining > 1:
+                    return 'A'
+                choice = response.lower()
                 valid = ['a', 's', 'q'] + (['v'] if show_view else [])
-                if response in valid:
-                    return response
+                if choice in valid:
+                    return choice
                 else:
                     print("\033[90mInvalid choice. Please enter a, s, v, or q.\033[0m")
             except (EOFError, KeyboardInterrupt):
@@ -409,19 +414,26 @@ class CLIDiffApplicator:
         
         print(f"\n\033[1mFound {len(diffs)} diff(s) in response\033[0m")
         
+        accept_all = False
+
         # Process each diff one at a time
         for i, diff in enumerate(diffs, 1):
             is_truncated = self._print_diff_preview(diff, i, len(diffs))
             
             # Prompt for action
             while True:
-                action = self._prompt_user_action(show_view=is_truncated)
+                remaining = len(diffs) - i + 1
+                action = 'a' if accept_all else self._prompt_user_action(show_view=is_truncated, remaining=remaining)
                 
                 if action == 'q':
                     print(f"\n\033[90mStopping. Processed {i-1}/{len(diffs)} diffs.\033[0m")
                     self._print_summary()
                     return False
                 
+                elif action == 'A':
+                    accept_all = True
+                    action = 'a'
+
                 elif action == 's':
                     print(f"\033[33m⊘ Skipped\033[0m")
                     self.skipped_count += 1
