@@ -89,7 +89,7 @@ class TestSimpleInvokeNonStreamingCancellation:
 
     @pytest.mark.asyncio
     async def test_cancellation_aborts_ainvoke(self, cli_instance):
-        """When _cancellation_requested is set during ainvoke, it should return empty string."""
+        """When _cancellation_requested is set during ainvoke, it should raise CancelledError."""
         async def slow_ainvoke(messages, **kwargs):
             # Simulate a slow LLM call (5 seconds)
             await asyncio.sleep(5)
@@ -104,10 +104,8 @@ class TestSimpleInvokeNonStreamingCancellation:
 
         asyncio.create_task(cancel_after_delay())
 
-        result = await cli_instance._simple_invoke([], stream=False)
-
-        # Should have returned empty due to cancellation, not waited 5 seconds
-        assert result == ""
+        with pytest.raises(asyncio.CancelledError):
+            await cli_instance._simple_invoke([], stream=False)
 
     @pytest.mark.asyncio
     async def test_no_cancellation_returns_result(self, cli_instance):
@@ -150,10 +148,10 @@ class TestSimpleInvokeNonStreamingCancellation:
         asyncio.create_task(cancel_soon())
 
         start = time.monotonic()
-        result = await cli_instance._simple_invoke([], stream=False)
+        with pytest.raises(asyncio.CancelledError):
+            await cli_instance._simple_invoke([], stream=False)
         elapsed = time.monotonic() - start
 
-        assert result == ""
         # Should complete in well under 1 second (poll interval is 200ms)
         assert elapsed < 1.0, f"Cancellation took {elapsed:.2f}s, expected < 1.0s"
 

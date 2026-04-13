@@ -14,7 +14,7 @@ from unittest.mock import patch, MagicMock
 class TestCreateProvider:
     """Tests for create_provider()."""
 
-    @patch("app.agents.models.ModelManager._get_persistent_bedrock_client")
+    @patch("app.providers.bedrock_client_cache.get_persistent_bedrock_client")
     def test_bedrock_endpoint(self, mock_get_client):
         mock_get_client.return_value = MagicMock()
         from app.providers.factory import create_provider
@@ -53,7 +53,7 @@ class TestCreateProvider:
         with pytest.raises(ValueError, match="No LLMProvider"):
             create_provider(endpoint="unsupported_provider", model_id="gpt-4")
 
-    @patch("app.agents.models.ModelManager._get_persistent_bedrock_client")
+    @patch("app.providers.bedrock_client_cache.get_persistent_bedrock_client")
     def test_empty_model_config_defaults(self, mock_get_client):
         mock_get_client.return_value = MagicMock()
         from app.providers.factory import create_provider
@@ -74,7 +74,7 @@ class TestCreateProvider:
             )
             assert isinstance(provider, AnthropicDirectProvider)
 
-    @patch("app.agents.models.ModelManager._get_persistent_bedrock_client")
+    @patch("app.providers.bedrock_client_cache.get_persistent_bedrock_client")
     def test_bedrock_default_profile_and_region(self, mock_get_client):
         mock_get_client.return_value = MagicMock()
         from app.providers.factory import create_provider

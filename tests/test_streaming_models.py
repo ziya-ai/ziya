@@ -1,4 +1,14 @@
-"""Streaming test for all supported models."""
+"""Streaming integration tests for all supported models.
+
+These tests start real uvicorn server subprocesses and require valid API
+credentials for the target provider (AWS Bedrock, Google, OpenAI, or
+Anthropic).  Each test can take 30-60 seconds per model.
+
+They are excluded from the default pytest run (``-m "not integration"``
+in pytest.ini) and must be invoked explicitly::
+
+    pytest tests/test_streaming_models.py -m integration
+"""
 
 import pytest
 import os
@@ -81,8 +91,14 @@ def wait_for_server(port, timeout=30):
     return False
 
 
+@pytest.mark.integration
 class TestStreamingModels:
-    """Test streaming with all supported models."""
+    """Test streaming with all supported models.
+@pytest.mark.integration
+
+    Each test starts a real uvicorn server and sends HTTP requests.
+    Requires valid API credentials for the target endpoint.
+    """
     
     @pytest.mark.parametrize("endpoint,model_name", [
         (endpoint, model) 

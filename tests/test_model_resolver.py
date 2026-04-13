@@ -27,7 +27,7 @@ class TestDefaultResolution:
         with patch.dict(os.environ, {"ZIYA_ENDPOINT": "bedrock"}, clear=False):
             config = resolve_service_model("memory_extraction")
             assert config["endpoint"] == "bedrock"
-            assert "nova" in config["model_id"].lower()
+            assert "haiku" in config["model_id"].lower()  # memory_extraction uses haiku override
 
     def test_google_default(self):
         with patch.dict(os.environ, {"ZIYA_ENDPOINT": "google"}, clear=False):
@@ -58,6 +58,7 @@ class TestDefaultResolution:
         with patch.dict(os.environ, {"ZIYA_ENDPOINT": "bedrock"}, clear=False):
             config = resolve_service_model("some_future_category")
             # Falls back to "default" entry for the endpoint
+            from app.services.model_resolver import _ENDPOINT_DEFAULTS
             assert config["model_id"] == _ENDPOINT_DEFAULTS["bedrock"]["default"]["model_id"]
 
 
@@ -120,7 +121,10 @@ class TestEndpointDefaults:
         """memory_extraction resolves to the bedrock default service model."""
         with patch.dict(os.environ, {"ZIYA_ENDPOINT": "bedrock"}, clear=False):
             config = resolve_service_model("memory_extraction")
-            assert config["model_id"] == DEFAULT_SERVICE_MODELS["bedrock"]
+            # memory_extraction has a category override (haiku), not the base default (nova)
+            from app.config.models_config import SERVICE_MODEL_OVERRIDES
+            expected = SERVICE_MODEL_OVERRIDES.get("memory_extraction", {}).get("bedrock", DEFAULT_SERVICE_MODELS["bedrock"])
+            assert config["model_id"] == expected
 
 
 # ── Unknown Endpoint Fallback ─────────────────────────────────────
