@@ -9,6 +9,7 @@ based positioning that spreads connected clusters apart.
 Use a `d3` code fence with a spec object containing `type: "force-directed"`.
 Both JSON and JavaScript expression syntax are supported:````
 
+
 ````
 ```d3
 ({
@@ -38,6 +39,8 @@ Both JSON and JavaScript expression syntax are supported:````
 })
 ```
 ````
+
+The outer `({...})` wrapper and unquoted keys are optional — strict JSON is also accepted.
 
 ## Spec Reference
 

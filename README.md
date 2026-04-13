@@ -14,70 +14,37 @@ Runs alongside your editor — not instead of it.
   <a href="https://github.com/ziya-ai/ziya/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/ziya-ai/ziya?style=flat-square&color=f1c40f"></a>
 </p>
 
-<!-- Uncomment when hero.gif is captured:
-<p align="center">
-  <img src="docs/images/hero.gif" alt="Ziya demo" width="800">
-</p>
--->
+---
+
+Ziya is a complete AI working environment. Code generation, architecture analysis, operational debugging, visual output, persistent context, parallel agents, tool integration — it handles the full surface of how senior engineers actually work, not just the editing part. Two years of daily production use across hundreds of engineers went into making every normal workflow feel right. Self-hosted, MIT licensed, runs alongside your editor.
+
+See [Design Philosophy](Docs/DesignPhilosophy.md) for the reasoning behind the choices.
 
 ---
 
-## What is Ziya?
+## What You Get
 
-Ziya is a self-hosted AI technical workbench. It's not an IDE, not a plugin, not a terminal-only CLI — it's the surface where code, architecture analysis, and operational diagnostics converge in a single conversation with rich visual output.
+Code changes come back as rendered diffs with per-hunk Apply/Undo buttons — a 4-stage patch pipeline handles imperfect model output so you never copy-paste from a chat window. Conversations persist across sessions with context you control: mute dead-end messages, fork to explore alternatives, drop files you're done with. No auto-compaction deciding for you. Persistent memory carries domain knowledge across sessions. Parallel agent swarms decompose large tasks into delegates with dependency ordering, memory crystals, and crash-resilient checkpointing. MCP tool integration with HMAC result signing, poisoning detection, and shell allowlisting. AST-based code intelligence with cross-file reference tracing. Projects with scoped conversations and reusable skill bundles. Web UI and full CLI from the same codebase.
 
-It was originally developed by engineers at a major technology company as an internal tool for real development and operations workflows, and has been used in production across hundreds of engineers. The community edition is open source under the MIT license.
+Multiple windows into the same codebase with different selected context, different models, even different conversations — open as many as make sense for how you work. Multiple projects with completely different codebases, each with their own conversations and context selections. You decide what layout fits your workflow.
 
-**Key idea:** You keep your editor, your terminal, your monitoring tools. Ziya is where you *think* about your systems — ask questions, get visual answers, apply changes, and coordinate parallel work.
+Seven visualization renderers — Graphviz, Mermaid, Vega-Lite, DrawIO, KaTeX, HTML mockups, packet frame diagrams — all render inline with a normalization layer that fixes broken LLM output. The model chooses the right format for the situation: a dependency graph when you're debugging, a sequence diagram when you're tracing a flow, a chart when you're looking at data, rendered math when you're working through a proof, a mockup when you're designing a UI. You don't pick the renderer — you describe the problem and the response comes back visual when visual is the right answer.
 
-## What Makes This Different
+An immense amount of engineering went into making all of this feel like one tool, not twelve features bolted together. Standard MCP tool protocol, reusable skill bundles, and agent delegation work the way you'd expect — Ziya isn't a closed system. [Feature Inventory](Docs/FeatureInventory.md) has the full reference.
 
-### 🔧 Rendered Diffs with Apply/Undo
-<!-- Uncomment: <img src="docs/images/diff-apply.gif" alt="Diff application" width="700"> -->
-Code changes rendered as structured diffs with per-hunk Apply/Undo buttons and individual status tracking. The 4-stage patch pipeline handles imperfect model output gracefully — no more copy-pasting from ChatGPT.
+### Same conversation, different universe every time
 
-### 🧭 User-Controlled Context Curation
-Most AI tools auto-compact your conversation when context fills up — the machine decides what to keep and what to summarize away. Ziya takes a different approach: **you decide what matters.**
+**Debug a deadlock** — Paste the thread dump. Get a dependency graph showing the cycle. The model correlates the lock ordering with your source code in the same conversation.
 
-- **Mute any message** — exclude it from model context without deleting it (unmute anytime)
-- **Fork from any point** — branch off to explore a tangent, optionally truncate to shed context weight
-- **Edit or resubmit** — revise any message in the history
-- **Selective file removal** — drop files from context when they've served their purpose
+**Iterate on a UI** — Describe a component, get a rendered HTML mockup inline. Adjust the layout, spacing, color. Each revision renders live in the conversation — no switching to a browser, no Figma, no screenshots.
 
-This keeps you in control of what the model retains. In 18+ months of daily use with very large contexts, deliberate curation has proven more reliable than automatic summarization, which risks discarding details that the user knows are important but the model doesn't recognize.
+**Model a system mathematically** — Discuss queueing theory for a rate limiter. The model derives the steady-state probabilities and renders them as fully typeset KaTeX — not ASCII approximations, real mathematical notation. Then plot the results: arrival rate vs. queue depth as a chart, sensitivity analysis across parameter ranges, distribution curves — right in the same conversation. Formulas and their visualizations, together.
 
-### 📊 Architecture & Operations Analysis
-<!-- Uncomment: <img src="docs/images/ops-analysis.png" alt="Operations analysis" width="700"> -->
-Paste a thread dump → get a Graphviz deadlock diagram. Ask about data flow → get a DrawIO architecture diagram built from the actual code. Drop in latency data → get a Vega-Lite trend chart. Drag and drop existing architecture diagrams, operational plots, or monitoring screenshots directly into the conversation for integrated visual analysis alongside your codebase.
+**Analyze a protocol** — Drop in a pcap, a header file, and a client implementation. Ziya reads all three and synthesizes a graph showing the error domains. Or if you're designing a protocol: lay out the frame format as a bit-level diagram with field widths and byte boundaries, then trace how each field is actually used across the codebase to find inconsistencies between the spec and the implementation.
 
-This is the gap no other AI coding tool fills. Cursor, Aider, Claude Code optimize for *writing* code. Ziya also helps you *understand and diagnose* the systems running it.
+**Diagnose a production incident** — Drag in a monitoring screenshot. Paste the error log. Add the service code. The model works through the root cause — choosing whatever visualization fits: a timing chart for latency patterns, a sequence diagram for request flow, a dependency graph for cascade failures — and generates the fix as an applicable diff.
 
-### 🎨 Seven Visualization Renderers
-Graphviz · Mermaid · Vega-Lite · DrawIO · KaTeX · HTML mockups · Packet frame diagrams
-
-All renderers include a normalization layer that handles imperfect LLM output. Diagrams render inline in the conversation, not in a separate window.
-
-### 🤖 Parallel Agent Swarms
-Decompose complex tasks into parallel delegates that run simultaneously. Each delegate has its own context, 9 coordination tools, and produces a crystal (compressed memory summary) when complete. Delegates can spawn sub-swarms. Progressive checkpointing survives crashes.
-
-### 🔌 MCP Tool Integration
-Connect any MCP server (local or remote). Built-in security: tool poisoning detection, shadowing prevention, rug-pull detection, cryptographic result signing. Shell commands are allowlisted — configurable per-session or persistently.
-
-### 🎯 Projects, Contexts, and Skills
-Organize work by project with scoped conversations, file contexts, and reusable skill bundles. Each project maintains its own history and context selections. Switch between projects without losing state.
-
-### 🖥️ Web + CLI, Same Codebase
-Full web UI at `localhost:6969` with rich rendering. Full CLI with `ziya chat`, `ziya ask`, `ziya review`, `ziya explain`. Same features, same codebase, your choice.
-
----
-
-## How People Use It
-
-**Development** — Ask about code, get diffs with Apply buttons, see architecture diagrams generated from your actual code, run parallel agents for large refactors. Drag and drop screenshots of UI bugs for visual context alongside the source.
-
-**Operations** — Paste thread dumps, log extracts, or error traces and get visual root cause analysis correlated with your codebase. Drag and drop existing monitoring dashboards, Grafana screenshots, or CloudWatch plots for AI-assisted interpretation alongside the code that produced the data.
-
-**Architecture** — Point it at a codebase and get living architecture documentation built from what the code actually does — not from stale diagrams someone drew six months ago.
+**Refactor a codebase** — Decompose a migration into parallel agents. Each handles a module independently, produces a memory crystal when done, downstream agents pick up where upstream left off. Apply the diffs when they come back.
 
 ---
 
@@ -131,39 +98,19 @@ Switch models mid-conversation. Configure temperature, top-k, max tokens, and th
 
 ---
 
-## How It Compares
-
-| | IDE Forks (Cursor, Windsurf) | CLI Tools (Aider, Claude Code) | Extensions (Cline, Copilot) | **Ziya** |
-|---|---|---|---|---|
-| Keep your editor | ❌ | ✅ | ✅ | ✅ |
-| Rich visual UI | ✅ | ❌ | Partial | ✅ |
-| Diff apply with per-hunk status | Partial | ❌ | ❌ | ✅ |
-| Inline diagrams (6+ types) | ❌ | ❌ | ❌ | ✅ |
-| Operational data → visual analysis | ❌ | ❌ | ❌ | ✅ |
-| User-controlled context curation | ❌ | ❌ | ❌ | ✅ (mute/fork/truncate/prune) |
-| Self-hosted / data stays local | ❌ | ✅ | ❌ | ✅ |
-| Project & context management | ❌ | ❌ | ❌ | ✅ |
-| Parallel agent swarms | ❌ | ❌ | ❌ | ✅ |
-| Web + CLI modes | ❌ | Terminal only | ❌ | ✅ |
-| Drag-and-drop images for analysis | ✅ | ❌ | Partial | ✅ |
-| MCP with security controls | Partial | Partial | Partial | ✅ |
-
----
-
-## Enterprise
-
-Ziya includes a plugin system for enterprise deployment — pluggable auth providers, endpoint restrictions, data retention policies, encryption at rest, and custom tool configuration. Currently deployed at scale internally at a major technology company. See [Docs/Enterprise.md](Docs/Enterprise.md) for details.
-
----
-
 ## Documentation
 
+- [Design Philosophy](Docs/DesignPhilosophy.md) — why Ziya makes the choices it does
 - [Feature Inventory](Docs/FeatureInventory.md) — complete capability reference
 - [Architecture Overview](Docs/ArchitectureOverview.md) — system design
 - [MCP Security](Docs/MCPSecurityControls.md) — tool security model
 - [Skills](Docs/Skills.md) — reusable instruction bundles
 - [User Configuration](Docs/UserConfigurationFiles.md) — `~/.ziya/` config files
-- [Enterprise](Docs/Enterprise.md) — plugin system and deployment
+- [Enterprise](Docs/Enterprise.md) — pluggable auth, encryption at rest, deployment at scale
+
+## Author
+
+Ziya is primarily built and maintained by [Dan Cohn](https://github.com/purlah), with early contributions from [Vishnu Kool](https://github.com/vishnukool).
 
 ## Contributing
 
