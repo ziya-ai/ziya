@@ -23,6 +23,7 @@ Cross-references:
 """
 
 import asyncio
+import os
 import time
 import threading
 import uuid
@@ -121,7 +122,7 @@ class DelegateManager:
 
             try:
                 plan = TaskPlan(**tp_raw) if isinstance(tp_raw, dict) else tp_raw
-            except Exception as exc:
+            except (TypeError, ValueError, KeyError) as exc:
                 logger.warning(f"♻️  Skipping group {group.id}: bad TaskPlan data: {exc}")
                 continue
 
@@ -181,7 +182,7 @@ class DelegateManager:
                     try:
                         crystal = MemoryCrystal(**crystal_raw) if isinstance(crystal_raw, dict) else crystal_raw
                         self._crystals[plan_id][did] = crystal
-                    except Exception as e:
+                    except (TypeError, ValueError, KeyError) as e:
                         logger.error(
                             f"💎 Crystal rehydration failed for delegate {did} "
                             f"in plan {plan_id[:8]}: {e}"
@@ -505,7 +506,7 @@ class DelegateManager:
                     scratch = get_scratch_manager(str(self.project_dir.parent))
                     scratch.cleanup_task(plan_id)
                     logger.info(f"🗑️ Auto-cleaned scratch for completed plan {plan_id[:8]}")
-                except Exception as exc:
+                except (ImportError, OSError, RuntimeError) as exc:
                     logger.warning(f"🗑️ Scratch auto-cleanup failed: {exc}")
 
             # Periodic GC: check for stale scratch dirs every 30 minutes
@@ -516,7 +517,7 @@ class DelegateManager:
                     from app.agents.swarm_scratch import get_scratch_manager
                     scratch = get_scratch_manager(str(self.project_dir.parent))
                     scratch.gc_stale_tasks(max_age_hours=48)
-                except Exception as exc:
+                except (ImportError, OSError, RuntimeError) as exc:
                     logger.debug(f"Periodic scratch GC: {exc}")
 
             # If this is a sub-plan, roll results up to the parent
@@ -992,7 +993,7 @@ class DelegateManager:
         except asyncio.CancelledError:
             logger.warning(f"🛑 Delegate cancelled: {spec.name}")
             await self.on_delegate_failed(plan_id, did, "Cancelled by user")
-        except Exception as exc:  # Stream died — attempt rescue
+        except Exception as exc:  # Intentionally broad: delegate stream can raise any API/transport/tool error
             logger.error(
                 f"❌ Delegate error: {spec.name} — {exc}", exc_info=True
             )
@@ -1109,7 +1110,7 @@ class DelegateManager:
                 skill = skill_storage.get(spec.skill_id)
                 if skill:
                     skill_prompt = f"[Active Skill: {skill.name}]\n{skill.prompt}"
-            except Exception as e:
+            except (ImportError, KeyError, AttributeError, OSError) as e:
                 logger.warning(f"Could not resolve skill {spec.skill_id}: {e}")
 
         conv_id = spec.conversation_id or f"delegate_{spec.delegate_id}"
@@ -1298,7 +1299,7 @@ class DelegateManager:
                     "type": "orchestrator_message",
                     "content": response,
                 })
-        except Exception as exc:
+        except (OSError, RuntimeError, asyncio.TimeoutError, ValueError) as exc:
             logger.warning(f"🎯 Orchestrator analysis failed: {exc}")
 
     async def _orchestrator_final_synthesis(self, plan_id: str) -> str:
@@ -1372,7 +1373,7 @@ class DelegateManager:
                     "content": msg,
                 })
                 return synthesis
-        except Exception as exc:
+        except (OSError, RuntimeError, asyncio.TimeoutError, ValueError) as exc:
             logger.warning(f"🎯 Orchestrator synthesis failed: {exc}")
         return ""
 
@@ -1934,7 +1935,7 @@ class DelegateManager:
             self._persist_plan(plan_id)
             await self._resolve_and_start(plan_id)
             logger.info(f"🆕 Dynamic delegate spawned: {spec.name} ({spec.delegate_id})")
-        except Exception as exc:
+        except (OSError, RuntimeError, asyncio.TimeoutError, ValueError, KeyError) as exc:
             logger.error(f"Failed to spawn dynamic delegate {spec.name}: {exc}", exc_info=True)
 
     @staticmethod
@@ -2012,7 +2013,7 @@ class DelegateManager:
         if cb:
             try:
                 await cb(plan_id, delegate_id, event, data)
-            except Exception as exc:
+            except Exception as exc:  # Intentionally broad: user-supplied progress callback
                 logger.warning(f"Progress callback error: {exc}")
 
     async def cancel_plan(self, plan_id: str) -> None:
@@ -2036,7 +2037,7 @@ class DelegateManager:
             from app.agents.swarm_scratch import get_scratch_manager
             scratch = get_scratch_manager(str(self.project_dir.parent))
             scratch.cleanup_task(plan_id)
-        except Exception as exc:
+        except (ImportError, OSError, RuntimeError) as exc:
             logger.warning(f"🗑️ Scratch cleanup failed for plan {plan_id[:8]}: {exc}")
 
         for attr in (

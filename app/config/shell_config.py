@@ -21,6 +21,8 @@ DEFAULT_SHELL_CONFIG = {
         "tee", "base64", "md5sum", "sha1sum", "sha256sum", "bc", "expr", "seq", 
         "paste", "join", "fold", "expand", "cd", "tree", "less", "xargs", "curl", 
         "ping", "du", "file",
+        # Scoped package runners (bare npx is unsafe — only specific tools allowed)
+        "npx jest", "npx craco",
         # Additional text/binary inspection and process control
         "strings", "diff", "stat", "readlink", "realpath", "basename", "dirname",
         # System information
@@ -57,7 +59,6 @@ def get_default_shell_config():
 
 def _get_merged_shell_config() -> dict:
     """Merge base defaults with any registered ShellConfigProvider additions."""
-    import copy
     merged = copy.deepcopy(DEFAULT_SHELL_CONFIG)
 
     try:

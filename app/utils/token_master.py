@@ -3,9 +3,12 @@ Single source of truth for token counting across the entire system.
 Replaces fragmented counting in directory_util, token_calibrator, and frontend.
 """
 
+import json
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 import threading
+
+from app.utils.logging_utils import logger
 
 
 @dataclass

@@ -200,7 +200,7 @@ class FileChangeHandler(FileSystemEventHandler):
             self._update_conversations(rel_path, content)
             
             # Update folder cache incrementally instead of invalidating
-            from app.server import update_file_in_folder_cache as _update_cache
+            from app.services.folder_service import update_file_in_folder_cache as _update_cache
             if _update_cache(rel_path, base_dir=self.base_dir):
                 logger.debug(f"✅ Incrementally updated cache for modified file: {rel_path}")
             else:
@@ -273,7 +273,7 @@ class FileChangeHandler(FileSystemEventHandler):
             logger.debug(f"File created: {rel_path}")
         
         # Try to add to cache incrementally
-        from app.server import add_file_to_folder_cache as _add_cache
+        from app.services.folder_service import add_file_to_folder_cache as _add_cache
         cache_updated = _add_cache(rel_path, base_dir=self.base_dir)
         
         if not cache_updated:
@@ -287,7 +287,7 @@ class FileChangeHandler(FileSystemEventHandler):
             token_count = estimate_tokens_fast(full_path)
             
             # Broadcast directly even without cache update
-            from app.server import _schedule_broadcast
+            from app.services.folder_service import _schedule_broadcast
             try:
                 _schedule_broadcast('file_added', rel_path, token_count)
             except Exception as e:
@@ -334,7 +334,7 @@ class FileChangeHandler(FileSystemEventHandler):
         logger.info(f"File deleted: {rel_path}" + (" (was in context)" if was_in_context else ""))
         
         # Remove from cache incrementally instead of invalidating
-        from app.server import remove_file_from_folder_cache as _remove_cache
+        from app.services.folder_service import remove_file_from_folder_cache as _remove_cache
         if _remove_cache(rel_path, base_dir=self.base_dir):
             logger.debug(f"✅ Incrementally removed file from cache: {rel_path}")
         else:

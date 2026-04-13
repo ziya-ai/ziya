@@ -30,7 +30,6 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
         
     Returns:
     """
-    import os
     
     # Get model capabilities from central source
     from app.config.models_config import get_model_capabilities
@@ -260,7 +259,7 @@ def _get_tool_call_formats_from_mcp(available_tools: list) -> str:
         mcp_manager = get_mcp_manager()
         
         if not mcp_manager.is_initialized:
-            return _get_fallback_tool_formats(available_tools)
+            return ""
             
         # Get all MCP tools with their schemas (already filters by enabled servers only)
         mcp_tools = mcp_manager.get_all_tools()

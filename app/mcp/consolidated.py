@@ -45,7 +45,6 @@ async def execute_mcp_tools_with_status(full_response: str) -> str:
     )
     
     # Check if response contains XML-style tool calls
-    import re
     xml_tool_pattern = r'<([a-zA-Z_][a-zA-Z0-9_]*)>.*?</\1>'
     has_xml_tool_calls = bool(re.search(xml_tool_pattern, full_response, re.DOTALL))
     
@@ -123,7 +122,6 @@ async def _execute_direct_mcp_tools(full_response: str) -> str:
     from app.mcp.utils import improved_parse_tool_call
     from app.mcp.manager import get_mcp_manager
     from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
-    import re
     
     logger.info(f"🔧 MCP: Direct execution starting for response length {len(full_response)}")
     
@@ -290,7 +288,6 @@ async def find_and_execute_all_tools(response: str) -> Tuple[str, List[Dict[str,
             start_idx = end_idx
     
     # Also look for XML-style tool calls
-    import re
     xml_tool_pattern = r'<([a-zA-Z_][a-zA-Z0-9_]*)>.*?</\1>'
     xml_matches = re.finditer(xml_tool_pattern, modified_response, re.DOTALL)
     for match in xml_matches:

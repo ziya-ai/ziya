@@ -502,7 +502,6 @@ class StreamingMiddleware(BaseHTTPMiddleware):
     
     def _contains_partial(self, content: str) -> bool:
         """Check if content contains the start of a tool call but not the end."""
-        from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
         
         # Check for configurable sentinels
         config_partial = TOOL_SENTINEL_OPEN in content and TOOL_SENTINEL_CLOSE not in content
@@ -512,7 +511,6 @@ class StreamingMiddleware(BaseHTTPMiddleware):
         
         # Check for generic XML-style tags with unbalanced opening/closing tags
         # This handles both <invoke> and custom tool tags
-        import re
         xml_tags = re.findall(r'<([a-zA-Z_][a-zA-Z0-9_]*)[^>]*>', content)
         for tag in xml_tags:
             if f"<{tag}" in content and f"</{tag}>" not in content:
@@ -528,7 +526,6 @@ class StreamingMiddleware(BaseHTTPMiddleware):
     
     def _contains_complete_tool_call(self, content: str) -> bool:
         """Check if content contains a complete tool call."""
-        from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
         
         # For TOOL_SENTINEL format, check if it has both name and arguments tags
         if TOOL_SENTINEL_OPEN in content and TOOL_SENTINEL_CLOSE in content:
@@ -554,7 +551,6 @@ class StreamingMiddleware(BaseHTTPMiddleware):
             return True
         
         # Check for generic XML-style tags with balanced opening/closing tags
-        import re
         xml_pattern = r'<([a-zA-Z_][a-zA-Z0-9_]*)[^>]*>(.*?)</\1>'
         xml_match = re.search(xml_pattern, content, re.DOTALL)
         
@@ -606,7 +602,6 @@ class StreamingMiddleware(BaseHTTPMiddleware):
     
     def _might_be_tool_start(self, content: str) -> bool:
         """Check if content might be the start of a tool call."""
-        from app.config.models_config import TOOL_SENTINEL_OPEN
         
         # Check for configurable sentinel
         sentinel_start = TOOL_SENTINEL_OPEN[:min(len(content), len(TOOL_SENTINEL_OPEN))]

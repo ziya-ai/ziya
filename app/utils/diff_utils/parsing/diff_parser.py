@@ -269,8 +269,8 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
     skip_file = True
     seen_hunks = set()
 
-    # fixme: import ziya project directory if specified on invocation cli
-    rel_path = os.path.relpath(target_file, os.getcwd())
+    from app.context import get_project_root
+    rel_path = os.path.relpath(target_file, get_project_root())
     rel_path = strip_leading_dotslash(rel_path)
 
     i = 0

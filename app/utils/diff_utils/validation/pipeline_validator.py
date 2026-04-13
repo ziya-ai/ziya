@@ -96,7 +96,8 @@ def validate_diff_with_full_pipeline(
     # ZIYA_USER_CODEBASE_DIR is set to a subdirectory but the diff path is
     # relative to a parent directory (or vice versa).
     if not os.path.exists(full_path):
-        cwd_candidate = os.path.join(os.getcwd(), file_path)
+        from app.context import get_project_root
+        cwd_candidate = os.path.join(get_project_root(), file_path)
         if os.path.exists(cwd_candidate):
             full_path = cwd_candidate
 

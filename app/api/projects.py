@@ -20,7 +20,8 @@ async def list_projects():
     """List all known projects."""
     storage = get_project_storage()
     projects = storage.list_deduped()
-    cwd = os.getcwd()
+    from app.context import get_project_root
+    cwd = get_project_root()
     ziya_home = get_ziya_home()
     projects_dir = ziya_home / "projects"
     
@@ -51,7 +52,8 @@ def _count_chats(chats_dir) -> int:
 async def get_current_project():
     """Get or create project for current working directory."""
     storage = get_project_storage()
-    cwd = os.getcwd()
+    from app.context import get_project_root
+    cwd = get_project_root()
     
     project = storage.get_by_path(cwd)
     if not project:

@@ -6,7 +6,6 @@ import shutil
 import threading
 from typing import Dict, List, Optional, Set, Tuple, Any
 import hashlib
-import shutil
 from difflib import SequenceMatcher
 from app.utils.file_utils import read_file_content
 from app.utils.logging_utils import logger

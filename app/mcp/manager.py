@@ -213,7 +213,7 @@ class MCPManager:
                 logger.warning("Skipping malformed config file, using built-in defaults only")
                 self.config_error = f"Syntax error in {self.config_path} — line {e.lineno}, column {e.colno}: {e.msg}"
                 user_config_data = {}
-            except Exception as e:
+            except (OSError, PermissionError) as e:
                 logger.error(f"Error reading MCP config from {self.config_path}: {e}")
                 logger.warning("Skipping unreadable config file, using built-in defaults only")
                 self.config_error = f"Failed to read {self.config_path}: {e}"
@@ -287,7 +287,7 @@ class MCPManager:
                         server_configs[name] = {**user_cfg, "builtin": False}
                 
                 logger.debug(f"Loaded {len(user_servers)} user server configurations from {self.config_path}. Total servers: {len(server_configs)}")
-            except Exception as e:
+            except (KeyError, TypeError, ValueError, AttributeError) as e:
                 logger.error(f"Error loading user MCP config from {self.config_path}: {e}")
         else:
             if self.config_path:
@@ -451,7 +451,7 @@ class MCPManager:
             
             self.is_initialized = True
             return True
-        except Exception as e:
+        except Exception as e:  # Intentionally broad: server lifecycle orchestration catches varied OS/transport/auth errors
             logger.error(f"Error initializing MCP manager: {str(e)}")
             return False
     
@@ -478,7 +478,7 @@ class MCPManager:
                         if success:
                             logger.info(f"Successfully restarted external server: {server_name}")
                             client._consecutive_failures = 0
-                    except Exception as e:
+                    except (OSError, RuntimeError, asyncio.TimeoutError) as e:
                         logger.error(f"Failed to restart external server {server_name}: {e}")
                         self._failed_servers[server_name] = time.time()
     
@@ -530,7 +530,7 @@ class MCPManager:
                         logger.error(f"Server {server_name} failed {self._reconnection_failures[server_name]} times, disabling")
                         self._failed_servers[server_name] = time.time()
                     return False
-            except Exception as e:
+            except (OSError, RuntimeError, asyncio.TimeoutError) as e:
                 logger.error(f"Error during client reconnection for {server_name}: {e}")
                 return False
         return True
@@ -604,7 +604,7 @@ class MCPManager:
             logger.info(f"Server {server_name} restart {'successful' if success else 'failed'}")
             return success
             
-        except Exception as e:
+        except (OSError, RuntimeError, asyncio.TimeoutError, ValueError) as e:
             logger.error(f"Error restarting server {server_name}: {str(e)}")
             return False
 
@@ -649,7 +649,7 @@ class MCPManager:
                     logger.error(f"  No server logs captured for {server_name}")
                     
             return success
-        except Exception as e:
+        except (OSError, RuntimeError, asyncio.TimeoutError, ValueError) as e:
             logger.error(f"Error connecting to MCP server {server_name}: {str(e)}")
             return False
     
@@ -1132,7 +1132,7 @@ class MCPManager:
             # Case 4: No transformation needed - return as-is
             return arguments
             
-        except Exception as e:
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as e:
             logger.warning(f"Error normalizing parameters for {tool_name}: {e}")
             return arguments
 
@@ -1187,7 +1187,7 @@ class MCPManager:
             else:
                 logger.error(f"❌ Failed to start workspace-scoped client: {server_name} @ {workspace_path}")
                 return None
-        except Exception as e:
+        except (OSError, RuntimeError, asyncio.TimeoutError) as e:
             logger.error(f"❌ Error creating workspace-scoped client: {e}")
             return None
     
@@ -1296,7 +1296,7 @@ class MCPManager:
                 from app.mcp.signing import sign_tool_result
                 conversation_id = arguments.get('conversation_id', 'default') if isinstance(arguments, dict) else 'default'
                 return sign_tool_result(internal_tool_name, arguments, normalized, conversation_id)
-            except Exception as e:
+            except Exception as e:  # Intentionally broad: dynamic tools are third-party code
                 logger.error(f"Dynamic tool execution failed: {e}", exc_info=True)
                 return {"error": True, "message": str(e)}
         
@@ -1449,7 +1449,7 @@ class MCPManager:
 
                                 if result:
                                     return result
-                            except Exception as e:
+                            except (OSError, RuntimeError, asyncio.TimeoutError, json.JSONDecodeError, ConnectionError) as e:
                                 logger.error(f"Error calling tool {name_to_try}: {e}")
                                 continue
             

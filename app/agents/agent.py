@@ -61,7 +61,7 @@ from app.utils.file_utils import read_file_content
 from app.utils.prompt_cache import get_prompt_cache
 from app.utils.file_state_manager import FileStateManager
 from app.utils.error_handlers import format_error_response, detect_error_type
-from app.utils.custom_exceptions import KnownCredentialException, ThrottlingException, ExpiredTokenException
+from app.utils.custom_exceptions import KnownCredentialException
 
 from app.mcp.manager import get_mcp_manager
 from app.config.models_config import TOOL_SENTINEL_CLOSE, DEFAULT_MAX_OUTPUT_TOKENS
@@ -115,7 +115,7 @@ def clean_chat_history(chat_history: List[Tuple[str, str]]) -> List[Tuple[str, s
                 continue
             cleaned.append((human.strip(), ai.strip()))
         return cleaned
-    except Exception as e:
+    except (TypeError, ValueError, AttributeError, IndexError) as e:
         logger.error(f"Error cleaning chat history: {str(e)}")
         logger.error(f"Raw chat history: {chat_history}")
         return cleaned
@@ -137,7 +137,7 @@ def _format_chat_history(chat_history: List[Tuple[str, str]]) -> List[Union[Huma
                         buffer.append(HumanMessage(content=str(content)))
                     elif msg_type in ['ai', 'assistant']:
                         buffer.append(AIMessage(content=str(content)))
-                except Exception as e:
+                except (TypeError, ValueError, KeyError) as e:
                     logger.error(f"Error creating message: {str(e)}")
             elif isinstance(item, (list, tuple)):
                 # Handle tuple formats
@@ -187,7 +187,7 @@ def _format_chat_history(chat_history: List[Tuple[str, str]]) -> List[Union[Huma
                         elif role == 'ai':
                             buffer.append(AIMessage(content=message_content))
                             
-                    except Exception as e:
+                    except (TypeError, ValueError, KeyError, json.JSONDecodeError) as e:
                         logger.error(f"Error processing message with images: {str(e)}")
                         # Fallback: create message without images
                         if role == 'human':
@@ -198,7 +198,7 @@ def _format_chat_history(chat_history: List[Tuple[str, str]]) -> List[Union[Huma
                     logger.warning(f"Unknown tuple length: {len(item)} - {item}")
             else:
                 logger.warning(f"Unknown chat history format: {type(item)} - {item}")
-    except Exception as e:
+    except (TypeError, ValueError, AttributeError, IndexError) as e:
         logger.error(f"Error formatting chat history: {str(e)}")
         logger.error(f"Problematic chat history: {chat_history}")
         return []
@@ -531,7 +531,7 @@ class RetryingChatBedrock(Runnable):
                 content = str(content)
  
             return content.strip()
-        except Exception as e:
+        except (TypeError, ValueError, AttributeError) as e:
             logger.error(f"Error formatting message content: {str(e)}")
             return ""
  
@@ -602,7 +602,7 @@ class RetryingChatBedrock(Runnable):
         try:
             from app.mcp.enhanced_tools import _reset_counter_async
             await _reset_counter_async()
-        except Exception as e:
+        except (ImportError, RuntimeError) as e:
             logger.warning(f"Failed to reset MCP tool counter: {e}")
         
         max_retries = 4  # Allow 4 retries for throttling
@@ -691,7 +691,6 @@ class RetryingChatBedrock(Runnable):
             logger.info(f"RETRYING_CHAT_BEDROCK.astream: Input to LLM is not a list of BaseMessages or ChatPromptValue. Type: {type(input)}")
 
         # Add AWS credential debugging
-        from app.utils.aws_utils import debug_aws_credentials
         # debug_aws_credentials()
 
         for attempt in range(max_retries):
@@ -714,7 +713,7 @@ class RetryingChatBedrock(Runnable):
                                     tokens = cache_match.group(1)
                                     pre_streaming_work.append(f"💾 Cache benefit: ~{tokens} tokens will be reused")
                                     processing_context["cache_benefit"] = f"~{tokens} tokens cached"
-                except Exception as e:
+                except (AttributeError, KeyError, TypeError) as e:
                     logger.debug(f"Could not extract cache info: {e}")
                 
                 # Convert input to messages if needed
@@ -742,7 +741,7 @@ class RetryingChatBedrock(Runnable):
                                 content = str(msg)[:100]
                                 empty = True
                             logger.debug(f"🔍 FILTERING: Message {i}: {type(msg).__name__} - content: '{content}...' - empty: {empty}")
-                        except Exception as e:
+                        except (AttributeError, TypeError) as e:
                             logger.warning(f"🔍 FILTERING: Error accessing message {i} content: {e} - type: {type(msg)}")
                     
                     # Filter messages - handle both BaseMessage objects and dictionaries
@@ -765,7 +764,7 @@ class RetryingChatBedrock(Runnable):
                             else:
                                 content = str(msg)[:100]
                             logger.debug(f"🔍 FILTERING: Kept Message {i}: {type(msg).__name__} - content: '{content}...'")
-                        except Exception as e:
+                        except (AttributeError, TypeError) as e:
                             logger.warning(f"🔍 FILTERING: Error accessing kept message {i} content: {e}")
                     
                     if not messages:
@@ -846,7 +845,7 @@ class RetryingChatBedrock(Runnable):
                                 # Notify frontend about tool execution (but don't await to avoid blocking)
                                 try:
                                     asyncio.create_task(self._notify_tool_execution_state(content))
-                                except Exception as e:
+                                except (RuntimeError, OSError) as e:
                                     logger.debug(f"Could not notify tool execution state: {e}")
                         
                         content = chunk.content() if callable(chunk.content) else chunk.content
@@ -887,7 +886,8 @@ class RetryingChatBedrock(Runnable):
 
                 break  # Success, exit retry loop
                 
-            except Exception as e:
+            except Exception as e:  # Intentionally broad: retry loop triages multiple error types
+                # ClientError, throttling, validation, token limits all handled below
                 # ClientError has its own handler below — re-raise so it's caught there
                 if isinstance(e, ClientError):
                     raise
@@ -967,7 +967,7 @@ class RetryingChatBedrock(Runnable):
                             self.model = fresh_model
                             logger.info("Successfully created fresh model connection for token throttling retry")
                             continue
-                    except Exception as reinit_error:
+                    except (ImportError, RuntimeError, ValueError, OSError) as reinit_error:
                         logger.warning(f"Failed to reinitialize model for token throttling retry: {reinit_error}")
                         # Continue with original model if reinit fails
                         continue
@@ -1026,7 +1026,8 @@ class RetryingChatBedrock(Runnable):
                 
                 return
 
-            except Exception as e:
+            except Exception as e:  # Intentionally broad: outer retry loop error classification
+                # Validation, throttling, credential, and generic errors all triaged below
                 error_str = str(e)
                 logger.warning(f"Error on attempt {attempt + 1}: {error_str}")
                 
@@ -1246,7 +1247,7 @@ class RetryingChatBedrock(Runnable):
                     content = self._format_message_content(msg)
 
                 formatted.append({"role": role, "content": content})
-        except Exception as e:
+        except (TypeError, ValueError, AttributeError, KeyError) as e:
             logger.error(f"Error formatting messages: {str(e)}")
             raise
         return formatted
@@ -1335,7 +1336,8 @@ class RetryingChatBedrock(Runnable):
                 
                 return response
                 
-            except Exception as e:
+            except Exception as e:  # Intentionally broad: provider invoke retry with error classification
+                # Handles retries and errors — throttling, validation, auth all triaged below
                 # Handle retries and errors
                 error_str = str(e)
                 logger.error(f"Error in invoke (attempt {attempt+1}/{max_retries}): {error_str}")
@@ -1454,7 +1456,6 @@ if llm_with_stop is None:
     logger.debug("Model binding deferred - will complete on first request")
 
 # Store the initial llm_with_stop in ModelManager
-from app.agents.models import ModelManager
 ModelManager._state['llm_with_stop'] = llm_with_stop
 
 file_state_manager = FileStateManager()
@@ -1577,7 +1578,7 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
                     annotated_lines, success = file_state_manager.get_annotated_content(conversation_id, file_path)
                     escaped_lines = [escape_backticks_for_llm(line) for line in annotated_lines]
                     combined_contents += f"File: {file_path}\n" + "\n".join(escaped_lines) + "\n\n"
-        except Exception as e:
+        except (OSError, UnicodeDecodeError, PermissionError) as e:
             logger.error(f"Error processing {file_path}: {str(e)}")
     
     file_count = len([l for l in combined_contents.split('\n') if l.startswith('File: ')])
@@ -1618,14 +1619,14 @@ def estimate_token_count(text: str) -> int:
         calibrator = get_token_calibrator()
         if calibrator.global_by_model:
             return calibrator.estimate_tokens(text)
-    except Exception:
+    except (ImportError, FileNotFoundError, PermissionError, OSError, RuntimeError):
         pass
     try:
         # Fallback: raw tiktoken (underestimates ~15-40% for Claude)
         import tiktoken
         encoding = tiktoken.get_encoding("cl100k_base")
         return len(encoding.encode(text))
-    except Exception:
+    except (ImportError, OSError, RuntimeError):
         # Fallback estimation: roughly 4 characters per token
         return len(text) // 4
  
@@ -1724,7 +1725,7 @@ def extract_codebase(x):
                 logger.debug(f"Successfully loaded {file_path} with {lines} lines")
             else:
                 logger.warning(f"Failed to read content from {file_path}")
-        except Exception as e:
+        except (OSError, UnicodeDecodeError, PermissionError) as e:
             logger.error(f"Error reading file {file_path}: {str(e)}")
             continue
     
@@ -1825,7 +1826,7 @@ def log_output(x):
     try:
         output = x.content if hasattr(x, 'content') else str(x)
         logger.info(f"Final output size: {len(output)} chars, first 100 chars: {output[:100]}")
-    except Exception as e:
+    except (AttributeError, TypeError) as e:
         logger.error(f"Error in log_output: {str(e)}")
         output = str(x)
     return x
@@ -1868,7 +1869,7 @@ def create_agent_chain(chat_model: BaseChatModel):
                 mcp_tools = create_secure_mcp_tools()
                 logger.debug(f"Created {len(mcp_tools)} MCP tools for agent chain")
         
-        except Exception as e:
+        except (ImportError, OSError, RuntimeError) as e:
             logger.warning(f"Failed to get MCP tools for agent: {str(e)}")
     else:
         logger.debug("MCP is disabled, no tools will be created for agent chain")
@@ -1945,7 +1946,7 @@ def create_agent_chain(chat_model: BaseChatModel):
                     for key, mapper in input_mapping.items():
                         try:
                             mapped_input[key] = mapper(input_data)
-                        except Exception as e:
+                        except (TypeError, ValueError, KeyError, AttributeError) as e:
                             logger.error(f"Error applying input mapping for {key}: {e}")
                             mapped_input[key] = ""
                     
@@ -1997,7 +1998,8 @@ def create_agent_chain(chat_model: BaseChatModel):
                     try:
                         result = llm_with_tools.invoke(messages)
                         return {"output": result.content}
-                    except Exception as e:
+                    except Exception as e:  # Intentionally broad: Google API can raise varied errors
+                        # Falls back to model without tools
                         logger.error(f"Google function calling error: {e}")
                         # Fall back to regular model without tools
                         result = chat_model.invoke(messages)
@@ -2016,7 +2018,7 @@ def create_agent_chain(chat_model: BaseChatModel):
                 
                 return agent_chain
                 
-        except Exception as e:
+        except (ImportError, RuntimeError, ValueError, TypeError) as e:
             logger.warning(f"Failed to create Google function calling agent, falling back to XML: {e}")
     
     # Bind the stop sequence to the model for XML agents
@@ -2065,7 +2067,7 @@ def create_agent_chain(chat_model: BaseChatModel):
         for key, mapper in input_mapping.items():
             try:
                 mapped_input[key] = mapper(input_data)
-            except Exception as e:
+            except (TypeError, ValueError, KeyError, AttributeError) as e:
                 logger.error(f"Error applying input mapping for {key}: {e}")
                 mapped_input[key] = ""
         return mapped_input
@@ -2122,7 +2124,7 @@ def update_conversation_state(conversation_id: str, file_paths: List[str]) -> No
             with open(full_path, 'r', encoding='utf-8') as f:
                 file_contents[file_path] = f.read()
             logger.debug(f"Read current content for {file_path}")
-        except Exception as e:
+        except (OSError, UnicodeDecodeError, PermissionError) as e:
             logger.error(f"Error reading file {file_path}: {str(e)}")
             continue
 
@@ -2169,7 +2171,7 @@ def create_agent_executor(agent_chain: Runnable):
                 logger.debug(f"Created agent executor with {len(mcp_tools)} MCP tools")
             else:
                 logger.debug("MCP not initialized, no MCP tools available")
-        except Exception as e:
+        except (ImportError, OSError, RuntimeError) as e:
             logger.warning(f"Failed to initialize MCP tools: {str(e)}", exc_info=True)
             from app.mcp.manager import get_mcp_manager
     else:
@@ -2239,7 +2241,8 @@ def create_agent_executor(agent_chain: Runnable):
                     else:
                         # If it's already a RunLogPatch, yield it directly
                         yield safe_chunk
-            except Exception as e:
+            except Exception as e:  # Intentionally broad: wraps entire LangChain stream
+                # Must produce an error chunk so the client sees something, never a silent drop
                 logger.error(f"Error in safe_astream_log: {str(e)}")
                 # Create an error chunk
                 error_content = f"Error in streaming: {str(e)}"
@@ -2261,7 +2264,7 @@ def create_agent_executor(agent_chain: Runnable):
                         try:
                             object.__setattr__(chunk, 'id', chunk_id)
                             logger.info(f"Added id to RunLogPatch: {chunk_id}")
-                        except Exception as e:
+                        except (AttributeError, TypeError) as e:
                             logger.warning(f"Could not add id to RunLogPatch: {str(e)}")
                             # Create a new object with the same data but with an id
                             if hasattr(chunk, 'data'):
@@ -2309,7 +2312,7 @@ def create_agent_executor(agent_chain: Runnable):
                         object.__setattr__(chunk, 'id', f"exec-{hash(str(content)) % 10000}")
                         object.__setattr__(chunk, 'message', content)
                         return chunk
-                    except Exception as e:
+                    except (AttributeError, TypeError) as e:
                         logger.warning(f"Could not add id to chunk: {str(e)}")
                         # Create a new chunk with the content
                         new_content = str(chunk)
@@ -2326,10 +2329,10 @@ def create_agent_executor(agent_chain: Runnable):
                             if callable(content):
                                 content = content()
                             object.__setattr__(chunk, 'message', content)
-                        except Exception as e:
+                        except (AttributeError, TypeError) as e:
                             logger.warning(f"Could not add message to chunk: {str(e)}")
                     return chunk
-            except Exception as e:
+            except Exception as e:  # Intentionally broad: last-resort chunk safety wrapper
                 logger.error(f"Error in _ensure_safe_chunk: {str(e)}")
                 # Create a fallback chunk
                 fallback_content = f"Error processing chunk: {str(e)}"

@@ -175,7 +175,6 @@ def find_best_chunk_position(
         
         # Strategy 8: Semantic similarity for code (ignoring formatting entirely)
         # Remove all whitespace, punctuation spacing, and compare just the semantic content
-        import re
         
         def normalize_code_semantics(text):
             # Remove all whitespace
