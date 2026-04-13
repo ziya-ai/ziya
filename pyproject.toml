@@ -70,6 +70,8 @@ playwright = {version = "^1.52.0", optional = true}
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.3"
+pytest-timeout = "^2.3.1"
+pytest-asyncio = ">=0.23,<1.0"
 pytest-playwright = {version = "^0.7.0", optional = true}
 
 [tool.poetry.group.pcap.dependencies]
