@@ -209,7 +209,6 @@ def improved_parse_tool_call(response: str) -> Optional[Dict[str, Any]]:
             tool_section = tool_section.replace('\\n', '\n')
         
         # Parse format: <n>tool_name</n>, <name>tool_name</name>, or other variations
-        import re
         
         # Try all possible name tag formats with more robust patterns
         name_patterns = [

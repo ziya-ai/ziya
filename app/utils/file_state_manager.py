@@ -250,7 +250,6 @@ class FileStateManager:
         for file_path, state in self.conversation_states[conversation_id].items():
             if state.current_content != state.last_context_submission_content:
                 # Calculate which lines changed since last submission
-                from difflib import SequenceMatcher
                 matcher = SequenceMatcher(None, state.last_context_submission_content, state.current_content)
                 changed_lines = set()
                 

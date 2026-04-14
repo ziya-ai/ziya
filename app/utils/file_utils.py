@@ -8,7 +8,6 @@ from app.utils.document_extractor import is_document_file, extract_document_text
 
 EXTERNAL_PREFIX = '[external]'
 
-
 def resolve_external_path(file_path: str, base_dir: str) -> str:
     """Resolve a file path that may carry the [external] prefix.
 
@@ -25,7 +24,6 @@ def resolve_external_path(file_path: str, base_dir: str) -> str:
             real = '/' + real
         return real
     return os.path.join(base_dir, s)
-
 
 BINARY_EXTENSIONS = {
     '.pyc', '.pyo', '.pyd', '.ico', '.png', '.jpg', '.jpeg', '.gif', '.svg',
@@ -124,7 +122,6 @@ def read_file_content(file_path: str) -> Optional[str]:
             return None
 
         # Check if it's a document file first
-        from app.utils.document_extractor import is_document_file, extract_document_text
         if is_document_file(file_path):
             content = extract_document_text(file_path)
             if content is not None:

@@ -204,7 +204,6 @@ class ProjectStorage(BaseStorage[Project]):
                 for sk, sv in value.items():
                     if sv is not None:
                         existing[sk] = sv
-                from app.models.project import ProjectSettings
                 project.settings = ProjectSettings(**existing)
             elif key == 'path' and value is not None:
                 project.path = _normalize_path(value) if value else ""

@@ -4,7 +4,6 @@ import subprocess
 import sys
 import threading
 
-
 def _check_installation():
     """Check if ziya is properly installed and accessible."""
     # Check Python version
@@ -25,17 +24,13 @@ def _check_installation():
         print(f"\n   Fix: python{py_version} -m pip install --user --force-reinstall ziya\n")
         sys.exit(1)
 
-
 def frontend_start():
     subprocess.run(["npm", "run", "start"], cwd="frontend")
-
 
 def frontend_install():
     subprocess.run(["npm", "install"], cwd="frontend")
 
-
 def frontend_build():
-    import sys
     symbols = "--symbols" in sys.argv
     env = os.environ.copy() if symbols else None
     if symbols:
@@ -44,7 +39,6 @@ def frontend_build():
     subprocess.run(["npm", "run", "build"], cwd="frontend", env=env)
     if symbols:
         _deploy_sourcemaps()
-
 
 def _deploy_sourcemaps():
     """Copy built JS files + source maps to installed package location."""
@@ -70,7 +64,6 @@ def _deploy_sourcemaps():
     print("⚠️  Could not find installed package location — copy manually:")
     print(f"   cp frontend/build/static/js/main.* <site-packages>/app/templates/static/js/")
 
-
 def ziya():
     # Check installation before anything else
     _check_installation()
@@ -78,7 +71,6 @@ def ziya():
     # Check for version flag first
     if "--version" in sys.argv:
         # Fast version check without plugin initialization
-        import os
         try:
             from .utils.version_util import get_current_version
         except ImportError:
@@ -96,11 +88,9 @@ def ziya():
         from app.main import main
     main()
 
-
 def signal_handler(sig, frame):
     print('Interrupt received, shutting down...')
     sys.exit(0)
-
 
 def dev():
     frontend_thread = threading.Thread(target=frontend_start)

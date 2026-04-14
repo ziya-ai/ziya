@@ -69,7 +69,7 @@ async def handle_streaming_tool_execution(chunk: str, processor: Optional[Any] =
     Returns:
         Tuple of (cleaned chunk, tool result if any)
     """
-    from app.mcp.utils import StreamingToolProcessor, clean_sentinels
+    from app.mcp.utils import StreamingToolProcessor
     
     # Create or use the provided processor
     if processor is None:

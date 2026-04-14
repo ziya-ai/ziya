@@ -24,7 +24,6 @@ from ..application.git_diff import parse_patch_output
 
 from .diff_pipeline import DiffPipeline, PipelineStage, HunkStatus, PipelineResult
 
-
 def _diff_has_indentation_changes(git_diff: str) -> bool:
     """
     Check if a diff contains indentation-only changes.
@@ -56,7 +55,6 @@ def _diff_has_indentation_changes(git_diff: str) -> bool:
                         return True
     
     return False
-
 
 def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str] = None, skip_already_applied_check: bool = False) -> Dict[str, Any]:
     """
@@ -360,7 +358,6 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
                 logger.info(f"Git apply modified file, checking which hunks were applied")
                 
                 # Check each pending hunk to see if it's now in the file
-                from ..validation.validators import is_hunk_already_applied
                 for hunk_id, tracker in pipeline.result.hunks.items():
                     logger.info(f"Checking hunk #{hunk_id}: status={tracker.status.value}")
                     if tracker.status == HunkStatus.PENDING:
@@ -483,7 +480,6 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
     # This dictionary now includes the correctly determined status and message
     final_result_dict = pipeline.result.to_dict()
 
-    
     # Log the final result being returned
     logger.info(f"Final result status: {final_result_dict.get('status')}")
     logger.info(f"Final result message: {final_result_dict.get('message')}")
@@ -531,7 +527,6 @@ def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_dif
         with open(file_path, 'r', encoding='utf-8') as f:
             file_lines = f.read().splitlines()
         
-        from ..parsing.diff_parser import parse_unified_diff_exact_plus
         from ..application.hunk_line_correction import correct_hunk_line_numbers
         from ..application.overlapping_hunks_fix import fix_overlapping_hunks
         
@@ -643,8 +638,6 @@ def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_dif
             logger.debug(f"Corrected diff last 100 chars: {repr(git_diff[-100:])}")
     
     # CRITICAL: Check for ambiguous context before applying
-    from ..parsing.diff_parser import parse_unified_diff_exact_plus
-    from ..validation.validators import normalize_line_for_comparison
     
     file_path = pipeline.file_path
     logger.debug(f"Checking for ambiguous context in {file_path}")
@@ -880,7 +873,6 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
     # This handles cases where diff was generated against older version of file
     # and some added lines already exist
     from ..validation.validators import detect_partial_overlap
-    from ..parsing.diff_parser import parse_unified_diff_exact_plus
     
     try:
         # Read the current file content
@@ -1384,7 +1376,6 @@ def update_merged_hunk_status(pipeline, merged_hunk_mapping, new_hunk_index, sta
                     confidence=hunk_confidence
                 )
                 logger.info(f"Updated original hunk #{hunk_id} (index {orig_idx}) to {status}")
-
 
 def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, original_lines: List[str], file_was_modified: bool = False) -> bool:
     """
@@ -2519,7 +2510,6 @@ def verify_hunks_with_file_content(pipeline: DiffPipeline, hunk_status: Dict[int
         pipeline: The pipeline instance
         hunk_status: Dictionary mapping hunk IDs to status information
     """
-    from ..validation.validators import is_hunk_already_applied
     
     # Use cached file content from pipeline
     file_content, file_lines = pipeline.get_file_content()

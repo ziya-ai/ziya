@@ -69,7 +69,6 @@ class ModelManager:
         Reset the internal state of the ModelManager.
         This is used when switching models to ensure a clean initialization.
         """
-        import gc
         import sys
         
         # Force garbage collection before resetting state
@@ -106,8 +105,6 @@ class ModelManager:
         
         # Reset boto3 in a safer way
         try:
-            import boto3
-            import botocore
             
             # Instead of trying to modify the existing session, we'll create a completely new one
             # First, remove boto3 and botocore modules from sys.modules to force a complete reload
@@ -541,8 +538,6 @@ class ModelManager:
         Returns:
             BaseChatModel: The initialized model
         """
-        import os
-        import gc
         
         # Force garbage collection before initialization
         gc.collect()
@@ -782,7 +777,6 @@ class ModelManager:
             ChatBedrock: The initialized Bedrock model
         """
         from app.utils.aws_utils import ThrottleSafeBedrock, check_aws_credentials, create_fresh_boto3_session
-        from app.utils.custom_exceptions import KnownCredentialException
         
         # Force garbage collection before creating new boto3 clients
         gc.collect()
@@ -1106,14 +1100,12 @@ class ModelManager:
             DirectOpenAIModel: The initialized model
         """
         from app.agents.wrappers.openai_direct import DirectOpenAIModel
-        import gc
 
         gc.collect()
         logger.info("Initializing OpenAI model with direct API")
 
         # Load .env if present
         try:
-            from dotenv import load_dotenv, find_dotenv
             dotenv_path = find_dotenv()
             if dotenv_path:
                 load_dotenv(dotenv_path)
@@ -1173,7 +1165,6 @@ class ModelManager:
     def _initialize_anthropic_model(cls, model_config: Dict[str, Any]):
         """Initialize an Anthropic model with the direct anthropic SDK."""
         from app.agents.wrappers.anthropic_direct import DirectAnthropicModel
-        import gc
         gc.collect()
         logger.info("Initializing Anthropic model with direct API")
 
@@ -1246,7 +1237,6 @@ class ModelManager:
             BaseChatModel: Model with stop sequences configured
         """
         # Force garbage collection before getting model
-        import gc
         gc.collect()
         
         # Initialize model if needed
