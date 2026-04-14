@@ -21,23 +21,36 @@ def _get_templates():
     from app.server import templates_dir
     return Jinja2Templates(directory=templates_dir)
 
+def _collect_formatter_scripts() -> list:
+    """Collect formatter script URLs from plugins, normalizing dict entries to strings."""
+    formatter_scripts = []
+    from app.plugins import get_active_config_providers
+    for provider in get_active_config_providers():
+        config = provider.get_defaults()
+        if 'frontend' in config and 'formatters' in config['frontend']:
+            for item in config['frontend']['formatters']:
+                if isinstance(item, str):
+                    formatter_scripts.append(item)
+                elif isinstance(item, dict):
+                    src = item.get('src') or item.get('url') or item.get('path')
+                    if src:
+                        formatter_scripts.append(src)
+                    else:
+                        logger.warning(
+                            f"Config provider {getattr(provider, 'provider_id', '?')} "
+                            f"returned formatter dict without 'src' key: {item}"
+                        )
+                else:
+                    logger.warning(
+                        f"Config provider {getattr(provider, 'provider_id', '?')} "
+                        f"returned unexpected formatter type: {type(item).__name__}: {item}"
+                    )
+    return list(dict.fromkeys(formatter_scripts))
 
 @router.get("/")
 async def root(request: Request):
     try:
-        # Get formatter scripts from plugins
-        formatter_scripts = []
-        from app.plugins import get_active_config_providers
-        for provider in get_active_config_providers():
-            config = provider.get_defaults()
-            if 'frontend' in config and 'formatters' in config['frontend']:
-                formatter_scripts.extend(config['frontend']['formatters'])
-        
-        # Deduplicate while preserving order — duplicate script tags cause
-        # fatal SyntaxError from const redeclaration in formatter JS files
-        formatter_scripts = list(dict.fromkeys(formatter_scripts))
-        # Log detailed information about templates
-        logger.info(f"Rendering index.html using custom template loader")
+        formatter_scripts = _collect_formatter_scripts()
         
         # Create the context for the template
         context = {
@@ -48,7 +61,7 @@ async def root(request: Request):
         }
         
         # Try to render the template
-        return _get_templates().TemplateResponse("index.html", context)
+        return _get_templates().TemplateResponse(request, "index.html", context=context)
     except Exception as e:
         logger.error(f"Error rendering index.html: {str(e)}")
         # Return a simple HTML response as fallback
@@ -78,9 +91,7 @@ async def root(request: Request):
         </body>
         </html>
         """
-        from fastapi.responses import HTMLResponse
         return HTMLResponse(content=html_content)
-
 
 @router.get("/render")
 async def render_page(request: Request):
@@ -92,27 +103,18 @@ async def render_page(request: Request):
     """
     return await root(request)
 
-
 @router.get("/info")
 async def info_page(request: Request):
     """Render the info page as part of the React app."""
     try:
         # Check if this is a request for the telemetry dashboard
         
-        # Get formatter scripts from plugins
-        formatter_scripts = []
-        from app.plugins import get_active_config_providers
-        for provider in get_active_config_providers():
-            config = provider.get_defaults()
-            if 'frontend' in config and 'formatters' in config['frontend']:
-                formatter_scripts.extend(config['frontend']['formatters'])
-        
+        formatter_scripts = _collect_formatter_scripts()
         context = {"request": request, "formatter_scripts": formatter_scripts, "info_page": True}
-        return _get_templates().TemplateResponse("index.html", context)
+        return _get_templates().TemplateResponse(request, "index.html", context=context)
     except Exception as e:
         logger.error(f"Error rendering info page: {str(e)}")
         return JSONResponse(status_code=500, content={"error": str(e)})
-
 
 @router.get("/debug2")
 async def debug_page_old(request: Request):
@@ -450,23 +452,19 @@ async def debug_page_old(request: Request):
             '</html>',
         ])
         
-        from fastapi.responses import HTMLResponse
         return HTMLResponse(content='\n'.join(html_parts))
         
     except Exception as e:
         logger.error(f"Error rendering info page: {str(e)}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-
 @router.get("/debug1")
 
 async def debug(request: Request):
     # Return the same app but with a query parameter to show debug mode
-    return _get_templates().TemplateResponse("index.html", {
-        "request": request,
+    return _get_templates().TemplateResponse(request, "index.html", context={
         "debug_mode": True
     })
-
 
 @router.get("/favicon.ico", include_in_schema=False)
 async def favicon():
