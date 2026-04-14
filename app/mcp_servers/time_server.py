@@ -12,7 +12,6 @@ import os
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 
-
 class TimeServer:
     """Simple MCP server that provides time-related tools."""
     
@@ -164,10 +163,8 @@ class TimeServer:
                 }
                 print(json.dumps(error_response), flush=True)
 
-
 def test_server():
     """Test the server with a simple request."""
-    import json
     
     server = TimeServer()
     
@@ -181,7 +178,6 @@ def test_server():
     
     response = asyncio.run(server.handle_request(init_request))
     print(f"Test response: {json.dumps(response, indent=2)}")
-
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "test":

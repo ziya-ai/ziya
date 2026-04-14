@@ -18,7 +18,6 @@ from app.agents.models import ModelManager
 
 router = APIRouter(tags=["debug"])
 
-
 @router.get('/api/debug/mcp-state')
 async def debug_mcp_state():
     """Debug endpoint to check MCP connection and tool execution state."""
@@ -60,7 +59,6 @@ async def debug_mcp_state():
     except Exception as e:
         logger.error(f"Error getting MCP debug state: {e}")
         return {"error": str(e)}
-
 
 @router.get('/api/info')
 async def get_system_info(request: Request):
@@ -260,7 +258,6 @@ async def get_system_info(request: Request):
         logger.error(f"Error getting system info: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-
 @router.post('/api/debug/reset-mcp')
 async def reset_mcp_state(request: Request):
     """Reset MCP state to recover from stuck tool execution."""
@@ -288,7 +285,6 @@ async def reset_mcp_state(request: Request):
         logger.error(f"Error resetting MCP state: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-
 @router.get('/api/telemetry/cache-health')
 async def get_cache_health_telemetry():
     """Get real-time cache health and efficiency metrics."""
@@ -299,7 +295,6 @@ async def get_cache_health_telemetry():
         
         # Get current conversation metrics
         current_conversation = None
-        from app.agents.models import ModelManager
         
         # Get all tracked conversations
         all_conversations = tracker.get_all_conversations()
@@ -386,7 +381,6 @@ async def get_cache_health_telemetry():
     except Exception as e:
         logger.error(f"Error getting cache health telemetry: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"error": str(e)})
-
 
 @router.get('/api/telemetry/current-conversation')
 async def get_current_conversation_telemetry(conversation_id: str):

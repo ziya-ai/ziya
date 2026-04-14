@@ -16,9 +16,7 @@ from pathlib import Path
 import uuid
 import time
 
-
 from app.utils.logging_utils import logger
-
 
 @dataclass
 class MCPResource:
@@ -28,7 +26,6 @@ class MCPResource:
     description: Optional[str] = None
     mimeType: Optional[str] = None
     
-
 @dataclass
 class MCPTool:
     """Represents an MCP tool."""
@@ -36,14 +33,12 @@ class MCPTool:
     description: str
     inputSchema: Dict[str, Any]
     
-
 @dataclass
 class MCPPrompt:
     """Represents an MCP prompt template."""
     name: str
     description: str
     arguments: List[Dict[str, Any]] = field(default_factory=list)
-
 
 class MCPClient:
     """
@@ -277,8 +272,6 @@ class MCPClient:
                         auth_indicators = ['FETCH_ERROR', 'authentication', 'login', 'unauthorized', '401', '403']
                         
                         if any(indicator in log_text for indicator in auth_indicators):
-                            import sys
-                            import subprocess
                             
                             # Detect current npm registry
                             current_registry = "unknown"
@@ -364,8 +357,6 @@ class MCPClient:
                             ]
                             
                             if any(indicator in stderr_output.lower() for indicator in auth_indicators):
-                                import sys
-                                import subprocess
                                 
                                 # Try to detect current npm registry configuration
                                 current_registry = "unknown"
@@ -642,7 +633,6 @@ class MCPClient:
                 "code": code
             }
         
-        import time
         start_time = time.time()
         
         max_retries = 5  # Increased for external servers
@@ -784,8 +774,6 @@ class MCPClient:
                                 auth_indicators = ['FETCH_ERROR', 'authentication', 'login', 'unauthorized', '401', '403']
                                 
                                 if stderr_output and any(indicator in stderr_output.lower() for indicator in auth_indicators):
-                                    import sys
-                                    import subprocess
                                     
                                     # Detect current npm registry
                                     current_registry = "unknown"

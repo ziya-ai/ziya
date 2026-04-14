@@ -12,7 +12,6 @@ from typing import List, Dict, Any, Optional
 import logging
 from datetime import datetime
 
-
 def _viz_fingerprint(source: str) -> str:
     """Content fingerprint for matching captured diagrams to code blocks.
 
@@ -21,7 +20,6 @@ def _viz_fingerprint(source: str) -> str:
     """
     normalized = source.strip()
     return f"{len(normalized)}:{normalized[:64]}"
-
 
 # All visualization code-fence languages recognised by the exporter.
 # Mirror of frontend/src/constants/visualizationTypes.ts — the single
@@ -33,7 +31,6 @@ _VIZ_TYPES = (
 _VIZ_TYPES_RE = '|'.join(_VIZ_TYPES)
 
 logger = logging.getLogger(__name__)
-
 
 def export_conversation_for_paste(
     messages: List[Dict[str, Any]],
@@ -107,7 +104,6 @@ def _extract_diagram_specs(messages: List[Dict[str, Any]]) -> List[Dict[str, Any
             })
     return specs
 
-
 async def render_diagrams_server_side(
     messages: List[Dict[str, Any]],
     theme: str = 'light',
@@ -176,7 +172,6 @@ async def render_diagrams_server_side(
                 len(diagram_by_hash), len(specs))
     return diagram_by_hash
 
-
 async def export_conversation_rendered(
     messages: List[Dict[str, Any]],
     format_type: str = 'markdown',
@@ -208,7 +203,6 @@ async def export_conversation_rendered(
         provider=provider,
     )
 
-
 def _clean_tool_blocks(content: str) -> str:
     """
     Replace HTML comment tool blocks with formatted output.
@@ -216,7 +210,6 @@ def _clean_tool_blocks(content: str) -> str:
     Also converts|syntax ... ```` fenced blocks
     To: Formatted markdown section with tool output
     """
-    import re
 
     # Pattern to match tool blocks
     # Markers include an optional tool-use ID suffix (|toolu_xxx) added by chatApi.ts.
@@ -290,7 +283,6 @@ def _clean_thinking_blocks(content: str) -> str:
     Replace thinking code blocks with formatted sections.
     Converts: ```thinking:step-N ... ``` to formatted thinking sections
     """
-    import re
 
     # Pattern to match thinking blocks
     pattern = r'```thinking:step-(\d+)\n(.*?)```'
@@ -313,14 +305,11 @@ def _clean_thinking_blocks(content: str) -> str:
     cleaned = re.sub(pattern, replace_thinking_block, content, flags=re.DOTALL)
     return cleaned
 
-
 def _process_content_for_export(content: str) -> str:
     """Process content to clean up tool and thinking blocks for export."""
     content = _clean_tool_blocks(content)
     content = _clean_thinking_blocks(content)
     return content
-
-
 
 def _export_as_markdown(
     messages: List[Dict[str, Any]],
@@ -385,7 +374,6 @@ def _export_as_markdown(
     
     return "\n".join(lines)
 
-
 def _embed_diagrams_in_markdown(
     content: str,
     diagram_by_hash: Dict[str, Dict[str, Any]]
@@ -420,7 +408,6 @@ def _embed_diagrams_in_markdown(
     processed = re.sub(viz_pattern, embed_diagram, content, flags=re.DOTALL)
     
     return processed
-
 
 def _export_as_html(
     messages: List[Dict[str, Any]],
@@ -597,7 +584,6 @@ def _export_as_html(
     
     return "".join(html_parts)
 
-
 def _embed_diagrams_in_html(
     content: str,
     diagram_by_hash: Dict[str, Dict[str, Any]]
@@ -643,7 +629,6 @@ def _embed_diagrams_in_html(
     
     return html
 
-
 def _markdown_to_html_basic(markdown: str) -> str:
     """Basic markdown to HTML conversion."""
     html = markdown
@@ -686,7 +671,6 @@ def _markdown_to_html_basic(markdown: str) -> str:
     
     return html
 
-
 def _process_visualizations_for_markdown(content: str) -> str:
     """
     Process content to embed visualizations in markdown-compatible format.
@@ -708,7 +692,6 @@ def _process_visualizations_for_markdown(content: str) -> str:
     content = re.sub(viz_pattern, replace_viz, content, flags=re.DOTALL)
     
     return content
-
 
 def _process_content_for_html(content: str) -> str:
     """
@@ -751,7 +734,6 @@ def _process_content_for_html(content: str) -> str:
     
     return html
 
-
 def _embed_visualizations_in_html(html: str) -> str:
     """
     Embed visualizations directly in HTML.
@@ -781,7 +763,6 @@ def _embed_visualizations_in_html(html: str) -> str:
     html = re.sub(viz_pattern, embed_viz, html, flags=re.DOTALL)
     
     return html
-
 
 def _create_footer(
     target: str,
@@ -847,7 +828,6 @@ def _create_footer(
 *This conversation was exported from Ziya — an AI client and orchestration harness for software engineering, system architecture, operations, and technical visualization. Ziya combines context-aware code intelligence with live system introspection, multi-model orchestration, and rich diagramming to support the full lifecycle from design through deployment.*
 """
 
-
 def _process_visualizations_for_markdown(content: str) -> str:
     """
     Process content to embed visualizations in markdown.
@@ -879,12 +859,10 @@ def _process_visualizations_for_markdown(content: str) -> str:
     
     return content
 
-
 def extract_svg_from_content(content: str) -> List[str]:
     """Extract SVG elements from content."""
     svg_pattern = r'<svg[^>]*>.*?</svg>'
     return re.findall(svg_pattern, content, flags=re.DOTALL)
-
 
 def svg_to_data_uri(svg_content: str) -> str:
     """Convert SVG to data URI for embedding."""
@@ -892,7 +870,6 @@ def svg_to_data_uri(svg_content: str) -> str:
     svg_bytes = svg_content.encode('utf-8')
     svg_base64 = base64.b64encode(svg_bytes).decode('utf-8')
     return f"data:image/svg+xml;base64,{svg_base64}"
-
 
 def _process_content_for_html(content: str) -> str:
     """

@@ -44,7 +44,6 @@ def create_fresh_boto3_session(profile_name=None):
     # Reload core modules
     try:
         import botocore
-        import boto3
         importlib.reload(botocore)
         importlib.reload(boto3)
     except Exception as e:
@@ -90,7 +89,6 @@ Please either:
     print(error_msg, file=sys.stderr)
     raise SystemExit(1)
 
-
 def _get_available_profiles():
     """Get list of available AWS profiles."""
     try:
@@ -99,7 +97,6 @@ def _get_available_profiles():
         return list(session.available_profiles)
     except Exception:
         return []
-
 
 def _create_fallback_session():
     """Attempt to create a session without any profile configuration."""
@@ -191,7 +188,6 @@ def check_aws_credentials(is_server_startup=True, profile_name=None, region_name
         region_name (str): Optional AWS region name to use
     """
     try:
-        import os
         # Use the same fresh session creation method as the working Bedrock clients
         session = create_fresh_boto3_session(profile_name=profile_name)
         
@@ -227,7 +223,6 @@ def check_aws_credentials(is_server_startup=True, profile_name=None, region_name
     except Exception as e:
         logger.error(f"AWS credentials check failed: {e}")
 
-        import os
         # First, check if we have any AWS credentials at all
         has_any_credentials = (
             os.environ.get("AWS_ACCESS_KEY_ID") or
@@ -284,8 +279,6 @@ Please set up your AWS credentials using one of these methods:
 
 def debug_aws_credentials():
     """Debug function to print AWS credential information."""
-    import boto3
-    import os
     
     logger.info("=== AWS CREDENTIAL DEBUG ===")
     

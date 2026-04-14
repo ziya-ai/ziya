@@ -139,8 +139,6 @@ def register_tool_enhancement_provider(provider):
     _tool_enhancement_providers.append(provider)
     logger.debug(f"Registered tool enhancement provider: {getattr(provider, 'provider_id', 'unknown')}")
 
-
-
 def get_tool_enhancements() -> Dict[str, Any]:
     """Get merged tool enhancements from all registered providers.
     
@@ -159,7 +157,6 @@ def get_tool_enhancements() -> Dict[str, Any]:
 def get_shell_config_providers() -> List:
     """Get all registered shell config providers."""
     return _shell_config_providers.copy()
-
 
 def get_active_auth_provider():
     """
@@ -191,7 +188,6 @@ def get_active_config_providers() -> List:
             logger.warning(f"Error checking {provider.provider_id}.should_apply(): {e}")
     return active
 
-
 def get_allowed_endpoints() -> Optional[List[str]]:
     """
     Resolve the effective allowed endpoints across all active config providers.
@@ -216,7 +212,6 @@ def get_allowed_endpoints() -> Optional[List[str]]:
     for r in restrictions[1:]:
         result &= set(r)
     return sorted(result)
-
 
 def get_shell_config_additions() -> dict:
     """
@@ -265,7 +260,6 @@ def get_shell_config_additions() -> dict:
         "providers": providers,
     }
 
-
 def get_registry_providers() -> List:
     """Get all registered MCP registry providers."""
     return _registry_providers.copy()
@@ -293,7 +287,6 @@ def get_data_retention_providers() -> List:
 def get_service_model_providers() -> List:
     """Get all registered service model providers sorted by priority."""
     return sorted(_service_model_providers, key=lambda p: getattr(p, 'priority', 0), reverse=True)
-
 
 def get_enabled_service_tool_categories() -> set:
     """
@@ -406,11 +399,9 @@ def get_effective_retention_policy() -> DataRetentionPolicy:
         policy_reason="; ".join(reasons) if reasons else "merged from providers",
     )
 
-
 def get_encryption_providers() -> List:
     """Return all registered encryption providers."""
     return list(_encryption_providers)
-
 
 def get_effective_encryption_policy() -> EncryptionPolicy:
     """
@@ -429,7 +420,6 @@ def get_effective_encryption_policy() -> EncryptionPolicy:
     Returns:
         EncryptionPolicy with the effective merged settings.
     """
-    import os
 
     active_policies = []
     reasons = []
@@ -483,7 +473,6 @@ def get_effective_encryption_policy() -> EncryptionPolicy:
         categories_requiring_encryption=all_categories,
         policy_reason="; ".join(reasons) if reasons else "merged from providers",
     )
-
 
 def initialize():
     """Initialize plugin system and load available plugins."""

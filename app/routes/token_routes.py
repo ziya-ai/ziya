@@ -30,7 +30,6 @@ class AccurateTokenCountRequest(BaseModel):
     model_config = {"extra": "allow"}
     file_paths: List[str]
 
-
 def count_tokens_fallback(text: str) -> int:
     """Fallback methods for counting tokens when primary method fails."""
     try:
@@ -48,7 +47,6 @@ def count_tokens_fallback(text: str) -> int:
             logger.error(f"All token counting methods failed: {str(e)}")
             # Return character count divided by 4 as very rough approximation
             return int(len(text) / 4)
-
 
 @router.post('/api/token-count')
 async def count_tokens(request: TokenCountRequest) -> Dict[str, int]:
@@ -68,7 +66,6 @@ async def count_tokens(request: TokenCountRequest) -> Dict[str, int]:
         logger.error(f"Error counting tokens: {str(e)}", exc_info=True)
         # Return 0 in case of error to avoid breaking the frontend
         return {"token_count": 0}
-
 
 @router.post('/api/accurate-token-count')
 async def get_accurate_token_counts(request: AccurateTokenCountRequest) -> Dict[str, Any]:
@@ -93,8 +90,6 @@ async def get_accurate_token_counts(request: AccurateTokenCountRequest) -> Dict[
                 logger.info(f"Returning {len(results)} token counts: {cached_count} from cache (accurate), {calculated_count} calculated on-demand")
                 return {"results": results, "debug_info": {"source": "precalculated_cache"}}
 
-        import os
-        
         from app.context import get_project_root
         user_codebase_dir = get_project_root()
         logger.info(f"Accurate token count requested for {len(request.file_paths)} files")
@@ -123,7 +118,6 @@ async def get_accurate_token_counts(request: AccurateTokenCountRequest) -> Dict[
         logger.error(f"Error getting accurate token counts: {str(e)}")
         return {"error": str(e), "results": {}}
 
-
 @router.get('/api/cache-stats')
 async def get_cache_stats():
     """Get context caching statistics and effectiveness metrics."""
@@ -151,7 +145,6 @@ async def get_cache_stats():
     except Exception as e:
         logger.error(f"Error getting cache stats: {str(e)}")
         return {"cache_enabled": False, "error": str(e)}
-
 
 @router.get('/api/cache-test')
 async def test_cache_functionality():
