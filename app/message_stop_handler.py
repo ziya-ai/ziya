@@ -57,7 +57,21 @@ async def handle_message_stop(
     # --- 1. Record stop reason ---
     state.last_stop_reason = chunk.get('stop_reason', 'end_turn')
 
-    # --- 2. Flush block-opening buffer ---
+    # --- 2. Flush content optimizer FIRST ---
+    # The optimizer may hold earlier content that arrived before the
+    # block_opening_buffer captured a backtick-ending chunk.  Flushing
+    # the optimizer first preserves chronological ordering.
+    if hasattr(executor, '_content_optimizer'):
+        remaining = executor._content_optimizer.flush_remaining()
+        if remaining:
+            executor._update_code_block_tracker(remaining, code_block_tracker)
+            yield track_yield({
+                'type': 'text',
+                'content': remaining,
+                'timestamp': ts(),
+            })
+
+    # --- 3. Flush block-opening buffer ---
     if hasattr(executor, '_block_opening_buffer') and executor._block_opening_buffer:
         state.assistant_text += executor._block_opening_buffer
         executor._update_code_block_tracker(executor._block_opening_buffer, code_block_tracker)
@@ -68,7 +82,7 @@ async def handle_message_stop(
         })
         executor._block_opening_buffer = ""
 
-    # --- 3. Flush viz buffer ---
+    # --- 4. Flush viz buffer ---
     if state.viz_buffer.strip():
         executor._update_code_block_tracker(state.viz_buffer, code_block_tracker)
         yield track_yield({
@@ -76,17 +90,6 @@ async def handle_message_stop(
             'content': state.viz_buffer,
             'timestamp': ts(),
         })
-
-    # --- 4. Flush content optimizer ---
-    if hasattr(executor, '_content_optimizer'):
-        remaining = executor._content_optimizer.flush_remaining()
-        if remaining:
-            executor._update_code_block_tracker(remaining, code_block_tracker)
-            yield track_yield({
-                'type': 'text',
-                'content': remaining,
-                'timestamp': ts(),
-            })
 
     # --- 5. Flush content buffer ---
     if state.content_buffer.strip():
