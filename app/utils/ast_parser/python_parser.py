@@ -6,6 +6,7 @@ converting Python's native AST to Ziya's unified AST format.
 """
 
 import ast
+import warnings
 from typing import Dict, List, Optional, Any, Tuple, Set
 import os
 
@@ -35,7 +36,9 @@ class PythonASTParser(ASTParserPlugin):
         Returns:
             Python native AST
         """
-        return ast.parse(file_content, filename=file_path)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return ast.parse(file_content, filename=file_path)
     
     def to_unified_ast(self, native_ast: ast.AST, file_path: str) -> UnifiedAST:
         """
