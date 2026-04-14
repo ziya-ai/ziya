@@ -358,12 +358,21 @@ def enhance_context_with_ast(query: str, context: Dict[str, Any]) -> Dict[str, A
 # Add token counting cache with LRU eviction
 import functools
 
-@functools.lru_cache(maxsize=1000)
 def cached_token_count(content_hash: str, content: str) -> int:
-    """Cached token counting to avoid recomputing for same content"""
+    """Cached token counting to avoid recomputing for same content.
+    Uses a simple dict instead of lru_cache to avoid pinning full content strings."""
+    if content_hash in _token_count_cache:
+        return _token_count_cache[content_hash]
     try:
         import tiktoken
         encoding = tiktoken.get_encoding("cl100k_base")
-        return len(encoding.encode(content))
+        count = len(encoding.encode(content))
     except Exception:
-        return len(content) // 4
+        count = len(content) // 4
+    # Cap cache size — evict all when too large
+    if len(_token_count_cache) > 1000:
+        _token_count_cache.clear()
+    _token_count_cache[content_hash] = count
+    return count
+
+_token_count_cache: dict = {}
