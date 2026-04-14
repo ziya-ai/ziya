@@ -51,7 +51,6 @@ class AddExplicitPathsRequest(BaseModel):
     paths: List[str]
     add_to_context: bool = False
 
-
 @router.post("/folder")
 async def get_folder(request: FolderRequest):
     """Get the folder structure of a directory with improved error handling."""
@@ -131,7 +130,6 @@ async def get_folder(request: FolderRequest):
         logger.error(f"Error in get_folder: {e}")
         return {"error": str(e)}
 
-
 @router.get("/folder-progress")
 async def get_folder_progress():
     """Get current folder scanning progress."""
@@ -152,7 +150,6 @@ async def get_folder_progress():
     
     return progress
 
-
 @router.post("/api/cancel-scan")
 async def cancel_folder_scan():
     """Cancel current folder scanning operation."""
@@ -162,7 +159,6 @@ async def cancel_folder_scan():
         logger.info("Folder scan cancellation requested")
     return {"cancelled": was_active}
 
-
 @router.post("/api/clear-folder-cache")
 async def clear_folder_cache():
     """Clear the folder structure cache."""
@@ -170,7 +166,6 @@ async def clear_folder_cache():
     _folder_cache = {}
     logger.info("Folder cache cleared")
     return {"cleared": True}
-
 
 @router.post("/api/clear-external-paths")
 async def clear_external_paths():
@@ -189,7 +184,6 @@ async def clear_external_paths():
     try:
         from app.storage.projects import ProjectStorage
         from app.utils.paths import get_ziya_home
-        from app.context import get_project_root
         ps = ProjectStorage(get_ziya_home())
         project = ps.get_by_path(get_project_root())
         if project and project.settings.externalPaths:
@@ -200,7 +194,6 @@ async def clear_external_paths():
         logger.warning(f"Failed to clear persisted external paths: {e}")
 
     return {"cleared": removed}
-
 
 @router.post("/file")
 async def get_file(request: FileRequest):
@@ -213,7 +206,6 @@ async def get_file(request: FileRequest):
         logger.error(f"Error in get_file: {e}")
         return {"error": str(e)}
 
-
 @router.post("/save")
 async def save_file(request: FileContentRequest):
     """Save content to a file."""
@@ -225,12 +217,10 @@ async def save_file(request: FileContentRequest):
         logger.error(f"Error in save_file: {e}")
         return {"error": str(e)}
 
-
 @router.get('/api/default-included-folders')
 async def get_default_included_folders():
     """Get the default included folders."""
     return []
-
 
 @router.get('/api/browse-directory')
 async def api_browse_directory(path: str = '~'):
@@ -305,7 +295,6 @@ async def api_browse_directory(path: str = '~'):
             status_code=500,
             content={"detail": f"Error browsing directory: {str(e)}"}
         )
-
 
 @router.post('/api/add-explicit-paths')
 async def api_add_explicit_paths(request: AddExplicitPathsRequest):
@@ -410,7 +399,6 @@ async def api_add_explicit_paths(request: AddExplicitPathsRequest):
         "context_keys": context_keys if context_keys else None
     }
 
-
 @router.get('/api/folders-cached')
 async def get_folders_cached():
     """Get folder structure from cache only - returns instantly without scanning."""
@@ -461,7 +449,6 @@ async def get_folders_cached():
         logger.error(f"Error in get_folders_cached: {e}")
         return {"error": f"Cache error: {str(e)}"}
 
-
 @router.get('/api/folders-with-accurate-tokens')
 async def get_folders_with_accurate_tokens():
     """Get folder structure with pre-calculated accurate token counts."""
@@ -498,7 +485,6 @@ async def get_folders_with_accurate_tokens():
     except Exception as e:
         logger.error(f"Error in get_folders_with_accurate_tokens: {e}")
         return {"error": f"Unexpected error: {str(e)}"}
-
 
 @router.get('/api/folders')
 async def api_get_folders(refresh: bool = False, project_path: str = Query(None)):

@@ -25,7 +25,6 @@ try:
     from langchain_classic.agents import AgentExecutor
     from langchain_classic.agents.format_scratchpad import format_xml
     from langchain_aws import ChatBedrock
-    from google.api_core.exceptions import ResourceExhausted
     from langchain_community.document_loaders import TextLoader
     
     # Import Google AI error for proper handling - optional for compatibility
@@ -358,7 +357,6 @@ class RetryingChatBedrock(Runnable):
             model_id = model_id.get(region_prefix, next(iter(model_id.values())))
             logger.debug(f"Using region-specific model ID: {model_id}")
         
-
         # Special handling for stop parameter
         if "stop" in kwargs:
             # For Claude models, we need to be careful with certain parameters
@@ -376,8 +374,6 @@ class RetryingChatBedrock(Runnable):
             self.__class__._binding_logged = True
             
         return RetryingChatBedrock(self.model.bind(**supported_kwargs))
-
-
 
     def get_num_tokens(self, text: str) -> int:
         return self.model.get_num_tokens(text)
@@ -625,7 +621,6 @@ class RetryingChatBedrock(Runnable):
             # Add max_tokens to kwargs if it's not already there
             filtered_kwargs["max_tokens"] = max_tokens
             logger.info(f"Added max_tokens={max_tokens} to astream kwargs from environment")
-        from app.agents.models import ModelManager
         endpoint = os.environ.get("ZIYA_ENDPOINT", ModelManager.DEFAULT_ENDPOINT)
         model_name = os.environ.get("ZIYA_MODEL", ModelManager.DEFAULT_MODELS.get(endpoint))
         model_config = ModelManager.get_model_config(endpoint, model_name)
@@ -707,7 +702,6 @@ class RetryingChatBedrock(Runnable):
                         # Check if any message contains cache information
                         for msg in messages:
                             if hasattr(msg, 'content') and 'CACHE BENEFIT' in str(msg.content):
-                                import re
                                 cache_match = re.search(r'CACHE BENEFIT: ~([\d,]+) tokens', str(msg.content))
                                 if cache_match:
                                     tokens = cache_match.group(1)
@@ -781,9 +775,6 @@ class RetryingChatBedrock(Runnable):
                     else: # ADD THIS BLOCK
                         logger.info(f"LLM_INPUT_DEBUG: Message {i} ({type(msg)}) has no content attribute.") # ADD THIS BLOCK
 
-
-
-                
                 pre_streaming_work.append("🚀 Initiating model stream connection")
                 
                 # Debug the Bedrock client being used
@@ -961,7 +952,6 @@ class RetryingChatBedrock(Runnable):
                     
                     # Force a fresh connection by reinitializing the model
                     try:
-                        from app.agents.models import ModelManager
                         fresh_model = ModelManager.initialize_model(force_reinit=True)
                         if fresh_model:
                             self.model = fresh_model
@@ -993,7 +983,6 @@ class RetryingChatBedrock(Runnable):
                 if accumulated_text:
                     logger.info(f"PARTIAL RESPONSE DEBUG: {len(accumulated_text)} characters in accumulated_text before error")
                     print(f"ACCUMULATED_TEXT BEFORE ERROR:\n{accumulated_text}")
-                
                 
                 # Run credential debug again on error
                 
@@ -1053,7 +1042,6 @@ class RetryingChatBedrock(Runnable):
                     logger.info(f"PARTIAL RESPONSE DEBUG: {len(accumulated_text)} characters in accumulated_text before exception")
                     print(f"ACCUMULATED_TEXT BEFORE EXCEPTION:\n{accumulated_text}")
                 
-
                 # Check if this is a throttling error wrapped in another exception
                 logger.error(f"🔍 ACTUAL_ERROR: {error_str}")
                 logger.error(f"🔍 ERROR_TYPE: {type(e)}")
@@ -1166,7 +1154,7 @@ class RetryingChatBedrock(Runnable):
     def _is_tool_execution_content(self, content: str) -> bool:
         """Check if content indicates tool execution."""
         # Check for tool sentinel markers
-        from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
+        from app.config.models_config import TOOL_SENTINEL_OPEN
         
         # Check for complete tool calls
         if TOOL_SENTINEL_OPEN in content and TOOL_SENTINEL_CLOSE in content:
@@ -1416,7 +1404,6 @@ class LazyLoadedModel:
     def get_model(self):
         """Get the underlying model instance"""
         # Always check the ModelManager state first
-        from app.agents.models import ModelManager
         if ModelManager._state.get('model') is not None:
             logger.info("Using model instance from ModelManager state")
             # Ensure it's wrapped if necessary (though it should be already)
@@ -1466,7 +1453,6 @@ def escape_backticks_for_llm(text: str) -> str:
 
 def is_file_allowed_by_filters(file_path: str) -> bool:
     """Check if a file is allowed by the include-only and exclude filters."""
-    import os
     from pathlib import Path
     
     # Get filter settings from environment
@@ -1537,7 +1523,6 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
             logger.debug(f"Skipping directory: {full_path}")
             continue
         try:
-            from app.utils.file_utils import read_file_content, EXTERNAL_PREFIX
             # Get annotated content with change tracking
             # CRITICAL: Refresh file from disk before getting annotated content
             refresh_base = '' if str(file_path).startswith(EXTERNAL_PREFIX) else user_codebase_dir
@@ -1743,7 +1728,11 @@ def extract_codebase(x):
     else:
         # For EXISTING conversations, refresh files from disk to catch external changes
         logger.debug(f"🔍 FILE_STATE: Refreshing existing conversation {conversation_id} from disk")
-        base_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
+        try:
+            from app.context import get_project_root
+            base_dir = get_project_root()
+        except (ImportError, LookupError):
+            base_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
         refresh_results = file_state_manager.refresh_all_files_from_disk(conversation_id, base_dir)
         changed_count = sum(1 for changed in refresh_results.values() if changed)
         logger.debug(f"Refreshed conversation {conversation_id}: {changed_count} files changed on disk")
@@ -1844,7 +1833,6 @@ def create_agent_chain(chat_model: BaseChatModel):
     """Create a new agent chain with the given model."""
     from langchain_classic.agents import create_xml_agent
     import hashlib
-    from app.agents.models import ModelManager
     logger.debug("Creating agent chain")
     
     # Create cache key based on model configuration
@@ -1857,7 +1845,6 @@ def create_agent_chain(chat_model: BaseChatModel):
     mcp_tools = []
     if mcp_enabled:
         try:
-            from app.mcp.manager import get_mcp_manager
             from app.mcp.enhanced_tools import create_secure_mcp_tools
             mcp_manager = get_mcp_manager()
             # Ensure MCP is initialized before creating tools
@@ -1879,7 +1866,6 @@ def create_agent_chain(chat_model: BaseChatModel):
     cache_key_hash = hashlib.md5(cache_key.encode()).hexdigest()[:8]
     
     # Check ModelManager cache
-    from app.agents.models import ModelManager
     cached_chain = ModelManager._state.get('agent_chain_cache', {}).get(cache_key_hash)
     if cached_chain:
         logger.info(f"Using cached agent chain for {cache_key_hash}")
@@ -1957,7 +1943,6 @@ def create_agent_chain(chat_model: BaseChatModel):
                     if hasattr(prompt_template, 'messages') and prompt_template.messages:
                         system_msg = prompt_template.messages[0]
                         # Escape curly braces but preserve template literals like ${variable}
-                        import re
                         def escape_braces_preserve_template_literals(text):
                             if not isinstance(text, str) or '{{' in text or '}}' in text:
                                 return text
@@ -2163,7 +2148,6 @@ def create_agent_executor(agent_chain: Runnable):
         try:
             logger.debug("Attempting to get MCP tools for agent executor...")
             
-            from app.mcp.manager import get_mcp_manager
             mcp_manager = get_mcp_manager()
             
             if mcp_manager.is_initialized:
@@ -2173,7 +2157,6 @@ def create_agent_executor(agent_chain: Runnable):
                 logger.debug("MCP not initialized, no MCP tools available")
         except (ImportError, OSError, RuntimeError) as e:
             logger.warning(f"Failed to initialize MCP tools: {str(e)}", exc_info=True)
-            from app.mcp.manager import get_mcp_manager
     else:
         logger.debug("MCP is disabled, no tools will be created for agent executor")
 

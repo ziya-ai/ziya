@@ -22,8 +22,6 @@ from app.mcp.registry_manager import get_registry_manager
 
 router = APIRouter(prefix="/api/mcp", tags=["mcp"])
 
-
-
 class MCPServerConfig(BaseModel):
     model_config = {"extra": "allow"}
     name: str
@@ -68,7 +66,6 @@ class PermissionsData(BaseModel):
     defaults: Dict[str, Any]
     servers: Dict[str, Any]
 
-
 def count_tool_tokens(tool_schema: Dict[str, Any]) -> int:
     """
     Count tokens used by a tool schema using existing token counter.
@@ -89,7 +86,6 @@ def count_tool_tokens(tool_schema: Dict[str, Any]) -> int:
     except Exception:
         # Fallback to string representation if JSON serialization fails
         return estimate_token_count(str(tool_schema))
-
 
 def count_server_tool_tokens(tools: List[Dict[str, Any]]) -> int:
     """
@@ -126,7 +122,6 @@ def count_server_tool_tokens(tools: List[Dict[str, Any]]) -> int:
     TOOL_OVERHEAD_MULTIPLIER = 1.1
     return int(raw_total * TOOL_OVERHEAD_MULTIPLIER)
 
-
 def format_token_count(tokens: int) -> str:
     """Format token count for display."""
     if tokens >= 1000000:
@@ -135,7 +130,6 @@ def format_token_count(tokens: int) -> str:
         return f"{tokens / 1000:.1f}K"
     return str(tokens)
 
-
 def calculate_model_instruction_tokens() -> Dict[str, Any]:
     """
     Calculate token counts for instructions across all enabled models.
@@ -143,7 +137,6 @@ def calculate_model_instruction_tokens() -> Dict[str, Any]:
     Returns:
         Dictionary with total tokens and per-model breakdown
     """
-    import os
     
     # Get the current endpoint and model
     endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
@@ -183,7 +176,6 @@ def calculate_model_instruction_tokens() -> Dict[str, Any]:
         "breakdown": INSTRUCTION_ESTIMATES,
         "models": enabled_models
     }
-
 
 @router.get("/status")
 async def get_mcp_status():
@@ -270,7 +262,6 @@ async def get_mcp_status():
             }
         
         # Calculate token costs for each server (including disabled ones)
-        from app.mcp.permissions import get_permissions_manager
         permissions_manager = get_permissions_manager()
         permissions = permissions_manager.get_permissions()
         
@@ -370,7 +361,6 @@ async def get_mcp_status():
         logger.error(f"Error getting MCP status: {e}")
         raise HTTPException(status_code=500, detail=f"Error getting MCP status: {str(e)}")
 
-
 @router.get("/resources")
 async def get_mcp_resources():
     """
@@ -407,7 +397,6 @@ async def get_mcp_resources():
     except Exception as e:
         logger.error(f"Error getting MCP resources: {e}")
         raise HTTPException(status_code=500, detail=f"Error getting MCP resources: {str(e)}")
-
 
 @router.get("/tools")
 async def get_mcp_tools():
@@ -459,7 +448,6 @@ async def get_mcp_tools():
         logger.error(f"Error getting MCP tools: {e}")
         raise HTTPException(status_code=500, detail=f"Error getting MCP tools: {str(e)}")
 
-
 @router.get("/prompts")
 async def get_mcp_prompts():
     """
@@ -495,7 +483,6 @@ async def get_mcp_prompts():
     except Exception as e:
         logger.error(f"Error getting MCP prompts: {e}")
         raise HTTPException(status_code=500, detail=f"Error getting MCP prompts: {str(e)}")
-
 
 @router.post("/initialize")
 async def initialize_mcp():
@@ -679,7 +666,6 @@ async def update_shell_config(config: ShellConfig):
         # Handle persistence to config file if requested
         if config.persist:
             try:
-                from pathlib import Path
                 
                 # Use the standard config path
                 config_path = Path.home() / ".ziya" / "mcp_config.json"
@@ -700,7 +686,6 @@ async def update_shell_config(config: ShellConfig):
                 if "shell" not in mcp_config["mcpServers"]:
                     # Get the base command and script path
                     import sys
-                    from pathlib import Path
                     
                     # Find the shell_server.py script using the same logic as builtin definitions
                     try:
@@ -874,7 +859,6 @@ class WritePolicyUpdate(BaseModel):
     allowed_interpreters: Optional[List[str]] = None
     always_blocked: Optional[List[str]] = None
 
-
 @router.get("/write-policy/{project_id}")
 async def get_project_write_policy(project_id: str):
     """Get effective write policy for a project."""
@@ -891,7 +875,6 @@ async def get_project_write_policy(project_id: str):
     except Exception as e:
         logger.error(f"Error getting write policy: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.post("/write-policy")
 async def update_project_write_policy(request: WritePolicyUpdate):
@@ -925,7 +908,6 @@ async def update_project_write_policy(request: WritePolicyUpdate):
     except Exception as e:
         logger.error(f"Error updating write policy: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.get("/permissions")
 async def get_mcp_permissions():
@@ -988,7 +970,6 @@ async def get_mcp_server_details(server_name: str):
     except Exception as e:
         logger.error(f"Error getting details for server {server_name}: {e}")
         raise HTTPException(status_code=500, detail=f"Error getting server details: {str(e)}")
-
 
 # ============================================================================
 # MCP REGISTRY ROUTES
@@ -1057,12 +1038,10 @@ async def get_registry_providers():
         logger.error(f"Error getting registry providers: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 class ToggleRegistryRequest(BaseModel):
     model_config = {"extra": "allow"}
     provider_id: str
     enabled: bool
-
 
 @router.post("/registry/providers/toggle")
 async def toggle_registry_provider(request: ToggleRegistryRequest):
@@ -1090,7 +1069,6 @@ async def toggle_registry_provider(request: ToggleRegistryRequest):
         logger.error(f"Error toggling registry provider: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 class AddRegistryRequest(BaseModel):
     model_config = {"extra": "allow"}
     name: str
@@ -1099,7 +1077,6 @@ class AddRegistryRequest(BaseModel):
     authToken: Optional[str] = None
     authUsername: Optional[str] = None
     authPassword: Optional[str] = None
-
 
 @router.post("/registry/providers/add")
 async def add_custom_registry(request: AddRegistryRequest):
@@ -1117,7 +1094,6 @@ async def add_custom_registry(request: AddRegistryRequest):
     except Exception as e:
         logger.error(f"Error adding custom registry: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.post("/registry/providers/{provider_id}/refresh")
 async def refresh_registry_provider(provider_id: str):
@@ -1157,7 +1133,6 @@ async def refresh_registry_provider(provider_id: str):
             }
         logger.error(f"Error refreshing registry provider: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.get("/registry/services")
 async def get_registry_services(
@@ -1334,13 +1309,11 @@ async def get_registry_services(
         logger.error(f"Error getting registry services: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 class ToolSearchRequest(BaseModel):
     model_config = {"extra": "allow"}
     query: str
     maxTools: int = 20
     providers: Optional[List[str]] = None
-
 
 @router.post("/registry/tools/search")
 async def search_registry_tools(request: ToolSearchRequest):
@@ -1391,12 +1364,10 @@ async def search_registry_tools(request: ToolSearchRequest):
         logger.error(f"Error searching tools: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 class InstallServiceRequest(BaseModel):
     model_config = {"extra": "allow"}
     service_id: str
     provider_id: Optional[str] = None
-
 
 @router.post("/registry/services/install")
 async def install_registry_service(request: InstallServiceRequest):
@@ -1415,11 +1386,9 @@ async def install_registry_service(request: InstallServiceRequest):
         logger.error(f"Error installing service: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 class UninstallServiceRequest(BaseModel):
     model_config = {"extra": "allow"}
     server_name: str
-
 
 @router.post("/registry/services/uninstall")
 async def uninstall_registry_service(request: UninstallServiceRequest):
@@ -1435,15 +1404,12 @@ async def uninstall_registry_service(request: UninstallServiceRequest):
         logger.error(f"Error uninstalling service: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
-
 # Builtin Tools API endpoints
 class BuiltinToolToggleRequest(BaseModel):
     model_config = {"extra": "allow"}
     """Request model for toggling builtin tools."""
     category: str
     enabled: bool
-
 
 @router.get("/builtin-tools/status")
 async def get_builtin_tools_status():
@@ -1490,7 +1456,6 @@ async def get_builtin_tools_status():
     except Exception as e:
         logger.error(f"Error getting builtin tools status: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.post("/builtin-tools/toggle")
 async def toggle_builtin_tool_category(request: BuiltinToolToggleRequest):
@@ -1639,7 +1604,6 @@ async def get_installed_registry_services():
         logger.error(f"Error getting installed services: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/registry/services/{service_id}/preview")
 async def get_service_preview(service_id: str, provider_id: Optional[str] = None):
     """Get preview of a service without installing it."""
@@ -1692,11 +1656,9 @@ async def get_service_preview(service_id: str, provider_id: Optional[str] = None
         logger.error(f"Error getting service preview: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 class FavoritesRequest(BaseModel):
     model_config = {"extra": "allow"}
     favorites: List[str]
-
 
 @router.post("/registry/favorites")
 async def update_favorites(request: FavoritesRequest):
@@ -1709,7 +1671,6 @@ async def update_favorites(request: FavoritesRequest):
         json.dump({'favorites': request.favorites}, f)
     
     return {'success': True, 'favorites': request.favorites}
-
 
 @router.get("/registry/favorites")
 async def get_favorites():

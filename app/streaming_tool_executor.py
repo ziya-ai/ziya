@@ -14,11 +14,9 @@ from app.utils.conversation_filter import filter_conversation_for_model
 from app.utils.logging_utils import get_mode_aware_logger
 logger = get_mode_aware_logger(__name__)
 
-
 # Global usage tracker for telemetry
 _global_usage_tracker = None
 _usage_tracker_lock = threading.Lock()
-
 
 @dataclass
 class IterationUsage:
@@ -42,7 +40,6 @@ class IterationUsage:
     def cache_efficiency(self) -> str:
         """Human-readable cache efficiency."""
         return f"{self.cache_hit_rate * 100:.1f}% cached"
-
 
 class GlobalUsageTracker:
     """Thread-safe global tracker for token usage across all conversations."""
@@ -84,7 +81,6 @@ class GlobalUsageTracker:
         with self.lock:
             return self.conversation_usages.copy()
 
-
 def get_global_usage_tracker() -> GlobalUsageTracker:
     """Get or create the global usage tracker singleton."""
     global _global_usage_tracker
@@ -92,7 +88,6 @@ def get_global_usage_tracker() -> GlobalUsageTracker:
         if _global_usage_tracker is None:
             _global_usage_tracker = GlobalUsageTracker()
         return _global_usage_tracker
-
 
 def validate_tool_args_against_schema(tool_name: str, args: dict, schema: dict) -> Optional[str]:
     """
@@ -163,7 +158,6 @@ def validate_tool_args_against_schema(tool_name: str, args: dict, schema: dict) 
     error_lines.append("Retry with corrected parameters.")
     
     return "\n".join(error_lines)
-
 
 class StreamingToolExecutor:
     def __init__(self, profile_name: str = 'ziya', region: str = 'us-west-2', model_id: str = None):
@@ -410,7 +404,6 @@ class StreamingToolExecutor:
         # For any tool that operates on a file path, derive from extension
         file_path = args.get('path') or args.get('file_path') or args.get('url') or ''
         if file_path:
-            import os
             _, ext = os.path.splitext(file_path)
             if ext:
                 return self._EXT_TO_LANG.get(ext.lower(), 'text')
@@ -628,7 +621,6 @@ class StreamingToolExecutor:
         
         if not content_to_parse:
             return {}
-            
             
         if isinstance(content_to_parse, list):
             # Handle multi-part content
@@ -848,7 +840,6 @@ class StreamingToolExecutor:
             iteration=iteration,
         )
 
-
     async def _load_and_prepare_tools(self, extra_tools=None):
         """Load MCP tools, convert schemas, deduplicate, and prepare for provider.
         
@@ -906,7 +897,6 @@ class StreamingToolExecutor:
 
         return all_tools, bedrock_tools, builtin_tool_names, internal_tool_names, optional_only_tools
 
-
     def _build_conversation_from_messages(self, messages):
         """Convert input messages (LangChain or dict format) to provider conversation format.
         
@@ -937,7 +927,6 @@ class StreamingToolExecutor:
                 conversation.append({"role": bedrock_role, "content": content})
 
         return conversation, system_content
-
 
     def _should_continue_or_end_stream(self, assistant_text, tools_executed, iteration,
                                         code_block_tracker, continuation_happened,
@@ -998,7 +987,6 @@ class StreamingToolExecutor:
             return 'continue'
         
         return 'end'
-
 
     def _classify_and_handle_error(self, error, error_str, iteration, tool_results,
                                     throttle_state, inter_tool_delay, iteration_usages,

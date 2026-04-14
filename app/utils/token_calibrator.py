@@ -26,7 +26,6 @@ from typing import Dict, List, Optional, Tuple, Any
 
 from app.utils.logging_utils import logger
 
-
 @dataclass
 class CalibrationSample:
     """A single calibration data point from actual Bedrock usage."""
@@ -44,7 +43,6 @@ class CalibrationSample:
         if self.actual_tokens == 0:
             return 4.1  # Fallback
         return self.content_length / self.actual_tokens
-
 
 class TokenCalibrator:
     """
@@ -182,7 +180,6 @@ class TokenCalibrator:
                 with open(temp_file, 'w') as f:
                     json.dump(data, f, indent=2)
                     f.flush()  # Ensure buffered data is written
-                
                 
                 # Atomic rename (prevents partial reads)
                 os.replace(temp_file, self.cache_file)
@@ -711,7 +708,6 @@ class TokenCalibrator:
 
     def get_cached_document_tokens(self, file_path: str) -> Optional[Dict[str, Any]]:
         """Get cached token estimate for a document file."""
-        import os
         if file_path not in self.document_cache:
             return None
         
@@ -743,8 +739,6 @@ class TokenCalibrator:
         text_length: Optional[int] = None
     ):
         """Cache token estimate for a document file with compression ratio tracking."""
-        import os
-        import time
         
         try:
             compression_ratio = file_size / text_length if text_length else None
@@ -846,7 +840,6 @@ class TokenCalibrator:
 # Global singleton
 _calibrator_instance = None
 _calibrator_lock = threading.Lock()
-
 
 def get_token_calibrator() -> TokenCalibrator:
     """Get or create the global token calibrator singleton."""

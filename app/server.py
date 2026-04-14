@@ -102,7 +102,6 @@ _security_stats = {
 }
 _security_stats_lock = threading.Lock()
 
-
 def record_verification_result(tool_name: str, is_valid: bool, error_message: str = None):
     """Record a verification result for monitoring."""
     with _security_stats_lock:
@@ -232,7 +231,8 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
         question=question,
         chat_history=processed_chat_history,
         system_prompt_addition=system_prompt_addition,
-        conv_start_ts=conv_start_ts
+        conv_start_ts=conv_start_ts,
+        conversation_id=conversation_id
     )
 
     logger.debug(f"🎯 PRECISION_SYSTEM: Built {len(messages)} messages with {len(files)} files preserved")
@@ -244,7 +244,6 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
 
     # Convert to LangChain format if needed
     if use_langchain_format:
-        from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
         langchain_messages = []
         for msg in messages:
             if isinstance(msg, dict) and "role" in msg:
@@ -260,7 +259,6 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
         return langchain_messages
 
     return messages
-
 
 # Dictionary to track active streaming tasks
 active_streams = {}
@@ -287,10 +285,6 @@ class PatchRequest(BaseModel):
     diff: str
     file_path: Optional[str] = None
     
-    
-    
-
-
 # Define lifespan context manager before app creation
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -403,7 +397,6 @@ async def lifespan(app: FastAPI):
         except (OSError, RuntimeError, asyncio.TimeoutError) as e:
             logger.warning(f"MCP shutdown failed: {str(e)}")
 
-
 async def _initialize_mcp_background():
     """Initialize MCP in the background without blocking server startup."""
     global _mcp_ready, _folder_ready, _background_tasks_lock
@@ -432,7 +425,6 @@ async def _initialize_mcp_background():
             secure_pool.set_server_configs(mcp_manager.server_configs)
             
             import gc; gc.collect()
-            from app.agents.agent import create_agent_chain, create_agent_executor, model
             agent = create_agent_chain(model.get_model())
             agent_executor = create_agent_executor(agent)
             
@@ -446,13 +438,10 @@ async def _initialize_mcp_background():
         _mcp_ready = True
         _check_and_print_completion_banner()
 
-
-            
     except (OSError, RuntimeError, ImportError) as e:
         logger.warning(f"Background folder cache warming failed: {e}")
         _folder_ready = True  # Mark as complete even on failure
         _check_and_print_completion_banner()
-
 
 async def _monitor_key_rotation():
     """Background task that checks for DEK rotation on a schedule."""
@@ -484,7 +473,6 @@ async def _monitor_key_rotation():
         # Check every hour
         await asyncio.sleep(3600)
 
-
 # Global state for tracking background task completion
 _mcp_ready = True  # Default to true if MCP is disabled
 _folder_ready = False
@@ -506,7 +494,6 @@ def _check_and_print_completion_banner():
             print("\n" + "=" * 80)
             print("✅ INITIALIZATION COMPLETE - All systems ready")
             print("=" * 80 + "\n")
-
 
 app = FastAPI(
     title="Ziya API",
@@ -658,7 +645,6 @@ async def delegate_stream_websocket(websocket: WebSocket, conversation_id: str):
     finally:
         await disconnect(conversation_id, websocket)
 
-
 # PRIORITY ROUTE: /api/chat - MUST BE FIRST TO TAKE PRECEDENCE
 
 @app.post('/api/chat')
@@ -687,7 +673,6 @@ async def chat_endpoint(request: Request):
         logger.debug(f"🔍 CHAT_ENDPOINT: question='{question[:50]}...', messages={len(messages)}, files={len(files)}")
         
         # Check current model to determine routing
-        from app.agents.models import ModelManager
         current_model = ModelManager.get_model_alias()
         logger.debug(f"🔍 CHAT_ENDPOINT: current_model={current_model}")
         is_bedrock_claude = current_model and ('claude' in current_model.lower() or 'sonnet' in current_model.lower() or 'opus' in current_model.lower() or 'haiku' in current_model.lower())
@@ -742,7 +727,6 @@ async def chat_endpoint(request: Request):
                     images = None
                     if len(msg) >= 3:
                         try:
-                            import json
                             images = json.loads(msg[2])
                         except (json.JSONDecodeError, TypeError):
                             logger.warning(f"Failed to parse images from message: {msg[2][:100] if len(msg[2]) > 100 else msg[2]}")
@@ -872,7 +856,6 @@ async def connection_state_middleware(request: Request, call_next):
             request.state.disconnected = True
         raise
 
-
 # Import and include MCP routes
 from app.routes.mcp_routes import router as mcp_router
 app.include_router(mcp_router)
@@ -931,7 +914,6 @@ app.include_router(page_router)
 from app.routes.misc_routes import router as misc_router
 app.include_router(misc_router)
 
-
 # Initialize Ziya home directory
 @app.on_event("startup")
 async def init_ziya_home():
@@ -944,7 +926,6 @@ initialize_ast_if_enabled()
 
 # Dictionary to track active WebSocket connections
 active_websockets = set()
-hunk_status_updates = []
 
 def get_templates_dir():
     """Get the templates directory."""
@@ -987,7 +968,6 @@ async def cleanup_stream(conversation_id: str):
         else:
             logger.debug(f"Stream {conversation_id} already cleaned up")
 
-
 async def _keepalive_wrapper(async_gen, interval: float = 15.0):
     """Wrap an async generator with periodic SSE keepalive comments.
 
@@ -1000,7 +980,6 @@ async def _keepalive_wrapper(async_gen, interval: float = 15.0):
     silently ignore, so we periodically inject ': keepalive\\n\\n' to
     keep the TCP connection alive.
     """
-    import asyncio
 
     sentinel = object()
 
@@ -1045,7 +1024,6 @@ async def _keepalive_wrapper(async_gen, interval: float = 15.0):
             break
 
         yield result
-
 
 async def stream_chunks(body):
     """Stream chunks from the agent executor."""
@@ -1100,7 +1078,6 @@ async def stream_chunks(body):
             # Check for common connectivity-related errors early
             try:
                 # Quick connectivity check before expensive operations
-                from app.agents.models import ModelManager
                 state = ModelManager.get_state()
                 if state.get('last_auth_error') and 'i/o timeout' in str(state.get('last_auth_error')):
                     yield f"data: {json.dumps({'error': 'Network connectivity issue detected. Please check your internet connection and try again.', 'error_type': 'connectivity'})}\n\n"
@@ -1113,7 +1090,6 @@ async def stream_chunks(body):
             
             try:
                 from app.streaming_tool_executor import StreamingToolExecutor
-                from app.agents.models import ModelManager
                 
                 chunk_count = 0
                 last_diff_start_line = -1
@@ -1338,7 +1314,6 @@ async def stream_chunks(body):
                         logger.info(f"📝 Requesting corrected diff for {summary['failed']} file(s)")
                         
                         # Add feedback to messages and restart generation
-                        from langchain_core.messages import HumanMessage
                         
                         # Simple feedback - model will acknowledge naturally
                         enhanced_feedback = validation_feedback
@@ -1440,7 +1415,6 @@ async def stream_chunks(body):
                 logger.debug(f"🚀 DIRECT_STREAMING: {ve} (pre-stream) - falling back to LangChain")
             except Exception as e:  # Intentionally broad: STE can raise API/auth/config errors
                 # Falls back to LangChain path — must catch everything to avoid aborting
-                import traceback
                 error_str = str(e)
                 error_details = traceback.format_exc()
                 logger.error(f"🚀 DIRECT_STREAMING: Error in StreamingToolExecutor: {e}")
@@ -1504,7 +1478,6 @@ async def stream_chunks(body):
         model_info = get_model_info_from_config()
         
         # Get MCP context, including endpoint and model_id for extensions
-        from app.agents.models import ModelManager
         mcp_context = {
             "model_id": ModelManager.get_model_id(),
             "endpoint": model_info["endpoint"]
@@ -1604,7 +1577,6 @@ async def stream_chunks(body):
         pass  # DirectStreamingAgent disabled
         
         # Check if model should use LangChain path instead of StreamingToolExecutor
-        from app.agents.models import ModelManager
         try:
             model_id_result = ModelManager.get_model_id()
             if isinstance(model_id_result, dict):
@@ -1638,14 +1610,12 @@ async def stream_chunks(body):
                 # Use StreamingToolExecutor path for OpenAI models to get same context
                 try:
                     from app.agents.direct_streaming import StreamingToolExecutor
-                    from app.agents.models import ModelManager
 
                     # Build messages using same method as other Bedrock models
                     executor = StreamingToolExecutor()
                     messages = executor.build_messages(question, chat_history, files, conversation_id)
 
                     # Convert to LangChain format for OpenAI wrapper
-                    from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
                     langchain_messages = []
                     for msg in messages:
                         if msg["role"] == "system":
@@ -1787,7 +1757,6 @@ async def stream_chunks(body):
         except (ImportError, KeyError, AttributeError, RuntimeError) as e:
             logger.error(f"🚀 DIRECT_STREAMING: Error checking model ID: {e}")
             # For Nova models, still try to use StreamingToolExecutor even if model ID check fails
-            from app.agents.models import ModelManager
             try:
                 current_model = ModelManager.get_model_alias()
                 if current_model and any(nova_model in current_model.lower() for nova_model in ['nova-micro', 'nova-lite', 'nova-pro', 'nova-premier']):
@@ -1804,7 +1773,6 @@ async def stream_chunks(body):
     
     # Check if this is a Nova model before falling back to LangChain
     try:
-        from app.agents.models import ModelManager
         current_model = ModelManager.get_model_alias()
         if current_model and any(nova_model in current_model.lower() for nova_model in ['nova-micro', 'nova-lite', 'nova-pro', 'nova-premier']):
             logger.debug(f"🚀 DIRECT_STREAMING: Nova model ({current_model}) should not use LangChain path - redirecting to StreamingToolExecutor")
@@ -1876,7 +1844,6 @@ async def stream_chunks(body):
     data_sent = False
 
     # Prepare messages for the model
-    from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
     # Initialize variables that are always needed
     conversation_id = body.get("conversation_id")
@@ -1884,7 +1851,6 @@ async def stream_chunks(body):
         config_data = body.get("config", {})
         conversation_id = config_data.get("conversation_id")
     if not conversation_id:
-        import uuid
         conversation_id = f"stream_{uuid.uuid4().hex[:8]}"
 
     # Check if messages were already built for OpenAI models in direct streaming section
@@ -1916,7 +1882,6 @@ async def stream_chunks(body):
                             chat_history.append({'type': 'ai', 'content': content})
             logger.debug(f"🔍 FRONTEND_MESSAGES: Converted {len(messages)} frontend messages to {len(chat_history)} chat history items")
             logger.debug(f"🔍 FRONTEND_MESSAGES: Chat history: {chat_history}")
-        
         
         config_data = body.get("config", {})
         files = config_data.get("files", [])
@@ -1980,7 +1945,6 @@ async def stream_chunks(body):
         
         # Only generate a stream ID as last resort
         if not conversation_id:
-            import uuid
             conversation_id = f"stream_{uuid.uuid4().hex[:8]}"
             logger.warning(f"No conversation_id provided, generated: {conversation_id}")
         else:
@@ -2010,13 +1974,10 @@ async def stream_chunks(body):
         if not isinstance(files, list):
             files = []
         
-        
         # Get the model instance using the proper method
-        from app.agents.agent import model
         model_instance = model.get_model()
         
         # Check if we have a Google function calling agent available
-        from app.agents.models import ModelManager
         agent_chain_cache = ModelManager._state.get('agent_chain_cache', {})
         agent_chain = None
         for cache_key, cached_agent in agent_chain_cache.items():
@@ -2292,7 +2253,6 @@ async def stream_chunks(body):
                         overflow_checked = True
                     # Check for reasoning content in OpenAI format (ops structure)
                     if content_str and '<reasoning>' in content_str and '</reasoning>' in content_str:
-                        import re
                         reasoning_matches = re.findall(r'<reasoning>(.*?)</reasoning>', content_str, re.DOTALL)
                         for reasoning in reasoning_matches:
                             ops = [{"op": "add", "path": "/reasoning_content/-", "value": reasoning}]
@@ -2386,7 +2346,6 @@ async def stream_chunks(body):
                         try:
                             error_data = json.loads(content_str.strip().replace('[DONE]', ''))
                             # Don't stream this as content, instead raise an exception to be handled by middleware
-                            from app.utils.custom_exceptions import ValidationError
                             raise ValidationError(error_data.get('detail', 'Validation error occurred'))
                         except (json.JSONDecodeError, ValueError):
                             logger.warning("Failed to parse error JSON, treating as regular content")
@@ -2789,7 +2748,6 @@ async def stream_chunks(body):
         if conversation_id: # Ensure cleanup if conversation_id was set
             await cleanup_stream(conversation_id)
 
-
 # Folder/cache management — delegated to app.services.folder_service
 from app.services.folder_service import (
     _folder_cache, _cache_lock, _explicit_external_paths,
@@ -2808,10 +2766,8 @@ from app.services.folder_service import (
 # Re-export model route functions for backward compatibility
 from app.routes.model_routes import get_config, get_available_models, get_current_model, get_model_capabilities
 
-
 # Import scan progress from directory_util
 # from app.utils.directory_util import get_scan_progress, cancel_scan, _scan_progress
-
 
 if __name__ == "__main__":
     import argparse
@@ -2872,8 +2828,4 @@ if __name__ == "__main__":
         print("\n✅ Ziya stopped.")
     except Exception:  # Intentionally broad: top-level server exit handler
         logger.exception("Server exited with error")
-
-
-    
-
 

@@ -22,11 +22,9 @@ from app.utils.logging_utils import logger
 
 router = APIRouter(tags=["models"])
 
-
 class SetModelRequest(BaseModel):
     model_config = {"extra": "allow"}
     model_id: str
-
 
 class ModelSettingsRequest(BaseModel):
     model_config = {"extra": "allow"}
@@ -36,7 +34,6 @@ class ModelSettingsRequest(BaseModel):
     thinking_mode: bool = Field(default=False)
     thinking_level: Optional[str] = Field(default=None, pattern='^(low|medium|high)$')
     thinking_effort: Optional[str] = Field(default=None, pattern='^(low|medium|high|max)$')
-
 
 @router.get('/api/available-models')
 def get_available_models(endpoint: Optional[str] = None):
@@ -98,7 +95,6 @@ def get_available_models(endpoint: Optional[str] = None):
         logger.error(f"Error getting available models: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get('/api/config')
 def get_config():
     """Get application configuration for frontend."""
@@ -138,7 +134,6 @@ def get_config():
     
     get_config._cache = config
     return config
-
 
 @router.get('/api/current-model')
 def get_current_model():
@@ -217,13 +212,11 @@ def get_current_model():
         logger.error(f"Error getting current model: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get current model: {str(e)}")
 
-
 @router.get('/api/model-id')
 def get_model_id():
     """Get the model ID in a simplified format for the frontend."""
     # Always return the model alias (name) rather than the full model ID
     return {'model_id': ModelManager.get_model_alias()}
-
 
 @router.post('/api/set-model')
 async def set_model(request: SetModelRequest):
@@ -412,7 +405,6 @@ async def set_model(request: SetModelRequest):
             from app.agents.agent import model, create_agent_chain, create_agent_executor
             model.reset()
 
-
             # Recreate agent chain and executor with new model
             try:
                 # Check if this is a Google model with native function calling
@@ -451,7 +443,6 @@ async def set_model(request: SetModelRequest):
             invalidate_config_cache()
 
             # Force garbage collection after successful model change
-            import gc
             gc.collect()
 
             # Return success response
@@ -486,12 +477,9 @@ async def set_model(request: SetModelRequest):
         logger.error(f"Error in set_model: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to change model: {str(e)}")
 
-
 @router.get('/api/model-capabilities')
 def get_model_capabilities(model: str = None):
     """Get the capabilities of the current model."""
-
-    import json
 
     endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
     # If model parameter is provided, get capabilities for that model
@@ -501,7 +489,6 @@ def get_model_capabilities(model: str = None):
     if model:
         try:
             # Try to parse as JSON if it's a dictionary
-            import json
             try:
                 model_dict = json.loads(model)
                 if isinstance(model_dict, dict):
@@ -618,7 +605,6 @@ def get_model_capabilities(model: str = None):
         absolute_max_input_tokens = base_token_limit
         logger.debug(f"absolute_max_input_tokens from base_model_config: {absolute_max_input_tokens}") # DEBUG
 
- 
         # Add token limits to capabilities
         capabilities["max_output_tokens"] = effective_max_output_tokens # Current value
         capabilities["max_input_tokens"] = effective_max_input_tokens # Current value
@@ -644,7 +630,6 @@ def get_model_capabilities(model: str = None):
     except Exception as e:
         logger.error(f"Error getting model capabilities: {str(e)}")
         return {"error": str(e)}
-
 
 @router.post('/api/model-settings')
 async def update_model_settings(settings: ModelSettingsRequest):
@@ -714,7 +699,6 @@ async def update_model_settings(settings: ModelSettingsRequest):
         filtered_kwargs = ModelManager.filter_model_kwargs(model_kwargs, model_config)
         logger.info(f"Filtered model kwargs: {filtered_kwargs}")
 
-
         # Update the model's kwargs directly
         if hasattr(model, 'model'):
             # For wrapped models (e.g., RetryingChatBedrock)
@@ -769,8 +753,6 @@ async def update_model_settings(settings: ModelSettingsRequest):
             status_code=500,
             detail=f"Error updating model settings: {str(e)}"
         )
-
-
 
 def invalidate_config_cache():
     """Invalidate the config cache so next /api/config poll picks up changes."""

@@ -23,7 +23,6 @@ class DirectGoogleModel:
         self.thinking_level = thinking_level  # "low", "medium", "high", or None
         self.mcp_manager = get_mcp_manager()
         
-        
         logger.info(f"DirectGoogleModel initialized: model={model_name}, temp={temperature}, max_output_tokens={max_output_tokens}")
         if thinking_level:
             logger.info(f"Gemini 3 thinking_level: {thinking_level}")
@@ -58,9 +57,7 @@ class DirectGoogleModel:
         if not tools:
             return None
         
-        # New SDK uses a different tool format
-        from google.genai import types
-        
+        # New SDK uses a different tool format        
         function_declarations = []
         for tool in tools:
             try:
@@ -227,7 +224,6 @@ class DirectGoogleModel:
         """
         Streams responses from the Google Gemini model, handling native tool calls correctly.
         """
-        from google.genai import types
         
         tools = kwargs.get("tools", [])
         google_tool = self._convert_langchain_tools_to_google(tools)
@@ -430,7 +426,6 @@ class DirectGoogleModel:
         Synchronous invocation.
         Wraps ainvoke in asyncio.run for compatibility.
         """
-        import asyncio
         return asyncio.run(self.ainvoke(messages, **kwargs))
 
     def bind(self, **kwargs):

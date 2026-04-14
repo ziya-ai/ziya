@@ -244,7 +244,6 @@ class PipelineResult:
                 already_applied_hunks.append(hunk_id)
         
         # Debug logging to understand what's happening
-        from app.utils.logging_utils import logger
         logger.info("=== DEBUG: PipelineResult.to_dict() ===")
         logger.info(f"Current status: {self.status}")
         logger.info(f"Succeeded hunks: {self.succeeded_hunks}")

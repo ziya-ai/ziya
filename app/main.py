@@ -30,7 +30,6 @@ from app.config.environment import setup_environment as _shared_setup_environmen
 # Re-export for backward compatibility (used by tests and possibly plugins)
 from app.config.environment import find_endpoint_for_model, validate_model_and_endpoint  # noqa: F401
 
-
 def get_available_models(endpoint=None):
     """Get list of available models for an endpoint or all endpoints."""
     if endpoint:
@@ -43,7 +42,6 @@ def get_available_models(endpoint=None):
     for endpoint_models in config.MODEL_CONFIGS.values():
         all_models.extend(endpoint_models.keys())
     return all_models
-
 
 def parse_arguments():
     from app.config.common_args import add_common_arguments
@@ -81,7 +79,6 @@ def parse_arguments():
     parser.add_argument("--ephemeral", action="store_true",
                        help="Don't persist conversations or data to database beyond current session")
     return parser.parse_args()
-
 
 def setup_environment(args):
     """Server entry-point environment setup.
@@ -121,7 +118,6 @@ def check_version_and_upgrade():
     else:
         logger.info(f"Ziya version {current_version} is up to date.")
 
-
 def is_package_installed_with_pip(package_name: str) -> bool:
     try:
         subprocess.check_call([sys.executable, '-m', 'pip', 'show', package_name], stdout=subprocess.DEVNULL,
@@ -130,7 +126,6 @@ def is_package_installed_with_pip(package_name: str) -> bool:
     except subprocess.CalledProcessError:
         return False
 
-
 def is_package_installed_with_pipx(package_name: str) -> bool:
     try:
         subprocess.check_call(['pipx', 'list'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -138,7 +133,6 @@ def is_package_installed_with_pipx(package_name: str) -> bool:
         return package_name in result.stdout.decode()
     except subprocess.CalledProcessError:
         return False
-
 
 def update_package(current_version: str, latest_version: Optional[str]) -> None:
     try:
@@ -163,17 +157,14 @@ def update_package(current_version: str, latest_version: Optional[str]) -> None:
     except Exception as e:
         logger.info(f"Unexpected error upgrading ziya: {e}")
 
-
 def print_version():
     """Print version information quickly."""
-    import os
     current_version = get_current_version()
     
     # Fast edition detection - use edition set by wrapper or default to community
     edition = os.environ.get('ZIYA_EDITION', 'Community Edition')
     
     print(f"Ziya version {current_version} - {edition}")
-
 
 def print_info(args):
     """Display system information and configuration for debugging."""
@@ -364,7 +355,6 @@ def print_info(args):
     
     print("=" * 60 + "\n")
 
-
 def print_models():
     """Pretty-print all supported endpoints and their available models."""
     print("\nSupported Endpoints and Models:")
@@ -403,7 +393,6 @@ def print_models():
         
         # Add a blank line between endpoints
         print()
-
 
 def start_server(args):
     # Dynamically import these only when needed
@@ -528,7 +517,6 @@ def check_auth(args):
                 return False
         elif args.endpoint == "google":
             # Check Google API key
-            import os
             google_api_key = os.environ.get("GOOGLE_API_KEY")
             if google_api_key:
                 print("\n✅ Google API key is configured.")
@@ -546,7 +534,6 @@ def check_auth(args):
     except Exception as e:
         print(f"\n⚠️ ERROR: Authentication check failed: {str(e)}")
         return False
-
 
 def main():
     # Check if running as CLI subcommand (ziya chat, ziya ask, etc.)
@@ -643,7 +630,6 @@ def main():
         logger.warning("Continuing with current version...")
     
     start_server(args)
-
 
 if __name__ == "__main__":
     main()
