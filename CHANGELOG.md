@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 ### Fixed
+- **File state change tracking**: Fixed critical bug where the file state manager used a shared fabricated conversation ID (`precision_/streaming_tools`) instead of the real conversation UUID from the frontend. This caused applied diffs to not appear as changes in the next model context submission. The real `conversation_id` now flows through `build_messages_for_streaming` → `PrecisionPromptSystem.build_messages` → `extract_codebase` → `FileStateManager`.
+- **Project root resolution**: Fixed `extract_codebase` falling back to an empty string for `base_dir` when `ZIYA_USER_CODEBASE_DIR` was unset, causing file refresh to fail. Now uses `get_project_root()` with a proper fallback chain.
 ### Changed
 
 ## [0.6.4.4] - 2026-04-13
