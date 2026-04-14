@@ -15,15 +15,12 @@ import shlex
 from typing import Dict, Any, Optional
 
 # Import centralized shell configuration
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Go up two levels: shell_server.py -> mcp_servers/ -> app/ -> site-packages (or project root)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from app.config.shell_config import get_default_shell_config
 from app.config.write_policy import WritePolicyManager
 from app.mcp_servers.write_policy import ShellWriteChecker
 
-
-# Global timeout tracking
-_consecutive_timeouts = {}
-_last_command_times = {}
 
 class ShellServer:
     """MCP server that provides shell command execution tools."""
