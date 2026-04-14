@@ -54,7 +54,6 @@ ProgressCallback = Callable[
 
 DEFAULT_MAX_CONCURRENCY = 8
 
-
 class DelegateManager:
     """
     Manages the lifecycle of parallel delegate threads within a TaskPlan.
@@ -499,15 +498,10 @@ class DelegateManager:
             })
             logger.info(f"✅ TaskPlan complete: {plan.name} ({plan_id[:8]})")
 
-            # Auto-cleanup scratch files for fully successful plans
-            if plan.status == "completed":
-                try:
-                    from app.agents.swarm_scratch import get_scratch_manager
-                    scratch = get_scratch_manager(str(self.project_dir.parent))
-                    scratch.cleanup_task(plan_id)
-                    logger.info(f"🗑️ Auto-cleaned scratch for completed plan {plan_id[:8]}")
-                except (ImportError, OSError, RuntimeError) as exc:
-                    logger.warning(f"🗑️ Scratch auto-cleanup failed: {exc}")
+            # Free in-memory state (plans, statuses, crystals, tasks, etc.)
+            # and scratch files for completed plans
+            self.cleanup_plan(plan_id)
+            logger.info(f"🗑️ Auto-cleaned in-memory state and scratch for plan {plan_id[:8]}")
 
             # Periodic GC: check for stale scratch dirs every 30 minutes
             now = time.time()
@@ -1077,7 +1071,6 @@ class DelegateManager:
         self, spec: DelegateSpec, messages: List[Dict[str, Any]], plan_id: str
     ):
         """Yield chunks from StreamingToolExecutor for this delegate."""
-        import os
         from app.streaming_tool_executor import StreamingToolExecutor
         from app.agents.models import ModelManager
         from app.server import build_messages_for_streaming
@@ -1152,7 +1145,6 @@ class DelegateManager:
     def _get_context_storage(self, project_root: Optional[str] = None):
         from app.storage.contexts import ContextStorage
         from app.services.token_service import TokenService
-        import os
         storage = ContextStorage(self.project_dir, TokenService())
         pp = project_root or os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
         if pp:
@@ -1631,7 +1623,6 @@ class DelegateManager:
     ) -> None:
         """Write a message (human or assistant) to a delegate's chat file."""
         from app.models.chat import Message
-        import uuid
         cs = self._get_chat_storage()
         msg = Message(
             id=str(uuid.uuid4()),
@@ -1900,7 +1891,6 @@ class DelegateManager:
             # Create scoped Context for the delegate's files
             ctx_id = None
             if spec.files:
-                from app.models.context import ContextCreate
                 # Reuse existing delegate context with same name to avoid duplicates
                 ctx_storage = self._get_context_storage(spec.project_root)
                 ctx_name = f"[D] {spec.name}"
@@ -1915,7 +1905,6 @@ class DelegateManager:
                 ctx_id = ctx.id
 
             # Create delegate Chat in the plan's folder
-            from app.models.chat import ChatCreate
             d_chat = chat_storage.create(ChatCreate(
                 groupId=group_id,
                 title=f"{spec.emoji} {spec.name}",
@@ -2050,13 +2039,11 @@ class DelegateManager:
         for k in stale_keys:
             del self._checkpoints[k]
 
-
 # ---------------------------------------------------------------------------
 # Module-level singleton
 # ---------------------------------------------------------------------------
 
 _instances: Dict[str, DelegateManager] = {}
-
 
 def get_delegate_manager(
     project_id: str = "",
@@ -2074,7 +2061,6 @@ def get_delegate_manager(
         mgr.rehydrate()
         _instances[project_id] = mgr
     return _instances[project_id]
-
 
 def reset_delegate_manager() -> None:
     """Reset the singleton (for testing)."""

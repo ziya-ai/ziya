@@ -40,7 +40,6 @@ _last_execution_time = {}
 # Tool enhancement cache
 _tool_enhancements: Optional[Dict[str, Any]] = None
 
-
 def _load_tool_enhancements() -> Dict[str, Any]:
     """Load tool enhancements from config files.
     
@@ -78,7 +77,6 @@ def _load_tool_enhancements() -> Dict[str, Any]:
     
     _tool_enhancements = merged
     return merged
-
 
 class TriggerType(Enum):
     """Types of triggers that can be processed."""
@@ -237,7 +235,6 @@ class DirectMCPTool(BaseTool):
     
     def _run(self, **kwargs) -> str:
         """Run the tool synchronously."""
-        import asyncio
         import traceback
         
         logger.debug(f"🔧 DirectMCPTool._run called for {self.tool_instance.name}")
@@ -439,6 +436,13 @@ class SecureMCPTool(BaseTool):
             _execution_counter += 1
             _last_execution_time[tool_key] = time.time()
             
+            # Prune stale rate-limit entries to prevent unbounded growth
+            if len(_last_execution_time) > 500:
+                cutoff = time.time() - 60
+                stale = [k for k, v in _last_execution_time.items() if v < cutoff]
+                for k in stale:
+                    del _last_execution_time[k]
+
             # Execute the tool with timeout
             start_time = time.time()
             try:
@@ -776,12 +780,10 @@ async def _reset_counter_async():
     _execution_counter = 0
     return True
 
-
 # Global cache for secure MCP tools
 _secure_tool_cache: Optional[List[BaseTool]] = None
 _tool_cache_timestamp: float = 0
 TOOL_CACHE_TTL = 300  # 5 minutes
-
 
 def invalidate_secure_tools_cache():
     """Invalidate the secure tools cache to force rebuild on next access."""
@@ -789,7 +791,6 @@ def invalidate_secure_tools_cache():
     _secure_tool_cache = None
     _tool_cache_timestamp = 0
     logger.info("MCP tools cache invalidated - will rebuild with current settings on next request")
-
 
 def create_secure_mcp_tools() -> List[BaseTool]:
     """
@@ -922,7 +923,6 @@ def create_secure_mcp_tools() -> List[BaseTool]:
     _tool_cache_timestamp = time.time()
     
     return secure_tools
-
 
 __all__ = [
     'create_secure_mcp_tools',

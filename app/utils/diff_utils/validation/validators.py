@@ -59,7 +59,6 @@ def is_new_file_creation(diff_lines: List[str]) -> bool:
     logger.debug("No new file indicators found")
     return False
 
-
 def is_file_deletion(diff_lines: List[str]) -> bool:
     """
     Determine if a diff represents a file deletion.
@@ -92,10 +91,9 @@ def is_file_deletion(diff_lines: List[str]) -> bool:
 
     return False
 
-
 from functools import lru_cache
 
-@lru_cache(maxsize=8192)
+@lru_cache(maxsize=1024)
 def normalize_line_for_comparison(line: str) -> str:
     """
     Normalize a line for comparison, handling whitespace, invisible characters, and escape sequences.
@@ -110,11 +108,9 @@ def normalize_line_for_comparison(line: str) -> str:
         return ""
     
     # First normalize Unicode characters to handle invisible characters
-    from ..core.unicode_handling import normalize_unicode
     normalized = normalize_unicode(line)
     
     # Then normalize escape sequences - preserve literals for code comparison
-    from ..core.escape_handling import normalize_escape_sequences
     normalized = normalize_escape_sequences(normalized, preserve_literals=True)
     
     # Strip all whitespace for fuzzy matching
@@ -134,11 +130,9 @@ def normalize_line_for_comparison(line: str) -> str:
         return ""
     
     # First normalize Unicode characters to handle invisible characters
-    from ..core.unicode_handling import normalize_unicode
     normalized = normalize_unicode(line)
     
     # Then normalize escape sequences - preserve literals for code comparison
-    from ..core.escape_handling import normalize_escape_sequences
     normalized = normalize_escape_sequences(normalized, preserve_literals=True)
     
     # Finally normalize whitespace - only trim leading/trailing
@@ -195,7 +189,6 @@ def detect_malformed_state(file_lines: List[str], hunk: Dict[str, Any]) -> bool:
     removed_lines, added_lines = extract_diff_changes(hunk)
     
     # Debug logging
-    import logging
     logger = logging.getLogger(__name__)
     logger.debug(f"Malformed check - Removed: {len(removed_lines)} lines, Added: {len(added_lines)} lines")
     if removed_lines:
@@ -315,7 +308,6 @@ def detect_malformed_state(file_lines: List[str], hunk: Dict[str, Any]) -> bool:
     logger.debug("Returning False - no malformed patterns detected")
     return False
 
-
 def detect_partial_overlap(file_lines: List[str], hunk: Dict[str, Any]) -> bool:
     """
     Detect if a pure addition hunk has partial overlap with existing file content.
@@ -339,7 +331,6 @@ def detect_partial_overlap(file_lines: List[str], hunk: Dict[str, Any]) -> bool:
     if removed_lines or not added_lines:
         return False
     
-    import logging
     logger = logging.getLogger(__name__)
     
     # Get context lines from the hunk
@@ -423,7 +414,6 @@ def detect_partial_overlap(file_lines: List[str], hunk: Dict[str, Any]) -> bool:
     
     return False
 
-
 def _is_indentation_only_change(removed_lines: List[str], added_lines: List[str]) -> bool:
     """
     Check if the change is purely an indentation change (same content, different leading whitespace).
@@ -452,7 +442,6 @@ def _is_indentation_only_change(removed_lines: List[str], added_lines: List[str]
     
     return False
 
-
 def _check_indentation_change_applied(file_lines: List[str], removed_lines: List[str], added_lines: List[str], pos: int) -> bool:
     """
     For indentation-only changes, check if the change has been applied using exact comparison.
@@ -478,7 +467,6 @@ def _check_indentation_change_applied(file_lines: List[str], removed_lines: List
     
     logger.debug(f"Indentation change already applied at pos {pos} (file has new indentation)")
     return True
-
 
 def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: int, ignore_whitespace: bool = True) -> bool:
     """
@@ -626,7 +614,6 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
     # Check if the expected result (new_lines) is already present at this position
     return _check_expected_content_match(file_lines, new_lines, pos, ignore_whitespace)
 
-
 def _is_valid_hunk_header(hunk: Dict[str, Any]) -> bool:
     """Check if the hunk header is valid."""
     if 'header' in hunk and '@@ -' in hunk['header']:
@@ -635,7 +622,6 @@ def _is_valid_hunk_header(hunk: Dict[str, Any]) -> bool:
             logger.warning(f"Malformed hunk header: {hunk['header']}")
             return False
     return True
-
 
 def _check_pure_addition_already_applied(file_lines: List[str], added_lines: List[str], hunk: Dict[str, Any], pos: int) -> bool:
     """Check if a pure addition (no removals) is already applied with context validation."""
@@ -698,7 +684,6 @@ def _check_pure_addition_already_applied(file_lines: List[str], added_lines: Lis
     logger.debug("Pure addition not found with matching context")
     return False
 
-
 def _check_duplicate_declarations(file_lines: List[str], added_lines: List[str]) -> bool:
     """Check if added lines contain declarations that already exist in the file."""
 
@@ -714,14 +699,12 @@ def _check_duplicate_declarations(file_lines: List[str], added_lines: List[str])
                 return True
     return False
 
-
 def _is_import_statement(line: str) -> bool:
     """Check if a line is an import statement."""
     normalized = line.strip()
     return (normalized.startswith('import ') or 
             normalized.startswith('from ') or
             normalized.startswith('const ') and ' = require(' in normalized)
-
 
 def _is_import_already_present(file_lines: List[str], import_line: str) -> bool:
     """Check if an import statement is already present in the file."""
@@ -774,7 +757,6 @@ def _is_import_already_present(file_lines: List[str], import_line: str) -> bool:
     logger.debug("No matching import found")
     return False
 
-
 def _is_other_declaration_duplicate(file_lines: List[str], added_line: str) -> bool:
     """Check if non-import declarations are duplicates."""
     declaration_patterns = [
@@ -800,7 +782,6 @@ def _is_other_declaration_duplicate(file_lines: List[str], added_line: str) -> b
                     return True
     return False
 
-
 def _validate_removal_content(file_lines: List[str], removed_lines: List[str], pos: int) -> bool:
     """Validate that the content to be removed matches what's in the file."""
     if pos + len(removed_lines) > len(file_lines):
@@ -817,7 +798,6 @@ def _validate_removal_content(file_lines: List[str], removed_lines: List[str], p
         return False
     
     return True
-
 
 def _check_expected_content_match(file_lines: List[str], new_lines: List[str], pos: int, ignore_whitespace: bool) -> bool:
     """Check if the expected content after applying the hunk is already present."""
@@ -846,14 +826,12 @@ def _check_expected_content_match(file_lines: List[str], new_lines: List[str], p
     logger.debug(f"Content match at position {pos}: {matches}")
     return matches
 
-
 def _lines_match_exactly(file_lines: List[str], expected_lines: List[str]) -> bool:
     """Check if lines match exactly."""
     for file_line, expected_line in zip(file_lines, expected_lines):
         if normalize_line_for_comparison(file_line) != normalize_line_for_comparison(expected_line):
             return False
     return True
-
 
 def _lines_match_with_normalization(file_lines: List[str], expected_lines: List[str], ignore_whitespace: bool) -> bool:
     """Check if lines match with various normalizations applied."""
@@ -870,7 +848,6 @@ def _lines_match_with_normalization(file_lines: List[str], expected_lines: List[
         return True
     
     return False
-
 
 def _check_whitespace_only_changes(file_lines: List[str], expected_lines: List[str], ignore_whitespace: bool) -> bool:
     """Check if the differences are only in whitespace."""
@@ -901,7 +878,6 @@ def _check_whitespace_only_changes(file_lines: List[str], expected_lines: List[s
     logger.debug("Whitespace-only changes already applied")
     return True
 
-
 def _check_invisible_unicode_match(file_lines: List[str], expected_lines: List[str]) -> bool:
     """Check if lines match when invisible Unicode characters are normalized."""
     if not any('\u200B' in line or '\u200C' in line or '\u200D' in line or '\uFEFF' in line for line in expected_lines):
@@ -917,7 +893,6 @@ def _check_invisible_unicode_match(file_lines: List[str], expected_lines: List[s
     logger.debug("Content with invisible Unicode characters already applied (normalized)")
     return True
 
-
 def _check_escape_sequence_match(file_lines: List[str], expected_lines: List[str]) -> bool:
     """Check if lines match when escape sequences are normalized."""
     if not any('\\n' in line or '\\r' in line or '\\t' in line or '\\\\' in line for line in expected_lines):
@@ -932,7 +907,6 @@ def _check_escape_sequence_match(file_lines: List[str], expected_lines: List[str
     
     logger.debug("Content with escape sequences already applied (normalized)")
     return True
-
 
 def _lines_match_fuzzy(file_lines: List[str], expected_lines: List[str]) -> bool:
     """Check if lines match using fuzzy matching."""

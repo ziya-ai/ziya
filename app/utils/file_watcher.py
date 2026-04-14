@@ -28,6 +28,8 @@ class FileChangeHandler(FileSystemEventHandler):
         self.atomic_write_sequences: Dict[str, Dict[str, float]] = {}
         # Cache invalidation debouncing
         self.last_cache_invalidation = 0
+        # Periodic cleanup tracking
+        self._last_cleanup = time.time()
         
         # Initialize gitignore patterns lazily — scanning for .gitignore files
         # across a large home directory is expensive and blocks startup.
@@ -97,6 +99,7 @@ class FileChangeHandler(FileSystemEventHandler):
         current_time = time.time()
         event_key = f"{rel_path}:{event_type}"
         
+        self._prune_stale_tracking(current_time)
         # Handle atomic write sequences - suppress delete/create events if modify follows quickly
         if event_type in ['deleted', 'created']:
             if rel_path not in self.atomic_write_sequences:
@@ -138,6 +141,23 @@ class FileChangeHandler(FileSystemEventHandler):
         self.recent_events[event_key] = current_time
         return True
         
+    def _prune_stale_tracking(self, now: float) -> None:
+        """Prune stale entries from tracking dicts every 30 seconds."""
+        if now - self._last_cleanup < 30:
+            return
+        self._last_cleanup = now
+        cutoff = now - 5.0  # Events older than 5s are irrelevant for debouncing
+        self.recent_events = {
+            k: v for k, v in self.recent_events.items() if v > cutoff
+        }
+        self.recently_modified = {
+            k: v for k, v in self.recently_modified.items() if v > cutoff
+        }
+        self.atomic_write_sequences = {
+            k: v for k, v in self.atomic_write_sequences.items()
+            if any(t > cutoff for t in v.values())
+        }
+
     def on_modified(self, event: FileSystemEvent):
         """Handle file modification events."""
         if event.is_directory:
