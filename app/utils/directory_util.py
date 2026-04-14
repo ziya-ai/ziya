@@ -277,6 +277,7 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
     _gitignore_visited = set()
     _gitignore_deadline = time.time() + 10.0  # 10 second hard cap
     _GITIGNORE_MAX_ENTRIES_PER_DIR = 10000
+    _deadline_warned = False
 
     def get_patterns_recursive(path: str) -> List[Tuple[str, str]]:
         """Recursively find gitignore patterns with optimizations for speed."""
@@ -289,7 +290,10 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
         
         # Wall-clock bail-out
         if time.time() > _gitignore_deadline:
-            logger.warning(f"Gitignore scan hit 10s deadline, skipping deeper directories")
+            nonlocal _deadline_warned
+            if not _deadline_warned:
+                _deadline_warned = True
+                logger.warning("Gitignore scan hit 10s deadline, skipping deeper directories")
             return patterns
         
         gitignore_path = os.path.join(path, ".gitignore")
@@ -404,7 +408,6 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
     
     return ignored_patterns
 
-
 def get_complete_file_list(user_codebase_dir: str, ignored_patterns: List[str], included_relative_dirs: List[str]) -> Dict[str, Dict]:
     should_ignore_fn = parse_gitignore_patterns(ignored_patterns)
     file_dict: Dict[str, Dict] = {}
@@ -449,13 +452,11 @@ FILE_TYPE_MULTIPLIERS = {
     'default': 1.0
 }
  
- 
 def get_file_type_multiplier(file_path: str) -> float:
     """Get the token density multiplier for a given file type."""
     _, ext = os.path.splitext(file_path)
     ext = ext.lower()
     return FILE_TYPE_MULTIPLIERS.get(ext, FILE_TYPE_MULTIPLIERS['default'])
-
 
 def detect_large_directory_and_warn(directory: str) -> None:
     """Detect if we're scanning a potentially large directory and warn the user."""
@@ -486,7 +487,6 @@ def detect_large_directory_and_warn(directory: str) -> None:
         print("   Or use: ziya --directory <project-path>", file=sys.stderr)
         print("   Or use: --include-only <path> to scan specific directories", file=sys.stderr)
         print("="*70 + "\n", file=sys.stderr)
-
 
 def estimate_directory_count(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int = 3) -> int:
     """Quick estimate of total directories to scan (only go 3 levels deep for estimate)."""
@@ -545,7 +545,6 @@ def estimate_directory_count(directory: str, ignored_patterns: List[Tuple[str, s
         scaled = count * (max_depth // 2) if max_depth > 2 else count
         return min(scaled, count * 10)  # Cap at 10x to avoid ridiculous estimates
     return 0
-
 
 def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int) -> Dict[str, Any]:
     """
@@ -928,7 +927,6 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     logger.debug(f"Returning folder structure with {len(result)} top-level entries")
     return result
 
-
 def estimate_tokens_calibrated(file_path: str, content: Optional[str] = None) -> int:
     """
     Estimate tokens using model-aware calibrated data.
@@ -958,7 +956,6 @@ def estimate_tokens_fast(file_path: str) -> int:
     try:
         from app.utils.token_calibrator import get_token_calibrator
         # Check for tool-backed files first (before any file I/O)
-        from app.utils.document_extractor import is_tool_backed_file
         if is_tool_backed_file(file_path):
             return -1  # Special marker for tool-backed files
         
@@ -1196,7 +1193,7 @@ def get_accurate_token_count(file_path: str) -> int:
         # Handle document files (PDF, DOCX, XLSX, PPTX) by extracting text
         _, ext = os.path.splitext(file_path.lower())
         if ext in {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'}:
-            from app.utils.document_extractor import extract_document_text, is_document_file
+            from app.utils.document_extractor import extract_document_text
             
             if not is_document_file(file_path):
                 return 0
