@@ -20,7 +20,8 @@ class PrecisionPromptSystem:
                       question: str,
                       chat_history: List[Dict[str, Any]] = None,
                       system_prompt_addition: str = "",
-                      conv_start_ts: float = None) -> List:
+                      conv_start_ts: float = None,
+                      conversation_id: str = None) -> List:
         """
         Drop-in replacement for the original build_messages function.
         
@@ -36,14 +37,10 @@ class PrecisionPromptSystem:
             from app.agents.prompts_manager import get_extended_prompt
             from app.agents.agent import extract_codebase
             
-            # CRITICAL: Use the actual conversation_id, not a temporary hash-based one
-            # This ensures file state tracking works correctly across the conversation
-            conversation_id = None
-            if chat_history and len(chat_history) > 0:
-                # Try to extract conversation_id from context
-                conversation_id = model_info.get("conversation_id")
-            
-            # Fall back to a stable ID based on the request path if no conversation_id
+            # Use the real conversation_id passed from the caller so that
+            # file state tracking (change markers, refresh from disk) operates
+            # under the same ID the rest of the system uses.  Fabricated
+            # precision_ IDs are invisible to the file watcher and get GC'd.
             if not conversation_id:
                 conversation_id = f"precision_{request_path}" if request_path else "precision_default"
             
