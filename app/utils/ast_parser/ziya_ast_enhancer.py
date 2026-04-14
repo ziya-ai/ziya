@@ -19,7 +19,6 @@ from .python_parser import PythonASTParser
 from .typescript_parser import TypeScriptASTParser
 from .html_css_parser import HTMLCSSParser
 
-
 class ZiyaASTEnhancer:
     """Enhancer for Ziya using AST capabilities."""
     
@@ -81,7 +80,10 @@ class ZiyaASTEnhancer:
     def _process_directory(self, codebase_dir: str, should_ignore_fn, max_depth: int, progress_callback=None) -> None:
         """
         Process all files in the directory and build ASTs.
-        
+
+        Uses a single os.walk pass with a file count cap and time deadline
+        to avoid runaway scanning in large directory trees.
+
         Args:
             codebase_dir: Path to the codebase root
             should_ignore_fn: Function to check if a path should be ignored
@@ -97,127 +99,91 @@ class ZiyaASTEnhancer:
 
         files_processed = 0
         files_total = 0
+        eligible_files = []
         start_time = time.time()
-        
-        # First, count total eligible files for progress reporting
+        walk_deadline = start_time + 30.0
+        _FILE_CAP = 10_000
+        capped = False
+
+        # Single walk: collect eligible file paths with cap and deadline
         for root, dirs, files in os.walk(codebase_dir):
-            # Check depth
+            if time.time() > walk_deadline:
+                logger.warning("AST: directory walk hit 30s deadline, indexing files found so far")
+                break
+
             rel_path = os.path.relpath(root, codebase_dir)
-            if rel_path == '.':
-                depth = 0
-            else:
-                depth = rel_path.count(os.sep) + 1
-            
+            depth = 0 if rel_path == '.' else rel_path.count(os.sep) + 1
             if depth >= max_depth:
-                dirs.clear()  # Don't go deeper
+                dirs.clear()
                 continue
-            
-            # Filter directories based on exclude patterns
+
             dirs[:] = [d for d in dirs
                        if d not in self._SKIP_DIRS
                        and not should_ignore_fn(os.path.join(root, d))]
-            
-            # Count eligible files
+
             for file in files:
                 file_path = os.path.join(root, file)
-                rel_file_path = os.path.relpath(file_path, codebase_dir)
-                
-                # Skip excluded files
                 if should_ignore_fn(file_path):
                     continue
-                
-                # Check if we have a parser for this file
-                parser_class = self.parser_registry.get_parser(file_path)
-                if parser_class:
-                    files_total += 1
-        
-        # Report initial file count via callback
+                if self.parser_registry.get_parser(file_path):
+                    eligible_files.append(file_path)
+                    if len(eligible_files) >= _FILE_CAP:
+                        capped = True
+                        break
+            if capped:
+                logger.warning(f"AST: hit {_FILE_CAP} file cap, indexing partial set")
+                break
+
+        files_total = len(eligible_files)
         if progress_callback:
             progress_callback(0, files_total, 0)
-        
         logger.debug(f"AST: found {files_total} parseable files")
-        
-        for root, dirs, files in os.walk(codebase_dir):
-            # Check depth
-            rel_path = os.path.relpath(root, codebase_dir)
-            if rel_path == '.':
-                depth = 0
-            else:
-                depth = rel_path.count(os.sep) + 1
-            
-            if depth >= max_depth:
-                dirs.clear()  # Don't go deeper
-                continue
-            
-            # Filter directories based on exclude patterns
-            dirs[:] = [d for d in dirs
-                       if d not in self._SKIP_DIRS
-                       and not should_ignore_fn(os.path.join(root, d))]
-            
-            # Process files
-            for file in files:
-                file_path = os.path.join(root, file)
-                rel_file_path = os.path.relpath(file_path, codebase_dir)
-                
-                # Skip excluded files
-                if should_ignore_fn(file_path):
-                    continue
-                
-                # Check if we have a parser for this file
-                parser_class = self.parser_registry.get_parser(file_path)
-                
-                if not parser_class:
-                    continue
-                
-                # Skip TypeScript files if in node_modules to avoid dependency issues
-                if 'node_modules' in rel_file_path and parser_class.__name__ == 'TypeScriptASTParser':
-                    continue
-                
-                try:
-                    cached = cached_files.get(file_path)
-                    if cached and is_fresh(cached, file_path):
-                        # Restore from cache — skip parsing entirely
-                        from .unified_ast import UnifiedAST
-                        unified_ast = UnifiedAST.from_dict(cached["ast"])
-                        cache_hits += 1
-                    else:
-                        # Parse from source
-                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                            file_content = f.read()
-                        parser = parser_class()
-                        native_ast = parser.parse(file_path, file_content)
-                        unified_ast = parser.to_unified_ast(native_ast, file_path)
-                    
-                    # Cache the AST
-                    self.ast_cache[file_path] = unified_ast
-                    
-                    # Record for disk cache
-                    try:
-                        st = os.stat(file_path)
-                        cache_entries[file_path] = {
-                            "mtime": st.st_mtime,
-                            "size": st.st_size,
-                            "ast": unified_ast.to_dict(),
-                        }
-                    except OSError:
-                        pass
 
-                    # Create query engine
-                    self.query_engines[file_path] = ASTQueryEngine(unified_ast)
-                    
-                    # Merge into project AST
-                    self.project_ast.merge(unified_ast)
-                    
-                    # Update progress
-                    files_processed += 1
-                    if files_processed % 10 == 0 or files_processed == files_total:
-                        if progress_callback:
-                            progress_percentage = int((files_processed / files_total) * 100) if files_total > 0 else 0
-                            progress_callback(files_processed, files_total, progress_percentage)
-                        logger.debug(f"AST indexing: {files_processed}/{files_total} files ({time.time() - start_time:.1f}s)")
-                    
-                except Exception as e:
-                    logger.debug(f"AST: skipped {rel_file_path}: {e}")
+        # Process collected files
+        for file_path in eligible_files:
+            rel_file_path = os.path.relpath(file_path, codebase_dir)
+            parser_class = self.parser_registry.get_parser(file_path)
+            if not parser_class:
+                continue
+            if 'node_modules' in rel_file_path and parser_class.__name__ == 'TypeScriptASTParser':
+                continue
+
+            try:
+                cached = cached_files.get(file_path)
+                if cached and is_fresh(cached, file_path):
+                    unified_ast = UnifiedAST.from_dict(cached["ast"])
+                    cache_hits += 1
+                else:
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        file_content = f.read()
+                    parser = parser_class()
+                    native_ast = parser.parse(file_path, file_content)
+                    unified_ast = parser.to_unified_ast(native_ast, file_path)
+
+                self.ast_cache[file_path] = unified_ast
+
+                try:
+                    st = os.stat(file_path)
+                    cache_entries[file_path] = {
+                        "mtime": st.st_mtime,
+                        "size": st.st_size,
+                        "ast": unified_ast.to_dict(),
+                    }
+                except OSError:
+                    pass
+
+                self.query_engines[file_path] = ASTQueryEngine(unified_ast)
+                self.project_ast.merge(unified_ast)
+
+                files_processed += 1
+                if files_processed % 10 == 0 or files_processed == files_total:
+                    if progress_callback:
+                        progress_percentage = int((files_processed / files_total) * 100) if files_total > 0 else 0
+                        progress_callback(files_processed, files_total, progress_percentage)
+                    logger.debug(f"AST indexing: {files_processed}/{files_total} files ({time.time() - start_time:.1f}s)")
+
+            except Exception as e:
+                logger.debug(f"AST: skipped {rel_file_path}: {e}")
         
         # Create project-wide query engine
         if self.project_ast:
@@ -235,6 +201,8 @@ class ZiyaASTEnhancer:
     def process_codebase(self, codebase_dir: str, ignored_patterns: Optional[List[str]] = None, max_depth: int = 15) -> Dict[str, Any]:
         """
         Process the entire codebase and build AST representations.
+
+        Detects hostile directories (home, filesystem root) and bails early.
         
         Args:
             codebase_dir: Path to the codebase directory
@@ -248,6 +216,27 @@ class ZiyaASTEnhancer:
         from app.utils.gitignore_parser import parse_gitignore_patterns
         from app.utils.directory_util import get_ignored_patterns
         
+        # Bail out for directories that are too broad to index usefully
+        abs_dir = os.path.abspath(codebase_dir)
+        home_dir = os.path.expanduser("~")
+        hostile_dirs = {
+            os.path.abspath(home_dir),
+            "/",
+            os.path.abspath("/tmp"),
+            os.path.abspath("/var"),
+        }
+        if abs_dir in hostile_dirs:
+            logger.warning(
+                f"AST indexing skipped: '{abs_dir}' is too broad to index. "
+                f"Open a specific project directory for full AST support."
+            )
+            return {
+                "files_processed": 0,
+                "ast_context": "# AST Analysis\n\nProject directory is too broad for AST indexing. Open a specific project folder.",
+                "token_count": 10,
+                "file_list": [],
+            }
+
         if ignored_patterns is None:
             ignored_patterns = []
         
