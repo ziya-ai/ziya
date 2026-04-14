@@ -16,10 +16,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **File state conversation ID regression tests**: Comprehensive test suite
+  (`tests/test_file_state_conversation_id.py`) verifying that real conversation
+  UUIDs propagate through the precision prompt system and that fabricated
+  `precision_` IDs do not cause cross-contamination between conversations.
+
 ### Fixed
-- **File state change tracking**: Fixed critical bug where the file state manager used a shared fabricated conversation ID (`precision_/streaming_tools`) instead of the real conversation UUID from the frontend. This caused applied diffs to not appear as changes in the next model context submission. The real `conversation_id` now flows through `build_messages_for_streaming` → `PrecisionPromptSystem.build_messages` → `extract_codebase` → `FileStateManager`.
-- **Project root resolution**: Fixed `extract_codebase` falling back to an empty string for `base_dir` when `ZIYA_USER_CODEBASE_DIR` was unset, causing file refresh to fail. Now uses `get_project_root()` with a proper fallback chain.
+- **File state change tracking**: Fixed critical bug where the file state
+  manager used a shared fabricated conversation ID
+  (`precision_/streaming_tools`) instead of the real conversation UUID from
+  the frontend. This caused applied diffs to not appear as changes in the
+  next model context submission. The real `conversation_id` now flows through
+  `build_messages_for_streaming` → `PrecisionPromptSystem.build_messages` →
+  `extract_codebase` → `FileStateManager`.
+- **Project root resolution**: Fixed `extract_codebase` falling back to an
+  empty string for `base_dir` when `ZIYA_USER_CODEBASE_DIR` was unset,
+  causing file refresh to fail silently. Now uses `get_project_root()` with
+  a proper fallback chain.
+- **Memory leaks from unbounded caches and tracking dicts**: Added periodic
+  pruning and size caps to prevent long-running sessions from accumulating
+  stale entries in `ConnectionPool.last_call_time` (cap 200),
+  `SecureMCPTool._last_execution_time` (cap 500),
+  `SwarmScratchManager` instances (cap 20),
+  AST enhancer instances (cap 3 with LRU eviction),
+  `FileChangeHandler` debounce tracking (30s prune cycle),
+  and `normalize_line_for_comparison` LRU cache (reduced from 8192 to 1024).
+  Replaced `@lru_cache` on `cached_token_count` with a bounded dict to avoid
+  pinning full content strings in memory.
+- **Delegate manager memory leak**: Completed plans now call `cleanup_plan()`
+  to free in-memory state (plans, statuses, crystals, tasks) in addition to
+  scratch files, preventing unbounded growth in long-running sessions.
+- **AST indexer resilience**: Large or hostile directories (home directory,
+  filesystem root, `/tmp`, `/var`) are now detected and skipped early.
+  Directory walking uses a single `os.walk` pass with a 10,000-file cap
+  and 30-second deadline to prevent runaway scanning.
+- **Stream end flush ordering**: Content optimizer now flushes before the
+  block-opening buffer in `handle_message_stop`, preserving chronological
+  ordering of streamed content at end of turn. Previously, content held by
+  the optimizer could appear after block-buffer content.
+- **Page route formatter handling**: `_collect_formatter_scripts()` now
+  handles dict-format formatter entries (with `src`/`url`/`path` keys) in
+  addition to plain strings, preventing `TypeError` when plugins return
+  mixed formatter lists.
+- **Jinja2 TemplateResponse deprecation**: Updated all `TemplateResponse`
+  calls in page routes to pass `request` as the first positional argument,
+  fixing Starlette deprecation warnings.
+- **Version detection robustness**: `get_current_version()` now uses a
+  three-stage fallback: `importlib.metadata` → `ZIYA_VERSION` env var →
+  `pkg_resources`, returning `"unknown"` as last resort instead of crashing.
+- **Shell server import path**: Fixed `sys.path` in `shell_server.py` to
+  traverse the correct number of parent directories, resolving import
+  failures in certain installation layouts.
+- **Gitignore scanner log spam**: Deadline warning now logs only once per
+  scan instead of on every directory visit after the 10-second cutoff.
+- **Python AST parser warnings**: Suppressed `DeprecationWarning` from
+  `ast.parse()` to keep logs clean.
+
 ### Changed
+- **Redundant imports removed across 25+ files**: Eliminated duplicate
+  in-function imports of `os`, `re`, `json`, `gc`, `asyncio`, `uuid`,
+  `boto3`, `subprocess`, `time`, `sys`, `traceback`, and various
+  `app.` modules that were already imported at module level.
+- **Dead code removed**: Removed unused `hunk_status_updates` global,
+  unused `_consecutive_timeouts`/`_last_command_times` dicts from shell
+  server, unused `clean_sentinels` import, unused `TOOL_SENTINEL_CLOSE`
+  import, and unused `ResourceExhausted` import.
+- **Formatting normalized**: Removed excessive blank lines across the
+  codebase for consistent style.
 
 ## [0.6.4.4] - 2026-04-13
 
