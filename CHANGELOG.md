@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+### Fixed
+### Changed
+
+## [0.6.4.5] - 2026-04-14
+
+### Added
 - **File state conversation ID regression tests**: Comprehensive test suite
   (`tests/test_file_state_conversation_id.py`) verifying that real conversation
   UUIDs propagate through the precision prompt system and that fabricated
