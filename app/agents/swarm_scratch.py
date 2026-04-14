@@ -178,5 +178,8 @@ def get_scratch_manager(project_root: str) -> SwarmScratchManager:
     """Get or create a SwarmScratchManager for the given project."""
     key = os.path.abspath(project_root)
     if key not in _instances:
+        # Cap instance count — evict all if too many project roots accumulated
+        if len(_instances) > 20:
+            _instances.clear()
         _instances[key] = SwarmScratchManager(key)
     return _instances[key]

@@ -16,7 +16,6 @@ from app.mcp.dynamic_tools import get_dynamic_loader
 from app.mcp.tool_guard import scan_tool_description, detect_shadowing, fingerprint_tools, check_fingerprint_change
 import time
 
-
 # Default timeout (seconds) for individual MCP tool executions when no
 # tool-specific timeout is provided.  Override via ZIYA_TOOL_TIMEOUT.
 DEFAULT_TOOL_TIMEOUT = 120
@@ -53,6 +52,7 @@ class MCPManager:
         self.workspace_scoped_clients: Dict[str, Dict[str, MCPClient]] = {}
         self._workspace_instance_last_used: Dict[str, Dict[str, float]] = {}
         self._workspace_instance_timeout = 300  # 5 minutes
+        self._last_workspace_cleanup = 0.0
         self.config_search_paths: List[str] = []
         self.builtin_server_definitions = self._get_builtin_server_definitions()
         self.is_initialized = False
@@ -1528,7 +1528,6 @@ class MCPManager:
 _mcp_manager: Optional[MCPManager] = None
 def get_mcp_manager():
     """Get the global MCP manager instance."""
-    import os
     
     # Check if MCP is enabled before creating manager
     if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):

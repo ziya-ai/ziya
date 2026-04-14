@@ -60,6 +60,14 @@ class ConnectionPool:
         # Update last call time
         self.last_call_time[tool_key] = time.time()
         
+        # Prune stale entries to prevent unbounded growth
+        if len(self.last_call_time) > 200:
+            now = time.time()
+            self.last_call_time = {
+                k: v for k, v in self.last_call_time.items()
+                if now - v < 60
+            }
+        
         # Import MCP manager
         from app.mcp.manager import get_mcp_manager
         mcp_manager = get_mcp_manager()
