@@ -25,8 +25,25 @@ def update_package() -> None:
 
 
 def get_current_version() -> str:
-    from importlib.metadata import version
-    return str(version('ziya'))
+    """Get current Ziya version with multiple fallback strategies."""
+    # Try importlib.metadata first (works for pip-installed packages)
+    try:
+        from importlib.metadata import version as meta_version
+        return str(meta_version('ziya'))
+    except Exception:
+        pass
+
+    # Try environment variable (set by wrappers like toolbox)
+    env_version = os.environ.get('ZIYA_VERSION', '')
+    if env_version:
+        return env_version
+
+    # Last resort: try pkg_resources or return unknown
+    try:
+        import pkg_resources
+        return str(pkg_resources.get_distribution('ziya').version)
+    except Exception:
+        return 'unknown'
 
 
 def get_build_info() -> dict:
