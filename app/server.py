@@ -1075,6 +1075,10 @@ async def stream_chunks(body):
         project_root = body.get("config", {}).get("project_root") or body.get("project_root")
         
         if question:
+            # Log the user's question at INFO level for operational visibility
+            if question.strip():
+                logger.info(f"👤 USER QUERY: {question}")
+
             # Check for common connectivity-related errors early
             try:
                 # Quick connectivity check before expensive operations
