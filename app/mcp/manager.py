@@ -770,13 +770,13 @@ class MCPManager:
         """Invalidate the tools cache to force refresh on next get_all_tools call."""
         self._tools_cache = None
         self._tools_cache_timestamp = 0
-        logger.info("MCP_MANAGER: Tools cache invalidated")
+        logger.debug("MCP_MANAGER: Tools cache invalidated")
         # Also invalidate the secure tools cache in enhanced_tools.py
         # so create_secure_mcp_tools() doesn't return stale tools
         try:
             from app.mcp.enhanced_tools import invalidate_secure_tools_cache
             invalidate_secure_tools_cache()
-            logger.info("MCP_MANAGER: Secure tools cache also invalidated")
+            logger.debug("MCP_MANAGER: Secure tools cache also invalidated")
         except ImportError:
             pass
     def get_all_prompts(self) -> List[MCPPrompt]:
