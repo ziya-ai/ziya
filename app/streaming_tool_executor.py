@@ -629,15 +629,15 @@ class StreamingToolExecutor:
         # Parse file sections from system message
         # Format: "File: path/to/file.py\n[content]\n\n"
         if 'File: ' in content_to_parse:
-            logger.info(f"📊 EXTRACT: Found 'File: ' in content, starting parse...")
-            logger.info(f"📊 EXTRACT: Content preview (first 500 chars): {content_to_parse[:500]}")
+            logger.debug(f"📊 EXTRACT: Found 'File: ' in content, starting parse...")
+            logger.debug(f"📊 EXTRACT: Content preview (first 500 chars): {content_to_parse[:500]}")
             
             # Find where the first file content starts
             first_file_pos = content_to_parse.find('File: ')
             first_file_pos = max(0, first_file_pos)  # Ensure it's always defined
             if first_file_pos > 0:
-                logger.info(f"📊 EXTRACT: First file starts at position {first_file_pos}")
-                logger.info(f"📊 EXTRACT: First file section preview: {content_to_parse[first_file_pos:first_file_pos+200]}")
+                logger.debug(f"📊 EXTRACT: First file starts at position {first_file_pos}")
+                logger.debug(f"📊 EXTRACT: First file section preview: {content_to_parse[first_file_pos:first_file_pos+200]}")
             
             lines = content_to_parse.split('\n')
             current_file = None
@@ -651,7 +651,7 @@ class StreamingToolExecutor:
                 
                 if line.startswith('File: '):
                     files_found += 1
-                    logger.info(f"📊 EXTRACT: Found file marker #{files_found}: '{line}'")
+                    logger.debug(f"📊 EXTRACT: Found file marker #{files_found}: '{line}'")
                     
                     # Save previous file
                     if current_file and current_content:
@@ -697,11 +697,11 @@ class StreamingToolExecutor:
                 file_contents[current_file] = '\n'.join(current_content)
                 logger.debug(f"📊 EXTRACT: Saved final file '{current_file}' with {len(current_content)} lines")
                 
-                logger.info(f"📊 EXTRACT: Processed {lines_processed:,} lines, found {files_found} files, extracted {len(file_contents)} files, skipped {lines_skipped_as_line_numbers:,} line number annotations")
+                logger.debug(f"📊 EXTRACT: Processed {lines_processed:,} lines, found {files_found} files, extracted {len(file_contents)} files, skipped {lines_skipped_as_line_numbers:,} line number annotations")
                 
                 # Log total extracted content
                 total_extracted_chars = sum(len(content) for content in file_contents.values())
-                logger.info(f"📊 EXTRACT: Total extracted content: {total_extracted_chars:,} chars from {len(file_contents)} files")
+                logger.debug(f"📊 EXTRACT: Total extracted content: {total_extracted_chars:,} chars from {len(file_contents)} files")
         
         logger.debug(f"📊 CALIBRATION: Extracted {len(file_contents)} files from messages")
         for path in list(file_contents.keys())[:3]:
@@ -1149,11 +1149,11 @@ class StreamingToolExecutor:
 
         # --- Logging ---
         if iteration == 0:
-            logger.info("🔍 METRICS_DEBUG: Usage from provider:")
-            logger.info(f"   input_tokens: {stream_event.input_tokens}")
-            logger.info(f"   output_tokens: {stream_event.output_tokens}")
-            logger.info(f"   cache_read_tokens: {stream_event.cache_read_tokens}")
-            logger.info(f"   cache_write_tokens: {stream_event.cache_write_tokens}")
+            logger.debug("Usage from provider:")
+            logger.debug(f"   input_tokens: {stream_event.input_tokens}")
+            logger.debug(f"   output_tokens: {stream_event.output_tokens}")
+            logger.debug(f"   cache_read_tokens: {stream_event.cache_read_tokens}")
+            logger.debug(f"   cache_write_tokens: {stream_event.cache_write_tokens}")
         elif cached > 0:
             throttle_state['cache_working'] = True
             throttle_state['last_cache_efficiency'] = iteration_usage.cache_hit_rate
@@ -1422,7 +1422,7 @@ class StreamingToolExecutor:
                                     import json as _json
                                     await ws.send_json({
                                         'type': 'feedback_status',
-                                        'status': 'delivered',
+                                        'status': 'queued',
                                         'feedback_id': data.get('feedback_id', ''),
                                         'message': msg[:80],
                                     })
@@ -1472,7 +1472,7 @@ class StreamingToolExecutor:
                 del chunk_sizes[:len(chunk_sizes) - 100]
             
             if stream_metrics['events_sent'] % 100 == 0:
-                logger.info(f"📊 Stream metrics: {stream_metrics['events_sent']} events, "
+                logger.debug(f"📊 Stream metrics: {stream_metrics['events_sent']} events, "
                            f"{stream_metrics['bytes_sent']} bytes, "
                            f"avg={stream_metrics['bytes_sent']/stream_metrics['events_sent']:.2f}")
             return event_data
@@ -1908,6 +1908,10 @@ class StreamingToolExecutor:
 
                 # Track event count for debugging
                 event_count = 0
+                
+                # Periodic feedback check state — check every 50 events
+                # or every 2 seconds during text streaming
+                _last_feedback_check_time = time.time()
 
                 # Stream via provider — yields normalized StreamEvent objects
                 from app.providers.base import (
@@ -1918,6 +1922,32 @@ class StreamingToolExecutor:
                     conversation, system_content, bedrock_tools, provider_config
                 ):
                     event_count += 1
+
+                    # --- Periodic feedback check during streaming ---
+                    # Without this, feedback sent while the model is
+                    # streaming text sits in _pending_feedback until
+                    # message_stop, which can be minutes later.
+                    _now = time.time()
+                    if (event_count % 50 == 0 or _now - _last_feedback_check_time > 2.0):
+                        _last_feedback_check_time = _now
+                        await asyncio.sleep(0)  # let monitor deposit
+                        for _mid_stream_fb in _drain_pending_feedback():
+                            if _mid_stream_fb['type'] == 'interrupt':
+                                yield track_yield({'type': 'text', 'content': '\n\n**User requested stop.**\n\n'})
+                                yield track_yield({'type': 'stream_end'})
+                                if _feedback_monitor_task:
+                                    _feedback_monitor_task.cancel()
+                                return
+                            _fb_msg = _mid_stream_fb.get('message', '')
+                            if any(w in _fb_msg.lower() for w in ['stop', 'halt', 'abort', 'cancel', 'quit']):
+                                yield track_yield({'type': 'text', 'content': f"\n\n**User feedback:** {_fb_msg}\n**Stopping as requested.**\n\n"})
+                                yield track_yield({'type': 'stream_end'})
+                                if _feedback_monitor_task:
+                                    _feedback_monitor_task.cancel()
+                                return
+                            # Non-stop feedback: flag it for injection after this stream completes
+                            _pending_feedback.append(_mid_stream_fb)
+                            logger.info(f"🔄 MID_STREAM_FEEDBACK: Captured feedback during streaming, will inject after message_stop: {_fb_msg[:60]}")
 
                     # --- Usage tracking ---
                     if isinstance(stream_event, UsageEvent):
@@ -2688,7 +2718,7 @@ Please retry the tool call with valid JSON. Ensure:
                     # monitor was mid-await when we yielded above), wait briefly
                     # and try once more before committing to a break decision.
                     if not pending_feedback_before_end:
-                        await asyncio.sleep(0.05)
+                        await asyncio.sleep(0.3)
                         pending_feedback_before_end = [
                             fb.get('message', '') for fb in _drain_pending_feedback()
                             if fb['type'] == 'feedback'
@@ -2718,6 +2748,10 @@ Please retry the tool call with valid JSON. Ensure:
                             'type': 'text',
                             'content': f"\n\n**📝 Feedback received:** {combined_feedback}\n\n",
                             'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
+                        })
+                        yield track_yield({
+                            'type': 'feedback_delivered',
+                            'message': combined_feedback[:80],
                         })
                         
                         # Continue to next iteration so model can respond
