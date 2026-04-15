@@ -132,11 +132,14 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     const wsHandler = (event: MessageEvent) => {
       try {
         const data = JSON.parse(event.data);
-        if (data.type === 'feedback_status' && data.status === 'delivered') {
-          console.log('📝 FEEDBACK: WebSocket ack received:', data.message);
-          // Upgrade from queued → delivered (monitor captured it)
-          setFeedbackStatus('delivered');
-          setTimeout(() => setFeedbackStatus('idle'), 4000);
+        if (data.type === 'feedback_status') {
+          console.log('📝 FEEDBACK: WebSocket ack received:', data.status, data.message);
+          if (data.status === 'queued') {
+            // Monitor picked it up from the queue — awaiting model injection
+            setFeedbackStatus('queued');
+          }
+          // 'delivered' is ONLY set by the SSE feedbackDelivered event,
+          // which fires when feedback is actually in the conversation.
         }
       } catch { /* ignore non-JSON */ }
     };
