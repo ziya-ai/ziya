@@ -790,7 +790,7 @@ def invalidate_secure_tools_cache():
     global _secure_tool_cache, _tool_cache_timestamp
     _secure_tool_cache = None
     _tool_cache_timestamp = 0
-    logger.info("MCP tools cache invalidated - will rebuild with current settings on next request")
+    logger.debug("MCP tools cache invalidated - will rebuild with current settings on next request")
 
 def create_secure_mcp_tools() -> List[BaseTool]:
     """

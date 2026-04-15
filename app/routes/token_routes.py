@@ -92,7 +92,7 @@ async def get_accurate_token_counts(request: AccurateTokenCountRequest) -> Dict[
 
         from app.context import get_project_root
         user_codebase_dir = get_project_root()
-        logger.info(f"Accurate token count requested for {len(request.file_paths)} files")
+        logger.debug(f"Accurate token count requested for {len(request.file_paths)} files")
         if not user_codebase_dir:
             raise ValueError("ZIYA_USER_CODEBASE_DIR not set")
         

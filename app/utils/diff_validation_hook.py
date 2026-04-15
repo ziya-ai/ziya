@@ -140,8 +140,8 @@ class DiffValidationHook:
         diff_number = len(self.validated_diffs)
         logger.info(f"🔍 Validating diff #{diff_number} for {file_path}")
         
-        logger.info(f"🔍 VALIDATION_HOOK: Diff content length: {len(diff_content)}")
-        logger.info(f"🔍 VALIDATION_HOOK: First 200 chars: {diff_content[:200]}")
+        logger.debug(f"🔍 VALIDATION_HOOK: Diff content length: {len(diff_content)}")
+        logger.debug(f"🔍 VALIDATION_HOOK: First 200 chars: {diff_content[:200]}")
         
         # In CLI mode, suppress verbose validation warnings
         is_cli_mode = os.environ.get('ZIYA_MODE') == 'chat'
