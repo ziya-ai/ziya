@@ -456,51 +456,25 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
             pipeline.result.status = "success"
         pipeline.complete()
     
-    # Add detailed debug logging about hunk statuses
-    # Only log detailed summary if there were failures
-    if pipeline.result.failed_hunks:
-        logger.info("=== PIPELINE COMPLETION SUMMARY ===")
-        logger.info(f"File: {file_path}")
-        logger.info(f"Total hunks: {len(pipeline.result.hunks)}")
-        logger.info(f"Succeeded hunks: {pipeline.result.succeeded_hunks}")
-        logger.info(f"Failed hunks: {pipeline.result.failed_hunks}")
-        logger.info(f"Already applied hunks: {pipeline.result.already_applied_hunks}")
-        
-        # Log detailed status for failed hunks only
-        logger.info("=== FAILED HUNK DETAILS ===")
-        for hunk_id, tracker in pipeline.result.hunks.items():
-            if tracker.status == HunkStatus.FAILED:
-                logger.info(f"Hunk #{hunk_id}: Stage={tracker.current_stage.value}")
-                if tracker.error_details:
-                    logger.info(f"  Error: {tracker.error_details}")
-    else:
-        logger.debug(f"Pipeline complete: {len(pipeline.result.succeeded_hunks)} succeeded, {len(pipeline.result.already_applied_hunks)} already applied")
+    # Compact per-hunk summary (DEBUG) + one-line result (DEBUG)
+    for hunk_id, tracker in pipeline.result.hunks.items():
+        stage = tracker.current_stage.value
+        status = tracker.status.value
+        extra = ""
+        if tracker.confidence > 0:
+            extra += f" conf={tracker.confidence:.2f}"
+        if tracker.status == HunkStatus.FAILED and tracker.error_details:
+            err_msg = str(tracker.error_details.get('error', ''))[:80]
+            extra += f" err={err_msg}"
+        logger.debug(f"  hunk #{hunk_id}: {status} @ {stage}{extra}")
     
-    # Get the final result dictionary directly from the PipelineResult object
-    # This dictionary now includes the correctly determined status and message
+    n_ok = len(pipeline.result.succeeded_hunks)
+    n_fail = len(pipeline.result.failed_hunks)
+    n_skip = len(pipeline.result.already_applied_hunks)
+    logger.debug(f"📋 Diff result: {n_ok} applied, {n_fail} failed, {n_skip} already applied — {os.path.basename(file_path)}")
+    
     final_result_dict = pipeline.result.to_dict()
 
-    # Log the final result being returned
-    logger.info(f"Final result status: {final_result_dict.get('status')}")
-    logger.info(f"Final result message: {final_result_dict.get('message')}")
-    
-    # Add safe JSON serialization
-    try:
-        details_json = json.dumps(final_result_dict.get('details', {}), indent=2)
-        logger.info(f"Final result details: {details_json}")
-    except TypeError as e:
-        logger.error(f"Error serializing result details: {e}")
-        # Create a simplified version that's guaranteed to be serializable
-        simplified_details = {
-            "succeeded": len(final_result_dict.get('succeeded', [])),
-            "failed": len(final_result_dict.get('failed', [])),
-            "already_applied": len(final_result_dict.get('already_applied', [])),
-            "changes_written": final_result_dict.get('changes_written', False),
-            "request_id": final_result_dict.get('request_id', ''),
-            "error": str(final_result_dict.get('error', ''))
-        }
-        logger.info(f"Simplified result details: {json.dumps(simplified_details, indent=2)}")
-    
     # Clean up any .rej files from workspace root
     cleanup_workspace_artifacts()
         
