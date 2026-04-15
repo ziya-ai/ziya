@@ -97,41 +97,36 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
     # --- Pre-execution feedback check ---
     skip_due_to_feedback = False
     if ctx.conversation_id:
-        try:
-            from app.server import active_feedback_connections
-            if ctx.conversation_id in active_feedback_connections:
-                conns = active_feedback_connections[ctx.conversation_id]
-                feedback_queue = conns[0]['feedback_queue'] if len(conns) > 0 else None
-                if not feedback_queue:
-                    raise asyncio.QueueEmpty()
-                try:
-                    feedback_data = feedback_queue.get_nowait()
-                    if feedback_data.get('type') == 'tool_feedback':
-                        feedback_message = feedback_data.get('message', '')
-                        logger.info(f"🔄 FEEDBACK_INTEGRATION: Received feedback: {feedback_message}")
-                        if any(w in feedback_message.lower() for w in ['stop', 'halt', 'abort', 'cancel', 'quit']):
-                            logger.info("🔄 FEEDBACK_INTEGRATION: Feedback indicates stop")
-                            yield ctx.track_yield_fn({'type': 'text', 'content': f"\n\n**User feedback received:** {feedback_message}\n**Stopping tool execution as requested.**\n\n"})
-                            await asyncio.sleep(0.1)
-                            yield ctx.track_yield_fn({'type': 'stream_end'})
-                            ctx.should_stop_stream = True
-                            return
-                        else:
-                            logger.info(f"🔄 FEEDBACK_INTEGRATION: Adding directive feedback: {feedback_message}")
-                            ctx.conversation.append({
-                                "role": "user",
-                                "content": f"[Real-time feedback]: {feedback_message}"
-                            })
-                            yield ctx.track_yield_fn({
-                                'type': 'text',
-                                'content': f"\n\n**Feedback received:** {feedback_message}\n\n"
-                            })
-                            ctx.feedback_received = True
-                            skip_due_to_feedback = True
-                except asyncio.QueueEmpty:
-                    pass
-        except (OSError, RuntimeError, asyncio.QueueEmpty, KeyError) as e:
-            logger.debug(f"Error checking feedback: {e}")
+        # Use the shared drain function instead of reading from the queue
+        # directly.  The _feedback_monitor background task is the sole
+        # consumer of the asyncio Queue; reading here would race with it
+        # and cause ~50% of messages to be silently dropped.
+        await asyncio.sleep(0)  # yield to let monitor deposit items
+        for fb in ctx.drain_feedback_fn():
+            fb_msg = fb.get('message', '')
+            if fb['type'] == 'interrupt' or any(w in fb_msg.lower() for w in ['stop', 'halt', 'abort', 'cancel', 'quit']):
+                logger.info(f"🔄 FEEDBACK_INTEGRATION: Stop requested: {fb_msg}")
+                yield ctx.track_yield_fn({'type': 'text', 'content': f"\n\n**User feedback received:** {fb_msg}\n**Stopping tool execution as requested.**\n\n"})
+                await asyncio.sleep(0.1)
+                yield ctx.track_yield_fn({'type': 'stream_end'})
+                ctx.should_stop_stream = True
+                return
+            else:
+                logger.info(f"🔄 FEEDBACK_INTEGRATION: Adding directive feedback: {fb_msg}")
+                ctx.conversation.append({
+                    "role": "user",
+                    "content": f"[Real-time feedback]: {fb_msg}"
+                })
+                yield ctx.track_yield_fn({
+                    'type': 'text',
+                    'content': f"\n\n**Feedback received:** {fb_msg}\n\n"
+                })
+                yield ctx.track_yield_fn({
+                    'type': 'feedback_delivered',
+                    'message': fb_msg[:80],
+                })
+                ctx.feedback_received = True
+                skip_due_to_feedback = True
 
     if skip_due_to_feedback:
         return
