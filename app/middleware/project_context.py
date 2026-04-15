@@ -46,6 +46,7 @@ class ProjectContextMiddleware(BaseHTTPMiddleware):
     def _ensure_ast_indexed(project_root: str) -> None:
         """Trigger background AST indexing for a project if not already done."""
         try:
+            from app.utils.context_enhancer import _ast_indexing_status, _broadcast_ast_complete
             from app.utils.ast_parser.integration import (
                 _initialized_projects, _indexing_in_progress,
                 initialize_ast_capabilities,
@@ -56,12 +57,44 @@ class ProjectContextMiddleware(BaseHTTPMiddleware):
             if abs_root in _initialized_projects or abs_root in _indexing_in_progress:
                 return
 
+            # Update the global status dict that /api/ast/status reads.
+            # Without this, the status stays stuck on the error from a
+            # previous project (e.g. home-dir rejection at startup).
+            _ast_indexing_status.update({
+                'is_indexing': True,
+                'enabled': True,
+                'completion_percentage': 0,
+                'is_complete': False,
+                'indexed_files': 0,
+                'total_files': 0,
+                'error': None,
+            })
+
             patterns = get_ignored_patterns(abs_root)
             max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
 
+            def _index_and_update_status():
+                result = initialize_ast_capabilities(abs_root, patterns, max_depth)
+                files = result.get("files_processed", 0)
+                if result.get("initialized") and files > 0:
+                    _ast_indexing_status.update({
+                        'is_indexing': False,
+                        'completion_percentage': 100,
+                        'is_complete': True,
+                        'indexed_files': files,
+                        'total_files': files,
+                        'error': None,
+                    })
+                    _broadcast_ast_complete(files)
+                else:
+                    _ast_indexing_status.update({
+                        'is_indexing': False,
+                        'is_complete': False,
+                        'error': result.get("error", "Indexing returned no files"),
+                    })
+
             t = threading.Thread(
-                target=initialize_ast_capabilities,
-                args=(abs_root, patterns, max_depth),
+                target=_index_and_update_status,
                 daemon=True,
             )
             t.start()
