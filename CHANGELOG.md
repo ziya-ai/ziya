@@ -19,6 +19,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 ### Changed
 
+## [0.6.4.6] - 2026-04-14
+
+### Added
+- **User query logging**: User prompts are now logged at INFO level in the
+  server for operational visibility and debugging. Empty prompts are skipped.
+
+### Fixed
+- **AST indexing status stale on project switch**: When switching between
+  projects, the AST status endpoint (`/api/ast/status`) could report errors
+  from the previous project's indexing attempt. The middleware now resets the
+  global `_ast_indexing_status` dict when starting background indexing and
+  updates it on completion. The status route also checks project-specific
+  state via the `X-Project-Root` header rather than relying solely on the
+  global dict.
+- **AST token count inflated in tool-only mode**: The frontend token counter
+  included AST tokens in the total even when `--ast` flag was not set (i.e.,
+  AST was available only via MCP tools, not baked into the system prompt).
+  Now only counts AST tokens when `ast_in_prompt` is true.
+- **AST status not refreshed after background indexing completes**: The
+  `TokenCountDisplay` component now listens for `astIndexingComplete` and
+  `projectSwitched` events to re-fetch AST status, so the token bar updates
+  automatically when indexing finishes or the project changes.
+- **Feedback delivery race condition during streaming**: User feedback sent
+  while the model was streaming text would sit in `_pending_feedback` until
+  `message_stop`, potentially minutes later. The streaming loop now checks
+  for pending feedback every 50 events or 2 seconds, enabling prompt
+  stop/redirect handling during long responses.
+- **Feedback queue dual-reader race**: `tool_execution.py` was reading
+  directly from the asyncio feedback queue, racing with the
+  `_feedback_monitor` background task and causing ~50% of feedback messages
+  to be silently dropped. Now uses the shared `_drain_pending_feedback()`
+  function exclusively.
+- **Feedback status lifecycle**: The frontend now distinguishes `queued`
+  (monitor captured from WebSocket) from `delivered` (feedback actually
+  injected into the conversation via SSE event). Previously both states
+  showed as `delivered`, giving false confirmation.
+- **Post-stream feedback grace period too short**: Increased the
+  `asyncio.sleep` after stream completion from 50ms to 300ms to reliably
+  capture feedback sent during the final moments of streaming.
+- **SQLite unavailability crashes conversation graph**: `GraphManager` now
+  handles missing `sqlite3` module gracefully, falling back to in-memory
+  mode with no-op persistence. Graphs are rebuilt on demand from
+  conversation data.
+- **Memory browser button UI**: Replaced emoji 🧠 button with proper Ant
+  Design `NodeIndexOutlined` icon and fixed duplicate "New Chat" tooltip
+  text on the memory browser button.
+
+### Changed
+- **Log noise reduction**: Downgraded ~20 verbose `logger.info` calls to
+  `logger.debug` across MCP client/manager, Bedrock provider, token routes,
+  diff validation hook, streaming tool executor (file extraction, usage
+  metrics, stream metrics), and diff pipeline manager. Server logs are now
+  significantly quieter during normal operation.
+- **Diff pipeline completion logging**: Replaced multi-line INFO summary
+  with compact per-hunk DEBUG lines and a single one-line result summary.
+  Failed hunk error details are still logged at DEBUG level.
+- **Feedback `feedback_delivered` event**: Both `streaming_tool_executor`
+  and `tool_execution` now emit a `feedback_delivered` SSE event when
+  directive feedback is injected into the conversation, enabling accurate
+  frontend status tracking.
+
 ## [0.6.4.5] - 2026-04-14
 
 ### Added
