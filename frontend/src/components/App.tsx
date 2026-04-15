@@ -12,7 +12,8 @@ import {
     ExportOutlined,
     ApiOutlined,
     CloudServerOutlined,
-    SettingOutlined
+    SettingOutlined,
+    NodeIndexOutlined
 } from "@ant-design/icons";
 import { useTheme } from '../context/ThemeContext';
 import PanelResizer from './PanelResizer';
@@ -464,8 +465,8 @@ export const App: React.FC = () => {
                                         </Tooltip>
                                     </>
                                 )}
-                                <Tooltip title="New Chat">
-                                    <Button onClick={() => setShowMemoryBrowser(true)}>🧠</Button>
+                                <Tooltip title="Memory Browser">
+                                    <Button icon={<NodeIndexOutlined />} onClick={() => setShowMemoryBrowser(true)} />
                                 </Tooltip>
                                 <Tooltip title="New Chat">
                                     <Button icon={<PlusOutlined />} onClick={() => startNewChat()} />
