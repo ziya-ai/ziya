@@ -136,7 +136,7 @@ class BedrockProvider(LLMProvider):
         if body_size > 800_000:  # ~200K tokens at ~4 chars/token
             connect_timeout = max(connect_timeout, 600)
 
-        logger.info(
+        logger.debug(
             f"BedrockProvider: invoking {self.model_id} — "
             f"body={body_size/1_048_576:.1f}MB, images={image_count}, "
             f"messages={len(messages)}, timeout={connect_timeout}s"
@@ -159,7 +159,7 @@ class BedrockProvider(LLMProvider):
                     ),
                     timeout=connect_timeout,
                 )
-                logger.info(f"BedrockProvider: stream started in {time.time() - call_start:.1f}s")
+                logger.debug(f"BedrockProvider: stream started in {time.time() - call_start:.1f}s")
                 break
             except Exception as e:
                 error_str = str(e)
