@@ -8,8 +8,13 @@ Phase 0-A only uses the first.  This avoids migration headaches later.
 """
 
 import json
-import sqlite3
 import time
+
+try:
+    import sqlite3
+    _HAS_SQLITE3 = True
+except ImportError:
+    _HAS_SQLITE3 = False
 from typing import Optional, List, Dict, Any
 
 from app.utils.logging_utils import logger
@@ -71,7 +76,15 @@ class GraphManager:
         if db_path is None:
             db_path = str(get_ziya_home() / "conversation_graphs.db")
         self.db_path = db_path
-        self._ensure_schema()
+        self._sqlite_available = _HAS_SQLITE3
+        if self._sqlite_available:
+            try:
+                self._ensure_schema()
+            except Exception as exc:
+                logger.warning(f"🌳 SQLite unavailable, graphs will not be persisted: {exc}")
+                self._sqlite_available = False
+        else:
+            logger.info("🌳 sqlite3 not available — conversation graphs will not be persisted (rebuild-on-demand)")
 
     def _ensure_schema(self):
         with sqlite3.connect(self.db_path) as conn:
@@ -118,6 +131,8 @@ class GraphManager:
     # ------------------------------------------------------------------
 
     def _load_cached(self, pid: str, cid: str) -> Optional[ConversationGraph]:
+        if not self._sqlite_available:
+            return None
         try:
             with sqlite3.connect(self.db_path) as conn:
                 row = conn.execute(
@@ -132,6 +147,8 @@ class GraphManager:
         return None
 
     def _save(self, pid: str, cid: str, graph: ConversationGraph):
+        if not self._sqlite_available:
+            return
         try:
             data = json.dumps(graph.to_dict())
             with sqlite3.connect(self.db_path) as conn:
