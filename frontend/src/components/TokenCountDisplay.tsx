@@ -74,6 +74,7 @@ export const TokenCountDisplay = memo(() => {
     const [astEnabled, setAstEnabled] = useState(false);
     const [astTokenCount, setAstTokenCount] = useState<number>(0);
     const [astResolutions, setAstResolutions] = useState<Record<string, any>>({});
+    const [astInPrompt, setAstInPrompt] = useState(false);
     const [astResolutionsLoaded, setAstResolutionsLoaded] = useState(false);
     const [currentAstResolution, setCurrentAstResolution] = useState<string>('medium');
     const [astResolutionLoading, setAstResolutionLoading] = useState(false);
@@ -92,6 +93,29 @@ export const TokenCountDisplay = memo(() => {
     const lastTokenCalcRunRef = useRef<number>(0);
     const [cacheHealth, setCacheHealth] = useState<any>(null);
     const [showTelemetryModal, setShowTelemetryModal] = useState(false);
+    // Revision counter bumped by astIndexingComplete — triggers AST re-fetch
+    const [astRevision, setAstRevision] = useState(0);
+
+    // Track project path so AST/MCP status is re-checked on project switch
+    // The projectSwitched event is dispatched by ProjectContext when the
+    // user selects a different project.
+    const [projectPath, setProjectPath] = useState<string | null>(
+        () => (window as any).__ZIYA_CURRENT_PROJECT_PATH__ || null);
+    useEffect(() => {
+        const handler = () =>
+            setProjectPath((window as any).__ZIYA_CURRENT_PROJECT_PATH__ || null);
+        window.addEventListener('projectSwitched', handler);
+        return () => window.removeEventListener('projectSwitched', handler);
+    }, []);
+
+    // Re-fetch AST status when background indexing completes.
+    // This fires on both fresh loads (AST finishes after mount) and
+    // project switches (AST re-indexes for the new project).
+    useEffect(() => {
+        const handler = () => setAstRevision(r => r + 1);
+        window.addEventListener('astIndexingComplete', handler);
+        return () => window.removeEventListener('astIndexingComplete', handler);
+    }, []);
 
     const tokenLimit = modelLimits.max_input_tokens || modelLimits.token_limit || 4096;
     const warningThreshold = useMemo(() => Math.floor(tokenLimit * 0.7), [tokenLimit]);
@@ -142,6 +166,10 @@ export const TokenCountDisplay = memo(() => {
                     if (isMounted) {
                         setAstEnabled(data.enabled === true);
 
+                        // AST tokens only count toward input context when
+                        // ZIYA_ENABLE_AST is set (--ast flag), which bakes AST
+                        // into the system prompt. Otherwise it's on-demand via tools.
+                        setAstInPrompt(data.ast_enabled === true && data.ast_in_prompt === true);
                         if (data.enabled === true) {
                             // Fetch resolution options first to get the correct token count
                             const resolutionData = await fetchAstResolutions();
@@ -192,7 +220,7 @@ export const TokenCountDisplay = memo(() => {
             isMounted = false;
             if (pollForCompletion) clearInterval(pollForCompletion);
         };
-    }, [fetchAstResolutions]);
+    }, [fetchAstResolutions, projectPath, astRevision]);
 
     // Check MCP status and fetch token costs
     useEffect(() => {
@@ -494,7 +522,8 @@ export const TokenCountDisplay = memo(() => {
 
     const combinedTokenCount = totalTokenCount + chatTokenCount + (astEnabled ? astTokenCount : 0) + (mcpEnabled && mcpServerCount > 0 ? mcpTokenCount : 0);
 
-    // Optimized token calculation with better debouncing
+    const astCountsInTotal = astInPrompt && astEnabled;
+    const combinedTokenCount = totalTokenCount + chatTokenCount + (astCountsInTotal ? astTokenCount : 0) + (mcpEnabled && mcpServerCount > 0 ? mcpTokenCount : 0);
     const performTokenCalculation = useCallback(() => {
         // Helper to recursively calculate total tokens for a folder, using accurate counts when available
         // This matches the logic used by the file explorer tree
@@ -814,7 +843,7 @@ export const TokenCountDisplay = memo(() => {
     }
 
     // Add AST if enabled
-    if (astEnabled && astTokenCount > 0) {
+    if (astCountsInTotal && astTokenCount > 0) {
         const astComponent = astResolutionsLoaded ? (
             <Dropdown
                 menu={{ items: astMenuItems, onClick: handleMenuClick }}
