@@ -700,6 +700,10 @@ export const sendPayload = async (
     // Throttle BroadcastChannel relay to avoid flooding other tabs
     let lastBroadcastTime = 0;
     let hallucinationDetected = false;  // Failsafe: track if model is generating fake tool output
+    // Track whether the tab was hidden at ANY point during streaming.
+    // ERR_NETWORK_IO_SUSPENDED fires after the machine wakes up (hidden=false),
+    // but the root cause is that the tab WAS hidden when the OS suspended networking.
+    let wasHiddenDuringStream = false;
 
     // ── Screen Wake Lock ──────────────────────────────────────────────
     // Prevent the display from dimming / OS from sleeping while a
@@ -729,6 +733,9 @@ export const sendPayload = async (
     const _onVisibilityChangeForWakeLock = () => {
         if (document.visibilityState === 'visible' && !isAborted && !errorOccurred) {
             _acquireWakeLock();
+        }
+        if (document.visibilityState === 'hidden') {
+            wasHiddenDuringStream = true;
         }
     };
 
@@ -2503,7 +2510,11 @@ export const sendPayload = async (
                     } catch (error) {
                         console.error('❌ Error reading stream:', error);
                         console.error('Error type:', (error as any)?.constructor?.name);
-                        const wasHidden = document.hidden;
+                        // document.hidden is unreliable for ERR_NETWORK_IO_SUSPENDED:
+                        // the machine has already woken up by the time this handler runs.
+                        // Use the session-wide flag that the visibilitychange listener sets
+                        // whenever the tab goes hidden during streaming.
+                        const wasHidden = document.hidden || wasHiddenDuringStream;
                         console.error('Tab hidden at time of error:', wasHidden);
                         console.error('Error message:', (error as any)?.message);
                         console.error('Error stack:', (error as any)?.stack);

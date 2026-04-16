@@ -63,6 +63,7 @@ class ToolExecContext:
     executor: Any = None
 
     # --- Mutable output flags (written by execute_single_tool) ---
+    deferred_feedback: List[str] = field(default_factory=list)
     feedback_received: bool = False
     should_stop_stream: bool = False
 
@@ -113,10 +114,8 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
                 return
             else:
                 logger.info(f"🔄 FEEDBACK_INTEGRATION: Adding directive feedback: {fb_msg}")
-                ctx.conversation.append({
-                    "role": "user",
-                    "content": f"[Real-time feedback]: {fb_msg}"
-                })
+                # Defer conversation injection — append AFTER assistant msg + tool results
+                ctx.deferred_feedback.append(fb_msg)
                 yield ctx.track_yield_fn({
                     'type': 'text',
                     'content': f"\n\n**Feedback received:** {fb_msg}\n\n"
@@ -129,6 +128,16 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
                 skip_due_to_feedback = True
 
     if skip_due_to_feedback:
+        # Yield a stub tool_result so the API contract is satisfied —
+        # every tool_use in the assistant message needs a corresponding
+        # tool_result in the user message.
+        skip_msg = "Tool execution skipped: user provided real-time feedback that takes priority."
+        yield {
+            'type': '_tool_result',
+            'tool_id': ctx.tool_id,
+            'tool_name': ctx.tool_name,
+            'result': skip_msg,
+        }
         return
 
     # --- Execute the tool ---
@@ -311,10 +320,8 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
                 ctx.should_stop_stream = True
                 return
             logger.info(f"🔄 FEEDBACK_POST_TOOL: Injecting feedback: {fb_msg[:60]}")
-            ctx.conversation.append({
-                "role": "user",
-                "content": f"[User feedback]: {fb_msg}"
-            })
+            # Defer conversation injection — append AFTER assistant msg + tool results
+            ctx.deferred_feedback.append(fb_msg)
             yield ctx.track_yield_fn({'type': 'text', 'content': f"\n\n**📝 Feedback received:** {fb_msg}\n\n"})
             yield ctx.track_yield_fn({
                 'type': 'feedback_delivered',
