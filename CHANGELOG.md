@@ -19,6 +19,161 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 ### Changed
 
+## [0.6.4.7] - 2026-04-16
+
+### Added
+- **Per-model thinking effort levels**: Models now declare `supported_efforts` in
+  config (e.g. `["low", "medium", "high", "max"]` for opus4.6,
+  `["low", "medium", "high", "xhigh", "max"]` for opus4.7). The CLI `/model` dialog,
+  capabilities endpoint, and runtime validation all read from this config instead of
+  hardcoding a global list. Invalid effort levels fall back to the model's default
+  with a warning.
+- **`xhigh` thinking effort**: New effort level supported by opus4.7. Available in the
+  `/effort` command, model settings dialog, and API.
+- **Claude Opus 4.7 model support**: Added `opus4.7` to Bedrock config (inference
+  profiles `us.anthropic.claude-opus-4-7` / `global.anthropic.claude-opus-4-7`) and
+  `claude-opus-4-7` to the Anthropic direct-API config.
+- **New Bedrock models**: Added Nova 2 Lite, GLM 5, Llama 4 Scout, Llama 4 Maverick,
+  Mistral Large 3, Devstral 2, MiniMax M2.5, and Qwen3 VL 235B — all confirmed
+  active and invocable in the Ziya AWS account.
+- **NovaBedrockProvider**: Dedicated provider using the Converse API for Nova models
+  (Micro, Lite, Pro). Handles `inferenceConfig.maxTokens`, content block arrays,
+  `toolSpec` format, and `converse_stream` instead of `invoke_model`.
+- **OpenAIBedrockProvider**: Dedicated provider using `invoke_model_with_response_stream`
+  for OpenAI-format models on Bedrock (DeepSeek, Kimi, MiniMax, GLM, Qwen, Llama4,
+  Mistral, Devstral). Preserves newlines and whitespace by using the native wire format.
+- **Three-way provider routing**: Factory now routes Claude → BedrockProvider,
+  OpenAI-format (`wrapper_class: "OpenAIBedrock"`) → OpenAIBedrockProvider,
+  Nova/other → NovaBedrockProvider.
+- **Native thinking/reasoning stream**: Handle `thinking_delta` events from DeepSeek R1
+  and other reasoning models. Thinking content is wrapped in `<thinking-data>` tags
+  for the collapsible thinking UI. Unclosed thinking tags are auto-closed on
+  `message_stop`.
+- **Reasoning tag support for OpenAI-compatible models**: Models like GLM emit thinking
+  content in `<reasoning>` tags inline in their text stream. Added tag conversion to
+  `<thinking-data>` in the text delta processor so reasoning content renders in the
+  collapsible thinking UI.
+- **Autoregressive repetition suppression**: Real-time detection of degenerate output
+  loops — if the same sentence appears 3+ times, further output is suppressed to
+  prevent runaway token consumption.
+- **Memory system opt-in flag**: The structured memory system (persistent memory across
+  sessions, memory extraction, mind-map, proposals) is now disabled by default and
+  enabled with `--memory` on both the server (`ziya --memory`) and CLI
+  (`ziya chat --memory`). The `ZIYA_ENABLE_MEMORY=true` environment variable also
+  enables it.
+- **Memory organize API**: `POST /api/v1/memory/organize` triggers LLM-powered
+  reorganization (cluster, place, relate, cross-link) as a background task.
+  Poll `GET /api/v1/memory/organize/status` for progress.
+- **Memory embedding service**: `POST /api/v1/memory/embeddings/backfill` and
+  `GET /api/v1/memory/embeddings/status` endpoints for embedding vector management
+  using Bedrock Titan provider with in-memory cache.
+- **Memory scope update API**: `PUT /api/v1/memory/{id}` now accepts a `scope`
+  field to update `project_paths` and `domain_node`, enabling project-based
+  memory organization and backfill of unscoped memories.
+- **Memory Browser project filter**: Explorer tab includes a project dropdown
+  filter. Memories display their project scope, and the knowledge graph colors
+  nodes by project.
+- **Memory extraction quality gate tests**: Comprehensive test suites for
+  refactoring rejection, code description rejection, career narrative rejection,
+  and intra-batch deduplication.
+
+### Fixed
+- **"invalid beta flag" error on opus4.7**: The `effort-2025-11-24` and
+  `context-1m-2025-08-07` beta headers are no longer needed for opus4.7 (both features
+  are GA). Added `effort_beta_required` model config flag; `_apply_thinking()` skips
+  the effort beta header when `False`. Removed stale `extended_context_header` from
+  opus4.7 config.
+- **Spurious "Error capturing logs" on clean exit**: Every `/quit` logged ERROR for
+  each MCP server because `disconnect()` terminated the subprocess while the background
+  `_capture_logs()` task was still reading from stderr. Now stores the task reference
+  and cancels it before process termination.
+- **Calibrator rejecting plausible ratios every round**: Fixed to use proportional
+  character attribution across total input (system + conversation), keeping the
+  ratio stable regardless of conversation length.
+- **KaTeX display math inside code fences rendered as encoded div**: Split by code
+  fences first; only replace `$$` in non-fence segments.
+- **KaTeX inline math inside code fences extracted as placeholders**: Applied
+  fence-aware split for inline math extraction.
+- **` ```latex `/` ```math ` fences not rendered as KaTeX**: Added preprocessing to
+  convert them into KaTeX-encoded divs for proper math rendering.
+- **` ```markdown ` fences rendered as literal text**: Added preprocessing to unwrap
+  these fences so their content renders normally.
+- **Nova models missing image upload button**: Fixed `MODEL_FAMILIES` reference and
+  added parent-chain resolution so `supports_vision` propagates to child families.
+- **Vision support not updating on model switch**: Both `SendChatContainer` and
+  `EditSection` now listen for the `modelChanged` event and re-fetch capabilities.
+- **GLM and other OpenAI-compatible Bedrock models returning null**: Fixed to check
+  `wrapper_class` from model config instead of pattern-matching model names.
+- **Nova models broken in CLI and server**: Added `NovaBedrockProvider` using the
+  Converse API and updated the provider factory to route Nova models automatically.
+- **OpenAI-format Bedrock models broken after dead code removal**: Added
+  `OpenAIBedrockProvider` with three-way factory routing.
+- **DeepSeek/Kimi/MiniMax/GLM/Qwen newlines lost in streaming**: `OpenAIBedrockProvider`
+  uses the native OpenAI wire format to preserve formatting.
+- **Diff content inside thinking tags destroyed by sanitizer**: Added
+  `outsideCodeBlocks()` helper that preserves fenced code block content.
+- **Raw view toggle on diffs non-functional**: Added `displayMode !== 'raw'` check.
+- **Code blocks inside thinking blocks rendered without syntax highlighting** (frontend):
+  Added `useEffect` that calls `Prism.highlightElement()` on code blocks after render.
+- **Code blocks inside thinking blocks rendered as raw text** (CLI): Added
+  `render_prefixed_markdown()` helper with rich rendering and prefix support.
+- **CLI assistant responses missing syntax-highlighted code blocks**: Changed
+  `display_content.strip()` to simple truthiness check so `"\n"` passes through.
+- **Duplicate identical diffs presented to user**: Added exact-content comparison
+  before the sequential pair check in diff deduplication.
+- **CLI diff extraction missed 5+ backtick fences**: Changed to `` `{3,} ``.
+- **Feedback buried before assistant message during tool execution**: Feedback is now
+  deferred and injected AFTER the assistant message and tool results are appended.
+- **Orphaned tool_use block on feedback skip**: Now yields a stub result for skipped
+  tools to satisfy the API contract.
+- **Assistant text dedup missed structured content**: Added
+  `_assistant_text_in_conversation()` helper that checks both formats.
+- **ERR_NETWORK_IO_SUSPENDED false negative after OS sleep/wake**: Added
+  `wasHiddenDuringStream` session flag set by `visibilitychange` listener.
+- **Duplicate feedback placeholder shown in conversation**: Added `feedbackDelivered`
+  event listener that removes pending feedback placeholders.
+- **Shell config path resolution broken after refactor**: Fixed to use
+  `Path(__file__).resolve()` instead of `import app.mcp_servers`.
+- **CLI shell restart using stale paths from mcp_config.json**: Fixed to always start
+  from the manager's builtin config and only layer persisted env customizations.
+- **File watcher missing .gitignore in nested project directories**: Added
+  `_check_inline_gitignore()` that walks up from each file, reading and caching
+  `.gitignore` files in the hierarchy.
+- **MCP tool descriptions breaking LangChain template formatting**: Added curly brace
+  escaping (`{` → `{{`) in `mcp_prompt_extensions.py`.
+- **Unbounded cache/dict growth in long-running sessions**: Added eviction policies to
+  `ThreadStateManager` (dead-thread pruning >100), `PromptCache` (LRU 200 max),
+  `CooldownManager` (stale 5min cleanup), `DelegateManager` (terminal plan 2hr eviction),
+  `_prompt_cache` (50 max), `agent_chain_cache` (10 max), `filtered_kwargs_cache`
+  (200 max).
+
+### Removed
+- **Deprecated Bedrock models**: Removed `sonnet3.5`, `sonnet3.5-v2`, `opus3`
+  (end-of-life) and `nova-premier` (broken).
+- **Nova Premier family definition**: Removed `nova-premier` family config.
+- **Dead LangChain fallback path in `stream_chunks`**: Removed ~1,290 lines of
+  unreachable code from `app/server.py`. `server.py` reduced from 2,883 to 1,593 lines.
+- **Dead `app/agents/direct_streaming.py` module**: 230-line module with no references.
+- **Dead `app/mcp/security.py` module**: 116-line module with no remaining imports.
+- **Unused imports in `server.py`**: Removed 15+ unused imports.
+- **Dead classes in `server.py`**: `SetModelRequest`, `PatchRequest`,
+  `active_websockets` set.
+- **Empty `set_terminal_title` function**.
+- **`import re as _re` in streaming hot loop**: Replaced with module-level `re`.
+- **Duplicate paragraphs in `Docs/ArchitectureOverview.md`**.
+
+### Changed
+- **Memory extraction quality gates strengthened**: Added three new structural
+  rejection patterns — refactoring notes, code descriptions, and career narratives.
+- **Memory extraction prompt**: Added Gates 4-6 rejecting code descriptions, redundant
+  paraphrases, and career/self-promotion content.
+- **Intra-batch memory deduplication**: Extraction pipeline now deduplicates within the
+  same batch before checking against existing store.
+- **Logging noise reduction**: Replaced `print()` with `logger` calls throughout Nova
+  wrapper, connection pool, and consolidated modules. Downgraded verbose `INFO` to
+  `DEBUG` in agent, nova_tool_execution, and connection_pool.
+- **Sonnet 4 thinking effort default**: Changed from `medium` to `high`.
+
 ## [0.6.4.6] - 2026-04-14
 
 ### Added
