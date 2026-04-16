@@ -11,6 +11,7 @@ from app.utils.file_utils import read_file_content, is_processable_file
 from app.utils.gitignore_parser import parse_gitignore_patterns
 from app.utils.directory_util import get_ignored_patterns
 
+
 class FileChangeHandler(FileSystemEventHandler):
     """Handler for file system events to update file state manager."""
     
@@ -36,6 +37,9 @@ class FileChangeHandler(FileSystemEventHandler):
         self._ignored_patterns_loaded = False
         self.ignored_patterns = []
         self.should_ignore_fn = lambda path: False  # placeholder until loaded
+        # Per-directory .gitignore cache for inline checks.
+        # Maps directory path → set of ignore patterns found in that dir's .gitignore.
+        self._inline_gitignore_cache: Dict[str, Optional[set]] = {}
         logger.debug(f"FileChangeHandler initialized with {len(self.ignored_patterns)} gitignore patterns")
     
     def _is_editor_temp_file(self, path: str) -> bool:
@@ -66,6 +70,67 @@ class FileChangeHandler(FileSystemEventHandler):
             self.should_ignore_fn = parse_gitignore_patterns(self.ignored_patterns)
             logger.debug(f"Lazy-loaded {len(self.ignored_patterns)} gitignore patterns")
 
+    def _check_inline_gitignore(self, abs_path: str) -> bool:
+        """Check .gitignore files in the path hierarchy for patterns that match.
+
+        When the file watcher's base_dir is above the project root (e.g. HOME),
+        the bulk gitignore scan may time out before finding the project's
+        .gitignore.  This method walks up from the file's directory, reads any
+        .gitignore files it finds, and checks if the file should be ignored.
+
+        Results are cached per-directory so each .gitignore is read at most once.
+        """
+        file_dir = os.path.dirname(abs_path)
+        file_name = os.path.basename(abs_path)
+
+        # Walk up from the file's directory towards base_dir
+        current = file_dir
+        while current and len(current) >= len(self.base_dir):
+            gitignore_path = os.path.join(current, '.gitignore')
+
+            # Check cache first
+            if current not in self._inline_gitignore_cache:
+                patterns = None
+                if os.path.isfile(gitignore_path):
+                    try:
+                        with open(gitignore_path, 'r', encoding='utf-8') as f:
+                            raw_patterns = []
+                            for line in f:
+                                line = line.strip()
+                                if line and not line.startswith('#'):
+                                    raw_patterns.append((line, current))
+                        if raw_patterns:
+                            patterns = parse_gitignore_patterns(raw_patterns)
+                    except (OSError, UnicodeDecodeError):
+                        pass
+                self._inline_gitignore_cache[current] = patterns
+
+                # Cap cache size to prevent unbounded growth
+                if len(self._inline_gitignore_cache) > 500:
+                    # Evict oldest half
+                    keys = list(self._inline_gitignore_cache.keys())
+                    for k in keys[:len(keys) // 2]:
+                        del self._inline_gitignore_cache[k]
+
+            check_fn = self._inline_gitignore_cache.get(current)
+            if check_fn is not None:
+                # Check the full file path against patterns anchored to this dir
+                if check_fn(abs_path):
+                    return True
+                # Also check parent directories between current and the file
+                check_dir = file_dir
+                while check_dir != current and len(check_dir) > len(current):
+                    if check_fn(check_dir):
+                        return True
+                    check_dir = os.path.dirname(check_dir)
+
+            parent = os.path.dirname(current)
+            if parent == current:
+                break
+            current = parent
+
+        return False
+
     def _should_ignore_path(self, abs_path: str) -> bool:
         """Check if a path should be ignored based on gitignore patterns and dot directories."""
         try:
@@ -88,6 +153,12 @@ class FileChangeHandler(FileSystemEventHandler):
                 if self.should_ignore_fn(parent_dir):
                     return True
                 parent_dir = os.path.dirname(parent_dir)
+
+            # Inline .gitignore check: when base_dir is above the project root,
+            # the bulk scan may have missed the project's .gitignore.  Walk up
+            # from the file and check any .gitignore files in the hierarchy.
+            if self._check_inline_gitignore(abs_path):
+                return True
             
             return False
         except Exception as e:
