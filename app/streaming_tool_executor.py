@@ -526,6 +526,27 @@ class StreamingToolExecutor:
         return text
 
     @staticmethod
+    def _assistant_text_in_conversation(text: str, conversation: list, lookback: int = 3) -> bool:
+        """Check if assistant_text is already in recent conversation history.
+
+        Handles both plain string content and structured content blocks
+        (list of dicts from build_assistant_message) so the dedup check
+        works regardless of whether tools were involved.
+        """
+        for m in conversation[-lookback:]:
+            if m.get('role') != 'assistant':
+                continue
+            content = m.get('content')
+            if content == text:
+                return True
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get('type') == 'text':
+                        if block.get('text') == text:
+                            return True
+        return False
+
+    @staticmethod
     def _build_tool_reinforcement_message() -> Dict[str, Any]:
         """Build a corrective user message reminding the model to use tool APIs.
 
@@ -1353,14 +1374,16 @@ class StreamingToolExecutor:
             model_config = ModelManager.get_model_config(endpoint, model_name)
             model_family = model_config.get('family', 'default')
 
-            # Derive file-only tokens from cache data
-            cache_read = iteration_usage.cache_read_tokens or 0
-            cache_creation = iteration_usage.cache_write_tokens or 0
-            system_prompt_tokens = cache_read + cache_creation
-            system_chars = max(1, len(system_content or ''))
+            # Derive file-only tokens by proportional character attribution.
+            # Use total_input (actual Bedrock token count for entire request)
+            # and estimate file content's share of total input characters.
             file_chars = sum(len(c) for c in file_contents.values())
-            file_ratio = min(1.0, file_chars / system_chars) if system_chars > 0 else 0.5
-            file_only_tokens = max(1, int(system_prompt_tokens * file_ratio))
+            system_chars = len(system_content or '')
+            conversation_chars = sum(
+                len(str(m.get('content', ''))) for m in conversation
+            )
+            total_input_chars = max(1, system_chars + conversation_chars)
+            file_only_tokens = max(1, int(total_input * (file_chars / total_input_chars)))
 
             calibrator.record_actual_usage(
                 conversation_id=conversation_id,
@@ -1811,7 +1834,15 @@ class StreamingToolExecutor:
             commands_this_iteration = []  # Track commands executed in this specific iteration
             last_stop_reason = None  # Track whether model was cut off (max_tokens) or finished (end_turn)
             empty_tool_calls_this_iteration = 0  # Track empty tool calls in this iteration
+            thinking_text = ""  # Track thinking/reasoning content (DeepSeek R1)
+            thinking_tag_opened = False  # Whether we've emitted the opening <thinking-data> tag
+            deferred_feedback_messages: List[str] = []  # Feedback caught during tool exec, injected after conversation is built
             continuation_happened = False  # Track if code block continuation occurred
+
+            # Streaming repetition detection state (reset per iteration)
+            self._recent_sentences = []
+            self._sentence_buffer = ''
+            self._repetition_suppressed = False
             
             # Safety guard: prevent sending conversation ending with assistant message
             # to models that don't support assistant prefill (e.g. Opus 4 via Bedrock)
@@ -2011,7 +2042,11 @@ class StreamingToolExecutor:
                         chunk = {'type': 'message_stop',
                                  'stop_reason': stream_event.stop_reason}
                     else:
-                        continue  # Unknown event type, skip
+                        logger.info(
+                            f"🔍 UNHANDLED_EVENT: {type(stream_event).__name__} "
+                            f"— {str(stream_event)[:150]}"
+                        )
+                        continue
                     
                     if chunk['type'] == 'content_block_start':
                         # We already decoded the chunk above for metrics, reuse it
@@ -2087,6 +2122,24 @@ class StreamingToolExecutor:
                         if delta.get('type') == 'text_delta':
                             # Process text delta via extracted helper
                             from app.text_delta_processor import process_text_delta
+
+                            # Streaming repetition suppression: if we already
+                            # detected a degenerate loop, swallow text silently
+                            if self._repetition_suppressed:
+                                assistant_text += delta.get('text', '')
+                                _td_state.assistant_text = assistant_text
+                                continue
+
+                            # Close thinking tag if transitioning from thinking to text
+                            if thinking_tag_opened:
+                                thinking_tag_opened = False
+                                closing = '</thinking-data>'
+                                assistant_text += closing
+                                yield track_yield({
+                                    'type': 'text',
+                                    'content': closing,
+                                    'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms",
+                                })
                             text = delta.get('text', '')
                             _td_state.assistant_text = assistant_text
                             _td_events = process_text_delta(self, text, _td_state)
@@ -2099,6 +2152,29 @@ class StreamingToolExecutor:
                             if _td_state.hallucination_detected:
                                 hallucination_this_iteration = True
                                 break
+
+                            # Check for autoregressive degeneration in real time.
+                            # Accumulate text into sentences; if the same sentence
+                            # appears 3+ times, suppress further output.
+                            self._sentence_buffer += delta.get('text', '')
+                            while True:
+                                m = re.search(r'([.!?])\s', self._sentence_buffer)
+                                if not m:
+                                    break
+                                end = m.end()
+                                sentence = self._sentence_buffer[:end].strip()
+                                self._sentence_buffer = self._sentence_buffer[end:]
+                                if len(sentence) >= 20:
+                                    norm = re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', '', sentence.lower())).strip()
+                                    count = sum(1 for s in self._recent_sentences if s == norm)
+                                    if count >= 2:
+                                        self._repetition_suppressed = True
+                                        logger.info(f"✂️ STREAM_REPETITION: Suppressing after 3x: {sentence[:80]}")
+                                        break
+                                    self._recent_sentences.append(norm)
+                                    if len(self._recent_sentences) > 50:
+                                        self._recent_sentences = self._recent_sentences[-30:]
+
                         elif delta.get('type') == 'input_json_delta':
                             # Find tool by index
                             tool_id = None
@@ -2110,6 +2186,22 @@ class StreamingToolExecutor:
                                 active_tools[tool_id]['partial_json'] += delta.get('partial_json', '')
                                 logger.debug(f"🔍 JSON_DELTA: Tool {tool_id} received delta: '{delta.get('partial_json', '')}'")
                                 logger.debug(f"🔍 JSON_ACCUMULATED: Tool {tool_id} total: '{active_tools[tool_id]['partial_json']}'")
+                        elif delta.get('type') == 'thinking_delta':
+                            # Native thinking events (e.g. DeepSeek R1, Claude thinking)
+                            # Wrap in <thinking-data> tags for frontend presentation
+                            thinking_content = delta.get('thinking', '')
+                            if thinking_content:
+                                output = ''
+                                if not thinking_tag_opened:
+                                    thinking_tag_opened = True
+                                    output = '<thinking-data>'
+                                output += thinking_content
+                                assistant_text += output
+                                yield track_yield({
+                                    'type': 'text',
+                                    'content': output,
+                                    'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms",
+                                })
 
                     elif chunk['type'] == 'content_block_stop':
                         # Find and execute tool
@@ -2401,6 +2493,8 @@ Retry with the 'command' parameter included."""
                                     if _feedback_monitor_task:
                                         _feedback_monitor_task.cancel()
                                     return
+                                # Collect any deferred feedback from this tool execution
+                                deferred_feedback_messages.extend(_exec_ctx.deferred_feedback)
                                 if _exec_ctx.feedback_received:
                                     _feedback_received = True
                                 tools_executed_this_iteration = True
@@ -2440,6 +2534,7 @@ Please retry the tool call with valid JSON. Ensure:
                             assistant_text=assistant_text,
                             viz_buffer=viz_buffer,
                             content_buffer=content_buffer,
+                            thinking_tag_opened=thinking_tag_opened,
                         )
                         async for _ms_evt in handle_message_stop(
                             executor=self,
@@ -2460,6 +2555,7 @@ Please retry the tool call with valid JSON. Ensure:
                         assistant_text = _ms_state.assistant_text
                         last_stop_reason = _ms_state.last_stop_reason
                         continuation_happened = _ms_state.continuation_happened
+                        thinking_tag_opened = _ms_state.thinking_tag_opened
                         break
 
                 # MOVED: Log usage metrics AFTER processing all chunks
@@ -2579,6 +2675,18 @@ Please retry the tool call with valid JSON. Ensure:
                     else:
                         conversation.append(tool_msg)
                 
+                # Inject deferred feedback AFTER assistant message + tool results
+                # so it appears at the correct position in conversation history.
+                # This feedback was caught during tool execution but deferred to
+                # avoid being buried before the assistant message.
+                if deferred_feedback_messages:
+                    for fb_msg in deferred_feedback_messages:
+                        conversation.append({
+                            "role": "user",
+                            "content": f"[User feedback during tool execution]: {fb_msg}"
+                        })
+                    deferred_feedback_messages.clear()
+
                 # SAFETY CHECK: Ensure conversation is in valid Bedrock format
                 # Verify that every tool_use in assistant messages has a corresponding tool_result
                 if conversation:

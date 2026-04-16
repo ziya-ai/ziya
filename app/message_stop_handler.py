@@ -27,6 +27,7 @@ class MessageStopState:
     assistant_text: str = ""
     viz_buffer: str = ""
     content_buffer: str = ""
+    thinking_tag_opened: bool = False
     last_stop_reason: str = "end_turn"
     continuation_happened: bool = False
 
@@ -54,7 +55,17 @@ async def handle_message_stop(
     """
     ts = lambda: f"{int((time.time() - iteration_start_time) * 1000)}ms"
 
-    # --- 1. Record stop reason ---
+    # Close unclosed <thinking-data> tag (DeepSeek R1 thinking-only responses).
+    if state.thinking_tag_opened:
+        state.thinking_tag_opened = False
+        closing = '</thinking-data>'
+        state.assistant_text += closing
+        yield track_yield({
+            'type': 'text',
+            'content': closing,
+            'timestamp': ts(),
+        })
+
     state.last_stop_reason = chunk.get('stop_reason', 'end_turn')
 
     # --- 2. Flush content optimizer FIRST ---
