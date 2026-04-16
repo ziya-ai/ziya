@@ -520,10 +520,9 @@ export const TokenCountDisplay = memo(() => {
         };
     }, [modelLimits]);
 
-    const combinedTokenCount = totalTokenCount + chatTokenCount + (astEnabled ? astTokenCount : 0) + (mcpEnabled && mcpServerCount > 0 ? mcpTokenCount : 0);
-
     const astCountsInTotal = astInPrompt && astEnabled;
     const combinedTokenCount = totalTokenCount + chatTokenCount + (astCountsInTotal ? astTokenCount : 0) + (mcpEnabled && mcpServerCount > 0 ? mcpTokenCount : 0);
+
     const performTokenCalculation = useCallback(() => {
         // Helper to recursively calculate total tokens for a folder, using accurate counts when available
         // This matches the logic used by the file explorer tree
