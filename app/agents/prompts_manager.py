@@ -16,6 +16,7 @@ from app.agents.prompts import original_template, conversational_prompt
 
 # Global cache for extended prompts
 _prompt_cache = {}
+_PROMPT_CACHE_MAX_ENTRIES = 50  # Bounded to prevent unbounded growth
 
 def get_extended_prompt(model_name: Optional[str] = None, 
                        model_family: Optional[str] = None,
@@ -88,6 +89,14 @@ def get_extended_prompt(model_name: Optional[str] = None,
     # Cache the result
     _prompt_cache[cache_key] = extended_prompt
     logger.debug(f"Cached extended prompt for {cache_key}")
+    
+    # Evict oldest entries if over limit
+    if len(_prompt_cache) > _PROMPT_CACHE_MAX_ENTRIES:
+        # Keys are MD5 hashes — insertion order is preserved in Python 3.7+
+        overflow = len(_prompt_cache) - _PROMPT_CACHE_MAX_ENTRIES
+        for old_key in list(_prompt_cache.keys())[:overflow]:
+            del _prompt_cache[old_key]
+        logger.info(f"♻️ Prompt cache: evicted {overflow} oldest entries (max={_PROMPT_CACHE_MAX_ENTRIES})")
     
     return extended_prompt
 

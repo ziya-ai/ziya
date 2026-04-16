@@ -18,6 +18,7 @@ class FileState:
 class ThreadStateManager:
     _instance = None
     _lock = threading.Lock()
+    _MAX_THREADS = 100  # Cap to prevent unbounded growth from dead threads
 
     def __new__(cls):
         with cls._lock:
@@ -29,6 +30,20 @@ class ThreadStateManager:
                 cls._instance.thread_states = {}
         return cls._instance
 
+
+    def prune_dead_threads(self):
+        """Remove state for threads that no longer exist.
+
+        Called lazily when thread count exceeds _MAX_THREADS.
+        """
+        with self._lock:
+            live_threads = {t.ident for t in threading.enumerate()}
+            dead = [tid for tid in self.thread_states if tid not in live_threads]
+            for tid in dead:
+                del self.thread_states[tid]
+            if dead:
+                from app.utils.logging_utils import logger
+                logger.info(f"♻️ ThreadStateManager: pruned {len(dead)} dead thread entries")
 
     def get_thread_state(self, thread_id: int) -> Dict[str, FileState]:
         with self._lock:
@@ -45,6 +60,10 @@ class ThreadStateManager:
                     # No existing state found
                     logger.debug(f"THREAD: Creating fresh state for thread {thread_id}")
                     self.thread_states[thread_id] = {}
+            # Prune dead threads if we're getting large
+            if len(self.thread_states) > self._MAX_THREADS:
+                # Release lock briefly for pruning (re-acquires inside)
+                threading.Thread(target=self.prune_dead_threads, daemon=True).start()
             return self.thread_states[thread_id]
 
 class FileStateCache:

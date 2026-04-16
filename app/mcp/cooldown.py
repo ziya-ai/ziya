@@ -47,6 +47,15 @@ class CooldownManager:
         
         # Update last execution time
         self.last_execution[tool_name] = time.time()
+        
+        # Prune stale entries to prevent unbounded growth
+        if len(self.last_execution) > 200:
+            now = time.time()
+            self.last_execution = {
+                k: v for k, v in self.last_execution.items()
+                if now - v < 300  # Keep entries from last 5 minutes
+            }
+        
         return 0.0
     
     def increase_cooldown(self, tool_name: str):

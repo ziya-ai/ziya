@@ -100,6 +100,8 @@ class DelegateManager:
         self.compaction_engine = CompactionEngine()
         self._checkpoints: Dict[str, Any] = {}
         self._last_scratch_gc: float = 0.0
+        # Timestamp of last access per plan, for stale-plan eviction
+        self._plan_last_accessed: Dict[str, float] = {}
 
     def rehydrate(self) -> int:
         """Rebuild in-memory state from persisted ChatGroup/Chat data.
@@ -2038,6 +2040,36 @@ class DelegateManager:
         stale_keys = [k for k in self._checkpoints if k.startswith(f"{plan_id}:")]
         for k in stale_keys:
             del self._checkpoints[k]
+        self._plan_last_accessed.pop(plan_id, None)
+
+    def evict_stale_plans(self, max_age_seconds: float = 7200) -> List[str]:
+        """Evict plans not accessed for more than max_age_seconds.
+
+        Only terminal plans (completed, cancelled, completed_partial) are
+        eligible for eviction.  Running plans are never evicted regardless
+        of age — their asyncio Tasks hold live references.
+
+        Returns list of evicted plan_ids.
+        """
+        now = time.time()
+        evicted: List[str] = []
+        terminal = {"completed", "cancelled", "completed_partial"}
+
+        for plan_id in list(self._plans):
+            plan = self._plans.get(plan_id)
+            if not plan:
+                continue
+            status = getattr(plan, "status", "unknown")
+            if status not in terminal:
+                continue
+            last = self._plan_last_accessed.get(plan_id, 0)
+            if (now - last) > max_age_seconds:
+                self.cleanup_plan(plan_id)
+                evicted.append(plan_id)
+
+        if evicted:
+            logger.info(f"♻️ DelegateManager: evicted {len(evicted)} stale plan(s)")
+        return evicted
 
 # ---------------------------------------------------------------------------
 # Module-level singleton
