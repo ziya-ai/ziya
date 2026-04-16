@@ -83,9 +83,10 @@ class MCPManager:
         """Defines configurations for built-in MCP servers."""
         builtin_servers = {}
         try:
-            # Find the path to the app.mcp_servers package
-            import app.mcp_servers
-            package_dir = Path(app.mcp_servers.__file__).parent
+            # Resolve the mcp_servers directory relative to this file.
+            # Using __file__ instead of `import app.mcp_servers` avoids
+            # resolving to a different `app` package on sys.path.
+            package_dir = Path(__file__).resolve().parent.parent / "mcp_servers"
 
             builtin_servers["time"] = {
                 "command": sys.executable,
@@ -269,17 +270,25 @@ class MCPManager:
                         updated_config = server_configs[name].copy()
                         updated_config.update(user_cfg)
                         
-                        # CRITICAL: For builtin servers, ensure script path is absolute
-                        # User configs may have relative paths that won't resolve correctly
+                        # CRITICAL: For builtin servers, ensure script path is valid.
+                        # User configs (persisted in mcp_config.json) may have stale
+                        # relative or absolute paths that don't resolve correctly
+                        # (e.g. from a different working directory or workspace).
                         if "args" in updated_config and len(updated_config["args"]) > 0:
                             script_arg = updated_config["args"][-1]  # Last arg is typically the script
-                            if script_arg.endswith('.py') and not os.path.isabs(script_arg):
-                                # Replace with absolute path from builtin definition
+                            if script_arg.endswith('.py') and (not os.path.isabs(script_arg) or not os.path.isfile(script_arg)):
+                                # Replace with known-good path from builtin definition
                                 builtin_args = server_configs[name].get("args", [])
                                 if builtin_args:
                                     updated_config["args"] = builtin_args
                                     logger.debug(f"Preserved absolute script path for builtin server '{name}': {builtin_args[-1]}")
                         
+                        # Also preserve the builtin command (sys.executable) — user
+                        # configs may have stale "python" or "python3" strings that
+                        # resolve to a different interpreter.
+                        if "command" in server_configs[name]:
+                            updated_config["command"] = server_configs[name]["command"]
+
                         updated_config["builtin"] = True 
                         server_configs[name] = updated_config
                     else:

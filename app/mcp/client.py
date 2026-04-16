@@ -223,7 +223,7 @@ class MCPClient:
             )
             
             # Start background task to capture logs
-            asyncio.create_task(self._capture_logs())
+            self._log_capture_task = asyncio.create_task(self._capture_logs())
             
             # CRITICAL: Give servers time to start up before initializing
             # External servers (npx, uvx, node) need more time than builtins
@@ -430,6 +430,15 @@ class MCPClient:
 
         if self.process:
             try:
+                # Cancel the background log capture task before terminating
+                # to avoid spurious "Error capturing logs" messages on shutdown
+                if hasattr(self, '_log_capture_task') and self._log_capture_task:
+                    self._log_capture_task.cancel()
+                    try:
+                        await self._log_capture_task
+                    except asyncio.CancelledError:
+                        pass
+                    self._log_capture_task = None
                 self.process.terminate()
                 await asyncio.wait_for(self.process.wait(), timeout=5)
             except asyncio.TimeoutError:
@@ -1506,6 +1515,8 @@ class MCPClient:
                         break
                 else:
                     break
-        except (OSError, RuntimeError, asyncio.CancelledError) as e:
+        except asyncio.CancelledError:
+            pass  # Expected during normal shutdown
+        except (OSError, RuntimeError) as e:
             logger.error(f"Error capturing logs for {self.server_config.get('name', 'unknown')}: {e}")
             self.logs.append(f"ERROR: Failed to capture logs - {str(e)}")

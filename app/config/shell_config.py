@@ -111,8 +111,6 @@ def _ensure_shell_env(cfg: dict) -> dict:
     """Ensure mcpServers.shell.env exists and return the env dict."""
     cfg.setdefault("mcpServers", {})
     cfg["mcpServers"].setdefault("shell", {
-        "command": "python3",
-        "args": ["-u", "app/mcp_servers/shell_server.py"],
         "enabled": True,
         "description": "Shell command execution server",
         "env": {},
