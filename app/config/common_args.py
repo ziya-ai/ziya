@@ -60,3 +60,7 @@ def add_common_arguments(parser):
     # Behavior flags
     parser.add_argument('--no-stream', action='store_true', help='Disable streaming output')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
+
+    # Experimental features
+    parser.add_argument('--memory', action='store_true',
+                        help='Enable persistent memory across sessions (experimental, disabled by default)')

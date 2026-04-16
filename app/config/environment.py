@@ -175,3 +175,8 @@ def setup_environment(args: Any) -> None:
     current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     templates_dir = os.path.join(current_dir, "templates")
     os.environ["ZIYA_TEMPLATES_DIR"] = templates_dir
+
+    # -- Memory system (experimental, opt-in) --------------------------------
+    if getattr(args, 'memory', False):
+        os.environ["ZIYA_ENABLE_MEMORY"] = "true"
+        logger.info("Persistent memory system enabled (experimental)")
