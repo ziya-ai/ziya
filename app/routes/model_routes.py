@@ -33,7 +33,7 @@ class ModelSettingsRequest(BaseModel):
     max_output_tokens: int = Field(default=DEFAULT_MAX_OUTPUT_TOKENS, ge=1)
     thinking_mode: bool = Field(default=False)
     thinking_level: Optional[str] = Field(default=None, pattern='^(low|medium|high)$')
-    thinking_effort: Optional[str] = Field(default=None, pattern='^(low|medium|high|max)$')
+    thinking_effort: Optional[str] = Field(default=None, pattern='^(low|medium|high|xhigh|max)$')
 
 @router.get('/api/available-models')
 def get_available_models(endpoint: Optional[str] = None):
@@ -116,6 +116,7 @@ def get_config():
         'mcpEnabled': os.environ.get('ZIYA_ENABLE_MCP', 'true').lower() in ('true', '1', 'yes'),
         'version': get_current_version(),
         'ephemeralMode': os.environ.get('ZIYA_EPHEMERAL_MODE', 'false').lower() in ('true', '1', 'yes'),
+        'memoryEnabled': os.environ.get('ZIYA_ENABLE_MEMORY', '').lower() in ('true', '1', 'yes'),
         'projectRoot': os.environ.get('ZIYA_USER_CODEBASE_DIR', os.getcwd()),
     }
     # Merge frontend config from active config providers
@@ -577,6 +578,7 @@ def get_model_capabilities(model: str = None):
                 "thinking_effort",
                 os.environ.get("ZIYA_THINKING_EFFORT", capabilities["thinking_effort_default"])
             )
+            capabilities["supported_efforts"] = base_model_config.get("supported_efforts", ["low", "medium", "high", "max"])
             capabilities["is_advanced_model"] = base_model_config.get("is_advanced_model", False)
 
         # Get base token limit, using extended context if supported

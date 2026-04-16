@@ -10,10 +10,11 @@ async def execute_nova_tools_properly(bedrock_client, converse_params, formatted
     from app.mcp.manager import get_mcp_manager
     import asyncio
     
-    logger.info("🔧 DEBUG: execute_nova_tools_properly called")
+    logger.debug("execute_nova_tools_properly called")
     
     # Retry logic for Nova streaming errors
     max_retries = 2
+    base_delay = 2
     for attempt in range(max_retries + 1):
         try:
             # Make initial call
@@ -21,8 +22,9 @@ async def execute_nova_tools_properly(bedrock_client, converse_params, formatted
             break
         except Exception as e:
             if "modelStreamErrorException" in str(e) and attempt < max_retries:
-                logger.warning(f"Nova streaming error on attempt {attempt + 1}, retrying in 2s: {e}")
-                await asyncio.sleep(2)
+                delay = base_delay * (2 ** attempt)  # 2s, 4s
+                logger.warning(f"Nova streaming error on attempt {attempt + 1}, retrying in {delay}s: {e}")
+                await asyncio.sleep(delay)
                 continue
             else:
                 logger.error(f"Nova streaming failed after {attempt + 1} attempts: {e}")
@@ -186,8 +188,9 @@ async def execute_nova_tools_properly(bedrock_client, converse_params, formatted
                 break
             except Exception as e:
                 if "modelStreamErrorException" in str(e) and attempt < max_retries:
-                    logger.warning(f"Nova follow-up call error on attempt {attempt + 1}, retrying in 2s: {e}")
-                    await asyncio.sleep(2)
+                    delay = base_delay * (2 ** attempt)  # 2s, 4s
+                    logger.warning(f"Nova follow-up call error on attempt {attempt + 1}, retrying in {delay}s: {e}")
+                    await asyncio.sleep(delay)
                     continue
                 else:
                     logger.error(f"Nova follow-up call failed after {attempt + 1} attempts: {e}")

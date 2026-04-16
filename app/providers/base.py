@@ -127,7 +127,7 @@ class ThinkingConfig:
     """Thinking / reasoning mode configuration."""
     enabled: bool = False
     mode: str = "adaptive"          # "adaptive" | "enabled"
-    effort: str = "high"            # "low" | "medium" | "high" | "max"
+    effort: str = "high"            # "low" | "medium" | "high" | "xhigh" | "max"
     budget_tokens: int = 16000      # for mode="enabled"
 
 

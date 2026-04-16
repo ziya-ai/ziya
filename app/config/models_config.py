@@ -118,17 +118,8 @@ MODEL_FAMILIES = {
         "parent": "nova",
         "supports_thinking": False
     },
-    "nova-premier": {
-        "wrapper_class": "NovaBedrock",
-        "parent": "nova",
-        "supports_thinking": True,
-        "token_limit": 1000000,  # Explicitly set token limit for nova-premier
-        "supports_multimodal": True,
-        "supports_vision": True,
-            "supports_assistant_prefill": False,
-    },
     "deepseek": {
-        "wrapper_class": "DeepSeekWrapper",
+        "wrapper_class": "OpenAIBedrock",
         "supported_parameters": ["temperature", "top_p", "max_tokens"],
         "parameter_ranges": {
             "temperature": {"min": 0.0, "max": 1.0, "default": 0.7},
@@ -206,8 +197,7 @@ MODEL_FAMILIES = {
             "max_tokens": {"min": 1, "max": 8192, "default": 4096}
         },
         "token_limit": 128000
-    }
-,
+    },
     "openai-gpt": {
         "supported_parameters": ["temperature", "top_p", "max_tokens"],
         "parameter_ranges": {
@@ -333,6 +323,7 @@ MODEL_CONFIGS = {
             "family": "claude",
             "supports_adaptive_thinking": True,
             "thinking_effort_default": "medium",
+            "supported_efforts": ["low", "medium", "high", "max"],
             "supports_context_caching": True,
             "supports_assistant_prefill": False,
             "supports_extended_context": True,
@@ -353,35 +344,6 @@ MODEL_CONFIGS = {
             "family": "claude",
             "supports_context_caching": True,
             "region": "eu-west-1"  # Ensure sonnet3.7 uses EU region
-        },
-        "sonnet3.5-v2": {
-            "model_id": {
-                "us": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
-                # Only available in US regions presently
-            },
-            "family": "claude",
-            "supports_vision": True,
-            "supports_context_caching": True,
-        },
-        "sonnet3.5": {
-            "model_id": {
-                "us": "us.anthropic.claude-3-5-sonnet-20240620-v1:0",
-                "eu": "anthropic.claude-3-5-sonnet-20240620-v1:0"
-            },
-            "family": "claude",
-            "supports_vision": True,
-            "supports_context_caching": True,
-        },
-        "opus3": {
-            "model_id": {
-                "us": "us.anthropic.claude-3-opus-20240229-v1:0"
-            },
-            "available_regions": ["us-east-1", "us-west-2"],
-            "region_restricted": True,  # Only available in US regions
-            "preferred_region": "us-east-1",
-            "family": "claude",
-            "supports_vision": True,
-            "region": "us-east-1"  # Model-specific region preference
         },
         "opus4": {
             "max_output_tokens": 64000,  # Add explicit output token limits
@@ -452,12 +414,39 @@ MODEL_CONFIGS = {
             "family": "claude",
             "supports_context_caching": True,
             "supports_adaptive_thinking": True,
-            "thinking_effort_default": "medium",
+            "thinking_effort_default": "high",
+            "supported_efforts": ["low", "medium", "high", "max"],
             "supports_vision": True,
             "supports_assistant_prefill": False,
             "supports_extended_context": True,  # Supports 1M token context window
             "extended_context_limit": 1000000,  # Extended context window size
             "extended_context_header": "context-1m-2025-08-07",  # Beta header for extended context
+        },
+        "opus4.7": {
+            "model_id": {
+                "us": "us.anthropic.claude-opus-4-7",
+                "eu": "global.anthropic.claude-opus-4-7"
+            },
+            "available_regions": ["us-east-1", "us-east-2", "us-west-2"],
+            "preferred_region": "us-east-1",
+            "token_limit": 200000,
+            "max_output_tokens": 64000,
+            "default_max_output_tokens": 32000,
+            "max_iterations": 8,
+            "timeout_multiplier": 6,
+            "is_advanced_model": True,
+            "supports_max_input_tokens": True,
+            "supports_thinking": True,
+            "family": "claude",
+            "supports_context_caching": True,
+            "supports_adaptive_thinking": True,
+            "thinking_effort_default": "medium",
+            "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+            "supports_vision": True,
+            "supports_assistant_prefill": False,
+            "supports_extended_context": True,
+            "extended_context_limit": 1000000,
+            "effort_beta_required": False,
         },
         "sonnet": {
             "model_id": {
@@ -515,22 +504,15 @@ MODEL_CONFIGS = {
                 "max_tokens": "maxTokens"  # Nova uses maxTokens instead of max_tokens
             }
         },
-        "nova-premier": {
-            "model_id": {
-                "us": "us.amazon.nova-premier-v1:0"
-            },
-            "family": "nova-premier", 
-            "supports_multimodal": True,
-            "token_limit": 1000000,  # Total context window size
-            "context_window": 1000000
-        },
         "deepseek-r1": {
             "model_id": {
                 "us": "us.deepseek.r1-v1:0"
             },
             "family": "deepseek",
+            "wrapper_class": "OpenAIBedrock",
             "max_input_tokens": 128000,
-            "context_window": 128000
+            "context_window": 128000,
+            "native_function_calling": False
         },
         "openai-gpt-120b": {
             "model_id": {
@@ -558,6 +540,7 @@ MODEL_CONFIGS = {
             "available_regions": ["us-west-2"],
             "region_restricted": True,
             "preferred_region": "us-west-2",
+            "wrapper_class": "OpenAIBedrock",
             "family": "oss_openai_gpt",
             "max_input_tokens": 128000,
             "context_window": 128000,
@@ -639,7 +622,92 @@ MODEL_CONFIGS = {
             "context_window": 128000,
             "default_max_output_tokens": 4096,
             "region": "us-west-2"
-        }
+        },
+        "nova-2-lite": {
+            "model_id": {
+                "us": "us.amazon.nova-2-lite-v1:0"
+            },
+            "family": "nova",
+            "context_window": 1000000,
+            "token_limit": 1000000,
+            "supported_parameters": ["temperature", "top_p", "max_tokens"],
+        },
+        "glm-5": {
+            "model_id": {
+                "us": "zai.glm-5"
+            },
+            "family": "glm",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 200000,
+            "context_window": 200000,
+            "default_max_output_tokens": 4096,
+            "region": "us-west-2"
+        },
+        "llama4-scout": {
+            "model_id": {
+                "us": "us.meta.llama4-scout-17b-instruct-v1:0"
+            },
+            "family": "oss_openai_gpt",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 128000,
+            "context_window": 128000,
+            "default_max_output_tokens": 4096,
+        },
+        "llama4-maverick": {
+            "model_id": {
+                "us": "us.meta.llama4-maverick-17b-instruct-v1:0"
+            },
+            "family": "oss_openai_gpt",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 128000,
+            "context_window": 128000,
+            "default_max_output_tokens": 4096,
+        },
+        "mistral-large-3": {
+            "model_id": {
+                "us": "mistral.mistral-large-3-675b-instruct"
+            },
+            "family": "oss_openai_gpt",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 256000,
+            "context_window": 256000,
+            "default_max_output_tokens": 4096,
+            "region": "us-west-2"
+        },
+        "devstral-2": {
+            "model_id": {
+                "us": "mistral.devstral-2-123b"
+            },
+            "family": "oss_openai_gpt",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 256000,
+            "context_window": 256000,
+            "default_max_output_tokens": 4096,
+            "region": "us-west-2"
+        },
+        "minimax-m2.5": {
+            "model_id": {
+                "us": "minimax.minimax-m2.5"
+            },
+            "family": "minimax",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 1000000,
+            "context_window": 1000000,
+            "default_max_output_tokens": 4096,
+            "region": "us-west-2"
+        },
+        "qwen3-vl-235b": {
+            "model_id": {
+                "us": "qwen.qwen3-vl-235b-a22b"
+            },
+            "family": "oss_openai_gpt",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 256000,
+            "context_window": 256000,
+            "supports_vision": True,
+            "default_max_output_tokens": 4096,
+            "region": "us-west-2"
+        },
     },
     "google": {
         "gemini-2.5-pro": {
@@ -854,6 +922,17 @@ MODEL_CONFIGS = {
         },
         "claude-opus-4-6": {
             "model_id": "claude-opus-4-6",
+            "family": "claude",
+            "token_limit": 200000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 16384,
+            "supports_vision": True,
+            "supports_thinking": True,
+            "supports_adaptive_thinking": True,
+            "native_function_calling": True,
+        },
+        "claude-opus-4-7": {
+            "model_id": "claude-opus-4-7",
             "family": "claude",
             "token_limit": 200000,
             "max_output_tokens": 128000,
