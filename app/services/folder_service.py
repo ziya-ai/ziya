@@ -545,6 +545,7 @@ def get_cached_folder_structure(directory: str, ignored_patterns, max_depth: int
                     'directory_mtime': 0
                 }
                 logger.info(f"Background folder scan completed in {time.time() - scan_start:.1f}s")
+                _schedule_broadcast("scan_complete", "")
             except Exception as e:
                 logger.error(f"Background folder scan error: {e}", exc_info=True)
             finally:

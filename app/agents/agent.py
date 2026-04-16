@@ -41,9 +41,7 @@ try:
     from langchain_core.runnables import RunnablePassthrough, Runnable
 except KnownCredentialException as e:
     # Print clean error message without traceback
-    print("\n" + "=" * 80)
-    print(str(e))
-    print("=" * 80 + "\n")
+    logger.error(f"Credential error: {e}")
     sys.exit(1)
 from pydantic import BaseModel, Field  # FastAPI/CORSMiddleware removed — only used by dead initialize_langserve
 from botocore.exceptions import ClientError
@@ -60,7 +58,6 @@ from app.utils.file_utils import read_file_content
 from app.utils.prompt_cache import get_prompt_cache
 from app.utils.file_state_manager import FileStateManager
 from app.utils.error_handlers import format_error_response, detect_error_type
-from app.utils.custom_exceptions import KnownCredentialException
 
 from app.mcp.manager import get_mcp_manager
 from app.config.models_config import TOOL_SENTINEL_CLOSE, DEFAULT_MAX_OUTPUT_TOKENS
@@ -77,10 +74,7 @@ def _get_model():
         try:
             _model_instance = ModelManager()
         except KnownCredentialException as e:
-            # Print clean error message without traceback
-            print("\n" + "=" * 80)
-            print(str(e))
-            print("=" * 80 + "\n")
+            logger.error(f"Credential error: {e}")
             sys.exit(1)
     return _model_instance
 
@@ -766,14 +760,14 @@ class RetryingChatBedrock(Runnable):
                     logger.debug(f"Filtered to {len(messages)} non-empty messages")
                     pre_streaming_work.append(f"✅ Validated {len(messages)} messages ready for processing")
 
-                logger.info("LLM_INPUT_DEBUG: Preparing to call LLM.") # ADD THIS BLOCK
-                for i, msg in enumerate(messages): # ADD THIS BLOCK
-                    if hasattr(msg, 'content'): # ADD THIS BLOCK
-                        logger.info(f"LLM_INPUT_DEBUG: Message {i} ({type(msg)}): Content length {len(msg.content)}") # ADD THIS BLOCK
-                        if isinstance(msg, SystemMessage): # ADD THIS BLOCK
-                            logger.info(f"LLM_INPUT_DEBUG: System Message Content: ...{msg.content[-1000:]}") # ADD THIS BLOCK
-                    else: # ADD THIS BLOCK
-                        logger.info(f"LLM_INPUT_DEBUG: Message {i} ({type(msg)}) has no content attribute.") # ADD THIS BLOCK
+                logger.debug("LLM_INPUT: Preparing to call LLM.")
+                for i, msg in enumerate(messages):
+                    if hasattr(msg, 'content'):
+                        logger.debug(f"LLM_INPUT: Message {i} ({type(msg)}): Content length {len(msg.content)}")
+                        if isinstance(msg, SystemMessage):
+                            logger.debug(f"LLM_INPUT: System Message Content: ...{msg.content[-1000:]}")
+                    else:
+                        logger.debug(f"LLM_INPUT: Message {i} ({type(msg)}) has no content attribute.")
 
                 pre_streaming_work.append("🚀 Initiating model stream connection")
                 
@@ -977,12 +971,10 @@ class RetryingChatBedrock(Runnable):
                 
                 # Log any accumulated content before error handling
                 if hasattr(self, '_accumulated_content') and self._accumulated_content:
-                    logger.info(f"PARTIAL RESPONSE DEBUG: {len(self._accumulated_content)} characters in _accumulated_content before error")
-                    print(f"_ACCUMULATED_CONTENT BEFORE ERROR:\n{self._accumulated_content}")
+                    logger.debug(f"Partial response: {len(self._accumulated_content)} chars in _accumulated_content before error")
                 
                 if accumulated_text:
-                    logger.info(f"PARTIAL RESPONSE DEBUG: {len(accumulated_text)} characters in accumulated_text before error")
-                    print(f"ACCUMULATED_TEXT BEFORE ERROR:\n{accumulated_text}")
+                    logger.debug(f"Partial response: {len(accumulated_text)} chars in accumulated_text before error")
                 
                 # Run credential debug again on error
                 
@@ -1035,12 +1027,10 @@ class RetryingChatBedrock(Runnable):
 
                 # Log any accumulated content before error handling
                 if hasattr(self, '_accumulated_content') and self._accumulated_content:
-                    logger.info(f"PARTIAL RESPONSE DEBUG: {len(self._accumulated_content)} characters in _accumulated_content before exception")
-                    print(f"_ACCUMULATED_CONTENT BEFORE EXCEPTION:\n{self._accumulated_content}")
+                    logger.debug(f"Partial response: {len(self._accumulated_content)} chars in _accumulated_content before exception")
                 
                 if accumulated_text:
-                    logger.info(f"PARTIAL RESPONSE DEBUG: {len(accumulated_text)} characters in accumulated_text before exception")
-                    print(f"ACCUMULATED_TEXT BEFORE EXCEPTION:\n{accumulated_text}")
+                    logger.debug(f"Partial response: {len(accumulated_text)} chars in accumulated_text before exception")
                 
                 # Check if this is a throttling error wrapped in another exception
                 logger.error(f"🔍 ACTUAL_ERROR: {error_str}")
@@ -2068,6 +2058,11 @@ def create_agent_chain(chat_model: BaseChatModel):
     if 'agent_chain_cache' not in ModelManager._state:
         ModelManager._state['agent_chain_cache'] = {}
     ModelManager._state['agent_chain_cache'][cache_key_hash] = agent_chain
+    # Cap to 10 entries — one per model config used in this session
+    cache = ModelManager._state['agent_chain_cache']
+    if len(cache) > 10:
+        for old_key in list(cache.keys())[:len(cache) - 10]:
+            del cache[old_key]
     logger.debug(f"Cached agent chain for {cache_key_hash}")
     
     return agent_chain

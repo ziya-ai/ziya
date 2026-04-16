@@ -173,15 +173,11 @@ async def abort_stream(request: Request):
                 content={"error": "conversation_id is required"}
             )
             
-        from app.server import active_streams, cleanup_stream, _keepalive_wrapper, stream_chunks
+        from app.server import cleanup_stream
 
-        if conversation_id in active_streams:
-            logger.info(f"Explicitly aborting stream for conversation: {conversation_id}")
-            # Remove from active streams to signal to any ongoing processing that it should stop
-            await cleanup_stream(conversation_id)
-            return JSONResponse(content={"status": "success", "message": "Stream aborted"})
-        else:
-            return JSONResponse(content={"status": "not_found", "message": "No active stream found for this conversation"})
+        logger.info(f"Explicitly aborting stream for conversation: {conversation_id}")
+        await cleanup_stream(conversation_id)
+        return JSONResponse(content={"status": "success", "message": "Stream aborted"})
     except Exception as e:
         logger.error(f"Error aborting stream: {str(e)}")
         return JSONResponse(status_code=500, content={"error": str(e)})
