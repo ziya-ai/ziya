@@ -645,9 +645,13 @@ async def update_shell_config(config: ShellConfig):
             logger.info(f"Updated shell server enabled state to: {config.enabled}")
         
         # Create new shell server configuration
+        import sys
+        # Resolve via __file__ to avoid picking up a different `app` package on sys.path
+        _shell_script = str(Path(__file__).resolve().parent.parent / "mcp_servers" / "shell_server.py")
+        
         new_shell_config = {
-            "command": "python",
-            "args": ["-u", "app/mcp_servers/shell_server.py"],
+            "command": sys.executable,
+            "args": ["-u", _shell_script],
             "enabled": config.enabled,
             "builtin": True,  # Preserve builtin flag
             "description": "Provides shell command execution",
@@ -684,20 +688,9 @@ async def update_shell_config(config: ShellConfig):
                 
                 # Update or create shell server config
                 if "shell" not in mcp_config["mcpServers"]:
-                    # Get the base command and script path
-                    import sys
-                    
-                    # Find the shell_server.py script using the same logic as builtin definitions
-                    try:
-                        import app.mcp_servers
-                        package_dir = Path(app.mcp_servers.__file__).parent
-                        shell_script_path = str(package_dir / "shell_server.py")
-                    except ImportError:
-                        shell_script_path = "app/mcp_servers/shell_server.py"  # Fallback to relative
-                    
                     mcp_config["mcpServers"]["shell"] = {
                         "command": sys.executable,
-                        "args": ["-u", shell_script_path],
+                        "args": ["-u", _shell_script],
                         "enabled": config.enabled,
                         "description": "Shell command execution server"
                     }
