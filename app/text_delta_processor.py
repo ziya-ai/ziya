@@ -64,6 +64,11 @@ def process_text_delta(
     events: List[Dict[str, Any]] = []
     ts = f"{int((time.time() - state.iteration_start_time) * 1000)}ms"
 
+    # --- Convert <reasoning> tags to <thinking-data> for presentation ---
+    # OpenAI-compatible models (GLM, Qwen, etc.) emit reasoning content
+    # inline in <reasoning> tags; map them to the thinking UI.
+    text = text.replace('<reasoning>', '<thinking-data>').replace('</reasoning>', '</thinking-data>')
+
     # --- Fence buffering ---
     if not hasattr(executor, '_block_opening_buffer'):
         executor._block_opening_buffer = ""
