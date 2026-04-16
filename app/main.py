@@ -1,19 +1,16 @@
 # CRITICAL: Set execution mode FIRST before any other imports
 # This must be the very first thing to ensure logging is configured correctly
 import sys
+import os
 if any(cmd in sys.argv for cmd in ['chat', 'ask', 'review', 'explain', 'task']):
-    import os
     os.environ["ZIYA_MODE"] = "chat"
     os.environ.setdefault("ZIYA_LOG_LEVEL", "WARNING")
 
 # Suppress transformers warning about PyTorch/TensorFlow not being installed
 # We only use transformers for tokenization, not ML models
-import os
 os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 import argparse
-import os
 import os.path
-import sys
 import subprocess
 import warnings
 from typing import Optional
@@ -95,6 +92,11 @@ def setup_environment(args):
         os.environ["ZIYA_ENABLE_AST"] = "true"
         os.environ["ZIYA_AST_RESOLUTION"] = args.ast_resolution
         logger.info(f"AST-based code understanding enabled (resolution: {args.ast_resolution})")
+
+    # Memory flag is handled by shared setup_environment() via ZIYA_ENABLE_MEMORY.
+    # Log a reminder in server mode so it's visible in the startup banner.
+    if getattr(args, 'memory', False):
+        logger.info("🧠 Persistent memory system enabled via --memory flag")
 
     if args.ephemeral:
         os.environ["ZIYA_EPHEMERAL_MODE"] = "true"
@@ -254,8 +256,7 @@ def print_info(args):
                     error_msg = str(sts_error)
                     if 'ExpiredToken' in error_msg:
                         print(f"  Access Key: {credentials.access_key[:8]}...")
-                        # Get credential help from active auth provider
-                        from app.plugins import get_active_auth_provider
+                        # get_active_auth_provider already imported at line 187
                         auth_provider = get_active_auth_provider()
                         if auth_provider:
                             print(f"  Status: Expired")
@@ -485,13 +486,9 @@ def start_server(args):
             logger.error("Server startup aborted due to configuration error.")
             sys.exit(1)
     except ValueError as e:
-        # Use a class variable to track if we've already displayed an error
-        if not getattr(ValueError, "_error_displayed", False):
-            print("\n" + "=" * 80)
-            print(f"⚠️ ERROR: {str(e)}")
-            print("=" * 80 + "\n")
-            setattr(ValueError, "_error_displayed", True)
-            
+        # Inner handler already caught and displayed ValueError — this is a
+        # redundant outer handler that can only fire if start_server itself
+        # raises ValueError before entering the inner try.  Just log and exit.
         logger.error("Server startup aborted due to configuration error.")
         sys.exit(1)
 

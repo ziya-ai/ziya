@@ -26,7 +26,6 @@ async def execute_mcp_tools_with_status(full_response: str) -> str:
     3. Replaces the tool calls with the results
     4. Returns the modified response
     """
-    print(f"🔧 DEBUG: execute_mcp_tools_with_status called with response length {len(full_response)}")
     logger.info(f"🔧 MCP: Processing response ({len(full_response)} chars)")
     
     # Import improved functions

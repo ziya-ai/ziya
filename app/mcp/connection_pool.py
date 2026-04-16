@@ -40,15 +40,14 @@ class ConnectionPool:
         Returns:
             Tool execution result
         """
-        # Add debug logging
-        logger.info(f"🔌 CONNECTION_POOL: Calling tool {tool_name} with arguments {arguments}")
+        logger.debug(f"CONNECTION_POOL: Calling tool {tool_name} with arguments {arguments}")
         
         # Special handling for shell commands
         if tool_name == "run_shell_command" or tool_name == "mcp_run_shell_command":
-            logger.info(f"🔌 CONNECTION_POOL: Detected shell command: {arguments.get('command', '')}")
+            logger.debug(f"CONNECTION_POOL: Detected shell command: {arguments.get('command', '')}")
             # Force server_name to "shell" for shell commands
             server_name = "shell"
-            logger.info(f"🔌 CONNECTION_POOL: Forcing server_name to 'shell' for shell command")
+            logger.debug(f"CONNECTION_POOL: Forcing server_name to 'shell' for shell command")
         
         # Apply rate limiting
         tool_key = f"{tool_name}:{conversation_id}"
@@ -77,15 +76,12 @@ class ConnectionPool:
         
         # Call the tool via MCP manager
         try:
-            logger.info(f"🔌 CONNECTION_POOL: Calling MCP manager with tool_name={tool_name}, server_name={server_name}")
-            print(f"🔌 CONNECTION_POOL: Calling MCP manager with tool_name={tool_name}, server_name={server_name}")
+            logger.debug(f"🔌 CONNECTION_POOL: Calling MCP manager with tool_name={tool_name}, server_name={server_name}")
             result = await mcp_manager.call_tool(tool_name, arguments, server_name)
-            logger.info(f"🔌 CONNECTION_POOL: Call successful, result type: {type(result)}")
-            print(f"🔌 CONNECTION_POOL: Call successful, result type: {type(result)}")
+            logger.debug(f"🔌 CONNECTION_POOL: Call successful, result type: {type(result)}")
             return result
         except Exception as e:
             logger.error(f"🔌 CONNECTION_POOL: Error calling tool {tool_name}: {e}")
-            print(f"🔌 CONNECTION_POOL: Error calling tool {tool_name}: {e}")
             raise e
 
 # Global connection pool instance

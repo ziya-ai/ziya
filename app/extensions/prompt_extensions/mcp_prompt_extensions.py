@@ -212,7 +212,10 @@ def _get_tool_descriptions_from_mcp(available_tools: list) -> str:
         logger.info("No tool descriptions available from enabled servers")
         return "No tools currently available."
     
-    return "\n".join(tool_descriptions)
+    # Escape curly braces — tool descriptions contain JSON examples like
+    # { "query": ... } that would break LangChain template formatting.
+    result = "\n".join(tool_descriptions)
+    return result.replace("{", "{{").replace("}", "}}")
 
 def _get_tool_parameter_schemas(available_tools: list) -> str:
     """Get detailed parameter schemas for MCP tools."""
@@ -250,7 +253,10 @@ def _get_tool_parameter_schemas(available_tools: list) -> str:
     if not tool_schemas:
         return ""
     
-    return "\n\n".join(tool_schemas) + "\n"
+    # Escape curly braces — parameter descriptions can contain JSON
+    # fragments that would break LangChain template formatting.
+    result = "\n\n".join(tool_schemas) + "\n"
+    return result.replace("{", "{{").replace("}", "}}")
 
 def _get_tool_call_formats_from_mcp(available_tools: list) -> str:
     """Generate tool call format examples from actual MCP tool schemas."""

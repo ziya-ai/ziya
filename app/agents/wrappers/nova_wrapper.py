@@ -564,7 +564,7 @@ class NovaWrapper(BaseChatModel):
         """Parse Nova Pro text-based tool calls and return tool execution results"""
         import re
         
-        print(f"🔧 DEBUG: Parsing Nova Pro text for tool calls: {text[:200]}...")
+        logger.debug(f"Parsing Nova Pro text for tool calls: {text[:200]}...")
         
         # Multiple patterns to match different Nova Pro tool call formats
         patterns = [
@@ -585,7 +585,7 @@ class NovaWrapper(BaseChatModel):
                     tool_name = match
                     command = ""
                 
-                print(f"🔧 DEBUG: Found Nova Pro tool call: {tool_name} with command: '{command.strip()}'")
+                logger.debug(f"Found Nova Pro tool call: {tool_name} with command: '{command.strip()}'")
                 
                 # Map tool names and execute
                 if tool_name in ['run_shell_command', 'mcp_run_shell_command']:
@@ -595,7 +595,7 @@ class NovaWrapper(BaseChatModel):
                 elif tool_name in ['get_current_time', 'mcp_get_current_time']:
                     result = await self._execute_mcp_tool('get_current_time', {})
                 else:
-                    print(f"🔧 DEBUG: Unknown Nova Pro tool: {tool_name}")
+                    logger.debug(f"Unknown Nova Pro tool: {tool_name}")
                     continue
                 
                 if result:
@@ -605,7 +605,7 @@ class NovaWrapper(BaseChatModel):
                         'tool_name': f'mcp_{tool_name.replace("mcp_", "")}',
                         'result': result
                     })
-                    print(f"🔧 DEBUG: Nova Pro text tool executed successfully: {result[:100]}...")
+                    logger.debug(f"Nova Pro text tool executed successfully: {result[:100]}...")
         
         return results
     
@@ -744,7 +744,7 @@ class NovaWrapper(BaseChatModel):
             logger.info(f"Nova Converse request keys: {list(converse_params.keys())}")
             
             # Use proper Nova tool execution
-            logger.info("🔧 DEBUG: About to call execute_nova_tools_properly")
+            logger.debug("About to call execute_nova_tools_properly")
             from app.agents.wrappers.nova_tool_execution import execute_nova_tools_properly
             
             accumulated_content = ""
