@@ -1,6 +1,7 @@
 """Streaming markdown renderer for terminal output using rich."""
 
 import re
+import sys
 from rich.console import Console
 from rich.syntax import Syntax
 from rich.markdown import CodeBlock
@@ -119,3 +120,25 @@ class StreamingMarkdownRenderer:
             self.console.print(Syntax(code, lang, theme="monokai", background_color="default", word_wrap=True))
         else:
             self.console.print(Markdown(text))
+
+
+def render_prefixed_markdown(text: str, prefix: str = "\033[90m│\033[0m ") -> None:
+    """Render markdown content to the terminal with a prefix on every line.
+
+    Used for thinking blocks and similar boxed output where each line
+    needs a leading border character but code blocks should still get
+    syntax highlighting.
+    """
+    if not text:
+        return
+    # Render through rich into a captured string so we can prefix lines.
+    capture_console = Console(
+        force_terminal=True,
+        width=max((Console().width or 100) - len(prefix) + 8, 40),  # +8 compensates for ANSI in prefix
+    )
+    with capture_console.capture() as cap:
+        renderer = StreamingMarkdownRenderer(console=capture_console)
+        renderer.feed(text)
+        renderer.flush()
+    for line in cap.get().rstrip("\n").split("\n"):
+        print(f"{prefix}{line}", flush=True, file=sys.stdout)

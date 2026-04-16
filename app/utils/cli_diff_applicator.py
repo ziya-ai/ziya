@@ -89,7 +89,7 @@ class CLIDiffApplicator:
             line = lines[i]
             stripped = line.strip()
             # Match opening fence: 3+ backticks followed by 'diff'
-            if re.match(r'^`{3,4}diff\s*$', stripped):
+            if re.match(r'^`{3,}diff\s*$', stripped):
                 fence_len = len(stripped.split('diff')[0])  # number of backticks
                 start_pos = sum(len(l) + 1 for l in lines[:i])
                 i += 1
@@ -212,6 +212,10 @@ class CLIDiffApplicator:
                     superseded.add(i)
                     break
                 if self._ranges_overlap(parsed_ranges[i], parsed_ranges[j]):
+                    # Exact duplicate — drop the earlier one
+                    if diffs[i].content.strip() == diffs[j].content.strip():
+                        superseded.add(i)
+                        break
                     if self._is_sequential_pair(diffs[i].content, diffs[j].content):
                         continue  # complementary, not superseding
                     superseded.add(i)
