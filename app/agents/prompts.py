@@ -434,19 +434,19 @@ def log_template_variables(variables):
 
 # Debug function to log template variables
 def debug_question_template(question):
-    logger.info("====== TEMPLATE QUESTION DEBUG ======")
-    logger.info(f"Question type: {type(question)}")
-    logger.info(f"Question value: '{question}'")
-    logger.info(f"Question is empty: {not question or not question.strip()}")
-    logger.info("====== END TEMPLATE QUESTION DEBUG ======")
+    logger.debug("====== TEMPLATE QUESTION DEBUG ======")
+    logger.debug(f"Question type: {type(question)}")
+    logger.debug(f"Question value: '{question}'")
+    logger.debug(f"Question is empty: {not question or not question.strip()}")
+    logger.debug("====== END TEMPLATE QUESTION DEBUG ======")
     return question
 
 # Debug function to log chat history
 def debug_chat_history(chat_history):
-    logger.info("====== TEMPLATE CHAT HISTORY DEBUG ======")
-    logger.info(f"Chat history type: {type(chat_history)}")
-    logger.info(f"Chat history length: {len(chat_history) if hasattr(chat_history, '__len__') else 'N/A'}")
-    logger.info("====== END TEMPLATE CHAT HISTORY DEBUG ======")
+    logger.debug("====== TEMPLATE CHAT HISTORY DEBUG ======")
+    logger.debug(f"Chat history type: {type(chat_history)}")
+    logger.debug(f"Chat history length: {len(chat_history) if hasattr(chat_history, '__len__') else 'N/A'}")
+    logger.debug("====== END TEMPLATE CHAT HISTORY DEBUG ======")
     return chat_history
 
 conversational_prompt = ChatPromptTemplate.from_messages(
