@@ -10,7 +10,7 @@ import json
 import re
 import time
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 from app.utils.logging_utils import logger
 from app.models.memory import (
@@ -175,6 +175,14 @@ class MemoryStorage:
             memories.append(dump)
         self._save_memories(memories)
         logger.info(f"💾 Memory saved: {memory.id} [{memory.layer}] {memory.content[:60]}")
+
+        # Embed asynchronously — non-blocking, best-effort
+        try:
+            from app.services.embedding_service import embed_and_cache
+            embed_and_cache(memory.id, memory.content)
+        except Exception as e:
+            logger.debug(f"Embedding on save failed (non-fatal): {e}")
+
         return memory
 
     def delete(self, memory_id: str) -> bool:
@@ -185,85 +193,121 @@ class MemoryStorage:
             return False
         self._save_memories(memories)
         logger.info(f"🗑️ Memory deleted: {memory_id}")
+
+        # Remove embedding from cache
+        try:
+            from app.services.embedding_service import remove_embedding
+            remove_embedding(memory_id)
+        except Exception as e:
+            logger.debug(f"Embedding removal failed (non-fatal): {e}")
+
         return True
 
     def search(self, query: str, limit: int = 20) -> List[Memory]:
-        """Multi-signal search across content, tags, and layer.
+        """Hybrid semantic + keyword search.
 
-        Scoring combines:
-        - Word overlap with IDF weighting (rare words score higher)
-        - Tag matches (weighted 3× vs content words)
-        - Exact phrase match bonus
-        - Importance × recency decay
+        Combines embedding-based semantic similarity with keyword IDF
+        scoring via Reciprocal Rank Fusion (RRF).  Falls back to
+        keyword-only when embeddings are unavailable.
         """
         raw = self._load_memories()
         active = [m for m in raw if m.get("status") in (None, "active")]
         if not active:
             return []
 
-        # Tokenize query
+        # -- Semantic search path --
+        semantic_ranked: List[Tuple[str, float]] = []
+        try:
+            from app.services.embedding_service import semantic_search, get_embedding_cache
+            cache = get_embedding_cache()
+            # Auto-backfill: if cache is mostly empty, trigger sync backfill
+            active_ids = [m.get("id") for m in active if m.get("id")]
+            missing = cache.missing_ids(active_ids)
+            if missing and len(missing) > len(active_ids) * 0.5:
+                logger.info(f"Embedding cache has {len(missing)}/{len(active_ids)} missing — triggering backfill")
+                from app.services.embedding_service import get_embedding_provider, NoopProvider
+                provider = get_embedding_provider()
+                if not isinstance(provider, NoopProvider):
+                    for mid in missing:
+                        mem_data = next((m for m in active if m.get("id") == mid), None)
+                        if mem_data:
+                            from app.services.embedding_service import embed_and_cache
+                            embed_and_cache(mid, mem_data.get("content", ""))
+            semantic_ranked = semantic_search(query, top_k=limit * 2)
+        except Exception as e:
+            logger.debug(f"Semantic search unavailable: {e}")
+
+        # -- Keyword search path (existing logic) --
         q_lower = query.lower()
         q_tokens = _tokenize(q_lower)
-        if not q_tokens:
+        if not q_tokens and not semantic_ranked:
             return []
 
-        # Build IDF table: words appearing in fewer memories are more discriminating
-        doc_freq: Dict[str, int] = {}
-        for m in active:
-            words = set(_tokenize(m.get("content", "").lower()))
-            words.update(t.lower() for t in m.get("tags", []))
-            for w in words:
-                doc_freq[w] = doc_freq.get(w, 0) + 1
-        n_docs = len(active)
+        keyword_ranked: List[Tuple[str, float]] = []
+        if q_tokens:
+            doc_freq: Dict[str, int] = {}
+            for m in active:
+                words = set(_tokenize(m.get("content", "").lower()))
+                words.update(t.lower() for t in m.get("tags", []))
+                for w in words:
+                    doc_freq[w] = doc_freq.get(w, 0) + 1
+            n_docs = len(active)
 
-        today = time.strftime("%Y-%m-%d")
-        scored: List[tuple] = []
+            today = time.strftime("%Y-%m-%d")
+            keyword_scored: List[tuple] = []
 
-        for m in active:
-            content_lower = m.get("content", "").lower()
-            content_tokens = set(_tokenize(content_lower))
-            mem_tags = {t.lower() for t in m.get("tags", [])}
+            for m in active:
+                content_lower = m.get("content", "").lower()
+                content_tokens = set(_tokenize(content_lower))
+                mem_tags = {t.lower() for t in m.get("tags", [])}
 
-            # Signal 1: Word overlap with IDF weighting
-            word_score = 0.0
-            for qt in q_tokens:
-                if qt in content_tokens:
-                    df = doc_freq.get(qt, 1)
-                    idf = math.log(n_docs / df) + 1.0
-                    word_score += idf
+                word_score = sum(
+                    math.log(n_docs / doc_freq.get(qt, 1)) + 1.0
+                    for qt in q_tokens if qt in content_tokens
+                )
+                tag_score = sum(
+                    3.0 for qt in q_tokens
+                    if any(qt == tag or qt in tag for tag in mem_tags)
+                )
+                phrase_score = 5.0 if q_lower in content_lower else 0.0
+                layer_score = 1.0 if q_lower in m.get("layer", "") else 0.0
 
-            # Signal 2: Tag matches (high-signal, curated)
-            tag_score = 0.0
-            for qt in q_tokens:
-                for tag in mem_tags:
-                    if qt == tag or qt in tag:
-                        tag_score += 3.0
-                        break
+                raw_score = word_score + tag_score + phrase_score + layer_score
+                if raw_score <= 0:
+                    continue
 
-            # Signal 3: Exact phrase match bonus
-            phrase_score = 5.0 if q_lower in content_lower else 0.0
+                importance = m.get("importance", 0.5)
+                last_accessed = m.get("last_accessed", today)
+                try:
+                    days_since = (time.mktime(time.strptime(today, "%Y-%m-%d"))
+                                  - time.mktime(time.strptime(last_accessed, "%Y-%m-%d"))) / 86400
+                except (ValueError, OverflowError):
+                    days_since = 0
+                recency = math.exp(-0.01 * max(days_since, 0))
+                final_score = raw_score * (0.5 + importance) * (0.3 + 0.7 * recency)
+                keyword_scored.append((m.get("id"), final_score))
 
-            # Signal 4: Layer match (minor)
-            layer_score = 1.0 if q_lower in m.get("layer", "") else 0.0
+            keyword_scored.sort(key=lambda x: x[1], reverse=True)
+            keyword_ranked = keyword_scored[:limit * 2]
 
-            raw_score = word_score + tag_score + phrase_score + layer_score
-            if raw_score <= 0:
-                continue
+        # -- Reciprocal Rank Fusion --
+        if semantic_ranked and keyword_ranked:
+            RRF_K = 60
+            rrf_scores: Dict[str, float] = {}
+            for rank, (mid, _) in enumerate(semantic_ranked):
+                rrf_scores[mid] = rrf_scores.get(mid, 0) + 1.0 / (RRF_K + rank + 1)
+            for rank, (mid, _) in enumerate(keyword_ranked):
+                rrf_scores[mid] = rrf_scores.get(mid, 0) + 1.0 / (RRF_K + rank + 1)
+            fused = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+            result_ids = [mid for mid, _ in fused[:limit]]
+        elif semantic_ranked:
+            result_ids = [mid for mid, _ in semantic_ranked[:limit]]
+        else:
+            result_ids = [mid for mid, _ in keyword_ranked[:limit]]
 
-            # Apply importance × recency decay
-            importance = m.get("importance", 0.5)
-            last_accessed = m.get("last_accessed", today)
-            try:
-                days_since = (time.mktime(time.strptime(today, "%Y-%m-%d"))
-                              - time.mktime(time.strptime(last_accessed, "%Y-%m-%d"))) / 86400
-            except (ValueError, OverflowError):
-                days_since = 0
-            recency = math.exp(-0.01 * max(days_since, 0))  # half-life ~70 days
-            final_score = raw_score * (0.5 + importance) * (0.3 + 0.7 * recency)
-            scored.append((final_score, m))
-
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [Memory(**m) for _, m in scored[:limit]]
+        # Resolve IDs to Memory objects
+        id_to_raw = {m.get("id"): m for m in active}
+        return [Memory(**id_to_raw[mid]) for mid in result_ids if mid in id_to_raw]
 
 
     def count(self) -> Dict[str, int]:

@@ -6,6 +6,7 @@ interface ConfigContextType {
     config: AppConfig;
     isLoading: boolean;
     isEphemeralMode: boolean;
+    memoryEnabled: boolean;
     version: string;
 }
 
@@ -41,6 +42,7 @@ export function ConfigProvider({ children }: ConfigProviderProps) {
         config,
         isLoading,
         isEphemeralMode: config.ephemeralMode || false,
+        memoryEnabled: config.memoryEnabled || false,
         version: config.version || 'dev',
     };
 

@@ -84,6 +84,15 @@ export async function saveMemory(content: string, layer: string, tags: string[])
   return res.json();
 }
 
+export async function updateMemoryScope(id: string, projectPaths: string[]): Promise<MemoryItem> {
+  const res = await fetch(`/api/v1/memory/${id}`, {
+    method: 'PUT', headers: headers(),
+    body: JSON.stringify({ scope: { project_paths: projectPaths } }),
+  });
+  if (!res.ok) throw new Error(`Scope update failed: ${res.status}`);
+  return res.json();
+}
+
 export async function updateMemory(id: string, updates: Partial<Pick<MemoryItem, 'content' | 'layer' | 'tags' | 'status'>>): Promise<MemoryItem> {
   const res = await fetch(`/api/v1/memory/${id}`, {
     method: 'PUT', headers: headers(),
@@ -143,6 +152,49 @@ export async function runMaintenance(): Promise<{ divided: string[]; cross_linke
   const res = await fetch('/api/v1/memory/maintenance', { method: 'POST', headers: headers() });
   if (!res.ok) throw new Error(`Maintenance failed: ${res.status}`);
   return res.json();
+}
+
+export async function startOrganize(): Promise<{ status: string }> {
+  const res = await fetch('/api/v1/memory/organize', { method: 'POST', headers: headers() });
+  if (!res.ok) throw new Error(`Organize failed: ${res.status}`);
+  return res.json();
+}
+
+export async function getOrganizeStatus(): Promise<{
+  running: boolean;
+  result: OrganizeResult | null;
+  error: string | null;
+  started_at: number | null;
+}> {
+  const res = await fetch('/api/v1/memory/organize/status', { headers: headers() });
+  if (!res.ok) throw new Error(`Status check failed: ${res.status}`);
+  return res.json();
+}
+
+export interface OrganizeResult {
+  cleanup: { status: string; removed?: number; merged?: number; reviewed?: number };
+  bootstrap: { status: string; domains_created?: number; domains_updated?: number; memories_placed?: number };
+  relations: { status: string; relations_found?: number };
+  cross_links: string[];
+  divisions: string[];
+}
+
+export async function runOrganize(): Promise<OrganizeResult> {
+  await startOrganize();
+  // Poll for completion
+  const POLL_INTERVAL = 2000;
+  const MAX_WAIT = 120000; // 2 minutes
+  const start = Date.now();
+  while (Date.now() - start < MAX_WAIT) {
+    await new Promise(r => setTimeout(r, POLL_INTERVAL));
+    const status = await getOrganizeStatus();
+    if (!status.running) {
+      if (status.error) throw new Error(status.error);
+      if (status.result) return status.result;
+      throw new Error('Organize completed with no result');
+    }
+  }
+  throw new Error('Organize timed out after 2 minutes');
 }
 
 export const LAYER_COLORS: Record<string, string> = {

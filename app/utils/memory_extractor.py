@@ -14,6 +14,7 @@ Runs as a fire-and-forget background task — never blocks the user.
 import json
 import os
 import re
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.utils.logging_utils import logger
@@ -59,7 +60,35 @@ Reject anything that is primarily about the CURRENT TASK being performed:
 - CSS/layout/config fixes to uncommitted code
 - Current implementation decisions about transient work products
 - TODO items or next steps for work in progress
+- Refactoring notes ("extracted X from Y", "replaced broad exception handling")
+- Test infrastructure details ("test failures caused by incorrect mocking")
+- Rendering pipeline implementation details
+- Code-level fixes (variable scoping, import ordering, property values)
 Extract ONLY the underlying domain truth, if one exists.
+
+GATE 4 — NOT A CODE DESCRIPTION:
+Reject memories that merely describe what code does without conveying \
+transferable knowledge. Implementation details of the CURRENT PROJECT \
+are not memories — they live in the code itself:
+- How a specific function/module/class works ("X uses Y to do Z")
+- What files were changed ("server.py was reduced from X to Y lines")
+- Internal API behavior ("the MCP tool server uses os.getcwd()")
+- Feature descriptions ("the rendering pipeline supports 6 diagram types")
+- Architecture of the tool being built ("AST tokens are only consumed when...")
+Only extract if the knowledge applies BEYOND the current codebase.
+
+GATE 5 — NOT REDUNDANT:
+If two candidate facts say essentially the same thing, keep only the most \
+complete version. Common failure: extracting 3-5 paraphrases of the same \
+project description or development philosophy.
+
+GATE 6 — NOT CAREER NARRATIVE OR SELF-PROMOTION:
+Reject content about career strategy, professional positioning, resume \
+narratives, or motivational framing. These are not domain knowledge:
+- "At company X, I rebuilt..." → career narrative
+- "The most valuable professionals are those who..." → opinion
+- "Career progression strategy involves..." → self-promotion
+- "The project survived internal politics by..." → organizational narrative
 
 REJECT examples (common failures to avoid):
 - "The document should avoid political language" → session editing instruction
@@ -67,11 +96,25 @@ REJECT examples (common failures to avoid):
 - "Removing marginRight: '8px' fixes the spacing" → transient code fix
 - "The document should include per-phase goals" → editing instruction
 - "The windowing logic initializes on first mount causing X" → debugging artifact
+- "Text delta processing was extracted from streaming_tool_executor.py" → refactoring note
+- "The README rewrite needs to emphasize..." → document editing instruction
+- "No changelog entries have been reported" → status observation, not knowledge
+- "The test suite requires patching ModelManager at the correct import path" → test infrastructure
+- "Broad exception handling was systematically replaced with..." → refactoring process note
+- "The streaming tool executor and server files have been refactored" → refactoring note
+- "The MCP tool server uses os.getcwd() to determine..." → code description
+- "AST status polling mechanism does not automatically re-trigger" → session bug
+- "At OCI, Dan rebuilt network architecture from first principles" → career narrative
+- "Ziya is a self-hosted AI workbench where code and visual analysis converge" → product description
+- "The memory system lacks a comprehensive mindmap infrastructure" → stale system state
+- "Memory cleanup will run periodically with reasonable frequency" → implementation plan
 
 ACCEPT examples:
 - "Component A handles packet forwarding; Component B handles routing policy" → durable system knowledge
 - "The ingestion pipeline uses TCAM-based queue routing with per-queue byte counters" → durable architecture fact
 - "Exponential backoff with jitter is required for retries to Service X" → durable operational pattern
+- "SDN quantum = 4.8112s, SDN slot = 3 × SDN quantum = 14.4s" → durable technical constant
+- "Safety_inhibit ALWAYS overrides persistence in flight mode" → durable safety constraint
 
 Output format — for each extracted fact, a JSON object with:
 - "content": Distilled principle or fact (1-2 sentences, self-contained)
@@ -274,8 +317,55 @@ _DANGLING_REF_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Code artifact detection: memories containing inline code identifiers
+# (backtick-wrapped names, file extensions, CSS properties) are almost
+# always session artifacts about the current task, not durable knowledge.
+# This is a structural check — it tests for syntactic patterns that
+# indicate code-level content, not semantic meaning.
+_CODE_ARTIFACT_RE = re.compile(
+    r'`[a-zA-Z_][a-zA-Z0-9_.]*(?:\(\))?`'  # backtick-wrapped identifiers like `marginRight` or `useState()`
+)
+_FILE_REF_RE = re.compile(
+    r'\b\w+\.(?:tsx?|jsx?|py|css|html|json|md|yaml|yml|toml|rs|go|java|rb)\b'
+)
+# CSS property patterns — px/em/rem values, CSS property names
+_CSS_PATTERN_RE = re.compile(
+    r"(?:\d+px|\d+em|\d+rem|margin\w*|padding\w*|border\w*|display\s*:|"
+    r"visibility\s*:|overflow\s*:|flex\w*|grid\w*)",
+    re.IGNORECASE,
+)
+
+# Refactoring / code-change patterns — describes what happened to code, not knowledge
+_REFACTORING_RE = re.compile(
+    r"(?:(?:was|were|have been|has been|had been) (?:\w+ )?(?:extracted|refactored|moved|migrated|reduced|split|decomposed)|"
+    r"refactoring (?:completed|progress|in progress)|"
+    r"systematically (?:replaced|removed|cleaned)|"
+    r"underwent (?:a |an )?(?:significant |major )?(?:API |)change|"
+    r"lines? (?:of code |)(?:was |were )?(?:removed|reduced|added))",
+    re.IGNORECASE,
+)
+
+# Code-description patterns — describes what code does, not transferable knowledge
+_CODE_DESCRIPTION_RE = re.compile(
+    r"(?:^The (?:current |existing )?(?:implementation|system|module|function|method|class|component|pipeline|subsystem) "
+    r"(?:uses|handles|manages|processes|provides|supports|requires|fails|lacks|does not))|"
+    r"(?:(?:polling|status|display|UI|frontend|backend) (?:mechanism|check|indicator|component) )"
+    r"(?:does not|has not|is not|fails to|currently)",
+    re.IGNORECASE,
+)
+
+# Career / self-promotion patterns
+_CAREER_RE = re.compile(
+    r"(?:career (?:strategy|progression|inflection|move)|"
+    r"professional (?:obligation|positioning|credibility)|"
+    r"most valuable (?:technical |)professionals|"
+    r"survived (?:internal )?politics|"
+    r"corporate.strategy|resume|self.promotion)",
+    re.IGNORECASE,
+)
+
 # Structural limits
-MAX_TAGS = 5
+MAX_TAGS = 4
 MIN_CONTENT_CHARS = 20
 MAX_CONTENT_CHARS = 500
 
@@ -289,6 +379,8 @@ def quality_gate(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     - Dangling references (syntactic self-containment)
     - Length bounds (too short = not self-contained, too long = not distilled)
     - Tag count cap
+    - Code artifact patterns (backtick identifiers, file extensions, CSS)
+    - Embedding similarity against existing store (>0.92 = paraphrase)
     """
     passed = []
     for c in candidates:
@@ -313,6 +405,40 @@ def quality_gate(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             logger.info(f"🧠 Quality gate REJECT ({dangling_hits} dangling refs): {content[:80]}")
             continue
 
+        # Structural: code artifact detection
+        # 3+ backtick-wrapped code identifiers = almost certainly a code-level note
+        code_id_count = len(_CODE_ARTIFACT_RE.findall(content))
+        if code_id_count >= 3:
+            logger.info(f"🧠 Quality gate REJECT ({code_id_count} code identifiers): {content[:80]}")
+            continue
+
+        # Structural: file reference detection
+        # 2+ source file references = refactoring/implementation note
+        file_ref_count = len(_FILE_REF_RE.findall(content))
+        if file_ref_count >= 2:
+            logger.info(f"🧠 Quality gate REJECT ({file_ref_count} file refs): {content[:80]}")
+            continue
+
+        # Structural: CSS/layout pattern detection
+        if _CSS_PATTERN_RE.search(content):
+            logger.info(f"🧠 Quality gate REJECT (CSS/layout pattern): {content[:80]}")
+            continue
+
+        # Structural: refactoring / code-change description
+        if _REFACTORING_RE.search(content):
+            logger.info(f"🧠 Quality gate REJECT (refactoring note): {content[:80]}")
+            continue
+
+        # Structural: code description (what code does, not knowledge)
+        if _CODE_DESCRIPTION_RE.search(content):
+            logger.info(f"🧠 Quality gate REJECT (code description): {content[:80]}")
+            continue
+
+        # Structural: career narrative / self-promotion
+        if _CAREER_RE.search(content):
+            logger.info(f"🧠 Quality gate REJECT (career narrative): {content[:80]}")
+            continue
+
         passed.append(c)
 
     if len(candidates) != len(passed):
@@ -327,8 +453,45 @@ def deduplicate(
 ) -> List[Dict[str, Any]]:
     """Filter out candidates that substantially overlap with existing memories."""
     if not existing_memories:
-        return candidates
+        # Still run intra-batch dedup even without existing memories
+        return _deduplicate_within_batch(candidates)
 
+    # Intra-batch dedup first: remove paraphrases within the same extraction
+    candidates = _deduplicate_within_batch(candidates)
+
+    # Embedding-based dedup: check cosine similarity against existing store
+    # This catches paraphrases that keyword matching misses entirely
+    try:
+        from app.services.embedding_service import (
+            get_embedding_provider, get_embedding_cache, NoopProvider
+        )
+        provider = get_embedding_provider()
+        if not isinstance(provider, NoopProvider):
+            cache = get_embedding_cache()
+            pre_embed_unique = []
+            for candidate in candidates:
+                content = candidate.get("content", "")
+                vec = provider.embed_text(content)
+                if vec is not None:
+                    similar = cache.search(vec, top_k=3)
+                    # >0.88 cosine similarity = likely paraphrase
+                    if similar and similar[0][1] > 0.88:
+                        logger.info(
+                            f"🧠 Embedding dedup REJECT (cosine={similar[0][1]:.3f}): "
+                            f"{content[:60]}"
+                        )
+                        continue
+                pre_embed_unique.append(candidate)
+            if len(candidates) != len(pre_embed_unique):
+                logger.info(
+                    f"🧠 Embedding dedup: {len(candidates)} → {len(pre_embed_unique)} "
+                    f"({len(candidates) - len(pre_embed_unique)} paraphrase duplicates removed)"
+                )
+            candidates = pre_embed_unique
+    except Exception as e:
+        logger.debug(f"Embedding dedup unavailable (non-fatal): {e}")
+
+    # Keyword-based dedup (catches exact substring matches)
     unique = []
     for candidate in candidates:
         content = candidate.get("content", "").lower()
@@ -360,6 +523,44 @@ def deduplicate(
     if len(candidates) != len(unique):
         logger.info(f"🧠 Dedup: {len(candidates)} → {len(unique)} unique")
 
+    return unique
+
+
+def _deduplicate_within_batch(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Remove near-duplicate candidates within the same extraction batch.
+
+    Catches the common failure where the model extracts 3-5 paraphrases
+    of the same fact (e.g. multiple descriptions of the same project).
+    Keeps the longest version of each cluster.
+    """
+    if len(candidates) <= 1:
+        return candidates
+
+    unique = []
+    for candidate in candidates:
+        content_words = set(
+            w.lower() for w in candidate.get("content", "").split() if len(w) > 3
+        )
+        is_dup = False
+        for i, existing in enumerate(unique):
+            existing_words = set(
+                w.lower() for w in existing.get("content", "").split() if len(w) > 3
+            )
+            if not content_words or not existing_words:
+                continue
+            overlap = len(content_words & existing_words)
+            smaller = min(len(content_words), len(existing_words))
+            # >60% word overlap = paraphrase; keep the longer one
+            if smaller > 0 and overlap / smaller > 0.6:
+                if len(candidate.get("content", "")) > len(existing.get("content", "")):
+                    unique[i] = candidate  # Replace with longer version
+                is_dup = True
+                break
+        if not is_dup:
+            unique.append(candidate)
+
+    if len(candidates) != len(unique):
+        logger.info(f"🧠 Intra-batch dedup: {len(candidates)} → {len(unique)} unique")
     return unique
 
 
@@ -458,8 +659,17 @@ async def run_post_conversation_extraction(
                         if target_mem:
                             target_mem.content = content
                             target_mem.tags = list(set(target_mem.tags + tags))
-                            target_mem.last_accessed = __import__('time').strftime("%Y-%m-%d")
+                            target_mem.last_accessed = time.strftime("%Y-%m-%d")
+                            # Preserve importance — don't reset a memory the user has
+                            # repeatedly retrieved just because the content was updated
+                            # (importance only goes up, never down on UPDATE)
                             store.save(target_mem)
+                            # Re-embed with new content so semantic search stays accurate
+                            try:
+                                from app.services.embedding_service import embed_and_cache
+                                embed_and_cache(target_id, content)
+                            except Exception:
+                                pass
                             saved += 1
                             logger.info(f"🧠 UPDATE: Replaced {target_id} with: {content[:60]}")
                             continue

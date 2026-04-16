@@ -59,7 +59,7 @@ BUILTIN_TOOL_CATEGORIES: Dict[str, Dict[str, any]] = {
     "memory": {
         "name": "Structured Memory",
         "description": "Persistent memory across sessions — search, save, and propose memories",
-        "enabled_by_default": True,
+        "enabled_by_default": False,
         "requires_dependencies": [],
         "tools": [],
     },
@@ -194,28 +194,47 @@ def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
     return []
 
 
+# Per-process cache for category enabled checks.  Populated on first
+# call per category, cleared by invalidate_category_cache().
+_category_enabled_cache: dict[str, bool] = {}
+
+
 def is_builtin_category_enabled(category: str) -> bool:
     """Check if a builtin tool category is enabled."""
     if category not in BUILTIN_TOOL_CATEGORIES:
         return False
-    
+
+    cached = _category_enabled_cache.get(category)
+    if cached is not None:
+        return cached
+
     # Check environment variable first
     env_var = f"ZIYA_ENABLE_{category.upper()}"
     env_value = os.environ.get(env_var)
     if env_value is not None:
-        return env_value.lower() in ("true", "1", "yes")
-    
+        result = env_value.lower() in ("true", "1", "yes")
+        _category_enabled_cache[category] = result
+        return result
+
     # Check if a service model plugin has enabled this category
     try:
         from app.plugins import get_enabled_service_tool_categories
         plugin_enabled = get_enabled_service_tool_categories()
         if category in plugin_enabled:
+            _category_enabled_cache[category] = True
             return True
     except Exception:
         pass
 
     # Fall back to default setting
-    return BUILTIN_TOOL_CATEGORIES[category]["enabled_by_default"]
+    result = BUILTIN_TOOL_CATEGORIES[category]["enabled_by_default"]
+    _category_enabled_cache[category] = result
+    return result
+
+
+def invalidate_category_cache() -> None:
+    """Clear the category-enabled cache after runtime config changes."""
+    _category_enabled_cache.clear()
 
 
 def get_enabled_builtin_tools() -> List[BaseMCPTool]:
