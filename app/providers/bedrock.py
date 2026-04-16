@@ -397,11 +397,16 @@ class BedrockProvider(LLMProvider):
 
         if thinking.mode == "adaptive":
             body["thinking"] = {"type": "adaptive"}
-            if thinking.effort in ("low", "medium", "high", "max"):
-                body.setdefault("output_config", {})["effort"] = thinking.effort
-                body.setdefault("anthropic_beta", [])
-                if "effort-2025-11-24" not in body["anthropic_beta"]:
-                    body["anthropic_beta"].append("effort-2025-11-24")
+            supported = self.model_config.get("supported_efforts", ["low", "medium", "high", "max"])
+            effort = thinking.effort if thinking.effort in supported else self.model_config.get("thinking_effort_default", "medium")
+            if effort != thinking.effort:
+                logger.warning("Effort '%s' not supported by this model, falling back to '%s'", thinking.effort, effort)
+            if effort in supported:
+                body.setdefault("output_config", {})["effort"] = effort
+                if self.model_config.get("effort_beta_required", True):
+                    body.setdefault("anthropic_beta", [])
+                    if "effort-2025-11-24" not in body["anthropic_beta"]:
+                        body["anthropic_beta"].append("effort-2025-11-24")
         elif thinking.mode == "enabled" and thinking.enabled:
             body["thinking"] = {"type": "enabled", "budget_tokens": thinking.budget_tokens}
 

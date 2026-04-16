@@ -201,9 +201,18 @@ class ModelManager:
         
         # Check if the model belongs to a family
         family = model_specific_config.get("family")
-        if family and hasattr(cls, "MODEL_FAMILIES") and family in cls.MODEL_FAMILIES:
+        if family and family in config.MODEL_FAMILIES:
             # Apply family-specific settings
-            family_config = cls.MODEL_FAMILIES[family].copy()
+            # First, resolve parent chain so inherited properties (like
+            # supports_vision on "nova") propagate to child families
+            # (like "nova-pro").
+            parent_name = config.MODEL_FAMILIES[family].get("parent")
+            while parent_name and parent_name in config.MODEL_FAMILIES:
+                parent_config = config.MODEL_FAMILIES[parent_name].copy()
+                parent_config.pop("parameter_ranges", None)
+                config_dict.update(parent_config)
+                parent_name = parent_config.get("parent")
+            family_config = config.MODEL_FAMILIES[family].copy()
             
             # Don't override parameter_ranges yet
             parameter_ranges = family_config.pop("parameter_ranges", {})
@@ -364,6 +373,13 @@ class ModelManager:
         # Cache the result
         cls._state['filtered_kwargs_cache'][cache_key] = filtered_kwargs
         logger.debug(f"Cached filtered kwargs for {cache_key}")
+        
+        # Prevent unbounded growth — evict oldest if over 200 entries
+        cache = cls._state['filtered_kwargs_cache']
+        if len(cache) > 200:
+            for old_key in list(cache.keys())[:len(cache) - 200]:
+                del cache[old_key]
+
         cls._last_filter_log = (model_kwargs, model_config)
         
         return filtered_kwargs
