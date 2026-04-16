@@ -62,6 +62,7 @@ class PromptCache:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.default_ttl = default_ttl
         self.cache_file = self.cache_dir / "prompt_cache.json"
+        self.max_entries = 200  # Prevent unbounded growth
         self._cache: Dict[str, PromptCacheEntry] = {}
         self._load_cache()
     
@@ -98,6 +99,15 @@ class PromptCache:
             del self._cache[key]
         if expired_keys:
             logger.debug(f"Cleaned up {len(expired_keys)} expired cache entries")
+        
+        # Enforce max entries — evict oldest if over limit
+        if len(self._cache) > self.max_entries:
+            overflow = len(self._cache) - self.max_entries
+            oldest_keys = sorted(self._cache.keys(),
+                                 key=lambda k: self._cache[k].timestamp)[:overflow]
+            for key in oldest_keys:
+                del self._cache[key]
+            logger.info(f"♻️ PromptCache: evicted {overflow} oldest entries (max={self.max_entries})")
     
     def _hash_content(self, content: str) -> str:
         """Generate a hash for content."""
