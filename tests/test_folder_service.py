@@ -162,6 +162,20 @@ class TestImportCompatibility:
         assert callable(is_path_explicitly_allowed)
         assert callable(add_file_to_folder_cache)
 
+    def test_server_exports_stream_lifecycle_symbols(self):
+        """server.py must export cleanup_stream and active_streams.
+
+        These are imported by diff_routes.py and misc_routes.py.
+        A refactoring pass removed the definitions but left the call
+        sites, causing NameError at runtime on every stream completion.
+        """
+        from app.server import cleanup_stream, active_streams
+        import asyncio
+
+        assert callable(cleanup_stream)
+        assert isinstance(active_streams, dict)
+        # Verify cleanup_stream is a coroutine function (async def)
+        assert asyncio.iscoroutinefunction(cleanup_stream)
     def test_file_watcher_can_import(self):
         """file_watcher.py should be importable with new paths."""
         # This validates the import path update worked
