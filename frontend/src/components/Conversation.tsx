@@ -390,6 +390,28 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     currentConvIsGlobalRef.current = currentConvIsGlobal;
 
 
+    // Listen for feedback delivery confirmation and remove the placeholder
+    // feedback message from the conversation.  The model echoes feedback
+    // inline in its response, so keeping the original would show it twice.
+    useEffect(() => {
+        const handleFeedbackDelivered = (event: CustomEvent) => {
+            const { conversationId: fbConvId } = event.detail || {};
+            if (!fbConvId) return;
+            convListRef.current.setConversations((prev: any[]) =>
+                prev.map(conv => {
+                    if (conv.id !== fbConvId) return conv;
+                    const filtered = conv.messages.filter(
+                        (msg: any) => !(msg._isFeedback && msg._feedbackStatus === 'pending')
+                    );
+                    if (filtered.length === conv.messages.length) return conv;
+                    return { ...conv, messages: filtered };
+                })
+            );
+        };
+        document.addEventListener('feedbackDelivered', handleFeedbackDelivered as EventListener);
+        return () => document.removeEventListener('feedbackDelivered', handleFeedbackDelivered as EventListener);
+    }, []);
+
     return (
         <div style={{ position: 'relative' }}>
             {/* Always-mounted overlay — shown/hidden via direct DOM manipulation
