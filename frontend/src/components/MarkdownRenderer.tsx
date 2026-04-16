@@ -83,6 +83,7 @@ const ThinkingBlock: React.FC<{ children: React.ReactNode; isDarkMode: boolean; 
     // Start expanded during streaming, collapsed when done
     const [isExpanded, setIsExpanded] = useState(isStreaming);
     const [htmlContent, setHtmlContent] = useState('');
+    const contentRef = useRef<HTMLDivElement>(null);
 
     // Parse markdown in children if it's a string
     const isString = typeof children === 'string';
@@ -99,6 +100,30 @@ const ThinkingBlock: React.FC<{ children: React.ReactNode; isDarkMode: boolean; 
             }
         }
     }, [children, isString]);
+
+    // Apply Prism syntax highlighting to code blocks after HTML is rendered
+    useEffect(() => {
+        if (!htmlContent || !contentRef.current || !isExpanded) return;
+        const codeBlocks = contentRef.current.querySelectorAll('pre > code');
+        if (codeBlocks.length === 0) return;
+
+        const highlightAll = async () => {
+            for (const el of Array.from(codeBlocks)) {
+                const langClass = Array.from(el.classList).find(c => c.startsWith('language-'));
+                const lang = langClass ? langClass.replace('language-', '') : 'plaintext';
+                try {
+                    await loadPrismLanguage(lang);
+                    const prism = window.Prism;
+                    if (prism && prism.languages[lang]) {
+                        prism.highlightElement(el);
+                    }
+                } catch (e) {
+                    // Language not available — leave as plain text
+                }
+            }
+        };
+        highlightAll();
+    }, [htmlContent, isExpanded]);
 
     return (
         <div className={`thinking-block ${isDarkMode ? 'dark' : 'light'}`} style={{
@@ -130,7 +155,8 @@ const ThinkingBlock: React.FC<{ children: React.ReactNode; isDarkMode: boolean; 
                         fontSize: '13px',
                         color: isDarkMode ? '#ccc' : '#555'
                     }}
-                    {...(isString ? { dangerouslySetInnerHTML: { __html: htmlContent } } : { children })}
+                    ref={contentRef}
+                    {...(isString ? { dangerouslySetInnerHTML: { __html: htmlContent } } : { children: children })}
                 />
             )}
         </div>
@@ -1130,7 +1156,7 @@ const normalizeGitDiff = (diff: string): string => {
         diff.match(/^@@\s+-\d+/m)) {
         const lines: string[] = diff.split('\n');
 
-        // CRITICAL: Handle XX placeholder patterns in hunk headers
+        // Handle XX placeholder patterns in hunk headers
         // Convert @@ -XX,X +XX,X @@ to @@ -1,1 +1,1 @@ for parseDiff compatibility
         for (let i = 0; i < lines.length; i++) {
             const xxPatternMatch = lines[i].match(/^@@\s+-XX,X\s+\+XX,X\s+@@/);
@@ -3236,7 +3262,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, inde
     }
 
     // If we're streaming and have any parsed files, always show them
-    if ((isGlobalStreaming) && parsedFilesRef.current.length > 0) {
+    if ((isGlobalStreaming) && parsedFilesRef.current.length > 0 && (displayMode as DisplayMode) !== 'raw') {
         // Keep rendering even when not visible to maintain state
         if (!isVisible && !isGlobalStreaming) return null; // Always render during streaming
 
@@ -3486,7 +3512,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
         return <ToolBlock toolName={toolName} content={token.text || ''} isDarkMode={isDarkMode} />;
     }
 
-    // CRITICAL: Check for shell blocks that are tool execution displays
+    // Check for shell blocks that are tool execution displays
     // These should be rendered as ToolBlock components for nice formatting
     if (token.lang === 'shell' && token.text) {
         const shellText = token.text;
@@ -3621,7 +3647,7 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
 
         // Check for DrawIO blocks
 
-        // CRITICAL: Check for shell blocks that are tool execution displays
+        // Check for shell blocks that are tool execution displays
         // These should be rendered as ToolBlock components, not plain code
         if (lang === 'shell' && tokenWithText.text) {
             const shellText = tokenWithText.text;
@@ -5252,7 +5278,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                         return; // Leave as HTML comment — harmless inside a code block
                     }
 
-                    // CRITICAL: Shell commands should be left as HTML
+                    // Shell commands should be left as HTML
                     // because they already have the proper ````shell fence structure inside
                     // Converting them creates double-wrapping and escaped backticks
                     if (toolName === 'mcp_run_shell_command') {
@@ -5284,7 +5310,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
                 // AFTER tool block processing, strip only TOOL_BLOCK markers that we actually converted
                 // Leave shell command blocks as HTML comments so the 'html' token handler can process them
-                // CRITICAL: We can't strip shell blocks here because we skipped conversion above
+                // We can't strip shell blocks here because we skipped conversion above
 
                 // Instead of blanket removal, only remove markers for blocks we converted
                 // Shell blocks were skipped and should remain as HTML for the 'html' case handler
@@ -5541,7 +5567,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 processedMarkdown = removeThinkingTags(processedMarkdown);
             }
 
-            // CRITICAL FIX: Escape backticks inside diff code blocks before markdown parsing
+            // Escape backticks inside diff code blocks before markdown parsing
             // This prevents backticks in diff content from being interpreted as fence delimiters
 
             // IMPORTANT: Extract and protect math blocks BEFORE fence escaping
@@ -5562,19 +5588,65 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             // matrices/aligned environments) or & (column separators).
             // The encoded content is stored in a data attribute and decoded
             // in the 'html' token handler below.
-            processedMarkdown = processedMarkdown.replace(/\$\$([\s\S]*?)\$\$/g, (_match, innerContent) => {
-                const encoded = btoa(unescape(encodeURIComponent(innerContent.trim())));
-                return `\n\n<div class="math-display-encoded" data-math="${encoded}"></div>\n\n`;
-            });
+
+            // Unwrap ```markdown fences — the content should be rendered as
+            // markdown, not displayed as a literal code block.
+            processedMarkdown = processedMarkdown.replace(
+                /```markdown\s*\n([\s\S]*?)\n\s*```/g, '\n\n$1\n\n');
+            // Split by code fences first so we don't replace $$ inside them.
+            // Odd-indexed segments are code blocks; only process even segments.
+            {
+                // First, convert ```latex/```math fences that contain $$...$$ into
+                // display math. Models often wrap KaTeX in these fences; we need
+                // to extract and render them as math, not as code blocks.
+                processedMarkdown = processedMarkdown.replace(
+                    /```(?:latex|math)\s*\n\s*\$\$([\s\S]*?)\$\$\s*\n\s*```/g,
+                    (_match, innerContent) => {
+                        const encoded = btoa(unescape(encodeURIComponent(innerContent.trim())));
+                        return `\n\n<div class="math-display-encoded" data-math="${encoded}"></div>\n\n`;
+                    }
+                );
+
+                // Also handle ```latex/```math fences without $$ delimiters —
+                // models sometimes emit raw LaTeX without wrapping in $$.
+                processedMarkdown = processedMarkdown.replace(
+                    /```(?:latex|math)\s*\n([\s\S]*?)\n\s*```/g,
+                    (_match, innerContent) => {
+                        const encoded = btoa(unescape(encodeURIComponent(innerContent.trim())));
+                        return `\n\n<div class="math-display-encoded" data-math="${encoded}"></div>\n\n`;
+                    }
+                );
+
+                // Now split remaining content by code fences for standalone $$ replacement
+                const mathFenceParts = processedMarkdown.split(/(```[^\n]*\n[\s\S]*?```)/g);
+                processedMarkdown = mathFenceParts.map((part, idx) => {
+                    if (idx % 2 === 1 && part.startsWith('```')) {
+                        return part; // code fence — leave untouched
+                    }
+                    return part.replace(/\$\$([\s\S]*?)\$\$/g, (_match, innerContent) => {
+                        const encoded = btoa(unescape(encodeURIComponent(innerContent.trim())));
+                        return `\n\n<div class="math-display-encoded" data-math="${encoded}"></div>\n\n`;
+                    });
+                }).join('');
+            }
 
             // Extract inline math ($...$) before fence processing
             // Use negative lookbehind/lookahead to avoid matching $$ delimiters
-            processedMarkdown = processedMarkdown.replace(/(?<!\$)\$(?!\$)((?:(?!\$).)+?)\$(?!\$)/g, (match, content) => {
-                const placeholder = `__MATH_INLINE_${mathCounter}__`;
-                mathBlocks.push({ placeholder, content: match });
-                mathCounter++;
-                return placeholder;
-            });
+            // Split by code fences so we don't extract $...$ from inside them.
+            {
+                const inlineFenceParts = processedMarkdown.split(/(```[^\n]*\n[\s\S]*?```)/g);
+                processedMarkdown = inlineFenceParts.map((part, idx) => {
+                    if (idx % 2 === 1 && part.startsWith('```')) {
+                        return part; // code fence — leave untouched
+                    }
+                    return part.replace(/(?<!\$)\$(?!\$)((?:(?!\$).)+?)\$(?!\$)/g, (match, content) => {
+                        const placeholder = `__MATH_INLINE_${mathCounter}__`;
+                        mathBlocks.push({ placeholder, content: match });
+                        mathCounter++;
+                        return placeholder;
+                    });
+                }).join('');
+            }
 
             // Now run fence escaping (won't affect math since it's been extracted)
             const escapeNestedFencesInCodeBlocks = (markdown: string): string => {

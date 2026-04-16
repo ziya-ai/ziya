@@ -361,6 +361,28 @@ export function formatMCPOutput(
     };
   }
 
+  // Handle file_read outputs (builtin tool)
+  if (toolName === 'file_read' || toolName === 'mcp_file_read') {
+    return formatFileRead(result, input, options);
+  }
+
+  // Handle file_write outputs (builtin tool)
+  if (toolName === 'file_write' || toolName === 'mcp_file_write') {
+    return formatFileWrite(result, input, options);
+  }
+
+  // Handle file_list outputs (builtin tool)
+  if (toolName === 'file_list' || toolName === 'mcp_file_list') {
+    return formatFileList(result, input, options);
+  }
+
+  // Handle AST tool outputs (builtin tools)
+  if (toolName === 'ast_get_tree' || toolName === 'mcp_ast_get_tree' ||
+      toolName === 'ast_search' || toolName === 'mcp_ast_search' ||
+      toolName === 'ast_references' || toolName === 'mcp_ast_references') {
+    return formatAstTool(toolName, result, input, options);
+  }
+
   // Handle wrapped response pattern (common in MCP responses)
   if (result.content && typeof result.content === 'object') {
     return formatMCPOutput(toolName, result.content, input, options);
@@ -585,6 +607,180 @@ function formatSequentialThinking(result: any, input: any, options: any): Format
     type: 'text',
     collapsed: false,
     summary: `Thought ${thoughtNumber}/${totalThoughts}`
+  };
+}
+
+// Map file extensions to language identifiers for syntax highlighting
+function getLanguageFromPath(filePath: string): string {
+  const ext = filePath.split('.').pop()?.toLowerCase() || '';
+  const extMap: Record<string, string> = {
+    ts: 'typescript', tsx: 'tsx', js: 'javascript', jsx: 'jsx',
+    py: 'python', rs: 'rust', go: 'go', java: 'java', rb: 'ruby',
+    c: 'c', cpp: 'cpp', h: 'c', hpp: 'cpp', cs: 'csharp',
+    json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'toml',
+    md: 'markdown', css: 'css', scss: 'scss', html: 'html',
+    xml: 'xml', sql: 'sql', sh: 'bash', bash: 'bash', zsh: 'bash',
+    kt: 'kotlin', swift: 'swift', r: 'r', lua: 'lua', perl: 'perl',
+    tf: 'hcl', dockerfile: 'docker', makefile: 'makefile',
+  };
+  return extMap[ext] || '';
+}
+
+function formatFileRead(result: any, input: any, options: any): FormattedOutput {
+  const { defaultCollapsed = true } = options;
+
+  // Handle error responses
+  if (result.error) {
+    return {
+      content: `❌ ${result.message || 'File read failed'}`,
+      type: 'error',
+      collapsed: false,
+    };
+  }
+
+  // Handle structured result: {content, metadata, path}
+  const filePath = result.path || input?.path || '';
+  const metadata = result.metadata || '';
+  const fileContent = result.content || (typeof result === 'string' ? result : '');
+  const fileName = filePath.split('/').pop() || filePath;
+  const lang = getLanguageFromPath(filePath);
+
+  if (!fileContent) {
+    return { content: `📄 ${filePath} — (empty file)`, type: 'text', collapsed: false };
+  }
+
+  const lines = fileContent.split('\n');
+  const lineCount = lines.length;
+  const shouldCollapse = lineCount > 8 || fileContent.length > 600;
+
+  // Build a concise summary for the collapsed header
+  let summary = `📄 **${fileName}**`;
+  if (metadata) {
+    summary += ` — ${metadata}`;
+  } else {
+    summary += ` — ${lineCount} line${lineCount !== 1 ? 's' : ''}`;
+  }
+
+  // Wrap content in a fenced code block with language hint
+  const fencedContent = lang
+    ? `\`\`\`${lang}\n${fileContent}\n\`\`\``
+    : fileContent;
+
+  return {
+    content: fencedContent,
+    type: 'text',
+    showInput: false,
+    collapsed: shouldCollapse && defaultCollapsed,
+    summary: shouldCollapse ? summary : undefined,
+  };
+}
+
+function formatFileWrite(result: any, input: any, _options: any): FormattedOutput {
+  // Handle error responses
+  if (result.error) {
+    const msg = result.message || 'File write failed';
+    const pathCtx = input?.path && !msg.includes(input.path) ? ` (${input.path})` : '';
+    return {
+      content: `❌ ${msg}${pathCtx}`,
+      type: 'error',
+      collapsed: false,
+    };
+  }
+
+  const filePath = result.path || input?.path || '';
+  const bytesWritten = result.bytes_written;
+  const message = result.message || '';
+  const isPatch = !!input?.patch;
+
+  let icon = '📝';
+  if (message.startsWith('Created')) icon = '🆕';
+  else if (isPatch) icon = '✏️';
+
+  let summary = `${icon} **${filePath}**`;
+  if (bytesWritten != null) {
+    summary += ` — ${bytesWritten.toLocaleString()} bytes`;
+  }
+  if (isPatch) {
+    const occMatch = message.match(/replaced (\d+) of (\d+)/);
+    if (occMatch) {
+      summary += ` (${occMatch[1]} of ${occMatch[2]} occurrence${occMatch[2] !== '1' ? 's' : ''} replaced)`;
+    } else {
+      summary += ' (patched)';
+    }
+  } else if (message.startsWith('Created')) {
+    summary += ' (new file)';
+  }
+
+  return {
+    content: summary,
+    type: 'text',
+    showInput: false,
+    collapsed: false,
+  };
+}
+
+function formatFileList(result: any, input: any, options: any): FormattedOutput {
+  const { defaultCollapsed = true } = options;
+
+  if (result.error) {
+    return {
+      content: `❌ ${result.message || 'File list failed'}`,
+      type: 'error',
+      collapsed: false,
+    };
+  }
+
+  const listContent = result.content || (typeof result === 'string' ? result : '');
+  if (!listContent) {
+    return { content: '📁 (empty directory)', type: 'text', collapsed: false };
+  }
+
+  const lines = listContent.split('\n');
+  const header = lines[0] || '';
+  const entryLines = lines.slice(1);
+  const shouldCollapse = entryLines.length > 10;
+
+  // Extract count from header like "Contents of ./  [15 entries]"
+  const countMatch = header.match(/\[(\d+) entries/);
+  const dirPath = input?.path || '.';
+  const pattern = input?.pattern;
+  let summaryText = `📁 **${dirPath}/**`;
+  if (countMatch) summaryText += ` — ${countMatch[1]} entries`;
+  if (pattern) summaryText += ` (${pattern})`;
+
+  return {
+    content: listContent,
+    type: 'text',
+    showInput: false,
+    collapsed: shouldCollapse && defaultCollapsed,
+    summary: shouldCollapse ? summaryText : undefined,
+  };
+}
+
+function formatAstTool(toolName: string, result: any, input: any, options: any): FormattedOutput {
+  const { defaultCollapsed = true } = options;
+
+  if (result.error) {
+    return { content: `❌ ${result.message || 'AST tool error'}`, type: 'error', collapsed: false };
+  }
+
+  const content = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+  const lines = content.split('\n');
+  const shouldCollapse = lines.length > 10 || content.length > 800;
+
+  const cleanName = toolName.replace('mcp_', '').replace(/_/g, ' ');
+  let summary = `🌳 **${cleanName}**`;
+  if (input?.path) summary += `: ${input.path}`;
+  else if (input?.query) summary += `: "${input.query}"`;
+  else if (input?.name) summary += `: ${input.name}`;
+  if (lines.length > 1) summary += ` — ${lines.length} lines`;
+
+  return {
+    content,
+    type: 'text',
+    showInput: false,
+    collapsed: shouldCollapse && defaultCollapsed,
+    summary: shouldCollapse ? summary : undefined,
   };
 }
 
@@ -1119,6 +1315,12 @@ function createToolSummary(toolName: string, input: any): string {
       return query ? `"${query}"${domainDisplay}` :
         domain !== 'ALL' ? `Search in ${domain}` : '';
     },
+    'file_read': (input) => input.path ? `📄 ${input.path}${input.offset ? ` (from line ${input.offset})` : ''}` : '',
+    'file_write': (input) => input.path ? (input.patch ? `✏️ ${input.path} (patch)` : `📝 ${input.path}`) : '',
+    'file_list': (input) => input.path ? `📁 ${input.path}/${input.pattern ? ` (${input.pattern})` : ''}` : '📁 ./',
+    'ast_get_tree': (input) => input.path ? `🌳 ${input.path}` : '🌳 project overview',
+    'ast_search': (input) => input.query ? `🔍 "${input.query}"${input.node_type ? ` (${input.node_type})` : ''}` : '',
+    'ast_references': (input) => input.name ? `🔗 ${input.action || 'definitions'}: ${input.name}` : '',
     'ReadInternalWebsites': (input) => {
       const inputs = input.inputs || [];
       if (inputs.length === 1) return `${inputs[0]}`;

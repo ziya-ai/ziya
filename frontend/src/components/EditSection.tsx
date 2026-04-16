@@ -54,11 +54,19 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
     }, [isEditing]);
 
     // Check vision support on mount
-    // This is cached globally - only fetches once per app load
+    // Re-check whenever the model changes
     useEffect(() => {
-        modelCapabilitiesService.getCapabilities()
-            .then(cap => setSupportsVision(cap.supports_vision || false))
-            .catch(() => setSupportsVision(false));
+        const checkVision = () => {
+            modelCapabilitiesService.invalidateCache();
+            modelCapabilitiesService.getCapabilities()
+                .then(cap => setSupportsVision(cap.supports_vision || false))
+                .catch(() => setSupportsVision(false));
+        };
+        checkVision();
+
+        const onModelChanged = () => checkVision();
+        window.addEventListener('modelChanged', onModelChanged);
+        return () => window.removeEventListener('modelChanged', onModelChanged);
     }, []);
 
     // Initialize attachedImages when editing starts

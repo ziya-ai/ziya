@@ -96,6 +96,11 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       }
     };
     checkVisionSupport();
+
+    // Re-check when the user switches models
+    const onModelChanged = () => checkVisionSupport();
+    window.addEventListener('modelChanged', onModelChanged);
+    return () => window.removeEventListener('modelChanged', onModelChanged);
   }, [currentConversationId]);
   
   // Listen for tool feedback ready events
