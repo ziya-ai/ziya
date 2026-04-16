@@ -498,6 +498,14 @@ class TestE2EPipelineFastAPIIntegration:
                 f"Expected done marker in SSE stream, events: {events}"
             )
 
+            # Guard: no spurious error events in the stream.
+            # A missing cleanup_stream definition caused a NameError
+            # chunk to be injected after the done marker on every
+            # successful stream completion.
+            error_events = [e for e in events if e.get("error")]
+            assert len(error_events) == 0, (
+                f"Unexpected error events in successful SSE stream: {error_events}"
+            )
 
 class TestE2EPipelineErrorHandling:
     """Verify error conditions are properly surfaced through the pipeline."""
