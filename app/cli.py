@@ -1069,7 +1069,7 @@ class CLI:
                     display_content = display_content.replace('', '')
                 
                     # Render through markdown renderer or print raw
-                    if display_content.strip():  # Only display if non-empty after filtering
+                    if display_content:  # Only skip completely empty strings
                         if md_renderer:
                             md_renderer.feed(display_content)
                         elif stream:
@@ -1165,16 +1165,16 @@ class CLI:
                         if 'thought' in args:
                             thought_text = args['thought']
                             if thought_text and isinstance(thought_text, str):
-                                for line in thought_text.split('\n'):
-                                    print(f"\033[90m│\033[0m {line}", flush=True)
+                                from app.utils.terminal_markdown import render_prefixed_markdown
+                                render_prefixed_markdown(thought_text)
                     
                         # Print result (tool output/response)
                         if result and isinstance(result, str):
                             is_json_metadata = result.strip().startswith('{') and 'thoughtNumber' in result
                     
                             if not is_json_metadata and result != args.get('thought', ''):
-                                for line in result.rstrip('\n').split('\n'):
-                                    print(f"\033[90m│\033[0m {line}", flush=True)
+                                from app.utils.terminal_markdown import render_prefixed_markdown
+                                render_prefixed_markdown(result.rstrip('\n'))
                     
                         print(f"\033[36m└─\033[0m", flush=True)
                     except Exception as e:  # Intentionally broad: display errors must not crash the stream
@@ -1837,13 +1837,15 @@ class CLI:
             from app.config.shell_config import _read_mcp_config
             mcp_manager = get_mcp_manager()
             if mcp_manager and mcp_manager.is_initialized:
-                # Build config from persisted base + session overrides
+                # Start from the manager's builtin config (correct absolute
+                # command/args paths).  Never take command/args from
+                # mcp_config.json — those may contain stale relative paths
+                # that don't resolve from the current working directory.
+                shell_cfg = dict(mcp_manager.server_configs.get("shell", {}))
+                # Layer persisted env customizations on top
                 cfg = _read_mcp_config()
-                shell_cfg = cfg.get("mcpServers", {}).get("shell", {})
-                if not shell_cfg:
-                    shell_cfg = mcp_manager.server_configs.get("shell", {})
-                shell_cfg = dict(shell_cfg)  # copy
-                env = dict(shell_cfg.get("env", {}))
+                persisted_env = cfg.get("mcpServers", {}).get("shell", {}).get("env", {})
+                env = {**persisted_env, **shell_cfg.get("env", {})}
                 # Apply session-local overrides
                 env["ALLOW_COMMANDS"] = ",".join(self._get_session_commands())
                 env["YOLO_MODE"] = "true" if self._session_yolo else "false"
@@ -1927,7 +1929,7 @@ class CLI:
         
         # Thinking effort if model supports adaptive thinking
         if model_config.get('supports_adaptive_thinking'):
-            valid_efforts = ['low', 'medium', 'high', 'max']
+            valid_efforts = model_config.get('supported_efforts', ['low', 'medium', 'high', 'max'])
             default_effort = model_config.get('thinking_effort_default', 'medium')
             current_effort = current_settings.get('thinking_effort') or os.environ.get('ZIYA_THINKING_EFFORT') or default_effort
             effort_input = input(f"Thinking Effort [{'/'.join(valid_efforts)}] (current: {current_effort}): ").strip().lower()
