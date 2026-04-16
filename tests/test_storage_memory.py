@@ -17,6 +17,20 @@ from app.models.memory import Memory, MemoryProposal, MemoryProfile
 from app.storage.memory import MemoryStorage
 
 
+@pytest.fixture(autouse=True)
+def _disable_embeddings(monkeypatch):
+    """Disable embedding provider so search tests exercise the keyword path only.
+
+    Without this, the embedding singleton connects to the live Bedrock endpoint
+    and the global embedding cache at ~/.ziya/memory/ contaminates results.
+    """
+    monkeypatch.setenv("ZIYA_EMBEDDING_PROVIDER", "none")
+    # Reset the singleton so it re-resolves with the patched env var
+    import app.services.embedding_service as _es
+    monkeypatch.setattr(_es, "_provider", None)
+    monkeypatch.setattr(_es, "_cache", None)
+
+
 @pytest.fixture
 def storage(tmp_path):
     """Create a MemoryStorage backed by a temp directory."""

@@ -16,6 +16,15 @@ import pytest
 from app.utils.memory_comparator import find_similar_memories, compare_memory
 
 
+@pytest.fixture(autouse=True)
+def _disable_embeddings(monkeypatch):
+    """Force keyword-only path for comparator tests."""
+    monkeypatch.setenv("ZIYA_EMBEDDING_PROVIDER", "none")
+    import app.services.embedding_service as _es
+    monkeypatch.setattr(_es, "_provider", None)
+    monkeypatch.setattr(_es, "_cache", None)
+
+
 # ── find_similar_memories ─────────────────────────────────────────
 
 class TestFindSimilar:

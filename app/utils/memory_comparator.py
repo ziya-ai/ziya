@@ -43,14 +43,37 @@ def find_similar_memories(
     existing: List[Dict[str, Any]],
     top_n: int = 5,
 ) -> List[Dict[str, Any]]:
-    """Find the most similar existing memories using tag + word overlap scoring.
+    """Find the most similar existing memories.
 
-    This is a cheap local operation — no LLM call.  Only candidates with
-    nonzero similarity proceed to the expensive LLM comparison step.
+    Uses embedding similarity when available, falls back to tag + word
+    overlap scoring.
     """
     if not existing:
         return []
 
+    # Try embedding-based similarity first
+    try:
+        from app.services.embedding_service import (
+            get_embedding_provider, get_embedding_cache,
+            NoopProvider, embed_and_cache
+        )
+        provider = get_embedding_provider()
+        if not isinstance(provider, NoopProvider):
+            # Embed the candidate
+            vec = provider.embed_text(candidate.get("content", ""))
+            if vec is not None:
+                cache = get_embedding_cache()
+                results = cache.search(vec, top_k=top_n)
+                if results:
+                    result_ids = {mid for mid, _ in results}
+                    matched = [m for m in existing if m.get("id") in result_ids]
+                    if matched:
+                        return matched
+                    # Embedding hits didn't overlap with provided existing list — fall through
+    except Exception as e:
+        logger.debug(f"Embedding similarity unavailable, using keyword fallback: {e}")
+
+    # Fallback: tag + word overlap (original logic)
     cand_tags = set(t.lower() for t in candidate.get("tags", []))
     cand_words = set(
         w.lower() for w in candidate.get("content", "").split() if len(w) > 3

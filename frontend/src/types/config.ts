@@ -17,6 +17,7 @@ export interface AppConfig {
     autoSaveInterval?: number;
     // Privacy/Storage settings
     ephemeralMode?: boolean;
+    memoryEnabled?: boolean;
 }
 
 export const DEFAULT_CONFIG: AppConfig = {
@@ -28,4 +29,5 @@ export const DEFAULT_CONFIG: AppConfig = {
     showTokenCount: true,
     showModelInHeader: true,
     ephemeralMode: false,
+    memoryEnabled: false,
 }

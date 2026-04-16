@@ -121,6 +121,7 @@ export const App: React.FC = () => {
     });
     const { isEphemeralMode } = useConfig();
     const { version } = useConfig();
+    const { memoryEnabled } = useConfig();
 
     // Validate panel width from localStorage
     const getValidPanelWidth = (width: number): number => {
@@ -304,7 +305,7 @@ export const App: React.FC = () => {
                 setGraphPanelOpen(prev => !prev);
                     }
                     // Ctrl+Shift+M → Memory Browser
-                    if (e.ctrlKey && e.shiftKey && e.key === 'M') {
+                    if (e.ctrlKey && e.shiftKey && e.key === 'M' && memoryEnabled) {
                         e.preventDefault();
                         setShowMemoryBrowser(prev => !prev);
             }
@@ -465,9 +466,11 @@ export const App: React.FC = () => {
                                         </Tooltip>
                                     </>
                                 )}
-                                <Tooltip title="Memory Browser">
-                                    <Button icon={<NodeIndexOutlined />} onClick={() => setShowMemoryBrowser(true)} />
-                                </Tooltip>
+                                {memoryEnabled && (
+                                    <Tooltip title="Memory Browser">
+                                        <Button icon={<NodeIndexOutlined />} onClick={() => setShowMemoryBrowser(true)} />
+                                    </Tooltip>
+                                )}
                                 <Tooltip title="New Chat">
                                     <Button icon={<PlusOutlined />} onClick={() => startNewChat()} />
                                 </Tooltip>

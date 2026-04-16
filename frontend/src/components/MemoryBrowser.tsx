@@ -14,7 +14,7 @@ import {
   SearchOutlined, CheckCircleOutlined, CloseCircleOutlined, DeleteOutlined,
   EditOutlined, ThunderboltOutlined, ReloadOutlined, StarFilled,
 } from '@ant-design/icons';
-import { useTheme } from '../context/ThemeContext';
+import { useTheme } from '../context/ThemeContext'; 
 import * as api from '../api/memoryApi';
 import type { MemoryItem, MemoryProposal, MindMapNode, MemoryStatus, ReviewSummary } from '../api/memoryApi';
 
@@ -40,6 +40,26 @@ interface GraphLink {
   source: string;
   target: string;
   type: 'child' | 'cross_link' | 'ref';
+}
+
+// Extract a short project label from a full path
+function projectLabel(path: string): string {
+  if (!path) return 'unscoped';
+  const parts = path.replace(/\/+$/, '').split('/');
+  return parts[parts.length - 1] || path;
+}
+
+// Deterministic color from project label
+const PROJECT_PALETTE = [
+  '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6',
+  '#06b6d4', '#ec4899', '#84cc16', '#f97316', '#6366f1',
+];
+
+function projectColor(path: string): string {
+  if (!path) return '#64748b';  // grey for unscoped
+  let hash = 0;
+  for (let i = 0; i < path.length; i++) hash = ((hash << 5) - hash + path.charCodeAt(i)) | 0;
+  return PROJECT_PALETTE[Math.abs(hash) % PROJECT_PALETTE.length];
 }
 
 function buildGraph(nodes: MindMapNode[], memories: MemoryItem[]): { nodes: GraphNode[]; links: GraphLink[] } {
@@ -553,6 +573,7 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ visible, onClose }) => {
   const [editingMem, setEditingMem] = useState<MemoryItem | null>(null);
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState('dashboard');
+  const [filterProject, setFilterProject] = useState<string | null>(null);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
 
   // Load all data
@@ -642,6 +663,18 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ visible, onClose }) => {
     } catch { message.error('Maintenance failed'); }
   }, [loadData]);
 
+  const handleOrganize = useCallback(async () => {
+    try {
+      message.loading({ content: 'Organizing knowledge (LLM clustering)...', key: 'organize', duration: 0 });
+      const result = await api.runOrganize();
+      const cleaned = (result.cleanup?.removed || 0) + (result.cleanup?.merged || 0);
+      const created = result.bootstrap?.domains_created || 0;
+      const relations = result.relations?.relations_found || 0;
+      message.success({ content: `Organized: ${cleaned} cleaned, ${created} domains, ${relations} relations`, key: 'organize' });
+      loadData();
+    } catch { message.error({ content: 'Organization failed', key: 'organize' }); }
+  }, [loadData]);
+
   const handleGraphSelect = useCallback((id: string) => {
     setHighlightId(id);
     setActiveTab('explorer');
@@ -649,10 +682,31 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ visible, onClose }) => {
     setTimeout(() => setHighlightId(null), 3000);
   }, []);
 
+  // Collect distinct projects for filter dropdown
+  const distinctProjects = useMemo(() => {
+    const paths = new Set<string>();
+    for (const m of memories) {
+      const pp = m.scope?.project_paths;
+      if (pp && pp.length > 0) {
+        pp.forEach(p => paths.add(p));
+      } else {
+        paths.add('');  // unscoped
+      }
+    }
+    return Array.from(paths).sort();
+  }, [memories]);
+
   // Filtered memories for explorer tab
   const displayedMemories = useMemo(() => {
     let list = searchResults !== null ? searchResults : memories;
     if (filterLayer) list = list.filter(m => m.layer === filterLayer);
+    if (filterProject !== null) {
+      if (filterProject === '') {
+        list = list.filter(m => !m.scope?.project_paths?.length);
+      } else {
+        list = list.filter(m => m.scope?.project_paths?.includes(filterProject));
+      }
+    }
     return list;
   }, [memories, searchResults, filterLayer]);
 
@@ -765,6 +819,20 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ visible, onClose }) => {
                 ...Object.entries(LAYER_LABELS).map(([k, v]) => ({ value: k, label: `${LAYER_ICONS[k]} ${v}` })),
               ]}
             />
+            <Select
+              allowClear
+              placeholder="Filter by project"
+              value={filterProject}
+              onChange={setFilterProject}
+              style={{ width: 200 }}
+              options={[
+                { value: null as any, label: 'All projects' },
+                ...distinctProjects.map(p => ({
+                  value: p,
+                  label: p ? projectLabel(p) : '(unscoped)',
+                })),
+              ]}
+            />
           </div>
 
           {/* Memory list */}
@@ -814,6 +882,11 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ visible, onClose }) => {
       children: (
         <div style={{ padding: '12px 0' }}>
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
+            <Tooltip title="Use LLM to cluster memories into domains, extract relations, and build the knowledge graph">
+              <Button type="primary" icon={<ThunderboltOutlined />} onClick={handleOrganize}
+                style={{ background: '#8b5cf6', borderColor: '#8b5cf6' }}>
+                Organize Knowledge</Button>
+            </Tooltip>
             <Button icon={<ThunderboltOutlined />} onClick={handleMaintenance}>Run Maintenance</Button>
             <Button icon={<ReloadOutlined />} onClick={loadData} style={{ marginLeft: 8 }}>Refresh</Button>
           </div>

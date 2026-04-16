@@ -76,6 +76,10 @@ async def toggle_builtin_tool_category(request: BuiltinToolToggleRequest):
         env_var = f"ZIYA_ENABLE_{request.category.upper()}"
         os.environ[env_var] = "true" if request.enabled else "false"
         
+        # Invalidate the cached enabled state so subsequent checks pick up the change
+        from app.mcp.builtin_tools import invalidate_category_cache
+        invalidate_category_cache()
+        
         # TODO: Optionally persist to config file for permanent storage
         
         # Clear the MCP tools cache to force reload
