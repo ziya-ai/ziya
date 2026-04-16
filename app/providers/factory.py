@@ -46,8 +46,32 @@ def create_provider(
     model_config = model_config or {}
 
     if endpoint == "bedrock":
-        from app.providers.bedrock import BedrockProvider
+        # Claude uses the Anthropic invoke_model API (prompt caching,
+        # extended context headers, region failover).
+        # OpenAI-format models use invoke_model with Chat Completions body.
+        # Nova and other models use the unified Converse API.
+        family = model_config.get("family", "")
+        is_claude = (family == "claude")
 
+        # Models with wrapper_class "OpenAIBedrock" speak the OpenAI Chat
+        # Completions wire format via invoke_model, not the Converse API.
+        # Routing them through converse_stream mangles newlines.
+        wrapper_class = model_config.get("wrapper_class", "")
+        if wrapper_class == "OpenAIBedrock":
+            from app.providers.openai_bedrock import OpenAIBedrockProvider
+            return OpenAIBedrockProvider(
+                model_id=model_id, model_config=model_config,
+                aws_profile=aws_profile or "ziya", region=region or "us-west-2",
+            )
+
+        if not is_claude:
+            from app.providers.nova_bedrock import NovaBedrockProvider
+            return NovaBedrockProvider(
+                model_id=model_id, model_config=model_config,
+                aws_profile=aws_profile or "ziya", region=region or "us-west-2",
+            )
+
+        from app.providers.bedrock import BedrockProvider
         return BedrockProvider(
             model_id=model_id,
             model_config=model_config,
@@ -57,7 +81,6 @@ def create_provider(
 
     if endpoint == "anthropic":
         from app.providers.anthropic_direct import AnthropicDirectProvider
-
         return AnthropicDirectProvider(
             model_id=model_id,
             model_config=model_config,
@@ -66,7 +89,6 @@ def create_provider(
 
     if endpoint == "openai":
         from app.providers.openai_direct import OpenAIDirectProvider
-
         return OpenAIDirectProvider(
             model_id=model_id,
             model_config=model_config,
@@ -75,7 +97,6 @@ def create_provider(
 
     if endpoint == "openrouter":
         from app.providers.openai_direct import OpenAIDirectProvider
-
         return OpenAIDirectProvider(
             model_id=model_id,
             model_config=model_config,
