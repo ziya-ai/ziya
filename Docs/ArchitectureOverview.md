@@ -123,6 +123,18 @@ Additionally, streaming sessions acquire a **Screen Wake Lock** (`navigator.wake
 
 `ModelManager` (`app/agents/models.py`) is the single source of truth for model selection, configuration, and the boto3 client lifecycle. All model streaming uses `StreamingToolExecutor` directly — the legacy LangServe routing layer has been removed.
 
+Model definitions live in `app/config/models_config.py` as nested dicts.
+The provider factory (`app/providers/factory.py`) routes each model to its
+backend-specific provider:
+
+| Model family | Provider | API used |
+|---|---|---|
+| Claude (Sonnet, Opus, Haiku) | `BedrockProvider` | `invoke_model_with_response_stream` (Anthropic body format) |
+| DeepSeek, Qwen, Kimi, MiniMax, GLM, OpenAI-GPT (on Bedrock) | `OpenAIBedrockProvider` | `invoke_model_with_response_stream` (OpenAI Chat Completions body format) |
+| Nova (Micro, Lite, Pro, Premier) | `NovaBedrockProvider` | `converse_stream` (Converse API format) |
+| Anthropic Direct | `AnthropicDirectProvider` | Anthropic Messages API |
+| OpenAI / OpenRouter | `OpenAIDirectProvider` | OpenAI Chat Completions API |
+
 Model definitions live in `app/config/models_config.py` as nested dicts:
 
 ```
@@ -218,8 +230,6 @@ The sanitizer runs at the point where `result_text` is determined in the streami
 
 See `Enterprise.md` for registering custom `ToolResultFilterProvider` plugins.
 
-See `Enterprise.md` for registering custom `ToolResultFilterProvider` plugins.
-
 ---
 
 ## File Tree & Context
@@ -231,8 +241,6 @@ Files selected by the user are sent in the chat payload as relative paths. The s
 External paths (outside the project root) can be added via `POST /api/add-explicit-paths`. These are tracked in `_explicit_external_paths` (a server-memory set) and in the folder cache under a `[external]` key. The security check in `apply_changes` uses `is_path_explicitly_allowed()` to permit writes only to the project root or explicitly added external paths.
 
 The `[external]` data is stored in the same `_folder_cache` entry that `/api/folders` reads from. The cache key is resolved via `get_project_root()` (request-scoped ContextVar → `ZIYA_USER_CODEBASE_DIR` → cwd), so `POST /api/add-explicit-paths` requests must include the `X-Project-Root` header to ensure the write targets the correct cache entry. On the frontend, WebSocket `file_added` events for `[external]` paths trigger a full `fetchFolders` refetch rather than incremental tree insertion, because the flat broadcast path format doesn't match the nested `{children}` structure the server builds for external directories.
-
-The `[external]` data is stored in the same `_folder_cache` entry that `/api/folders` reads from. The cache key is resolved via `get_project_root()` (request-scoped ContextVar → `ZIYA_USER_CODEBASE_DIR` → cwd), so `POST /api/add-explicit-paths` requests must include the `X-Project-Root` header to ensure the write targets the correct cache entry. On the frontend side, WebSocket `file_added` events for `[external]` paths trigger a full `fetchFolders` refetch rather than incremental tree insertion, because the flat broadcast path format doesn't match the nested `{children}` structure the server builds for external directories.
 
 ---
 
@@ -396,6 +404,10 @@ Several server-side data structures track per-conversation state across requests
 | `ExtendedContextManager._conversation_states` | `app/utils/extended_context_manager.py` | LRU cap (50 entries) + TTL (2 hours). Eviction runs on `activate_extended_context()`. |
 | `GlobalUsageTracker.conversation_usages` | `app/streaming_tool_executor.py` | 100-conversation cap (evicts oldest on overflow). Per-conversation list capped at 500 `IterationUsage` entries. |
 | `stream_metrics['chunk_sizes']` | `app/streaming_tool_executor.py` | Rolling window of last 100 entries per stream. |
+| `PromptCache._cache` | `app/utils/prompt_cache.py` | TTL (1 hour) + LRU cap (200 entries). Lazy eviction on read; forced cleanup every 30 min by `_periodic_memory_cleanup`. |
+| `_prompt_cache` (prompts_manager) | `app/agents/prompts_manager.py` | LRU cap (50 entries). Evicted on overflow; cleared on model switch. |
+| `DelegateManager` plan state | `app/agents/delegate_manager.py` | Terminal plans evicted after 2 hours of inactivity by `_periodic_memory_cleanup`. Running plans are never evicted. |
+| `ThreadStateManager.thread_states` | `app/utils/file_cache.py` | Cap (100 threads). Dead threads pruned lazily when cap is exceeded. |
 
 **Per-request structures** (garbage collected when the request ends):
 
@@ -414,6 +426,11 @@ Ziya maintains a persistent knowledge store across sessions so the model
 behaves like a colleague who was in every previous meeting.  The system is
 local-first (all data in `~/.ziya/memory/`), human-owned (approve/edit/delete),
 and invisible when working correctly.
+
+> **Opt-in (experimental):** Memory is disabled by default. Enable with
+> `--memory` on the command line or `ZIYA_ENABLE_MEMORY=true` in the
+> environment.  When disabled, no memory tools appear, no background
+> extraction runs, and no memory prompt sections are injected.
 
 ### Phase 0 — Flat Store
 
@@ -456,6 +473,7 @@ The model interacts with memory through five builtin MCP tools:
 | `/api/v1/memory/mindmap` | POST | Create/update a mind-map node |
 | `/api/v1/memory/mindmap/{node_id}` | DELETE | Delete node (children reparented) |
 | `/api/v1/memory/mindmap/{node_id}/expand` | POST | All memories under node tree |
+| `/api/v1/memory/organize` | POST | LLM-powered clustering, relation extraction, and mind-map bootstrap |
 
 See `design/structured-memory-system.md` for the full design rationale,
 research foundation, and roadmap for Phases 1–3.
@@ -470,7 +488,20 @@ The frontend includes an interactive **Memory Browser** (`frontend/src/component
 | 🌐 Knowledge Graph | Force-directed SVG visualization of mind-map nodes (large circles) and individual memories (colored dots).  Nodes are draggable; links show parent-child, cross-links, and memory refs.  Importance maps to node size/glow, layer maps to color. Click a memory node to jump to it in the Explorer tab. |
 | 📚 Explorer | Searchable, filterable list of all memories with inline edit, delete, and real-time search.  Memories show layer badge, importance stars, freshness label, and tags. |
 | 💡 Proposals | Review queue for pending memory proposals.  Each card shows content, layer, tags, and age.  Approve individually or in batch. |
-| 🩺 Health | Stale memories (90+ days unaccessed), oversized mind-map nodes (12+ memories that should split), orphan memories (not linked to any node), and a "Run Maintenance" button that triggers cell division and cross-link discovery. |
+| 🩺 Health | Stale memories (90+ days unaccessed), oversized mind-map nodes (12+ memories that should split), orphan memories (not linked to any node).  "Organize Knowledge" triggers LLM-powered clustering and relation extraction.  "Run Maintenance" triggers cell division and cross-link discovery. |
+
+### Knowledge Organization
+
+The **memory organizer** (`app/utils/memory_organizer.py`) uses LLM calls to build
+mind-map structure from unorganized memories:
+
+1. **Clustering** — Groups memories into thematic domains (e.g. "Network Architecture", "AI Tooling") via a service model call.  Batched for large corpora.
+2. **Placement** — Creates mind-map nodes for each domain and assigns memories to them.  Merges with existing domains when tag/handle overlap is sufficient.
+3. **Relation extraction** — Within each domain, identifies `supports`, `contradicts`, `elaborates`, and `depends_on` relationships between memories.
+4. **Cross-link discovery** — Connects domains in different branches that share tags (algorithmic, uses existing `memory_maintenance.py`).
+5. **Cell division** — Splits oversized nodes into focused children when a tag cluster reaches threshold.
+
+Auto-triggers when orphan memories exceed 15 (configurable via `AUTO_ORGANIZE_ORPHAN_THRESHOLD`).
 
 The API layer (`frontend/src/api/memoryApi.ts`) provides typed wrappers around all `/api/v1/memory` endpoints with shared constants for layer colors, labels, and icons.
 
@@ -512,6 +543,14 @@ Every `memory_save` call triggers automatic maintenance:
    strongest tag cluster is split into a new child node.
 3. **Cross-link discovery** — nodes in different branches sharing ≥2
    tags get bidirectional cross-links.
+4. **Auto-linking** — embedding cosine similarity against the full store
+   finds the top-5 most similar memories.  Above 0.88 similarity,
+   an `elaborates` relation is created; 0.75–0.88 creates a `supports`
+   relation.  Links are bidirectional (new→existing and existing→new).
+5. **Tag enrichment** — for memories with >0.80 cosine similarity, tags
+   from the new memory propagate to the existing memory (up to 2 new
+   tags, capped at 6 total).  This enables tag-based queries to find
+   related content that was tagged differently across sessions.
 
 Additional maintenance endpoints:
 
@@ -547,6 +586,19 @@ The extraction pipeline:
    Lite for Google, GPT-4.1-mini for OpenAI, Haiku for Anthropic).
    Existing memories are summarized in the prompt so the model avoids
    re-extracting known facts.
+   The extraction prompt enforces five gates:
+   1. **Next-session test** — would this be useful without today's context?
+   2. **Self-containment** — no unresolved "the document" / "the system" references
+   3. **Session artifact rejection** — code fixes, refactoring notes, CSS, test infrastructure
+   4. **Tool meta-commentary** — descriptions of the AI tool itself
+   5. **Career narrative** — personal branding, motivational content
+
+   After extraction, a **structural quality gate** enforces:
+   - Backtick-wrapped code identifiers (≥3 → reject)
+   - Source file references (≥2 → reject)
+   - CSS/layout property patterns → reject
+   - Dangling references (≥2 → reject), length bounds, tag count cap (4)
+
 3. **Deduplicate** — candidates are compared against the existing store
    using tag overlap + significant-word overlap.  Near-duplicates are
    filtered out.
