@@ -19,6 +19,16 @@ export interface ImageAttachment {
     height?: number;
 }
 
+export interface DocumentAttachment {
+    id?: string;
+    filename: string;
+    text: string;          // extracted text content
+    type: string;          // file extension: 'pdf', 'docx', etc.
+    chars: number;
+    // For scanned PDFs rendered as page images
+    pageImages?: ImageAttachment[];
+}
+
 export interface ModelChange {
     from: string;
     to: string;
@@ -48,6 +58,7 @@ export type Message = {
     _feedbackStatus?: 'pending' | 'acknowledged';  // Status of feedback message
     _feedbackId?: string;           // Unique ID for tracking feedback acknowledgment
     images?: ImageAttachment[];  // Optional array of attached images
+    documents?: DocumentAttachment[];  // Optional array of attached documents
 };
 
 export interface Conversation {
