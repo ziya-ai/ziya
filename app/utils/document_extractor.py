@@ -7,6 +7,7 @@ so they can be meaningfully included in the context for the LLM.
 
 import os
 import io
+import base64
 from typing import Optional, Dict, Any, List
 import logging
 from functools import lru_cache
@@ -144,13 +145,16 @@ def extract_pdf_text(file_path: str) -> Optional[str]:
             
             text_content = []
             with pdfplumber.open(file_path) as pdf:
+                page_count = len(pdf.pages)
                 for page in pdf.pages:
                     text = page.extract_text()
                     if text:
                         text_content.append(text)
-                        logger.debug(f"Extracted {len(text)} chars from page {len(text_content)}")
             
-            logger.debug(f"Total pages processed: {len(text_content)}")
+            if text_content:
+                logger.debug(f"pdfplumber: extracted text from {len(text_content)}/{page_count} pages")
+            else:
+                logger.warning(f"pdfplumber: opened {file_path} ({page_count} pages) but no text found — may be a scanned image")
             return '\n\n'.join(text_content) if text_content else None
             
         except Exception as e:
@@ -176,6 +180,80 @@ def extract_pdf_text(file_path: str) -> Optional[str]:
     
     logger.error(f"No PDF libraries available to extract text from {file_path}")
     return None
+
+
+def extract_pdf_page_images(file_path: str, max_pages: int = 20, max_edge: int = 1568) -> Optional[List[Dict[str, Any]]]:
+    """
+    Render PDF pages as images.  Useful for scanned PDFs that contain no
+    extractable text — the page images can be sent to a vision-capable model.
+
+    Uses pypdfium2 (a pdfplumber dependency) to render each page.
+
+    Args:
+        file_path: Path to the PDF file.
+        max_pages: Maximum number of pages to render.
+        max_edge:  Maximum pixel dimension on the longer edge.
+
+    Returns:
+        A list of dicts ``{data, mediaType, page, width, height}`` where
+        *data* is a base64-encoded JPEG string, or ``None`` on failure.
+    """
+    try:
+        import pypdfium2 as pdfium
+        from PIL import Image as PILImage
+    except ImportError:
+        logger.warning("pypdfium2 or Pillow not available — cannot render PDF pages as images")
+        return None
+
+    try:
+        pdf = pdfium.PdfDocument(file_path)
+    except Exception as e:
+        logger.warning(f"pypdfium2 could not open {file_path}: {e}")
+        return None
+
+    page_count = len(pdf)
+    if page_count == 0:
+        pdf.close()
+        return None
+
+    pages_to_render = min(page_count, max_pages)
+    logger.info(f"Rendering {pages_to_render}/{page_count} PDF pages as images from {file_path}")
+
+    images: List[Dict[str, Any]] = []
+    for i in range(pages_to_render):
+        try:
+            page = pdf[i]
+            # Render at 150 DPI (good balance of quality vs size)
+            bitmap = page.render(scale=150 / 72)
+            pil_image = bitmap.to_pil()
+
+            # Resize if larger than max_edge
+            w, h = pil_image.size
+            if max(w, h) > max_edge:
+                scale = max_edge / max(w, h)
+                pil_image = pil_image.resize(
+                    (round(w * scale), round(h * scale)),
+                    PILImage.LANCZOS,
+                )
+                w, h = pil_image.size
+
+            buf = io.BytesIO()
+            pil_image.save(buf, format="JPEG", quality=80)
+            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+            images.append({
+                "data": b64,
+                "mediaType": "image/jpeg",
+                "page": i + 1,
+                "width": w,
+                "height": h,
+            })
+        except Exception as e:
+            logger.warning(f"Failed to render page {i + 1} of {file_path}: {e}")
+
+    pdf.close()
+    return images if images else None
+
 
 def extract_docx_text(file_path: str) -> Optional[str]:
     """
@@ -356,6 +434,8 @@ def _extract_document_text_impl(file_path: str) -> Optional[str]:
         Extracted text or None if extraction failed
     """
     # Check if we have any document processing libraries
+    _check_libraries()
+
     if not any(_AVAILABLE_LIBRARIES.values()):
         logger.warning(f"Cannot extract text from {file_path}: document extraction libraries not installed")
         return None

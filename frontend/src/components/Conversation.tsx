@@ -6,6 +6,7 @@ import { EditSection } from "./EditSection";
 import { Spin, Button, Tooltip, Image as AntImage } from 'antd';
 import { RedoOutlined, SoundOutlined, MutedOutlined, PictureOutlined, CodeOutlined, EyeOutlined } from "@ant-design/icons";
 
+import { DocumentChip, ImageChip } from './FileChip';
 import ModelChangeNotification from './ModelChangeNotification';
 import { useSetQuestion } from '../context/QuestionContext';
 import { useFolderContext } from '../context/FolderContext';
@@ -375,12 +376,12 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
         previousStreamingStateRef.current = new Set(streamingConversations);
 
         if (wasCurrentStreaming && !isCurrentlyStreaming) {
-                console.log('✅ Current conversation finished streaming');
-                // Scroll behavior handled by scrollToBottom in ChatContext
+            console.log('✅ Current conversation finished streaming');
+            // Scroll behavior handled by scrollToBottom in ChatContext
         } else if (previousSet.size > streamingConversations.size) {
-                // A background conversation finished
-                console.log('📌 Background conversation finished - locking scroll position');
-                recordManualScroll();
+            // A background conversation finished
+            console.log('📌 Background conversation finished - locking scroll position');
+            recordManualScroll();
         }
     }, [isCurrentlyStreaming, streamingConversations, currentConversationId, recordManualScroll]);
 
@@ -530,8 +531,21 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                     {/* Only show edit section when editing, otherwise show message content */}
                                     {msg.role === 'human' && editingMessageIndex === actualIndex ? (
                                         <EditSection index={actualIndex} isInline={false} />
-                                    ) : msg.role === 'human' && (msg.content || (msg.images && msg.images.length > 0)) ? (
+                                    ) : msg.role === 'human' && (msg.content || (msg.images && msg.images.length > 0) || (msg.documents && msg.documents.length > 0)) ? (
                                         <>
+                                            {/* Display attached documents as chips */}
+                                            {msg.documents && msg.documents.length > 0 && (
+                                                <div style={{
+                                                    marginBottom: '8px',
+                                                    display: 'flex',
+                                                    gap: '6px',
+                                                    flexWrap: 'wrap'
+                                                }}>
+                                                    {msg.documents.map((doc, docIdx) => (
+                                                        <DocumentChip key={docIdx} doc={doc} inline />
+                                                    ))}
+                                                </div>
+                                            )}
                                             {/* Display attached images if present */}
                                             {msg.images && msg.images.length > 0 && (
                                                 <div style={{
@@ -568,7 +582,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                                         enableCodeApply={enableCodeApply}
                                                         onOpenShellConfig={onOpenShellConfig}
                                                         isStreaming={false}
-                                                            role={msg.role as 'human' | 'assistant' | 'system'}
+                                                        role={msg.role as 'human' | 'assistant' | 'system'}
                                                     />
                                                 )}
                                             </div>}
@@ -595,7 +609,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                                         enableCodeApply={enableCodeApply}
                                                         onOpenShellConfig={onOpenShellConfig}
                                                         isStreaming={false}
-                                                            role={msg.role as 'human' | 'assistant' | 'system'}
+                                                        role={msg.role as 'human' | 'assistant' | 'system'}
                                                     />
                                                 )}
                                             </div>

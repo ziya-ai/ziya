@@ -187,14 +187,65 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
         e.preventDefault();
         e.stopPropagation();
 
-        if (!supportsVision) {
-            message.warning('Current model does not support image attachments');
-            return;
+        const files = e.dataTransfer.files;
+        if (!files || files.length === 0) return;
+
+        const docExts = new Set(['pdf','doc','docx','xls','xlsx','ppt','pptx']);
+        const imageFiles: File[] = [];
+        const documentFiles: File[] = [];
+
+        for (const file of Array.from(files)) {
+            const ext = file.name.split('.').pop()?.toLowerCase() || '';
+            if (file.type.startsWith('image/')) imageFiles.push(file);
+            else if (docExts.has(ext)) documentFiles.push(file);
         }
 
-        const files = e.dataTransfer.files;
-        if (files && files.length > 0) {
-            await processImageFiles(files);
+        if (imageFiles.length > 0) {
+            if (!supportsVision) {
+                message.warning('Current model does not support image attachments');
+            } else {
+                await processImageFiles(files);
+            }
+        }
+
+        for (const file of documentFiles) {
+            try {
+                const formData = new FormData();
+                formData.append('file', file);
+                const resp = await fetch('/api/extract-document', { method: 'POST', body: formData });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    message.error(err.message || `Failed to extract text from ${file.name}`);
+                    continue;
+                }
+                const result = await resp.json();
+
+                if (result.text) {
+                    setEditedMessage(prev => prev + `\n\n--- ${result.filename} ---\n${result.text}`);
+                    message.success(`Extracted text from ${file.name}`);
+                } else if (result.images && result.images.length > 0) {
+                    if (!supportsVision) {
+                        message.warning(
+                            `${file.name} appears to be a scanned document. ` +
+                            `Switch to a vision-capable model to analyze its ${result.images.length} page(s).`
+                        );
+                    } else {
+                        const newImgs = result.images.map((img: any) => ({
+                            data: img.data,
+                            mediaType: img.mediaType as ImageAttachment['mediaType'],
+                            filename: `${result.filename} p${img.page}`,
+                            width: img.width,
+                            height: img.height,
+                        }));
+                        setAttachedImages(prev => [...prev, ...newImgs]);
+                        message.success(`Extracted ${newImgs.length} page image(s) from ${file.name}`);
+                    }
+                } else {
+                    message.warning(`No content could be extracted from ${file.name}`);
+                }
+            } catch {
+                message.error(`Failed to process ${file.name}`);
+            }
         }
     };
 
@@ -403,7 +454,7 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
                     <input
                         ref={fileInputRef}
                         type="file"
-                        accept="image/*"
+                        accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
                         multiple
                         style={{ display: 'none' }}
                         onChange={handleImageSelect}
