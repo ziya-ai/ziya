@@ -629,8 +629,47 @@ function getLanguageFromPath(filePath: string): string {
 function formatFileRead(result: any, input: any, options: any): FormattedOutput {
   const { defaultCollapsed = true } = options;
 
-  // Handle error responses
-  if (result.error) {
+  // When result arrives as a string (JSON-serialised by the backend),
+  // parse it into a structured object so we can extract content/metadata/path.
+  if (typeof result === 'string') {
+    try {
+      const parsed = JSON.parse(result);
+      if (parsed && typeof parsed === 'object') {
+        return formatFileRead(parsed, input, options);
+      }
+    } catch {
+      // Unparseable string — treat as raw file content
+      let fileText = result;
+
+      // Defensive: strip Python dict wrapper if the backend returned str()
+      // instead of json.dumps().  Pattern: {'content': '...', 'path': '...'}
+      const pyDictMatch = fileText.match(/^\{'content':\s*'([\s\S]*)',\s*'(?:metadata|path)':/);
+      if (pyDictMatch) {
+        fileText = pyDictMatch[1].replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\'/g, "'");
+      }
+
+      const lines = fileText.split('\n');
+      const shouldCollapse = fileText.length > 600 || lines.length > 8;
+      const filePath = input?.path || '';
+      const fileName = filePath.split('/').pop() || '';
+      let summary: string;
+      if (fileName) {
+        summary = `📄 **${fileName}** — ${lines.length} line${lines.length !== 1 ? 's' : ''}`;
+      } else {
+        summary = `📄 Output (${lines.length} lines)`;
+      }
+      return {
+        content: fileText,
+        type: 'text',
+        showInput: false,
+        collapsed: shouldCollapse && defaultCollapsed,
+        summary: shouldCollapse ? summary : undefined,
+      };
+    }
+  }
+
+  // Handle error responses (structured object)
+  if (result?.error) {
     return {
       content: `❌ ${result.message || 'File read failed'}`,
       type: 'error',
@@ -641,9 +680,8 @@ function formatFileRead(result: any, input: any, options: any): FormattedOutput 
   // Handle structured result: {content, metadata, path}
   const filePath = result.path || input?.path || '';
   const metadata = result.metadata || '';
-  const fileContent = result.content || (typeof result === 'string' ? result : '');
+  const fileContent = result.content || '';
   const fileName = filePath.split('/').pop() || filePath;
-  const lang = getLanguageFromPath(filePath);
 
   if (!fileContent) {
     return { content: `📄 ${filePath} — (empty file)`, type: 'text', collapsed: false };
@@ -661,13 +699,10 @@ function formatFileRead(result: any, input: any, options: any): FormattedOutput 
     summary += ` — ${lineCount} line${lineCount !== 1 ? 's' : ''}`;
   }
 
-  // Wrap content in a fenced code block with language hint
-  const fencedContent = lang
-    ? `\`\`\`${lang}\n${fileContent}\n\`\`\``
-    : fileContent;
-
+  // Return raw file content — ToolBlock handles syntax highlighting
+  // via the backend's syntax hint in the tool fence header.
   return {
-    content: fencedContent,
+    content: fileContent,
     type: 'text',
     showInput: false,
     collapsed: shouldCollapse && defaultCollapsed,
@@ -676,8 +711,19 @@ function formatFileRead(result: any, input: any, options: any): FormattedOutput 
 }
 
 function formatFileWrite(result: any, input: any, _options: any): FormattedOutput {
-  // Handle error responses
-  if (result.error) {
+  // Parse string results into structured objects
+  if (typeof result === 'string') {
+    try {
+      const parsed = JSON.parse(result);
+      if (parsed && typeof parsed === 'object') {
+        return formatFileWrite(parsed, input, _options);
+      }
+    } catch {
+      return { content: result, type: 'text', collapsed: false };
+    }
+  }
+
+  if (result?.error) {
     const msg = result.message || 'File write failed';
     const pathCtx = input?.path && !msg.includes(input.path) ? ` (${input.path})` : '';
     return {
@@ -722,7 +768,19 @@ function formatFileWrite(result: any, input: any, _options: any): FormattedOutpu
 function formatFileList(result: any, input: any, options: any): FormattedOutput {
   const { defaultCollapsed = true } = options;
 
-  if (result.error) {
+  // Parse string results into structured objects
+  if (typeof result === 'string') {
+    try {
+      const parsed = JSON.parse(result);
+      if (parsed && typeof parsed === 'object') {
+        return formatFileList(parsed, input, options);
+      }
+    } catch {
+      // Plain text listing — use as-is
+    }
+  }
+
+  if (result?.error) {
     return {
       content: `❌ ${result.message || 'File list failed'}`,
       type: 'error',

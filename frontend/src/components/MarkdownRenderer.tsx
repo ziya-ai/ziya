@@ -310,25 +310,6 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
 
     // Load Prism highlighting for any tool that has a language hint
     const hasSyntaxHighlighting = contentLanguage && contentLanguage !== 'text' && contentLanguage !== 'markdown';
-    useEffect(() => {
-        if (hasSyntaxHighlighting) {
-            const loadHighlighting = async () => {
-                try {
-                    const prismLang = contentLanguage === 'sh' ? 'bash' : contentLanguage;
-                    await loadPrismLanguage(prismLang);
-                    const prism = window.Prism;
-                    if (prism && prism.languages[prismLang]) {
-                        const highlighted = prism.highlight(content, prism.languages[prismLang], prismLang);
-                        setHighlightedShellOutput(highlighted);
-                    }
-                } catch (error) {
-                    console.warn(`Failed to load ${contentLanguage} highlighting:`, error);
-                }
-                setIsShellHighlightLoaded(true);
-            };
-            loadHighlighting();
-        }
-    }, [hasSyntaxHighlighting, contentLanguage, content]);
     const queryMatch = isSearchTool && content.match(/Query:\s*\*?\*?"([^"]+)"\*?\*?/);
     const searchQuery = queryMatch ? queryMatch[1] : '';
 
@@ -359,14 +340,64 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
         try {
             // Parse if it looks like JSON
             if (content.trim().startsWith('{') || content.trim().startsWith('[')) {
-                const parsed = JSON.parse(content);
-                return formatMCPOutput(toolName, parsed, toolInput, {
+                let parsed: any;
+                try {
+                    parsed = JSON.parse(content);
+                } catch (_jsonErr) {
+                    // Backend returns Python dict repr with single quotes for
+                    // file_read/file_write/file_list results.  Naive quote
+                    // replacement breaks when content contains quotes (code),
+                    // so extract the known fields positionally instead.
+                    const pyDict = content.trim();
+                    const metaDelim = "', 'metadata': '";
+                    const pathDelim = "', 'path': '";
+                    const metaIdx = pyDict.lastIndexOf(metaDelim);
+                    const pathIdx = pyDict.lastIndexOf(pathDelim);
+                    if (metaIdx > 0 && pathIdx > metaIdx) {
+                        const fileContent = pyDict.substring("{'content': '".length, metaIdx);
+                        const metadata = pyDict.substring(metaIdx + metaDelim.length, pathIdx);
+                        const path = pyDict.substring(pathIdx + pathDelim.length, pyDict.length - 2); // strip '}
+                        parsed = { content: fileContent.replace(/\\n/g, '\n'), metadata, path };
+                    } else if (pyDict.startsWith("{'content': '") && pyDict.endsWith("'}")) {
+                        // file_list returns only {content: ...} without metadata/path
+                        const fileContent = pyDict.substring("{'content': '".length, pyDict.length - 2);
+                        parsed = { content: fileContent.replace(/\\n/g, '\n') };
+                    } else {
+                        // Fallback: try the general single-quote-to-double-quote approach
+                        // for non-file tool results that use simple Python dicts
+                        try {
+                            const jsonified = content
+                                .replace(/'/g, '"')
+                                .replace(/True/g, 'true')
+                                .replace(/False/g, 'false')
+                                .replace(/None/g, 'null');
+                            parsed = JSON.parse(jsonified);
+                        } catch (_) { /* give up — fall through to plain text */ }
+                    }
+                }
+                if (parsed) return formatMCPOutput(actualToolName, parsed, toolInput, {
                     defaultCollapsed: true,
                     maxLength: 10000
                 });
             }
         } catch (e) {
             // Not JSON, continue with regular processing
+        }
+
+        // Builtin file tools (file_read, file_write, file_list, ast_*) may
+        // return plain text that doesn't start with '{'.  Route through
+        // formatMCPOutput so tool-specific formatters build a proper summary
+        // with file path and line counts instead of the generic fallback.
+        const FILE_TOOL_NAMES = new Set([
+            'file_read', 'mcp_file_read', 'file_write', 'mcp_file_write',
+            'file_list', 'mcp_file_list', 'ast_get_tree', 'mcp_ast_get_tree',
+            'ast_search', 'mcp_ast_search', 'ast_references', 'mcp_ast_references',
+        ]);
+        if (FILE_TOOL_NAMES.has(actualToolName)) {
+            return formatMCPOutput(actualToolName, content, toolInput, {
+                defaultCollapsed: true,
+                maxLength: 10000
+            });
         }
 
         // For non-JSON content, create a simple formatted output
@@ -477,6 +508,39 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
         return `🛠️ ${cleanToolName}`;
     };
 
+    // Destructure formatted output and compute cleanContent before any early returns,
+    // so the useEffect below (which is a hook) always runs in the same order.
+    const { content: formattedContent, collapsed, summary } = formattedOutput;
+    const hierarchicalResults = formattedOutput.hierarchicalResults;
+    const shouldShowCollapsed = collapsed !== false && (summary || formattedContent.length > 500);
+
+    // Don't clean tool markers - they're already properly formatted by the backend
+    // Aggressive cleaning corrupts diffs, code blocks, and template literals
+    const cleanContent = formattedContent.trim();
+
+    // Prism syntax highlighting: run on the *formatted* content (cleanContent),
+    // not the raw tool output, so that file_read results get highlighted
+    // after the formatter extracts the actual file text from the wrapper dict.
+    useEffect(() => {
+        if (hasSyntaxHighlighting) {
+            const loadHighlighting = async () => {
+                try {
+                    const prismLang = contentLanguage === 'sh' ? 'bash' : contentLanguage;
+                    await loadPrismLanguage(prismLang);
+                    const prism = window.Prism;
+                    if (prism && prism.languages[prismLang]) {
+                        const highlighted = prism.highlight(cleanContent, prism.languages[prismLang], prismLang);
+                        setHighlightedShellOutput(highlighted);
+                    }
+                } catch (error) {
+                    console.warn(`Failed to load ${contentLanguage} highlighting:`, error);
+                }
+                setIsShellHighlightLoaded(true);
+            };
+            loadHighlighting();
+        }
+    }, [hasSyntaxHighlighting, contentLanguage, cleanContent]);
+
     // Check if this is a security error from shell command blocking
     let isSecurityError = content.includes('🚫 SECURITY' + ' BLOCK') ||
         content.includes('🚫 WRITE' + ' BLOCKED') ||
@@ -527,14 +591,6 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
         );
     }
 
-
-    const { content: formattedContent, collapsed, summary } = formattedOutput;
-    const hierarchicalResults = formattedOutput.hierarchicalResults;
-    const shouldShowCollapsed = collapsed !== false && (summary || formattedContent.length > 500);
-
-    // Don't clean tool markers - they're already properly formatted by the backend
-    // Aggressive cleaning corrupts diffs, code blocks, and template literals
-    const cleanContent = formattedContent.trim();
 
     // Color scheme based on tool type
     const getToolColors = () => {
@@ -756,7 +812,18 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
                     );
                 })()
             ) : (
-                shouldRenderAsMarkdown ? (
+                hasSyntaxHighlighting && isShellHighlightLoaded && highlightedShellOutput ? (
+                    <pre style={{
+                        margin: 0,
+                        padding: '16px',
+                        color: colors.contentText,
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        overflow: 'auto'
+                    }}>
+                        <code className={`language-${contentLanguage === 'sh' ? 'bash' : contentLanguage}`} dangerouslySetInnerHTML={{ __html: highlightedShellOutput }} />
+                    </pre>
+                ) : shouldRenderAsMarkdown ? (
                     <div style={{
                         padding: '16px',
                         color: colors.contentText,
@@ -767,7 +834,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
                         dangerouslySetInnerHTML={{ __html: renderedHtml }}
                     />
                 ) : (
-                    hasSyntaxHighlighting && isShellHighlightLoaded && highlightedShellOutput ? (
+                    containsAnsi(cleanContent) ? (
                         <pre style={{
                             margin: 0,
                             padding: '16px',
@@ -776,32 +843,19 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
                             wordBreak: 'break-word',
                             overflow: 'auto'
                         }}>
-                            <code className={`language-${contentLanguage === 'sh' ? 'bash' : contentLanguage}`} dangerouslySetInnerHTML={{ __html: highlightedShellOutput }} />
+                            <code dangerouslySetInnerHTML={{ __html: ansiToHtml(cleanContent) }} />
                         </pre>
                     ) : (
-                        containsAnsi(cleanContent) ? (
-                            <pre style={{
-                                margin: 0,
-                                padding: '16px',
-                                color: colors.contentText,
-                                whiteSpace: 'pre-wrap',
-                                wordBreak: 'break-word',
-                                overflow: 'auto'
-                            }}>
-                                <code dangerouslySetInnerHTML={{ __html: ansiToHtml(cleanContent) }} />
-                            </pre>
-                        ) : (
-                            <pre style={{
-                                margin: 0,
-                                padding: '16px',
-                                color: colors.contentText,
-                                whiteSpace: 'pre-wrap',
-                                wordBreak: 'break-word',
-                                overflow: 'auto'
-                            }}>
-                                {cleanContent}
-                            </pre>
-                        )
+                        <pre style={{
+                            margin: 0,
+                            padding: '16px',
+                            color: colors.contentText,
+                            whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-word',
+                            overflow: 'auto'
+                        }}>
+                            {cleanContent}
+                        </pre>
                     )
                 )
             )}
@@ -5561,6 +5615,22 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                     processedMarkdown = removeThinkingTags(processedMarkdown);
                     // Add simple marker at the beginning
                     processedMarkdown = `THINKING_MARKER\n\n${processedMarkdown}`;
+                } else if (externalStreaming) {
+                    // During streaming, an unclosed <thinking-data> or <thinking> opening
+                    // tag has no closing counterpart yet, so parseThinkingContent returns
+                    // null. Strip the raw tag and partial content from the rendered output
+                    // and accumulate in thinkingContentRef so the ThinkingBlock shows live
+                    // progress instead of leaking raw tags into the chat bubble.
+                    const partialMatch =
+                        processedMarkdown.match(/<thinking-data>([\s\S]*)$/) ||
+                        processedMarkdown.match(/<thinking>([\s\S]*)$/);
+                    if (partialMatch) {
+                        thinkingContentRef.current = partialMatch[1];
+                        processedMarkdown = processedMarkdown
+                            .replace(/<thinking-data>[\s\S]*$/, '')
+                            .replace(/<thinking>[\s\S]*$/, '');
+                        processedMarkdown = `THINKING_MARKER\n\n${processedMarkdown}`;
+                    }
                 }
             } else {
                 // Remove thinking tags from subsequent renders
