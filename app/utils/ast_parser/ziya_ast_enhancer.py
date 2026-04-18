@@ -75,6 +75,10 @@ class ZiyaASTEnhancer:
         'diff_test_cases', 'test_cases', 'node_modules', '__pycache__',
         '.ziya', '.git', '.svn', '.hg', 'dist', 'build', '.venv', 'venv',
         '.pytest_cache', '.mypy_cache', '.tox', 'egg-info',
+        # Brazil workspace artifacts: env/ holds resolved runtime deps (can be
+        # 10s of GB); env-*/ and *-runtime-* are per-package variants. These
+        # aren't source and contain heavy symlink webs.
+        'env', 'env-runtime', 'env-tests', 'build-tools', 'brazil-output',
     })
 
     def _process_directory(self, codebase_dir: str, should_ignore_fn, max_depth: int, progress_callback=None) -> None:
@@ -101,14 +105,19 @@ class ZiyaASTEnhancer:
         files_total = 0
         eligible_files = []
         start_time = time.time()
-        walk_deadline = start_time + 30.0
-        _FILE_CAP = 10_000
+        # AST walks of large source trees can legitimately take a couple of
+        # minutes; default to 180s and allow operators to raise it further via
+        # ZIYA_AST_TIMEOUT. File cap likewise bumped to 50k with override via
+        # ZIYA_AST_FILE_CAP — 10k was too tight for real monorepos.
+        _ast_timeout = float(os.environ.get("ZIYA_AST_TIMEOUT", "180"))
+        walk_deadline = start_time + _ast_timeout
+        _FILE_CAP = int(os.environ.get("ZIYA_AST_FILE_CAP", "50000"))
         capped = False
 
         # Single walk: collect eligible file paths with cap and deadline
-        for root, dirs, files in os.walk(codebase_dir):
+        for root, dirs, files in os.walk(codebase_dir, followlinks=False):
             if time.time() > walk_deadline:
-                logger.warning("AST: directory walk hit 30s deadline, indexing files found so far")
+                logger.warning(f"AST: directory walk hit {_ast_timeout:.0f}s deadline, indexing files found so far")
                 break
 
             rel_path = os.path.relpath(root, codebase_dir)

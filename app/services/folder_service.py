@@ -18,7 +18,7 @@ import threading
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.utils.logging_utils import logger
-from app.utils.directory_util import get_ignored_patterns
+from app.utils.directory_util import get_ignored_patterns, MAX_SYMLINK_HOPS
 
 
 # Folder structure cache, keyed by absolute directory path
@@ -273,39 +273,73 @@ def add_external_path_to_cache(full_path: str) -> bool:
         if os.path.isdir(full_path):
             _ext_entry_count = 0
             _EXT_MAX_ENTRIES = 10_000
+            _ext_visited: set = set()
+            _ext_deadline = time.time() + 15.0
 
-            def scan_directory(dir_path, max_depth=10, current_depth=0):
+            def scan_directory(dir_path, max_depth=10, current_depth=0, symlink_hops=0):
                 nonlocal _ext_entry_count
-                if current_depth >= max_depth or _ext_entry_count >= _EXT_MAX_ENTRIES:
+                if (current_depth >= max_depth
+                        or _ext_entry_count >= _EXT_MAX_ENTRIES
+                        or time.time() > _ext_deadline):
                     return {'children': {}, 'token_count': 0}
-                real_dir = os.path.realpath(dir_path)
+                try:
+                    real_dir = os.path.realpath(dir_path)
+                except (OSError, ValueError):
+                    return {'children': {}, 'token_count': 0}
                 if real_dir.startswith(real_codebase + os.sep) or real_dir == real_codebase:
                     logger.info(f"Skipping '{dir_path}' — resolves into project root")
                     return {'children': {}, 'token_count': 0}
+                # Guard against symlink-induced re-traversal in build trees.
+                if real_dir in _ext_visited:
+                    return {'children': {}, 'token_count': 0}
+                _ext_visited.add(real_dir)
                 result = {'children': {}, 'token_count': 0}
                 total_tokens = 0
                 try:
-                    for entry_name in os.listdir(dir_path):
+                    scanner = os.scandir(dir_path)
+                except (PermissionError, OSError):
+                    return result
+                try:
+                    for de in scanner:
+                        entry_name = de.name
                         if entry_name.startswith('.'):
                             continue
+                        # Symlink hop budget: follow up to MAX_SYMLINK_HOPS
+                        # (matches directory_util policy). Each symlink
+                        # encountered costs one hop; nested symlinks in a
+                        # shared-asset tree are refused past the budget.
+                        try:
+                            is_symlink = de.is_symlink()
+                        except OSError:
+                            continue
+                        entry_hops = symlink_hops
+                        if is_symlink:
+                            entry_hops = symlink_hops + 1
+                            if entry_hops > MAX_SYMLINK_HOPS:
+                                continue
                         _ext_entry_count += 1
                         if _ext_entry_count >= _EXT_MAX_ENTRIES:
                             logger.warning(f"External path scan hit {_EXT_MAX_ENTRIES} entry limit at {dir_path}")
                             break
-                        entry_path = os.path.join(dir_path, entry_name)
+                        entry_path = de.path
                         try:
-                            if os.path.isfile(entry_path):
+                            is_dir = de.is_dir(follow_symlinks=is_symlink)
+                            is_file = de.is_file(follow_symlinks=False) if not is_dir else False
+                        except OSError:
+                            continue
+                        try:
+                            if is_file:
                                 tc = estimate_tokens_fast(entry_path)
                                 result['children'][entry_name] = {'token_count': tc}
                                 total_tokens += tc
-                            elif os.path.isdir(entry_path):
-                                sub = scan_directory(entry_path, max_depth, current_depth + 1)
+                            elif is_dir:
+                                sub = scan_directory(entry_path, max_depth, current_depth + 1, entry_hops)
                                 result['children'][entry_name] = sub
                                 total_tokens += sub.get('token_count', 0)
                         except (PermissionError, OSError):
                             continue
-                except (PermissionError, OSError):
-                    pass
+                finally:
+                    scanner.close()
                 result['token_count'] = total_tokens
                 return result
 
@@ -358,7 +392,7 @@ def add_directory_to_folder_cache(rel_path: str, full_path: str, is_inside_works
         _scan_visited = set()
         _scan_deadline = time.time() + 15.0
 
-        def scan_directory(dir_path, max_depth=10, current_depth=0):
+        def scan_directory(dir_path, max_depth=10, current_depth=0, symlink_hops=0):
             if current_depth >= max_depth or time.time() > _scan_deadline:
                 return {'children': {}, 'token_count': 0}
             try:
@@ -373,23 +407,43 @@ def add_directory_to_folder_cache(rel_path: str, full_path: str, is_inside_works
             result = {'children': {}, 'token_count': 0}
             total_tokens = 0
             try:
-                for entry_name in os.listdir(dir_path):
+                scanner = os.scandir(dir_path)
+            except (PermissionError, OSError):
+                return result
+            try:
+                for de in scanner:
+                    entry_name = de.name
                     if entry_name.startswith('.'):
                         continue
-                    entry_path = os.path.join(dir_path, entry_name)
+                    # Symlink hop budget — matches directory_util policy.
                     try:
-                        if os.path.isfile(entry_path):
+                        is_symlink = de.is_symlink()
+                    except OSError:
+                        continue
+                    entry_hops = symlink_hops
+                    if is_symlink:
+                        entry_hops = symlink_hops + 1
+                        if entry_hops > MAX_SYMLINK_HOPS:
+                            continue
+                    entry_path = de.path
+                    try:
+                        is_dir = de.is_dir(follow_symlinks=is_symlink)
+                        is_file = de.is_file(follow_symlinks=False) if not is_dir else False
+                    except OSError:
+                        continue
+                    try:
+                        if is_file:
                             tc = estimate_tokens_fast(entry_path)
                             result['children'][entry_name] = {'token_count': tc}
                             total_tokens += tc
-                        elif os.path.isdir(entry_path):
-                            sub = scan_directory(entry_path, max_depth, current_depth + 1)
+                        elif is_dir:
+                            sub = scan_directory(entry_path, max_depth, current_depth + 1, entry_hops)
                             result['children'][entry_name] = sub
                             total_tokens += sub.get('token_count', 0)
                     except (PermissionError, OSError):
                         continue
-            except (PermissionError, OSError):
-                pass
+            finally:
+                scanner.close()
             result['token_count'] = total_tokens
             return result
 
