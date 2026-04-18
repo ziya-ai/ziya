@@ -392,6 +392,18 @@ def _process_result(result: Any, tool_name: str, actual_tool_name: str) -> Any:
 
     elif isinstance(result, dict) and 'content' in result:
         content = result['content']
+
+        # file_read / file_write / file_list pattern: the tool returns
+        # {content: "file text", metadata: "N lines", path: "a/b.py"}.
+        # Return just the file text — path and metadata are already in
+        # the display header that the frontend renders above the body.
+        # Serialising the whole wrapper via json.dumps() produced a giant
+        # JSON string that downstream processing (sanitiser, MCP content-
+        # block wrapping) frequently corrupted, causing the frontend to
+        # display the raw Python dict repr instead of highlighted code.
+        if isinstance(content, str) and 'path' in result:
+            return content
+
         _has_image = isinstance(content, list) and any(
             isinstance(b, dict) and b.get('type') == 'image' for b in content)
         if _has_image:
@@ -400,6 +412,12 @@ def _process_result(result: Any, tool_name: str, actual_tool_name: str) -> Any:
             return content  # keep as structured list
         elif isinstance(content, list) and len(content) > 0:
             return content[0].get('text', str(result))
+        elif isinstance(content, str):
+            # Structured dict with string content (e.g. file_read returns
+            # {content, metadata, path}).  JSON-serialize so the frontend
+            # can parse all fields; str() would produce Python repr with
+            # single quotes that JSON.parse rejects.
+            return json.dumps(result)
         else:
             return str(result)
 

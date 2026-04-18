@@ -247,7 +247,10 @@ class DirectAnthropicModel:
 
                     try:
                         result = await self.mcp_manager.call_tool(display_name, args)
-                        result_text = str(result) if result else "Tool executed successfully"
+                        if isinstance(result, dict):
+                            result_text = json.dumps(result)
+                        else:
+                            result_text = str(result) if result else "Tool executed successfully"
                     except Exception as e:
                         result_text = f"Error: {e}"
 
