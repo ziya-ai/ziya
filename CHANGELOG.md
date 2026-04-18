@@ -16,8 +16,140 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Document upload and extraction**: New `POST /api/extract-document` endpoint
+  accepts PDF, DOCX, XLSX, and PPTX file uploads via multipart form data and
+  returns extracted text. Scanned PDFs with no text layer are rendered as page
+  images via pypdfium2 for vision-capable models. Frontend supports drag-drop and
+  file picker for documents in both `SendChatContainer` and `EditSection`.
+- **DocumentChip and ImageChip components**: New `FileChip.tsx` provides compact
+  pill-shaped attachment indicators with preview modals for documents and images.
+  Chips are displayed in the compose area and inline in conversation messages.
+- **Directory scan plugin system**: New `DirectoryScanProvider` plugin interface
+  with `ScanCustomization` dataclass lets plugins override recursion depth and
+  include/exclude masks per directory. Default provider reads rules from
+  `.ziya/scan.yaml` with match conditions (`has_file`, `name`, `name_glob`) and
+  actions (`include_only`, `exclude`, `default_depth`, `depth_overrides`).
+- **Memory introspection endpoint**: `GET /api/debug/memstats` reports process RSS
+  (via `resource` and optional `psutil`), sizes of suspect in-memory caches
+  (connection maps, folder cache, AST cache, prompt cache, etc.), gc object counts
+  by type, and optional tracemalloc top-allocator snapshots. Companion endpoints
+  to start/stop tracemalloc and force gc.collect().
+- **DrawIO Open button**: Pop out rendered diagram into a resizable browser window
+  with zoom controls (mouse wheel + buttons) and SVG download.
+- **PDF page image extraction**: `extract_pdf_page_images()` renders PDF pages as
+  JPEG images (150 DPI, capped at 1568px long edge) for scanned documents that
+  contain no extractable text.
+- **Pretty-print formatters for built-in file tools**: `file_read`, `file_write`,
+  `file_list`, and AST tools now have dedicated formatters in `mcpFormatter.ts` that
+  show clean summaries (e.g. `📄 Component.tsx — 500 total lines`) instead of raw JSON.
+  `file_write` shows a concise one-liner with action icon, path, and byte count.
+- **psutil dependency**: Added to dev dependencies for per-child-process memory
+  breakdown in the memstats endpoint.
+
 ### Fixed
+- **Renderer OOM crash during idle on long conversation histories**: Chrome's
+  renderer process was being killed (tab shows "Page crashed" with no JS error)
+  after ~60-90 minutes of idle time on accounts with many conversations. Root
+  cause was three compounding leaks in the 30s server sync loop, identified via
+  heap snapshot retainer-chain analysis:
+  1. `db.ts` `getConversationShells` kept message `content` on shell objects as
+     a "preview" via `String.slice(0, 200)`. V8's `slice()` returns a SlicedString
+     that retains the entire parent string, so "truncated" shells held full
+     message content alive (including base64 images and tool-call payloads).
+     With 833 conversations × 2 messages per shell, this pinned ~800MB into the
+     baseline heap. Fix: drop `content` from shell messages entirely — the
+     sidebar only reads `title`/`id`/timestamps, never content.
+  2. `ChatContext.tsx` folder sync called `setFolders(prev => ...)` with an
+     internal equality-bailout. Functional updaters enqueue an Update node whose
+     `action` closure captures the computed payload (`mergedFolders`); when the
+     reducer bails by returning `prev`, React doesn't flush the queue, and the
+     pending Update nodes accumulate in a linked list retaining every cycle's
+     folder array (~100 folder objects × 40KB taskPlan metadata per cycle).
+     Fix: reuse the already-computed `foldersChanged` flag and call `setFolders`
+     only when true, with a plain value (no closure).
+  3. `ChatContext.tsx` conversation sync had the same functional-updater pattern
+     with `setConversations(prev => ...)`, leaking ~0.85MB per 30s cycle. Fix:
+     hoist the merge computation out of the functional updater (using
+     `conversationsRef.current` for reference-preservation), call
+     `setConversations` with a plain value only when the result actually differs.
+  Combined impact: baseline heap dropped from ~1070MB to ~115MB, and per-cycle
+  leak rate went from ~40MB/cycle to 0MB/cycle (flat post-GC floor verified
+  across 6+ sync cycles).
+- **Tool results serialised as Python repr instead of JSON**: `_process_result()` in
+  `tool_execution.py` used `str()` on dicts with string content (e.g. file_read
+  results), producing single-quoted Python repr that `JSON.parse` rejects on the
+  frontend. Now uses `json.dumps()` so structured fields (content, metadata, path)
+  are parseable. Same fix applied to `anthropic_direct.py` and `enhanced_tools.py`.
+- **Double code-fencing in file_read display**: `formatFileRead` was wrapping content
+  in markdown fences, but ToolBlock already renders inside its own code fence —
+  causing literal fence markers to appear as text. Removed inner fences; syntax
+  highlighting is handled by the backend's `_infer_syntax_hint()`.
+- **Pure-addition diff applied twice**: After a pure-addition hunk is applied, the
+  original context lines are no longer consecutive (added lines sit between them).
+  `_check_pure_addition_already_applied` now also checks whether the full
+  `new_lines` (context + additions interleaved) match a consecutive block in the
+  file, correctly detecting the post-apply state and preventing duplication.
+- **DrawIO explicit layout labels misplaced**: Diagrams with author-specified vertex
+  coordinates had labels displaced because the placement optimizer and orthogonal
+  router were rearranging positions. Now detects explicit layout before running
+  auto-layout logic and skips both passes. Text-only cells use a new
+  `forceTextCellPositioning` method that aligns labels via view-state screen
+  coordinates instead of relying on CSS offsets that break under SVG scaling.
+- **DrawIO arrow markers oversized after fit()**: Arrow marker pixel size is
+  `(endSize + strokeWidth) * viewScale`; fit() amplified them disproportionately.
+  Reduced default endSize from 6 to 3, switched to `classicThin`, and added
+  post-render `scaleDownArrowMarkers` pass capping markers at 8px.
+- **DrawIO XML normalizer corrupting quoted attributes**: The regex-based attribute
+  quoter was modifying values inside already-quoted attributes (e.g.
+  `value="Group=fsw"` → `value="Group="fsw""`). Now processes each XML tag
+  individually with a mask-and-restore approach.
+- **Feedback queue unbounded growth**: `feedback_queue` in the WebSocket handler
+  was an unbounded `asyncio.Queue`. If the stream consumer exited before the WS
+  disconnected, queued items accumulated without limit. Now bounded to 100 with
+  drop-oldest-on-full semantics.
+- **Streaming thinking tags leaking into chat**: During streaming, unclosed
+  `<thinking-data>` or `<thinking>` tags were rendered as raw text. Now detected
+  and stripped from the rendered output, with partial content accumulated in the
+  ThinkingBlock's ref for live progress display.
+- **SSE orphan fragment warning**: `chatApi.ts` now logs a warning when SSE
+  messages lack the expected `data:` prefix, aiding debugging of stream corruption.
+- **Folder cycle in sidebar**: `anchorFolder` in `MUIChatHistory` could recurse
+  into the folder's own subtree, creating an infinite cycle. Now skips self.
+- **Missing conversationCount in depth-limited clone**: `cloneNode` at depth > 30
+  now includes `conversationCount: 0` to prevent undefined property errors.
+- **HTML injection in CLI session picker**: Session opener text is now HTML-escaped
+  before rendering in `prompt_toolkit`, preventing titles with HTML entities from
+  being misinterpreted.
+- **TypeScript validation false positives**: Added `--target ES2022` and
+  `--moduleResolution node` to the tsc validation command, eliminating false
+  positives on modern syntax like top-level await and satisfies.
+- **enhanced_tools content-only check too aggressive**: The content extraction
+  shortcut in `DirectMCPTool` was stripping results that had both `content` and
+  `path`/`metadata` keys. Now only applies to simple content-only results.
+
 ### Changed
+- **Directory scanning hardened for large workspaces**: Symlink hop budget
+  (`ZIYA_SYMLINK_HOPS`, default 1) prevents blowup on cross-package symlink webs
+  while still allowing root-level shared-asset links. `env/`, `build-tools/`, and
+  `brazil-output/` excluded by default. Gitignore scan skips descent into
+  known-excluded directory names. All timeouts configurable via environment
+  variables: `ZIYA_GITIGNORE_TIMEOUT` (60s), `ZIYA_SCAN_TIMEOUT` (120s),
+  `ZIYA_FILE_LIST_TIMEOUT` (120s), `ZIYA_ESTIMATE_TIMEOUT` (15s).
+- **Folder service uses scandir**: `os.listdir()` + `os.path.isdir()` replaced with
+  `os.scandir()` to halve syscall count during external path scans.
+- **AST indexer configurable**: Timeout raised to 180s (was 30s), file cap to 50k
+  (was 10k). Both overridable via `ZIYA_AST_TIMEOUT` and `ZIYA_AST_FILE_CAP`.
+  Brazil workspace artifact directories excluded. `followlinks=False` in os.walk.
+- **File list guardrails**: `get_complete_file_list` now has a 200k file cap,
+  configurable deadline, and explicit `followlinks=False`.
+- **Token cache uses per-entry TTL**: Replaced global timestamp with per-entry TTL
+  eviction (5 min) and size cap (16 entries), preventing stale cache from growing
+  unbounded across project switches.
+- **Paste optimization**: Large text pastes use direct DOM Range API insertion
+  instead of `document.execCommand('insertText')`, which fired O(n) input events
+  each triggering full DOM serialization + React re-render.
+- **Model effort dropdown dynamic**: Reads from `supported_efforts` capability
+  array instead of hardcoded options, supporting the new `xhigh` level.
 
 ## [0.6.4.7] - 2026-04-16
 
