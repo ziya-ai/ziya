@@ -186,6 +186,8 @@ async def select_session() -> Optional[str]:
 
         from prompt_toolkit.formatted_text import HTML
 
+        from html import escape as html_escape
+        opener = html_escape(opener)
         meta = f"{session['message_count']} msgs, {session['file_count']} files"
         if started == updated:
             time_info = f"  <style fg='ansibrightblack'>{started}</style>"

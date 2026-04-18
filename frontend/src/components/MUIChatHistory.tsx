@@ -2379,7 +2379,7 @@ const MUIChatHistory = () => {
       // and causes inconsistent renders during concurrent updates
       // (e.g. streaming + SERVER_SYNC firing in the same frame).
       const cloneNode = (node: any, _depth = 0): any => {
-        if (_depth > 30) return { ...node, children: [] };
+        if (_depth > 30) return { ...node, children: [], conversationCount: 0 };
 
         // Check if the conversation reference actually changed
         let conversationChanged = false;
@@ -2632,7 +2632,8 @@ const MUIChatHistory = () => {
         return true;
       }
       for (const item of items) {
-        if (item.children && anchorFolder(item.children, folder, sourceConvId, _depth + 1)) return true;
+        // Skip recursing into folder's own subtree — inserting folder there creates a cycle
+        if (item !== folder && item.children && anchorFolder(item.children, folder, sourceConvId, _depth + 1)) return true;
       }
       return false;
     };
