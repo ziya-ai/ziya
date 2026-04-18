@@ -8,8 +8,9 @@ import { useProject } from '../context/ProjectContext';
 import { useFolderContext } from '../context/FolderContext';
 import { useSendPayload } from '../hooks/useSendPayload';
 import { Button, message } from 'antd';
-import { SendOutlined, PictureOutlined } from '@ant-design/icons';
-import { ImageAttachment, Message } from '../utils/types';
+import { SendOutlined, PictureOutlined, PaperClipOutlined } from '@ant-design/icons';
+import { ImageAttachment, DocumentAttachment, Message } from '../utils/types';
+import { DocumentChip } from './FileChip';
 import { useTheme } from '../context/ThemeContext';
 import StopStreamButton from './StopStreamButton';
 import { ThrottlingErrorDisplay } from './ThrottlingErrorDisplay';
@@ -25,6 +26,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   const [inputValue, setInputValue] = useState('');
   const [submittingConversationId, setSubmittingConversationId] = useState<string | null>(null);
   const [attachedImages, setAttachedImages] = useState<ImageAttachment[]>([]);
+  const [attachedDocuments, setAttachedDocuments] = useState<DocumentAttachment[]>([]);
   const [supportsVision, setSupportsVision] = useState(false);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [isSendingFeedback, setIsSendingFeedback] = useState(false);
@@ -37,7 +39,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   const draftsRef = useRef<Map<string, string>>(new Map());
   // Initialize with undefined to avoid circular dependency during initial render
   const prevConversationIdRef = useRef<string | undefined>(undefined);
-  
+
   const {
     currentConversationId,
     currentMessages,
@@ -51,38 +53,38 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     updateProcessingState,
     addMessageToConversation,
   } = useActiveChat();
-  
+
   const { setUserHasScrolled } = useScrollContext();
   const { checkedKeys } = useFolderContext();
   const { activeSkillPrompts, currentProject } = useProject();
   const { isServerReachable } = useServerStatus();
   const { isDarkMode } = useTheme();
   const { send } = useSendPayload();
-  
+
   const isCurrentlyStreaming = streamingConversations.has(currentConversationId);
   // isSubmitting is true only when the CURRENT conversation has a send in flight.
   // A send running for a different conversation (user switched tabs) must not block.
   const isSubmitting = submittingConversationId === currentConversationId;
   const shouldSendAsFeedback = isCurrentlyStreaming && inputValue.trim().length > 0;
-  
+
   // Disabled when: no content, OR this conversation is streaming, OR server is unreachable
-  const isDisabled = useMemo(() => 
-    (!inputValue.trim() && attachedImages.length === 0) || isCurrentlyStreaming || !isServerReachable,
-    [inputValue, attachedImages.length, isCurrentlyStreaming, isServerReachable]
+  const isDisabled = useMemo(() =>
+    (!inputValue.trim() && attachedImages.length === 0 && attachedDocuments.length === 0) || isCurrentlyStreaming || !isServerReachable,
+    [inputValue, attachedImages.length, attachedDocuments.length, isCurrentlyStreaming, isServerReachable]
   );
-  
+
   // Memoized button title for accessibility
   const buttonTitle = useMemo(() =>
     !isServerReachable
       ? "Server is unreachable"
       : isCurrentlyStreaming
-      ? "Waiting for AI response..."
-      : currentMessages[currentMessages.length - 1]?.role === 'human'
-        ? "AI response may have failed - click Send to retry"
-        : "Send message",
+        ? "Waiting for AI response..."
+        : currentMessages[currentMessages.length - 1]?.role === 'human'
+          ? "AI response may have failed - click Send to retry"
+          : "Send message",
     [isCurrentlyStreaming, currentMessages, isServerReachable]
   );
-  
+
   // Check if current model supports vision
   useEffect(() => {
     const checkVisionSupport = async () => {
@@ -102,7 +104,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     window.addEventListener('modelChanged', onModelChanged);
     return () => window.removeEventListener('modelChanged', onModelChanged);
   }, [currentConversationId]);
-  
+
   // Listen for tool feedback ready events
   useEffect(() => {
     const handleFeedbackReady = (event: CustomEvent) => {
@@ -110,11 +112,11 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
         setCurrentToolId(event.detail.toolId || null);
       }
     };
-    
+
     document.addEventListener('feedbackReady', handleFeedbackReady as EventListener);
     return () => document.removeEventListener('feedbackReady', handleFeedbackReady as EventListener);
   }, [currentConversationId]);
-  
+
   // Listen for feedback delivery confirmation (SSE event from backend)
   useEffect(() => {
     const handleDelivered = (event: CustomEvent) => {
@@ -168,18 +170,18 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       console.log('Throttling error received:', event.detail);
       setThrottlingError(event.detail);
     };
-    
+
     document.addEventListener('throttlingError', handleThrottlingError as EventListener);
     return () => document.removeEventListener('throttlingError', handleThrottlingError as EventListener);
   }, [currentConversationId]);
-  
+
   // Clear throttling error when streaming starts
   useEffect(() => {
     if (streamingConversations.has(currentConversationId)) {
       setThrottlingError(null);
     }
   }, [streamingConversations, currentConversationId]);
-  
+
   // Check if the last message suggests continuation is needed
   useEffect(() => {
     const lastMessage = currentMessages[currentMessages.length - 1];
@@ -190,11 +192,11 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       setShowContinueButton(false);
     }
   }, [currentMessages, streamingConversations, currentConversationId]);
-  
+
   // Save/restore draft text and clear images when conversation changes
   useEffect(() => {
     const prevId = prevConversationIdRef.current || currentConversationId;
-    
+
     // Skip the first run where prevId is undefined
     if (prevConversationIdRef.current === undefined) {
       prevConversationIdRef.current = currentConversationId;
@@ -225,33 +227,33 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
 
     prevConversationIdRef.current = currentConversationId;
   }, [currentConversationId]);
-  
+
   // Process image files (from file input or drag-drop)
   const processImageFiles = useCallback(async (files: FileList | null) => {
     if (!files || files.length === 0) return;
-    
+
     const maxSize = 5 * 1024 * 1024; // 5MB limit
     const maxImages = 5;
-    
+
     if (attachedImages.length + files.length > maxImages) {
       message.warning(`Maximum ${maxImages} images allowed`);
       return;
     }
-    
+
     const validImageTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
     const newImages: ImageAttachment[] = [];
-    
+
     for (const file of Array.from(files)) {
       if (!validImageTypes.includes(file.type)) {
         message.error(`Unsupported image type: ${file.type}`);
         continue;
       }
-      
+
       if (file.size > maxSize) {
         message.error(`Image ${file.name} exceeds 5MB limit`);
         continue;
       }
-      
+
       try {
         const base64 = await new Promise<string>((resolve, reject) => {
           const reader = new FileReader();
@@ -259,7 +261,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
           reader.onerror = reject;
           reader.readAsDataURL(file);
         });
-        
+
         // Resize large images before sending.  Claude processes images at
         // max 1568px on the long edge; anything larger just inflates the
         // payload and slows down the Bedrock call.
@@ -286,27 +288,27 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
           img.src = base64;
         });
 
-         const imageAttachment: ImageAttachment = {
+        const imageAttachment: ImageAttachment = {
           id: uuidv4(),
           filename: file.name,
           data: resized.split(',')[1],
           mediaType: file.type
         };
-        
+
         newImages.push(imageAttachment);
       } catch (error) {
         message.error(`Failed to process ${file.name}`);
       }
     }
-    
+
     if (newImages.length > 0) {
       setAttachedImages(prev => [...prev, ...newImages]);
-      
+
       // Insert images at cursor position in the editor
       if (editorRef.current) {
         const selection = window.getSelection();
         let range: Range;
-        
+
         // Check if selection is within our editor
         if (selection && selection.rangeCount > 0) {
           const currentRange = selection.getRangeAt(0);
@@ -324,7 +326,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
           range.selectNodeContents(editorRef.current);
           range.collapse(false);
         }
-        
+
         // Insert each image
         for (const img of newImages) {
           const imgElement = document.createElement('img');
@@ -333,12 +335,12 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
           imgElement.style.cssText = 'max-height: 100px; max-width: 150px; border-radius: 6px; margin: 0 4px; vertical-align: middle; cursor: pointer;';
           imgElement.contentEditable = 'false';
           imgElement.draggable = false;
-          
+
           range.insertNode(imgElement);
           range.setStartAfter(imgElement);
           range.setEndAfter(imgElement);
         }
-        
+
         // Restore focus and cursor position
         selection?.removeAllRanges();
         selection?.addRange(range);
@@ -346,13 +348,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       }
     }
   }, [attachedImages.length, supportsVision]);
-  
-  const handleImageSelect = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
-    await processImageFiles(event.target.files);
-    // Reset file input so same file can be selected again
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  }, [processImageFiles]);
-  
+
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -360,7 +356,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       setIsDraggingOver(true);
     }
   }, []);
-  
+
   // Map file extensions to language identifiers for code blocks
   const getLanguageFromFilename = useCallback((filename: string): string => {
     const ext = filename.split('.').pop()?.toLowerCase() || '';
@@ -391,29 +387,121 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     // Many code files have empty MIME type — check extension
     const ext = file.name.split('.').pop()?.toLowerCase() || '';
     const codeExts = new Set([
-      'js','jsx','ts','tsx','py','rb','rs','go','java','kt','swift','c','cpp',
-      'h','hpp','cs','php','scala','sh','bash','zsh','sql','html','htm','css',
-      'scss','less','xml','json','yaml','yml','toml','ini','cfg','conf','md',
-      'mdx','txt','log','gradle','groovy','lua','r','dart','ex','exs','erl',
-      'hs','ml','clj','vim','tf','hcl','proto','graphql','vue','svelte',
-      'makefile','dockerfile','bat','ps1','fish',
+      'js', 'jsx', 'ts', 'tsx', 'py', 'rb', 'rs', 'go', 'java', 'kt', 'swift', 'c', 'cpp',
+      'h', 'hpp', 'cs', 'php', 'scala', 'sh', 'bash', 'zsh', 'sql', 'html', 'htm', 'css',
+      'scss', 'less', 'xml', 'json', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf', 'md',
+      'mdx', 'txt', 'log', 'gradle', 'groovy', 'lua', 'r', 'dart', 'ex', 'exs', 'erl',
+      'hs', 'ml', 'clj', 'vim', 'tf', 'hcl', 'proto', 'graphql', 'vue', 'svelte',
+      'makefile', 'dockerfile', 'bat', 'ps1', 'fish',
     ]);
     if (codeExts.has(ext)) return true;
     // Check for extensionless known filenames
-    const knownFiles = new Set(['Makefile','Dockerfile','Gemfile','Rakefile','.gitignore','.env']);
+    const knownFiles = new Set(['Makefile', 'Dockerfile', 'Gemfile', 'Rakefile', '.gitignore', '.env']);
     return knownFiles.has(file.name);
   }, []);
+
+  const DOCUMENT_EXTENSIONS = useMemo(() => new Set([
+    'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'
+  ]), []);
+
+  const isDocumentFile = useCallback((file: File): boolean => {
+    const ext = file.name.split('.').pop()?.toLowerCase() || '';
+    return DOCUMENT_EXTENSIONS.has(ext);
+  }, [DOCUMENT_EXTENSIONS]);
+
+  // Upload a document to the backend for text extraction, then insert the
+  // extracted text into the editor as a fenced block.
+  const processDocumentFiles = useCallback(async (files: File[]) => {
+    for (const file of files) {
+      try {
+        message.loading({ content: `Extracting text from ${file.name}…`, key: `doc-${file.name}`, duration: 0 });
+        const formData = new FormData();
+        formData.append('file', file);
+        const resp = await fetch('/api/extract-document', { method: 'POST', body: formData });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          message.error(err.message || `Failed to extract text from ${file.name}`);
+          message.destroy(`doc-${file.name}`);
+          continue;
+        }
+        const result = await resp.json();
+        const ext = file.name.split('.').pop()?.toLowerCase() || '';
+
+        if (result.text) {
+          const doc: DocumentAttachment = {
+            id: uuidv4(),
+            filename: result.filename,
+            text: result.text,
+            type: ext,
+            chars: result.chars || result.text.length,
+          };
+          setAttachedDocuments(prev => [...prev, doc]);
+          message.success({ content: `Extracted text from ${file.name}`, key: `doc-${file.name}` });
+        } else if (result.images && result.images.length > 0) {
+          if (!supportsVision) {
+            message.warning({
+              content: `${file.name} appears to be a scanned document. ` +
+                `Switch to a vision-capable model to analyze its ${result.images.length} page(s).`,
+              key: `doc-${file.name}`,
+            });
+            continue;
+          }
+          const pageImages: ImageAttachment[] = result.images.map((img: any) => ({
+            data: img.data,
+            mediaType: img.mediaType as ImageAttachment['mediaType'],
+            filename: `${result.filename} p${img.page}`,
+            width: img.width,
+            height: img.height,
+          }));
+          const doc: DocumentAttachment = {
+            id: uuidv4(),
+            filename: result.filename,
+            text: '',
+            type: ext,
+            chars: 0,
+            pageImages,
+          };
+          setAttachedDocuments(prev => [...prev, doc]);
+          message.success({ content: `Extracted ${pageImages.length} page image(s) from ${file.name}`, key: `doc-${file.name}` });
+        } else {
+          message.warning({ content: `No content could be extracted from ${file.name}`, key: `doc-${file.name}` });
+        }
+      } catch (err) {
+        message.error({ content: `Failed to process ${file.name}`, key: `doc-${file.name}` });
+      }
+    }
+  }, [supportsVision]);
+
+  const handleFileSelect = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (!files || files.length === 0) return;
+
+    const images: File[] = [];
+    const docs: File[] = [];
+    for (const f of Array.from(files)) {
+      const ext = f.name.split('.').pop()?.toLowerCase() || '';
+      if (f.type.startsWith('image/')) images.push(f);
+      else if (DOCUMENT_EXTENSIONS.has(ext)) docs.push(f);
+    }
+
+    if (images.length > 0) { const dt = new DataTransfer(); images.forEach(f => dt.items.add(f)); await processImageFiles(dt.files); }
+    if (docs.length > 0) await processDocumentFiles(docs);
+
+    // Reset file input so same file can be selected again
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }, [processImageFiles, processDocumentFiles, DOCUMENT_EXTENSIONS]);
 
   const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setIsDraggingOver(false);
-    
+
     const files = e.dataTransfer.files;
     if (!files.length) return;
 
     const imageFiles: File[] = [];
     const textFiles: File[] = [];
+    const documentFiles: File[] = [];
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
@@ -421,6 +509,8 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
         imageFiles.push(file);
       } else if (isTextFile(file)) {
         textFiles.push(file);
+      } else if (isDocumentFile(file)) {
+        documentFiles.push(file);
       }
     }
 
@@ -447,24 +537,29 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       }
     }
 
-    if (imageFiles.length === 0 && textFiles.length === 0) {
+    // Handle document files — upload to backend for text extraction
+    if (documentFiles.length > 0) {
+      await processDocumentFiles(documentFiles);
+    }
+
+    if (imageFiles.length === 0 && textFiles.length === 0 && documentFiles.length === 0) {
       message.warning(`Unsupported file type: ${files[0].name}`);
     }
-  }, [supportsVision, processImageFiles, isTextFile, getLanguageFromFilename]);
-  
+  }, [supportsVision, processImageFiles, isTextFile, isDocumentFile, getLanguageFromFilename, processDocumentFiles]);
+
   // Serialize editor content to text with image markers and extract image order
-  const serializeEditorContent = useCallback((): { text: string; orderedImages: ImageAttachment[] } => {
+  const serializeEditorContent = useCallback((): { text: string; orderedImages: ImageAttachment[]; } => {
     if (!editorRef.current) return { text: '', orderedImages: [] };
-    
+
     const orderedImages: ImageAttachment[] = [];
     let text = '';
-    
+
     const processNode = (node: Node) => {
       if (node.nodeType === Node.TEXT_NODE) {
         text += node.textContent || '';
       } else if (node.nodeType === Node.ELEMENT_NODE) {
         const element = node as HTMLElement;
-        
+
         if (element.tagName === 'IMG') {
           const imageId = element.dataset.imageId;
           const image = attachedImages.find(img => img.id === imageId);
@@ -488,21 +583,21 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
         }
       }
     };
-    
+
     editorRef.current.childNodes.forEach(processNode);
-    
+
     // Trim trailing newlines
     text = text.replace(/\n+$/, '');
-    
+
     return { text, orderedImages };
   }, [attachedImages]);
-  
+
   // Update inputValue when editor content changes
   const handleInput = useCallback(() => {
     const { text } = serializeEditorContent();
     setInputValue(text);
   }, [serializeEditorContent]);
-  
+
   // Remove an inline image element from the editor and clean up state
   const removeImageElement = useCallback((imgElement: HTMLElement) => {
     const imageId = imgElement.dataset.imageId;
@@ -519,10 +614,10 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   // Send feedback to running tools
   const sendToolFeedback = useCallback(async () => {
     if (!inputValue.trim() || isSendingFeedback) return;
-    
+
     const feedbackText = inputValue.trim();
     setIsSendingFeedback(true);
-    
+
     try {
       // Add feedback message to conversation
       const feedbackMessage: Message = {
@@ -533,7 +628,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
         _feedbackStatus: 'pending'
       };
       addMessageToConversation(feedbackMessage, currentConversationId);
-      
+
       setFeedbackStatus('pending');
       // Use the global WebSocket if available
       const feedbackWebSocket = (window as any).feedbackWebSocket;
@@ -542,12 +637,12 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
         feedbackWebSocket.sendFeedback(toolId, feedbackText);
         console.log('🔄 FEEDBACK:', feedbackText);
         setFeedbackStatus('queued');
-        
+
         // Clear the input
         if (editorRef.current) editorRef.current.innerHTML = '';
         setInputValue('');
         draftsRef.current.delete(currentConversationId);
-        
+
         message.info({
           content: (
             <span>📤 Feedback sent — waiting for delivery confirmation…</span>
@@ -570,57 +665,74 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       setIsSendingFeedback(false);
     }
   }, [inputValue, isSendingFeedback, currentConversationId, currentToolId, addMessageToConversation]);
-  
+
   const handleSend = useCallback(async () => {
     // If streaming, send as feedback instead
     if (shouldSendAsFeedback) {
       await sendToolFeedback();
       return;
     }
-    
+
     const { text, orderedImages } = serializeEditorContent();
-    
-    if (!text.trim() || isSubmitting) return;
-    
+
+    if (!text.trim() && attachedDocuments.length === 0) return;
+    if (isSubmitting) return;
+
+    // Assemble document content into the message text
+    let fullContent = text;
+    if (attachedDocuments.length > 0) {
+      const docBlocks = attachedDocuments
+        .filter(d => d.text)
+        .map(d => `**📄 ${d.filename}:**\n\`\`\`\n${d.text}\n\`\`\``)
+        .join('\n\n');
+      if (docBlocks) {
+        fullContent = docBlocks + (text.trim() ? '\n\n' + text : '');
+      }
+    }
+
     // Don't allow sending while streaming
     if (isCurrentlyStreaming) {
       return;
     }
-    
+
     // CRITICAL: Capture conversation ID before any async operations
     // This ensures responses go to the correct conversation even if user switches
     const targetConversationId = currentConversationId;
-    
+
     setSubmittingConversationId(targetConversationId);
-    
+
     // Reset scroll state so auto-scroll works for new messages
     setUserHasScrolled(false);
-    
+
     try {
       // Add user message
       const userMessage = {
         role: 'human' as const,
         content: text,
         _timestamp: Date.now(),
-        images: orderedImages.length > 0 ? orderedImages : undefined
+        images: orderedImages.length > 0 ? orderedImages : undefined,
+        documents: attachedDocuments.length > 0 ? attachedDocuments : undefined,
       };
       addMessageToConversation(userMessage, targetConversationId);
-      
+
       // Clear editor
       if (editorRef.current) editorRef.current.innerHTML = '';
       setInputValue('');
       setAttachedImages([]);
+      setAttachedDocuments([]);
       draftsRef.current.delete(targetConversationId);
-      
+
       // Start streaming
       addStreamingConversation(targetConversationId);
-      
+
       // Include the new user message in the messages sent to API
-      const messagesToSend = [...currentMessages, userMessage].filter(m => !m.muted);
-      
+      // Use fullContent (with document text prepended) for the API copy
+      const apiUserMessage = { ...userMessage, content: fullContent };
+      const messagesToSend = [...currentMessages.filter(m => !m.muted), apiUserMessage];
+
       await send({
         messages: messagesToSend,
-        question: text,
+        question: fullContent,
         conversationId: targetConversationId,
         images: orderedImages,
         includeReasoning: true,
@@ -634,9 +746,9 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   }, [
     shouldSendAsFeedback, sendToolFeedback, serializeEditorContent, isSubmitting,
     isCurrentlyStreaming, currentConversationId, setUserHasScrolled, addMessageToConversation,
-    addStreamingConversation, removeStreamingConversation, currentMessages, send
+    addStreamingConversation, removeStreamingConversation, currentMessages, send, attachedDocuments
   ]);
-  
+
   // Handle keyboard events - must be after sendToolFeedback and handleSend
   const handleKeyDown = useCallback((e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
@@ -709,12 +821,12 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       }
     }
   }, [shouldSendAsFeedback, sendToolFeedback, handleSend, removeImageElement, handleInput]);
-  
+
   return (
-    <div 
-      style={{ 
-        padding: '8px 20px 6px 20px', 
-        borderTop: isDarkMode ? '1px solid #333' : '1px solid #e0e0e0' 
+    <div
+      style={{
+        padding: '8px 20px 6px 20px',
+        borderTop: isDarkMode ? '1px solid #333' : '1px solid #e0e0e0'
       }}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
@@ -727,12 +839,12 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
           onDismiss={() => setThrottlingError(null)}
         />
       )}
-      
+
       {/* Continue button for truncated responses */}
       {showContinueButton && (
         <div style={{ marginBottom: '8px', textAlign: 'center' }}>
-          <Button 
-            type="default" 
+          <Button
+            type="default"
             onClick={() => {
               const continuePrompt = "Please continue your previous response.";
               if (editorRef.current) {
@@ -741,28 +853,40 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
               }
               setShowContinueButton(false);
               handleSend();
-            }} 
-            style={{ background: isDarkMode ? '#111d2c' : '#f0f8ff', borderColor: '#1890ff', color: '#1890ff' }} 
+            }}
+            style={{ background: isDarkMode ? '#111d2c' : '#f0f8ff', borderColor: '#1890ff', color: '#1890ff' }}
             disabled={isCurrentlyStreaming}
           >
             ↗️ Continue Response
           </Button>
         </div>
       )}
-      
-      <div style={{ 
-        background: isDraggingOver 
+
+      <div style={{
+        background: isDraggingOver
           ? (isDarkMode ? 'rgba(24, 144, 255, 0.15)' : 'rgba(24, 144, 255, 0.1)')
-          : (isDarkMode ? '#252525' : '#ffffff'), 
-        borderRadius: '12px', 
+          : (isDarkMode ? '#252525' : '#ffffff'),
+        borderRadius: '12px',
         padding: '10px 12px',
-        border: isDraggingOver 
-          ? '2px dashed #1890ff' 
+        border: isDraggingOver
+          ? '2px dashed #1890ff'
           : isCurrentlyStreaming
             ? (isDarkMode ? '1px solid #49aa19' : '1px solid #52c41a')
             : (isDarkMode ? '1px solid #333' : '1px solid #e0e0e0'),
         transition: 'all 0.2s'
       }}>
+        {/* Document attachment chips */}
+        {attachedDocuments.length > 0 && (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+            {attachedDocuments.map((doc) => (
+              <DocumentChip
+                key={doc.id}
+                doc={doc}
+                onRemove={() => setAttachedDocuments(prev => prev.filter(d => d.id !== doc.id))}
+              />
+            ))}
+          </div>
+        )}
         {/* Rich text editor with inline images */}
         <div
           ref={editorRef}
@@ -780,7 +904,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
                 }
               }
             }
-            
+
             if (imageFiles.length > 0) {
               // Handle pasted images
               e.preventDefault();
@@ -795,17 +919,42 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
               const plain = e.clipboardData?.getData('text/plain');
               if (plain) {
                 e.preventDefault();
-                document.execCommand('insertText', false, plain);
+                // Direct DOM insertion via Range API. execCommand('insertText')
+                // fires O(n) input events for large text, each triggering a
+                // full DOM serialization + React re-render. This inserts the
+                // entire paste as a single DOM operation.
+                const sel = window.getSelection();
+                if (sel && sel.rangeCount > 0) {
+                  const range = sel.getRangeAt(0);
+                  range.deleteContents();
+                  const escaped = plain
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/\n/g, '<br>');
+                  const tpl = document.createElement('template');
+                  tpl.innerHTML = escaped;
+                  const frag = tpl.content;
+                  const lastChild = frag.lastChild;
+                  range.insertNode(frag);
+                  if (lastChild) {
+                    range.setStartAfter(lastChild);
+                    range.collapse(true);
+                  }
+                  sel.removeAllRanges();
+                  sel.addRange(range);
+                  handleInput();
+                }
               }
             }
           }}
-          style={{ 
+          style={{
             minHeight: '50px',
             maxHeight: '50vh',
             overflowY: 'auto',
             outline: 'none',
-            border: 'none', 
-            color: isDarkMode ? '#e0e0e0' : '#1f1f1f', 
+            border: 'none',
+            color: isDarkMode ? '#e0e0e0' : '#1f1f1f',
             fontSize: '14px',
             lineHeight: '1.5',
             wordBreak: 'break-word',
@@ -813,25 +962,25 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
           data-placeholder={isCurrentlyStreaming ? "Provide feedback for running tools... (Enter to send)" : "Message..."}
           suppressContentEditableWarning
         />
-        
+
         {/* Hidden file input */}
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*"
+          accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
           multiple
           style={{ display: 'none' }}
-          onChange={handleImageSelect}
+          onChange={handleFileSelect}
         />
-        
+
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '8px' }}>
           <div style={{ display: 'flex', gap: '8px' }}>
-            {/* Image upload button */}
-            {!isCurrentlyStreaming && supportsVision && (
+            {/* Attach file button (images need vision; documents always work) */}
+            {!isCurrentlyStreaming && (
               <Button
-                icon={<PictureOutlined />}
+                icon={supportsVision ? <PictureOutlined /> : <PaperClipOutlined />}
                 onClick={() => fileInputRef.current?.click()}
-                title="Attach image"
+                title={supportsVision ? "Attach image or document" : "Attach document"}
                 disabled={attachedImages.length >= 5}
                 style={{
                   backgroundColor: 'transparent',
@@ -839,7 +988,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
                 }}
               />
             )}
-            
+
             {/* Stop button when streaming */}
             {isCurrentlyStreaming && (
               <StopStreamButton
@@ -848,7 +997,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
               />
             )}
           </div>
-          
+
           {/* Feedback delivery status indicator */}
           {feedbackStatus !== 'idle' && (
             <div style={{
