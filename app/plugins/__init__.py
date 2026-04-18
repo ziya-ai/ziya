@@ -14,6 +14,7 @@ from app.plugins.interfaces import DataRetentionPolicy, EncryptionPolicy
 
 # Global plugin registries
 _auth_providers = []
+_directory_scan_providers = []
 _config_providers = []
 _registry_providers = []
 _service_model_providers = []
@@ -128,6 +129,17 @@ def register_encryption_provider(provider):
     _encryption_providers.append(provider)
     _encryption_providers.sort(key=lambda p: getattr(p, 'priority', 0), reverse=True)
     logger.info(f"Registered encryption provider: {getattr(provider, 'provider_id', 'unknown')}")
+
+def register_directory_scan_provider(provider):
+    """
+    Register a directory scan customization provider.
+
+    Providers can override recursion depth and inclusion/exclusion
+    masks for children of specific directories.
+    """
+    _directory_scan_providers.append(provider)
+    _directory_scan_providers.sort(key=lambda p: getattr(p, 'priority', 0), reverse=True)
+    logger.debug(f"Registered directory scan provider: {getattr(provider, 'provider_id', 'unknown')}")
 
 def register_tool_enhancement_provider(provider):
     """
@@ -271,6 +283,10 @@ def get_formatter_providers() -> List:
 def get_export_providers() -> List:
     """Get all registered export providers."""
     return [p for p in _export_providers if p.should_apply()]
+
+def get_directory_scan_providers() -> List:
+    """Get all registered directory scan providers."""
+    return [p for p in _directory_scan_providers if p.should_apply()]
 
 def get_tool_result_filter_providers() -> List:
     """Get all registered tool result filter providers."""
@@ -481,9 +497,12 @@ def initialize():
         return
     
     # Register default providers first
-    from app.plugins.default_providers import DefaultAuthProvider, DefaultConfigProvider
+    from app.plugins.default_providers import (
+        DefaultAuthProvider, DefaultConfigProvider, DefaultDirectoryScanProvider,
+    )
     register_auth_provider(DefaultAuthProvider())
     register_config_provider(DefaultConfigProvider())
+    register_directory_scan_provider(DefaultDirectoryScanProvider())
     
     # Only load internal plugins if ZIYA_LOAD_INTERNAL_PLUGINS is set
     if os.environ.get('ZIYA_LOAD_INTERNAL_PLUGINS') == '1':
