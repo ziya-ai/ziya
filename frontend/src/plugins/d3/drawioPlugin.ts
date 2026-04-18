@@ -126,67 +126,33 @@ const normalizeDrawIOXml = (xml: string): string => {
     
     console.log('📐 DrawIO: Removed over-quoted values in style attributes');
 
-    // CRITICAL FIX: Add quotes to unquoted XML attribute values at TAG LEVEL
-    // which breaks XML parsing because the quote before # ends the style attribute
-    // 
-    // Strategy: Find patterns like ="#hexcolor" or ="number" within what looks like
-    // a style context (preceded by a style key like fillColor, strokeColor, etc.)
-    // and remove the quotes around the value
-    
-    // Fix quoted hex colors: fillColor="#fff9c4" -> fillColor=#fff9c4
-    // This pattern looks for colorKeyword="# and removes the quotes
-    normalized = normalized.replace(
-        /(\w*[Cc]olor\w*)="(#[0-9a-fA-F]{3,8})"/g,
-        '$1=$2'
-    );
-    
-    // Fix quoted numbers: fontSize="16" -> fontSize=16 (within style context)
-    normalized = normalized.replace(
-        /(fontSize|strokeWidth|opacity|spacing\w*)="(\d+)"/g,
-        '$1=$2'
-    );
-    
-    console.log('📐 DrawIO: Removed over-quoted values in style attributes');
+    // Fix unquoted XML tag-level attributes (e.g. vertex=1 -> vertex="1")
+    // Process each tag individually so we don't corrupt values inside
+    // already-quoted attributes (e.g. value="Group=fsw" must stay intact)
+    normalized = normalized.replace(/<[a-zA-Z]\w*\b[^>]*>/g, (tag) => {
+        // Mask properly-quoted attribute values so fix regexes skip over them
+        const placeholders: string[] = [];
+        let masked = tag.replace(/\w+="[^"]*"/g, (m) => {
+            placeholders.push(m);
+            return `__QATTR${placeholders.length - 1}__`;
+        });
+        masked = masked.replace(/\w+='[^']*'/g, (m) => {
+            placeholders.push(m);
+            return `__QATTR${placeholders.length - 1}__`;
+        });
 
-    // CRITICAL FIX: Add quotes to unquoted XML attribute values at TAG LEVEL
-    // This must happen BEFORE any other processing to create valid XML
+        // Fix unquoted attributes in the masked tag (only tag-level ones remain)
+        masked = masked.replace(/(\s)(\w+)=(#[0-9a-fA-F]{3,8})(?=[\s>\/])/g, '$1$2="$3"');
+        masked = masked.replace(/(\s)(\w+[Cc]olor)=([0-9a-fA-F]{6})(?=[\s>\/])/g, '$1$2="$3"');
+        masked = masked.replace(/(\s)(\w+)=([a-zA-Z][a-zA-Z0-9_.]*)(?=[\s>\/])/g, '$1$2="$3"');
+        masked = masked.replace(/(\s)(\w+)=(\d+)(?=[\s>\/])/g, '$1$2="$3"');
 
-    // Strategy: Use a more robust pattern that explicitly handles XML tag attributes
-    // Pattern matches: attribute=unquotedValue where the = is preceded by whitespace/< 
-    // and the value is followed by whitespace/>/;
+        // Restore masked quoted attributes
+        masked = masked.replace(/__QATTR(\d+)__/g, (_, idx) => placeholders[parseInt(idx)]);
+        return masked;
+    });
 
-    // IMPORTANT: We need to match attribute=value patterns that are NOT already inside quotes
-    // The safest way is to match complete tag patterns and fix them
-
-    // Fix unquoted hex colors: background=#ffffff -> background="#ffffff"
-    // This pattern explicitly requires the hex color to NOT be preceded by a quote
-    // Pattern: (whitespace) + attributeName + = + #hexValue + (whitespace|>|/)
-    // Where the = is not preceded by " or '
-    normalized = normalized.replace(/(\s)(\w+)=(#[0-9a-fA-F]{3,8})(?=[\s>\/])/g, '$1$2="$3"');
-
-    // Fix unquoted hex colors without #: fillColor=dae8fc -> fillColor="dae8fc"
-    normalized = normalized.replace(/(\s)(\w+[Cc]olor)=([0-9a-fA-F]{6})(?=[\s>\/])/g, '$1$2="$3"');
-
-    // Fix unquoted identifier values: resIcon=mxgraph.aws4.lambda -> resIcon="mxgraph.aws4.lambda"  
-    // Pattern: (whitespace) + attributeName + = + identifierValue + (whitespace|>|/)
-    normalized = normalized.replace(/(\s)(\w+)=([a-zA-Z][a-zA-Z0-9_.]*)(?=[\s>\/])/g, '$1$2="$3"');
-
-    // Additional fix: Handle numeric values that should be quoted
-    // Match: attribute=123 -> attribute="123" (but only at tag level)
-    // This handles edge cases like fontSize=14 which should be fontSize="14"
-    normalized = normalized.replace(/(\s)(\w+)=(\d+)(?=[\s>\/])/g, '$1$2="$3"');
-
-    // Log sample to verify the fix was applied
-    if (normalized.includes('background=')) {
-        const idx = normalized.indexOf('background=');
-        console.log('📐 DrawIO: Background attribute:', normalized.substring(idx, idx + 25));
-    }
-    if (normalized.includes('fontSize=')) {
-        const idx = normalized.indexOf('fontSize=');
-        console.log('📐 DrawIO: FontSize attribute sample:', normalized.substring(idx, idx + 20));
-    }
-
-    console.log('📐 DrawIO: Added quotes to unquoted hex color attributes');
+    console.log('📐 DrawIO: Fixed unquoted tag-level attributes');
 
     // CRITICAL FIX: Clean ampersands BEFORE any XML parsing
     // Fix bare ampersands in attribute values (e.g., "Security & Monitoring")
@@ -547,11 +513,111 @@ const createControls = (container: HTMLElement, spec: DrawIOSpec, xml: string, i
         graph.refresh();
     };
 
+    // Open button - pop out diagram into its own resizable window
+    const openBtn = document.createElement('button');
+    openBtn.innerHTML = '↗️ Open';
+    openBtn.className = 'diagram-action-button';
+    openBtn.title = 'Open diagram in a new window';
+    openBtn.onclick = () => {
+        const svgEl = container.querySelector('.drawio-graph-container svg') as SVGSVGElement | null;
+        if (!svgEl) {
+            console.warn('DrawIO: no SVG available to open');
+            return;
+        }
+
+        // Clone so we don't mutate the on-page SVG
+        const svgClone = svgEl.cloneNode(true) as SVGSVGElement;
+        // Ensure it scales responsively in the popup
+        svgClone.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+        svgClone.removeAttribute('width');
+        svgClone.removeAttribute('height');
+        svgClone.style.width = '100%';
+        svgClone.style.height = '100%';
+
+        const svgData = new XMLSerializer().serializeToString(svgClone);
+        const title = (spec.title || 'DrawIO Diagram').replace(/[<>]/g, '');
+        const bg = isDarkMode ? '#1f1f1f' : '#ffffff';
+        const fg = isDarkMode ? '#e6e6e6' : '#24292e';
+        const toolbarBg = isDarkMode ? '#2d2d2d' : '#f1f3f5';
+        const toolbarBorder = isDarkMode ? '#30363d' : '#dee2e6';
+
+        const htmlContent = `
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>${title}</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; background:${bg}; color:${fg};
+    font-family: system-ui, -apple-system, sans-serif; }
+  body { display:flex; flex-direction:column; }
+  .toolbar { background:${toolbarBg}; border-bottom:1px solid ${toolbarBorder};
+    padding:8px; display:flex; gap:8px; align-items:center; }
+  .toolbar button { background:#1890ff; color:#fff; border:none; border-radius:4px;
+    padding:6px 12px; cursor:pointer; font-size:13px; }
+  .toolbar button:hover { background:#40a9ff; }
+  .container { flex:1; overflow:auto; display:flex; align-items:center;
+    justify-content:center; padding:20px; }
+  #viewport { transform-origin: center center; transition: transform 0.15s ease; }
+  #viewport svg { max-width:100%; max-height:100%; display:block; }
+</style></head>
+<body>
+  <div class="toolbar">
+    <strong style="margin-right:12px;">${title}</strong>
+    <button onclick="zoomIn()">Zoom In</button>
+    <button onclick="zoomOut()">Zoom Out</button>
+    <button onclick="resetZoom()">Reset</button>
+    <button onclick="downloadSvg()">Download SVG</button>
+  </div>
+  <div class="container"><div id="viewport">${svgData}</div></div>
+  <script>
+    let scale = 1;
+    const vp = document.getElementById('viewport');
+    function apply() { vp.style.transform = 'scale(' + scale + ')'; }
+    function zoomIn() { scale = Math.min(scale * 1.2, 10); apply(); }
+    function zoomOut() { scale = Math.max(scale / 1.2, 0.1); apply(); }
+    function resetZoom() { scale = 1; apply(); }
+    window.addEventListener('wheel', function(e) {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        if (e.deltaY < 0) zoomIn(); else zoomOut();
+      }
+    }, { passive: false });
+    function downloadSvg() {
+      const svg = vp.querySelector('svg');
+      if (!svg) return;
+      const data = new XMLSerializer().serializeToString(svg);
+      const doc = '<?xml version="1.0" encoding="UTF-8"?>\\n' + data;
+      const blob = new Blob([doc], { type: 'image/svg+xml' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = ${JSON.stringify((spec.title?.replace(/[^a-z0-9]/gi, '_') || 'diagram') + '.svg')};
+      a.click();
+      setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+    }
+  </script>
+</body></html>`;
+
+        const blob = new Blob([htmlContent], { type: 'text/html' });
+        const url = URL.createObjectURL(blob);
+
+        const svgRect = svgEl.getBoundingClientRect();
+        const width = Math.min(Math.max(Math.round(svgRect.width) + 60, 600), 1600);
+        const height = Math.min(Math.max(Math.round(svgRect.height) + 120, 500), 1200);
+
+        const popupWindow = window.open(
+            url,
+            'DrawIODiagram',
+            `width=${width},height=${height},resizable=yes,scrollbars=yes,status=no,toolbar=no,menubar=no,location=no`
+        );
+        if (popupWindow) popupWindow.focus();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+    };
+
     controlsDiv.appendChild(viewSourceBtn);
     // controlsDiv.appendChild(editBtn); // Disabled - external site privacy concern
     controlsDiv.appendChild(exportBtn);
     controlsDiv.appendChild(copyBtn);
     controlsDiv.appendChild(editBtn);
+    controlsDiv.appendChild(openBtn);
 
     container.appendChild(controlsDiv);
 };
@@ -813,10 +879,10 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
             defaultEdgeStyle['rounded'] = 1;
             defaultEdgeStyle['curved'] = 0;
             defaultEdgeStyle['endArrow'] = 'classic';
-            defaultEdgeStyle['endSize'] = 6; // Small arrow heads (6px instead of default ~20-30px)
+            defaultEdgeStyle['endSize'] = 3; // Small arrow heads — rendered size is (endSize + strokeWidth) * viewScale
             defaultEdgeStyle['startArrow'] = 'none';
-            defaultEdgeStyle['startSize'] = 6;
-            defaultEdgeStyle['strokeWidth'] = 1;
+            defaultEdgeStyle['startSize'] = 3;
+            defaultEdgeStyle['strokeWidth'] = 1.5;
 
             // Edge label defaults for readability
             defaultEdgeStyle['labelBackgroundColor'] = '#ffffff';
@@ -952,21 +1018,25 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
 
                             // Fix arrow sizes for edges
                             if (edge) {
-                                // Edge label positioning fixes
-                                styleObj['labelBackgroundColor'] = '#ffffff';
-                                styleObj['labelBorderColor'] = '#cccccc';
-                                styleObj['align'] = 'center';
-                                styleObj['verticalAlign'] = 'middle';
+                                // Arrow marker sizing: maxGraph computes marker extent
+                                // as (endSize + strokeWidth) * viewScale. With fit()
+                                // scaling the diagram ~2x, keep endSize small.
+                                if (!styleObj['endArrow']) {
+                                    styleObj['endArrow'] = 'classicThin';
+                                }
+                                styleObj['endSize'] = 3;
+                                if (!styleObj['startArrow'] || styleObj['startArrow'] === 'none') {
+                                    styleObj['startSize'] = 3;
+                                }
 
-                                // Ensure edge labels are readable with padding
-                                styleObj['spacingTop'] = 2;
-                                styleObj['spacingBottom'] = 2;
-                                styleObj['spacingLeft'] = 4;
-                                styleObj['spacingRight'] = 4;
-
-                                // Arrow size fixes
-                                styleObj['endSize'] = 6;
-                                styleObj['startSize'] = 6;
+                                // Edge label readability
+                                if (!styleObj['labelBackgroundColor']) {
+                                    styleObj['labelBackgroundColor'] = '#ffffff';
+                                }
+                                styleObj['spacingTop'] = styleObj['spacingTop'] || 2;
+                                styleObj['spacingBottom'] = styleObj['spacingBottom'] || 2;
+                                styleObj['spacingLeft'] = styleObj['spacingLeft'] || 4;
+                                styleObj['spacingRight'] = styleObj['spacingRight'] || 4;
 
                                 // Handle curved edges properly
                                 if (isCurved || styleObj['curved'] || styleObj['rounded']) {
@@ -1293,8 +1363,31 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                     }
                 });
 
-                // PLACEMENT OPTIMIZATION: Reorder shapes within containers to minimize crossings
-                console.log('📐 PLACEMENT: Optimizing shape positions within containers');
+                // Detect explicit layout BEFORE running any position/route optimizers.
+                // Diagrams with author-specified coordinates should NOT be rearranged
+                // by the placement optimizer or the custom orthogonal router — those
+                // are for auto-layout diagrams only.
+                let hasExplicitLayout = false;
+                cellMap.forEach((cell, id) => {
+                    if (id === '0' || id === '1') return;
+                    if (cell.isVertex()) {
+                        const geom = cell.getGeometry();
+                        if (geom && (geom.x !== 0 || geom.y !== 0)) {
+                            hasExplicitLayout = true;
+                        }
+                    }
+                });
+                console.log('📐 LAYOUT-CHECK: hasExplicitLayout =', hasExplicitLayout);
+
+                if (hasExplicitLayout) {
+                    console.log('📐 LAYOUT-CHECK: Skipping placement optimizer and custom router — diagram has explicit positions');
+                    graph.__hasExplicitLayout = true;
+                }
+
+                if (!hasExplicitLayout) {
+                // --- BEGIN auto-layout-only section (placement optimizer + router) ---
+
+                console.log('📐 PLACEMENT: Optimizing shape positions within containers (auto-layout)');
 
                 // Group vertices by parent and Y-position (row)
                 const containerRows = new Map<string, Map<number, Array<{ id: string, cell: any, geom: any }>>>();
@@ -1697,23 +1790,9 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
 
                 // Mark that orthogonal routing was applied
                 graph.__orthogonalRoutingApplied = true;
-
                 console.log('✅ ROUTER: All edges routed');
 
-                // CRITICAL: Check if diagram has explicit positioning from XML
-                // If vertices have non-zero positions, skip ELK auto-layout
-                console.log('📐 SKIP-CHECK: Starting explicit layout detection');
-                let hasExplicitLayout = false;
-                cellMap.forEach((cell, id) => {
-                    if (id === '0' || id === '1') return;
-                    if (cell.isVertex()) {
-                        const geom = cell.getGeometry();
-                        if (geom && (geom.x !== 0 || geom.y !== 0)) {
-                            hasExplicitLayout = true;
-                        }
-                    }
-                });
-                console.log('📐 SKIP-CHECK: hasExplicitLayout =', hasExplicitLayout);
+                } // --- END auto-layout-only section (placement optimizer + router) ---
 
                 if (hasExplicitLayout) {
                     console.log('📐 ELK: Diagram has explicit positioning - SKIPPING automatic layout');
@@ -2437,37 +2516,29 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                 const svgElement = graphContainer.querySelector('svg') as SVGSVGElement;
                 if (svgElement) {
                     console.log('📐 DrawIO: Applying enhancer to fix label positions');
-                    DrawIOEnhancer.fixAllForeignObjects(svgElement);
+                    DrawIOEnhancer.fixAllForeignObjects(svgElement, graph);
                     console.log('✅ DrawIO: Label positions fixed');
+
+                    // Scale down oversized arrow markers after fit() amplifies them
+                    DrawIOEnhancer.scaleDownArrowMarkers(svgElement, 8);
 
                     // CRITICAL: Don't call refresh() if ELK layout was applied
                     // graph.refresh() calls view.clear() which destroys all shapes and redraws
                     // This wipes out the ELK routing we carefully applied
                     console.log('📐 DrawIO: Forcing bounds recalculation');
 
-                    if (!graph.__elkLayoutApplied) {
-                        console.log('📐 DrawIO: Manual routing - calling view.invalidate/validate');
+                    // Skip explicit invalidate/validate when we have ELK layout
+                    // OR explicit layout — fitCenter() below will revalidate anyway,
+                    // and running validate here just wipes out the foreignObject
+                    // positioning we applied in the enhancer (only to have fitCenter
+                    // wipe it again).
+                    if (!graph.__elkLayoutApplied && !graph.__hasExplicitLayout) {
+                        console.log('📐 DrawIO: Auto-layout path - calling view.invalidate/validate');
                         graph.view.invalidate();
                         graph.view.validate();
                     } else {
-                        console.log('📐 DrawIO: ELK layout applied - skipping refresh to preserve routing');
+                        console.log('📐 DrawIO: ELK or explicit layout - skipping refresh (fitCenter will revalidate)');
                     }
-
-                    // DEBUG: After all rendering, check if waypoints survived
-                    console.log('🔍 FINAL CHECK: Inspecting edge geometries after all rendering');
-                    ['edge1', 'edge2', 'edge3', 'edge4'].forEach(edgeId => {
-                        const cell = model.getCell(edgeId);
-                        if (cell && cell.isEdge()) {
-                            const geom = cell.getGeometry();
-                            const viewState = graph.view.getState(cell);
-                            console.log(`🔍 FINAL ${edgeId}:`, {
-                                geomPoints: geom?.points?.length || 0,
-                                absPoints: viewState?.absolutePoints?.length || 0,
-                                firstGeomPoint: geom?.points?.[0],
-                                firstAbsPoint: viewState?.absolutePoints?.[0]
-                            });
-                        }
-                    });
 
                     // Log bounds before and after for comparison
                     const boundsAfterFix = graph.getGraphBounds();
@@ -2481,7 +2552,7 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                     });
                 }
             } catch (enhanceError) {
-                console.error('📐 Error getting bounds before fix:', e);
+                console.error('📐 Error in label positioning enhancer:', enhanceError);
             }
 
             // CRITICAL: Use maxGraph's built-in fit() and center() functions
@@ -2513,6 +2584,16 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                         contentBounds: { width: bounds.width, height: bounds.height },
                         containerSize: { width: neededWidth, height: neededHeight }
                     });
+
+                    // Re-apply force-positioning for text-only cells. fitCenter's
+                    // revalidation pass rewrites the foreignObject x/y and the
+                    // inner div's CSS, which undoes the positioning we applied
+                    // in DrawIOEnhancer.fixAllForeignObjects above.
+                    const currentSvg = graphContainer.querySelector('svg') as SVGSVGElement | null;
+                    if (currentSvg) {
+                        DrawIOEnhancer.forceTextCellPositioning(currentSvg, graph);
+                    }
+
                     console.log('✅ DrawIO: Fit and center applied successfully');
                 } catch (fitError) {
                     console.warn('📐 DrawIO: Fit/center error:', fitError);
@@ -2551,20 +2632,6 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
             resizeObserver.observe(container);
             console.log('📐 DrawIO: ResizeObserver attached to graphContainer');
 
-            // DIAGNOSTIC: Monitor if diagram gets removed from DOM
-            const observer = new MutationObserver((mutations) => {
-                mutations.forEach(mut => {
-                    if (mut.removedNodes.length > 0) {
-                        console.error('🚨 DIAGRAM CONTENT REMOVED FROM DOM:', {
-                            removedNodes: mut.removedNodes.length,
-                            target: mut.target,
-                            timestamp: Date.now()
-                        });
-                    }
-                });
-            });
-            observer.observe(container, { childList: true, subtree: true });
-
             // Final validation
             // Add controls now that graph is fully rendered
             createControls(container, spec, xml!, isDarkMode, graph);
@@ -2574,7 +2641,13 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
             graphContainer.setAttribute('data-drawio-graph', 'true');
             console.log('✅ DrawIO: Render complete, container marked stable');
 
-            graph.view.validate();
+            // Skip revalidation for explicit/ELK layouts — it would overwrite
+            // the text-cell margin-left positioning we just applied.
+            if (!graph.__elkLayoutApplied && !graph.__hasExplicitLayout) {
+                graph.view.validate();
+            } else {
+                console.log('📐 DrawIO: Skipping final view.validate (would wipe text positioning)');
+            }
             
             // Apply universal visibility enhancement after render
             const svgElement = graphContainer.querySelector('svg');
