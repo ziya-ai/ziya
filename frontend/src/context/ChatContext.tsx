@@ -2369,67 +2369,64 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     // interaction or paint frames during project switches.
                     // PERF: Build a lookup map from prev to preserve object
                     // references for unchanged conversations (avoids re-render cascade).
-                    React.startTransition(() => {
-                        setConversations(prev => {
-                            try {
-                                const prevMap = new Map(prev.map(c => [c.id, c]));
-                                // Don't let a stale sync cycle resurrect a conversation that
-                                // was deleted in this tab between when this sync started and now.
-                                // If an id is in mergedProjectConvs but absent from both prev
-                                // (current React state) and the server list, it was just deleted locally.
-                                const prevIds = new Set(prev.map((p: any) => p.id));
-                                const safeConvs = mergedProjectConvs.filter((mc: any) =>
-                                    prevIds.has(mc.id) || serverIdSet.has(mc.id)
-                                );
+                    // PERF: Compute the merged result outside setConversations and
+                    // call it with a plain value.  Functional updaters capture
+                    // mergedProjectConvs/serverIdSet in their closure; those closures
+                    // get retained by React's pending Update queue when the reducer
+                    // bails out, leaking ~2MB per 30s sync cycle on long histories.
+                    let mergedResult: Conversation[] | null = null;
+                    try {
+                        const prev = conversationsRef.current;
+                        const prevMap = new Map(prev.map(c => [c.id, c]));
+                        // Don't let a stale sync cycle resurrect a conversation that
+                        // was deleted in this tab between when this sync started and now.
+                        const prevIds = new Set(prev.map((p: any) => p.id));
+                        const safeConvs = mergedProjectConvs.filter((mc: any) =>
+                            prevIds.has(mc.id) || serverIdSet.has(mc.id)
+                        );
 
-                                // Preserve in-memory messages that were lazy-loaded during
-                                // this session but not yet persisted to IDB.  Without this,
-                                // mergedProjectConvs (built from IDB+server) would overwrite
-                                // lazy-loaded messages with empty arrays.
-                                for (const mc of safeConvs) {
-                                    const mcMsgCount = mc.messages?.length || 0;
-                                    const inMemory = prevMap.get(mc.id);
-                                    const inMemoryCount = inMemory?.messages?.length || 0;
-                                    // Preserve in-memory messages for the active conversation
-                                    // when counts match OR in-memory has more.  Same count
-                                    // doesn't guarantee same content — React state is
-                                    // authoritative for the conversation the user is editing.
-                                    const isActive = mc.id === currentConversationRef.current;
-                                    if (inMemoryCount > mcMsgCount || (isActive && inMemoryCount > 0 && inMemoryCount >= mcMsgCount)) {
-                                        mc.messages = inMemory.messages;
-                                    }
-                                }
-
-                                // PERF: Reuse prev object references for conversations whose
-                                // _version and message count haven't changed.  This prevents
-                                // downstream useMemo/useEffect from detecting spurious changes
-                                // (treeDataRaw, currentMessages, etc.).
-                                let anyReferenceChanged = prev.length !== safeConvs.length;
-                                const result = safeConvs.map((mc: any) => {
-                                    const existing = prevMap.get(mc.id);
-                                    if (existing &&
-                                        (mc._version || 0) <= (existing._version || 0) &&
-                                        (mc.messages?.length || 0) <= (existing.messages?.length || 0) &&
-                                        mc.title === existing.title &&
-                                        mc.folderId === existing.folderId &&
-                                        mc.isGlobal === existing.isGlobal &&
-                                        mc.delegateMeta?.status === existing.delegateMeta?.status &&
-                                        mc.hasUnreadResponse === existing.hasUnreadResponse) {
-                                        return existing; // Reuse reference — no downstream re-render
-                                    }
-                                    anyReferenceChanged = true;
-                                    return mc;
-                                });
-                                return anyReferenceChanged ? result : prev;
-                            } catch (mergeErr) {
-                                // If the merge logic throws (malformed server data, corrupt IDB,
-                                // undefined property access), return prev unchanged rather than
-                                // letting the error propagate to the root and kill the React tree.
-                                console.error('📡 SERVER_SYNC: Merge failed inside setConversations, state unchanged:', mergeErr);
-                                return prev;
+                        // Preserve in-memory messages that were lazy-loaded during
+                        // this session but not yet persisted to IDB.
+                        for (const mc of safeConvs) {
+                            const mcMsgCount = mc.messages?.length || 0;
+                            const inMemory = prevMap.get(mc.id);
+                            const inMemoryCount = inMemory?.messages?.length || 0;
+                            const isActive = mc.id === currentConversationRef.current;
+                            if (inMemoryCount > mcMsgCount || (isActive && inMemoryCount > 0 && inMemoryCount >= mcMsgCount)) {
+                                mc.messages = inMemory.messages;
                             }
+                        }
+
+                        // PERF: Reuse prev object references for conversations whose
+                        // _version and message count haven't changed.  This prevents
+                        // downstream useMemo/useEffect from detecting spurious changes.
+                        let anyReferenceChanged = prev.length !== safeConvs.length;
+                        const result = safeConvs.map((mc: any) => {
+                            const existing = prevMap.get(mc.id);
+                            if (existing &&
+                                (mc._version || 0) <= (existing._version || 0) &&
+                                (mc.messages?.length || 0) <= (existing.messages?.length || 0) &&
+                                mc.title === existing.title &&
+                                mc.folderId === existing.folderId &&
+                                mc.isGlobal === existing.isGlobal &&
+                                mc.delegateMeta?.status === existing.delegateMeta?.status &&
+                                mc.hasUnreadResponse === existing.hasUnreadResponse) {
+                                return existing;
+                            }
+                            anyReferenceChanged = true;
+                            return mc;
                         });
+                        if (anyReferenceChanged) mergedResult = result;
+                    } catch (mergeErr) {
+                        console.error('📡 SERVER_SYNC: Merge failed, state unchanged:', mergeErr);
+                        mergedResult = null;
+                    }
+
+                    if (mergedResult !== null) {
+                    React.startTransition(() => {
+                        setConversations(mergedResult!);
                     });
+                    }
 
                     // 7. Update current conversation if it doesn't exist in merged set
                     // For periodic polls: NEVER change currentConversationId — it's
@@ -2514,13 +2511,14 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             await Promise.all(mergedFolders.map(f => db.saveFolder(f)));
                         }
 
-                        setFolders(prev => {
-                            const changed = mergedFolders.some(mf => {
-                                const existing = prev.find(p => p.id === mf.id);
-                                return !existing || (mf.updatedAt || 0) > (existing.updatedAt || 0);
-                            });
-                            return (prev.length !== mergedFolders.length || changed) ? mergedFolders : prev;
-                        });
+                        // Skip setFolders entirely when state matches — the previous
+                        // functional update form enqueued `mergedFolders` in a closure
+                        // every sync cycle, which React's hook queue retained even on
+                        // bailout.  With a 30s sync that leaked ~100 folder objects per
+                        // tick.  Reuse the foldersChanged flag computed just above.
+                        if (foldersChanged) {
+                            setFolders(mergedFolders);
+                        }
                     } catch (e) {
                         console.warn('📡 SERVER_SYNC: Folder sync failed:', e);
                     }

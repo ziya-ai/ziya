@@ -640,7 +640,9 @@ async def feedback_websocket(websocket: WebSocket, conversation_id: str):
     conn_entry = {
         'websocket': websocket,
         'connected_at': time.time(),
-        'feedback_queue': asyncio.Queue()
+        # Bounded to prevent unbounded growth if the stream consumer exits
+        # before the WS disconnects. Old messages dropped, not blocked.
+        'feedback_queue': asyncio.Queue(maxsize=100)
     }
     if conversation_id not in active_feedback_connections:
         active_feedback_connections[conversation_id] = []
@@ -659,12 +661,25 @@ async def feedback_websocket(websocket: WebSocket, conversation_id: str):
                     # Add to feedback queue of ALL connections for this conversation
                     if conversation_id in active_feedback_connections:
                         for conn in active_feedback_connections[conversation_id]:
-                            await conn['feedback_queue'].put(data)
+                            q = conn['feedback_queue']
+                            # Drop oldest if full — never block the WS receive loop
+                            if q.full():
+                                try:
+                                    q.get_nowait()
+                                except asyncio.QueueEmpty:
+                                    pass
+                            q.put_nowait(data)
                 elif feedback_type == 'interrupt':
                     logger.info(f"🔄 FEEDBACK: Received interrupt request for {conversation_id}")
                     if conversation_id in active_feedback_connections:
                         for conn in active_feedback_connections[conversation_id]:
-                            await conn['feedback_queue'].put({'type': 'interrupt'})
+                            q = conn['feedback_queue']
+                            if q.full():
+                                try:
+                                    q.get_nowait()
+                                except asyncio.QueueEmpty:
+                                    pass
+                            q.put_nowait({'type': 'interrupt'})
                 
             except WebSocketDisconnect:
                 logger.debug(f"🔄 FEEDBACK: WebSocket disconnected for {conversation_id}")
