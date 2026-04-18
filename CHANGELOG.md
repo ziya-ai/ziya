@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
+### Fixed
+
+### Changed
+
+## [0.6.4.9] - 2026-04-18
+
+### Added
 - **Document upload and extraction**: New `POST /api/extract-document` endpoint
   accepts PDF, DOCX, XLSX, and PPTX file uploads via multipart form data and
   returns extracted text. Scanned PDFs with no text layer are rendered as page
