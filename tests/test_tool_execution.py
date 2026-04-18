@@ -133,6 +133,20 @@ class TestProcessResult:
         out = _process_result(result, "tool", "tool")
         assert "BLOCKED" in out
 
+    def test_content_string_with_path_returns_content_only(self):
+        """file_read-style dicts return just the content string, not the wrapper."""
+        result = {"content": "hello world", "metadata": "1 total lines", "path": "a.txt"}
+        out = _process_result(result, "file_read", "file_read")
+        assert out == "hello world"
+
+    def test_content_string_without_path_serialises_as_json(self):
+        """Dicts with string content but no path key still JSON-serialize."""
+        result = {"content": "just text", "extra": "data"}
+        out = _process_result(result, "tool", "tool")
+        import json
+        parsed = json.loads(out)
+        assert parsed["content"] == "just text"
+
 
 # ---------------------------------------------------------------------------
 # execute_single_tool integration tests

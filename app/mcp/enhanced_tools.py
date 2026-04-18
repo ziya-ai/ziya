@@ -276,9 +276,8 @@ class DirectMCPTool(BaseTool):
             if result.get("error"):
                 error_message = result.get('message', 'Unknown error')
                 return f"❌ Error: {error_message}"
-            elif result.get("content"):
-                # Return content directly for information retrieval tools
-                logger.debug(f"🔧 Returning content, length: {len(result['content'])}")
+            elif result.get("content") and not result.get("path") and not result.get("metadata"):
+                # Return content directly only for simple content-only results
                 return result["content"]
             elif result.get("success"):
                 message = result.get("message", "Operation completed successfully")
@@ -299,7 +298,7 @@ class DirectMCPTool(BaseTool):
                 
                 return message
             else:
-                return str(result)
+                return json.dumps(result, ensure_ascii=False)
         else:
             return str(result)
     
@@ -334,7 +333,7 @@ class DirectMCPTool(BaseTool):
                     
                     return message
                 else:
-                    return str(result)
+                    return json.dumps(result, ensure_ascii=False)
             else:
                 return str(result)
         except Exception as e:  # Intentionally broad: third-party tool code
