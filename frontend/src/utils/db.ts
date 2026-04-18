@@ -871,12 +871,23 @@ class ConversationDB implements DB {
                         return;
                     }
 
-                    // Build shell: keep only first + last message for preview
+                    // Build shell: drop message content entirely.  V8's String.slice
+                    // returns a SlicedString that retains the parent string, so even
+                    // "truncated" previews hold the full original content alive.
+                    // The sidebar only reads title/id/timestamps from shells, never
+                    // content, so dropping it is safe and essential to keep shells
+                    // actually lightweight.
+                    const stripMessage = (m: any) => m ? ({
+                        id: m.id,
+                        role: m.role,
+                        content: '',
+                        _timestamp: m._timestamp,
+                    }) : m;
+                    const firstMsg = conv.messages.length > 0 ? stripMessage(conv.messages[0]) : null;
+                    const lastMsg = conv.messages.length > 1 ? stripMessage(conv.messages[conv.messages.length - 1]) : null;
                     shells.push({
                         ...conv,
-                        messages: conv.messages?.length > 0
-                            ? [conv.messages[0], ...(conv.messages.length > 1 ? [conv.messages[conv.messages.length - 1]] : [])]
-                            : [],
+                        messages: firstMsg ? (lastMsg ? [firstMsg, lastMsg] : [firstMsg]) : [],
                         _isShell: true,
                         _fullMessageCount: conv.messages?.length || 0,
                     } as Conversation);
