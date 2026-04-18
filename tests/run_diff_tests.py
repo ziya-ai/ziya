@@ -1039,6 +1039,44 @@ class DiffRegressionTest(unittest.TestCase):
                 self.assertTrue(len(second_result['details']['already_applied']) > 0, 
                                f"Second application should report hunks as already_applied for {case_name}")
 
+    def test_pure_addition_idempotent(self):
+        """Test that a pure-addition diff is detected as already applied when the file
+        already contains the added line.
+
+        Regression test: _check_pure_addition_already_applied searched for context
+        lines as a consecutive block, but after the addition is applied the context
+        lines are no longer consecutive (the added line sits between them).  This
+        caused is_hunk_already_applied to return False, allowing the diff to be
+        applied again and duplicating the import line.
+        """
+        from app.utils.diff_utils.validation.validators import is_hunk_already_applied
+        from app.utils.diff_utils.parsing.diff_parser import parse_unified_diff_exact_plus
+
+        metadata, original, diff, expected = self.load_test_case('pure_addition_idempotent')
+
+        # 'expected' is the post-apply state (with the added import line).
+        # is_hunk_already_applied should return True when run against this state.
+        file_lines = expected.splitlines()
+        hunks = list(parse_unified_diff_exact_plus(diff, '/tmp/test.tsx'))
+        self.assertEqual(len(hunks), 1, "Should parse exactly one hunk")
+        hunk = hunks[0]
+
+        # Verify the hunk is a pure addition (no removed lines)
+        self.assertEqual(len(hunk.get('removed_lines', [])), 0,
+                         "Hunk should have no removed lines (pure addition)")
+        self.assertTrue(len(hunk.get('added_lines', [])) > 0,
+                        "Hunk should have added lines")
+
+        # Check at the expected position (old_start - 1 for 0-based)
+        pos = hunk['old_start'] - 1
+        result = is_hunk_already_applied(file_lines, hunk, pos)
+        self.assertTrue(result,
+                        f"is_hunk_already_applied should return True at pos {pos} "
+                        f"for pure addition that is already in the file")
+
+        # Also verify via the full pipeline (double-apply should be idempotent)
+        self.run_diff_test('pure_addition_idempotent')
+
     def test_gemini_extensions_cleanup(self):
         """Test case for cleaning up gemini extensions by removing gemini-specific instructions"""
         self.run_diff_test('gemini_extensions_cleanup')
