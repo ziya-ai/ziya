@@ -826,7 +826,7 @@ export const sendPayload = async (
             // Forcefully close the stream reader so reader.read() rejects immediately.
             // This doesn't depend on browser AbortSignal propagation through ReadableStream,
             // which can be delayed — especially when no data is flowing (deep thinking).
-            try { readerRef?.cancel().catch(() => {}); } catch (_) { /* stream may already be closed */ }
+            try { readerRef?.cancel().catch(() => { }); } catch (_) { /* stream may already be closed */ }
 
 
             console.log('Sending abort notification to server');
@@ -961,6 +961,10 @@ export const sendPayload = async (
             // Process complete messages
             for (const sseMessage of messages) {
                 if (!sseMessage.trim()) continue;
+                if (!sseMessage.startsWith('data:')) {
+                    console.warn('🚨 ORPHAN SSE FRAGMENT (len=' + sseMessage.length + '):',
+                        sseMessage.substring(0, 300));
+                }
 
                 // Check if it's an SSE data line
                 if (sseMessage.startsWith('data:')) {
@@ -2763,7 +2767,7 @@ export const sendPayload = async (
             // connection stays open until the server or TCP keepalive closes it,
             // which can exhaust the browser's 6-connection-per-origin limit and
             // cause subsequent fetch() calls to silently queue for minutes.
-            try { readerRef?.cancel().catch(() => {}); } catch (_) {}
+            try { readerRef?.cancel().catch(() => { }); } catch (_) { }
             readerRef = null;
         }
     } catch (error) {
