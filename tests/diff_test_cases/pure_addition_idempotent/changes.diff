@@ -1,0 +1,8 @@
+diff --git a/frontend/src/components/Conversation.tsx b/frontend/src/components/Conversation.tsx
+--- a/frontend/src/components/Conversation.tsx
++++ b/frontend/src/components/Conversation.tsx
+@@ -7,6 +7,7 @@
+ import { RedoOutlined, SoundOutlined, MutedOutlined, PictureOutlined, CodeOutlined, EyeOutlined } from "@ant-design/icons";
++import { DocumentChip, ImageChip } from './FileChip';
+ import ModelChangeNotification from './ModelChangeNotification';
+ import { useSetQuestion } from '../context/QuestionContext';

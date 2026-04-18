@@ -1,0 +1,7 @@
+{
+    "target_file": "frontend/src/components/Conversation.tsx",
+    "description": "Pure addition diff (no removals) should be idempotent - applying twice should not duplicate the added line. Tests that is_hunk_already_applied correctly detects pure additions in the post-applied state where context lines are no longer consecutive.",
+    "date_added": "2026-04-17",
+    "issue_reference": "pure_addition_double_apply",
+    "apply_twice": true
+}

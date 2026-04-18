@@ -658,6 +658,24 @@ def _check_pure_addition_already_applied(file_lines: List[str], added_lines: Lis
         logger.debug("Added content not found anywhere in file")
         return False
     
+    # Check if the full new_lines (context + additions interleaved) already
+    # exist consecutively in the file.  After a pure addition is applied the
+    # original context lines are no longer consecutive -- the added lines sit
+    # between them -- so searching for context lines alone will fail.
+    new_lines = hunk.get('new_lines', [])
+    if new_lines and len(new_lines) > len(added_lines):
+        new_lines_normalized = [normalize_line_for_comparison(line) for line in new_lines]
+        search_start = max(0, pos - 20)
+        search_end = min(len(file_lines) - len(new_lines) + 1, pos + 20)
+        for search_pos in range(search_start, search_end):
+            file_block = [normalize_line_for_comparison(file_lines[search_pos + j])
+                         for j in range(len(new_lines))]
+            if file_block == new_lines_normalized:
+                logger.debug(
+                    f"Pure addition already applied: new_lines match at pos {search_pos}"
+                )
+                return True
+
     added_block = [normalize_line_for_comparison(line) for line in added_lines]
     context_normalized = [normalize_line_for_comparison(line) for line in context_lines]
     
