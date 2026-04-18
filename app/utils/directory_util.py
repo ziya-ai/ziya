@@ -32,6 +32,13 @@ _ignored_patterns_cache: Optional[List[Tuple[str, str]]] = None
 _ignored_patterns_cache_dir: Optional[str] = None
 _ignored_patterns_cache_time: float = 0
 IGNORED_PATTERNS_CACHE_TTL = 3600  # 1 hour - gitignore files rarely change
+# Symlink traversal policy: follow up to N symlink hops by default. A shared
+# asset symlinked at the repo root counts as 1 hop; symlinks encountered
+# *inside* that shared asset would be hop 2+. Brazil-style cross-package
+# symlink webs typically need >1 hop to traverse, so default 1 allows
+# legitimate root-level shared-asset symlinks while preventing blowup.
+# Explicit --include overrides the budget.
+MAX_SYMLINK_HOPS = int(os.environ.get("ZIYA_SYMLINK_HOPS", "1"))
 
 def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
     global _ignored_patterns_cache, _ignored_patterns_cache_dir, _ignored_patterns_cache_time, _included_symlink_names
@@ -205,6 +212,13 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
         ("vendor", user_codebase_dir),  # Vendor dependencies
         (".pytest_cache", user_codebase_dir),
         ("temp_merge/", user_codebase_dir),  # Temporary merge directories at any level
+        # Brazil workspace artifacts: env/ holds resolved runtime deps (can be
+        # tens of GB with heavy symlink webs); build-tools/ and brazil-output/
+        # are build artifacts. Excluding these by name is safe — legitimate
+        # Python virtualenvs use .venv/venv, not env.
+        ("env", user_codebase_dir),
+        ("build-tools", user_codebase_dir),
+        ("brazil-output", user_codebase_dir),
     ]
     
     # Add additional exclude directories from environment variable if it exists
@@ -274,12 +288,25 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
 
     # Shared state for get_patterns_recursive: visited set prevents symlink/hardlink loops,
     # wall-clock deadline prevents unbounded scanning in enormous trees.
+    # Deadline is generous by default (60s) because legitimate large source
+    # trees can take tens of seconds; override via ZIYA_GITIGNORE_TIMEOUT.
     _gitignore_visited = set()
-    _gitignore_deadline = time.time() + 10.0  # 10 second hard cap
+    _gitignore_timeout = float(os.environ.get("ZIYA_GITIGNORE_TIMEOUT", "60"))
+    _gitignore_deadline = time.time() + _gitignore_timeout
     _GITIGNORE_MAX_ENTRIES_PER_DIR = 10000
     _deadline_warned = False
 
-    def get_patterns_recursive(path: str) -> List[Tuple[str, str]]:
+    # Don't descend into directories we've already decided to exclude — reading
+    # .gitignore from .git/objects/xx/ or env/cargo-brazil/registry/ is pure
+    # waste and can dominate startup on large trees. Build a name-set from the
+    # hardcoded exclusions (patterns without slashes or globs are pure names).
+    _skip_descend_names = {
+        p for p, _ in ignored_patterns
+        if p and '/' not in p and '*' not in p and '?' not in p
+        and not p.startswith('!') and not p.startswith('.DS')
+    }
+
+    def get_patterns_recursive(path: str, symlink_hops: int = 0) -> List[Tuple[str, str]]:
         """Recursively find gitignore patterns with optimizations for speed."""
         patterns: List[Tuple[str, str]] = []
         
@@ -293,7 +320,7 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
             nonlocal _deadline_warned
             if not _deadline_warned:
                 _deadline_warned = True
-                logger.warning("Gitignore scan hit 10s deadline, skipping deeper directories")
+                logger.warning(f"Gitignore scan hit {_gitignore_timeout:.0f}s deadline, skipping deeper directories")
             return patterns
         
         gitignore_path = os.path.join(path, ".gitignore")
@@ -332,12 +359,18 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
         
         entry_count = 0
         for entry in entries:
-            # Follow symlinks only for explicitly --include'd directories
-            is_included_symlink = (
-                entry.is_symlink() and entry.name in include_patterns_override
-            )
-            follow = is_included_symlink
-            if not entry.is_dir(follow_symlinks=follow):
+            # Symlink hop budget: follow up to MAX_SYMLINK_HOPS (default 1).
+            # Explicit --include overrides the budget.
+            try:
+                is_symlink = entry.is_symlink()
+            except OSError:
+                continue
+            entry_hops = symlink_hops
+            if is_symlink and entry.name not in include_patterns_override:
+                entry_hops = symlink_hops + 1
+                if entry_hops > MAX_SYMLINK_HOPS:
+                    continue
+            if not entry.is_dir(follow_symlinks=is_symlink):
                 continue
 
             # Cap entries per directory to avoid blocking on huge flat dirs
@@ -345,6 +378,11 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
             if entry_count > _GITIGNORE_MAX_ENTRIES_PER_DIR:
                 logger.warning(f"Skipping remaining entries in {path} (>{_GITIGNORE_MAX_ENTRIES_PER_DIR} children)")
                 break
+
+            # Skip descent into known-excluded directory names (.git, node_modules,
+            # env, target, build, __pycache__, etc.) — they won't yield gitignores.
+            if entry.name in _skip_descend_names:
+                continue
             
             subdir = entry.path + os.sep
             
@@ -354,7 +392,7 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
                 logger.debug(f"Skipping directory with brackets: {subdir}")
                 continue
             try:
-                patterns.extend(get_patterns_recursive(subdir))
+                patterns.extend(get_patterns_recursive(subdir, entry_hops))
             except re.error as e:
                 logger.warning(f"Skipping directory due to regex error: {subdir} - {e}")
                 continue
@@ -411,10 +449,27 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
 def get_complete_file_list(user_codebase_dir: str, ignored_patterns: List[str], included_relative_dirs: List[str]) -> Dict[str, Dict]:
     should_ignore_fn = parse_gitignore_patterns(ignored_patterns)
     file_dict: Dict[str, Dict] = {}
+    # Guardrails: avoid multi-minute walks on build trees / Brazil workspaces.
+    # os.walk defaults to followlinks=False — set explicitly to make the intent
+    # obvious, since build/ trees often contain symlink webs. Deadline is set
+    # generously (120s) for large source trees; override via ZIYA_FILE_LIST_TIMEOUT.
+    _filelist_timeout = float(os.environ.get("ZIYA_FILE_LIST_TIMEOUT", "120"))
+    deadline = time.time() + _filelist_timeout
+    MAX_FILES = 200_000
+    hit_limit = False
     for pattern in included_relative_dirs:
-        for root, dirs, files in os.walk(os.path.normpath(os.path.join(user_codebase_dir, pattern))):
+        if hit_limit:
+            break
+        for root, dirs, files in os.walk(
+            os.path.normpath(os.path.join(user_codebase_dir, pattern)),
+            followlinks=False,
+        ):
+            if time.time() > deadline:
+                logger.warning(f"get_complete_file_list: hit {_filelist_timeout:.0f}s deadline at {root}, returning partial list")
+                hit_limit = True
+                break
             # Filter out ignored directories and hidden directories
-            # CRITICAL: Add trailing slash to directory paths for gitignore matching
+            # Append trailing slash to directory paths for gitignore matching.
             dirs[:] = [d for d in dirs 
                       if not should_ignore_fn(os.path.join(root, d) + os.sep) 
                       and not d.startswith('.')]
@@ -423,6 +478,12 @@ def get_complete_file_list(user_codebase_dir: str, ignored_patterns: List[str], 
                 file_path = os.path.join(root, file)
                 if not should_ignore_fn(file_path) and not is_binary_file(file_path) and not file.startswith('.'):
                     file_dict[file_path] = {}
+                    if len(file_dict) >= MAX_FILES:
+                        logger.warning(f"get_complete_file_list: hit {MAX_FILES} file cap, returning partial list")
+                        hit_limit = True
+                        break
+            if hit_limit:
+                break
 
     return file_dict
 
@@ -492,14 +553,16 @@ def estimate_directory_count(directory: str, ignored_patterns: List[Tuple[str, s
     """Quick estimate of total directories to scan (only go 3 levels deep for estimate)."""
     should_ignore_fn = parse_gitignore_patterns(ignored_patterns)
     count = 0
-    _estimate_deadline = time.time() + 5.0  # 5 second hard cap (thread-safe)
+    # Estimation is depth-limited (2 levels) + count-capped (1000 dirs); the
+    # wall-clock bound is a safety net, not the primary limit.
+    _estimate_deadline = time.time() + float(os.environ.get("ZIYA_ESTIMATE_TIMEOUT", "15"))
     
     # CRITICAL: Skip Library directory in estimation to avoid hanging
     if 'Library' in directory or directory.endswith('/Library'):
         logger.info("Skipping Library directory in estimation")
         return 0
     
-    def quick_count(path: str, depth: int) -> int:
+    def quick_count(path: str, depth: int, symlink_hops: int = 0) -> int:
         # Even more aggressive depth limit for estimation
         if depth > 2:  # Only scan 2 levels deep for estimate
             return 0
@@ -515,10 +578,14 @@ def estimate_directory_count(directory: str, ignored_patterns: List[Tuple[str, s
         try:
             entries = os.scandir(path)
             for entry in entries:
-                if not entry.is_dir(follow_symlinks=False):
+                is_symlink = entry.is_symlink()
+                entry_hops = symlink_hops
+                if is_symlink and entry.name not in _included_symlink_names:
+                    entry_hops = symlink_hops + 1
+                    if entry_hops > MAX_SYMLINK_HOPS:
+                        continue
+                if not entry.is_dir(follow_symlinks=is_symlink):
                     continue
-                if entry.is_symlink() and entry.name not in _included_symlink_names:
-                    continue  # skip symlinks unless explicitly included
                 entry_path = entry.path
                 
                 # Skip Library and other known slow directories
@@ -529,7 +596,7 @@ def estimate_directory_count(directory: str, ignored_patterns: List[Tuple[str, s
                 if should_ignore_fn(entry_path):
                     continue
                 count += 1
-                quick_count(entry_path, depth + 1)
+                quick_count(entry_path, depth + 1, entry_hops)
                 
                 # Add a limit to prevent estimation from taking too long
                 if count > 1000:  # Stop counting after 1000 dirs found
@@ -620,8 +687,9 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     
     _scan_progress["estimated_total"] = estimated_total
     logger.debug(f"Estimated ~{estimated_total} directories to scan" if estimated_total > 0 else "Starting scan without estimate (will show raw counts)")
-    # Set a maximum time limit for scanning (45 seconds default, configurable)
-    max_scan_time = int(os.environ.get("ZIYA_SCAN_TIMEOUT", "45"))  # Increased default, configurable
+    # Set a maximum time limit for scanning. Default 120s accommodates large
+    # source trees; extreme cases can extend via ZIYA_SCAN_TIMEOUT.
+    max_scan_time = int(os.environ.get("ZIYA_SCAN_TIMEOUT", "120"))
     
     # Track progress for intelligent timeout
     last_progress_check = {'time': time.time(), 'directories': 0}
@@ -639,13 +707,19 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     # Scan everything up to BFS_DEPTH_THRESHOLD first so the UI has a
     # usable tree quickly, then go deeper for directories that were deferred.
     BFS_DEPTH_THRESHOLD = 6
-    deferred_dirs: list = []  # [(parent_children_dict, entry_name, entry_path, depth)]
+    deferred_dirs: list = []  # [(parent_children_dict, entry_name, entry_path, depth, effective_max)]
 
     MAX_DEFERRED = 5000  # Prevent OOM on extremely wide trees
     MAX_ENTRIES_PER_DIR = 10000  # Skip pathologically large flat directories
 
-    def process_dir_bfs(path: str, depth: int) -> Dict[str, Any]:
-        """Process a directory, deferring children beyond BFS_DEPTH_THRESHOLD."""
+    def process_dir_bfs(path: str, depth: int, effective_max: int = 0, symlink_hops: int = 0) -> Dict[str, Any]:
+        """Process a directory, deferring children beyond BFS_DEPTH_THRESHOLD.
+
+        Args:
+            effective_max: When > 0, overrides the global max_depth for this
+                subtree (set by DirectoryScanProvider customizations).
+            symlink_hops: Count of symlink hops taken to reach this directory.
+        """
         nonlocal last_progress_check
 
         dir_basename = os.path.basename(path.rstrip(os.sep))
@@ -657,10 +731,15 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
         }:
             return {'token_count': 0}
 
-        if depth > max_depth:
+        local_max = effective_max if effective_max > 0 else max_depth
+
+        if depth > local_max:
             return {'token_count': 0}
 
-        real_path = os.path.realpath(path)
+        try:
+            real_path = os.path.realpath(path)
+        except (OSError, ValueError):
+            return {'token_count': 0}
         if real_path in _visited_directories:
             return {'token_count': 0}
         _visited_directories.add(real_path)
@@ -696,11 +775,21 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
         result = {'token_count': 0, 'children': {}}
         total_tokens = 0
 
+        # Ask directory-scan providers for per-child customizations
+        scan_custom = None
+        try:
+            from app.plugins import get_directory_scan_providers
+            for prov in get_directory_scan_providers():
+                scan_custom = prov.customize_scan(path, depth, max_depth)
+                if scan_custom is not None:
+                    break
+        except Exception as exc:
+            logger.debug(f"Directory scan provider error: {exc}")
+
         try:
             dir_scanner = os.scandir(path)
         except (PermissionError, OSError) as e:
             logger.debug(f"Cannot access directory {path}: {e}")
-            _visited_directories.discard(real_path)
             return {'token_count': 0}
 
         # Materialize entries with a circuit breaker for pathologically large dirs.
@@ -708,7 +797,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
         entries = []
         try:
             for de in dir_scanner:
-                entries.append(de.name)
+                entries.append(de)
                 if len(entries) > MAX_ENTRIES_PER_DIR:
                     logger.warning(f"⚠️ Directory {path} has >{MAX_ENTRIES_PER_DIR} entries, truncating scan")
                     break
@@ -717,7 +806,8 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
         finally:
             dir_scanner.close()
 
-        for entry in entries:
+        for de in entries:
+            entry = de.name
             if _scan_progress.get("cancelled"):
                 break
 
@@ -739,26 +829,66 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
             if entry.startswith('.'):
                 continue
 
-            entry_path = os.path.join(path, entry) if isinstance(entry, str) else entry
-            check_path = entry_path + os.sep if os.path.isdir(entry_path) else entry_path
+            entry_path = de.path
+            # Symlink hop budget: follow up to MAX_SYMLINK_HOPS (default 1).
+            # A shared asset linked at the root is 1 hop; any symlink found
+            # while already inside a symlinked subtree is 2+ and is skipped.
+            # Combined with the permanent realpath visited-set, this prevents
+            # Brazil-style cross-package symlink webs from exploding the scan
+            # while still allowing legitimate root-level shared-asset links.
+            # Explicit --include names override the hop budget.
+            try:
+                is_symlink = de.is_symlink()
+            except OSError:
+                continue
+            entry_hops = symlink_hops
+            if is_symlink:
+                if entry not in _included_symlink_names:
+                    entry_hops = symlink_hops + 1
+                    if entry_hops > MAX_SYMLINK_HOPS:
+                        continue
+            try:
+                is_dir = de.is_dir(follow_symlinks=is_symlink)
+                is_file = de.is_file(follow_symlinks=False) if not is_dir else False
+            except OSError:
+                continue
+
+            check_path = entry_path + os.sep if is_dir else entry_path
             if should_ignore_fn(check_path):
                 continue
 
-            if os.path.isdir(entry_path):
-                if depth < max_depth:
+            if is_dir:
+                # Apply scan customization masks
+                if scan_custom is not None:
+                    if entry in scan_custom.exclude_children:
+                        continue
+                    if (scan_custom.include_only_children is not None
+                            and entry not in scan_custom.include_only_children):
+                        continue
+
+                # Determine effective max_depth for this child
+                child_max = local_max
+                if scan_custom is not None:
+                    override = scan_custom.child_max_depth_overrides.get(entry)
+                    if override is not None:
+                        child_max = override
+                    elif scan_custom.default_child_max_depth is not None:
+                        child_max = scan_custom.default_child_max_depth
+
+                if depth < child_max:
                     if len(deferred_dirs) >= MAX_DEFERRED:
                         # Too many deferred dirs — skip to prevent OOM
                         pass
                     elif depth >= BFS_DEPTH_THRESHOLD:
                         # Defer: record a placeholder so the UI sees the directory exists
                         result['children'][entry] = {'token_count': 0, 'children': {}}
-                        deferred_dirs.append((result['children'], entry, entry_path, depth + 1))
+                        deferred_dirs.append((result['children'], entry, entry_path, depth + 1, child_max, entry_hops))
                     else:
-                        sub_result = process_dir_bfs(entry_path, depth + 1)
+                        sub_result = process_dir_bfs(entry_path, depth + 1, child_max, entry_hops)
                         if sub_result['token_count'] > 0 or sub_result.get('children'):
                             result['children'][entry] = sub_result
                             total_tokens += sub_result['token_count']
-            elif os.path.isfile(entry_path):
+            elif is_file:
                 tokens = estimate_tokens_fast(entry_path)
                 if tokens >= 0 or tokens == -1:
                     scan_stats['files_processed'] += 1
@@ -767,7 +897,6 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
                         total_tokens += tokens
 
         result['token_count'] = total_tokens
-        _visited_directories.discard(real_path)
 
         dir_time = time.time() - dir_start_time
         if dir_time > 2.0:
@@ -784,12 +913,11 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     while deferred_dirs:
         if _scan_progress.get("cancelled"):
             break
-        elapsed = time.time() - scan_stats['start_time']
         if elapsed > max_scan_time * 2:
             logger.warning(f"Timeout during BFS phase 2 at {elapsed:.1f}s, {len(deferred_dirs)} dirs remaining")
             break
-        parent_children, entry_name, entry_path, depth = deferred_dirs.pop(0)
-        sub_result = process_dir_bfs(entry_path, depth)
+        parent_children, entry_name, entry_path, depth, eff_max, hops = deferred_dirs.pop(0)
+        sub_result = process_dir_bfs(entry_path, depth, eff_max, hops)
         if sub_result['token_count'] > 0 or sub_result.get('children'):
             parent_children[entry_name] = sub_result
         else:
@@ -1010,10 +1138,14 @@ def estimate_tokens_fast(file_path: str) -> int:
     except (OSError, IOError):
         return 0
 
-# Add caching system
-_token_cache = {}
-_cache_timestamp = 0
+# Folder-structure cache, keyed by (directory, max_depth, gitignore_hash).
+# Entries older than TOKEN_CACHE_TTL are evicted on access; whole cache
+# is capped at TOKEN_CACHE_MAX_ENTRIES.
+_token_cache: Dict[str, Dict[str, Any]] = {}
+_token_cache_times: Dict[str, float] = {}   # per-entry timestamps
 _cache_lock = threading.Lock()
+TOKEN_CACHE_TTL = 300          # 5 minutes
+TOKEN_CACHE_MAX_ENTRIES = 16   # typical use is 1-2 per codebase
 
 # Global thread management for background token calculation
 _background_thread = None
@@ -1035,29 +1167,46 @@ def ensure_background_token_calculation(directory: str, ignored_patterns: List[T
 
 def get_cached_folder_structure_with_tokens(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int) -> Optional[Dict[str, Any]]:
     """Get cached folder structure if available and fresh."""
-    global _token_cache, _cache_timestamp
-    
     cache_key = f"{directory}:{max_depth}:{hash(str(ignored_patterns))}"
     current_time = time.time()
-    
+
     with _cache_lock:
-        if cache_key in _token_cache and (current_time - _cache_timestamp) < 300:  # 5 minute cache
+        ts = _token_cache_times.get(cache_key, 0)
+        if cache_key in _token_cache and (current_time - ts) < TOKEN_CACHE_TTL:
             logger.debug("🔍 PERF: Returning cached folder structure with tokens")
-            # Even with cached results, ensure background calculation is running for freshness
             ensure_background_token_calculation(directory, ignored_patterns, max_depth)
             return _token_cache[cache_key]
-    
+        # Drop stale entry if present
+        if cache_key in _token_cache:
+            _token_cache.pop(cache_key, None)
+            _token_cache_times.pop(cache_key, None)
+
     return None
 
 def cache_folder_structure_with_tokens(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int, result: Dict[str, Any]):
-    """Cache folder structure with tokens."""
-    global _token_cache, _cache_timestamp
-    
+    """Cache folder structure with tokens (with TTL eviction + size cap)."""
     cache_key = f"{directory}:{max_depth}:{hash(str(ignored_patterns))}"
-    
+    current_time = time.time()
+
     with _cache_lock:
+        # Evict TTL-expired entries on write
+        stale = [k for k, ts in _token_cache_times.items()
+                 if (current_time - ts) >= TOKEN_CACHE_TTL]
+        for k in stale:
+            _token_cache.pop(k, None)
+            _token_cache_times.pop(k, None)
+
         _token_cache[cache_key] = result
-        _cache_timestamp = time.time()
+        _token_cache_times[cache_key] = current_time
+
+        # Cap total entries — oldest-first eviction if over the cap
+        if len(_token_cache) > TOKEN_CACHE_MAX_ENTRIES:
+            overflow = len(_token_cache) - TOKEN_CACHE_MAX_ENTRIES
+            sorted_keys = sorted(_token_cache_times.items(), key=lambda kv: kv[1])
+            for k, _ in sorted_keys[:overflow]:
+                _token_cache.pop(k, None)
+                _token_cache_times.pop(k, None)
+
         logger.debug(f"🔍 PERF: Cached folder structure with {len(result)} entries")
 
 def start_background_token_calculation(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int):
