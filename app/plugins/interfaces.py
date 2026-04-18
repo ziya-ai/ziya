@@ -483,3 +483,58 @@ class EncryptionProvider(ABC):
     def should_apply(self) -> bool:
         """Return True if this encryption policy should be applied."""
         return True
+
+
+@dataclass
+class ScanCustomization:
+    """
+    Per-directory scan customization returned by DirectoryScanProvider.
+
+    Controls which children are visited and how deep the scanner
+    recurses into each one.
+    """
+
+    # Max depth applied to children not listed in overrides.
+    # None means use the global default.
+    default_child_max_depth: Optional[int] = None
+
+    # Per-child-name depth overrides.  Keys are directory basenames.
+    # None value means "use the global default max_depth".
+    child_max_depth_overrides: Dict[str, Optional[int]] = field(default_factory=dict)
+
+    # Children to skip entirely (blocklist).
+    exclude_children: Set[str] = field(default_factory=set)
+
+    # If non-empty, ONLY scan children in this set (allowlist).
+    # None means "scan everything not excluded".
+    include_only_children: Optional[Set[str]] = None
+
+
+class DirectoryScanProvider(ABC):
+    """
+    Directory scan customization provider.
+
+    Plugins implement this to alter scanning behaviour for specific
+    workspace layouts.  A Brazil workspace plugin can detect
+    ``packageInfo`` marker files and limit recursion on non-source
+    directories; users can author rules in ``.ziya/scan.yaml``.
+    """
+
+    provider_id: str = "default"
+    priority: int = 0
+
+    @abstractmethod
+    def customize_scan(
+        self, dir_path: str, current_depth: int, global_max_depth: int
+    ) -> Optional[ScanCustomization]:
+        """
+        Called when the scanner enters a directory.
+
+        Return a ScanCustomization to override child depth limits or
+        inclusion/exclusion masks, or None for default behaviour.
+        """
+        pass
+
+    def should_apply(self) -> bool:
+        """Return True if this provider should be consulted."""
+        return True
