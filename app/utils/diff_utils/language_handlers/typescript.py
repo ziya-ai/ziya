@@ -75,7 +75,8 @@ class TypeScriptHandler(LanguageHandler):
 
             try:
                 tsc_args = [tsc_path, '--noEmit', '--skipLibCheck',
-                            '--isolatedModules', '--noResolve']
+                            '--isolatedModules', '--noResolve',
+                            '--target', 'ES2022', '--moduleResolution', 'node']
                 if suffix == '.tsx':
                     tsc_args += ['--jsx', 'react-jsx']
                 tsc_args.append(temp_path)

@@ -5,6 +5,10 @@ Extracted from server.py during Phase 3b refactoring.
 """
 import os
 import time
+import gc
+import sys
+import tracemalloc
+from collections import Counter
 import asyncio
 import json
 import logging
@@ -427,4 +431,273 @@ async def get_current_conversation_telemetry(conversation_id: str):
     except Exception as e:
         logger.error(f"Error getting conversation telemetry: {e}")
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Memory introspection — /api/debug/memstats
+#
+# Reports sizes of suspect in-memory caches / connection maps, plus optional
+# tracemalloc snapshots, gc object counts by type, and per-child-process
+# RSS (via psutil if installed).  Non-invasive: every probe is wrapped in
+# try/except so one broken import can't hide the rest.
+# ---------------------------------------------------------------------------
+
+
+def _safe_len(obj) -> int:
+    try:
+        return len(obj)
+    except Exception:
+        return -1
+
+
+def _deep_size(obj, seen=None, max_depth: int = 6, _depth: int = 0) -> int:
+    """
+    Recursive sys.getsizeof that follows dict/list/tuple/set/frozenset.
+    Bounded by identity-set (seen) and max_depth to avoid blowups on cycles
+    or pathological structures.  Best-effort — good enough to rank suspects
+    by order of magnitude, not exact.
+    """
+    if seen is None:
+        seen = set()
+    oid = id(obj)
+    if oid in seen:
+        return 0
+    seen.add(oid)
+    try:
+        size = sys.getsizeof(obj)
+    except Exception:
+        return 0
+    if _depth >= max_depth:
+        return size
+    try:
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                size += _deep_size(k, seen, max_depth, _depth + 1)
+                size += _deep_size(v, seen, max_depth, _depth + 1)
+        elif isinstance(obj, (list, tuple, set, frozenset)):
+            for item in obj:
+                size += _deep_size(item, seen, max_depth, _depth + 1)
+    except Exception:
+        pass
+    return size
+
+
+def _probe(label: str, getter):
+    """Run a probe safely; capture len + approximate deep size."""
+    try:
+        obj = getter()
+        if obj is None:
+            return {"label": label, "present": False}
+        n = _safe_len(obj)
+        size = _deep_size(obj)
+        return {
+            "label": label,
+            "present": True,
+            "count": n,
+            "bytes": size,
+            "mb": round(size / (1024 * 1024), 2),
+        }
+    except Exception as e:
+        return {"label": label, "present": False, "error": f"{type(e).__name__}: {e}"}
+
+
+@router.post('/api/debug/memstats/tracemalloc/start')
+async def memstats_tracemalloc_start(nframe: int = 10):
+    """Start tracemalloc tracing. Call this, let the server run, then
+    GET /api/debug/memstats to see top allocators."""
+    try:
+        if tracemalloc.is_tracing():
+            return {"status": "already_running",
+                    "nframe": tracemalloc.get_traceback_limit()}
+        tracemalloc.start(nframe)
+        return {"status": "started", "nframe": nframe}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@router.post('/api/debug/memstats/tracemalloc/stop')
+async def memstats_tracemalloc_stop():
+    try:
+        if not tracemalloc.is_tracing():
+            return {"status": "not_running"}
+        tracemalloc.stop()
+        return {"status": "stopped"}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@router.post('/api/debug/memstats/gc')
+async def memstats_force_gc():
+    """Force a full gc.collect() pass. Useful to distinguish uncollected
+    cycles from genuinely reachable memory."""
+    try:
+        before = sum(gc.get_count())
+        collected = gc.collect()
+        after = sum(gc.get_count())
+        return {"collected": collected,
+                "count_before": before,
+                "count_after": after}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@router.get('/api/debug/memstats')
+async def memstats(top: int = 25, by_type: int = 20):
+    """
+    Report process memory stats plus sizes of suspect in-memory structures.
+
+    Query params:
+      top     — tracemalloc top allocators to report (default 25)
+      by_type — gc object types to report by count (default 20)
+    """
+    report: Dict[str, Any] = {"timestamp": time.time()}
+
+    # ---- process RSS ------------------------------------------------------
+    try:
+        import resource
+        rss_raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        # On Linux ru_maxrss is KB; on macOS it's bytes. Report both.
+        report["process"] = {
+            "pid": os.getpid(),
+            "ru_maxrss_raw": rss_raw,
+            "ru_maxrss_mb_if_kb": round(rss_raw / 1024, 2),
+            "ru_maxrss_mb_if_bytes": round(rss_raw / (1024 * 1024), 2),
+        }
+    except Exception as e:
+        report["process"] = {"error": str(e)}
+
+    # psutil is optional but strongly recommended for per-child breakdown
+    try:
+        import psutil
+        p = psutil.Process(os.getpid())
+        mi = p.memory_info()
+        report["process"]["psutil_rss_mb"] = round(mi.rss / (1024 * 1024), 2)
+        report["process"]["psutil_vms_mb"] = round(mi.vms / (1024 * 1024), 2)
+        report["process"]["num_threads"] = p.num_threads()
+        report["process"]["num_fds"] = p.num_fds() if hasattr(p, "num_fds") else None
+
+        children = p.children(recursive=True)
+        report["process"]["num_children"] = len(children)
+        child_details = []
+        child_rss_total = 0
+        for c in children:
+            try:
+                cmi = c.memory_info()
+                child_rss_total += cmi.rss
+                child_details.append({
+                    "pid": c.pid,
+                    "name": c.name(),
+                    "rss_mb": round(cmi.rss / (1024 * 1024), 2),
+                    "cmdline": " ".join(c.cmdline()[:3]),
+                })
+            except Exception:
+                pass
+        report["process"]["children_rss_total_mb"] = round(child_rss_total / (1024 * 1024), 2)
+        report["process"]["children"] = sorted(child_details,
+                                               key=lambda c: -c.get("rss_mb", 0))
+    except ImportError:
+        report["process"]["psutil"] = "not installed (pip install psutil for per-child RSS)"
+    except Exception as e:
+        report["process"]["psutil_error"] = str(e)
+
+    # ---- suspect structure probes ----------------------------------------
+    probes = []
+
+    probes.append(_probe("server.active_feedback_connections",
+        lambda: __import__('app.server', fromlist=['active_feedback_connections']).active_feedback_connections))
+    probes.append(_probe("server.active_streams",
+        lambda: __import__('app.server', fromlist=['active_streams']).active_streams))
+    probes.append(_probe("server.active_file_tree_connections",
+        lambda: __import__('app.server', fromlist=['active_file_tree_connections']).active_file_tree_connections))
+
+    probes.append(_probe("delegate_stream_relay._active_connections",
+        lambda: __import__('app.agents.delegate_stream_relay', fromlist=['_active_connections'])._active_connections))
+
+    probes.append(_probe("directory_util._folder_cache",
+        lambda: __import__('app.utils.directory_util', fromlist=['_folder_cache'])._folder_cache))
+    probes.append(_probe("directory_util._token_cache",
+        lambda: __import__('app.utils.directory_util', fromlist=['_token_cache'])._token_cache))
+    probes.append(_probe("directory_util._accurate_token_cache",
+        lambda: __import__('app.utils.directory_util', fromlist=['_accurate_token_cache'])._accurate_token_cache))
+    probes.append(_probe("directory_util._ignored_patterns_cache",
+        lambda: __import__('app.utils.directory_util', fromlist=['_ignored_patterns_cache'])._ignored_patterns_cache))
+
+    probes.append(_probe("document_extractor._DOCUMENT_CACHE",
+        lambda: __import__('app.utils.document_extractor', fromlist=['_DOCUMENT_CACHE'])._DOCUMENT_CACHE))
+    probes.append(_probe("prompts_manager._prompt_cache",
+        lambda: __import__('app.agents.prompts_manager', fromlist=['_prompt_cache'])._prompt_cache))
+    probes.append(_probe("prompt_cache.PromptCache._cache",
+        lambda: __import__('app.utils.prompt_cache', fromlist=['get_prompt_cache']).get_prompt_cache()._cache))
+    probes.append(_probe("context_cache.cache_store",
+        lambda: __import__('app.utils.context_cache', fromlist=['get_context_cache_manager']).get_context_cache_manager().cache_store))
+
+    def _get_fsm_states():
+        import app.agents.agent as _agent
+        fsm = getattr(_agent, 'file_state_manager', None)
+        return fsm.conversation_states if fsm else None
+    probes.append(_probe("file_state_manager.conversation_states", _get_fsm_states))
+
+    def _get_fsm_diffs():
+        import app.agents.agent as _agent
+        fsm = getattr(_agent, 'file_state_manager', None)
+        return fsm.conversation_diffs if fsm else None
+    probes.append(_probe("file_state_manager.conversation_diffs", _get_fsm_diffs))
+
+    probes.append(_probe("streaming_tool_executor._global_usage_tracker.conversation_usages",
+        lambda: __import__('app.streaming_tool_executor', fromlist=['get_global_usage_tracker']).get_global_usage_tracker().conversation_usages))
+
+    probes.append(_probe("mcp.tools._conversation_tool_states",
+        lambda: __import__('app.mcp.tools', fromlist=['_conversation_tool_states'])._conversation_tool_states))
+
+    # AST enhancer caches
+    try:
+        mod = __import__('app.utils.ast_parser.integration', fromlist=['_enhancers'])
+        ast_report = {}
+        for root, enh in getattr(mod, '_enhancers', {}).items():
+            ast_cache = getattr(enh, 'ast_cache', {})
+            ast_report[root] = {
+                'ast_cache_entries': _safe_len(ast_cache),
+                'ast_cache_mb': round(_deep_size(ast_cache) / (1024 * 1024), 2),
+                'query_engines': _safe_len(getattr(enh, 'query_engines', {})),
+            }
+        report["ast_enhancers"] = ast_report
+    except Exception as e:
+        report["ast_enhancers"] = {"error": str(e)}
+
+    probes.sort(key=lambda p: p.get("bytes", 0) if p.get("present") else -1, reverse=True)
+    report["probes"] = probes
+
+    # ---- gc object counts by type ----------------------------------------
+    try:
+        type_counts: Counter = Counter()
+        for obj in gc.get_objects():
+            type_counts[type(obj).__name__] += 1
+        report["gc_top_types"] = type_counts.most_common(by_type)
+        report["gc_total_objects"] = sum(type_counts.values())
+    except Exception as e:
+        report["gc_top_types"] = {"error": str(e)}
+
+    # ---- tracemalloc top allocators --------------------------------------
+    try:
+        if tracemalloc.is_tracing():
+            snap = tracemalloc.take_snapshot()
+            stats = snap.statistics('lineno')[:top]
+            report["tracemalloc"] = {
+                "tracing": True,
+                "top": [
+                    {"file": str(s.traceback[0].filename) if s.traceback else None,
+                     "line": s.traceback[0].lineno if s.traceback else None,
+                     "size_mb": round(s.size / (1024 * 1024), 3),
+                     "count": s.count}
+                    for s in stats
+                ],
+            }
+        else:
+            report["tracemalloc"] = {
+                "tracing": False,
+                "hint": "POST /api/debug/memstats/tracemalloc/start to enable"}
+    except Exception as e:
+        report["tracemalloc"] = {"error": str(e)}
+
+    return report
 

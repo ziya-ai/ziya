@@ -48,6 +48,7 @@ export interface ModelCapabilities {
   supports_adaptive_thinking?: boolean;
   is_advanced_model?: boolean;  // Opus-class models that support max effort
   thinking_effort_default?: string;  // Default thinking effort for Claude 4.6+
+  supported_efforts?: string[];  // Which effort levels the model supports
 }
 
 const DEFAULT_SETTINGS: ModelSettings = {
@@ -551,12 +552,23 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
             name="thinking_effort"
           >
             <Select>
-              <Select.Option value="low">Low (fastest, minimal reasoning)</Select.Option>
-              <Select.Option value="medium">Medium (recommended for coding)</Select.Option>
-              <Select.Option value="high">High (deeper reasoning, slower)</Select.Option>
-              {selectedModelCapabilities?.is_advanced_model && (
-                <Select.Option value="max">Max (deepest reasoning)</Select.Option>
-              )}
+              {(selectedModelCapabilities?.supported_efforts
+                || capabilities?.supported_efforts
+                || ['low', 'medium', 'high', ...(selectedModelCapabilities?.is_advanced_model ? ['max'] : [])]
+              ).map((effort: string) => {
+                const labels: Record<string, string> = {
+                  low: 'Low (fastest, minimal reasoning)',
+                  medium: 'Medium (recommended for coding)',
+                  high: 'High (deeper reasoning, slower)',
+                  xhigh: 'Extra High (very deep reasoning)',
+                  max: 'Max (deepest reasoning)',
+                };
+                return (
+                  <Select.Option key={effort} value={effort}>
+                    {labels[effort] || effort}
+                  </Select.Option>
+                );
+              })}
             </Select>
           </Form.Item>
         )}
