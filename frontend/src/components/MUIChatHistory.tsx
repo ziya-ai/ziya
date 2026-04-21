@@ -2318,8 +2318,43 @@ const MUIChatHistory = () => {
     const safeFolders = folders.filter(Boolean);
     const safeConversations = conversations.filter(Boolean);
 
+    // Guard against building a tree before folders have synced. If we have
+    // conversations but zero folders, the server/IDB load is still in flight:
+    // a full rebuild now would produce a conversations-only tree that would
+    // then match the structural hash on every subsequent render and freeze.
+    // Return whatever prior tree we had (or empty) WITHOUT updating cache refs,
+    // so the next render — once folders arrive — rebuilds normally.
+    if (safeFolders.length === 0 && safeConversations.length > 0) {
+      return lastTreeDataRef.current.length > 0 ? lastTreeDataRef.current : [];
+    }
+
     // Two-level hash: structural (folder/conversation identity) vs sort
     // (activity times that only affect display order).  When only sort
+    // Guard against a cached tree that was built with incomplete inputs.
+    // If a previous render ran the full-rebuild path while folders were
+    // still mid-sync (e.g. folders=0 on first paint, or a transitional
+    // SERVER_SYNC state), that build produced a tree missing folder nodes.
+    // The result then gets frozen: structural hash matches on every
+    // subsequent render and the fast-exit keeps returning the stale tree.
+    // Detect the discrepancy (fewer folder nodes cached than inputs
+    // currently provide) and invalidate so fast-exit and sort-only fall
+    // through to a full rebuild on this render.
+    if (lastTreeDataRef.current.length > 0 && safeFolders.length > 0) {
+      let cachedFolderCount = 0;
+      const countFolders = (nodes: any[], _d = 0): void => {
+        if (_d > 20) return;
+        for (const n of nodes) {
+          if (n.folder) cachedFolderCount++;
+          if (n.children) countFolders(n.children, _d + 1);
+        }
+      };
+      countFolders(lastTreeDataRef.current);
+      if (cachedFolderCount < safeFolders.length) {
+        lastTreeDataInputsRef.current = 0;
+        lastSortHashRef.current = 0;
+        lastTreeDataRef.current = [];
+      }
+    }
     // fields change we skip the expensive tree assembly and only re-sort.
     const fnv1a = () => {
       let h = 0x811c9dc5;
@@ -2754,6 +2789,18 @@ const MUIChatHistory = () => {
     lastSortHashRef.current = sortHash;
 
     lastTreeDataRef.current = result;
+    // Observability: log every cache write with folder coverage. If a future
+    // tree-display regression reoccurs, grep for [TREE-CACHE-WRITE] entries
+    // where reachableFolders < safeFolders.length — that is a partial build
+    // that would otherwise freeze via structural-hash match.
+    let _reachable = 0;
+    const _walkCount = (nodes: any[], _d = 0): void => {
+      if (_d > 30) return;
+      for (const n of nodes) { if (n?.folder) _reachable++; if (n?.children?.length) _walkCount(n.children, _d + 1); }
+    };
+    _walkCount(result);
+    // eslint-disable-next-line no-console
+    console.debug('[TREE-CACHE-WRITE]', { folders: safeFolders.length, convs: safeConversations.length, resultLen: result.length, reachableFolders: _reachable });
 
     // POST-RENDER CHECKPOINT: If we get here, the tree built successfully
     try {
