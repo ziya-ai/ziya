@@ -110,20 +110,20 @@ const normalizeDrawIOXml = (xml: string): string => {
     // Strategy: Find patterns like ="#hexcolor" or ="number" within what looks like
     // a style context (preceded by a style key like fillColor, strokeColor, etc.)
     // and remove the quotes around the value
-    
+
     // Fix quoted hex colors: fillColor="#fff9c4" -> fillColor=#fff9c4
     // This pattern looks for colorKeyword="# and removes the quotes
     normalized = normalized.replace(
         /(\w*[Cc]olor\w*)="(#[0-9a-fA-F]{3,8})"/g,
         '$1=$2'
     );
-    
+
     // Fix quoted numbers: fontSize="16" -> fontSize=16 (within style context)
     normalized = normalized.replace(
         /(fontSize|strokeWidth|opacity|spacing\w*)="(\d+)"/g,
         '$1=$2'
     );
-    
+
     console.log('📐 DrawIO: Removed over-quoted values in style attributes');
 
     // Fix unquoted XML tag-level attributes (e.g. vertex=1 -> vertex="1")
@@ -440,28 +440,28 @@ const createControls = (container: HTMLElement, spec: DrawIOSpec, xml: string, i
     editBtn.innerHTML = '✏️ Edit';
     editBtn.className = 'diagram-action-button';
     editBtn.title = 'Enable editing mode with grid';
-    
+
     let isEditMode = false;
-    
+
     editBtn.onclick = () => {
         if (!graph) return;
-        
+
         isEditMode = !isEditMode;
-        
+
         const graphContainer = container.querySelector('.drawio-graph-container') as HTMLElement;
-        
+
         if (isEditMode) {
             // Enable edit mode
             editBtn.innerHTML = '👁️ View';
             editBtn.title = 'Exit editing mode';
-            
+
             // Enable graph interaction
             graph.setEnabled(true);
             graph.setConnectable(true);
-            
+
             // Enable grid
             graph.view.gridEnabled = true;
-            
+
             // Set background to show grid properly
             if (graphContainer) {
                 graphContainer.style.background = isDarkMode ? '#0d1117' : '#ffffff';
@@ -472,45 +472,61 @@ const createControls = (container: HTMLElement, spec: DrawIOSpec, xml: string, i
                 `;
                 graphContainer.style.backgroundSize = '10px 10px';
             }
-            
+
             // Enable snap to grid
             graph.setGridEnabled(true);
             graph.setGridSize(10);
-            
+
             // Allow moving and resizing
             graph.setCellsMovable(true);
             graph.setCellsResizable(true);
-            
+
             console.log('📐 DrawIO: Edit mode ENABLED');
         } else {
             // Disable edit mode
             editBtn.innerHTML = '✏️ Edit';
             editBtn.title = 'Enable editing mode with grid';
-            
+
             // Disable graph interaction
             graph.setEnabled(false);
             graph.setConnectable(false);
-            
+
             // Disable grid
             graph.view.gridEnabled = false;
-            
+
             // Restore transparent background
             if (graphContainer) {
                 graphContainer.style.background = 'transparent';
                 graphContainer.style.backgroundImage = 'none';
             }
-            
+
             // Disable snap to grid
             graph.setGridEnabled(false);
-            
+
             // Disable moving and resizing
             graph.setCellsMovable(false);
             graph.setCellsResizable(false);
-            
+
             console.log('📐 DrawIO: Edit mode DISABLED');
         }
-        
+
         graph.refresh();
+
+        // graph.refresh() revalidates the view and rewrites every cell's
+        // SVG, which wipes the text-cell CSS margin-left corrections applied
+        // by DrawIOEnhancer.forceTextCellPositioning. Re-apply them after the
+        // refresh settles, on the next tick and again briefly after, so the
+        // text cells keep their corrected positions when toggling edit mode.
+        const svg = graphContainer?.querySelector('svg') as SVGSVGElement | null;
+        if (svg) {
+            setTimeout(() => DrawIOEnhancer.forceTextCellPositioning(svg, graph), 0);
+            setTimeout(() => DrawIOEnhancer.forceTextCellPositioning(svg, graph), 50);
+            // Also re-apply the main enhancer so container-label clamps
+            // (e.g. the trust-boundary outline label) get restored after
+            // maxGraph's refresh wipes them.
+            setTimeout(() => DrawIOEnhancer.fixAllForeignObjects(svg, graph), 0);
+            setTimeout(() => DrawIOEnhancer.fixAllForeignObjects(svg, graph), 50);
+        }
     };
 
     // Open button - pop out diagram into its own resizable window
@@ -527,12 +543,34 @@ const createControls = (container: HTMLElement, spec: DrawIOSpec, xml: string, i
 
         // Clone so we don't mutate the on-page SVG
         const svgClone = svgEl.cloneNode(true) as SVGSVGElement;
-        // Ensure it scales responsively in the popup
+
+        // Ensure the SVG has a viewBox so it can scale responsively.
+        // mxGraph-rendered SVGs typically use absolute width/height with no viewBox,
+        // which prevents CSS-based scaling.
+        if (!svgClone.getAttribute('viewBox')) {
+            let vbW = 0, vbH = 0;
+            const wAttr = parseFloat(svgEl.getAttribute('width') || '');
+            const hAttr = parseFloat(svgEl.getAttribute('height') || '');
+            if (isFinite(wAttr) && isFinite(hAttr) && wAttr > 0 && hAttr > 0) {
+                vbW = wAttr; vbH = hAttr;
+            } else {
+                try {
+                    const bbox = (svgEl as any).getBBox();
+                    vbW = bbox.width || svgEl.clientWidth || 800;
+                    vbH = bbox.height || svgEl.clientHeight || 600;
+                } catch {
+                    vbW = svgEl.clientWidth || 800;
+                    vbH = svgEl.clientHeight || 600;
+                }
+            }
+            svgClone.setAttribute('viewBox', `0 0 ${vbW} ${vbH}`);
+        }
         svgClone.setAttribute('preserveAspectRatio', 'xMidYMid meet');
         svgClone.removeAttribute('width');
         svgClone.removeAttribute('height');
         svgClone.style.width = '100%';
         svgClone.style.height = '100%';
+        svgClone.style.display = 'block';
 
         const svgData = new XMLSerializer().serializeToString(svgClone);
         const title = (spec.title || 'DrawIO Diagram').replace(/[<>]/g, '');
@@ -553,10 +591,13 @@ const createControls = (container: HTMLElement, spec: DrawIOSpec, xml: string, i
   .toolbar button { background:#1890ff; color:#fff; border:none; border-radius:4px;
     padding:6px 12px; cursor:pointer; font-size:13px; }
   .toolbar button:hover { background:#40a9ff; }
-  .container { flex:1; overflow:auto; display:flex; align-items:center;
-    justify-content:center; padding:20px; }
-  #viewport { transform-origin: center center; transition: transform 0.15s ease; }
-  #viewport svg { max-width:100%; max-height:100%; display:block; }
+  .container { flex:1; overflow:auto; position:relative; }
+  /* Viewport grows with zoom so container's overflow:auto gives real scroll
+     area to pan against. At scale=1 it fills the container exactly. */
+  #viewport { width:100%; height:100%; min-width:100%; min-height:100%;
+    display:flex; align-items:center; justify-content:center; padding:20px;
+    box-sizing:border-box; transition: width 0.15s ease, height 0.15s ease; }
+  #viewport svg { width:100%; height:100%; display:block; }
 </style></head>
 <body>
   <div class="toolbar">
@@ -570,7 +611,31 @@ const createControls = (container: HTMLElement, spec: DrawIOSpec, xml: string, i
   <script>
     let scale = 1;
     const vp = document.getElementById('viewport');
-    function apply() { vp.style.transform = 'scale(' + scale + ')'; }
+    const container = document.querySelector('.container');
+    // Click-and-drag panning
+    let isDown = false, sx = 0, sy = 0, sl = 0, st = 0;
+    container.style.cursor = 'grab';
+    container.addEventListener('mousedown', function(e) {
+      if (e.button !== 0) return;
+      if (e.target.closest('button')) return;
+      isDown = true; sx = e.pageX; sy = e.pageY;
+      sl = container.scrollLeft; st = container.scrollTop;
+      container.style.cursor = 'grabbing';
+      e.preventDefault();
+    });
+    window.addEventListener('mouseup', function() {
+      if (!isDown) return; isDown = false; container.style.cursor = 'grab';
+    });
+    window.addEventListener('mousemove', function(e) {
+      if (!isDown) return;
+      container.scrollLeft = sl - (e.pageX - sx);
+      container.scrollTop = st - (e.pageY - sy);
+    });
+    function apply() {
+      const pct = (scale * 100) + '%';
+      vp.style.width = pct;
+      vp.style.height = pct;
+    }
     function zoomIn() { scale = Math.min(scale * 1.2, 10); apply(); }
     function zoomOut() { scale = Math.max(scale / 1.2, 0.1); apply(); }
     function resetZoom() { scale = 1; apply(); }
@@ -705,7 +770,7 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
             min-height: 600px;
             background: transparent;
             border: 1px solid ${isDarkMode ? '#30363d88' : '#d0d7de88'};;
-            overflow: hidden;
+            overflow: auto;
         `;
 
             // Parse the XML
@@ -833,8 +898,12 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
             if (maxGraphModule.constants) {
                 maxGraphModule.constants.STYLE_IMAGE = null;
             }
-            graph.collapsedImage = null;
-            graph.expandedImage = null;
+            // Read-only viewer: disable folding entirely.  This stops
+            // CellRenderer from emitting the collapse/expand <image>
+            // elements at all, which avoids the /collapsed.gif and
+            // /expanded.gif requests (maxGraph's Client.imageBasePath
+            // defaults to '.', so those resolve to the page root).
+            if (graph.options) graph.options.foldingEnabled = false;
 
             // Configure graph for read-only viewing
             graph.setEnabled(false); // Disable editing
@@ -884,9 +953,10 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
             defaultEdgeStyle['startSize'] = 3;
             defaultEdgeStyle['strokeWidth'] = 1.5;
 
-            // Edge label defaults for readability
-            defaultEdgeStyle['labelBackgroundColor'] = '#ffffff';
-            defaultEdgeStyle['labelBorderColor'] = '#333333';
+            // Edge labels: no white background (obscures the line behind
+            // them). Rely on font contrast against the diagram background.
+            defaultEdgeStyle['labelBackgroundColor'] = 'none';
+            defaultEdgeStyle['labelBorderColor'] = 'none';
             defaultEdgeStyle['align'] = 'center';
             defaultEdgeStyle['verticalAlign'] = 'middle';
             defaultEdgeStyle['spacingTop'] = 6;
@@ -1029,10 +1099,11 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                                     styleObj['startSize'] = 3;
                                 }
 
-                                // Edge label readability
-                                if (!styleObj['labelBackgroundColor']) {
-                                    styleObj['labelBackgroundColor'] = '#ffffff';
-                                }
+                                // Remove author's labelBackgroundColor if
+                                // set — we don't want white backgrounds
+                                // blocking the line behind labels.
+                                delete styleObj['labelBackgroundColor'];
+                                delete styleObj['labelBorderColor'];
                                 styleObj['spacingTop'] = styleObj['spacingTop'] || 2;
                                 styleObj['spacingBottom'] = styleObj['spacingBottom'] || 2;
                                 styleObj['spacingLeft'] = styleObj['spacingLeft'] || 4;
@@ -1050,10 +1121,10 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                             if (styleObj['fillColor'] && styleObj['fillColor'] !== 'none') {
                                 const fillColor = styleObj['fillColor'];
                                 const fontColor = styleObj['fontColor'];
-                                
+
                                 // Calculate optimal text color for this background
                                 const optimalColor = getOptimalTextColor(fillColor);
-                                
+
                                 // ALWAYS verify contrast ratio - don't trust LLM-provided fontColor
                                 const contrast = fontColor ? calculateContrastRatio(fontColor, fillColor) : 0;
                                 const needsFix = !fontColor || contrast < 3.0;
@@ -1065,7 +1136,7 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                                 // No fill color - use theme-based default
                                 styleObj['fontColor'] = isDarkMode ? '#e0e0e0' : '#000000';
                             }
-                            
+
                             // Special handling for swimlanes (only for actual vertex cells)
                             if (vertex && styleObj['fillColor']) {
                                 if (isSwimlane) {
@@ -1385,440 +1456,302 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                 }
 
                 if (!hasExplicitLayout) {
-                // --- BEGIN auto-layout-only section (placement optimizer + router) ---
+                    // --- BEGIN auto-layout-only section (placement optimizer + router) ---
 
-                console.log('📐 PLACEMENT: Optimizing shape positions within containers (auto-layout)');
+                    console.log('📐 PLACEMENT: Optimizing shape positions within containers (auto-layout)');
 
-                // Group vertices by parent and Y-position (row)
-                const containerRows = new Map<string, Map<number, Array<{ id: string, cell: any, geom: any }>>>();
+                    // Group vertices by parent and Y-position (row)
+                    const containerRows = new Map<string, Map<number, Array<{ id: string, cell: any, geom: any }>>>();
 
-                vertexCells.forEach(({ id }) => {
-                    const cell = cellMap.get(id);
-                    if (!cell) return;
-                    const geom = cell.getGeometry();
-                    if (!geom) return;
-
-                    // Skip containers themselves
-                    const style = cell.getStyle();
-                    if (style && (style['swimlane'] || style['container'])) return;
-
-                    const parent = cell.getParent();
-                    const parentId = parent?.getId() || 'root';
-
-                    if (!containerRows.has(parentId)) {
-                        containerRows.set(parentId, new Map());
-                    }
-                    const rows = containerRows.get(parentId)!;
-
-                    const rowKey = Math.round(geom.y / 30) * 30; // Group within 30px
-                    if (!rows.has(rowKey)) rows.set(rowKey, []);
-                    rows.get(rowKey)!.push({ id, cell, geom });
-                });
-
-                // Optimize each row in each container
-                containerRows.forEach((rows, parentId) => {
-                    rows.forEach((rowShapes, rowY) => {
-                        if (rowShapes.length <= 1) return;
-
-                        // Calculate optimal X position for each shape based on connections
-                        const optimalX = new Map<string, number>();
-
-                        rowShapes.forEach(({ id, cell }) => {
-                            const xPositions: number[] = [];
-                            const weights: number[] = [];
-
-                            // Find all edges and calculate where they connect
-                            edgeCells.forEach(({ element }) => {
-                                const sourceId = element.getAttribute('source');
-                                const targetId = element.getAttribute('target');
-
-                                if (sourceId === id && targetId) {
-                                    const target = cellMap.get(targetId);
-                                    if (target) {
-                                        // Calculate absolute X
-                                        let absX = 0;
-                                        let current = target;
-                                        while (current && current.getId() !== '0') {
-                                            const g = current.getGeometry();
-                                            if (g) {
-                                                // For calculating position, use center X
-                                                if (current === target) {
-                                                    absX += g.x + g.width / 2;
-                                                } else {
-                                                    // Parent container offset
-                                                    absX += g.x;
-                                                }
-                                            }
-                                            current = current.getParent();
-                                            if (current && (current.getId() === '0' || current.getId() === '1')) break;
-                                        }
-
-                                        // Weight vertical connections more heavily (they benefit most from alignment)
-                                        const targetParent = target.getParent()?.getId();
-                                        const sourceParent = cell.getParent()?.getId();
-                                        const weight = targetParent !== sourceParent ? 3.0 : 1.0; // Cross-container edges weighted 3x
-
-                                        xPositions.push(absX);
-                                        weights.push(weight);
-                                    }
-                                } else if (targetId === id && sourceId) {
-                                    const source = cellMap.get(sourceId);
-                                    if (source) {
-                                        let absX = 0;
-                                        let current = source;
-                                        while (current && current.getId() !== '0') {
-                                            const g = current.getGeometry();
-                                            if (g) {
-                                                if (current === source) {
-                                                    absX += g.x + g.width / 2;
-                                                } else {
-                                                    absX += g.x;
-                                                }
-                                            }
-                                            current = current.getParent();
-                                            if (current && (current.getId() === '0' || current.getId() === '1')) break;
-                                        }
-
-                                        const sourceParent = source.getParent()?.getId();
-                                        const targetParent = cell.getParent()?.getId();
-                                        const weight = sourceParent !== targetParent ? 3.0 : 1.0;
-
-                                        xPositions.push(absX);
-                                        weights.push(weight);
-                                    }
-                                }
-                            });
-
-                            // Set optimal X as average of connections, or keep current if no connections
-                            // Use weighted average to prioritize cross-container vertical connections
-                            if (xPositions.length > 0) {
-                                const weightedSum = xPositions.reduce((sum, x, i) => sum + x * weights[i], 0);
-                                const totalWeight = weights.reduce((a, b) => a + b, 0);
-                                optimalX.set(id, weightedSum / totalWeight);
-
-                                console.log(`📐 PLACEMENT: ${id} connection analysis:`, {
-                                    connections: xPositions.map((x, i) => ({ x: x.toFixed(1), weight: weights[i] })),
-                                    optimalX: (weightedSum / totalWeight).toFixed(1)
-                                });
-                            } else {
-                                optimalX.set(id, rowShapes.find(s => s.id === id)!.geom.x);
-                            }
-                        });
-
-                        // Sort by optimal X
-                        const sorted = [...rowShapes].sort((a, b) =>
-                            (optimalX.get(a.id) || 0) - (optimalX.get(b.id) || 0)
-                        );
-
-                        // Get existing X positions (sorted) to redistribute
-                        const existingXPositions = rowShapes.map(s => s.geom.x).sort((a, b) => a - b);
-
-                        // Assign new positions
-                        sorted.forEach((shape, idx) => {
-                            const oldX = shape.geom.x;
-                            const newX = existingXPositions[idx];
-                            if (Math.abs(oldX - newX) > 5) {
-                                console.log(`📐 PLACEMENT: ${shape.id} x: ${oldX.toFixed(1)} → ${newX.toFixed(1)} (optimal: ${optimalX.get(shape.id)?.toFixed(1)})`);
-                                shape.geom.x = newX;
-                                shape.cell.setGeometry(shape.geom);
-                            }
-                        });
-                    });
-                });
-
-                console.log('✅ PLACEMENT: Optimization complete');
-
-                // ROUTER: Orthogonal connector helper types and functions
-                interface Rect {
-                    left: number;
-                    top: number;
-                    width: number;
-                    height: number;
-                }
-
-                type Side = 'top' | 'right' | 'bottom' | 'left';
-
-                interface Point {
-                    x: number;
-                    y: number;
-                }
-
-                interface ConnectionPoint {
-                    shape: Rect;
-                    side: Side;
-                    distance: number;
-                }
-
-                /**
-                 * Determine optimal sides for connecting two shapes
-                 */
-                const getOptimalSide = (sourceRect: Rect, targetRect: Rect): { sourceSide: Side, targetSide: Side } => {
-                    const sourceCenterX = sourceRect.left + sourceRect.width / 2;
-                    const sourceCenterY = sourceRect.top + sourceRect.height / 2;
-                    const targetCenterX = targetRect.left + targetRect.width / 2;
-                    const targetCenterY = targetRect.top + targetRect.height / 2;
-
-                    const dx = targetCenterX - sourceCenterX;
-                    const dy = targetCenterY - sourceCenterY;
-                    
-                    const absDx = Math.abs(dx);
-                    const absDy = Math.abs(dy);
-
-                    // Prefer vertical routing when:
-                    // 1. Shapes are horizontally aligned (small dx), OR
-                    // 2. Vertical distance is significantly larger than horizontal (ratio > 0.6)
-                    const isVerticallyAligned = absDx < 30;
-                    const isVerticalDominant = absDy > 0 && (absDy / (absDx + absDy)) > 0.6;
-                    const isHorizontal = !isVerticallyAligned && !isVerticalDominant && absDx > absDy;
-
-                    if (isHorizontal) {
-                        return {
-                            sourceSide: dx > 0 ? 'right' : 'left',
-                            targetSide: dx > 0 ? 'left' : 'right'
-                        };
-                    } else {
-                        return {
-                            sourceSide: dy > 0 ? 'bottom' : 'top',
-                            targetSide: dy > 0 ? 'top' : 'bottom'
-                        };
-                    }
-                };
-
-                /**
-                 * Get the connection point on a shape's edge
-                 */
-                const getConnectionPoint = (cp: ConnectionPoint): Point => {
-                    const { shape, side, distance } = cp;
-
-                    switch (side) {
-                        case 'top':
-                            return { x: shape.left + shape.width * distance, y: shape.top };
-                        case 'right':
-                            return { x: shape.left + shape.width, y: shape.top + shape.height * distance };
-                        case 'bottom':
-                            return { x: shape.left + shape.width * distance, y: shape.top + shape.height };
-                        case 'left':
-                            return { x: shape.left, y: shape.top + shape.height * distance };
-                    }
-                };
-
-                /**
-                 * Route an orthogonal connector with obstacle avoidance
-                 */
-                const routeOrthogonalConnector = (config: {
-                    pointA: ConnectionPoint;
-                    pointB: ConnectionPoint;
-                    obstacles: Rect[];
-                    shapeMargin: number;
-                }): Point[] => {
-                    const { pointA, pointB, shapeMargin } = config;
-
-                    const startPoint = getConnectionPoint(pointA);
-                    const endPoint = getConnectionPoint(pointB);
-
-                    // Simple 2-segment orthogonal routing
-                    // Start -> intermediate point -> End
-                    const waypoints: Point[] = [startPoint];
-
-                    // Determine intermediate point based on start and end sides
-                    const isStartHorizontal = pointA.side === 'left' || pointA.side === 'right';
-                    const isEndHorizontal = pointB.side === 'left' || pointB.side === 'right';
-
-                    if (isStartHorizontal && !isEndHorizontal) {
-                        // Start horizontal, end vertical: intermediate at (end.x, start.y)
-                        const intermediateX = endPoint.x;
-                        const intermediateY = startPoint.y;
-
-                        // Add intermediate waypoint if not collinear
-                        if (Math.abs(intermediateX - startPoint.x) > 1 && Math.abs(intermediateY - endPoint.y) > 1) {
-                            waypoints.push({ x: intermediateX, y: intermediateY });
-                        }
-                    } else if (!isStartHorizontal && isEndHorizontal) {
-                        // Start vertical, end horizontal: intermediate at (start.x, end.y)
-                        const intermediateX = startPoint.x;
-                        const intermediateY = endPoint.y;
-
-                        if (Math.abs(intermediateX - endPoint.x) > 1 && Math.abs(intermediateY - startPoint.y) > 1) {
-                            waypoints.push({ x: intermediateX, y: intermediateY });
-                        }
-                    } else if (isStartHorizontal && isEndHorizontal) {
-                        // Both horizontal: need 3-segment path
-                        const midX = (startPoint.x + endPoint.x) / 2;
-
-                        if (Math.abs(midX - startPoint.x) > 1) {
-                            waypoints.push({ x: midX, y: startPoint.y });
-                        }
-                        if (Math.abs(midX - endPoint.x) > 1 && Math.abs(startPoint.y - endPoint.y) > 1) {
-                            waypoints.push({ x: midX, y: endPoint.y });
-                        }
-                    } else {
-                        // Both vertical: need 3-segment path
-                        const midY = (startPoint.y + endPoint.y) / 2;
-
-                        if (Math.abs(midY - startPoint.y) > 1) {
-                            waypoints.push({ x: startPoint.x, y: midY });
-                        }
-                        if (Math.abs(midY - endPoint.y) > 1 && Math.abs(startPoint.x - endPoint.x) > 1) {
-                            waypoints.push({ x: endPoint.x, y: midY });
-                        }
-                    }
-
-                    waypoints.push(endPoint);
-
-                    // Remove duplicate consecutive points
-                    const cleaned: Point[] = [waypoints[0]];
-                    for (let i = 1; i < waypoints.length; i++) {
-                        const prev = waypoints[i - 1];
-                        const curr = waypoints[i];
-                        if (Math.abs(curr.x - prev.x) > 0.1 || Math.abs(curr.y - prev.y) > 0.1) {
-                            cleaned.push(curr);
-                        }
-                    }
-
-                    return cleaned;
-                };
-
-                console.log('📐 ROUTER: Using OrthogonalConnector for edge routing');
-
-                // Helper to get absolute geometry
-                const getAbsoluteGeometry = (cell: any) => {
-                    const geom = cell.getGeometry();
-                    if (!geom) return null;
-
-                    let absX = geom.x;
-                    let absY = geom.y;
-
-                    let parent = cell.getParent();
-                    while (parent && parent.getId() !== '0' && parent.getId() !== '1') {
-                        const parentGeom = parent.getGeometry();
-                        if (parentGeom) {
-                            absX += parentGeom.x;
-                            absY += parentGeom.y;
-                        }
-                        parent = parent.getParent();
-                    }
-
-                    return { x: absX, y: absY, width: geom.width, height: geom.height };
-                };
-
-                // Build list of all shapes (for obstacle avoidance)
-                const allShapes: Rect[] = [];
-                cellMap.forEach((cell, id) => {
-                    if (id === '0' || id === '1') return;
-                    if (cell.isVertex()) {
-                        const absGeom = getAbsoluteGeometry(cell);
-                        if (absGeom) {
-                            allShapes.push({
-                                left: absGeom.x,
-                                top: absGeom.y,
-                                width: absGeom.width,
-                                height: absGeom.height
-                            });
-                        }
-                    }
-                });
-
-                console.log(`📐 ROUTER: Found ${allShapes.length} shapes for obstacle avoidance`);
-
-                // Route each edge
-                model.beginUpdate();
-                try {
-                    edgeCells.forEach(({ id }) => {
+                    vertexCells.forEach(({ id }) => {
                         const cell = cellMap.get(id);
                         if (!cell) return;
+                        const geom = cell.getGeometry();
+                        if (!geom) return;
 
-                        const source = cell.getTerminal(true);
-                        const target = cell.getTerminal(false);
-                        if (!source || !target) return;
+                        // Skip containers themselves
+                        const style = cell.getStyle();
+                        if (style && (style['swimlane'] || style['container'])) return;
 
-                        const sourceGeom = getAbsoluteGeometry(source);
-                        const targetGeom = getAbsoluteGeometry(target);
-                        if (!sourceGeom || !targetGeom) return;
+                        const parent = cell.getParent();
+                        const parentId = parent?.getId() || 'root';
 
-                        // Determine optimal connection sides
-                        const { sourceSide, targetSide } = getOptimalSide(
-                            { left: sourceGeom.x, top: sourceGeom.y, width: sourceGeom.width, height: sourceGeom.height },
-                            { left: targetGeom.x, top: targetGeom.y, width: targetGeom.width, height: targetGeom.height }
-                        );
+                        if (!containerRows.has(parentId)) {
+                            containerRows.set(parentId, new Map());
+                        }
+                        const rows = containerRows.get(parentId)!;
 
-                        // Filter obstacles to exclude source and target
-                        const obstacles = allShapes.filter(shape => {
-                            return !(shape.left === sourceGeom.x && shape.top === sourceGeom.y) &&
-                                !(shape.left === targetGeom.x && shape.top === targetGeom.y);
-                        });
+                        const rowKey = Math.round(geom.y / 30) * 30; // Group within 30px
+                        if (!rows.has(rowKey)) rows.set(rowKey, []);
+                        rows.get(rowKey)!.push({ id, cell, geom });
+                    });
 
-                        // Route the connector
-                        const waypoints = routeOrthogonalConnector({
-                            pointA: {
-                                shape: { left: sourceGeom.x, top: sourceGeom.y, width: sourceGeom.width, height: sourceGeom.height },
-                                side: sourceSide,
-                                distance: 0.5
-                            },
-                            pointB: {
-                                shape: { left: targetGeom.x, top: targetGeom.y, width: targetGeom.width, height: targetGeom.height },
-                                side: targetSide,
-                                distance: 0.5
-                            },
-                            obstacles,
-                            shapeMargin: 20
-                        });
+                    // Optimize each row in each container
+                    containerRows.forEach((rows, parentId) => {
+                        rows.forEach((rowShapes, rowY) => {
+                            if (rowShapes.length <= 1) return;
 
-                        if (waypoints.length >= 2) {
-                            const geometry = cell.getGeometry();
-                            if (geometry) {
-                                const points = waypoints.map(wp => new Point(wp.x, wp.y));
+                            // Calculate optimal X position for each shape based on connections
+                            const optimalX = new Map<string, number>();
 
-                                geometry.points = points;
-                                geometry.relative = false;
-                                geometry.setTerminalPoint(null, true);
-                                geometry.setTerminalPoint(null, false);
-                                cell.setGeometry(geometry);
+                            rowShapes.forEach(({ id, cell }) => {
+                                const xPositions: number[] = [];
+                                const weights: number[] = [];
 
-                                // Update view state
-                                const viewState = graph.view.getState(cell);
-                                if (viewState) {
-                                    viewState.absolutePoints = points;
+                                // Find all edges and calculate where they connect
+                                edgeCells.forEach(({ element }) => {
+                                    const sourceId = element.getAttribute('source');
+                                    const targetId = element.getAttribute('target');
+
+                                    if (sourceId === id && targetId) {
+                                        const target = cellMap.get(targetId);
+                                        if (target) {
+                                            // Calculate absolute X
+                                            let absX = 0;
+                                            let current = target;
+                                            while (current && current.getId() !== '0') {
+                                                const g = current.getGeometry();
+                                                if (g) {
+                                                    // For calculating position, use center X
+                                                    if (current === target) {
+                                                        absX += g.x + g.width / 2;
+                                                    } else {
+                                                        // Parent container offset
+                                                        absX += g.x;
+                                                    }
+                                                }
+                                                current = current.getParent();
+                                                if (current && (current.getId() === '0' || current.getId() === '1')) break;
+                                            }
+
+                                            // Weight vertical connections more heavily (they benefit most from alignment)
+                                            const targetParent = target.getParent()?.getId();
+                                            const sourceParent = cell.getParent()?.getId();
+                                            const weight = targetParent !== sourceParent ? 3.0 : 1.0; // Cross-container edges weighted 3x
+
+                                            xPositions.push(absX);
+                                            weights.push(weight);
+                                        }
+                                    } else if (targetId === id && sourceId) {
+                                        const source = cellMap.get(sourceId);
+                                        if (source) {
+                                            let absX = 0;
+                                            let current = source;
+                                            while (current && current.getId() !== '0') {
+                                                const g = current.getGeometry();
+                                                if (g) {
+                                                    if (current === source) {
+                                                        absX += g.x + g.width / 2;
+                                                    } else {
+                                                        absX += g.x;
+                                                    }
+                                                }
+                                                current = current.getParent();
+                                                if (current && (current.getId() === '0' || current.getId() === '1')) break;
+                                            }
+
+                                            const sourceParent = source.getParent()?.getId();
+                                            const targetParent = cell.getParent()?.getId();
+                                            const weight = sourceParent !== targetParent ? 3.0 : 1.0;
+
+                                            xPositions.push(absX);
+                                            weights.push(weight);
+                                        }
+                                    }
+                                });
+
+                                // Set optimal X as average of connections, or keep current if no connections
+                                // Use weighted average to prioritize cross-container vertical connections
+                                if (xPositions.length > 0) {
+                                    const weightedSum = xPositions.reduce((sum, x, i) => sum + x * weights[i], 0);
+                                    const totalWeight = weights.reduce((a, b) => a + b, 0);
+                                    optimalX.set(id, weightedSum / totalWeight);
+
+                                    console.log(`📐 PLACEMENT: ${id} connection analysis:`, {
+                                        connections: xPositions.map((x, i) => ({ x: x.toFixed(1), weight: weights[i] })),
+                                        optimalX: (weightedSum / totalWeight).toFixed(1)
+                                    });
+                                } else {
+                                    optimalX.set(id, rowShapes.find(s => s.id === id)!.geom.x);
                                 }
+                            });
 
-                                console.log(`📐 ROUTER: Edge ${id} routed with ${waypoints.length} waypoints`);
+                            // Sort by optimal X
+                            const sorted = [...rowShapes].sort((a, b) =>
+                                (optimalX.get(a.id) || 0) - (optimalX.get(b.id) || 0)
+                            );
+
+                            // Get existing X positions (sorted) to redistribute
+                            const existingXPositions = rowShapes.map(s => s.geom.x).sort((a, b) => a - b);
+
+                            // Assign new positions
+                            sorted.forEach((shape, idx) => {
+                                const oldX = shape.geom.x;
+                                const newX = existingXPositions[idx];
+                                if (Math.abs(oldX - newX) > 5) {
+                                    console.log(`📐 PLACEMENT: ${shape.id} x: ${oldX.toFixed(1)} → ${newX.toFixed(1)} (optimal: ${optimalX.get(shape.id)?.toFixed(1)})`);
+                                    shape.geom.x = newX;
+                                    shape.cell.setGeometry(shape.geom);
+                                }
+                            });
+                        });
+                    });
+
+                    console.log('✅ PLACEMENT: Optimization complete');
+
+                    // ROUTER: Orthogonal connector helper types and functions
+                    interface Rect {
+                        left: number;
+                        top: number;
+                        width: number;
+                        height: number;
+                    }
+
+                    type Side = 'top' | 'right' | 'bottom' | 'left';
+
+                    interface Point {
+                        x: number;
+                        y: number;
+                    }
+
+                    interface ConnectionPoint {
+                        shape: Rect;
+                        side: Side;
+                        distance: number;
+                    }
+
+                    /**
+                     * Determine optimal sides for connecting two shapes
+                     */
+                    const getOptimalSide = (sourceRect: Rect, targetRect: Rect): { sourceSide: Side, targetSide: Side } => {
+                        const sourceCenterX = sourceRect.left + sourceRect.width / 2;
+                        const sourceCenterY = sourceRect.top + sourceRect.height / 2;
+                        const targetCenterX = targetRect.left + targetRect.width / 2;
+                        const targetCenterY = targetRect.top + targetRect.height / 2;
+
+                        const dx = targetCenterX - sourceCenterX;
+                        const dy = targetCenterY - sourceCenterY;
+
+                        const absDx = Math.abs(dx);
+                        const absDy = Math.abs(dy);
+
+                        // Prefer vertical routing when:
+                        // 1. Shapes are horizontally aligned (small dx), OR
+                        // 2. Vertical distance is significantly larger than horizontal (ratio > 0.6)
+                        const isVerticallyAligned = absDx < 30;
+                        const isVerticalDominant = absDy > 0 && (absDy / (absDx + absDy)) > 0.6;
+                        const isHorizontal = !isVerticallyAligned && !isVerticalDominant && absDx > absDy;
+
+                        if (isHorizontal) {
+                            return {
+                                sourceSide: dx > 0 ? 'right' : 'left',
+                                targetSide: dx > 0 ? 'left' : 'right'
+                            };
+                        } else {
+                            return {
+                                sourceSide: dy > 0 ? 'bottom' : 'top',
+                                targetSide: dy > 0 ? 'top' : 'bottom'
+                            };
+                        }
+                    };
+
+                    /**
+                     * Get the connection point on a shape's edge
+                     */
+                    const getConnectionPoint = (cp: ConnectionPoint): Point => {
+                        const { shape, side, distance } = cp;
+
+                        switch (side) {
+                            case 'top':
+                                return { x: shape.left + shape.width * distance, y: shape.top };
+                            case 'right':
+                                return { x: shape.left + shape.width, y: shape.top + shape.height * distance };
+                            case 'bottom':
+                                return { x: shape.left + shape.width * distance, y: shape.top + shape.height };
+                            case 'left':
+                                return { x: shape.left, y: shape.top + shape.height * distance };
+                        }
+                    };
+
+                    /**
+                     * Route an orthogonal connector with obstacle avoidance
+                     */
+                    const routeOrthogonalConnector = (config: {
+                        pointA: ConnectionPoint;
+                        pointB: ConnectionPoint;
+                        obstacles: Rect[];
+                        shapeMargin: number;
+                    }): Point[] => {
+                        const { pointA, pointB, shapeMargin } = config;
+
+                        const startPoint = getConnectionPoint(pointA);
+                        const endPoint = getConnectionPoint(pointB);
+
+                        // Simple 2-segment orthogonal routing
+                        // Start -> intermediate point -> End
+                        const waypoints: Point[] = [startPoint];
+
+                        // Determine intermediate point based on start and end sides
+                        const isStartHorizontal = pointA.side === 'left' || pointA.side === 'right';
+                        const isEndHorizontal = pointB.side === 'left' || pointB.side === 'right';
+
+                        if (isStartHorizontal && !isEndHorizontal) {
+                            // Start horizontal, end vertical: intermediate at (end.x, start.y)
+                            const intermediateX = endPoint.x;
+                            const intermediateY = startPoint.y;
+
+                            // Add intermediate waypoint if not collinear
+                            if (Math.abs(intermediateX - startPoint.x) > 1 && Math.abs(intermediateY - endPoint.y) > 1) {
+                                waypoints.push({ x: intermediateX, y: intermediateY });
+                            }
+                        } else if (!isStartHorizontal && isEndHorizontal) {
+                            // Start vertical, end horizontal: intermediate at (start.x, end.y)
+                            const intermediateX = startPoint.x;
+                            const intermediateY = endPoint.y;
+
+                            if (Math.abs(intermediateX - endPoint.x) > 1 && Math.abs(intermediateY - startPoint.y) > 1) {
+                                waypoints.push({ x: intermediateX, y: intermediateY });
+                            }
+                        } else if (isStartHorizontal && isEndHorizontal) {
+                            // Both horizontal: need 3-segment path
+                            const midX = (startPoint.x + endPoint.x) / 2;
+
+                            if (Math.abs(midX - startPoint.x) > 1) {
+                                waypoints.push({ x: midX, y: startPoint.y });
+                            }
+                            if (Math.abs(midX - endPoint.x) > 1 && Math.abs(startPoint.y - endPoint.y) > 1) {
+                                waypoints.push({ x: midX, y: endPoint.y });
+                            }
+                        } else {
+                            // Both vertical: need 3-segment path
+                            const midY = (startPoint.y + endPoint.y) / 2;
+
+                            if (Math.abs(midY - startPoint.y) > 1) {
+                                waypoints.push({ x: startPoint.x, y: midY });
+                            }
+                            if (Math.abs(midY - endPoint.y) > 1 && Math.abs(startPoint.x - endPoint.x) > 1) {
+                                waypoints.push({ x: endPoint.x, y: midY });
                             }
                         }
-                    });
-                } finally {
-                    model.endUpdate();
-                }
 
-                // Mark that orthogonal routing was applied
-                graph.__orthogonalRoutingApplied = true;
-                console.log('✅ ROUTER: All edges routed');
+                        waypoints.push(endPoint);
 
-                } // --- END auto-layout-only section (placement optimizer + router) ---
+                        // Remove duplicate consecutive points
+                        const cleaned: Point[] = [waypoints[0]];
+                        for (let i = 1; i < waypoints.length; i++) {
+                            const prev = waypoints[i - 1];
+                            const curr = waypoints[i];
+                            if (Math.abs(curr.x - prev.x) > 0.1 || Math.abs(curr.y - prev.y) > 0.1) {
+                                cleaned.push(curr);
+                            }
+                        }
 
-                if (hasExplicitLayout) {
-                    console.log('📐 ELK: Diagram has explicit positioning - SKIPPING automatic layout');
-                    graph.__elkLayoutSkipped = true;
-                    // Skip the entire ELK section below
-                } else {
-                    console.log('📐 ELK: No explicit positioning detected - running automatic layout');
+                        return cleaned;
+                    };
 
-                console.log('📐 ELK: Preparing graph for automatic layout');
-                console.log('📐 ELK: Current cellMap size:', cellMap.size);
+                    console.log('📐 ROUTER: Using OrthogonalConnector for edge routing');
 
-                // Declare layoutResult outside try-catch so it's accessible later
-                let layoutResult: any = null;
-
-                try {
-                    // Convert our graph structure to ELK format
-                    const elkNodes: LayoutNode[] = [];
-                    const elkEdges: LayoutEdge[] = [];
-                    const elkContainers: LayoutContainer[] = [];
-
-                    // Group nodes by container
-                    const containerMap = new Map<string, { nodes: LayoutNode[], edges: LayoutEdge[], containerId: string }>();
-
-                    console.log('📐 ELK: Starting cell iteration...');
-
-                    // Helper to get absolute geometry (accounting for parent container offsets)
+                    // Helper to get absolute geometry
                     const getAbsoluteGeometry = (cell: any) => {
                         const geom = cell.getGeometry();
                         if (!geom) return null;
@@ -1826,7 +1759,6 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                         let absX = geom.x;
                         let absY = geom.y;
 
-                        // Walk up parent chain to accumulate offsets
                         let parent = cell.getParent();
                         while (parent && parent.getId() !== '0' && parent.getId() !== '1') {
                             const parentGeom = parent.getGeometry();
@@ -1837,174 +1769,313 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                             parent = parent.getParent();
                         }
 
-                        return { x: absX, y: absY, width: geom.width, height: geom.height, originalGeom: geom };
+                        return { x: absX, y: absY, width: geom.width, height: geom.height };
                     };
 
+                    // Build list of all shapes (for obstacle avoidance)
+                    const allShapes: Rect[] = [];
                     cellMap.forEach((cell, id) => {
                         if (id === '0' || id === '1') return;
-
-                        const style = cell.getStyle();
-                        const isSwimlane = style && (style['swimlane'] || style['container']);
-
-                        if (isSwimlane) {
-                            // This is a container
-                            const geom = cell.getGeometry();
-                            console.log(`📐 ELK: Found container: ${id}`, geom);
-                            containerMap.set(id, {
-                                nodes: [],
-                                edges: [],
-                                containerId: id
-                            });
-                        } else if (cell.isVertex()) {
-                            // This is a regular node
+                        if (cell.isVertex()) {
                             const absGeom = getAbsoluteGeometry(cell);
-                            if (!absGeom) return;
-                            console.log(`📐 ELK: Found vertex: ${id}`, {
-                                relative: cell.getGeometry(),
-                                absolute: { x: absGeom.x, y: absGeom.y }
-                            });
-
-                            const node: LayoutNode = {
-                                id,
-                                width: absGeom.width,
-                                height: absGeom.height,
-                                x: absGeom.x,
-                                y: absGeom.y,
-                                labels: cell.getValue() ? [{ text: cell.getValue() }] : undefined
-                            };
-
-                            // Find which container this node belongs to
-                            const parent = cell.getParent();
-                            const parentId = parent?.getId();
-
-                            // Check if parent is a container (not root cells 0/1)
-                            if (parentId && parentId !== '0' && parentId !== '1' && containerMap.has(parentId)) {
-                                // Node belongs to a container
-                                containerMap.get(parentId)!.nodes.push(node);
-                                console.log(`📐 ELK: Added node ${id} to container ${parentId}`);
-                            } else {
-                                // Top-level node (not in any container)
-                                elkNodes.push(node);
-                                console.log(`📐 ELK: Added node ${id} as top-level (parent: ${parentId})`);
+                            if (absGeom) {
+                                allShapes.push({
+                                    left: absGeom.x,
+                                    top: absGeom.y,
+                                    width: absGeom.width,
+                                    height: absGeom.height
+                                });
                             }
-                        } else if (cell.isEdge()) {
-                            // This is an edge
+                        }
+                    });
+
+                    console.log(`📐 ROUTER: Found ${allShapes.length} shapes for obstacle avoidance`);
+
+                    // Route each edge
+                    model.beginUpdate();
+                    try {
+                        edgeCells.forEach(({ id }) => {
+                            const cell = cellMap.get(id);
+                            if (!cell) return;
+
                             const source = cell.getTerminal(true);
                             const target = cell.getTerminal(false);
-                            console.log(`📐 ELK: Found edge: ${id}, source: ${source?.getId()}, target: ${target?.getId()}`);
+                            if (!source || !target) return;
 
-                            if (source && target) {
-                                const edge: LayoutEdge = {
+                            const sourceGeom = getAbsoluteGeometry(source);
+                            const targetGeom = getAbsoluteGeometry(target);
+                            if (!sourceGeom || !targetGeom) return;
+
+                            // Determine optimal connection sides
+                            const { sourceSide, targetSide } = getOptimalSide(
+                                { left: sourceGeom.x, top: sourceGeom.y, width: sourceGeom.width, height: sourceGeom.height },
+                                { left: targetGeom.x, top: targetGeom.y, width: targetGeom.width, height: targetGeom.height }
+                            );
+
+                            // Filter obstacles to exclude source and target
+                            const obstacles = allShapes.filter(shape => {
+                                return !(shape.left === sourceGeom.x && shape.top === sourceGeom.y) &&
+                                    !(shape.left === targetGeom.x && shape.top === targetGeom.y);
+                            });
+
+                            // Route the connector
+                            const waypoints = routeOrthogonalConnector({
+                                pointA: {
+                                    shape: { left: sourceGeom.x, top: sourceGeom.y, width: sourceGeom.width, height: sourceGeom.height },
+                                    side: sourceSide,
+                                    distance: 0.5
+                                },
+                                pointB: {
+                                    shape: { left: targetGeom.x, top: targetGeom.y, width: targetGeom.width, height: targetGeom.height },
+                                    side: targetSide,
+                                    distance: 0.5
+                                },
+                                obstacles,
+                                shapeMargin: 20
+                            });
+
+                            if (waypoints.length >= 2) {
+                                const geometry = cell.getGeometry();
+                                if (geometry) {
+                                    const points = waypoints.map(wp => new Point(wp.x, wp.y));
+
+                                    geometry.points = points;
+                                    geometry.relative = false;
+                                    geometry.setTerminalPoint(null, true);
+                                    geometry.setTerminalPoint(null, false);
+                                    cell.setGeometry(geometry);
+
+                                    // Update view state
+                                    const viewState = graph.view.getState(cell);
+                                    if (viewState) {
+                                        viewState.absolutePoints = points;
+                                    }
+
+                                    console.log(`📐 ROUTER: Edge ${id} routed with ${waypoints.length} waypoints`);
+                                }
+                            }
+                        });
+                    } finally {
+                        model.endUpdate();
+                    }
+
+                    // Mark that orthogonal routing was applied
+                    graph.__orthogonalRoutingApplied = true;
+                    console.log('✅ ROUTER: All edges routed');
+
+                } // --- END auto-layout-only section (placement optimizer + router) ---
+
+                if (hasExplicitLayout) {
+                    console.log('📐 ELK: Diagram has explicit positioning - SKIPPING automatic layout');
+                    graph.__elkLayoutSkipped = true;
+                    // Skip the entire ELK section below
+                } else {
+                    console.log('📐 ELK: No explicit positioning detected - running automatic layout');
+
+                    console.log('📐 ELK: Preparing graph for automatic layout');
+                    console.log('📐 ELK: Current cellMap size:', cellMap.size);
+
+                    // Declare layoutResult outside try-catch so it's accessible later
+                    let layoutResult: any = null;
+
+                    try {
+                        // Convert our graph structure to ELK format
+                        const elkNodes: LayoutNode[] = [];
+                        const elkEdges: LayoutEdge[] = [];
+                        const elkContainers: LayoutContainer[] = [];
+
+                        // Group nodes by container
+                        const containerMap = new Map<string, { nodes: LayoutNode[], edges: LayoutEdge[], containerId: string }>();
+
+                        console.log('📐 ELK: Starting cell iteration...');
+
+                        // Helper to get absolute geometry (accounting for parent container offsets)
+                        const getAbsoluteGeometry = (cell: any) => {
+                            const geom = cell.getGeometry();
+                            if (!geom) return null;
+
+                            let absX = geom.x;
+                            let absY = geom.y;
+
+                            // Walk up parent chain to accumulate offsets
+                            let parent = cell.getParent();
+                            while (parent && parent.getId() !== '0' && parent.getId() !== '1') {
+                                const parentGeom = parent.getGeometry();
+                                if (parentGeom) {
+                                    absX += parentGeom.x;
+                                    absY += parentGeom.y;
+                                }
+                                parent = parent.getParent();
+                            }
+
+                            return { x: absX, y: absY, width: geom.width, height: geom.height, originalGeom: geom };
+                        };
+
+                        cellMap.forEach((cell, id) => {
+                            if (id === '0' || id === '1') return;
+
+                            const style = cell.getStyle();
+                            const isSwimlane = style && (style['swimlane'] || style['container']);
+
+                            if (isSwimlane) {
+                                // This is a container
+                                const geom = cell.getGeometry();
+                                console.log(`📐 ELK: Found container: ${id}`, geom);
+                                containerMap.set(id, {
+                                    nodes: [],
+                                    edges: [],
+                                    containerId: id
+                                });
+                            } else if (cell.isVertex()) {
+                                // This is a regular node
+                                const absGeom = getAbsoluteGeometry(cell);
+                                if (!absGeom) return;
+                                console.log(`📐 ELK: Found vertex: ${id}`, {
+                                    relative: cell.getGeometry(),
+                                    absolute: { x: absGeom.x, y: absGeom.y }
+                                });
+
+                                const node: LayoutNode = {
                                     id,
-                                    source: source.getId(),
-                                    target: target.getId(),
+                                    width: absGeom.width,
+                                    height: absGeom.height,
+                                    x: absGeom.x,
+                                    y: absGeom.y,
                                     labels: cell.getValue() ? [{ text: cell.getValue() }] : undefined
                                 };
 
-                                // Determine if edge is within a container or crosses containers
-                                const sourceParent = source.getParent()?.getId();
-                                const targetParent = target.getParent()?.getId();
+                                // Find which container this node belongs to
+                                const parent = cell.getParent();
+                                const parentId = parent?.getId();
 
-                                // Edge is within same container only if both nodes have the same container parent
-                                if (sourceParent && targetParent &&
-                                    sourceParent === targetParent &&
-                                    sourceParent !== '0' && sourceParent !== '1' &&
-                                    containerMap.has(sourceParent)) {
-                                    // Edge within same container
-                                    containerMap.get(sourceParent)!.edges.push(edge);
-                                    console.log(`📐 ELK: Added edge ${id} to container ${sourceParent}`);
+                                // Check if parent is a container (not root cells 0/1)
+                                if (parentId && parentId !== '0' && parentId !== '1' && containerMap.has(parentId)) {
+                                    // Node belongs to a container
+                                    containerMap.get(parentId)!.nodes.push(node);
+                                    console.log(`📐 ELK: Added node ${id} to container ${parentId}`);
                                 } else {
-                                    // Cross-container or top-level edge
-                                    elkEdges.push(edge);
-                                    console.log(`📐 ELK: Added edge ${id} as cross-container (${sourceParent} -> ${targetParent})`);
+                                    // Top-level node (not in any container)
+                                    elkNodes.push(node);
+                                    console.log(`📐 ELK: Added node ${id} as top-level (parent: ${parentId})`);
+                                }
+                            } else if (cell.isEdge()) {
+                                // This is an edge
+                                const source = cell.getTerminal(true);
+                                const target = cell.getTerminal(false);
+                                console.log(`📐 ELK: Found edge: ${id}, source: ${source?.getId()}, target: ${target?.getId()}`);
+
+                                if (source && target) {
+                                    const edge: LayoutEdge = {
+                                        id,
+                                        source: source.getId(),
+                                        target: target.getId(),
+                                        labels: cell.getValue() ? [{ text: cell.getValue() }] : undefined
+                                    };
+
+                                    // Determine if edge is within a container or crosses containers
+                                    const sourceParent = source.getParent()?.getId();
+                                    const targetParent = target.getParent()?.getId();
+
+                                    // Edge is within same container only if both nodes have the same container parent
+                                    if (sourceParent && targetParent &&
+                                        sourceParent === targetParent &&
+                                        sourceParent !== '0' && sourceParent !== '1' &&
+                                        containerMap.has(sourceParent)) {
+                                        // Edge within same container
+                                        containerMap.get(sourceParent)!.edges.push(edge);
+                                        console.log(`📐 ELK: Added edge ${id} to container ${sourceParent}`);
+                                    } else {
+                                        // Cross-container or top-level edge
+                                        elkEdges.push(edge);
+                                        console.log(`📐 ELK: Added edge ${id} as cross-container (${sourceParent} -> ${targetParent})`);
+                                    }
                                 }
                             }
-                        }
-                    });
-
-                    // Build containers array
-                    containerMap.forEach((data, containerId) => {
-                        const cell = cellMap.get(containerId);
-                        if (cell) {
-                            elkContainers.push({
-                                id: containerId,
-                                children: data.nodes,
-                                edges: data.edges,
-                                labels: cell.getValue() ? [{ text: cell.getValue() }] : undefined
-                            });
-                        }
-                    });
-
-                    console.log('📐 ELK: Converted to ELK format', {
-                        topLevelNodes: elkNodes.length,
-                        topLevelEdges: elkEdges.length,
-                        containers: elkContainers.length
-                    });
-
-                    // Validate that all edge endpoints exist in the node lists
-                    const allNodeIds = new Set([
-                        ...elkNodes.map(n => n.id),
-                        ...elkContainers.flatMap(c => c.children.map(n => n.id))
-                    ]);
-
-                    const allEdges = [...elkEdges, ...elkContainers.flatMap(c => c.edges)];
-                    const invalidEdges = allEdges.filter(e =>
-                        !allNodeIds.has(e.source) || !allNodeIds.has(e.target)
-                    );
-
-                    if (invalidEdges.length > 0) {
-                        console.error('❌ ELK: Found edges with missing nodes:', invalidEdges);
-                        invalidEdges.forEach(e => {
-                            console.error(`  Edge ${e.id}: ${e.source} -> ${e.target}`, {
-                                sourceExists: allNodeIds.has(e.source),
-                                targetExists: allNodeIds.has(e.target)
-                            });
                         });
-                        throw new Error(`ELK validation failed: ${invalidEdges.length} edges reference missing nodes`);
-                    }
 
-                    console.log('✅ ELK: All edge endpoints validated');
+                        // Build containers array
+                        containerMap.forEach((data, containerId) => {
+                            const cell = cellMap.get(containerId);
+                            if (cell) {
+                                elkContainers.push({
+                                    id: containerId,
+                                    children: data.nodes,
+                                    edges: data.edges,
+                                    labels: cell.getValue() ? [{ text: cell.getValue() }] : undefined
+                                });
+                            }
+                        });
 
-                    // Run ELK layout
-                    console.log('📐 ELK: About to call runLayout with:', {
-                        topLevelNodes: elkNodes.length,
-                        topLevelEdges: elkEdges.length,
-                        containers: elkContainers.length,
-                        nodeIds: elkNodes.map(n => n.id),
-                        edgeIds: elkEdges.map(e => e.id)
-                    });
-                    layoutResult = await runLayout(elkNodes, elkEdges, {
-                        algorithm: 'layered',
-                        direction: 'DOWN',
-                        edgeRouting: 'ORTHOGONAL',
-                        hierarchical: true,
-                        spacing: {
-                            nodeNode: 80,
-                            edgeNode: 40,
-                            edgeEdge: 15
+                        console.log('📐 ELK: Converted to ELK format', {
+                            topLevelNodes: elkNodes.length,
+                            topLevelEdges: elkEdges.length,
+                            containers: elkContainers.length
+                        });
+
+                        // Validate that all edge endpoints exist in the node lists
+                        const allNodeIds = new Set([
+                            ...elkNodes.map(n => n.id),
+                            ...elkContainers.flatMap(c => c.children.map(n => n.id))
+                        ]);
+
+                        const allEdges = [...elkEdges, ...elkContainers.flatMap(c => c.edges)];
+                        const invalidEdges = allEdges.filter(e =>
+                            !allNodeIds.has(e.source) || !allNodeIds.has(e.target)
+                        );
+
+                        if (invalidEdges.length > 0) {
+                            console.error('❌ ELK: Found edges with missing nodes:', invalidEdges);
+                            invalidEdges.forEach(e => {
+                                console.error(`  Edge ${e.id}: ${e.source} -> ${e.target}`, {
+                                    sourceExists: allNodeIds.has(e.source),
+                                    targetExists: allNodeIds.has(e.target)
+                                });
+                            });
+                            throw new Error(`ELK validation failed: ${invalidEdges.length} edges reference missing nodes`);
                         }
-                    }, elkContainers);
 
-                    console.log('📐 ELK: Layout result received:', {
-                        nodes: layoutResult.nodes.size,
-                        edges: layoutResult.edges.size,
-                        containers: layoutResult.containers?.size || 0
-                    });
+                        console.log('✅ ELK: All edge endpoints validated');
 
-                    // Apply layout results back to maxGraph
-                    applyLayoutToMaxGraph(graph.getModel ? graph : { getModel: () => model }, cellMap, layoutResult);
+                        // Run ELK layout
+                        console.log('📐 ELK: About to call runLayout with:', {
+                            topLevelNodes: elkNodes.length,
+                            topLevelEdges: elkEdges.length,
+                            containers: elkContainers.length,
+                            nodeIds: elkNodes.map(n => n.id),
+                            edgeIds: elkEdges.map(e => e.id)
+                        });
+                        layoutResult = await runLayout(elkNodes, elkEdges, {
+                            algorithm: 'layered',
+                            direction: 'DOWN',
+                            edgeRouting: 'ORTHOGONAL',
+                            hierarchical: true,
+                            spacing: {
+                                nodeNode: 80,
+                                edgeNode: 40,
+                                edgeEdge: 15
+                            }
+                        }, elkContainers);
 
-                    console.log('✅ ELK: Layout applied successfully');
+                        console.log('📐 ELK: Layout result received:', {
+                            nodes: layoutResult.nodes.size,
+                            edges: layoutResult.edges.size,
+                            containers: layoutResult.containers?.size || 0
+                        });
 
-                    // Mark that ELK layout was applied successfully
-                    graph.__elkLayoutApplied = true;
-                } catch (elkError) {
-                    console.error('📐 ELK: Layout failed, falling back to manual routing:', elkError);
-                    console.error('📐 ELK: Error details:', {
-                        message: elkError.message,
-                        stack: elkError.stack
-                    });
-                }
+                        // Apply layout results back to maxGraph
+                        applyLayoutToMaxGraph(graph.getModel ? graph : { getModel: () => model }, cellMap, layoutResult);
+
+                        console.log('✅ ELK: Layout applied successfully');
+
+                        // Mark that ELK layout was applied successfully
+                        graph.__elkLayoutApplied = true;
+                    } catch (elkError) {
+                        console.error('📐 ELK: Layout failed, falling back to manual routing:', elkError);
+                        console.error('📐 ELK: Error details:', {
+                            message: elkError.message,
+                            stack: elkError.stack
+                        });
+                    }
                 } // Close the hasExplicitLayout else block
 
                 // CRITICAL: If ELK layout was successful, extract and apply edge routing from ELK results
@@ -2209,6 +2280,74 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                 } else {
                     console.log('📐 ROUTING: Applying manual connection point calculation (ELK fallback)');
 
+                    // Shared helper: get a cell's absolute position by
+                    // walking its parent chain (accounting for swimlane/
+                    // container offsets). Used both by the pre-pass below
+                    // and by the per-edge routing forEach that follows.
+                    const getAbsoluteGeometry = (cell: any) => {
+                        const geom = cell.getGeometry?.();
+                        if (!geom) return null;
+                        let x = geom.x || 0;
+                        let y = geom.y || 0;
+                        let parent = cell.getParent?.();
+                        while (parent && parent.getId?.() !== '0' && parent.getId?.() !== '1') {
+                            const pg = parent.getGeometry?.();
+                            if (pg) {
+                                x += pg.x || 0;
+                                y += pg.y || 0;
+                            }
+                            parent = parent.getParent?.();
+                        }
+                        return { x, y, width: geom.width, height: geom.height };
+                    };
+
+                    // Pre-pass: group edges by which side of which vertex they
+                    // enter/exit. When multiple edges end on the same side of
+                    // the same vertex, we'll distribute them along that side
+                    // instead of stacking them at 0.5 where they overlap and
+                    // their labels become ambiguous.
+                    const incomingBySide = new Map<string, string[]>();  // key = `${vertexId}:${side}`, value = edge ids
+                    const outgoingBySide = new Map<string, string[]>();
+                    const edgeSideInfo = new Map<string, { sourceSide: string; targetSide: string }>();
+
+                    const classifyEdgeSide = (dx: number, dy: number): { sourceSide: string; targetSide: string } => {
+                        const absDx = Math.abs(dx);
+                        const absDy = Math.abs(dy);
+                        if (absDx < 30 || (absDy > 0 && absDy / (absDx + absDy) > 0.6)) {
+                            // Vertical routing
+                            return {
+                                sourceSide: dy > 0 ? 'bottom' : 'top',
+                                targetSide: dy > 0 ? 'top' : 'bottom',
+                            };
+                        }
+                        return {
+                            sourceSide: dx > 0 ? 'right' : 'left',
+                            targetSide: dx > 0 ? 'left' : 'right',
+                        };
+                    };
+
+                    edgeCells.forEach(({ id, element }) => {
+                        const sourceId = element.getAttribute('source');
+                        const targetId = element.getAttribute('target');
+                        if (!sourceId || !targetId) return;
+                        const s = cellMap.get(sourceId), t = cellMap.get(targetId);
+                        if (!s || !t) return;
+                        const sGeom = getAbsoluteGeometry(s), tGeom = getAbsoluteGeometry(t);
+                        if (!sGeom || !tGeom) return;
+                        const dx = (tGeom.x + tGeom.width / 2) - (sGeom.x + sGeom.width / 2);
+                        const dy = (tGeom.y + tGeom.height / 2) - (sGeom.y + sGeom.height / 2);
+                        const sides = classifyEdgeSide(dx, dy);
+                        edgeSideInfo.set(id, sides);
+                        const inKey = `${targetId}:${sides.targetSide}`;
+                        const outKey = `${sourceId}:${sides.sourceSide}`;
+                        if (!incomingBySide.has(inKey)) incomingBySide.set(inKey, []);
+                        if (!outgoingBySide.has(outKey)) outgoingBySide.set(outKey, []);
+                        incomingBySide.get(inKey)!.push(id);
+                        outgoingBySide.get(outKey)!.push(id);
+                    });
+                    console.log('📐 ROUTING: Convergence map (incoming):', Object.fromEntries(incomingBySide));
+                    console.log('📐 ROUTING: Convergence map (outgoing):', Object.fromEntries(outgoingBySide));
+
                     edgeCells.forEach(({ id, element }) => {
                         const cell = cellMap.get(id);
                         if (!cell) return;
@@ -2221,28 +2360,6 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                         const targetCell = cellMap.get(targetId);
                         if (!sourceCell || !targetCell) return;
 
-                        // Get absolute positions (accounting for parent containers)
-                        const getAbsoluteGeometry = (cell: any) => {
-                            let geom = cell.getGeometry();
-                            if (!geom) return null;
-
-                            let x = geom.x;
-                            let y = geom.y;
-
-                            // Walk up parent chain to get absolute position
-                            let parent = cell.getParent();
-                            while (parent && parent.getId() !== '0' && parent.getId() !== '1') {
-                                const parentGeom = parent.getGeometry();
-                                if (parentGeom) {
-                                    x += parentGeom.x;
-                                    y += parentGeom.y;
-                                }
-                                parent = parent.getParent();
-                            }
-
-                            return { x, y, width: geom.width, height: geom.height };
-                        };
-
                         const sourceGeom = getAbsoluteGeometry(sourceCell);
                         const targetGeom = getAbsoluteGeometry(targetCell);
                         if (!sourceGeom || !targetGeom) return;
@@ -2254,7 +2371,7 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
 
                         const dx = targetGeom.x + targetGeom.width / 2 - (sourceGeom.x + sourceGeom.width / 2);
                         const dy = targetGeom.y + targetGeom.height / 2 - (sourceGeom.y + sourceGeom.height / 2);
-                        
+
                         const absDx = Math.abs(dx);
                         const absDy = Math.abs(dy);
 
@@ -2330,9 +2447,9 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                         currentStyle['exitPerimeter'] = '1';
                         currentStyle['entryPerimeter'] = '1';
 
-                        // Improve edge label positioning to avoid overlaps
-                        currentStyle['labelBackgroundColor'] = '#ffffff';
-                        currentStyle['labelBorderColor'] = '#d9d9d9';
+                        // Label positioning (no opaque backgrounds so lines stay visible)
+                        delete currentStyle['labelBackgroundColor'];
+                        delete currentStyle['labelBorderColor'];
                         currentStyle['spacingTop'] = 8;
                         currentStyle['spacingBottom'] = 8;
                         currentStyle['spacingLeft'] = 12;
@@ -2373,7 +2490,6 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                             currentStyle['align'] = 'left';
                             currentStyle['verticalAlign'] = 'middle';
                             currentStyle['spacingLeft'] = isLongLabel ? 28 : 22;
-                            currentStyle['labelBackgroundColor'] = 'rgba(255,255,255,0.95)';
                             console.log(`📐 LABEL: ${id} positioned LEFT of vertical line`);
                         } else if (isMainlyHorizontal) {
                             // HORIZONTAL edges: position labels ABOVE the line
@@ -2381,7 +2497,6 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                             currentStyle['align'] = 'center';
                             currentStyle['verticalAlign'] = 'bottom';
                             currentStyle['spacingBottom'] = isLongLabel ? 18 : 14;
-                            currentStyle['labelBackgroundColor'] = 'rgba(255,255,255,0.95)';
                             console.log(`📐 LABEL: ${id} positioned ABOVE horizontal line`);
                         } else {
                             // DIAGONAL edges: position above and to the side
@@ -2391,13 +2506,11 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                             currentStyle['spacingTop'] = 14;
                             currentStyle['spacingLeft'] = dx > 0 ? 16 : 0;
                             currentStyle['spacingRight'] = dx < 0 ? 16 : 0;
-                            currentStyle['labelBackgroundColor'] = 'rgba(255,255,255,0.95)';
                             console.log(`📐 LABEL: ${id} positioned for diagonal line`);
                         }
 
                         // Extra adjustments for long labels
                         if (isLongLabel) {
-                            currentStyle['labelBackgroundColor'] = '#ffffff';
                             currentStyle['spacingTop'] = 10;
                             currentStyle['spacingBottom'] = 10;
                             currentStyle['spacingLeft'] = 14;
@@ -2474,6 +2587,9 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
             // Add zoom controls to graphContainer before appending
             console.log('📐 DrawIO: Adding zoom controls');
             addZoomControls(graphContainer, graph);
+
+            // Enable click-and-drag panning when not in edit mode
+            enableDragPan(graphContainer, () => !graph.isEnabled());
 
             // Make container centered and relatively positioned for absolute controls
             container.style.position = 'relative';
@@ -2558,7 +2674,7 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
             // CRITICAL: Use maxGraph's built-in fit() and center() functions
             // instead of manual sizing - this ensures proper scaling and positioning
             console.log('📐 DrawIO: Fitting and centering diagram using maxGraph functions');
-            
+
             // Wait for DOM to be fully rendered before calling fit()
             // Multiple attempts with increasing delays to handle slow rendering
             const applyFitAndCenter = () => {
@@ -2566,23 +2682,26 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                     // fit() lives on the FitPlugin in maxGraph >=0.17; fitCenter both fits and centers
                     const fitPlugin = graph.getPlugin('fit');
                     fitPlugin?.fitCenter({ margin: 20 });
-                    
+
                     // CRITICAL: After fit(), resize graphContainer to match content bounds
                     // This allows the parent container to center it properly
                     const bounds = graph.getGraphBounds();
-                    const padding = 40; // Match the fit() padding (20px * 2 for both sides)
                     const zoomControlsHeight = 60; // 32px controls + 16px bottom margin + 12px spacing
-                    
-                    const neededWidth = Math.ceil(bounds.width + padding);
-                    const neededHeight = Math.ceil(bounds.height + padding + zoomControlsHeight);
-                    
-                    graphContainer.style.width = `${neededWidth}px`;
+
+                    // Let graphContainer fill its parent horizontally so fit()
+                    // can use the full available width. Height is sized to the
+                    // content so we don't leave vertical whitespace below.
+                    const neededHeight = Math.ceil(bounds.height + 40 + zoomControlsHeight);
+                    graphContainer.style.width = '100%';
                     graphContainer.style.height = `${neededHeight}px`;
                     graphContainer.style.minHeight = `${neededHeight}px`;
-                    
+
+                    // Refit now that the container has its final width so the
+                    // diagram scales up to actually fill the available space.
+                    fitPlugin?.fitCenter({ margin: 20 });
+
                     console.log('✅ DrawIO: Fit and center applied, container resized to content', {
-                        contentBounds: { width: bounds.width, height: bounds.height },
-                        containerSize: { width: neededWidth, height: neededHeight }
+                        contentBounds: { width: bounds.width, height: bounds.height }
                     });
 
                     // Re-apply force-positioning for text-only cells. fitCenter's
@@ -2592,6 +2711,9 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                     const currentSvg = graphContainer.querySelector('svg') as SVGSVGElement | null;
                     if (currentSvg) {
                         DrawIOEnhancer.forceTextCellPositioning(currentSvg, graph);
+                        // Also re-run the main enhancer so any container-label
+                        // clamps survive fitCenter's revalidation pass.
+                        DrawIOEnhancer.fixAllForeignObjects(currentSvg, graph);
                     }
 
                     console.log('✅ DrawIO: Fit and center applied successfully');
@@ -2599,7 +2721,7 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                     console.warn('📐 DrawIO: Fit/center error:', fitError);
                 }
             };
-            
+
             // Try immediately and then with increasing delays
             setTimeout(applyFitAndCenter, 50);
             setTimeout(applyFitAndCenter, 200);
@@ -2607,28 +2729,28 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
 
             // Add ResizeObserver to re-fit and re-center when parent container resizes
             console.log('📐 DrawIO: Setting up ResizeObserver for responsive resizing');
-            
+
             const resizeObserver = new ResizeObserver((entries) => {
                 for (const entry of entries) {
                     // Only respond to significant size changes (> 50px difference)
                     const newWidth = entry.contentRect.width;
                     const oldWidth = (container as any).__lastWidth || 0;
-                    
+
                     if (Math.abs(newWidth - oldWidth) > 50) {
                         console.log('📐 DrawIO: Container resized, re-fitting diagram', {
                             oldWidth,
                             newWidth,
                             delta: newWidth - oldWidth
                         });
-                        
+
                         (container as any).__lastWidth = newWidth;
-                        
+
                         // Re-apply fit and center with a small delay to let layout settle
                         setTimeout(() => applyFitAndCenter(), 100);
                     }
                 }
             });
-            
+
             resizeObserver.observe(container);
             console.log('📐 DrawIO: ResizeObserver attached to graphContainer');
 
@@ -2648,7 +2770,7 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
             } else {
                 console.log('📐 DrawIO: Skipping final view.validate (would wipe text positioning)');
             }
-            
+
             // Apply universal visibility enhancement after render
             const svgElement = graphContainer.querySelector('svg');
             if (svgElement) {
@@ -2767,8 +2889,27 @@ function addZoomControls(graphContainer: HTMLElement, graph: any): void {
         controlsRight: '16px'
     });
 
-    const zoomInBtn = createZoomButton('+', () => graph.zoomIn());
-    const zoomOutBtn = createZoomButton('-', () => graph.zoomOut());
+    // After any zoom action, maxGraph revalidates the view which wipes out
+    // the text-cell positioning corrections applied by DrawIOEnhancer.
+    // Re-apply them after each zoom so alignment persists.
+    const reapplyAfterViewChange = () => {
+        const svg = graphContainer.querySelector('svg') as SVGSVGElement | null;
+        if (svg) {
+            // Small delay to let maxGraph finish its revalidation pass first.
+            setTimeout(() => DrawIOEnhancer.forceTextCellPositioning(svg, graph), 0);
+            setTimeout(() => DrawIOEnhancer.forceTextCellPositioning(svg, graph), 50);
+        }
+    };
+
+    const zoomInBtn = createZoomButton('+', () => {
+        graph.zoomIn();
+        reapplyAfterViewChange();
+    });
+    const zoomOutBtn = createZoomButton('-', () => {
+        graph.zoomOut();
+        reapplyAfterViewChange();
+    });
+    reapplyAfterViewChange();
     const zoomFitBtn = createZoomButton('⊡', () => {
         try {
             // fit() lives on the FitPlugin in maxGraph >=0.17; fitCenter both fits and centers
@@ -2796,6 +2937,55 @@ function addZoomControls(graphContainer: HTMLElement, graph: any): void {
         buttonCount: zoomControls.children.length,
         computedStyles: window.getComputedStyle(zoomControls).cssText.substring(0, 200)
     });
+}
+
+// Enables click-and-drag panning of the graph container when the predicate returns true.
+// Uses native scrollLeft/scrollTop. Runs in capture phase so it wins vs mxGraph handlers.
+function enableDragPan(graphContainer: HTMLElement, canPan: () => boolean): void {
+    let isDown = false;
+    let startX = 0;
+    let startY = 0;
+    let scrollLeft = 0;
+    let scrollTop = 0;
+    const prevCursor = graphContainer.style.cursor;
+    const updateCursor = () => {
+        if (isDown) { graphContainer.style.cursor = 'grabbing'; return; }
+        graphContainer.style.cursor = canPan() ? 'grab' : (prevCursor || '');
+    };
+    updateCursor();
+
+    graphContainer.addEventListener('mousedown', (e: MouseEvent) => {
+        if (!canPan()) { updateCursor(); return; }
+        if (e.button !== 0) return;
+        const target = e.target as HTMLElement;
+        if (target && target.closest('#drawio-zoom-controls')) return;
+        if (target && target.closest('button, input, select, textarea, a')) return;
+        isDown = true;
+        startX = e.pageX;
+        startY = e.pageY;
+        scrollLeft = graphContainer.scrollLeft;
+        scrollTop = graphContainer.scrollTop;
+        graphContainer.style.cursor = 'grabbing';
+        graphContainer.style.userSelect = 'none';
+        e.preventDefault();
+        e.stopPropagation();
+    }, true);
+
+    const endDrag = () => {
+        if (!isDown) return;
+        isDown = false;
+        graphContainer.style.userSelect = '';
+        updateCursor();
+    };
+    window.addEventListener('mouseup', endDrag, true);
+    window.addEventListener('mouseleave', endDrag, true);
+    window.addEventListener('mousemove', (e: MouseEvent) => {
+        if (!isDown) return;
+        graphContainer.scrollLeft = scrollLeft - (e.pageX - startX);
+        graphContainer.scrollTop = scrollTop - (e.pageY - startY);
+        e.preventDefault();
+        e.stopPropagation();
+    }, true);
 }
 
 // Export the DrawIO plugin
