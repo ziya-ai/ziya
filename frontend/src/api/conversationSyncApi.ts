@@ -65,6 +65,29 @@ export async function getChat(projectId: string, chatId: string): Promise<Server
 }
 
 export async function bulkSync(projectId: string, chats: ServerChat[]): Promise<BulkSyncResult> {
+  // Defense-in-depth: never push shells.  Shells have messages stripped
+  // to first+last (or blanked content) for sidebar memory reasons.
+  // Pushing them to the server truncates the authoritative record —
+  // this caused the April-2026 chat-history loss.
+  const _filtered: ServerChat[] = [];
+  let _dropped = 0;
+  for (const c of chats) {
+    const anyC = c as any;
+    if (anyC?._isShell) { _dropped++; continue; }
+    if (typeof anyC?._fullMessageCount === 'number'
+      && Array.isArray(anyC.messages)
+      && anyC.messages.length < anyC._fullMessageCount) {
+      _dropped++;
+      continue;
+    }
+    _filtered.push(c);
+  }
+  if (_dropped > 0) {
+    console.warn(`⚠️ bulkSync: dropped ${_dropped} shell/partial chats to protect server records`);
+  }
+  chats = _filtered;
+  if (chats.length === 0) return { created: 0, updated: 0, skipped: 0, errors: [] };
+
   // Chunk large payloads to avoid 413 Request Entity Too Large.
   // With 500+ conversations carrying full message bodies, a single
   // POST can easily exceed the server's 20MB request limit.
