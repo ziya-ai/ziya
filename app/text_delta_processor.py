@@ -18,6 +18,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
+from app.hallucination import check_for_parroting, scannable_text
+
 logger = logging.getLogger(__name__)
 
 # Patterns indicating hallucinated tool output (checked outside code fences)
@@ -42,9 +44,16 @@ class TextDeltaState:
         'in_block': False, 'block_type': None, 'accumulated_content': ''
     })
     iteration_start_time: float = 0.0
+    # Session key for shingle index lookups. When None, the shingle
+    # check short-circuits (legitimate: no conversation_id means we
+    # never registered anything to match against).
+    conversation_id: Optional[str] = None
 
     # Output flags — checked by caller after each call
     hallucination_detected: bool = False
+    # Populated when a shingle match fires. Consumed by caller to
+    # build a targeted corrective message citing the parroted tool.
+    parrot_match: Optional[Dict[str, Any]] = None
 
 
 def process_text_delta(
@@ -111,12 +120,19 @@ def process_text_delta(
     state.assistant_text += text
 
     # --- Hallucination detection ---
-    _tail = state.assistant_text[-500:] if len(state.assistant_text) > 500 else state.assistant_text
-    _match = next(
-        (p for p in _BACKEND_HALLUCINATION_PATTERNS if p.search(_tail)), None
-    )
+    # Match only against scannable regions of the assistant text: outside
+    # Markdown fences, inline backticks, blockquotes, and indented blocks.
+    # This prevents false positives when the model legitimately quotes
+    # pattern literals while analyzing the detection system itself.
     if state.code_block_tracker.get('in_block'):
-        _match = None  # legitimate quoting inside code fences
+        _match = None  # short-circuit: currently inside a fence
+    else:
+        _scan = scannable_text(state.assistant_text)
+        _tail = _scan[-500:] if len(_scan) > 500 else _scan
+        _match = next(
+            (p for p in _BACKEND_HALLUCINATION_PATTERNS if p.search(_tail)),
+            None,
+        )
 
     if _match:
         _pat = getattr(_match, 'pattern', 'fake_tool_call')
@@ -140,6 +156,66 @@ def process_text_delta(
             'content': '\n\n⚠️ Model attempted to fabricate tool output — retrying…\n\n'
         })
         return events  # caller will break
+
+    # --- Layer A: shingle-index parroting detection ---
+    # Checks whether the assistant text is reproducing content from a
+    # previously-registered real tool result. Runs outside fences, at
+    # a coarse cadence (roughly every 256 chars of accumulated text)
+    # to keep cost bounded on long streams. Session-scoped — no
+    # conversation_id means nothing to match against.
+    if (
+        state.conversation_id
+        and not state.code_block_tracker.get('in_block')
+    ):
+        _total = len(state.assistant_text)
+        _delta = len(text)
+        # Fires when the latest delta carries the cumulative length
+        # across a 256-char boundary. This runs roughly once per 256
+        # chars without needing additional state.
+        if _total >= 256 and (_total // 256) != ((_total - _delta) // 256):
+            try:
+                _scan_full = scannable_text(state.assistant_text)
+                # Match against the tail window — parroting tends to
+                # happen near the front of the model's output for the
+                # current turn and then continue; a trailing window
+                # catches ongoing parroting without repeatedly
+                # re-matching the same early content.
+                _probe = _scan_full[-1200:] if len(_scan_full) > 1200 else _scan_full
+                _match = check_for_parroting(state.conversation_id, _probe)
+            except Exception as _e:
+                logger.debug(f"🔐 SHINGLE_CHECK: skipped: {_e}")
+                _match = None
+
+            if _match is not None:
+                logger.warning(
+                    f"🚨 HALLUCINATION_SHINGLE: confidence={_match.confidence} "
+                    f"tool={_match.matched_tool_name} "
+                    f"tool_use_id={_match.matched_tool_use_id} "
+                    f"shingle_overlap={_match.shingle_overlap} "
+                    f"line_matches={_match.line_matches}"
+                )
+                # Only abort on high-confidence matches. Low-confidence
+                # matches are logged for observability but allowed to
+                # continue — surfacing them early would produce too
+                # many false-positive aborts while the thresholds are
+                # being tuned against real traffic.
+                if _match.confidence == 'high':
+                    state.hallucination_detected = True
+                    state.parrot_match = {
+                        'tool_name': _match.matched_tool_name,
+                        'tool_use_id': _match.matched_tool_use_id,
+                        'shingle_overlap': _match.shingle_overlap,
+                        'line_matches': _match.line_matches,
+                    }
+                    events.append({
+                        'type': 'text',
+                        'content': (
+                            '\n\n⚠️ Model appears to be reproducing prior '
+                            f'`{_match.matched_tool_name}` output rather than '
+                            'calling the tool — retrying…\n\n'
+                        ),
+                    })
+                    return events  # caller will break
 
     # --- Content optimizer init ---
     if not hasattr(executor, '_content_optimizer'):
