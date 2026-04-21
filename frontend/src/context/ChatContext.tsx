@@ -17,7 +17,7 @@ import * as syncApi from '../api/conversationSyncApi';
 import { useServerStatus } from './ServerStatusContext';
 import * as folderSyncApi from '../api/folderSyncApi';
 import { useDelegatePolling } from '../hooks/useDelegatePolling';
-import { gcEmptyConversations } from '../utils/retentionPurge';
+import { gcEmptyConversations, purgeExpiredConversations } from '../utils/retentionPurge';
 import { useDelegateStreaming } from '../hooks/useDelegateStreaming';
 
 const TERMINAL_PLAN_STATUSES = new Set(['completed', 'completed_partial', 'cancelled']);
@@ -1304,24 +1304,32 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         const fullConv = typeof db.getConversation === 'function'
                             ? await db.getConversation(conversationId)
                             : (await db.getConversations()).find(c => c.id === conversationId);
-                        // Accept IDB data only if it has strictly more messages
-                        // than the shell AND isn't itself a shell.  If IDB has
-                        // exactly 2 messages (first+last) it was likely corrupted
-                        // by a prior shell-write bug — fall through to server.
-                        const idbUsable = fullConv?.messages?.length > 0
+                        // Accept IDB data when it has real content.  The shell
+                        // in state has content: ''; the IDB record has real
+                        // text.  Count-based comparison can't distinguish a
+                        // shell-pair (2 empty msgs) from a real short chat
+                        // (2 real msgs), so we compare total content length.
+                        const localContentLen = (convEntry.messages || []).reduce(
+                            (n: number, m: any) => n + (typeof m?.content === 'string' ? m.content.length : 0), 0);
+                        const idbContentLen = (fullConv?.messages || []).reduce(
+                            (n: number, m: any) => n + (typeof m?.content === 'string' ? m.content.length : 0), 0);
+                        const idbMsgs = fullConv?.messages ?? [];
+                        const idbUsable = !!fullConv && idbMsgs.length > 0
                             && !(fullConv as any)._isShell
-                            && fullConv.messages.length > (convEntry.messages?.length || 0)
-                            && (fullConv.messages.length > 2 || !(convEntry as any)._isShell);
-                        if (idbUsable) {
+                            && (
+                                idbMsgs.length > (convEntry.messages?.length || 0)
+                                || idbContentLen > localContentLen
+                            );
+                        if (idbUsable && fullConv) {
                             setConversations(prev => prev.map(c =>
                                 c.id === conversationId
-                                    ? { ...c, messages: fullConv.messages, _isShell: false, _fullMessageCount: undefined }
+                                    ? { ...c, messages: fullConv!.messages, _isShell: false, _fullMessageCount: undefined }
                                     : c
                             ));
                             loaded = true;
                             console.log(`✅ Lazy-loaded ${fullConv.messages.length} messages from IDB`);
                         }
-                        if (!loaded) console.log(`⚠️ IDB has ${fullConv?.messages?.length || 0} messages — trying server`);
+                        if (!loaded) console.log(`⚠️ IDB has ${fullConv?.messages?.length ?? 0} messages — trying server`);
                     } catch (err) {
                         console.warn('⚠️ IDB lazy-load failed:', err);
                     }
@@ -1332,16 +1340,26 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     if (pid) {
                         try {
                             const serverChat = await syncApi.getChat(pid, conversationId);
-                            // Only accept server messages if they have MORE than what
-                            // we already have locally (prevents partial data overwrite)
-                            if (serverChat?.messages?.length > 2 &&
-                                serverChat.messages.length >= (convEntry.messages?.length || 0)) {
+                            // Accept server payload when it carries more total
+                            // content than what we have in state — covers real
+                            // short (2-message) conversations that the previous
+                            // `length > 2` gate rejected, while still preventing
+                            // a thinner server payload from overwriting a fuller
+                            // local record.
+                            const localLen = (convEntry.messages || []).reduce(
+                                (n: number, m: any) => n + (typeof m?.content === 'string' ? m.content.length : 0), 0);
+                            const srvLen = (serverChat?.messages || []).reduce(
+                                (n: number, m: any) => n + (typeof m?.content === 'string' ? m.content.length : 0), 0);
+                            const srvMsgs = serverChat?.messages ?? [];
+                            if (serverChat
+                                && srvMsgs.length >= (convEntry.messages?.length || 0)
+                                && srvLen > localLen) {
                                 setConversations(prev => prev.map(c =>
                                     c.id === conversationId
-                                        ? { ...c, messages: serverChat.messages, _isShell: false, _fullMessageCount: undefined, _version: Date.now() }
+                                        ? { ...c, messages: srvMsgs, _isShell: false, _fullMessageCount: undefined, _version: Date.now() }
                                         : c
                                 ));
-                                console.log(`✅ Lazy-loaded ${serverChat.messages.length} messages from server`);
+                                console.log(`✅ Lazy-loaded ${srvMsgs.length} messages from server`);
                             }
                         } catch (err) {
                             console.warn('⚠️ Server lazy-load failed:', err);
@@ -1401,19 +1419,20 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 if (pid) {
                     // Fire-and-forget: don't block conversation load
                     syncApi.getChat(pid, conversationId).then(serverChat => {
-                        if (!serverChat?.messages?.length) return;
+                        const srvMsgs = serverChat?.messages ?? [];
+                        if (!serverChat || srvMsgs.length === 0) return;
                         React.startTransition(() => {
                             setConversations(prev => prev.map(c => {
                                 if (c.id !== conversationId) return c;
                                 // Never replace with fewer messages — prevents
                                 // partial server data from destroying local history
                                 const localCount = c.messages?.length || 0;
-                                const serverCount = serverChat.messages?.length || 0;
+                                const serverCount = srvMsgs.length;
                                 if (serverCount < localCount && localCount > 2) {
                                     console.warn(`🛡️ FETCH_GUARD: Keeping ${localCount} local messages (server had ${serverCount})`);
                                     return { ...c, delegateMeta: serverChat.delegateMeta ?? c.delegateMeta };
                                 }
-                                return { ...c, messages: serverChat.messages, delegateMeta: serverChat.delegateMeta ?? c.delegateMeta };
+                                return { ...c, messages: srvMsgs, delegateMeta: serverChat.delegateMeta ?? c.delegateMeta };
                             }));
                         });
                     }).catch(err => {
@@ -1524,7 +1543,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                         `<mark style="background:${isDarkMode ? '#b8860b' : '#fff176'};color:${isDarkMode ? '#fff' : '#000'};border-radius:2px;padding:0 1px">$1</mark>`);
                                     node.parentNode?.replaceChild(span, node);
                                 }
-                            } else if (node.nodeType === Node.ELEMENT_NODE && !['SCRIPT','STYLE','CODE','PRE'].includes((node as Element).tagName)) {
+                            } else if (node.nodeType === Node.ELEMENT_NODE && !['SCRIPT', 'STYLE', 'CODE', 'PRE'].includes((node as Element).tagName)) {
                                 Array.from(node.childNodes).forEach(walk);
                             }
                         };
@@ -1835,15 +1854,16 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     const fullConv = typeof db.getConversation === 'function'
                         ? await db.getConversation(activeId)
                         : (await db.getConversations()).find(c => c.id === activeId);
-                    const idbIsShell = fullConv && (
+                    const fcMsgs = fullConv?.messages ?? [];
+                    const idbIsShell = !!fullConv && (
                         (fullConv as any)._isShell ||
-                        ((fullConv as any)._fullMessageCount && fullConv.messages.length < (fullConv as any)._fullMessageCount)
+                        ((fullConv as any)._fullMessageCount && fcMsgs.length < (fullConv as any)._fullMessageCount)
                     );
-                    if (fullConv && fullConv.messages.length > 0 && !idbIsShell) {
+                    if (fullConv && fcMsgs.length > 0 && !idbIsShell) {
                         setConversations(prev => prev.map(c =>
-                            c.id === activeId ? { ...c, messages: fullConv.messages, _isShell: false, _fullMessageCount: undefined } : c
+                            c.id === activeId ? { ...c, messages: fcMsgs, _isShell: false, _fullMessageCount: undefined } : c
                         ));
-                        console.log(`✅ Lazy-loaded ${fullConv.messages.length} messages for active conversation`);
+                        console.log(`✅ Lazy-loaded ${fcMsgs.length} messages for active conversation`);
                     }
                 } catch (err) {
                     console.warn('⚠️ Failed to lazy-load active conversation messages:', err);
@@ -1863,6 +1883,20 @@ export function ChatProvider({ children }: ChatProviderProps) {
             console.warn('⚠️ INIT: IndexedDB failed. Server sync will attempt recovery.');
         } finally {
             isRecovering.current = false;
+            // Schedule retention purge AFTER initialization, off the critical
+            // path.  Previously this ran inside db.init() and its getConversations()
+            // call held the ziya-db-read Web Lock, starving getConversationShells()
+            // and producing multi-minute startup hangs on large DBs.
+            const schedulePurge = () => {
+                purgeExpiredConversations(db).catch(err => {
+                    console.warn('Retention purge failed (non-fatal):', err);
+                });
+            };
+            if (typeof (window as any).requestIdleCallback === 'function') {
+                (window as any).requestIdleCallback(schedulePurge, { timeout: 10000 });
+            } else {
+                setTimeout(schedulePurge, 5000);
+            }
         }
     }, [currentConversationId, isEphemeralMode]);
 
@@ -2041,9 +2075,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 return c;
             });
 
-                    // Only save the migrated conversations (not shells) to avoid clobbering full data
-                    const migratedNonShells = migrated.filter(c => !(c as any)._isShell);
-                    if (migratedNonShells.length > 0) await db.saveConversations(migratedNonShells);
+            // Only save the migrated conversations (not shells) to avoid clobbering full data
+            const migratedNonShells = migrated.filter(c => !(c as any)._isShell);
+            if (migratedNonShells.length > 0) await db.saveConversations(migratedNonShells);
             console.log('✅ MIGRATION: Conversations tagged with projectId');
             return migrated;
         };
@@ -2141,7 +2175,21 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             // appear stale on every sync cycle. Treat them as current to
                             // prevent repeated full fetches before lazy-load completes.
                             const localVer = (local as any)._isShell ? Infinity : ((local as any)._version || local.lastAccessedAt || 0);
-                            if (serverVer > localVer) {
+                            // Symmetric message-count divergence check (mirror of the
+                            // push-side filter below).  If server reports strictly
+                            // more messages than we have locally, fetch — even if
+                            // versions match.  Without this, a local copy that fell
+                            // behind the server with coincident _version stays
+                            // permanently behind.  Shells are excluded (they
+                            // intentionally carry a reduced message count until
+                            // lazy-load completes).
+                            const localMsgCount = (local as any)._isShell
+                                ? Infinity
+                                : (Array.isArray(local.messages) ? local.messages.length : 0);
+                            const serverMsgCount = typeof (sc as any).messageCount === 'number'
+                                ? (sc as any).messageCount
+                                : 0;
+                            if (serverVer > localVer || serverMsgCount > localMsgCount) {
                                 // Skip if we already fetched this conversation this session
                                 if (recentlyFetchedFullIds.current.has(sc.id)) {
                                     continue;
@@ -2218,7 +2266,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                     folderId: sc.groupId || sc.folderId || null,
                                     lastAccessedAt: sc.lastActiveAt || 0,
                                     isActive: true,
-                                _version: serverVersion,
+                                    _version: serverVersion,
                                 });
                             }
                         } else if (serverVersion > localVersion) {
@@ -2310,8 +2358,37 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             if (deletedIds.includes(c.id)) return false;
                             // Don't push inactive (deleted) conversations back to server
                             if (c.isActive === false) return false;
+                            // NEVER push shells.  SERVER_SYNC loads local state as
+                            // shells (getConversationShells — messages stripped to
+                            // first+last or blanked) for memory reasons.  Pushing
+                            // those to the server truncates or blanks the
+                            // authoritative record.  April-2026 regression.
+                            if ((c as any)._isShell) return false;
+                            if ((c as any)._fullMessageCount
+                                && Array.isArray(c.messages)
+                                && c.messages.length < (c as any)._fullMessageCount) return false;
                             const sc = serverChats.find(sc => sc.id === c.id);
                             if (!sc) return true; // local-only, needs push
+                            // Message-count divergence check.  If local has strictly
+                            // more messages than server, push regardless of _version.
+                            // Without this, a once-synced conversation whose _version
+                            // matched the server can accumulate local messages via
+                            // code paths that don't bump _version (or via stale
+                            // server state from an earlier shell-push incident), and
+                            // the version-only filter will block the correction
+                            // indefinitely — producing permanent local/server drift.
+                            // The April-2026 Rahul-Patil conversation hit this:
+                            // server stuck at 2 messages, local at 46, same _version.
+                            // Shell guards above still prevent pushing truncated
+                            // shells, so widening here is safe.
+                            const localMsgCount = Array.isArray(c.messages) ? c.messages.length : 0;
+                            const serverMsgCount = typeof (sc as any).messageCount === 'number'
+                                ? (sc as any).messageCount
+                                : Array.isArray((sc as any).messages) ? (sc as any).messages.length : 0;
+                            if (localMsgCount > serverMsgCount) {
+                                console.log(`📡 SERVER_SYNC: msg-count divergence for ${c.id.substring(0,8)} (local=${localMsgCount} server=${serverMsgCount}) — pushing`);
+                                return true;
+                            }
                             // Only push if local has a _version AND it's strictly greater than server's
                             // If server has no _version (old data), compare lastActiveAt instead
                             const serverVer = (sc as any)._version || sc.lastActiveAt || 0;
@@ -2377,7 +2454,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     let mergedResult: Conversation[] | null = null;
                     try {
                         const prev = conversationsRef.current;
-                        const prevMap = new Map(prev.map(c => [c.id, c]));
+                        const prevMap = new Map<string, Conversation>(prev.map(c => [c.id, c] as [string, Conversation]));
                         // Don't let a stale sync cycle resurrect a conversation that
                         // was deleted in this tab between when this sync started and now.
                         const prevIds = new Set(prev.map((p: any) => p.id));
@@ -2423,9 +2500,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     }
 
                     if (mergedResult !== null) {
-                    React.startTransition(() => {
-                        setConversations(mergedResult!);
-                    });
+                        React.startTransition(() => {
+                            setConversations(mergedResult!);
+                        });
                     }
 
                     // 7. Update current conversation if it doesn't exist in merged set
@@ -2538,15 +2615,16 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             const fullConv = typeof db.getConversation === 'function'
                                 ? await db.getConversation(activeId)
                                 : null;
-                            if (fullConv && fullConv.messages?.length > (activeConv.messages?.length || 0)) {
+                            const fcMsgs = fullConv?.messages ?? [];
+                            if (fullConv && fcMsgs.length > (activeConv.messages?.length || 0)) {
                                 React.startTransition(() => {
                                     setConversations(prev => prev.map(c =>
                                         c.id === activeId
-                                            ? { ...c, messages: fullConv.messages, _isShell: false, _fullMessageCount: undefined }
+                                            ? { ...c, messages: fcMsgs, _isShell: false, _fullMessageCount: undefined }
                                             : c
                                     ));
                                 });
-                                console.log(`✅ POST_SYNC: Re-hydrated active conversation with ${fullConv.messages.length} messages`);
+                                console.log(`✅ POST_SYNC: Re-hydrated active conversation with ${fcMsgs.length} messages`);
                             }
                         } catch (e) {
                             console.warn('⚠️ POST_SYNC: Active conversation re-hydration failed:', e);
@@ -2684,7 +2762,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             if (!isInitialized) return;
             try {
                 const allFolders = await db.getFolders();
-                const folderMap = new Map(allFolders.map(f => [f.id, f]));
+                const folderMap = new Map<string, ConversationFolder>(allFolders.map(f => [f.id, f] as [string, ConversationFolder]));
                 // Merge server folders so TaskPlan folders that haven't
                 // been persisted to IndexedDB yet aren't lost, and
                 // stale IndexedDB entries get updated with server status.
@@ -2980,7 +3058,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         if (currentConversationId === conversationId && targetProjectId !== sourceProjectId) {
             const remaining = conversationsRef.current.filter(
                 c => c.id !== conversationId && c.isActive !== false &&
-                     (c.projectId === sourceProjectId || c.isGlobal)
+                    (c.projectId === sourceProjectId || c.isGlobal)
             );
             if (remaining.length > 0) {
                 const mostRecent = remaining.reduce((a, b) =>

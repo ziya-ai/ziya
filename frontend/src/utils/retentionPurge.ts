@@ -55,30 +55,66 @@ export async function purgeExpiredConversations(db: any): Promise<void> {
     const ttlMs = policy.conversation_data_ttl_seconds * 1000;
     const cutoff = Date.now() - ttlMs;
 
-    const conversations = await db.getConversations();
-    if (!conversations || conversations.length === 0) return;
-
-    const kept: any[] = [];
-    let purgedCount = 0;
-
-    for (const conv of conversations) {
-        // Use the MOST RECENT activity timestamp for retention decisions.
-        // A conversation created months ago but used yesterday must not be
-        // purged.  Prefer lastAccessedAt > _version > lastActiveAt > createdAt.
-        const lastActivity = conv.lastAccessedAt || conv._version || conv.lastActiveAt || conv.createdAt || 0;
-        if (lastActivity > 0 && lastActivity < cutoff) {
-            purgedCount++;
-        } else {
-            kept.push(conv);
-        }
+    // Cursor-based scan + delete.  Previously this called
+    // getConversations() (full getAll including message bodies) and then
+    // saveConversations(kept) which re-wrote every retained record.  On
+    // databases with hundreds of conversations and large message bodies
+    // that was tens of seconds of main-thread work and held the
+    // ziya-db-read lock long enough to starve the sidebar's shell load.
+    //
+    // The cursor-based version walks records one at a time and deletes
+    // expired ones in-place via cursor.delete().  Retained records are
+    // not re-serialised.  Peak memory stays flat regardless of DB size.
+    const rawDb = db?.db as IDBDatabase | undefined;
+    if (!rawDb) {
+        console.warn('Retention purge: no IDB handle, skipping');
+        return;
     }
+    if (!rawDb.objectStoreNames.contains('conversations')) {
+        return;
+    }
+
+    const runPurge = () => new Promise<number>((resolve, reject) => {
+        let tx: IDBTransaction;
+        try {
+            tx = rawDb.transaction(['conversations'], 'readwrite');
+        } catch (err) {
+            reject(err);
+            return;
+        }
+        const store = tx.objectStore('conversations');
+        const req = store.openCursor();
+        let purgedCount = 0;
+
+        req.onsuccess = () => {
+            const cursor = req.result;
+            if (!cursor) return; // tx.oncomplete will resolve
+            const conv: any = cursor.value;
+            // Most recent activity wins: lastAccessedAt > _version > lastActiveAt > createdAt.
+            const lastActivity = conv?.lastAccessedAt || conv?._version || conv?.lastActiveAt || conv?.createdAt || 0;
+            if (lastActivity > 0 && lastActivity < cutoff) {
+                cursor.delete();
+                purgedCount++;
+            }
+            cursor.continue();
+        };
+        req.onerror = () => reject(req.error);
+        tx.oncomplete = () => resolve(purgedCount);
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(new Error('Retention purge transaction aborted'));
+    });
+
+    // Serialise against other DB writers via the existing Web Lock.  This
+    // is the same lock name db.ts uses for its write path.
+    const purgedCount = navigator.locks
+        ? await navigator.locks.request('ziya-db-write', runPurge)
+        : await runPurge();
 
     if (purgedCount > 0) {
         console.log(
-            `🗑️ Retention policy: purging ${purgedCount} expired conversation(s) ` +
+            `🗑️ Retention policy: purged ${purgedCount} expired conversation(s) ` +
             `(policy: ${policy.policy_reason})`
         );
-        await db.saveConversations(kept);
     }
 }
 
