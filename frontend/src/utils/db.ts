@@ -191,11 +191,13 @@ class ConversationDB implements DB {
                             stores: Array.from(this.db.objectStoreNames)
                         });
 
-                        // Enforce data retention policy after successful init
-                        purgeExpiredConversations(this).catch(err => {
-                            console.warn('Retention purge failed (non-fatal):', err);
-                        });
-
+                        // Retention purge is intentionally NOT run here.
+                        // It called getConversations() (full getAll on every
+                        // record including message bodies) which held the
+                        // ziya-db-read Web Lock and starved the sidebar's
+                        // getConversationShells() call that runs right after
+                        // init resolves.  ChatContext schedules the purge
+                        // after shells are loaded and the UI is interactive.
                         // Migrate from bulk 'current' key to per-record storage.
                         // Must complete before callers read/write.
                         this._migrateBulkToPerRecord().then(() => {
@@ -424,6 +426,17 @@ class ConversationDB implements DB {
                         tx.onerror = () => reject(tx.error);
                         tx.onabort = () => reject(new Error('Transaction aborted'));
                         for (const conv of conversations) {
+                            // Defensive: hasShells above should guarantee this never
+                            // fires, but if a future change ever lets a shell reach
+                            // the fast path we want to know loudly rather than
+                            // silently blank message content.
+                            if ((conv as any)._isShell) {
+                                console.error(
+                                    `🛡️ FAST_PATH_GUARD: Refusing to write shell for ${conv.id?.substring?.(0, 8)} via fast path. This indicates a regression.`,
+                                    new Error('shell-in-fast-path stack')
+                                );
+                                continue;
+                            }
                             const stripped = { ...conv } as any;
                             delete stripped._isShell;
                             delete stripped._fullMessageCount;
@@ -481,12 +494,21 @@ class ConversationDB implements DB {
             // downgrade the message count (data loss prevention).
             if ((conv as any)._isShell) {
                 const fullCount = (conv as any)._fullMessageCount || 0;
-                if (conv.messages.length < fullCount) {
-                    console.warn(`🛡️ SAVE_GUARD: Blocking full shell write for ${conv.id.substring(0, 8)} — has ${conv.messages.length} messages, full count is ${fullCount}. Metadata will be merged separately.`);
-                    // Queue a metadata-only merge so folderId/version changes aren't lost
-                    shellMetadataUpdates.set(conv.id, conv);
-                    return; // Skip this conversation entirely — IndexedDB already has the full version
-                }
+                // Shells ALWAYS have stripped message content (content: '').
+                // Writing them to IDB blanks the real content even when
+                // messages.length matches _fullMessageCount (short chats) or
+                // when _fullMessageCount got cleared upstream.  Block
+                // unconditionally and route through the metadata-only merge
+                // path so folderId/version/lastAccessedAt are still persisted.
+                // Capture a stack so we can identify which caller fed a shell
+                // into queueSave — shells should never reach persistence paths
+                // and the caller is the real bug to fix.
+                console.warn(
+                    `🛡️ SAVE_GUARD: Blocking shell write for ${conv.id.substring(0, 8)} (messages=${conv.messages.length}, fullCount=${fullCount}). Metadata will be merged separately.`,
+                    new Error('shell-write-caller stack')
+                );
+                shellMetadataUpdates.set(conv.id, conv);
+                return; // Skip this conversation entirely — IDB keeps the full record
             }
 
             const existing = deduped.get(conv.id);
