@@ -12,10 +12,114 @@ import { useSetQuestion } from '../context/QuestionContext';
 import { useFolderContext } from '../context/FolderContext';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 import { useProject } from '../context/ProjectContext';
+import { useSendPayload } from '../hooks/useSendPayload';
 
 // Lazy load the MarkdownRenderer
 import { MarkdownRenderer } from "./MarkdownRenderer";
-import { useSendPayload } from '../hooks/useSendPayload';
+// --- Deferred markdown rendering ---------------------------------------------
+// Rendering MarkdownRenderer for a single large message (heavy diffs, syntax
+// highlighting, tool-blocks) can cost 1-2 seconds.  Mounting 8 of them in a
+// single React render pass blocks the main thread for 15+ seconds.  We defer
+// each MarkdownRenderer mount via a shared idle-time queue, with
+// IntersectionObserver prioritising messages that are actually on screen.
+// Off-screen messages render during idle time.  Streaming is unaffected
+// because live streaming goes through StreamedContent.tsx, not this path —
+// every message passed here is already settled.
+
+type QueueEntry = { priority: number; task: () => void };
+const __messageRenderQueue: QueueEntry[] = [];
+let __messageQueueProcessing = false;
+const __rIC: (cb: () => void, opts?: { timeout: number }) => number =
+    (window as any).requestIdleCallback
+        ? (window as any).requestIdleCallback.bind(window)
+        : ((cb: () => void) => window.setTimeout(cb, 16) as unknown as number);
+const __processMessageQueue = () => {
+    if (__messageQueueProcessing) return;
+    if (__messageRenderQueue.length === 0) return;
+    __messageQueueProcessing = true;
+    __rIC(() => {
+        __messageRenderQueue.sort((a, b) => b.priority - a.priority);
+        const entry = __messageRenderQueue.shift();
+        __messageQueueProcessing = false;
+        if (entry) {
+            try { entry.task(); } catch (e) { console.warn('deferred markdown render threw:', e); }
+        }
+        if (__messageRenderQueue.length > 0) __processMessageQueue();
+    }, { timeout: 500 });
+};
+
+// Small messages aren't worth the observer + queue overhead — render them
+// directly.  Threshold picked empirically; below this size the MarkdownRenderer
+// cost is negligible compared with observer machinery.
+const INLINE_THRESHOLD_CHARS = 400;
+
+const LazyMarkdownRenderer: React.FC<React.ComponentProps<typeof MarkdownRenderer>> = (props) => {
+    const { markdown } = props;
+    const isSmall = (markdown?.length || 0) < INLINE_THRESHOLD_CHARS;
+    const [mounted, setMounted] = useState<boolean>(isSmall);
+    const placeholderRef = useRef<HTMLDivElement>(null);
+    const mountedRef = useRef<boolean>(isSmall);
+
+    // Estimate final height so the placeholder doesn't cause scroll-jump
+    // when the real content mounts.  Rough proxy: ~80 chars/line, ~21px/line.
+    const estimatedHeight = useMemo(() => {
+        if (!markdown) return 40;
+        return Math.max(40, Math.min(4000, Math.round((markdown.length / 80) * 21)));
+    }, [markdown?.length]);
+
+    useEffect(() => {
+        if (mountedRef.current) return;
+
+        const entry: QueueEntry = {
+            priority: 0,
+            task: () => {
+                if (mountedRef.current) return;
+                mountedRef.current = true;
+                setMounted(true);
+            },
+        };
+        __messageRenderQueue.push(entry);
+        __processMessageQueue();
+
+        let observer: IntersectionObserver | null = null;
+        if (placeholderRef.current && typeof IntersectionObserver !== 'undefined') {
+            observer = new IntersectionObserver((entries) => {
+                for (const e of entries) {
+                    if (e.isIntersecting) {
+                        entry.priority = 100;
+                        __processMessageQueue();
+                        observer?.disconnect();
+                        break;
+                    }
+                }
+            }, { rootMargin: '500px 0px' }); // 500px preload
+            observer.observe(placeholderRef.current);
+        }
+
+        return () => {
+            observer?.disconnect();
+            const idx = __messageRenderQueue.indexOf(entry);
+            if (idx >= 0) __messageRenderQueue.splice(idx, 1);
+        };
+    }, []);
+
+    if (!mounted) {
+        return (
+            <div
+                ref={placeholderRef}
+                style={{
+                    minHeight: estimatedHeight,
+                    opacity: 0.3,
+                    padding: '0.5em 0',
+                    fontSize: '0.9em',
+                    color: 'var(--text-muted, #888)',
+                }}
+            >…</div>
+        );
+    }
+    return <MarkdownRenderer {...props} />;
+};
+// --- end deferred markdown rendering ----------------------------------------
 
 /**
  * MessageActions — memoized per-message action buttons (retry, resubmit, mute).
@@ -217,7 +321,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     // INITIAL_WINDOW messages immediately.  Once the browser paints, expand
     // in steps so the browser can paint between batches and stay responsive.
     const INITIAL_WINDOW = 8;
-    const [messageWindow, setMessageWindow] = useState<number>(Infinity);
+    const [messageWindow, setMessageWindow] = useState<number>(INITIAL_WINDOW);
     const scrollToMessageIndexRef = useRef<number | null>(null);
     const windowConvRef = useRef(currentConversationId);
     const expandTimerRef = useRef<number | null>(null);
@@ -335,11 +439,19 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
 
     // Apply progressive window: show only the tail during initial render,
     // then the full list once the transition completes.
+    // Conversation-switch detection happens during render (not in effect) so
+    // the clamp applies on the very first render after switch — otherwise the
+    // old messageWindow (usually Infinity after prior expansion) would render
+    // all N messages synchronously before the effect has a chance to clamp,
+    // producing a multi-second blocked main thread.
+    const effectiveWindow = windowConvRef.current !== currentConversationId
+        ? INITIAL_WINDOW
+        : messageWindow;
     const windowedMessages = useMemo(() => {
-        if (messageWindow >= currentMessages.length) return currentMessages;
+        if (effectiveWindow >= currentMessages.length) return currentMessages;
         // Keep the last N messages so the user sees the most recent content first
-        return currentMessages.slice(-messageWindow);
-    }, [currentMessages, messageWindow]);
+        return currentMessages.slice(-effectiveWindow);
+    }, [currentMessages, effectiveWindow]);
 
     const displayMessages = isTopToBottom ? windowedMessages : [...windowedMessages].reverse();
 
@@ -577,7 +689,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                                 {isRawMode ? (
                                                     <pre className="raw-markdown-view">{msg.content}</pre>
                                                 ) : (
-                                                    <MarkdownRenderer
+                                                    <LazyMarkdownRenderer
                                                         markdown={msg.content}
                                                         enableCodeApply={enableCodeApply}
                                                         onOpenShellConfig={onOpenShellConfig}
@@ -604,7 +716,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                                 {isRawMode ? (
                                                     <pre className="raw-markdown-view">{msg.content}</pre>
                                                 ) : (
-                                                    <MarkdownRenderer
+                                                    <LazyMarkdownRenderer
                                                         markdown={msg.content}
                                                         enableCodeApply={enableCodeApply}
                                                         onOpenShellConfig={onOpenShellConfig}
