@@ -115,6 +115,10 @@ def _check_write_allowed(relative_path: str, project_root: str, file_exists: boo
     honours the project's ``direct_write_mode``.  Returns an empty string when allowed, or a human-readable rejection
     message that includes the approved paths (so the model can adjust).
     """
+    # YOLO mode: opened up via `/shell yolo` — unrestricted writes in-process
+    # (mirrors the shell server's YOLO_MODE env handling).
+    if os.environ.get("ZIYA_YOLO_MODE", "").lower() in ("1", "true", "yes"):
+        return ""
     from app.config.write_policy import get_write_policy_manager
     pm = get_write_policy_manager()
     allowed, reason = pm.is_direct_write_allowed(relative_path, project_root, file_exists=file_exists)
