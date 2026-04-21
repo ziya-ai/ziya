@@ -556,6 +556,47 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
             if context_offset > 0:
                 removal_matches = _validate_removal_content(file_lines, removed_lines, pos + context_offset)
         if removal_matches:
+            # Edge case: when every removed line also appears in added_lines (e.g.
+            # a "\ No newline at end of file" hunk that removes the last line and
+            # re-adds it followed by additional lines, or a code-move diff), the
+            # removed content is *expected* to still be in the file after a
+            # successful apply. In that case, presence of removal content is NOT
+            # evidence that the hunk is un-applied -- fall through to the
+            # added-content check below instead of returning False here.
+            if added_lines:
+                removed_norm = {normalize_line_for_comparison(l) for l in removed_lines if l.strip()}
+                added_norm = {normalize_line_for_comparison(l) for l in added_lines if l.strip()}
+                if removed_norm and removed_norm.issubset(added_norm):
+                    # Only override removal_matches when the post-state
+                    # (new_lines) is actually present at/near pos. If the
+                    # applied state isn't here, the removal match is the
+                    # genuine pre-state - the hunk is NOT applied at pos
+                    # and any "distinctive added content" found elsewhere
+                    # would be a coincidental match at a similar-looking
+                    # region (e.g. a sibling block with the same pattern).
+                    new_lines_present_near_pos = False
+                    if new_lines:
+                        new_lines_normalized_check = [normalize_line_for_comparison(l) for l in new_lines]
+                        nl_check = len(new_lines)
+                        ws = max(0, pos - 5)
+                        we = min(len(file_lines) - nl_check + 1, pos + 6)
+                        for sp in range(ws, we):
+                            slc = [normalize_line_for_comparison(file_lines[sp + k]) for k in range(nl_check)]
+                            if slc == new_lines_normalized_check:
+                                new_lines_present_near_pos = True
+                                break
+                    if new_lines_present_near_pos:
+                        logger.debug(
+                            f"Removal content present but re-add pattern confirmed by "
+                            f"new_lines presence near pos {pos}; continuing to added-content check"
+                        )
+                        removal_matches = False
+                    else:
+                        logger.debug(
+                            f"Re-add pattern suspected (removed subset of added) but new_lines "
+                            f"not present near pos {pos} - treating as genuine pre-state"
+                        )
+        if removal_matches:
             # The content to be removed IS in the file - hunk is NOT already applied
             logger.debug(f"Removal content found at pos {pos} - hunk NOT already applied")
             return False
@@ -584,6 +625,14 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
                 removed_as_str = "\n".join(removed_normalized)
                 distinctive_as_str = "\n".join(distinctive_normalized)
                 is_code_move = distinctive_as_str in removed_as_str
+                # Re-add pattern: every removed line also appears among added lines
+                # (e.g. context is re-stated in the added block). In that case the
+                # removed content will always "still be present" inside the matched
+                # added region, so the removal-still-present scan below would give
+                # a false negative. Detect and skip it.
+                _removed_norm_set = {n for n in removed_normalized if n.strip()}
+                _added_norm_set = {normalize_line_for_comparison(l) for l in added_lines if l.strip()}
+                is_re_add = bool(_removed_norm_set) and _removed_norm_set.issubset(_added_norm_set)
 
                 for search_pos in range(max(0, pos - 5), min(len(file_lines) - len(distinctive_added) + 1, pos + hunk.get('old_count', hunk.get('src_count', 20)) + 5)):
                     file_block = [normalize_line_for_comparison(file_lines[search_pos + i]) 
@@ -597,6 +646,38 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
                         # content is truly gone. If it still exists somewhere,
                         # the hunk has not been applied — there is just a
                         # similar block that coincidentally matches the result.
+                        if is_re_add:
+                            # As in the sub-fix above, declaring a re-add pattern
+                            # requires the post-state (new_lines) actually be
+                            # present at or near search_pos. Otherwise
+                            # distinctive_found may be matching a coincidentally
+                            # similar region (a sibling block with the same
+                            # distinctive tokens) rather than the applied hunk -
+                            # and we must not report already-applied.
+                            _new_lines_present_near_search = False
+                            if new_lines:
+                                _nl_norm_b = [normalize_line_for_comparison(l) for l in new_lines]
+                                _nl_b = len(new_lines)
+                                _wsb = max(0, search_pos - 5)
+                                _web = min(len(file_lines) - _nl_b + 1, search_pos + 6)
+                                for _spb in range(_wsb, _web):
+                                    _slcb = [normalize_line_for_comparison(file_lines[_spb + k]) for k in range(_nl_b)]
+                                    if _slcb == _nl_norm_b:
+                                        _new_lines_present_near_search = True
+                                        break
+                            if _new_lines_present_near_search:
+                                logger.debug(
+                                    f"Hunk appears already applied (re-add pattern): distinctive added "
+                                    f"content found at pos {search_pos} AND new_lines present nearby; "
+                                    f"skipping removal-still-present scan"
+                                )
+                                return True
+                            else:
+                                logger.debug(
+                                    f"Re-add pattern candidate at pos {search_pos} rejected - "
+                                    f"new_lines not present nearby, likely coincidental match"
+                                )
+                                continue
                         for scan_pos in range(len(file_lines) - len(removed_lines) + 1):
                             file_scan_block = [normalize_line_for_comparison(file_lines[scan_pos + j])
                                                for j in range(len(removed_lines))]
@@ -608,6 +689,133 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
                         return True
                 
                 logger.debug(f"Distinctive added content not found - hunk NOT already applied")
+                # For pure deletions or when new content doesn't match - not applied
+                return False
+            # added_lines is too small for distinctive-block search (0-2 lines).
+            # For small-replacement hunks (e.g. 1-line swaps) we try two
+            # progressively looser tests:
+            #   1) Full new_lines block (context + added) present within window
+            #      of pos AND removed lines absent from file.
+            #   2) If the diff's context is imprecise (new_lines can't be
+            #      located as a block), fall back to: every added line appears
+            #      within a window of pos AND every removed line is absent
+            #      from the file. This catches cases where the diff's context
+            #      lines don't exactly match the surrounding file content
+            #      (e.g. comment lines adjacent to the change).
+            if added_lines and new_lines and len(new_lines) >= 2:
+                removed_normalized = [normalize_line_for_comparison(line) for line in removed_lines]
+                new_lines_normalized = [normalize_line_for_comparison(line) for line in new_lines]
+                nl = len(new_lines)
+                # Search window: a bit around pos, plus the hunk's expected size.
+                window = max(20, hunk.get('old_count', hunk.get('src_count', 20)) + 10)
+                wstart = max(0, pos - window)
+                wend = min(len(file_lines) - nl + 1, pos + window)
+                block_found_at = -1
+                for sp in range(wstart, wend):
+                    slice_norm = [normalize_line_for_comparison(file_lines[sp + k]) for k in range(nl)]
+                    if slice_norm == new_lines_normalized:
+                        block_found_at = sp
+                        break
+                if block_found_at >= 0:
+                    # Verify the removal content is truly gone from the file.
+                    # If the removed line still exists somewhere, the hunk is
+                    # not applied - a similar block just happens to match new_lines.
+                    # EXCEPT: for "re-add" patterns where a removed line is also
+                    # present within new_lines (e.g. context is re-stated in the
+                    # added block), the removal will always "still be present"
+                    # inside block_found_at. Skip matches that fall entirely
+                    # within the already-matched new_lines region.
+                    removal_still_present = False
+                    rl = len(removed_lines)
+                    block_start = block_found_at
+                    block_end = block_found_at + nl
+                    if rl > 0 and rl <= len(file_lines):
+                        for sp in range(len(file_lines) - rl + 1):
+                            # Skip positions falling inside the new_lines region.
+                            if block_start <= sp and sp + rl <= block_end:
+                                continue
+                            scan_slice = [normalize_line_for_comparison(file_lines[sp + k]) for k in range(rl)]
+                            if scan_slice == removed_normalized:
+                                removal_still_present = True
+                                break
+                    if not removal_still_present:
+                        logger.debug(
+                            f"Small-change hunk appears already applied: new_lines block found at {block_found_at}, "
+                            f"removal content absent from file"
+                        )
+                        return True
+                    logger.debug(
+                        f"new_lines block found at {block_found_at} but removal content still present - NOT already applied"
+                    )
+
+            # Looser fallback for small-change hunks: check individual added
+            # lines near pos with removed lines absent from file.
+            if added_lines and removed_lines and len(added_lines) <= 2:
+                added_normalized = [normalize_line_for_comparison(l) for l in added_lines if l.strip()]
+                removed_normalized = [normalize_line_for_comparison(l) for l in removed_lines if l.strip()]
+                # Require at least one non-trivial added line to search for.
+                if added_normalized:
+                    # Tight window: the loose check should only fire when the
+                    # added line appears close to pos, not anywhere within 30
+                    # lines. A wide window causes false positives when an
+                    # unrelated sibling block (e.g. a different CSS rule or
+                    # JSX wrapper) happens to contain the same added line -
+                    # see MRE_css_padding_real_file where an identical
+                    # `padding: 0 !important;` appears in a neighbouring rule.
+                    # Use a tight window sized to the hunk body only. A wider
+                    # window (e.g. +10 padding) can still reach into an
+                    # adjacent sibling rule and produce a false positive.
+                    window = max(len(new_lines), 5)
+                    wstart = max(0, pos - window)
+                    wend = min(len(file_lines), pos + window)
+                    window_norm = [normalize_line_for_comparison(file_lines[i]) for i in range(wstart, wend)]
+                    all_added_near_pos = all(a in window_norm for a in added_normalized)
+                    if all_added_near_pos:
+                        # Verify no removed line is present anywhere in the
+                        # file. (Full-file scan so we don't miss a stray
+                        # identical line elsewhere that would indicate
+                        # partial / failed application.)
+                        full_file_norm = [normalize_line_for_comparison(l) for l in file_lines]
+                        any_removed_present = False
+                        for rn in removed_normalized:
+                            if rn in full_file_norm:
+                                any_removed_present = True
+                                break
+                        if not any_removed_present:
+                            # Before declaring the hunk applied, verify that the
+                            # post-state (new_lines block) actually lives near pos.
+                            # The "added lines scattered in window" signal alone
+                            # fires on coincidental matches (e.g. a different CSS
+                            # rule several lines away that happens to contain the
+                            # same property value). A legitimate already-applied
+                            # hunk has new_lines as a contiguous block at/near pos.
+                            new_lines_block_near_pos = False
+                            if new_lines:
+                                nl_norm = [normalize_line_for_comparison(l) for l in new_lines]
+                                nlen = len(new_lines)
+                                ws = max(0, pos - 5)
+                                we = min(len(file_lines) - nlen + 1, pos + 6)
+                                for sp in range(ws, we):
+                                    slc = [normalize_line_for_comparison(file_lines[sp + k]) for k in range(nlen)]
+                                    if slc == nl_norm:
+                                        new_lines_block_near_pos = True
+                                        break
+                            if new_lines_block_near_pos:
+                                logger.debug(
+                                    f"Small-change hunk appears already applied (loose check): "
+                                    f"all added lines present within window of pos {pos}, "
+                                    f"removed lines absent from file, new_lines block near pos"
+                                )
+                                return True
+                            else:
+                                logger.debug(
+                                    f"Loose-check suspected applied at pos {pos} but new_lines "
+                                    f"block not present near pos - rejecting as coincidental match"
+                                )
+                        logger.debug(
+                            f"Loose check: added lines near pos {pos} but removed lines still present"
+                        )
+
             # For pure deletions or when new content doesn't match - not applied
             return False
     
@@ -663,6 +871,11 @@ def _check_pure_addition_already_applied(file_lines: List[str], added_lines: Lis
     # original context lines are no longer consecutive -- the added lines sit
     # between them -- so searching for context lines alone will fail.
     new_lines = hunk.get('new_lines', [])
+    # Strip trailing empty lines which are a common parser artifact for hunks
+    # at end-of-function/file boundaries. The file won't contain those
+    # trailing blank lines verbatim when the hunk lives mid-file.
+    while new_lines and new_lines[-1] == '':
+        new_lines = new_lines[:-1]
     if new_lines and len(new_lines) > len(added_lines):
         new_lines_normalized = [normalize_line_for_comparison(line) for line in new_lines]
         search_start = max(0, pos - 20)
@@ -699,6 +912,39 @@ def _check_pure_addition_already_applied(file_lines: List[str], added_lines: Lis
                 logger.debug(f"Pure addition already applied: context at {search_pos}, additions at {check_pos}")
                 return True
     
+    # Fallback: the diff's context lines may not match the file exactly (e.g.
+    # the diff was generated against a slightly different version of the file,
+    # or a prior fuzzy-applied hunk shifted content). If the added lines
+    # themselves form a distinctive block, search for that block anywhere in
+    # the file. This catches "pure addition already applied with bogus context"
+    # which is the dominant double-apply failure mode.
+    non_trivial_added = [
+        normalize_line_for_comparison(l)
+        for l in added_lines
+        if normalize_line_for_comparison(l).strip()
+        and normalize_line_for_comparison(l).strip() not in ['}', '{', '});', '};', '];', '],', ');', ')', '/>', '>']
+    ]
+    if len(non_trivial_added) >= 3:
+        # Build the block WITHOUT trimming empty lines - we want positional match
+        full_added_norm = [normalize_line_for_comparison(l) for l in added_lines]
+        al = len(added_lines)
+        # Prefer searching within a generous window around pos first, then
+        # fall back to the whole file if not found.
+        def _search(start: int, end: int) -> int:
+            for sp in range(start, end):
+                file_block = [normalize_line_for_comparison(file_lines[sp + i]) for i in range(al)]
+                if file_block == full_added_norm:
+                    return sp
+            return -1
+        wstart = max(0, pos - 50)
+        wend = min(len(file_lines) - al + 1, pos + 50)
+        found_at = _search(wstart, wend)
+        if found_at < 0:
+            found_at = _search(0, len(file_lines) - al + 1)
+        if found_at >= 0:
+            logger.debug(f"Pure addition already applied: distinctive added block found at pos {found_at} (context-free match)")
+            return True
+
     logger.debug("Pure addition not found with matching context")
     return False
 

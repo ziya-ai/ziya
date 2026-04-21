@@ -17,6 +17,266 @@ logger = logging.getLogger(__name__)
 # This constant is kept for backward compatibility but should use get_confidence_threshold('medium')
 MIN_CONFIDENCE = get_confidence_threshold('medium')  # Medium confidence threshold for fuzzy matching
 
+def _normalize_for_idempotency(line: str) -> str:
+    """
+    Normalize a line for idempotency-detection comparison.
+
+    Wraps normalize_line_for_comparison() and additionally strips
+    Ziya's backtick-escape convention (backslash-backtick -> backtick) so that a
+    hunk's stored content (which has escaped backticks as shipped
+    through the model/context pipeline) compares equal to the
+    already-unescaped content written to the file on a prior apply.
+    """
+    normalized = normalize_line_for_comparison(line)
+    # Undo escaped backticks. This is safe on already-unescaped input
+    # (which contains no backslash-backtick sequences).
+    return normalized.replace('\`', '`')
+
+def _strip_trailing_line_comment(normalized_line: str) -> str:
+    """
+    Strip a trailing line-comment (// or #) from an already-normalized line.
+    Only strips when the comment marker is preceded by whitespace (to avoid
+    eating // inside URLs or # at start-of-line directives).
+    Returns the line with trailing comment removed and re-stripped.
+    """
+    if not normalized_line:
+        return normalized_line
+    for marker in ('//', '#'):
+        idx = 0
+        while True:
+            idx = normalized_line.find(marker, idx)
+            if idx <= 0:
+                break
+            if normalized_line[idx - 1].isspace():
+                return normalized_line[:idx].rstrip()
+            idx += len(marker)
+    return normalized_line
+
+def _added_line_matches_file_line(normalized_added: str, normalized_file: str) -> bool:
+    """
+    Idempotency-comparison helper: true if the file line contains the added
+    line's code content, allowing the file line to carry an extra trailing
+    comment that the diff's added line does not carry. This handles the case
+    where a previous (fuzzy / surgical) apply preserved a trailing comment
+    from the removed context line while the hunk's +line had no comment.
+    """
+    if normalized_added == normalized_file:
+        return True
+    if not normalized_added:
+        return False
+    stripped_file = _strip_trailing_line_comment(normalized_file)
+    return stripped_file == normalized_added
+
+def _added_block_already_present(
+    file_lines: List[str],
+    added_lines: List[str],
+    insert_pos: int,
+    window: int = 50,
+) -> bool:
+    """
+    Idempotency helper: check whether the given added_lines from a hunk
+    are already present within a window of insert_pos. Handles both
+    contiguous blocks (pure additions) and non-contiguous additions
+    (diffs that interleave '+' and ' ' lines - the added lines are
+    scattered among context lines in the final file).
+
+    Used to guard the 'standard' fallback path from duplicating content
+    when a hunk is being applied a second time (double-apply scenario).
+
+    Comparison is whitespace-normalized and ignores line endings.
+    Returns False for empty added_lines (nothing to verify).
+    """
+    if not added_lines:
+        return False
+
+    n = len(added_lines)
+    file_count = len(file_lines)
+    if n > file_count:
+        return False
+
+    normalized_added = [_normalize_for_idempotency(line) for line in added_lines]
+
+    # First try: contiguous-block match (pure-addition case).
+    cstart = max(0, insert_pos - window)
+    cend = min(file_count - n, insert_pos + window)
+    if cend >= cstart:
+        for i in range(cstart, cend + 1):
+            slice_norm = [
+                _normalize_for_idempotency(line) for line in file_lines[i:i + n]
+            ]
+            if all(
+                _added_line_matches_file_line(a, f)
+                for a, f in zip(normalized_added, slice_norm)
+            ):
+                return True
+
+    # Fallback: non-contiguous presence check. For diffs that interleave
+    # '+' and ' ' lines (replace-and-add patterns), the added lines end
+    # up scattered among context lines in the applied file. In that case
+    # verify that every non-trivial added line appears somewhere within
+    # an expanded window around insert_pos, in order.
+    non_trivial = [(idx, norm) for idx, norm in enumerate(normalized_added) if norm]
+    if not non_trivial:
+        return False
+    wstart = max(0, insert_pos - window)
+    wend = min(file_count, insert_pos + window + n)
+    window_norm = [_normalize_for_idempotency(line) for line in file_lines[wstart:wend]]
+    search_from = 0
+    for _idx, needle in non_trivial:
+        found_at = -1
+        for j in range(search_from, len(window_norm)):
+            if _added_line_matches_file_line(needle, window_norm[j]):
+                found_at = j
+                break
+        if found_at == -1:
+            return False
+        search_from = found_at + 1
+    return True
+
+def _expected_new_block_present(
+    file_lines: List[str],
+    hunk: Dict[str, Any],
+    insert_pos: int,
+    window: int = 200,
+) -> bool:
+    """
+    Idempotency helper: check whether the hunk's expected post-apply content
+    (derived from new_block / added+context lines) is already present in the
+    file within a window of insert_pos. Used to guard against re-applying a
+    hunk that was already applied on a previous pass.
+
+    Comparison is whitespace-normalized.
+    """
+    new_block = hunk.get('new_block') or []
+    # Strip diff prefix from new_block lines (' ' context, '+' added)
+    expected = []
+    for line in new_block:
+        if not line:
+            expected.append('')
+        elif line.startswith('+') or line.startswith(' '):
+            expected.append(line[1:])
+        else:
+            expected.append(line)
+    # Fall back to added_lines if new_block is unusable
+    if not expected:
+        expected = list(hunk.get('added_lines') or [])
+    if not expected:
+        return False
+
+    n = len(expected)
+    file_count = len(file_lines)
+    if n > file_count:
+        return False
+
+    normalized_expected = [normalize_line_for_comparison(l) for l in expected]
+    start = max(0, insert_pos - window)
+    end = min(file_count - n, insert_pos + window)
+    if end < start:
+        return False
+    for i in range(start, end + 1):
+        slice_norm = [normalize_line_for_comparison(file_lines[i + k]) for k in range(n)]
+        if slice_norm == normalized_expected:
+            return True
+    return False
+
+def _removed_lines_absent_from_window(
+    file_lines: List[str],
+    removed_lines: List[str],
+    insert_pos: int,
+    window: int = 50,
+) -> bool:
+    """
+    Idempotency helper: return True when the hunk's removed_lines cannot be
+    found as a contiguous block anywhere in a window around insert_pos.
+
+    If the content that the hunk wants to remove is nowhere to be found near
+    where the hunk expects to operate, the removal has almost certainly
+    already happened on a prior apply, so re-applying would corrupt the file.
+
+    Returns False if removed_lines is empty (no removal to verify).
+    """
+    if not removed_lines:
+        return False
+
+    n = len(removed_lines)
+    file_count = len(file_lines)
+    if n > file_count:
+        # File is too short to contain the removed block -> absent.
+        return True
+
+    normalized_removed = [normalize_line_for_comparison(l) for l in removed_lines]
+    # Ignore purely-empty normalized lines which give spurious matches.
+    if not any(normalized_removed):
+        return False
+
+    start = max(0, insert_pos - window)
+    end = min(file_count - n, insert_pos + window)
+    if end < start:
+        return True
+
+    for i in range(start, end + 1):
+        slice_norm = [
+            normalize_line_for_comparison(line) for line in file_lines[i:i + n]
+        ]
+        if slice_norm == normalized_removed:
+            return False
+    return True
+
+def _build_context_preserving_new_lines(
+    hunk: Dict[str, Any],
+    file_lines: List[str],
+    insert_pos: int,
+    new_lines_content: List[str],
+    dominant_ending: str,
+) -> List[str]:
+    """
+    Build the replacement block for a hunk, preserving context lines as they
+    appear in the file rather than overwriting them with the diff's version.
+
+    Used in the fuzzy-match fallback paths, where the diff's context lines may
+    byte-differ from the file (e.g. the file contains a typo or a trailing
+    comment that the diff's context line omits). Writing new_lines_content
+    verbatim in that case would incorrectly "correct" the file's context lines.
+
+    Strategy:
+    - Lines whose stripped form appears in hunk['added_lines'] (and NOT in
+      removed_lines) are treated as additions and taken from the diff.
+    - Other lines are context (or the post-state of a replacement); take the
+      corresponding line from the file at insert_pos + old_idx, where old_idx
+      tracks advancement through the hunk's old_block.
+    - For a replacement (added line whose old_block slot is a removed line),
+      advance old_idx to consume the removed slot but still emit the diff's
+      added text.
+
+    Falls back to the diff's verbatim line if we'd run past the end of the file.
+    """
+    added_set = {a.strip() for a in hunk.get('added_lines', [])}
+    removed_set = {r.strip() for r in hunk.get('removed_lines', [])}
+    old_block = hunk.get('old_block', []) or []
+
+    result: List[str] = []
+    old_idx = 0
+    for new_line in new_lines_content:
+        new_stripped = new_line.strip()
+        is_addition = new_stripped in added_set and new_stripped not in removed_set
+        if is_addition:
+            # If this addition replaces a removed line at the current old_idx,
+            # advance old_idx to consume that slot.
+            if old_idx < len(old_block) and old_block[old_idx].strip() in removed_set:
+                old_idx += 1
+            result.append(new_line if new_line.endswith('\n') else new_line + dominant_ending)
+        else:
+            # Context / unchanged line: preserve the file's version so we don't
+            # overwrite typos, trailing comments, or other byte-level quirks
+            # that the diff's context line doesn't reproduce.
+            file_idx = insert_pos + old_idx
+            if file_idx < len(file_lines):
+                result.append(file_lines[file_idx])
+            else:
+                result.append(new_line if new_line.endswith('\n') else new_line + dominant_ending)
+            old_idx += 1
+    return result
+
 def apply_surgical_changes(original_lines: List[str], hunk: Dict[str, Any], position: int) -> List[str]:
     """
     Apply only the actual changes from a hunk while preserving context lines.
@@ -60,8 +320,14 @@ def apply_surgical_changes(original_lines: List[str], hunk: Dict[str, Any], posi
                 # Verify the file line actually matches what we expect to remove.
                 # If context is offset (e.g. diff omitted a line), position+i
                 # points at the wrong line and we'd corrupt the file.
+                # Accept lines where the file has *trailing content* beyond the
+                # removed text (e.g. a trailing comment that the diff omits).
+                # The startswith relaxation preserves position-drift detection
+                # (unrelated lines still fail) while allowing the trailing-
+                # content preservation logic further down to run.
                 file_norm = normalize_line_for_comparison(original_lines[file_idx])
-                if file_norm != removed_norm[removed_map[i]]:
+                expected_norm = removed_norm[removed_map[i]]
+                if file_norm != expected_norm and not file_norm.startswith(expected_norm):
                     return original_lines
                 file_line = original_lines[file_idx]
                 removed_line = removed_lines[removed_map[i]]
@@ -1662,7 +1928,10 @@ def apply_diff_with_difflib_hybrid_forced(
                                     indents = [len(line) - len(line.lstrip()) 
                                              for line in original_lines_to_replace if line.strip()]
                                     if indents:
-                                        common_indent = max(set(indents), key=indents.count)
+                                        # Deterministic tie-break: pick most-common indent; on ties,
+                                        # the one that appears earliest in the source (avoids
+                                        # PYTHONHASHSEED-sensitive set iteration order).
+                                        common_indent = max(set(indents), key=lambda v: (indents.count(v), -indents.index(v)))
                                         adapted_indent = ' ' * common_indent
                                         corrected_new_lines.append(adapted_indent + new_content + dominant_ending)
                                     else:
@@ -1689,7 +1958,8 @@ def apply_diff_with_difflib_hybrid_forced(
                             
                             if indents:
                                 # Use the most common indentation level
-                                common_indent = max(set(indents), key=indents.count)
+                                # Deterministic tie-break (most-common, earliest-occurrence on ties).
+                                common_indent = max(set(indents), key=lambda v: (indents.count(v), -indents.index(v)))
                                 adapted_indent = ' ' * common_indent
                                 corrected_new_lines.append(adapted_indent + new_content + dominant_ending)
                             else:
@@ -1731,6 +2001,22 @@ def apply_diff_with_difflib_hybrid_forced(
                                     logger.info(f"Hunk #{hunk_idx}: Successfully applied content-based changes")
                                 else:
                                     logger.warning(f"Hunk #{hunk_idx}: Content-based also made no changes, falling back to standard")
+                                    # Idempotency guard: when both surgical and content-based
+                                    # decline to make changes due to context mismatch, the hunk
+                                    # is very likely already applied. Verify by checking whether
+                                    # the hunk's added lines are already present (as a contiguous
+                                    # block OR scattered among context) near insert_pos. If so,
+                                    # skip the destructive standard fallback that would duplicate
+                                    # content on a second apply.
+                                    _added_lines_only = h.get('added_lines', [])
+                                    if _added_lines_only and _added_block_already_present(
+                                        final_lines_with_endings, _added_lines_only, insert_pos
+                                    ):
+                                        logger.info(
+                                            f"Hunk #{hunk_idx}: Added lines already present near position {insert_pos}; "
+                                            f"skipping standard fallback to preserve idempotency"
+                                        )
+                                        continue
                                     new_lines_with_endings = []
                                     for line in new_lines_content:
                                         new_lines_with_endings.append(line + dominant_ending)

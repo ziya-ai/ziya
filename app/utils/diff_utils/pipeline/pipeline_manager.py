@@ -286,7 +286,12 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
         # Set the final status based on hunk results
         if all(tracker.status in (HunkStatus.SUCCEEDED, HunkStatus.ALREADY_APPLIED) 
                for tracker in pipeline.result.hunks.values()):
-            pipeline.result.status = "success"
+            # Distinguish "all already applied" (no-op) from "some succeeded"
+            if all(tracker.status == HunkStatus.ALREADY_APPLIED
+                   for tracker in pipeline.result.hunks.values()):
+                pipeline.result.status = "already_applied"
+            else:
+                pipeline.result.status = "success"
         elif any(tracker.status == HunkStatus.SUCCEEDED 
                 for tracker in pipeline.result.hunks.values()):
             pipeline.result.status = "partial"
@@ -309,7 +314,14 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
     # If all hunks succeeded or were already applied, we're done
     if all(tracker.status in (HunkStatus.SUCCEEDED, HunkStatus.ALREADY_APPLIED) 
            for tracker in pipeline.result.hunks.values()):
-        pipeline.result.status = "success"
+        # Distinguish "all already applied" (no-op, double-apply) from "some succeeded".
+        # On a second apply, every hunk is ALREADY_APPLIED and the caller expects status
+        # 'already_applied' rather than 'success' so downstream logic can treat it as a no-op.
+        if all(tracker.status == HunkStatus.ALREADY_APPLIED
+               for tracker in pipeline.result.hunks.values()):
+            pipeline.result.status = "already_applied"
+        else:
+            pipeline.result.status = "success"
         # Only mark changes as written if system patch actually succeeded
         # System patch has all-or-nothing behavior - if any hunk fails, no changes are written
         if system_patch_result:
@@ -383,7 +395,11 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
     # If all hunks succeeded or were already applied, we're done
     if all(tracker.status in (HunkStatus.SUCCEEDED, HunkStatus.ALREADY_APPLIED) 
            for tracker in pipeline.result.hunks.values()):
-        pipeline.result.status = "success"
+        if all(tracker.status == HunkStatus.ALREADY_APPLIED
+               for tracker in pipeline.result.hunks.values()):
+            pipeline.result.status = "already_applied"
+        else:
+            pipeline.result.status = "success"
         # Only mark changes as written if git apply actually succeeded
         if git_apply_result:
             pipeline.result.changes_written = True
@@ -453,7 +469,11 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
             pipeline.result.status = "partial"
         elif pipeline.result.succeeded_hunks or pipeline.result.already_applied_hunks:
             logger.info("All processed hunks succeeded")
-            pipeline.result.status = "success"
+            if pipeline.result.already_applied_hunks and not pipeline.result.succeeded_hunks:
+                # All hunks were already applied — report already_applied (no-op, double-apply).
+                pipeline.result.status = "already_applied"
+            else:
+                pipeline.result.status = "success"
         pipeline.complete()
     
     # Compact per-hunk summary (DEBUG) + one-line result (DEBUG)
@@ -1631,14 +1651,46 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                 
             found_applied_at_any_pos = False
             
-            # Skip "already applied" detection for merged hunks since they contain
-            # combined content from multiple original hunks that won't match the current file state
+            # Merged hunks contain combined content from multiple original hunks and
+            # won't match the current file state as-is. Instead, check each constituent
+            # original hunk independently - if ALL constituents are already applied in
+            # the file, the merged hunk is effectively already applied and re-applying
+            # it on a second pass would corrupt the file.
             is_merged_hunk = merged_hunk_mapping and (i-1) in merged_hunk_mapping
             if is_merged_hunk:
-                logger.info(f"Skipping 'already applied' detection for merged hunk #{i} - will apply directly")
-                logger.info(f"Hunk #{i} (original ID #{original_hunk_id}) is not already applied")
-                all_hunks_found_applied = False
-                continue
+                constituent_indices = merged_hunk_mapping[i-1]
+                all_constituents_applied = True
+                for orig_idx in constituent_indices:
+                    if orig_idx >= len(original_hunks):
+                        all_constituents_applied = False
+                        break
+                    orig_hunk = original_hunks[orig_idx]
+                    orig_applied = False
+                    # Search a window around the original hunk's expected position.
+                    exp = max(0, orig_hunk.get('old_start', 1) - 1)
+                    search_radius = 50
+                    for p in range(max(0, exp - search_radius),
+                                   min(len(original_lines), exp + search_radius) + 1):
+                        if is_hunk_already_applied(original_lines, orig_hunk, p, ignore_whitespace=True):
+                            orig_applied = True
+                            break
+                    if not orig_applied:
+                        all_constituents_applied = False
+                        break
+                if all_constituents_applied:
+                    logger.info(
+                        f"Merged hunk #{i}: all {len(constituent_indices)} constituent hunks "
+                        f"already applied - marking as already applied"
+                    )
+                    found_applied_at_any_pos = True
+                    any_hunks_processed = True
+                    update_merged_hunk_status(pipeline, merged_hunk_mapping, i-1,
+                                              HunkStatus.ALREADY_APPLIED, PipelineStage.DIFFLIB)
+                    continue
+                else:
+                    logger.info(f"Merged hunk #{i}: constituents not all applied - will apply directly")
+                    all_hunks_found_applied = False
+                    continue
             
             # Check if this specific hunk is already applied anywhere in the file
             # OPTIMIZATION: Use smarter search instead of checking every position
@@ -1663,11 +1715,14 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                 
                 if distinctive_line:
                     # Find positions where this distinctive line appears
-                    for i, file_line in enumerate(original_lines):
+                    # NOTE: use a non-'i' loop variable here; the outer loop
+                    # `for i, hunk in enumerate(hunks, 1)` relies on `i` being
+                    # the hunk index for hunk_id_mapping lookups after this block.
+                    for file_idx, file_line in enumerate(original_lines):
                         if file_line.strip() == distinctive_line:
                             # Add positions around this match
                             for offset in range(-5, 6):  # Check 5 lines before/after
-                                pos = i + offset
+                                pos = file_idx + offset
                                 if 0 <= pos <= len(original_lines) and pos not in search_positions:
                                     search_positions.append(pos)
             
@@ -1873,7 +1928,24 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                         if old_block and old_block != new_lines:
                             # Check if old_block exists anywhere in the file
                             old_block_exists = False
+                            # For "re-add" patterns (e.g. diffs with `\ No newline at end
+                            # of file` that remove and re-add the last line before
+                            # appending more content), old_block is a strict prefix/subset
+                            # of new_lines and will always "exist" inside the
+                            # already-applied new_lines region. In that case, matching
+                            # inside the new_lines region is not evidence that the hunk
+                            # is un-applied - so exclude it. Only apply this exclusion
+                            # when old_block is genuinely shorter than new_lines; when
+                            # they are the same length (e.g. indentation-only changes
+                            # where normalize(old)==normalize(new)), the matched region
+                            # is the only place the old content can live, and excluding
+                            # it would incorrectly report "already applied".
+                            exclude_new_region = len(old_block) < len(new_lines)
+                            new_region_start = pos
+                            new_region_end = pos + len(new_lines)
                             for check_pos in range(len(original_lines) - len(old_block) + 1):
+                                if exclude_new_region and new_region_start <= check_pos < new_region_end:
+                                    continue
                                 check_slice = original_lines[check_pos:check_pos+len(old_block)]
                                 normalized_check = [normalize_line_for_comparison(line) for line in check_slice]
                                 if normalized_check == normalized_old_block:
