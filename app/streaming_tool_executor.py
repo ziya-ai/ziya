@@ -582,6 +582,39 @@ class StreamingToolExecutor:
             ),
         }
 
+    @staticmethod
+    def _build_parrot_corrective_message(parrot_match: Dict[str, Any]) -> Dict[str, Any]:
+        """Build a targeted corrective message when the shingle index
+        detected the model reproducing a specific prior tool result.
+
+        Unlike the generic fabrication scold, this cites the tool and
+        invocation being parroted and offers a concrete recovery path:
+        re-call the tool if current state might differ, or quote the
+        prior result inside a code fence if referencing it analytically.
+        """
+        tool_name = parrot_match.get('tool_name') or 'a prior tool'
+        tool_use_id = parrot_match.get('tool_use_id') or 'unknown'
+        shingle_overlap = parrot_match.get('shingle_overlap', 0)
+        line_matches = parrot_match.get('line_matches', 0)
+        return {
+            "role": "user",
+            "content": (
+                f"Your response started reproducing the output of `{tool_name}` "
+                f"from an earlier invocation (tool_use_id {tool_use_id}, "
+                f"{shingle_overlap} shingle overlaps, {line_matches} line matches) "
+                "as prose in your assistant text. This is a hallucination pattern: "
+                "you are echoing content from a prior real tool result instead of "
+                "calling the tool again.\n\n"
+                "Choose one of:\n"
+                "  1. If the current state might differ from that earlier result, "
+                "call the tool again now using the tool_use API.\n"
+                "  2. If you were referencing the earlier result analytically, "
+                "quote it briefly inside a fenced code block instead of reproducing "
+                "it as free prose.\n\n"
+                "Do not reproduce tool output as narrative text."
+            ),
+        }
+
     async def _execute_fake_tool(self, tool_name, command, assistant_text, tool_results, mcp_manager):
         """Execute a fake tool call detected in the text stream."""
         actual_tool_name = self._normalize_tool_name(tool_name)
@@ -1599,6 +1632,7 @@ class StreamingToolExecutor:
         for iteration in range(max_iterations):
             logger.debug(f"🔍 ITERATION_START: Beginning iteration {iteration}")
             hallucination_this_iteration = False
+            parrot_match_this_iteration: Optional[Dict[str, Any]] = None
             
             # Suppress verbose iteration logs in chat mode
             chat_mode = os.environ.get('ZIYA_MODE', 'server') == 'chat'
@@ -1935,6 +1969,7 @@ class StreamingToolExecutor:
                 _td_state = TextDeltaState(
                     code_block_tracker=code_block_tracker,
                     iteration_start_time=iteration_start_time,
+                    conversation_id=conversation_id,
                 )
 
                 # Track event count for debugging
@@ -2151,6 +2186,7 @@ class StreamingToolExecutor:
                             in_viz_block = _td_state.in_viz_block
                             if _td_state.hallucination_detected:
                                 hallucination_this_iteration = True
+                                parrot_match_this_iteration = _td_state.parrot_match
                                 break
 
                             # Check for autoregressive degeneration in real time.
@@ -2726,24 +2762,33 @@ Please retry the tool call with valid JSON. Ensure:
                         })
                         yield {'type': 'stream_end'}
                         break
-                    conversation.append({
-                        "role": "user",
-                        "content": "STOP. You just tried to fabricate tool output in your text instead of using the tool calling API. "
-                                   "Do NOT generate fake tool results, shell prompts, or simulated command output. "
-                                   "If you need to run a command, use the run_shell_command tool properly. "
-                                   "Continue your response normally without fabricating any tool output."
-                    })
-                    logger.info(f"🔄 HALLUCINATION_RETRY: Attempt {hallucination_retries}/3, added corrective message")
-
-                    # Inject corrective message so the model sees explicit
-                    # feedback that prose-based tool usage is not acceptable
-                    conversation.append(
-                        self._build_tool_reinforcement_message()
-                    )
-                    logger.info(
-                        "🔄 HALLUCINATION_RETRY: Injected tool-use reinforcement "
-                        "message into conversation"
-                    )
+                    if parrot_match_this_iteration:
+                        conversation.append(
+                            self._build_parrot_corrective_message(
+                                parrot_match_this_iteration
+                            )
+                        )
+                        logger.info(
+                            f"🔄 HALLUCINATION_RETRY: Attempt {hallucination_retries}/3, "
+                            f"parrot-specific corrective (tool={parrot_match_this_iteration.get('tool_name')}, "
+                            f"shingle_overlap={parrot_match_this_iteration.get('shingle_overlap')}, "
+                            f"line_matches={parrot_match_this_iteration.get('line_matches')})"
+                        )
+                    else:
+                        conversation.append({
+                            "role": "user",
+                            "content": "STOP. You just tried to fabricate tool output in your text instead of using the tool calling API. "
+                                       "Do NOT generate fake tool results, shell prompts, or simulated command output. "
+                                       "If you need to run a command, use the run_shell_command tool properly. "
+                                       "Continue your response normally without fabricating any tool output."
+                        })
+                        conversation.append(
+                            self._build_tool_reinforcement_message()
+                        )
+                        logger.info(
+                            f"🔄 HALLUCINATION_RETRY: Attempt {hallucination_retries}/3, "
+                            "generic fabrication corrective (no parrot_match)"
+                        )
                     continue
 
                 # Continue to next iteration if tools were executed

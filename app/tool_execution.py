@@ -290,6 +290,33 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
         else:
             logger.warning(f"🔐 SECURITY: Suppressed unverified result from display: {ctx.actual_tool_name}")
 
+        # --- Register result fingerprint for hallucination detection ---
+        # Only fingerprint verified, substantive results. Server-constructed
+        # error/blocked messages are skipped so the model can legitimately
+        # echo phrases like "please try a different approach" without being
+        # flagged as parroting tool output.
+        if is_verified and ctx.conversation_id:
+            try:
+                if isinstance(result_text, list):
+                    _fp_text = '\n'.join(
+                        b.get('text', '') for b in result_text
+                        if isinstance(b, dict) and b.get('type') == 'text'
+                    )
+                elif isinstance(result_text, str):
+                    _fp_text = result_text
+                else:
+                    _fp_text = ''
+                if _fp_text and not _fp_text.startswith(('ERROR:', 'BLOCKED:')):
+                    from app.hallucination import register_tool_result
+                    register_tool_result(
+                        conversation_id=ctx.conversation_id,
+                        tool_use_id=ctx.tool_id,
+                        tool_name=ctx.actual_tool_name,
+                        result_text=_fp_text,
+                    )
+            except Exception as _e:
+                logger.debug(f"🔐 SHINGLE_INDEX: registration skipped: {_e}")
+
         # Send result to model
         yield {
             'type': 'tool_result_for_model',
