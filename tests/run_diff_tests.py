@@ -195,7 +195,6 @@ class DiffRegressionTest(unittest.TestCase):
             # Read the result after first application
             with open(test_file_path, 'r', encoding='utf-8') as f:
                 after_first_apply = f.read()
-            print(f"DEBUG: After first apply: {len(after_first_apply.splitlines())} lines")
             
             try:
                 use_git_to_apply_code_diff(diff, test_file_path)
@@ -203,7 +202,6 @@ class DiffRegressionTest(unittest.TestCase):
                 # Read result after second application
                 with open(test_file_path, 'r', encoding='utf-8') as f:
                     after_second_apply = f.read()
-                print(f"DEBUG: After second apply: {len(after_second_apply.splitlines())} lines")
                 
                 # Verify second application didn't change anything
                 if after_first_apply != after_second_apply:
