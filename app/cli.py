@@ -1369,6 +1369,10 @@ class CLI:
         while True:
             try:
                 # Use prompt_toolkit for rich input
+                # OSC 133;D then 133;A tells iTerm2 that any prior command has
+                # finished and a new prompt is starting.  Without this, iTerm
+                # keeps showing the tab activity spinner while we're idle.
+                sys.stdout.write("\033]133;D\007\033]133;A\007"); sys.stdout.flush()
                 try:
                     user_input = await asyncio.to_thread(
                         self.session.prompt,
@@ -1399,11 +1403,13 @@ class CLI:
                 # Regular message
                 print()
                 print("\033[90m⏳ Sending to model...\033[0m", file=sys.stderr)
+                sys.stdout.write("\033]133;C\007"); sys.stdout.flush()
                 try:
                     await self.ask(user_input)
                 except asyncio.CancelledError:
                     # Operation was cancelled, continue the loop
                     pass
+                sys.stdout.write("\033]133;D\007"); sys.stdout.flush()
                 print("\033[90m[trace] ask() returned, looping to prompt\033[0m", file=sys.stderr)
                 print()
                 
@@ -1691,6 +1697,7 @@ class CLI:
         if sub == 'yolo':
             if sub_args and sub_args[0] == 'off':
                 self._session_yolo = False
+                os.environ["ZIYA_YOLO_MODE"] = "false"
                 print("\033[32m✓ YOLO mode disabled.\033[0m")
                 await self._restart_shell_server()
                 return
@@ -1718,6 +1725,7 @@ class CLI:
                 return
 
             self._session_yolo = True
+            os.environ["ZIYA_YOLO_MODE"] = "true"
             print("\n\033[1;33m🔥 YOLO mode enabled (this session only).\033[0m")
             print("Disable with: /shell yolo off")
             await self._restart_shell_server()
@@ -1772,9 +1780,7 @@ class CLI:
             merged_config = get_default_shell_config()
             self._session_shell_commands = merged_config["allowedCommands"].copy()
             self._session_yolo = False
-            if persist:
-                reset_shell_config()
-            n = len(self._session_shell_commands)
+            os.environ["ZIYA_YOLO_MODE"] = "false"
             print(f"\033[32m✓ Shell config reset to defaults ({n} commands, YOLO off)\033[0m")
             if persist:
                 print("\033[90m  (saved permanently)\033[0m")

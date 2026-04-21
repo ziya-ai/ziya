@@ -14,6 +14,16 @@ import time
 import shlex
 from typing import Dict, Any, Optional
 
+# Shell keywords that begin compound constructs requiring a shell interpreter
+_COMPOUND_STARTERS = frozenset({'for', 'while', 'until', 'if', 'case', 'select'})
+
+# All shell keywords (structural tokens that are never standalone executables)
+_SHELL_KEYWORDS = frozenset({
+    'for', 'while', 'until', 'if', 'then', 'else', 'elif', 'fi',
+    'do', 'done', 'case', 'esac', 'in', 'select',
+    'function', 'return', 'break', 'continue',
+})
+
 # Import centralized shell configuration
 # Go up two levels: shell_server.py -> mcp_servers/ -> app/ -> site-packages (or project root)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -159,6 +169,66 @@ class ShellServer:
         return result
 
     @staticmethod
+    def _is_compound_command(command: str) -> bool:
+        """Check if command is a compound shell construct (for/while/if/etc)."""
+        first_word = command.strip().split()[0] if command.strip() else ''
+        return first_word in _COMPOUND_STARTERS
+
+    def _validate_compound_body(self, command: str) -> tuple:
+        """Validate commands inside a compound shell construct.
+
+        Splits the compound into segments, strips shell keywords, and
+        checks the actual commands against the allowlist.
+        Returns (allowed: bool, denial_reason: str).
+        """
+        # Split into fine-grained segments by ; \n && || |
+        parts = re.split(r'[;\n]|\s*\&\&\s*|\s*\|\|\s*|\s*\|\s*', command)
+
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            words = part.split()
+            if not words:
+                continue
+
+            # Strip leading shell keywords to find the real command
+            idx = 0
+            while idx < len(words) and words[idx] in _SHELL_KEYWORDS:
+                # After 'for', skip variable name + word list (not commands)
+                if words[idx] == 'for' and idx + 1 < len(words):
+                    idx += 1          # skip loop variable name
+                    while idx < len(words) and words[idx] not in ('do', 'in'):
+                        idx += 1
+                idx += 1
+
+            if idx >= len(words):
+                continue
+
+            cmd_word = words[idx]
+
+            # Variable assignment (var=...) — not a command invocation
+            if '=' in cmd_word and not cmd_word.startswith('=') and not cmd_word.startswith('-'):
+                continue
+
+            # Validate the command against the allowlist
+            test_cmd = ' '.join(words[idx:])
+            segment_ok = any(
+                re.match(p, test_cmd, re.IGNORECASE)
+                for p in self.safe_command_patterns.values()
+            )
+            if not segment_ok:
+                return False, f"'{cmd_word}' is not allowed"
+
+        # Validate $() and backtick substitutions
+        for sub in re.findall(r'\$\(([^)]+)\)', command) + re.findall(r'`([^`]+)`', command):
+            sub_ok, sub_reason = self.is_command_allowed(sub.strip())
+            if not sub_ok:
+                return False, sub_reason
+
+        return True, ""
+
+    @staticmethod
     def _extract_redirections(args: list) -> tuple:
         """Extract shell-style redirections from tokenized args.
 
@@ -243,6 +313,18 @@ class ShellServer:
         """
         effective_cwd = cwd if cwd and os.path.isdir(cwd) else None
         segments = self._split_by_shell_operators(command)
+
+        # Compound shell constructs (for/while/if/case/select) require a
+        # shell interpreter — they aren't standalone executables.
+        if self._is_compound_command(command):
+            return subprocess.run(
+                ['sh', '-c', command],
+                shell=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=effective_cwd,
+            )
 
         last_result = None
         accumulated_stdout = ""
@@ -419,6 +501,14 @@ class ShellServer:
         command = lines[0].strip() if lines else ''
         if not command:
             return False, "Command is only comments"
+
+        # Compound shell constructs get dedicated validation that inspects
+        # the body commands rather than naively splitting on `;`.
+        if self._is_compound_command(command):
+            if not self.yolo_mode:
+                return self._validate_compound_body(command)
+            # In yolo mode, fall through to the normal always_blocked check
+            # (the block below handles it)
 
         # YOLO mode — allow everything except always_blocked commands
         if self.yolo_mode:
