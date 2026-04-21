@@ -128,8 +128,11 @@ export class DrawIOEnhancer {
             if (isExplicitLayout) {
                 // Check if there's a sibling shape in the same group.
                 // If YES: CSS offsets are for text alignment → skip conversion.
-                // If NO: this is a text-only cell where CSS offsets ARE the
-                // positioning mechanism → fall through to conversion below.
+                // If NO: either a text-only vertex (handled by
+                // forceTextCellPositioning) or an edge label (positioned
+                // by maxGraph along the edge path). Either way, don't
+                // touch — the CSS→SVG conversion below is the wrong fix
+                // for both cases.
                 const parentGroup = foreignObj.parentElement;
                 const hasSiblingShape = parentGroup?.querySelector(
                     'rect, ellipse, path[fill]:not([fill="none"]), polygon'
@@ -137,12 +140,127 @@ export class DrawIOEnhancer {
                 if (hasSiblingShape) {
                     innerDiv.style.overflow = 'hidden';
                     foreignObj.style.overflow = 'hidden';
-                    foreignObj.setAttribute('data-enhanced', 'true');
-                    console.log(`  FO ${idx}: Explicit layout with shape sibling — overflow:hidden, skipped repositioning`);
-                    return; // Skip the CSS→SVG conversion below
+
+                    // Clamp margin-left so labels don't bleed past the cell's
+                    // right edge. MaxGraph sometimes places a right-aligned
+                    // label with a margin-left that, combined with the text
+                    // width, extends past the cell's right boundary (e.g.
+                    // the Trust Boundary label sitting on the dashed edge).
+                    // Measure the cell width from the sibling shape and cap
+                    // margin-left to keep the text inside.
+                    try {
+                        const siblingShape = hasSiblingShape as SVGGraphicsElement;
+                        const bbox = siblingShape.getBBox();
+                        const innerStyle = innerDiv.getAttribute('style') || '';
+                        const mlMatch = innerStyle.match(/margin-left:\s*(-?[\d.]+)px/);
+                        // DIAGNOSTIC: log what we see so we know if this ran
+                        if (innerDiv.textContent?.includes('Trust Boundary')) {
+                            console.log(`🧪 tb-clamp check:`, {
+                                bbox: { w: bbox.width, h: bbox.height },
+                                mlMatched: !!mlMatch,
+                                mlValue: mlMatch?.[1],
+                                divScreenW: innerDiv.getBoundingClientRect().width,
+                                innerStyleSnippet: innerStyle.slice(0, 160),
+                            });
+                        }
+                        if (mlMatch) {
+                            const currentMl = parseFloat(mlMatch[1]);
+                            // Convert the div's screen width back into the
+                            // pre-scale frame that margin-left lives in.
+                            let accumScale = 1;
+                            let p: Element | null = foreignObj.parentElement;
+                            while (p && p.tagName !== 'svg' && p.tagName !== 'SVG') {
+                                const t = (p.getAttribute && p.getAttribute('transform')) || '';
+                                const m = t.match(/scale\(([\d.]+)\)/);
+                                if (m) accumScale *= parseFloat(m[1]);
+                                p = p.parentElement;
+                            }
+                            if (!accumScale) accumScale = 1;
+                            const preScaleWidth = innerDiv.getBoundingClientRect().width / accumScale;
+                            const rightMargin = 16; // pre-scale px from right edge
+                            const maxMl = Math.max(0, bbox.width - preScaleWidth - rightMargin);
+                            if (currentMl > maxMl) {
+                                innerDiv.setAttribute('style',
+                                    innerStyle.replace(/margin-left:\s*-?[\d.]+px/, `margin-left: ${maxMl}px`)
+                                );
+                                console.log(`  📏 Clamped margin-left for FO ${idx}: ${currentMl.toFixed(0)} → ${maxMl.toFixed(0)} (cell w=${bbox.width.toFixed(0)}, text w=${preScaleWidth.toFixed(0)})`);
+                            }
+                        }
+                    } catch { /* getBBox can throw pre-render */ }
                 }
-                console.log(`  FO ${idx}: Explicit layout, no sibling shape — will convert CSS positioning`);
-                // Fall through to the CSS→SVG conversion below
+
+                // Fallback for cells whose backing shape isn't a direct
+                // sibling (e.g. the trust-boundary outer container where
+                // maxGraph renders the dashed rect elsewhere in the SVG
+                // hierarchy). Search the broader SVG for any enclosing
+                // shape that visually contains the foreignObject, then
+                // clamp margin-left so the label fits inside its bounds.
+                if (!hasSiblingShape) {
+                    try {
+                        const divRect = innerDiv.getBoundingClientRect();
+                        // Find the dashed/unfilled container whose screen
+                        // bbox overlaps the div's bbox the most. Using
+                        // point-containment fails here because maxGraph's
+                        // oversized label foreignObjects often extend past
+                        // their actual cell's visible bounds.
+                        const candidates = Array.from(
+                            svgElement.querySelectorAll('rect, path')
+                        ).filter(el => {
+                            const fill = el.getAttribute('fill');
+                            const dash = el.getAttribute('stroke-dasharray');
+                            return fill === 'none' || !!dash;
+                        });
+                        let best: { el: SVGGraphicsElement; r: DOMRect; overlap: number; dashed: boolean } | null = null;
+                        candidates.forEach(c => {
+                            const r = c.getBoundingClientRect();
+                            // Skip tiny shapes (edge markers, icon internals)
+                            if (r.width < 100 || r.height < 100) return;
+                            const ox = Math.max(0, Math.min(divRect.x + divRect.width, r.x + r.width) - Math.max(divRect.x, r.x));
+                            const oy = Math.max(0, Math.min(divRect.y + divRect.height, r.y + r.height) - Math.max(divRect.y, r.y));
+                            const overlap = ox * oy;
+                            if (overlap <= 0) return;
+                            const dashed = !!c.getAttribute('stroke-dasharray');
+                            // Prefer dashed over filled-none; then larger overlap
+                            if (!best ||
+                                (dashed && !best.dashed) ||
+                                (dashed === best.dashed && overlap > best.overlap)) {
+                                best = { el: c as SVGGraphicsElement, r, overlap, dashed };
+                            }
+                        });
+                        const enclosing = best?.el || null;
+                        if (enclosing) {
+                            const encRect = enclosing.getBoundingClientRect();
+                            const overshoot = (divRect.x + divRect.width) - (encRect.x + encRect.width);
+                            if (overshoot > 16) {
+                                // Convert overshoot screen-px back to pre-scale frame
+                                let accumScale = 1;
+                                let p: Element | null = foreignObj.parentElement;
+                                while (p && p.tagName !== 'svg' && p.tagName !== 'SVG') {
+                                    const t = (p.getAttribute && p.getAttribute('transform')) || '';
+                                    const m = t.match(/scale\(([\d.]+)\)/);
+                                    if (m) accumScale *= parseFloat(m[1]);
+                                    p = p.parentElement;
+                                }
+                                if (!accumScale) accumScale = 1;
+                                const reduction = (overshoot + 16) / accumScale;
+                                const innerStyle = innerDiv.getAttribute('style') || '';
+                                const mlMatch = innerStyle.match(/margin-left:\s*(-?[\d.]+)px/);
+                                if (mlMatch) {
+                                    const currentMl = parseFloat(mlMatch[1]);
+                                    const newMl = Math.max(0, currentMl - reduction);
+                                    innerDiv.setAttribute('style',
+                                        innerStyle.replace(/margin-left:\s*-?[\d.]+px/, `margin-left: ${newMl}px`)
+                                    );
+                                    console.log(`  📏 Fallback-clamped margin-left for FO ${idx}: ${currentMl.toFixed(0)} → ${newMl.toFixed(0)} (overshoot=${overshoot.toFixed(0)}px)`);
+                                }
+                            }
+                        }
+                    } catch { /* getBBox/getBoundingClientRect can throw */ }
+                }
+
+                foreignObj.setAttribute('data-enhanced', 'true');
+                console.log(`  FO ${idx}: Explicit layout — skipping CSS→SVG conversion (handled elsewhere)`);
+                return;
             }
 
             if (marginLeft !== 0 || paddingTop !== 0) {
@@ -226,7 +344,7 @@ export class DrawIOEnhancer {
         // translate + scale), not from raw XML geometry — because maxGraph's
         // other rendering (e.g. sibling background rects) uses view state
         // coordinates, and we need our foreignObject to match those.
-        const textCells: Array<{ id: string; value: string; x: number; y: number; w: number; h: number }> = [];
+        const textCells: Array<{ id: string; cell: any; value: string; x: number; y: number; w: number; h: number }> = [];
         const visit = (cell: any, offsetX: number, offsetY: number) => {
             if (!cell) return;
             const geom = cell.getGeometry?.();
@@ -246,6 +364,7 @@ export class DrawIOEnhancer {
                 // wrong position after the parent's scale transform applies.
                 textCells.push({
                     id: cell.getId(),
+                    cell,
                     value: String(cell.getValue()).trim(),
                     x: absX, y: absY, w: geom.width, h: geom.height,
                 });
@@ -328,7 +447,41 @@ export class DrawIOEnhancer {
             // and the label's inner div (where the text renders).
             const shapeScreen = shapeNode.getBoundingClientRect();
             const divScreen = innerDiv.getBoundingClientRect();
-            const screenDx = shapeScreen.x - divScreen.x;
+
+            // Read the cell's declared text inset. When authors set
+            // spacingLeft in the style (e.g. spacingLeft=4), they want
+            // the text to sit that many pixels inside the box's left
+            // edge. maxGraph normally honors this for non-text shapes;
+            // for text-style cells we need to apply it ourselves.
+            const cellStyle = tc.cell.getStyle?.();
+            const spacingLeft = cellStyle && typeof cellStyle === 'object'
+                ? (parseFloat(cellStyle['spacingLeft']) || 0)
+                : 0;
+            const spacingRight = cellStyle && typeof cellStyle === 'object'
+                ? (parseFloat(cellStyle['spacingRight']) || 0)
+                : 0;
+            // Honor the cell's declared horizontal alignment.
+            const align = cellStyle && typeof cellStyle === 'object'
+                ? (cellStyle['align'] || 'left')
+                : 'left';
+
+            // Compute target screenDx based on declared alignment:
+            // - left:   div's left edge sits at shape's left + spacingLeft
+            // - center: div's center x sits at shape's center x
+            // - right:  div's right edge sits at shape's right - spacingRight
+            let screenDx: number;
+            if (align === 'center') {
+                const shapeCenter = shapeScreen.x + shapeScreen.width / 2;
+                const divCenter = divScreen.x + divScreen.width / 2;
+                screenDx = shapeCenter - divCenter;
+            } else if (align === 'right') {
+                const shapeRight = shapeScreen.x + shapeScreen.width;
+                const divRight = divScreen.x + divScreen.width;
+                screenDx = shapeRight - divRight;
+            } else {
+                // left (default)
+                screenDx = shapeScreen.x - divScreen.x;
+            }
 
             // Convert screen-px delta to the margin-left coordinate frame,
             // which is scaled by the accumulated parent-chain scale.
@@ -345,7 +498,13 @@ export class DrawIOEnhancer {
             const styleStr = innerDiv.getAttribute('style') || '';
             const mlMatch = styleStr.match(/margin-left:\s*(-?[\d.]+)px/);
             const currentMl = mlMatch ? parseFloat(mlMatch[1]) : 0;
-            const newMl = currentMl + screenDx / accumScale;
+            // screenDx / accumScale converts the delta to pre-scale units.
+            // For left alignment, add spacingLeft as the author-declared inset.
+            // For center/right, the formula already places the text correctly.
+            const inset = align === 'left' ? spacingLeft
+                : align === 'right' ? -spacingRight
+                : 0;
+            const newMl = currentMl + screenDx / accumScale + inset;
 
             const newStyle = mlMatch
                 ? styleStr.replace(/margin-left:\s*-?[\d.]+px/, `margin-left: ${newMl}px`)
