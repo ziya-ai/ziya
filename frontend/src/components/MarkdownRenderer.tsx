@@ -38,12 +38,63 @@ import { parseD3Spec } from '../utils/d3SpecParser';
 const D3Renderer = React.lazy(() => import('./D3Renderer').then(m => ({ default: m.D3Renderer })));
 const HTMLMockupRenderer = React.lazy(() => import('./HTMLMockupRenderer').then(m => ({ default: m.HTMLMockupRenderer })));
 
-// Suspense wrapper so individual render-switch arms need no boilerplate.
-const LazyD3Renderer = (props: React.ComponentProps<typeof D3Renderer>) => (
-    <React.Suspense fallback={<div style={{ padding: '1em', opacity: 0.5 }}>Loading diagram…</div>}>
-        <D3Renderer {...props} />
-    </React.Suspense>
-);
+// Global render queue — diagrams in a conversation register here and
+// wait their turn.  Processing one diagram at a time via requestIdleCallback
+// keeps the UI responsive when a single assistant message contains many
+// heavyweight visualizations (Vega-Lite, DrawIO, Graphviz, Mermaid, etc.).
+// Streaming renders bypass the queue so live output still feels immediate.
+const __diagramRenderQueue: Array<() => void> = [];
+let __diagramQueueProcessing = false;
+const __rIC: (cb: () => void, opts?: { timeout: number }) => number =
+    (window as any).requestIdleCallback
+        ? (window as any).requestIdleCallback.bind(window)
+        : ((cb: () => void) => window.setTimeout(cb, 16) as unknown as number);
+const __processDiagramQueue = () => {
+    if (__diagramQueueProcessing) return;
+    if (__diagramRenderQueue.length === 0) return;
+    __diagramQueueProcessing = true;
+    __rIC(() => {
+        const cb = __diagramRenderQueue.shift();
+        __diagramQueueProcessing = false;
+        if (cb) {
+            try { cb(); } catch (e) { console.warn('deferred diagram render threw:', e); }
+        }
+        if (__diagramRenderQueue.length > 0) __processDiagramQueue();
+    }, { timeout: 2000 });
+};
+
+const LazyD3Renderer = (props: React.ComponentProps<typeof D3Renderer>) => {
+    const streaming = (props as any)?.isStreaming === true;
+    const [ready, setReady] = React.useState<boolean>(streaming);
+    React.useEffect(() => {
+        if (streaming) { setReady(true); return; }
+        let cancelled = false;
+        const task = () => { if (!cancelled) setReady(true); };
+        __diagramRenderQueue.push(task);
+        __processDiagramQueue();
+        return () => {
+            cancelled = true;
+            const idx = __diagramRenderQueue.indexOf(task);
+            if (idx >= 0) __diagramRenderQueue.splice(idx, 1);
+        };
+    }, [streaming]);
+    if (!ready) {
+        return (
+            <div style={{
+                padding: '1em', opacity: 0.6, fontSize: '0.9em',
+                border: '1px dashed rgba(128,128,128,0.3)', borderRadius: 4,
+                margin: '0.5em 0'
+            }}>
+                Diagram queued for render…
+            </div>
+        );
+    }
+    return (
+        <React.Suspense fallback={<div style={{ padding: '1em', opacity: 0.5 }}>Loading diagram…</div>}>
+            <D3Renderer {...props} />
+        </React.Suspense>
+    );
+};
 
 const DelegateLaunchButton = React.lazy(() => import('./DelegateLaunchButton'));
 const { Panel } = Collapse;
@@ -5816,7 +5867,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                             // Handle display math $$...$$
                             processed = processed.replace(
                                 /\$\$([\s\S]+?)\$\$/g,
-                                '\n<div class="math-display-block">MATH_DISPLAY:$1</div>\n'
+                            '\n<div class="math-display-block">MATH_DISPLAY:$1</div>\n'
                             );
 
                             // Handle inline math $...$
