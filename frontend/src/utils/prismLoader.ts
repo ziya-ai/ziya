@@ -35,6 +35,9 @@ const languageMap: { [key: string]: string } = {
     yml: 'yaml',
     yaml: 'yaml',
     json: 'json',
+    text: 'plaintext',
+    plain: 'plaintext',
+    plaintext: 'plaintext',
     md: 'markdown',
     sql: 'sql',
     plist: 'markup', // Property lists are XML-based
@@ -311,8 +314,9 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
         } catch (error: any) {
             console.error(`Failed to load language: ${mappedLanguage} (${language})`, error);
             // Set up plaintext fallback
-            if (!prism || !prism.languages.plaintext) {
-                prism.languages.plaintext = {
+            const p = prismInstance;
+            if (p && !p.languages.plaintext) {
+                p.languages.plaintext = {
                     text: /[\s\S]+/
                 };
             }
