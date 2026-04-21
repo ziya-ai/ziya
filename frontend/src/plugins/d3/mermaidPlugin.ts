@@ -110,9 +110,9 @@ async function loadMermaid(): Promise<any> {
     }
 
     // Helper: Import with timeout protection
-    const importWithTimeout = (moduleSpecifier: string, timeoutMs: number = 3000): Promise<any> => {
+    const importMermaidWithTimeout = (timeoutMs: number = 3000): Promise<any> => {
         return Promise.race([
-            import(moduleSpecifier),
+            import(/* webpackChunkName: "mermaid" */ 'mermaid'),
             new Promise((_, reject) =>
                 setTimeout(() => reject(new Error(`Import timeout after ${timeoutMs}ms`)), timeoutMs)
             )
@@ -153,7 +153,7 @@ async function loadMermaid(): Promise<any> {
     };
 
     // Start loading with timeout protection and CDN fallback
-    window.__mermaidLoading = importWithTimeout('mermaid', 3000)
+    window.__mermaidLoading = importMermaidWithTimeout(3000)
         .catch(error => {
             console.error('❌ MERMAID-LOAD: Chunk import failed:', error.message);
             // Fall back to CDN
@@ -607,28 +607,28 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
         // These diagrams have already set proper text colors; the post-processor
         // should not override the author's explicit choices
         const hasExplicitColors = rawDefinition.includes('style ') &&
-                                   rawDefinition.includes('color:');
-        
+            rawDefinition.includes('color:');
+
         if (!hasExplicitColors) {
-        setTimeout(() => {
-            console.log('🎨 DELAYED-VISIBILITY-FIX: Starting universal enhancement');
-            const result = enhanceSVGVisibility(svgElement, isDarkMode, { debug: true });
-            console.log('🎨 DELAYED-VISIBILITY-FIX: Complete');
-            
-            console.group('🎨 MERMAID-CONTRAST: Visibility Enhancement Results');
-            console.log(`Diagram Type: "${diagramType}"`);
-            console.log(`Dark Mode: ${isDarkMode}`);
-            console.log(`Elements Processed:`, result.elementsProcessed || 0);
-            console.log(`Elements Modified:`, result.elementsModified || 0);
-            console.log(`Details:`, result);
-            
-            // Log any specific contrast issues found
-            if (result.contrastIssues && result.contrastIssues.length > 0) {
-                console.warn(`⚠️ Contrast issues found:`, result.contrastIssues);
-            }
-            
-            console.groupEnd();
-        }, 500);
+            setTimeout(() => {
+                console.log('🎨 DELAYED-VISIBILITY-FIX: Starting universal enhancement');
+                const result = enhanceSVGVisibility(svgElement, isDarkMode, { debug: true });
+                console.log('🎨 DELAYED-VISIBILITY-FIX: Complete');
+
+                console.group('🎨 MERMAID-CONTRAST: Visibility Enhancement Results');
+                console.log(`Diagram Type: "${diagramType}"`);
+                console.log(`Dark Mode: ${isDarkMode}`);
+                console.log(`Elements Processed:`, result.elementsProcessed || 0);
+                console.log(`Elements Modified:`, result.elementsModified || 0);
+                console.log(`Details:`, result);
+
+                // Log any specific contrast issues found
+                if (result.contrastIssues && result.contrastIssues.length > 0) {
+                    console.warn(`⚠️ Contrast issues found:`, result.contrastIssues);
+                }
+
+                console.groupEnd();
+            }, 500);
         } else {
             console.log('🎨 VISIBILITY-FIX: Skipping post-processing - diagram has explicit color styles');
         }
@@ -654,32 +654,32 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
         // subtract the offset from every axis tick label to show original years.
         const yearOffsetMatch = rawDefinition.match(/gantt-year-offset:\s*(\d+)/);
         if (yearOffsetMatch && diagramType === 'gantt') {
-          const offset = parseInt(yearOffsetMatch[1], 10);
-          console.log(`📅 GANTT-YEAR-FIX: Correcting axis labels by -${offset}`);
-          setTimeout(() => {
-            // Mermaid renders axis ticks as <text> inside <g class="tick">
-            const ticks = svgElement.querySelectorAll('.tick text, .x text, .xAxis text');
-            let fixed = 0;
-            ticks.forEach((el: Element) => {
-              const txt = el.textContent?.trim() ?? '';
-              const yearMatch = txt.match(/^(\d{4})$/);
-              if (yearMatch) {
-                const original = parseInt(yearMatch[1], 10) - offset;
-                el.textContent = String(original);
-                fixed++;
-              }
-            });
-            // Also check for any text elements that look like offset years
-            if (fixed === 0) {
-              svgElement.querySelectorAll('text').forEach((el: Element) => {
-                const txt = el.textContent?.trim() ?? '';
-                if (/^\d{4}$/.test(txt) && parseInt(txt, 10) >= offset) {
-                  el.textContent = String(parseInt(txt, 10) - offset);
+            const offset = parseInt(yearOffsetMatch[1], 10);
+            console.log(`📅 GANTT-YEAR-FIX: Correcting axis labels by -${offset}`);
+            setTimeout(() => {
+                // Mermaid renders axis ticks as <text> inside <g class="tick">
+                const ticks = svgElement.querySelectorAll('.tick text, .x text, .xAxis text');
+                let fixed = 0;
+                ticks.forEach((el: Element) => {
+                    const txt = el.textContent?.trim() ?? '';
+                    const yearMatch = txt.match(/^(\d{4})$/);
+                    if (yearMatch) {
+                        const original = parseInt(yearMatch[1], 10) - offset;
+                        el.textContent = String(original);
+                        fixed++;
+                    }
+                });
+                // Also check for any text elements that look like offset years
+                if (fixed === 0) {
+                    svgElement.querySelectorAll('text').forEach((el: Element) => {
+                        const txt = el.textContent?.trim() ?? '';
+                        if (/^\d{4}$/.test(txt) && parseInt(txt, 10) >= offset) {
+                            el.textContent = String(parseInt(txt, 10) - offset);
+                        }
+                    });
                 }
-              });
-            }
-            console.log(`📅 GANTT-YEAR-FIX: Fixed ${fixed} axis labels`);
-          }, 300);
+                console.log(`📅 GANTT-YEAR-FIX: Fixed ${fixed} axis labels`);
+            }, 300);
         }
 
         // Apply unified responsive scaling for all browsers
