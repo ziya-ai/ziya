@@ -690,7 +690,10 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   flex: 1;
   height: 100%;
   position: relative;
-  overflow: auto;
+  /* The inner tab children (MUIChatHistory, ContextsTab, MUIFileExplorer)
+     manage their own scrolling.  Leaving this as `auto` produced a nested
+     outer scrollbar alongside the chat list's own — confusing UX. */
+  overflow: hidden;
   width: 100% !important;
 }
 
