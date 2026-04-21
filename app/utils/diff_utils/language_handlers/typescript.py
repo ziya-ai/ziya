@@ -76,7 +76,8 @@ class TypeScriptHandler(LanguageHandler):
             try:
                 tsc_args = [tsc_path, '--noEmit', '--skipLibCheck',
                             '--isolatedModules', '--noResolve',
-                            '--target', 'ES2022', '--moduleResolution', 'node']
+                            '--target', 'ES2022', '--module', 'esnext',
+                            '--moduleResolution', 'node']
                 if suffix == '.tsx':
                     tsc_args += ['--jsx', 'react-jsx']
                 tsc_args.append(temp_path)
@@ -96,7 +97,13 @@ class TypeScriptHandler(LanguageHandler):
                     # import/type resolution errors (TS2xxx+) which are
                     # expected when validating an isolated file.
                     diag_codes = _re.findall(r'TS(\d+)', error_msg)
-                    has_syntax_error = any(c.startswith('1') for c in diag_codes)
+                    # Config-level TS1xxx diagnostics that aren't real
+                    # grammar errors — the source is valid JS/TS, the
+                    # complaint is about isolated-validation flags we
+                    # can't fully replicate.  Don't fail the file for these.
+                    CONFIG_TS1_CODES = {'1323', '1378', '1375', '1432', '1208'}
+                    has_syntax_error = any(c.startswith('1') and c not in CONFIG_TS1_CODES
+                                           for c in diag_codes)
 
                     if has_syntax_error:
                         logger.error(f"TypeScript syntax validation failed for {file_path}: {error_msg}")
@@ -149,13 +156,17 @@ class TypeScriptHandler(LanguageHandler):
         Returns:
             List of issue descriptions
         """
-        # Start with JavaScript common issues
-        issues = JavaScriptHandler._check_common_issues(original_content, modified_content)
-        
-        # Add TypeScript-specific checks
-        ts_issues = cls._check_typescript_specific_issues(modified_content)
-        issues.extend(ts_issues)
-        
+        # Only report issues that were NEWLY INTRODUCED by the diff.
+        # Pre-existing `any` usage, unbalanced-bracket false positives, etc.
+        # must not block unrelated edits elsewhere in the file.
+        js_issues_new = JavaScriptHandler._check_common_issues(original_content, modified_content)
+        ts_issues_mod = cls._check_typescript_specific_issues(modified_content)
+        ts_issues_orig = cls._check_typescript_specific_issues(original_content)
+        # Strip line numbers when diffing issue sets — a line insert above
+        # a pre-existing `any` would otherwise make it look "new".
+        orig_norm = {re.sub(r'\s+at line \d+', '', s) for s in ts_issues_orig}
+        ts_issues_new = [s for s in ts_issues_mod if re.sub(r'\s+at line \d+', '', s) not in orig_norm]
+        issues = js_issues_new + ts_issues_new
         return issues
     
     @classmethod
