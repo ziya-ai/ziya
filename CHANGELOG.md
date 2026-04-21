@@ -21,6 +21,257 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+## [0.6.4.10] - 2026-04-21
+
+### Added
+- **Hallucination detection: session-scoped content fingerprinting (Layer A)**:
+  New `app/hallucination/` subsystem catches the model reproducing prior real
+  tool results as prose in its assistant text instead of issuing a `tool_use`
+  block — a failure mode that became increasingly common in long conversations
+  with many tool calls, where the narrow pre-existing regex patterns in
+  `text_delta_processor.py` caught none of it.
+  - **`region_extraction.py`**: extracts the scannable portion of assistant text
+    by excluding Markdown code fences (triple-backtick and tilde), indented code
+    blocks (4+ spaces or tab), blockquotes, and inline backtick spans including
+    multi-backtick CommonMark escapes. Over-excludes on purpose: false negatives
+    are recoverable, false positives on analytical prose about the detection
+    system itself (or on pasted conversation transcripts) damage operator trust.
+  - **`shingle_index.py`**: per-conversation store of tool-result fingerprints.
+    Each registered result contributes (a) word-level 5-gram shingles hashed
+    with blake2b-64 for paraphrased-reproduction detection and (b) per-line
+    whitespace-normalized hashes for verbatim short-line detection. Bounded to
+    200 shingles per result and 100 results per session (LRU eviction). Results
+    shorter than 100 characters and lines shorter than 20 characters are
+    skipped as noise. Thread-safe for single-process use.
+  - **Detection thresholds**: high-confidence match requires ≥5 shingle
+    overlaps or ≥2 line matches; low-confidence requires ≥3 shingle overlaps or
+    ≥1 line match. Only high-confidence fires the retry loop; low-confidence is
+    logged for observability and later threshold tuning.
+  - **Layer 1 false-positive fix**: existing narrow hallucination patterns in
+    `text_delta_processor.py` (which matched the literal text of
+    `run_shell_command` error messages) now run against `scannable_text()`
+    output rather than raw `assistant_text`. Previously fired on any
+    analytical prose that discussed the detection strings themselves; the
+    false-positive was reproduced live during design review.
+  - **Fingerprint registration** in `tool_execution.py`: verified tool results
+    (i.e., those that passed HMAC signature verification) are registered into
+    the shingle index at the same emission point that yields
+    `tool_result_for_model`. Error/blocked results are skipped so the model can
+    legitimately echo server error phrases. Handles both list-of-blocks and
+    plain-string result formats, exception-safe.
+  - **Streaming detection** in `text_delta_processor.py`: runs every ~256 chars
+    of accumulated scannable text against the session's fingerprint set using a
+    1200-char tail window. On high-confidence match, populates
+    `TextDeltaState.parrot_match` with `tool_use_id`, `tool_name`,
+    `shingle_overlap`, and `line_matches`, and aborts the current iteration.
+  - **Targeted corrective message** in `streaming_tool_executor.py`: when
+    `parrot_match` is set, the retry loop injects a parrot-specific corrective
+    citing the exact tool and invocation being parroted, with match strength
+    numbers, and offering two concrete recovery paths (re-call the tool, or
+    quote the prior result inside a fenced code block). Falls back to the
+    existing generic "STOP / do not fabricate" message when detection came from
+    the narrow regex patterns with no parrot_match info. Retry cap of 3
+    preserved from existing behavior.
+  - **Non-goal**: the subsystem does not attempt to give the model a token it
+    can verify. Any token the model can read it can reproduce; verification
+    must live server-side where the model can't forge it. Design doc for
+    rationale and future layers (pressure score, provenance-absence check) at
+    `.ziya/hallucination-detection-design.md`.
+- **Compound shell command support (for/while/if/case/select)**: Shell server now
+  detects compound shell constructs and routes them through `sh -c` instead of
+  attempting to exec them as standalone binaries. Body commands within compound
+  constructs are validated against the allowlist by stripping shell keywords
+  (for, while, do, done, if, then, etc.) and checking the actual command words.
+  Command substitutions (`$(...)` and backticks) are also recursively validated.
+- **YOLO mode propagation to file_write**: `/shell yolo` now sets
+  `ZIYA_YOLO_MODE` env var, and `file_write`'s write-policy check honors it —
+  unrestricted in-process writes when YOLO is active, mirroring shell server
+  behavior.
+
+### Fixed
+- **Chat history loss from shell writes (three-layer fix)**: SERVER_SYNC was
+  loading local state as shells via `getConversationShells()` (messages stripped
+  to first+last or blanked) and pushing them to the server through `bulkSync`
+  whenever `_version`/`lastAccessedAt` beat the server's, silently truncating
+  or blanking the authoritative per-project chat JSON files. Fingerprint on
+  damaged records: exactly 2 messages with fresh message IDs sharing the same
+  `Date.now()` prefix (synthesized in a single `conversationToServerChat` call).
+  - **Frontend filter (`ChatContext.tsx` `SERVER_SYNC`)**: the push-list filter
+    now drops any conversation with `_isShell` or where
+    `messages.length < _fullMessageCount`. Shells never enter the sync pipeline.
+  - **Frontend chokepoint (`conversationSyncApi.bulkSync`)**: defense-in-depth
+    filter drops shell/partial records at the network boundary regardless of
+    caller. Logs `bulkSync: dropped N shell/partial chats`.
+  - **Server guard (`app/api/chats.py`)**: tightened the `bulk-sync` regression
+    guard from "only block shrinkage when existing > 2" to "block any shrinkage
+    when existing >= 1" and added a content-length guard that rejects
+    same-count overwrites where incoming content is under 25% of existing.
+  - **Lazy-load rendering (`ChatContext.tsx`)**: the IDB and server acceptance
+    gates no longer require `length > 2` to replace in-memory shells. They now
+    compare total content length, so real 2-message conversations (and records
+    already truncated by the earlier bug) actually render their text instead
+    of staying blank. Before the fix, clicking a 2-message conversation left
+    the chat area empty because the shell had 2 empty-content messages and the
+    acceptance test `length > existing.length` (2 > 2 = false) rejected both
+    sources.
+- **Deferred message rendering for large conversations**: clicking into a
+  150+ message conversation blocked the main thread for 15+ seconds during
+  initial React reconciliation of all markdown content. Introduced
+  `LazyMarkdownRenderer` in `Conversation.tsx`: each non-streaming message
+  wraps `MarkdownRenderer` in a placeholder that defers the real mount via a
+  shared `requestIdleCallback` queue, with `IntersectionObserver` bumping
+  priority when a placeholder enters the viewport (500px preload margin).
+  Small messages under 400 chars render inline. Streaming is unaffected because
+  live streams go through `StreamedContent.tsx`, not this path — every message
+  handed to `LazyMarkdownRenderer` is already settled.
+- **Deferred D3 diagram rendering**: the `LazyD3Renderer` wrapper in
+  `MarkdownRenderer.tsx` now queues diagram mounts through a shared idle-time
+  queue. Assistant messages with many heavyweight visualizations
+  (Vega-Lite/DrawIO/Graphviz/Mermaid/Joint) no longer block the main thread on
+  click; text appears first, diagrams materialize one at a time.
+  `isStreaming={true}` bypasses the queue so live streaming output renders
+  immediately.
+- **Mermaid CDN fallback every load**: `mermaidPlugin.ts` was invoking
+  `import(moduleSpecifier)` through a parameterized helper, which prevented
+  webpack from statically resolving and emitting a `mermaid` chunk. Every
+  mermaid diagram triggered `❌ Chunk import failed → ⚠️ Loading from CDN
+  fallback`, adding ~500–1500ms network latency. Fixed to use a literal
+  `import(/* webpackChunkName: "mermaid" */ 'mermaid')`. A companion
+  `frontend/src/types/mermaid-shim.d.ts` ambient module declaration works
+  around TypeScript 4.9's inability to parse mermaid's `exports` field
+  (`moduleResolution: "bundler"` requires TS 5.0+).
+- **Initial conversation-switch window clamp**: `Conversation.tsx`
+  `messageWindow` state initialized to `Infinity` and only clamped to
+  `INITIAL_WINDOW` inside a `useEffect`, so the first render after a
+  conversation switch rendered all N messages synchronously before the clamp
+  applied. Changed initial value to `INITIAL_WINDOW` and added an inline ref
+  comparison (`effectiveWindow = windowConvRef.current !== currentConversationId
+  ? INITIAL_WINDOW : messageWindow`) so the clamp takes effect during render,
+  not after.
+- **Nested scrollbar in folder-tree-panel**: `.folder-tree-panel
+  .ant-tabs-content` had `overflow: auto`, producing a confusing outer
+  scrollbar alongside the chat list's own inner scrollbar. Set to
+  `overflow: hidden` — inner tab children (MUIChatHistory, ContextsTab,
+  MUIFileExplorer) each manage their own scrolling.
+- **diff-utils idempotency: double-apply now passes 139/151 (was 124/151)**:
+  Fixes target the "apply the same diff twice, expect a no-op on the second
+  apply" harness invariant without changing single-apply behavior.
+  - **Pattern B (re-add false-application)** in `patch_apply.py`: new
+    `_added_block_already_present()` helper short-circuits the destructive
+    standard-fallback path when surgical and content-based matching both decline
+    and the added block is already present (contiguous or scattered) in the
+    file. Handles Ziya's backslash-backtick escape convention. Fixes
+    `test_backtick_escaping_issue`, `test_custom_bedrock_log_level_change`,
+    `test_d3renderer_container_styles`, plus collaterals.
+  - **Pattern A (EOF `\ No newline at end of file` re-add duplication)** in
+    `pipeline_manager.is_hunk_already_applied`: `old_block_exists` scan now
+    excludes the already-applied `new_lines` region only when `old_block` is a
+    strict prefix/subset of `new_lines` (`len(old_block) < len(new_lines)`).
+    Without the length guard, indentation-only changes where normalized
+    `old_block == new_lines` were false-flagged as already-applied because the
+    one legitimate match was being excluded. Fixes
+    `test_MRE_missing_newline_at_eof`, `test_MRE_hunk_context_mismatch`,
+    `test_indentation_only_change`.
+  - **Re-add pattern verification** in `validators.is_hunk_already_applied`:
+    when removed-lines are a subset of added-lines (classic re-add shape), the
+    removal-still-present signal is only suppressed if `new_lines` is actually
+    present within +/-5 lines of `pos`. Without this guard, any "removed subset
+    of added" diff was treated as re-add and the applier accepted a distant
+    similar-looking block as evidence of "already applied" - e.g. finding an
+    existing `isRawMode ? ... : <MarkdownRenderer ...>` wrapper on a different
+    MarkdownRenderer, or finding `padding: 0 !important;` in a sibling CSS rule.
+    Fixes `test_MRE_css_padding_real_file`,
+    `test_conversation_israwmode_false_applied`.
+  - **Variable-shadow regression** in `pipeline_manager.py`: inner
+    `for i, file_line in enumerate(original_lines)` shadowed the outer
+    `for i, hunk in enumerate(hunks, 1)`, corrupting `hunk_id_mapping` lookups
+    after the distinctive-line search block. Renamed inner loop variable to
+    `file_idx`. Fixes `test_variable_shadow_false_negative_already_applied`.
+  - **Fuzzy-apply rewriting context lines** in `patch_apply.py`: fuzzy fallback
+    now copies context lines from the file at the matched position instead of
+    overwriting them with the diff's copy of those lines. Prevents e.g. an
+    intentional typo `overflow: visisble` in a CSS context line from being
+    silently "corrected" to `overflow: visible` when the hunk only meant to
+    change a `margin-bottom` value. Fixes `test_MRE_fuzzy_context_modification`.
+- **Non-deterministic diff application under randomized `PYTHONHASHSEED`**:
+  Two `max(set(indents), key=indents.count)` calls in `patch_apply.py`'s
+  indentation-adaptation code iterated a set in hash-order, so on ties between
+  equally-common indent levels the "most common" pick varied between runs.
+  Manifested as intermittent failures in `test_additive_replace_deep_offset` and
+  `test_vega_lite_closing_brace_fix` (~10% failure rate without a fixed seed,
+  100% fail under `PYTHONHASHSEED=0`, 100% pass under `PYTHONHASHSEED=1`). Both
+  sites now tie-break on earliest source occurrence:
+  `max(set(indents), key=lambda v: (indents.count(v), -indents.index(v)))`.
+- **Startup hang with large conversation DBs (~minutes of unresponsive UI)**:
+  `db.init()` was firing `purgeExpiredConversations()` as a "background" task that
+  called `getConversations()` — a full `getAll()` deserializing every message body
+  into memory. On DBs with hundreds of conversations this held the `ziya-db-read`
+  Web Lock long enough to starve `getConversationShells()`, which runs immediately
+  after init resolves. Result: sidebar stayed empty and the active conversation
+  rendered as a shell for up to 20+ minutes until the purge eventually completed.
+  Retention purge is now scheduled post-init via `requestIdleCallback` (with
+  `setTimeout` fallback) in `ChatContext.initializeWithRecovery`, off the startup
+  critical path.
+- **Retention purge memory/lock footprint**: `purgeExpiredConversations` rewritten
+  to use a cursor-based `cursor.delete()` scan serialized under the
+  `ziya-db-write` Web Lock. No longer deserializes retained records or re-serializes
+  them back to storage. Flat memory regardless of DB size.
+- **SAVE_GUARD data-loss bypass for short conversations**: The shell-write guard
+  in `_saveConversationsWithLock` only blocked writes that would reduce message
+  count (`messages.length < _fullMessageCount`). Conversations with ≤2 messages,
+  or conversations where `_fullMessageCount` got cleared upstream, slipped past
+  the guard and had their real message content blanked when a transient shell was
+  queued for save. Guard now blocks every shell write unconditionally and routes
+  folderId/version metadata through the metadata-only merge path. Stack traces
+  from `new Error('shell-write-caller stack')` are attached to the warning to
+  identify upstream callers feeding shells into `queueSave`.
+- **FAST_PATH_GUARD defense**: Defensive `console.error` + stack trace in the
+  fast-path save branch in case a shell ever reaches it. Fails loudly instead of
+  silently blanking content.
+- **SERVER_SYNC permanent local/server divergence when `_version` ties**: Both
+  push and receive filters compared `_version` strictly, and fell back to
+  `lastAccessedAt` when `_version` was missing. When local and server ended up
+  with identical `_version` but different message counts (possible when an
+  earlier shell-push incident set server state, or when a code path appended
+  messages without bumping `_version`), neither side could correct the other and
+  drift was permanent. Both directions now include message-count divergence as
+  an independent trigger: push when `localMsgCount > serverMsgCount`, full-fetch
+  when `serverMsgCount > localMsgCount`. Shell guards still prevent pushing
+  truncated shells, so widening the push condition is safe.
+- **iTerm2 tab activity spinner stuck during idle**: Added OSC 133;D and 133;A
+  escape sequences around the prompt loop so iTerm2 recognizes command boundaries
+  and stops showing the tab activity spinner while Ziya is waiting for input.
+- **TypeScript validation false positives on config-level diagnostics**: Whitelisted
+  TS1xxx codes (1323, 1378, 1375, 1432, 1208) that fire from isolated-validation
+  flags rather than real syntax errors. Added `--module esnext` to tsc args for
+  proper ESM support. TypeScript issue checker now only reports issues newly
+  introduced by the diff, not pre-existing ones (compares against original content
+  with line-number normalization).
+- **DrawIO text cell alignment and label overflow**: Text cells now honor the cell's
+  declared `spacingLeft`, `spacingRight`, and `align` style properties for
+  positioning. Margin-left is clamped to keep labels inside their parent cell
+  bounds. Fallback container-label clamping detects enclosing dashed/unfilled
+  shapes when the backing shape isn't a direct sibling. Edge labels no longer have
+  opaque white backgrounds that obscured the connection lines behind them.
+- **DrawIO popup window pan and zoom**: Popup window now has click-and-drag panning
+  via `overflow: auto` on a resizable viewport, and adds a `viewBox` attribute to
+  the cloned SVG for proper responsive scaling. Folding is disabled entirely to
+  prevent collapsed/expanded.gif 404s. Edit-mode toggle re-applies text cell and
+  container-label corrections after maxGraph's refresh wipes them.
+- **DrawIO edge routing with multiple edges on same vertex side**: When multiple
+  edges enter or exit the same side of a vertex, they are now distributed along
+  that side instead of all connecting at the 0.5 midpoint, preventing label overlap.
+- **Sidebar tree-cache invalidation for incomplete folder loads**: `useMemo` in
+  `MUIChatHistory` now guards against building a tree before folders have synced
+  (returns prior tree when folders=0 but conversations>0). Also detects and
+  invalidates a cached tree that was built with fewer folder nodes than currently
+  available, preventing a stale structural-hash match from freezing the sidebar.
+- **Prism syntax highlighting for plaintext**: Added `text`, `plain`, and
+  `plaintext` aliases to the language map, and null-safe prism instance access
+  in the fallback path.
+
+### Changed
+
 ## [0.6.4.9] - 2026-04-18
 
 ### Added
