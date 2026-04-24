@@ -1,4 +1,5 @@
 import React, { useState, useEffect, memo, useMemo, useCallback, useRef, useId, useLayoutEffect } from 'react';
+import { lazyWithRetry } from '../utils/lazyWithRetry';
 import { marked, Tokens } from 'marked';
 import { Alert, Button, message, Tooltip, Collapse } from 'antd';
 import { parseDiff } from 'react-diff-view';
@@ -35,8 +36,8 @@ import { parseD3Spec } from '../utils/d3SpecParser';
 // mermaid + vega + d3 + graphviz + drawio together account for ~4 MB of JS that most
 // conversations never need.  Deferring until first diagram cuts initial parse time
 // by 2-4 seconds on average connections.
-const D3Renderer = React.lazy(() => import('./D3Renderer').then(m => ({ default: m.D3Renderer })));
-const HTMLMockupRenderer = React.lazy(() => import('./HTMLMockupRenderer').then(m => ({ default: m.HTMLMockupRenderer })));
+const D3Renderer = lazyWithRetry(() => import('./D3Renderer').then(m => ({ default: m.D3Renderer })));
+const HTMLMockupRenderer = lazyWithRetry(() => import('./HTMLMockupRenderer').then(m => ({ default: m.HTMLMockupRenderer })));
 
 // Global render queue — diagrams in a conversation register here and
 // wait their turn.  Processing one diagram at a time via requestIdleCallback
@@ -96,7 +97,7 @@ const LazyD3Renderer = (props: React.ComponentProps<typeof D3Renderer>) => {
     );
 };
 
-const DelegateLaunchButton = React.lazy(() => import('./DelegateLaunchButton'));
+const DelegateLaunchButton = lazyWithRetry(() => import('./DelegateLaunchButton'));
 const { Panel } = Collapse;
 
 // Helper function to make "Shell Configuration settings" clickable in security error messages
@@ -1475,6 +1476,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     const { isDarkMode } = useTheme();
     const parsedFilesRef = useRef<any[]>([]);
     const [parseError, setParseError] = useState<boolean>(false);
+    const [fallbackHighlighted, setFallbackHighlighted] = useState<string | null>(null);
     const lastValidDiffRef = useRef<string | null>(null);
     const { isStreaming: isGlobalStreaming } = useStreamingContext();
     const [instanceHunkStatusMap, setInstanceHunkStatusMap] = useState<Map<string, HunkStatus>>(new Map());
@@ -1645,7 +1647,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     useEffect(() => {
         const parseAndSetFiles = () => {
             try {
-                const normalizedDiff = normalizeGitDiff(diff);
+                const normalizedDiff = normalizeGitDiff(diff);                
                 let parsedFiles = validateAndFixParsedFiles(
                     safeParseDiff(normalizedDiff)
                 );
@@ -1734,7 +1736,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                     parsedFilesRef.current = parsedFiles;
                     lastValidDiffRef.current = diff; // Store this as our last valid diff
                     setParseError(false);
-                } else if (lastValidDiffRef.current && isGlobalStreaming) {
+                } else if (lastValidDiffRef.current && isStreamingRef.current) {
                     // During streaming, if parsing fails but we have a previous valid state, keep using it
                     setParseError(false); // Don't set parse error - we'll use the last valid state
                 } else {
@@ -1751,7 +1753,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                 console.error('Error parsing diff:', error);
 
                 // If we're streaming and have a previous valid state, keep using it
-                if (lastValidDiffRef.current && isGlobalStreaming) {
+                if (lastValidDiffRef.current && isStreamingRef.current) {
                     setParseError(false);
                 } else {
                     // Otherwise set parse error
@@ -1761,13 +1763,34 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
             }
         };
         parseAndSetFiles();
-    }, [diff, isGlobalStreaming]);
+    }, [diff]);
 
     // Set loading to false since we're not doing any async tokenization
     useEffect(() => {
         // Skip tokenization entirely since it's unused and problematic
         setIsLoading(false);
     }, [diff, parseError]); // Re-tokenize if diff changes or parseError state changes
+
+    // When we fall back to plain rendering (e.g. illustrative diffs without
+    // real file headers), still run Prism's 'diff' grammar over the text so
+    // +/- lines get coloured like any other diff block.
+    useEffect(() => {
+        if (!parseError) return;
+        let cancelled = false;
+        (async () => {
+            try {
+                await loadPrismLanguage('diff');
+                const prism = window.Prism;
+                const grammar = prism?.languages?.diff;
+                if (!cancelled && prism && grammar) {
+                    setFallbackHighlighted(prism.highlight(diff, grammar, 'diff'));
+                }
+            } catch (e) {
+                if (process.env.NODE_ENV === 'development') console.warn('Fallback diff highlight failed:', e);
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [parseError, diff]);
 
     const renderHunks = (hunks: any[], filePath: string, fileIndex: number) => {
 
@@ -1916,7 +1939,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                     color: isDarkMode ? '#888' : '#666',
                     borderBottom: '1px solid ' + (isDarkMode ? '#404040' : '#e1e4e8')
                 }}>
-                    📄 Diff (fallback rendering - parsing failed)
+                    📄 Diff
                 </div>
                 <pre data-testid="diff-parse-error" style={{
                     backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
@@ -1929,7 +1952,11 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                     fontSize: '13px',
                     lineHeight: '1.45'
                 }}>
-                    <code>{diff}</code>
+                    {fallbackHighlighted ? (
+                        <code className="language-diff" dangerouslySetInnerHTML={{ __html: fallbackHighlighted }} />
+                    ) : (
+                        <code className="language-diff">{diff}</code>
+                    )}
                 </pre>
             </div>
         );
@@ -2875,7 +2902,7 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode, superseded 
 
     // Check for missing files after streaming completes if we haven't checked yet
     useEffect(() => {
-        if (!streamingConversations.has(currentConversationId) &&
+        if (!isStreaming &&
             autoAddDiffFiles &&
             !hasCheckedAfterStreamingRef.current &&
             !hasCheckedFilesRef.current &&
@@ -2898,7 +2925,7 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode, superseded 
 
             checkAfterStreaming();
         }
-    }, [streamingConversations, currentConversationId, token.text, addFilesToContext, autoAddDiffFiles]);
+    }, [isStreaming, token.text, addFilesToContext, autoAddDiffFiles]);
 
     // Debounced check function
     const debouncedCheck = useCallback((checkFn: () => Promise<void>) => {
@@ -3294,7 +3321,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, inde
 
     // Update content when token text changes (for streaming)
     useEffect(() => {
-        if (isGlobalStreaming) {
+        if (isStreamingRef.current) {
             streamingContentRef.current = token.text || '';
             // Queue the update to allow multiple chunks to arrive
             if (parseTimeoutRef.current) {
@@ -3310,7 +3337,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, inde
             setCurrentContent(token.text || '');
             streamingContentRef.current = token.text || '';
         }
-    }, [token.text, isGlobalStreaming]);
+    }, [token.text]);
 
     // Maintain last valid parsed diff
     const parsedFilesRef = useRef<any[]>([]);
@@ -3343,14 +3370,14 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, inde
         // Store the first non-empty title we extract
         if (extractedTitle && extractedTitle !== 'Unknown file' && !initialFileTitleRef.current) {
             initialFileTitleRef.current = extractedTitle;
-        } else if (!isGlobalStreaming) {
+        } else if (!isStreamingRef.current) {
             // When not streaming, always use the fresh title to prevent stale cache
             return extractedTitle;
         }
 
         // During streaming, use the initial title if current extraction fails
-        return (isGlobalStreaming && initialFileTitleRef.current && extractedTitle === 'Unknown file') ? initialFileTitleRef.current : extractedTitle;
-    }, [currentContent, extractFileTitle, isGlobalStreaming]);
+        return (isStreamingRef.current && initialFileTitleRef.current && extractedTitle === 'Unknown file') ? initialFileTitleRef.current : extractedTitle;
+    }, [currentContent, extractFileTitle]);
 
     // Track streaming state in a ref to avoid re-renders
     useEffect(() => {
@@ -3469,8 +3496,6 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
     const [loadError, setLoadError] = useState<string | null>(null);
     const { isDarkMode } = useTheme();
     const [prismInstance, setPrismInstance] = useState<PrismStatic | null>(null);
-
-    const { isStreaming: isGlobalStreaming } = useStreamingContext();
 
     // Normalize the language identifier
     const normalizedLang = useMemo(() => {
@@ -3643,7 +3668,8 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
     if (!isLanguageLoaded) {
         return (
             <pre style={{
-                visibility: isGlobalStreaming ? 'visible' : 'hidden',
+                // Always visible — hiding during language load caused every CodeBlock
+                // to subscribe to StreamingContext, triggering mass re-renders on stream end
                 padding: '16px',
                 borderRadius: '6px',
                 overflow: 'auto',
@@ -3685,7 +3711,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
 
 // Define the possible determined types
 type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' |
-    'd3' | 'mermaid' | 'file-operation' | 'tool' |
+    'd3' | 'mermaid' | 'plotly' | 'file-operation' | 'tool' |
     'joint' | 'jointjs' | 'code' | 'html' | 'text' | 'list' | 'table' | 'escape' | 'math' |
     'paragraph' | 'heading' | 'hr' | 'blockquote' | 'space' | 'packet' | 'drawio' |
     'circuitikz' | 'html-mockup' | 'delegate-tasks' |
@@ -3781,6 +3807,9 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         // This prevents Vega-Lite blocks from being misidentified
         if (lang === 'vega-lite' || lang === 'vegalite') {
             return 'vega-lite';
+        }
+        if (lang === 'plotly') {
+            return 'plotly';
         }
         if (lang === 'mermaid') {
             return 'mermaid';
@@ -4293,6 +4322,33 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             type="d3"
                             isStreaming={isStreaming}
                         />
+                    );
+
+                case 'plotly':
+                    if (!hasText(tokenWithText)) return null;
+
+                    let plotlySpec: any;
+                    try {
+                        const parsedPlotly = JSON.parse(tokenWithText.text);
+                        plotlySpec = {
+                            type: 'plotly',
+                            ...parsedPlotly,
+                            isStreaming: isStreaming,
+                            isMarkdownBlockClosed: true,
+                            forceRender: true
+                        };
+                    } catch (error) {
+                        plotlySpec = {
+                            type: 'plotly',
+                            definition: tokenWithText.text,
+                            isStreaming: isStreaming,
+                            isMarkdownBlockClosed: true,
+                            forceRender: true
+                        };
+                    }
+
+                    return (
+                        <LazyD3Renderer key={sk} spec={plotlySpec} type="d3" isStreaming={isStreaming} />
                     );
 
                 case 'joint':
@@ -5574,7 +5630,19 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                                 continue;
                             }
 
-                            const looksLikeMarkdown = /\*\*|^#{1,6}\s|^\d+\.|^[-*]\s|^>\s/m.test(innerContent);
+                            // Detect prose signals — any of: bold/italic markers,
+                            // headings, lists, blockquotes, markdown links,
+                            // inline HTML tags (e.g. <strong>), or labelled
+                            // search-result structure like "Title:"/"URL:"/"Description:".
+                            // Search-tool output often uses <strong>...</strong> and
+                            // [text](url) rather than **bold**, so the original
+                            // heuristic missed it and wrapped prose as a code block.
+                            const looksLikeMarkdown = (
+                                /\*\*|^#{1,6}\s|^\d+\.|^[-*]\s|^>\s/m.test(innerContent) ||
+                                /\[[^\]]+\]\([^)]+\)/.test(innerContent) ||
+                                /<\/?(?:strong|em|b|i|a|p|br|code|span)\b[^>]*>/i.test(innerContent) ||
+                                /^(?:Title|URL|Description|Source|Link):\s/m.test(innerContent)
+                            );
                             const looksLikeCode = innerContent.split('\n').some(l => {
                                 const t = l.trimStart();
                                 return (
@@ -5867,7 +5935,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                             // Handle display math $$...$$
                             processed = processed.replace(
                                 /\$\$([\s\S]+?)\$\$/g,
-                            '\n<div class="math-display-block">MATH_DISPLAY:$1</div>\n'
+                                '\n<div class="math-display-block">MATH_DISPLAY:$1</div>\n'
                             );
 
                             // Handle inline math $...$
@@ -6000,7 +6068,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             // Anything containing periods at the end, spaces, or unreasonable
             // length is not a real language — strip it so the content isn't lost.
             processedMarkdown = processedMarkdown.replace(
-                /^(```)([^\n`]+)$/gm,
+                /^(`{3,})([^\n`]+)$/gm,
                 (_match, backticks, langTag) => {
                     const trimmed = langTag.trim();
                     if (!trimmed) return _match;
