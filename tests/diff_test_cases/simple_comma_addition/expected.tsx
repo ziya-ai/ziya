@@ -39,4 +39,3 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = memo(({ fixed
     } = useChatContext();
 
     const { checkedKeys } = useFolderContext();
-
