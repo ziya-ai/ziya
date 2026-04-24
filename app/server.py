@@ -61,7 +61,7 @@ from app.utils.pcap_analyzer import analyze_pcap_file, is_pcap_supported
 from app.utils.conversation_exporter import export_conversation_for_paste
 
 # Session management API routers
-from app.api import projects, contexts, skills, chats, tokens
+from app.api import projects, contexts, skills, chats, tokens, task_cards, task_runs
 from app.api import delegates as delegates_api
 from app.api import memory as memory_api
 from app.utils.paths import get_ziya_home
@@ -232,6 +232,34 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
 
     logger.debug(f"🎯 PRECISION_SYSTEM: Built {len(messages)} messages with {len(files)} files preserved")
     
+    # Inject image content blocks for raster image files selected in the
+    # file context tree.  These can't go in the system prompt (text-only),
+    # so we append them to the last user message as multi-modal blocks.
+    if files:
+        from app.utils.file_utils import read_image_as_base64
+        context_image_blocks = []
+        for fpath in files:
+            result = read_image_as_base64(fpath)
+            if result:
+                data, media_type = result
+                context_image_blocks.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": data,
+                    }
+                })
+                logger.debug(f"🖼️ File context image: {fpath} ({media_type})")
+        if context_image_blocks:
+            # Find the last user message and convert its content to multi-modal
+            for msg in reversed(messages):
+                if isinstance(msg, dict) and msg.get("role") == "user":
+                    text = msg["content"] if isinstance(msg["content"], str) else msg["content"]
+                    msg["content"] = context_image_blocks + [{"type": "text", "text": text if isinstance(text, str) else str(text)}]
+                    break
+            logger.info(f"🖼️ Injected {len(context_image_blocks)} file-context images into user message")
+
     # Log if any messages contain images
     image_message_count = sum(1 for msg in messages if isinstance(msg.get('content'), list))
     if image_message_count > 0:
@@ -994,6 +1022,8 @@ app.include_router(chats.router)
 app.include_router(tokens.router)
 app.include_router(delegates_api.router)
 app.include_router(memory_api.router)
+app.include_router(task_cards.router)
+app.include_router(task_runs.router)
 app_logger.info("Session management API routes loaded")
 
 # Import and include model routes
