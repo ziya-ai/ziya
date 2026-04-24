@@ -240,7 +240,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       return;
     }
 
-    const validImageTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    const validImageTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml'];
     const newImages: ImageAttachment[] = [];
 
     for (const file of Array.from(files)) {
@@ -262,21 +262,28 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
           reader.readAsDataURL(file);
         });
 
-        // Resize large images before sending.  Claude processes images at
-        // max 1568px on the long edge; anything larger just inflates the
-        // payload and slows down the Bedrock call.
+        const isSvg = file.type === 'image/svg+xml';
+
+        // SVGs are always rasterized to PNG (LLM vision APIs only accept
+        // raster formats).  Raster images are resized when the long edge
+        // exceeds the model's processing limit (1568px).
         const resized = await new Promise<string>((resolve) => {
           const img = new Image();
           img.onload = () => {
             const MAX_EDGE = 1568;
-            if (img.width <= MAX_EDGE && img.height <= MAX_EDGE) {
+            // SVGs may report 0×0 when they lack explicit dimensions
+            const w = img.width || (isSvg ? 1024 : 0);
+            const h = img.height || (isSvg ? 1024 : 0);
+            if (!isSvg && w <= MAX_EDGE && h <= MAX_EDGE) {
               resolve(base64);
               return;
             }
-            const scale = MAX_EDGE / Math.max(img.width, img.height);
+            const scale = Math.max(w, h) > MAX_EDGE
+              ? MAX_EDGE / Math.max(w, h)
+              : 1;
             const canvas = document.createElement('canvas');
-            canvas.width = Math.round(img.width * scale);
-            canvas.height = Math.round(img.height * scale);
+            canvas.width = Math.round(w * scale);
+            canvas.height = Math.round(h * scale);
             const ctx = canvas.getContext('2d')!;
             ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
             // Use same media type; fall back to PNG for non-lossy formats
@@ -292,7 +299,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
           id: uuidv4(),
           filename: file.name,
           data: resized.split(',')[1],
-          mediaType: file.type
+          mediaType: isSvg ? 'image/png' : file.type
         };
 
         newImages.push(imageAttachment);
@@ -384,6 +391,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     if (file.type.startsWith('text/')) return true;
     if (file.type === 'application/json' || file.type === 'application/xml') return true;
     if (file.type === 'application/javascript' || file.type === 'application/typescript') return true;
+    if (file.type === 'application/rtf' || file.type === 'text/rtf') return true;
     // Many code files have empty MIME type — check extension
     const ext = file.name.split('.').pop()?.toLowerCase() || '';
     const codeExts = new Set([
@@ -392,11 +400,16 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       'scss', 'less', 'xml', 'json', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf', 'md',
       'mdx', 'txt', 'log', 'gradle', 'groovy', 'lua', 'r', 'dart', 'ex', 'exs', 'erl',
       'hs', 'ml', 'clj', 'vim', 'tf', 'hcl', 'proto', 'graphql', 'vue', 'svelte',
-      'makefile', 'dockerfile', 'bat', 'ps1', 'fish',
+      'makefile', 'dockerfile', 'bat', 'ps1', 'fish', 'rtf',
+      'ipynb', 'diff', 'patch', 'drawio', 'plist',
     ]);
     if (codeExts.has(ext)) return true;
     // Check for extensionless known filenames
-    const knownFiles = new Set(['Makefile', 'Dockerfile', 'Gemfile', 'Rakefile', '.gitignore', '.env']);
+    const knownFiles = new Set([
+      'Makefile', 'Dockerfile', 'Gemfile', 'Rakefile',
+      '.gitignore', '.gitattributes', '.dockerignore', '.editorconfig',
+      '.env', '.npmrc', '.prettierrc', '.eslintrc',
+    ]);
     return knownFiles.has(file.name);
   }, []);
 
@@ -502,15 +515,25 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     const imageFiles: File[] = [];
     const textFiles: File[] = [];
     const documentFiles: File[] = [];
+    const unsupported: string[] = [];
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
+
+      // Folders appear as size-0 entries with no type or a generic type
+      if (file.size === 0 && (!file.type || file.type === 'application/x-directory')) {
+        message.warning('Folder drops are not supported — drop individual files instead');
+        continue;
+      }
+
       if (file.type.startsWith('image/')) {
         imageFiles.push(file);
       } else if (isTextFile(file)) {
         textFiles.push(file);
       } else if (isDocumentFile(file)) {
         documentFiles.push(file);
+      } else {
+        unsupported.push(file.name);
       }
     }
 
@@ -525,15 +548,32 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       }
     }
 
-    // Handle text/code files — read content and insert as code blocks
+    // Handle text/code files as document chips
     for (const file of textFiles) {
-      const content = await file.text();
-      const lang = getLanguageFromFilename(file.name);
-      const fence = '```';
-      const codeBlock = `\n**${file.name}:**\n${fence}${lang}\n${content}\n${fence}\n`;
-      if (editorRef.current) {
-        editorRef.current.focus();
-        document.execCommand('insertText', false, codeBlock);
+      const ext = file.name.split('.').pop()?.toLowerCase() || '';
+      const MAX_TEXT_SIZE = 5 * 1024 * 1024; // 5 MB
+      if (file.size > MAX_TEXT_SIZE) {
+        message.warning(`${file.name} is too large (${(file.size / 1024 / 1024).toFixed(1)} MB, limit 5 MB)`);
+        continue;
+      }
+      try {
+        const content = await file.text();
+        const doc: DocumentAttachment = {
+          id: uuidv4(),
+          filename: file.name,
+          text: content,
+          type: ext || 'txt',
+          chars: content.length,
+        };
+        // Skip duplicates (same filename and content length)
+        const isDupe = attachedDocuments.some(d => d.filename === file.name && d.chars === content.length);
+        if (isDupe) {
+          message.info(`${file.name} is already attached`);
+          continue;
+        }
+        setAttachedDocuments(prev => [...prev, doc]);
+      } catch (err) {
+        message.error(`Failed to read ${file.name}`);
       }
     }
 
@@ -542,8 +582,8 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       await processDocumentFiles(documentFiles);
     }
 
-    if (imageFiles.length === 0 && textFiles.length === 0 && documentFiles.length === 0) {
-      message.warning(`Unsupported file type: ${files[0].name}`);
+    if (unsupported.length > 0) {
+      message.warning(`Unsupported file type${unsupported.length > 1 ? 's' : ''}: ${unsupported.join(', ')}`);
     }
   }, [supportsVision, processImageFiles, isTextFile, isDocumentFile, getLanguageFromFilename, processDocumentFiles]);
 
