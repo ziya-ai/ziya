@@ -2352,21 +2352,20 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     }
 
                     // 4. Push local-only / newer-local conversations to server (non-blocking)
-                    const chatsToSync = mergedProjectConvs
+                    // Phase 1: Identify candidates that need pushing.
+                    // mergedProjectConvs are shells (messages stripped), so use
+                    // _fullMessageCount for the message-count comparison and
+                    // hydrate from IDB before actually sending.
+                    const pushCandidateIds = mergedProjectConvs
                         .filter(c => {
                             // Don't push conversations we just marked as deleted
                             if (deletedIds.includes(c.id)) return false;
                             // Don't push inactive (deleted) conversations back to server
                             if (c.isActive === false) return false;
-                            // NEVER push shells.  SERVER_SYNC loads local state as
-                            // shells (getConversationShells — messages stripped to
-                            // first+last or blanked) for memory reasons.  Pushing
-                            // those to the server truncates or blanks the
-                            // authoritative record.  April-2026 regression.
-                            if ((c as any)._isShell) return false;
-                            if ((c as any)._fullMessageCount
-                                && Array.isArray(c.messages)
-                                && c.messages.length < (c as any)._fullMessageCount) return false;
+                            // Use _fullMessageCount (real IDB count) when available,
+                            // since merged entries are shells with stripped messages.
+                            const localMsgCount = (c as any)._fullMessageCount
+                                || (Array.isArray(c.messages) ? c.messages.length : 0);
                             const sc = serverChats.find(sc => sc.id === c.id);
                             if (!sc) return true; // local-only, needs push
                             // Message-count divergence check.  If local has strictly
@@ -2381,7 +2380,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             // server stuck at 2 messages, local at 46, same _version.
                             // Shell guards above still prevent pushing truncated
                             // shells, so widening here is safe.
-                            const localMsgCount = Array.isArray(c.messages) ? c.messages.length : 0;
                             const serverMsgCount = typeof (sc as any).messageCount === 'number'
                                 ? (sc as any).messageCount
                                 : Array.isArray((sc as any).messages) ? (sc as any).messages.length : 0;
@@ -2395,11 +2393,45 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             const localVer = (c as any)._version || c.lastAccessedAt || 0;
                             return localVer > serverVer;
                         })
-                        .map((c: any) => syncApi.conversationToServerChat(c, projectId));
-                    if (chatsToSync.length > 0) {
-                        syncApi.bulkSync(projectId, chatsToSync).catch(e =>
-                            console.warn('📡 SERVER_SYNC: Push to server failed (non-fatal):', e)
+                        .map(c => c.id);
+
+                    // Phase 2: Hydrate candidates from IDB (full message arrays).
+                    // Shells must never be sent to the server — they'd overwrite
+                    // real data with empty content.  Load full records and guard
+                    // against any that come back truncated or missing.
+                    if (pushCandidateIds.length > 0) {
+                        const fullConvResults = await Promise.allSettled(
+                            pushCandidateIds.map(id => db.getConversation(id))
                         );
+                        const chatsToSync: any[] = [];
+                        fullConvResults.forEach((result, i) => {
+                            if (result.status !== 'fulfilled' || !result.value) return;
+                            const full = result.value;
+                            const fullMsgCount = Array.isArray(full.messages) ? full.messages.length : 0;
+                            // Guard: if the hydrated record is itself truncated
+                            // (e.g. IDB was corrupted), don't push garbage.
+                            if (fullMsgCount === 0) {
+                                console.warn(`📡 SERVER_SYNC: Skipping push for ${full.id.substring(0,8)} — hydrated with 0 messages`);
+                                return;
+                            }
+                            if ((full as any)._isShell) {
+                                console.warn(`📡 SERVER_SYNC: Skipping push for ${full.id.substring(0,8)} — still marked as shell after hydration`);
+                                return;
+                            }
+                            chatsToSync.push(syncApi.conversationToServerChat(full, projectId));
+                        });
+                        if (chatsToSync.length > 0) {
+                            syncApi.bulkSync(projectId, chatsToSync).then(result => {
+                                if (result.errors && result.errors.length > 0) {
+                                    console.error('📡 SERVER_SYNC: Push partial failure —', result.errors.length, 'errors:', result.errors);
+                                }
+                                if (result.created > 0 || result.updated > 0) {
+                                    console.log(`📡 SERVER_SYNC: Push complete — created=${result.created} updated=${result.updated} skipped=${result.skipped}`);
+                                }
+                            }).catch(e =>
+                                console.error('📡 SERVER_SYNC: Push to server failed:', e)
+                            );
+                        }
                     }
 
                     // 5. Update IndexedDB with merged data
