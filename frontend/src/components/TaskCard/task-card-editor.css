@@ -1,0 +1,172 @@
+/* Task Card editor — visual language per design/task-cards.md.
+   Blue = Task (atom).  Yellow = Repeat (decorator). */
+
+.tc-card {
+  background: var(--tc-card-bg, #0d1117);
+  border: 1px solid var(--tc-card-border, #30363d);
+  border-radius: 10px;
+  overflow: hidden;
+  color: var(--tc-card-text, #e0e0e0);
+  font-family: inherit;
+}
+
+.tc-card-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px;
+  background: var(--tc-card-header-bg, #161b22);
+  border-bottom: 1px solid var(--tc-card-border, #30363d);
+}
+.tc-card-emoji { font-size: 15px; }
+.tc-card-name-input {
+  flex: 1; background: transparent; border: none;
+  color: inherit; font-size: 14px; font-weight: 600; outline: none;
+  padding: 4px 6px; border-radius: 4px;
+}
+.tc-card-name-input:hover, .tc-card-name-input:focus {
+  background: rgba(255,255,255,0.04);
+}
+.tc-card-description-input {
+  width: 100%; box-sizing: border-box;
+  background: transparent; border: none;
+  color: var(--tc-muted, #7d8590); font-size: 12px;
+  padding: 6px 14px; outline: none;
+  border-bottom: 1px solid var(--tc-card-border, #30363d);
+}
+.tc-draft-indicator {
+  font-size: 10px; color: var(--tc-muted, #7d8590);
+}
+.tc-card-actions { margin-left: auto; display: flex; gap: 6px; }
+.tc-btn {
+  padding: 4px 12px; border-radius: 4px;
+  font-size: 11px; cursor: pointer; border: 1px solid;
+}
+.tc-btn-secondary {
+  background: transparent; border-color: var(--tc-card-border, #30363d);
+  color: var(--tc-muted, #7d8590);
+}
+.tc-btn-primary {
+  background: #238636; border-color: #2ea043;
+  color: white; font-weight: 600;
+}
+.tc-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.tc-card-canvas {
+  padding: 14px;
+  background: var(--tc-canvas-bg, #0a0e13);
+}
+
+/* Block base */
+.tc-block {
+  border: 1px solid; border-radius: 8px;
+  margin-bottom: 6px;
+}
+.tc-block-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid transparent;
+}
+.tc-block-body { padding: 8px 12px; }
+.tc-block-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
+  font-weight: 600; margin-left: auto;
+}
+.tc-emoji { font-size: 13px; }
+.tc-name-input {
+  flex: 1; background: transparent; border: none;
+  color: inherit; font-weight: 600; font-size: 12px; outline: none;
+  padding: 2px 4px; border-radius: 3px;
+}
+.tc-name-input:hover, .tc-name-input:focus { background: rgba(255,255,255,0.04); }
+.tc-icon-btn {
+  background: transparent; border: none; color: var(--tc-muted, #7d8590);
+  font-size: 13px; cursor: pointer; padding: 0 4px;
+}
+
+/* Task block — blue */
+.tc-block-task {
+  border-color: #1f6feb;
+  background: linear-gradient(180deg, rgba(31,111,235,0.06), transparent 30%);
+  box-shadow: inset 3px 0 0 #1f6feb;
+}
+.tc-block-task .tc-block-header {
+  background: rgba(31,111,235,0.06);
+  border-bottom-color: rgba(31,111,235,0.15);
+}
+.tc-block-task .tc-block-label { color: #4a9eff; }
+.tc-instructions {
+  width: 100%; box-sizing: border-box;
+  background: var(--tc-card-header-bg, #161b22);
+  border: 1px solid var(--tc-card-border, #30363d);
+  color: inherit; font-size: 11px; padding: 6px 8px;
+  border-radius: 4px; resize: vertical; font-family: inherit;
+  outline: none;
+}
+
+/* Repeat block — yellow */
+.tc-block-repeat {
+  border-color: #f2cc60;
+  background: linear-gradient(180deg, rgba(242,204,96,0.06), transparent 30%);
+  box-shadow: inset 3px 0 0 #f2cc60;
+}
+.tc-block-repeat > .tc-block-header {
+  background: rgba(242,204,96,0.08);
+  border-bottom-color: rgba(242,204,96,0.2);
+}
+.tc-block-label-repeat { color: #f2cc60; margin-left: 0; }
+.tc-block-body-repeat { padding: 10px 12px 10px 12px; }
+.tc-sequence-label {
+  font-size: 9px; text-transform: uppercase; letter-spacing: 1px;
+  color: #5a6370; margin-bottom: 4px;
+}
+
+.tc-select, .tc-num-input {
+  background: var(--tc-card-header-bg, #161b22);
+  border: 1px solid var(--tc-card-border, #30363d);
+  color: inherit; padding: 2px 6px; border-radius: 3px;
+  font-size: 11px; outline: none;
+}
+.tc-num-input { width: 48px; text-align: center; }
+.tc-select-right { margin-left: auto; }
+.tc-label-dim { font-size: 11px; color: var(--tc-muted, #7d8590); }
+.tc-checkbox-label {
+  display: inline-flex; align-items: center; gap: 4px;
+  color: var(--tc-muted, #7d8590); font-size: 11px;
+}
+
+/* Scope chips */
+.tc-scope-row {
+  margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px;
+  align-items: center;
+}
+.tc-chip {
+  font-size: 10px; padding: 2px 6px; border-radius: 3px;
+  background: rgba(255,255,255,0.06); display: inline-flex;
+  align-items: center; gap: 3px;
+}
+.tc-chip-file { color: #7ee787; }
+.tc-chip-tool { color: #4a9eff; }
+.tc-chip-skill { color: #d2a8ff; }
+.tc-chip-remove {
+  background: transparent; border: none; color: inherit;
+  cursor: pointer; padding: 0 2px; opacity: 0.6; font-size: 12px;
+}
+.tc-chip-remove:hover { opacity: 1; }
+.tc-chip-add {
+  font-size: 10px; padding: 2px 8px; border-radius: 3px;
+  background: transparent; border: 1px dashed var(--tc-card-border, #30363d);
+  color: var(--tc-muted, #7d8590); cursor: pointer;
+}
+
+/* Add-block row inside a repeat */
+.tc-add-row { display: flex; gap: 6px; margin-top: 4px; }
+.tc-add-btn {
+  flex: 1; background: transparent;
+  border: 1px dashed var(--tc-card-border, #30363d);
+  color: var(--tc-muted, #7d8590);
+  padding: 6px; border-radius: 6px; font-size: 11px; cursor: pointer;
+}
+
+.tc-block-unknown {
+  padding: 8px 12px; border-color: #da3633; color: #f85149;
+  font-size: 11px;
+}
