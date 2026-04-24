@@ -54,6 +54,21 @@ const isVegaLiteObject = (obj: any): boolean => {
   );
 };
 
+// A Vega-Lite spec may carry its data at the top level, in datasets, in
+// individual layers, or inside any sub-view of a composition
+// (vconcat / hconcat / concat / facet / repeat).  Walk the tree and return
+// true if *anywhere* in the spec there is a data source.
+const hasVegaLiteDataAnywhere = (node: any): boolean => {
+  if (!node || typeof node !== 'object') return false;
+  if (node.data || node.datasets) return true;
+  if (Array.isArray(node.layer) && node.layer.some(hasVegaLiteDataAnywhere)) return true;
+  if (Array.isArray(node.vconcat) && node.vconcat.some(hasVegaLiteDataAnywhere)) return true;
+  if (Array.isArray(node.hconcat) && node.hconcat.some(hasVegaLiteDataAnywhere)) return true;
+  if (Array.isArray(node.concat) && node.concat.some(hasVegaLiteDataAnywhere)) return true;
+  if (node.spec && hasVegaLiteDataAnywhere(node.spec)) return true;
+  return false;
+};
+
 function sanitizeSpec(obj: any): any {
   if (obj === null || obj === undefined) {
     return undefined;
@@ -102,8 +117,9 @@ const isVegaLiteDefinitionComplete = (definition: string): boolean => {
       return false;
     }
 
-    // Check for required Vega-Lite properties
-    const hasData = parsed.data !== undefined;
+    // Check for required Vega-Lite properties.  Data can live in the top
+    // level, in datasets, in layers, or in any sub-view of a composition.
+    const hasData = hasVegaLiteDataAnywhere(parsed);
     const hasVisualization = parsed.mark || parsed.layer || parsed.concat || parsed.facet || parsed.repeat;
 
     // A complete spec should have both data and visualization
@@ -201,7 +217,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
     // Content analysis - this takes priority over streaming flags
     // Check if this is a complete Vega-Lite object (has schema, data, mark, etc.)
-    const isCompleteVegaLiteObject = spec.$schema && (spec.data || spec.datasets) &&
+    const isCompleteVegaLiteObject = spec.$schema && hasVegaLiteDataAnywhere(spec) &&
       (spec.mark || spec.layer || spec.vconcat || spec.hconcat || spec.facet || spec.repeat);
 
     if (isCompleteVegaLiteObject) {
@@ -2878,8 +2894,10 @@ export const vegaLitePlugin: D3RenderPlugin = {
       }
 
       // Ensure required properties exist
-      const layersHaveData = Array.isArray(vegaSpec.layer) && vegaSpec.layer.some((l: any) => l.data);
-      if (!vegaSpec.data && !vegaSpec.datasets && !layersHaveData) {
+      // Data may live at the top level, in datasets, in layers, or in any
+      // sub-view of a composition (vconcat / hconcat / concat / facet / repeat).
+      // Only bail if we can't find data anywhere in the tree.
+      if (!hasVegaLiteDataAnywhere(vegaSpec)) {
         throw new Error('Invalid Vega-Lite specification: missing data or datasets');
       }
 
@@ -5445,7 +5463,7 @@ ${svgData}`;
       // During streaming or with incomplete JSON, don't show errors unless forced
       // CRITICAL: Don't suppress errors when forceRender is true - user explicitly wants to see what's wrong
       // Also don't suppress when the spec is a fully-formed object — the error is real.
-      const specIsCompleteObject = spec.$schema && (spec.data || spec.datasets) &&
+      const specIsCompleteObject = spec.$schema && hasVegaLiteDataAnywhere(spec) &&
         (spec.mark || spec.layer || spec.vconcat || spec.hconcat || spec.facet || spec.repeat);
       const shouldSuppressError = (
         (!spec.forceRender && (
@@ -5595,7 +5613,7 @@ ${svgData}`;
      */
     function showVegaLiteErrorView(container: HTMLElement, spec: VegaLiteSpec, isDarkMode: boolean, error: Error): void {
       const sourceDefinition = spec.definition || JSON.stringify(spec, null, 2);
-      const isCompleteVegaLiteObject = spec.$schema && (spec.data || spec.datasets) &&
+      const isCompleteVegaLiteObject = spec.$schema && hasVegaLiteDataAnywhere(spec) &&
         (spec.mark || spec.layer || spec.vconcat || spec.hconcat || spec.facet || spec.repeat);
 
       container.innerHTML = `
@@ -5682,7 +5700,7 @@ ${svgData}`;
      */
     function showVegaLiteDebugView(container: HTMLElement, spec: VegaLiteSpec, isDarkMode: boolean, error?: Error): void {
       const sourceDefinition = spec.definition || JSON.stringify(spec, null, 2);
-      const isCompleteVegaLiteObject = spec.$schema && (spec.data || spec.datasets) &&
+      const isCompleteVegaLiteObject = spec.$schema && hasVegaLiteDataAnywhere(spec) &&
         (spec.mark || spec.layer || spec.vconcat || spec.hconcat || spec.facet || spec.repeat);
 
       container.innerHTML = `
