@@ -12,7 +12,7 @@ DEFAULT_ENDPOINT = "bedrock"
 DEFAULT_MODELS = {
     "bedrock": "sonnet4.6",
     "google": "gemini-3.1-pro",
-    "openai": "gpt-4.1",
+    "openai": "gpt-5.4",
     "anthropic": "claude-sonnet-4-6"
 }
 
@@ -25,7 +25,7 @@ DEFAULT_MODELS = {
 DEFAULT_SERVICE_MODELS = {
     "bedrock": "us.amazon.nova-lite-v1:0",
     "google": "gemini-2.0-flash-lite",
-    "openai": "gpt-4.1-mini",
+    "openai": "gpt-5.4-mini",
     "anthropic": "claude-haiku-4-5-20251001",
 }
 
@@ -38,7 +38,7 @@ SERVICE_MODEL_OVERRIDES: dict[str, dict[str, str]] = {
     "memory_extraction": {
         "bedrock": "us.anthropic.claude-3-5-haiku-20241022-v1:0",
         "google": "gemini-2.0-flash",       # flash (not lite) for extraction
-        "openai": "gpt-4.1-mini",           # already strong enough
+        "openai": "gpt-5.4-mini",           # already strong enough
         "anthropic": "claude-haiku-4-5-20251001",
     },
 }
@@ -203,11 +203,11 @@ MODEL_FAMILIES = {
         "parameter_ranges": {
             "temperature": {"min": 0.0, "max": 2.0, "default": 0.3},
             "top_p": {"min": 0.0, "max": 1.0, "default": 1.0},
-            "max_tokens": {"min": 1, "max": 16384, "default": 4096}
+            "max_tokens": {"min": 1, "max": 128000, "default": 4096}
         },
         "native_function_calling": True,
         "supports_vision": True,
-        "token_limit": 128000
+        "token_limit": 272000
     },
 }
 
@@ -244,14 +244,14 @@ ENDPOINT_DEFAULTS = {
         "max_request_size_mb": 10
     },
     "openai": {
-        "token_limit": 128000,
-        "max_output_tokens": 16384,
-        "default_max_output_tokens": 16384,
+        "token_limit": 272000,
+        "max_output_tokens": 128000,
+        "default_max_output_tokens": 32768,
         "supported_parameters": ["temperature", "top_p", "max_tokens"],
         "parameter_ranges": {
             "temperature": {"min": 0.0, "max": 2.0, "default": 0.3},
             "top_p": {"min": 0.0, "max": 1.0, "default": 1.0},
-            "max_tokens": {"min": 1, "max": 16384, "default": 4096}
+            "max_tokens": {"min": 1, "max": 128000, "default": 4096}
         }
     },
 }
@@ -447,6 +447,11 @@ MODEL_CONFIGS = {
             "supports_extended_context": True,
             "extended_context_limit": 1000000,
             "effort_beta_required": False,
+            # Opus 4.7 rejects sampling parameters (temperature/top_p/top_k)
+            # with a 400 error per Anthropic's migration guide. Steer via
+            # prompting + the `effort` parameter instead. These are stripped
+            # from outgoing requests and hidden in the frontend modal.
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
         "sonnet": {
             "model_id": {
@@ -825,6 +830,42 @@ MODEL_CONFIGS = {
         },
     },
     "openai": {
+        "gpt-5.4": {
+            "model_id": "gpt-5.4",
+            "family": "openai-gpt",
+            "token_limit": 272000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32768,
+            "supports_vision": True,
+            "native_function_calling": True,
+        },
+        "gpt-5.4-pro": {
+            "model_id": "gpt-5.4-pro",
+            "family": "openai-gpt",
+            "token_limit": 1050000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32768,
+            "supports_thinking": True,
+            "native_function_calling": True,
+        },
+        "gpt-5.4-mini": {
+            "model_id": "gpt-5.4-mini",
+            "family": "openai-gpt",
+            "token_limit": 400000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32768,
+            "supports_vision": True,
+            "native_function_calling": True,
+        },
+        "gpt-5.4-nano": {
+            "model_id": "gpt-5.4-nano",
+            "family": "openai-gpt",
+            "token_limit": 400000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32768,
+            "supports_vision": True,
+            "native_function_calling": True,
+        },
         "gpt-4.1": {
             "model_id": "gpt-4.1",
             "family": "openai-gpt",
@@ -836,15 +877,6 @@ MODEL_CONFIGS = {
         },
         "gpt-4.1-mini": {
             "model_id": "gpt-4.1-mini",
-            "family": "openai-gpt",
-            "token_limit": 200000,
-            "max_output_tokens": 32768,
-            "default_max_output_tokens": 16384,
-            "supports_vision": True,
-            "native_function_calling": True,
-        },
-        "gpt-4.1-nano": {
-            "model_id": "gpt-4.1-nano",
             "family": "openai-gpt",
             "token_limit": 200000,
             "max_output_tokens": 32768,
@@ -1036,6 +1068,16 @@ def get_supported_parameters(endpoint, model_name):
     # Add model-specific parameters
     supported_params.update(model_specific_config.get("supported_parameters", []))
     
+    # Subtract any parameters explicitly marked unsupported. This lets a
+    # specific model opt out of family-level defaults (e.g. Opus 4.7 rejects
+    # temperature/top_p/top_k even though the claude family supports them).
+    unsupported = set()
+    unsupported.update(family_config.get("unsupported_parameters", []))
+    if parent_family_config:
+        unsupported.update(parent_family_config.get("unsupported_parameters", []))
+    unsupported.update(model_specific_config.get("unsupported_parameters", []))
+    supported_params -= unsupported
+
     # Now collect parameter ranges from all levels
     param_ranges = {}
     
