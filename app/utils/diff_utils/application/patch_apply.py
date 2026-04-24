@@ -2169,17 +2169,32 @@ def apply_diff_with_difflib_hybrid_forced(
         # Full-file replacement fallback: when a single hunk covers the entire
         # file but fuzzy matching failed (e.g. hallucinated context lines or
         # wildly wrong line numbers), build the new content from the hunk's
-        # context + addition lines.
+        # context + addition lines. Require at least some confidence that the
+        # hunk actually belongs to this file — otherwise a diff whose
+        # old_block has no relation to the current content would clobber an
+        # unrelated target file (e.g. applying a diff for one file against
+        # another that merely shares a similar size).
         if len(hunks) == 1 and len(hunk_failures) == 1:
             h = hunks[0]
             h_old_count = h.get('old_count', 0)
             file_line_count = len(original_lines_with_endings)
-            if h_old_count >= file_line_count * 0.9 or h_old_count > file_line_count:
+            failure_detail = hunk_failures[0][1] if hunk_failures else {}
+            failure_confidence = failure_detail.get('confidence', 0.0) or 0.0
+            covers_whole_file = (
+                h_old_count >= file_line_count * 0.9 or h_old_count > file_line_count
+            )
+            if covers_whole_file and failure_confidence >= 0.30:
                 new_lines = h.get('new_lines', [])
                 if new_lines:
-                    logger.info(f"Full-file replacement fallback: single hunk covers {h_old_count}/{file_line_count} lines, using {len(new_lines)} new lines")
+                    logger.info(
+                        f"Full-file replacement fallback: single hunk covers {h_old_count}/{file_line_count} lines, using {len(new_lines)} new lines (match confidence={failure_confidence:.2f})"
+                    )
                     replacement = [line + dominant_ending if not line.endswith(('\n', '\r\n')) else line for line in new_lines]
                     return replacement
+            elif covers_whole_file:
+                logger.info(
+                    f"Skipping full-file replacement fallback: match confidence {failure_confidence:.2f} below threshold 0.30"
+                )
 
         # Determine overall status based on whether *any* changes were made before failure
         # This requires tracking if any hunk *was* successfully applied before a failure occurred.
