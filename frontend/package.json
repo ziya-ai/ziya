@@ -1,6 +1,6 @@
 {
   "name": "frontend",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "private": true,
   "engines": {
     "node": ">=20.0.0",
@@ -25,6 +25,7 @@
     "marked": "^16.4.1",
     "mermaid": "^11.12.1",
     "pako": "^2.1.0",
+    "plotly.js-dist-min": "^3.5.0",
     "prismjs": "^1.30.0",
     "react": "^18.3.1",
     "react-diff-view": "^3.3.2",
