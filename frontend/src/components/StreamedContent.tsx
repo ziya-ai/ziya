@@ -14,7 +14,8 @@ import SwarmRecoveryPanel from './SwarmRecoveryPanel';
 import SwarmFlowGraph from './SwarmFlowGraph';
 import type { SwarmNode } from './SwarmFlowGraph';
 import ReasoningDisplay from './ReasoningDisplay';
-const MarkdownRenderer = React.lazy(() => import("./MarkdownRenderer"));
+import { lazyWithRetry } from '../utils/lazyWithRetry';
+const MarkdownRenderer = lazyWithRetry(() => import("./MarkdownRenderer"));
 
 export const StreamedContent: React.FC<{}> = () => {
     const [error, setError] = useState<string | null>(null);
