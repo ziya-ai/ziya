@@ -28,6 +28,16 @@ function persistCrash(entry: CrashEntry) {
   } catch { /* localStorage full or unavailable — non-fatal */ }
 }
 
+/** Errors matching any of these patterns are benign browser noise
+ *  and should not be persisted or surfaced to the user. */
+const SUPPRESSED_ERRORS = [
+  /ResizeObserver loop/,
+];
+
+function isSuppressedError(message: string): boolean {
+  return SUPPRESSED_ERRORS.some(re => re.test(message));
+}
+
 /** Read crash log from console: `getCrashLog()` */
 (window as any).getCrashLog = () => {
   try {
@@ -47,6 +57,14 @@ function persistCrash(entry: CrashEntry) {
     });
     return log;
   } catch { return []; }
+};
+
+/** Clear crash log from console: `clearCrashLog()` */
+(window as any).clearCrashLog = () => {
+  try {
+    localStorage.removeItem(CRASH_LOG_KEY);
+    console.log('🧹 Crash log cleared.');
+  } catch { /* non-fatal */ }
 };
 
 interface State {
@@ -70,6 +88,12 @@ export class RootErrorBoundary extends React.Component<
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
+    // Suppress benign errors — reset state so the app continues rendering
+    if (isSuppressedError(error.message)) {
+      this.setState({ hasError: false, error: null });
+      return;
+    }
+
     const entry: CrashEntry = {
       timestamp: new Date().toISOString(),
       message: error.message,

@@ -23,8 +23,9 @@ import { QuestionProvider } from "./context/QuestionContext";
 import { ServerStatusProvider } from './context/ServerStatusContext';
 import { ProjectProvider } from './context/ProjectContext';
 
+import { lazyWithRetry } from './utils/lazyWithRetry';
 // Lazy-load the render harness — only needed for headless diagram export
-const DiagramRenderPage = React.lazy(() => import('./components/DiagramRenderPage'));
+const DiagramRenderPage = lazyWithRetry(() => import('./components/DiagramRenderPage'));
 
 // hide unhandled promise rejections from making console spam
 window.addEventListener('unhandledrejection', (event) => {
@@ -125,6 +126,11 @@ setTimeout(startWhiteScreenDetector, 3000);
 
 window.addEventListener('error', (event) => {
     try {
+        // ResizeObserver warnings are benign browser noise — don't persist
+        if (event.message?.includes('ResizeObserver loop')) {
+            event.preventDefault();
+            return;
+        }
         const entry = {
             timestamp: new Date().toISOString(),
             message: `[GlobalError] ${event.message}`,
