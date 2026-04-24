@@ -178,6 +178,91 @@ class TestHallucinationDetection:
         assert state.hallucination_detected is False
         assert state.assistant_text == "Here is my analysis of the code."
 
+    # -- Structural-parrot patterns (observed in production session fabrication) --
+
+    def test_fake_tool_invocation_header_file_write(self):
+        """Fabricated 'file_write|🔐' UI-format header should trigger detection."""
+        executor = _make_executor()
+        state = _make_state()
+
+        process_text_delta(
+            executor,
+            "file_write|🔐 file write: /tmp/patch.py|python\n"
+            "{'success': True, 'message': 'Created /tmp/patch.py', 'path': '/tmp/patch.py'}",
+            state,
+        )
+
+        assert state.hallucination_detected is True
+
+    def test_fake_tool_invocation_header_shell(self):
+        """Fabricated 'run_shell_command|🔐 Shell:' header should trigger detection."""
+        executor = _make_executor()
+        state = _make_state()
+
+        process_text_delta(
+            executor,
+            "run_shell_command|🔐 Shell: python3 patch.py|bash\npatched 14 flags",
+            state,
+        )
+
+        assert state.hallucination_detected is True
+
+    def test_fake_tool_invocation_with_mcp_prefix(self):
+        """The 'mcp_' prefix variant should also trigger detection."""
+        executor = _make_executor()
+        state = _make_state()
+
+        process_text_delta(
+            executor,
+            "mcp_file_write|🔐 file write: .ziya/note.md|markdown",
+            state,
+        )
+
+        assert state.hallucination_detected is True
+
+    def test_fake_file_write_result_dict(self):
+        """Fabricated file_write result dict shape should trigger detection."""
+        executor = _make_executor()
+        state = _make_state()
+
+        process_text_delta(
+            executor,
+            "The result was {'success': True, 'message': 'Created foo.py (842 bytes)', "
+            "'path': 'foo.py', 'bytes_written': 842}",
+            state,
+        )
+
+        assert state.hallucination_detected is True
+
+    def test_structural_patterns_suppressed_inside_code_block(self):
+        """Same structural patterns inside a code fence must NOT trigger."""
+        executor = _make_executor()
+        state = _make_state(code_block_tracker={
+            'in_block': True, 'block_type': 'text', 'accumulated_content': ''
+        })
+
+        process_text_delta(
+            executor,
+            "run_shell_command|🔐 Shell: example\n"
+            "{'success': True, 'message': 'x', 'path': 'y'}",
+            state,
+        )
+
+        assert state.hallucination_detected is False
+
+    def test_legitimate_success_dict_no_false_positive(self):
+        """A result dict without the file-tool key combination should not trigger."""
+        executor = _make_executor()
+        state = _make_state()
+
+        process_text_delta(
+            executor,
+            "The API returned {'success': True, 'data': [1, 2, 3], 'count': 3}",
+            state,
+        )
+
+        assert state.hallucination_detected is False
+
 
 # ---------------------------------------------------------------------------
 # Visualization block buffering

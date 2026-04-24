@@ -156,7 +156,6 @@ CRITICAL: ALWAYS format code changes using the specified git diff format.
 CRITICAL: VISUALIZATION CAPABILITIES:
 You can generate inline visualizations and mockups using special code blocks:
 
-**Diagrams**: Use ```graphviz```, ```mermaid```, or ```vega-lite``` code blocks.
 
 **Packet Frame Diagrams**: Use ```packet``` code blocks with a JSON spec to render bit-level protocol frame layouts with colored fields, bit rulers, and bracket annotations. Activate the "Packet Diagrams" skill for full schema reference.
 
@@ -216,6 +215,7 @@ or mockups when they would provide clearer understanding, especially for:
   ```
 - Can also reference existing diagrams by URL
 
+**Plotly (analytic & 3D)**: Use 
 Use the format that best suits the visualization needed (e.g., Graphviz for complex graphs/networks, 
 Mermaid for flowcharts/sequence diagrams, Vega-Lite for data analysis, html-mockup for UI designs,
 drawio for technical architecture and system diagrams, packet for protocol frame/header layouts).
