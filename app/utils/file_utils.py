@@ -26,11 +26,58 @@ def resolve_external_path(file_path: str, base_dir: str) -> str:
     return os.path.join(base_dir, s)
 
 BINARY_EXTENSIONS = {
-    '.pyc', '.pyo', '.pyd', '.ico', '.png', '.jpg', '.jpeg', '.gif', '.svg',
+    '.pyc', '.pyo', '.pyd', '.ico', '.png', '.jpg', '.jpeg', '.gif',
     '.core', '.bin', '.exe', '.dll', '.so', '.dylib', '.class',
     '.woff', '.woff2', '.ttf', '.eot', '.zip', '.key', '.crt', '.p12', '.pfx',
-    '.der', '.pem'  # Add certificate and key file extensions
+    '.der', '.pem',
+    '.webp',  # raster image, handled via IMAGE_EXTENSIONS
 }
+
+# Raster image formats supported by LLM vision APIs (Claude, Nova, GPT-4V).
+# SVGs are intentionally excluded — they're sent as text/XML code context.
+IMAGE_EXTENSIONS = {
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+}
+
+# In-process cache: (abspath) -> (mtime, size, base64_data, media_type)
+_image_cache: dict = {}
+_IMAGE_CACHE_MAX = 64  # max entries before full eviction
+
+
+def read_image_as_base64(file_path: str):
+    """Read a raster image file and return (base64_data, media_type), or None
+    if the file isn't a supported image format.  Results are cached by
+    (path, mtime, size) so unchanged files aren't re-read each turn."""
+    ext = os.path.splitext(file_path)[1].lower()
+    media_type = IMAGE_EXTENSIONS.get(ext)
+    if not media_type:
+        return None
+
+    abspath = os.path.abspath(file_path)
+    try:
+        st = os.stat(abspath)
+    except OSError:
+        return None
+
+    cache_key = abspath
+    cached = _image_cache.get(cache_key)
+    if cached and cached[0] == st.st_mtime and cached[1] == st.st_size:
+        return cached[2], cached[3]
+
+    try:
+        import base64
+        with open(abspath, 'rb') as f:
+            data = base64.b64encode(f.read()).decode('ascii')
+        if len(_image_cache) >= _IMAGE_CACHE_MAX:
+            _image_cache.clear()
+        _image_cache[cache_key] = (st.st_mtime, st.st_size, data, media_type)
+        return data, media_type
+    except OSError:
+        return None
  
 def is_binary_file(file_path: str) -> bool:
     """Check if a file is binary based on extension or content.
