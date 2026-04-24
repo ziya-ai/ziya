@@ -184,10 +184,15 @@ class ModelManager:
         if model_name is None:
             model_name = cls.DEFAULT_MODELS.get(endpoint, cls.DEFAULT_MODELS[cls.DEFAULT_ENDPOINT])
             
-        # Validate model name
+        # If the model isn't available on this endpoint, fall back to the
+        # endpoint default.  This handles env-var carryover when switching
+        # endpoints (e.g. ZIYA_MODEL=opus4.6 with --endpoint openai).
         if model_name not in cls.MODEL_CONFIGS[endpoint]:
-            valid_models = ", ".join(cls.MODEL_CONFIGS[endpoint].keys())
-            raise ValueError(f"Invalid model: '{model_name}' for endpoint '{endpoint}'. Valid models are: {valid_models}")
+            default = cls.DEFAULT_MODELS.get(endpoint, cls.DEFAULT_MODELS[cls.DEFAULT_ENDPOINT])
+            logger.warning(
+                f"Model '{model_name}' not available on endpoint '{endpoint}', using default '{default}'"
+            )
+            model_name = default
             
         # Start with global defaults
         config_dict = cls.GLOBAL_DEFAULTS.copy()
@@ -994,16 +999,23 @@ class ModelManager:
                 "max_tokens": effective_max_tokens
             }
 
-            # Check if model supports top_k
-            if 'supported_parameters' in model_config:
-                if 'top_k' not in model_config['supported_parameters']:
-                    # Remove top_k if not supported
-                    if 'top_k' in model_kwargs:
-                        logger.debug(f"Removing unsupported parameter 'top_k' for model {model_id}")
-                        del model_kwargs['top_k']
-                        # Also remove from environment
-                        if 'ZIYA_TOP_K' in os.environ:
-                            del os.environ['ZIYA_TOP_K']
+            # Strip any sampling parameters the model doesn't support.
+            # Uses get_supported_parameters() which honours both
+            # supported_parameters (additive) and unsupported_parameters
+            # (subtractive, e.g. Opus 4.7 rejects temperature/top_p/top_k).
+            model_alias = os.environ.get("ZIYA_MODEL", "")
+            resolved_supported = get_supported_parameters("bedrock", model_alias)
+            for _param, _env_var in (
+                ("top_k", "ZIYA_TOP_K"),
+                ("top_p", "ZIYA_TOP_P"),
+                ("temperature", "ZIYA_TEMPERATURE"),
+            ):
+                if _param not in resolved_supported:
+                    model_kwargs.pop(_param, None)
+                    os.environ.pop(_env_var, None)
+                    logger.debug(f"Removing unsupported parameter '{_param}' for model {model_id}")
+
+            effective_temperature_arg = effective_temperature if "temperature" in resolved_supported else None
                 
             # Import and use ZiyaBedrock
             from app.agents.wrappers.ziya_bedrock import ZiyaBedrock
@@ -1014,13 +1026,13 @@ class ModelManager:
                 client=persistent_client,  # Use persistent client
                 region_name=region,
                 model_kwargs=model_kwargs, # Pass effective kwargs from above
-                temperature=effective_temperature,    # Pass effective temperature
+                temperature=effective_temperature_arg,
                 max_tokens=effective_max_tokens,      # Pass effective max_tokens
                 thinking_mode=effective_thinking_mode
             )
             
             # Add a debug log to check the model's parameters
-            logger.debug(f"ZiyaBedrock created with: model_id={model_id}, temperature={effective_temperature}, max_tokens={effective_max_tokens}")
+            logger.debug(f"ZiyaBedrock created with: model_id={model_id}, temperature={effective_temperature_arg}, max_tokens={effective_max_tokens}")
             if hasattr(model, 'get_parameters'):
                 logger.debug(f"ZiyaBedrock parameters: {model.get_parameters()}")
         

@@ -67,18 +67,29 @@ class ZiyaBedrock(Runnable):
         
         # Check if the model supports top_k
         from app.agents.models import ModelManager
+        from app.config.models_config import get_supported_parameters
         endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
         model_name = os.environ.get("ZIYA_MODEL")
         model_config = ModelManager.get_model_config(endpoint, model_name)
-        
-        # If model doesn't support top_k, set it to None
-        if ('supported_parameters' not in model_config or 
-            'top_k' not in model_config.get('supported_parameters', [])):
-            logger.info(f"Model {model_name} doesn't support top_k, setting to None")
+        resolved_supported = get_supported_parameters(endpoint, model_name)
+
+        # Strip any sampling parameters the model rejects. Uses the resolved
+        # supported-parameter set so model-level `unsupported_parameters`
+        # opt-outs (e.g. Opus 4.7 rejecting temperature/top_p/top_k) are
+        # honoured even when the family lists them as supported.
+        if 'top_k' not in resolved_supported:
+            logger.info(f"Model {model_name} does not support top_k, clearing")
             self.ziya_top_k = None
-            # Also remove from model_kwargs if present
             if model_kwargs and "top_k" in model_kwargs:
                 del model_kwargs["top_k"]
+        if 'top_p' not in resolved_supported:
+            logger.info(f"Model {model_name} does not support top_p, clearing")
+            self.ziya_top_p = None
+            if model_kwargs and "top_p" in model_kwargs:
+                del model_kwargs["top_p"]
+        if 'temperature' not in resolved_supported:
+            logger.info(f"Model {model_name} does not support temperature, clearing")
+            self.ziya_temperature = None
 
         # Ensure model_kwargs is a dict and update max_tokens
         current_model_kwargs = model_kwargs or {} # Use a temporary var or modify model_kwargs directly
@@ -446,26 +457,32 @@ class ZiyaBedrock(Runnable):
         if "max_tokens" in kwargs:
             self.ziya_max_tokens = kwargs["max_tokens"]
             logger.debug(f"Updated ziya_max_tokens to {self.ziya_max_tokens} in bind")
-        
-        if "temperature" in kwargs:
+
+        # Resolve the model's supported-parameter set once so bind() honours
+        # `unsupported_parameters` opt-outs the same way __init__ does.
+        from app.agents.models import ModelManager
+        from app.config.models_config import get_supported_parameters
+        _endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        _model_name = os.environ.get("ZIYA_MODEL")
+        _resolved_supported = get_supported_parameters(_endpoint, _model_name)
+
+        if "temperature" in kwargs and "temperature" in _resolved_supported:
             self.ziya_temperature = kwargs["temperature"]
             logger.debug(f"Updated ziya_temperature to {self.ziya_temperature} in bind")
+        elif "temperature" in kwargs:
+            logger.debug(f"Ignoring temperature in bind: {_model_name} does not support it")
         
-        if "top_k" in kwargs:
-            # Check if model supports top_k before setting it
-            from app.agents.models import ModelManager
-            endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
-            model_name = os.environ.get("ZIYA_MODEL")
-            model_config = ModelManager.get_model_config(endpoint, model_name)
-            
-            # Only set top_k if the model supports it
-            if 'supported_parameters' in model_config and 'top_k' in model_config.get('supported_parameters', []):
-                self.ziya_top_k = kwargs["top_k"]
-                logger.debug(f"Updated ziya_top_k to {self.ziya_top_k} in bind")
-        
-        if "top_p" in kwargs:
+        if "top_k" in kwargs and "top_k" in _resolved_supported:
+            self.ziya_top_k = kwargs["top_k"]
+            logger.debug(f"Updated ziya_top_k to {self.ziya_top_k} in bind")
+        elif "top_k" in kwargs:
+            logger.debug(f"Ignoring top_k in bind: {_model_name} does not support it")
+
+        if "top_p" in kwargs and "top_p" in _resolved_supported:
             self.ziya_top_p = kwargs["top_p"]
             logger.debug(f"Updated ziya_top_p to {self.ziya_top_p} in bind")
+        elif "top_p" in kwargs:
+            logger.debug(f"Ignoring top_p in bind: {_model_name} does not support it")
         
         if "thinking_mode" in kwargs:
             self.ziya_thinking_mode = kwargs["thinking_mode"]
