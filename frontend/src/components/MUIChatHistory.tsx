@@ -812,6 +812,9 @@ const MUIChatHistory = () => {
   // current conversation.  Used after folder creation so the user sees the
   // new folder rather than being yanked to the active chat.
   const scrollToNodeIdRef = useRef<string | null>(null);
+  // Tracks the last conversation ID we auto-scrolled to, so expand/collapse
+  // (which changes flatNodes) does not re-yank the scroll position.
+  const lastScrolledConvIdRef = useRef<string | null>(null);
   const [pinnedFolders, setPinnedFolders] = useState<Set<string>>(new Set());
   const [newFolderDialogOpen, setNewFolderDialogOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
@@ -2851,33 +2854,32 @@ const MUIChatHistory = () => {
 
   useEffect(() => {
     if (!currentConversationId || !virtualListRef.current || scrollToNodeIdRef.current) return;
+    // Only auto-scroll when the active conversation actually changes, not when
+    // flatNodes changes due to user expanding/collapsing a folder.
+    if (lastScrolledConvIdRef.current === currentConversationId) return;
     const targetNodeId = `conv-${currentConversationId}`;
     const rowIndex = flatNodes.findIndex(n => n.id === targetNodeId);
     console.log('🔍 SCROLL_EFFECT:', { hasRef: !!virtualListRef.current, targetNodeId, rowIndex, flatNodesLen: flatNodes.length });
     if (rowIndex === -1) return;
     virtualListRef.current.scrollToItem(rowIndex, 'smart');
+    lastScrolledConvIdRef.current = currentConversationId;
   }, [currentConversationId, flatNodes]);
-
-  useEffect(() => {
-    if (!currentConversationId || !virtualListRef.current || scrollToNodeIdRef.current) return;
-    const targetNodeId = `conv-${currentConversationId}`;
-    const timer = setTimeout(() => {
-      if (!virtualListRef.current) return;
-      const rowIndex = flatNodes.findIndex(n => n.id === targetNodeId);
-      console.log('🔍 SCROLL_TIMEOUT:', { hasRef: !!virtualListRef.current, targetNodeId, rowIndex, flatNodesLen: flatNodes.length });
-      if (rowIndex !== -1) virtualListRef.current.scrollToItem(rowIndex, 'smart');
-    }, 100);
-    return () => clearTimeout(timer);
-  }, [currentConversationId]);
 
   // After search clears and tree becomes visible again, scroll to active conversation
   useEffect(() => {
-    if (searchQuery || !currentConversationId || !virtualListRef.current) return;
+    // Entering search: invalidate last-scrolled so that on search-clear
+    // we re-scroll to the active conversation even if it hasn't changed.
+    if (searchQuery) {
+      lastScrolledConvIdRef.current = null;
+      return;
+    }
+    if (!currentConversationId || !virtualListRef.current) return;
+    if (lastScrolledConvIdRef.current === currentConversationId) return;
     const timer = setTimeout(() => {
       if (!virtualListRef.current) return;
       const targetNodeId = `conv-${currentConversationId}`;
       const rowIndex = flatNodes.findIndex(n => n.id === targetNodeId);
-      if (rowIndex !== -1) virtualListRef.current.scrollToItem(rowIndex, 'smart');
+      if (rowIndex !== -1) { virtualListRef.current.scrollToItem(rowIndex, 'smart'); lastScrolledConvIdRef.current = currentConversationId; }
     }, 150);
     return () => clearTimeout(timer);
   }, [searchQuery, currentConversationId, flatNodes]);
