@@ -586,37 +586,26 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                     simulationRef.current = null;
                 }
 
-                // Set container dimensions - but allow height to grow for joint-renderer and drawio-renderer
-                const isJointRenderer = plugin?.name === 'joint-renderer';
-                const isDrawioRenderer = currentPlugin?.name === 'drawio-renderer';
-                const isVegaRenderer = currentPlugin?.name === 'vega-renderer';
+                // Derive container sizing from the plugin's sizingConfig.
+                // Plugins without config (or with 'fixed' strategy) get the
+                // explicit width/height props; everything else scales to fit.
+                const sizingConfig = currentPlugin?.sizingConfig;
+                const isFlexible = sizingConfig
+                    ? sizingConfig.sizingStrategy !== 'fixed'
+                    : false;
+                const needsDynamicHeight = sizingConfig?.needsDynamicHeight ?? false;
+                const needsOverflowVisible = sizingConfig?.needsOverflowVisible ?? false;
+                const configMinHeight = sizingConfig?.minHeight;
 
                 // Also check if container will contain error content
                 const willHaveError = renderError !== null;
 
-                container.style.width = (isJointRenderer || isDrawioRenderer || isVegaRenderer) ? '100%' : `${width}px`;
-                // Allow auto height for joint, drawio, and error states
-                container.style.height = (isJointRenderer || isDrawioRenderer || isVegaRenderer || willHaveError) ? 'auto' : `${height}px`;
-                container.style.minHeight = (isJointRenderer || isVegaRenderer) ? '400px' : 'unset';
-                container.style.maxHeight = (isJointRenderer || isVegaRenderer || willHaveError) ? 'none' : 'unset';
+                container.style.width = isFlexible ? '100%' : `${width}px`;
+                container.style.height = (needsDynamicHeight || willHaveError) ? 'auto' : `${height}px`;
+                container.style.minHeight = configMinHeight != null ? `${configMinHeight}px` : 'unset';
+                container.style.maxHeight = (needsDynamicHeight || willHaveError) ? 'none' : 'unset';
                 container.style.position = 'relative';
-                // Use visible/auto overflow for joint, drawio, and errors
-                container.style.overflow = (isJointRenderer || isDrawioRenderer || isVegaRenderer || willHaveError) ? 'visible' : 'hidden';
-                const isGraphvizOrMermaid = currentPlugin?.name === 'graphviz-renderer' || currentPlugin?.name === 'mermaid-renderer';
-                // For Graphviz or Mermaid, override the container style to be more flexible
-                if (isGraphvizOrMermaid) {
-                    container.style.width = '100%';
-                    container.style.height = 'auto';
-                    container.style.minHeight = 'unset';
-                    container.style.overflow = 'visible';
-                }
-
-                // Content-driven plugins manage their own sizing via viewBox
-                if (currentPlugin?.sizingConfig?.sizingStrategy === 'content-driven') {
-                    container.style.width = '100%';
-                    container.style.height = 'auto';
-                    container.style.overflow = 'visible';
-                }
+                container.style.overflow = (needsOverflowVisible || willHaveError) ? 'visible' : 'hidden';
 
                 // Create temporary container for safe rendering
                 const tempContainer = document.createElement('div');

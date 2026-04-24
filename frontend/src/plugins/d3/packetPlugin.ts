@@ -313,7 +313,7 @@ export const packetPlugin: D3RenderPlugin = {
   sizingConfig: {
     sizingStrategy: 'content-driven',
     needsDynamicHeight: true,
-    needsOverflowVisible: false,
+    needsOverflowVisible: true,
     observeResize: false,
     containerStyles: {
       width: '100%',

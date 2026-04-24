@@ -49,6 +49,7 @@ export const vegaPlugin: D3RenderPlugin = {
     sizingStrategy: 'responsive',
     needsDynamicHeight: true,
     needsOverflowVisible: true,
+    minHeight: 400,
     observeResize: true,
     containerStyles: {
       width: '100%',

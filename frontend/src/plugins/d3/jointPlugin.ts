@@ -1559,7 +1559,7 @@ export const jointPlugin: D3RenderPlugin = {
         needsOverflowVisible: true,
         observeResize: false,
         minWidth: undefined,
-        minHeight: undefined,
+        minHeight: 400,
         containerStyles: {
             width: '100%',
             height: 'auto',
