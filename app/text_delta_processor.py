@@ -25,7 +25,51 @@ logger = logging.getLogger(__name__)
 # Patterns indicating hallucinated tool output (checked outside code fences)
 _BACKEND_HALLUCINATION_PATTERNS = [
     re.compile(r'SECURITY BLOCK:.{0,200}not allowed', re.DOTALL),
-    re.compile(r'Allowed commands:\s*awk'),
+    # Real shell-server denial message starts with bracket commands
+    # (sorted alphabetically in get_allowed_commands_description):
+    # "Allowed commands: [, [[, ], ]], awk, aws, ...". Prior regex
+    # required "awk" immediately after the colon and never matched.
+    re.compile(r'Allowed commands:\s*\[, \[\[, \], \]\], awk'),
+    # Structural-parrot patterns — the model reproduces Ziya's own UI
+    # tool-result format as prose without actually invoking any tool.
+    # These signatures are specific to how Ziya renders tool results in
+    # the chat UI, so they should never appear in genuine assistant prose.
+    # Occasional false-positive on meta-analytical discussion is
+    # acceptable; the retry corrective message is the same either way.
+    #
+    # Match: "file_write|🔐 file write:" / "run_shell_command|🔐 Shell:"
+    # and variants. The "|🔐" separator is the strongest signal.
+    re.compile(
+        r'\b(?:mcp_)?(?:file_write|file_read|file_list|run_shell_command|'
+        r'puppeteer_\w+|fetch)\s*\|\s*🔐',
+    ),
+    # Match: python-dict-shaped fake tool result with the specific keys
+    # Ziya's file-tool results use: success/message/path/bytes_written.
+    # Requires at least two of these keys co-occurring in a dict literal
+    # to avoid flagging legitimate code examples.
+    re.compile(
+        r"\{\s*'success'\s*:\s*True\s*,\s*'message'\s*:.{0,200}"
+        r"'(?:path|bytes_written|error)'\s*:",
+        re.DOTALL,
+    ),
+]
+
+# Tool-output signatures so unambiguous that fenced context is not an
+# excuse — these strings are generated exclusively by Ziya's tool
+# plumbing (TOOL_MARKER comments from chatApi.ts / memory_extractor) or
+# by the shell server's denial path (tool_execution.py, shell_server.py)
+# and should never appear in legitimate assistant output regardless of
+# whether they're inside a Markdown fence.
+_RAW_HALLUCINATION_PATTERNS = [
+    # TOOL_MARKER HTML comments are emitted only by the frontend when
+    # rendering a real tool invocation. A model-emitted marker means
+    # the model is fabricating a tool-call boundary in its prose.
+    re.compile(r'<!--\s*TOOL_MARKER:'),
+    # Shell-server denial text, emitted verbatim by
+    # tool_execution.py:_process_result when policy_block is set.
+    re.compile(r'POLICY BLOCK \(do NOT retry this command\)'),
+    # Denial emoji + "BLOCKED:" prefix from shell_server.py line 724.
+    re.compile(r'🚫 (?:WRITE )?BLOCKED:'),
 ]
 
 _CONTAMINATION_RE = re.compile(
@@ -124,9 +168,20 @@ def process_text_delta(
     # Markdown fences, inline backticks, blockquotes, and indented blocks.
     # This prevents false positives when the model legitimately quotes
     # pattern literals while analyzing the detection system itself.
-    if state.code_block_tracker.get('in_block'):
-        _match = None  # short-circuit: currently inside a fence
-    else:
+    # First pass: raw-text patterns that are unambiguous tool-output
+    # signatures. These fire even inside fences because the model is
+    # sometimes observed wrapping fabricated tool output in ```` fences
+    # to evade the scannable-region filter.
+    _tail_raw = (
+        state.assistant_text[-500:]
+        if len(state.assistant_text) > 500
+        else state.assistant_text
+    )
+    _match = next(
+        (p for p in _RAW_HALLUCINATION_PATTERNS if p.search(_tail_raw)),
+        None,
+    )
+    if _match is None and not state.code_block_tracker.get('in_block'):
         _scan = scannable_text(state.assistant_text)
         _tail = _scan[-500:] if len(_scan) > 500 else _scan
         _match = next(
@@ -181,7 +236,18 @@ def process_text_delta(
                 # catches ongoing parroting without repeatedly
                 # re-matching the same early content.
                 _probe = _scan_full[-1200:] if len(_scan_full) > 1200 else _scan_full
-                _match = check_for_parroting(state.conversation_id, _probe)
+                # Skip fingerprints registered within the current
+                # iteration: the model legitimately summarizes tool
+                # results it just received, which would otherwise fire
+                # as false-positive parroting. Fingerprints from prior
+                # iterations are still checked -- parroting stale
+                # results is the actual failure mode we're guarding
+                # against.
+                _match = check_for_parroting(
+                    state.conversation_id,
+                    _probe,
+                    skip_after_timestamp=state.iteration_start_time or None,
+                )
             except Exception as _e:
                 logger.debug(f"🔐 SHINGLE_CHECK: skipped: {_e}")
                 _match = None

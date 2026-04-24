@@ -176,6 +176,7 @@ class ShingleIndex:
         self,
         conversation_id: str,
         text: str,
+        skip_after_timestamp: float | None = None,
     ) -> ShingleMatch | None:
         """
         Check probe text against all session fingerprints.
@@ -183,6 +184,14 @@ class ShingleIndex:
         Returns the strongest match (highest confidence tier, then
         highest line-match count, then highest shingle overlap) that
         meets the low-confidence threshold, or None.
+
+        ``skip_after_timestamp`` excludes fingerprints whose
+        ``registered_at`` is >= the given timestamp. Used by the
+        streaming detector to avoid flagging the model for legitimately
+        summarizing a tool result it just received in the same
+        iteration -- the fingerprint was registered mid-turn, so the
+        assistant text quoting it is narration, not parroting.
+        A value of ``None`` or ``0`` disables the filter.
         """
         if not conversation_id or not text:
             return None
@@ -192,6 +201,14 @@ class ShingleIndex:
             if not session:
                 return None
             fingerprints = list(session.values())
+
+        if skip_after_timestamp:
+            fingerprints = [
+                fp for fp in fingerprints
+                if fp.registered_at < skip_after_timestamp
+            ]
+            if not fingerprints:
+                return None
 
         # No practical cap on probe-side shingles; bounded by text length.
         text_shingles = _compute_shingles(
@@ -269,8 +286,11 @@ def register_tool_result(
 def check_for_parroting(
     conversation_id: str,
     text: str,
+    skip_after_timestamp: float | None = None,
 ) -> ShingleMatch | None:
-    return _default_index.check(conversation_id, text)
+    return _default_index.check(
+        conversation_id, text, skip_after_timestamp=skip_after_timestamp
+    )
 
 
 def clear_session(conversation_id: str) -> None:
