@@ -111,21 +111,28 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
                     reader.readAsDataURL(file);
                 });
 
-                // Resize large images before sending.  Claude processes images
-                // at max 1568px on the long edge; anything larger just inflates
-                // the payload and slows down the Bedrock call.
+                const isSvg = file.type === 'image/svg+xml';
+
+                // SVGs are always rasterized to PNG (LLM vision APIs only
+                // accept raster formats).  Raster images are resized when
+                // the long edge exceeds the model's processing limit.
                 const resized = await new Promise<string>((resolve) => {
                     const resImg = new Image();
                     resImg.onload = () => {
                         const MAX_EDGE = 1568;
-                        if (resImg.width <= MAX_EDGE && resImg.height <= MAX_EDGE) {
+                        // SVGs may report 0×0 when they lack explicit dimensions
+                        const w = resImg.width || (isSvg ? 1024 : 0);
+                        const h = resImg.height || (isSvg ? 1024 : 0);
+                        if (!isSvg && w <= MAX_EDGE && h <= MAX_EDGE) {
                             resolve(imageData);
                             return;
                         }
-                        const scale = MAX_EDGE / Math.max(resImg.width, resImg.height);
+                        const scale = Math.max(w, h) > MAX_EDGE
+                            ? MAX_EDGE / Math.max(w, h)
+                            : 1;
                         const canvas = document.createElement('canvas');
-                        canvas.width = Math.round(resImg.width * scale);
-                        canvas.height = Math.round(resImg.height * scale);
+                        canvas.width = Math.round(w * scale);
+                        canvas.height = Math.round(h * scale);
                         const ctx = canvas.getContext('2d')!;
                         ctx.drawImage(resImg, 0, 0, canvas.width, canvas.height);
                         const outputType = file.type === 'image/jpeg' ? 'image/jpeg' : 'image/png';
@@ -191,13 +198,42 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
         if (!files || files.length === 0) return;
 
         const docExts = new Set(['pdf','doc','docx','xls','xlsx','ppt','pptx']);
+        const textExts = new Set([
+            'js', 'jsx', 'ts', 'tsx', 'py', 'rb', 'rs', 'go', 'java', 'kt', 'swift', 'c', 'cpp',
+            'h', 'hpp', 'cs', 'php', 'scala', 'sh', 'bash', 'zsh', 'sql', 'html', 'htm', 'css',
+            'scss', 'less', 'xml', 'json', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf', 'md',
+            'mdx', 'txt', 'log', 'gradle', 'groovy', 'lua', 'r', 'dart', 'ex', 'exs', 'erl',
+            'hs', 'ml', 'clj', 'vim', 'tf', 'hcl', 'proto', 'graphql', 'vue', 'svelte',
+            'makefile', 'dockerfile', 'bat', 'ps1', 'fish', 'rtf', 'ipynb', 'diff', 'patch',
+            'drawio', 'plist', 'csv', 'tsv',
+        ]);
+        const textKnownFiles = new Set([
+            'Makefile', 'Dockerfile', 'Gemfile', 'Rakefile', '.gitignore', '.gitattributes',
+            '.env', '.npmrc', '.prettierrc', '.eslintrc', '.editorconfig', '.dockerignore',
+        ]);
+        const MAX_TEXT_SIZE = 5 * 1024 * 1024; // 5 MB
+
+        const isTextFile = (file: File): boolean => {
+            if (file.type.startsWith('text/')) return true;
+            if (file.type === 'application/json' || file.type === 'application/xml') return true;
+            if (file.type === 'application/javascript' || file.type === 'application/typescript') return true;
+            if (file.type === 'application/rtf' || file.type === 'text/rtf') return true;
+            const ext = file.name.split('.').pop()?.toLowerCase() || '';
+            if (textExts.has(ext)) return true;
+            return textKnownFiles.has(file.name);
+        };
+
         const imageFiles: File[] = [];
+        const textFiles: File[] = [];
         const documentFiles: File[] = [];
+        const unsupported: string[] = [];
 
         for (const file of Array.from(files)) {
             const ext = file.name.split('.').pop()?.toLowerCase() || '';
             if (file.type.startsWith('image/')) imageFiles.push(file);
+            else if (isTextFile(file)) textFiles.push(file);
             else if (docExts.has(ext)) documentFiles.push(file);
+            else unsupported.push(file.name);
         }
 
         if (imageFiles.length > 0) {
@@ -206,6 +242,23 @@ export const EditSection: React.FC<EditSectionProps> = ({ index, isInline = fals
             } else {
                 await processImageFiles(files);
             }
+        }
+
+        for (const file of textFiles) {
+            if (file.size > MAX_TEXT_SIZE) {
+                message.warning(`${file.name} is too large (${(file.size / 1024 / 1024).toFixed(1)} MB, limit 5 MB)`);
+                continue;
+            }
+            try {
+                const content = await file.text();
+                setEditedMessage(prev => prev + `\n\n--- ${file.name} ---\n${content}`);
+            } catch {
+                message.error(`Failed to read ${file.name}`);
+            }
+        }
+
+        if (unsupported.length > 0) {
+            message.warning(`Unsupported file type${unsupported.length > 1 ? 's' : ''}: ${unsupported.join(', ')}`);
         }
 
         for (const file of documentFiles) {
