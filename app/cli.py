@@ -80,11 +80,15 @@ def get_session_dir() -> Path:
     return session_dir
 
 
-def save_session(cli: 'CLI') -> str:
-    """Save current session and return session ID."""
+def save_session(cli: 'CLI', name: Optional[str] = None) -> str:
+    """Save current session and return session ID.
+
+    If the CLI already has a _session_id (from resume or a prior save),
+    that same file is updated in place (checkpoint semantics). Otherwise
+    a new timestamp-based id is generated, optionally suffixed with a
+    user-supplied name.
+    """
     session_dir = get_session_dir()
-    session_id = datetime.now().strftime('%Y%m%d_%H%M%S')
-    session_file = session_dir / f"{session_id}.json"
     
     # Extract opening statement from first human message
     opening_statement = ''
@@ -96,8 +100,26 @@ def save_session(cli: 'CLI') -> str:
     # Preserve start_time from a previously loaded session, otherwise use now
     start_time = getattr(cli, '_session_start_time', None) or datetime.now().isoformat()
 
+    # Determine session id / filename
+    existing_id = getattr(cli, '_session_id', None)
+    # Resolve the friendly name: explicit arg wins, else keep prior name
+    resolved_name = name if name is not None else getattr(cli, '_session_name', None)
+
+    if existing_id:
+        session_id = existing_id
+    else:
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        if resolved_name:
+            safe = ''.join(c if c.isalnum() or c in '-_' else '_' for c in resolved_name)[:40]
+            session_id = f"{ts}_{safe}" if safe else ts
+        else:
+            session_id = ts
+
+    session_file = session_dir / f"{session_id}.json"
+
     session_data = {
         'id': session_id,
+        'name': resolved_name,
         'start_time': start_time,
         'last_update_time': datetime.now().isoformat(),
         'timestamp': datetime.now().isoformat(),  # kept for backward compat
@@ -108,10 +130,14 @@ def save_session(cli: 'CLI') -> str:
     
     with open(session_file, 'w') as f:
         json.dump(session_data, f, indent=2)
-    
-    # Cleanup old sessions (keep last 10)
+
+    # Remember id/name on the CLI for subsequent checkpoints
+    cli._session_id = session_id
+    cli._session_name = resolved_name
+
+    # Cleanup old sessions (keep last 10) — but preserve named sessions
     cleanup_old_sessions()
-    
+
     return session_id
 
 
@@ -127,12 +153,55 @@ def load_session(session_id: str) -> dict:
         return json.load(f)
 
 
+def find_session_by_name(name: str) -> Optional[str]:
+    """Find a session id by friendly name or id match.
+
+    Preference order: exact name match, exact id match, name prefix,
+    id prefix, name substring. Returns the most recently updated match.
+    """
+    session_dir = get_session_dir()
+    candidates = []  # (priority, mtime, id)
+    for p in sorted(session_dir.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            with open(p) as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+        sid = data.get('id') or p.stem
+        sname = data.get('name') or ''
+        mt = p.stat().st_mtime
+        if sname == name:
+            candidates.append((0, mt, sid))
+        elif sid == name:
+            candidates.append((1, mt, sid))
+        elif sname and sname.startswith(name):
+            candidates.append((2, mt, sid))
+        elif sid.startswith(name):
+            candidates.append((3, mt, sid))
+        elif sname and name.lower() in sname.lower():
+            candidates.append((4, mt, sid))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda t: (t[0], -t[1]))
+    return candidates[0][2]
+
+
 def cleanup_old_sessions(keep_count: int = 10):
-    """Keep only the most recent sessions."""
+    """Keep only the most recent sessions. Named sessions are preserved."""
     session_dir = get_session_dir()
     sessions = sorted(session_dir.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True)
-    
-    for old_session in sessions[keep_count:]:
+
+    # Protect named sessions (have a non-null "name" field) from auto-cleanup
+    unnamed = []
+    for p in sessions:
+        try:
+            with open(p) as f:
+                if json.load(f).get('name'):
+                    continue
+        except (OSError, json.JSONDecodeError, ValueError):
+            pass
+        unnamed.append(p)
+    for old_session in unnamed[keep_count:]:
         old_session.unlink()
 
 
@@ -153,6 +222,7 @@ async def select_session() -> Optional[str]:
                 data = json.load(f)
                 session_list.append({
                     'id': data['id'],
+                    'name': data.get('name'),
                     'start_time': data.get('start_time', data.get('timestamp', '')),
                     'last_update_time': data.get('last_update_time', data.get('timestamp', '')),
                     'opening_statement': data.get('opening_statement', ''),
@@ -188,16 +258,18 @@ async def select_session() -> Optional[str]:
 
         from html import escape as html_escape
         opener = html_escape(opener)
+        name = session.get('name')
         meta = f"{session['message_count']} msgs, {session['file_count']} files"
         if started == updated:
             time_info = f"  <style fg='ansibrightblack'>{started}</style>"
         else:
             time_info = f"  <style fg='ansibrightblack'>started {started} · updated {updated}</style>"
 
+        name_tag = f"<style fg='ansicyan'>[{html_escape(name)}]</style> " if name else ""
         if opener:
-            label = HTML(f"<b>{opener}</b>\n    {meta}{time_info}")
+            label = HTML(f"{name_tag}<b>{opener}</b>\n    {meta}{time_info}")
         else:
-            label = HTML(f"<b>(no opening message)</b>  {meta}{time_info}")
+            label = HTML(f"{name_tag}<b>(no opening message)</b>  {meta}{time_info}")
 
         radio_values.append((session['id'], label))
 
@@ -255,7 +327,7 @@ def print_chat_startup_info(args):
     """Pretty print essential startup information for chat mode."""
     root = getattr(args, 'root', None) or os.getcwd()
     profile = getattr(args, 'profile', None) or os.environ.get('AWS_PROFILE', 'default')
-    model = getattr(args, 'model', None) or os.environ.get('ZIYA_MODEL', 'sonnet4.5')
+    model = getattr(args, 'model', None) or os.environ.get('ZIYA_MODEL', '')
     
     # Only show essential info
     print(f"Ziya CLI • profile: {profile} • model: {model}")
@@ -446,6 +518,7 @@ class CLI:
                     '/quit', '/q', '/exit',
                     '/reset',
                     '/suspend', '/resume',
+                    '/save',
                     '/help', '/h'
                 ], ignore_case=True, sentence=True, match_middle=True)
                 
@@ -1436,8 +1509,9 @@ class CLI:
   /add <path>    Add file or directory to context
   /rm <path>     Remove from context  
   /files         List context files
-  /suspend       Save session and exit (resume later with /resume or --resume)
-  /resume        Restore a previous session's files and history
+  /suspend [name]  Save session and exit (resume later with /resume or --resume)
+  /save [name]     Checkpoint the current session without exiting
+  /resume          Restore a previous session's files and history
   /shell         Manage shell commands (session-local by default)
                  /shell add <cmd>   Add to allowlist
                  /shell rm <cmd>    Remove from allowlist
@@ -1492,20 +1566,39 @@ class CLI:
             await self._handle_shell_command(arg)
 
         elif command == '/suspend':
-            session_id = save_session(self)
+            name = arg.strip() or None
+            session_id = save_session(self, name=name)
             print(f"\033[32m✓ Session suspended: {session_id}\033[0m")
             print(f"\033[90m  Resume with: ziya chat --resume\033[0m")
             print(f"\033[90m  Or use /resume in any session\033[0m")
             return False
 
+        elif command == '/save':
+            name = arg.strip() or None
+            try:
+                session_id = save_session(self, name=name)
+                label = f" ({name})" if name else ""
+                print(f"\033[32m✓ Session checkpointed: {session_id}{label}\033[0m")
+            except (OSError, ValueError) as e:
+                print(f"\033[31mFailed to save: {e}\033[0m")
+            return True
+
         elif command == '/resume':
-            session_id = await select_session()
+            if arg:
+                session_id = find_session_by_name(arg)
+                if not session_id:
+                    print(f"\033[33mNo session matching '{arg}'\033[0m")
+                    return True
+            else:
+                session_id = await select_session()
             if session_id:
                 try:
                     session_data = load_session(session_id)
                     self.files = session_data.get('files', [])
                     self.history = session_data.get('history', [])
                     self._session_start_time = session_data.get('start_time', session_data.get('timestamp'))
+                    self._session_id = session_data.get('id', session_id)
+                    self._session_name = session_data.get('name')
                     opener = session_data.get('opening_statement', '')
                     print(f"\033[32m✓ Session resumed\033[0m")
                     if opener:
@@ -1536,6 +1629,8 @@ class CLI:
             self.files.clear()
             self.conversation_id = f"cli_{os.getpid()}_{id(self)}"
             self._session_start_time = None
+            self._session_id = None
+            self._session_name = None
             self._session_shell_commands = None
             self._session_yolo = False
             self._session_timeout = None
@@ -2263,7 +2358,14 @@ def cmd_chat(args):
             _print_auth_error()
             sys.exit(1)
 
-        session_id = asyncio.run(select_session())
+        resume_arg = args.resume if isinstance(args.resume, str) else None
+        if resume_arg:
+            session_id = find_session_by_name(resume_arg)
+            if not session_id:
+                print(f"\033[33mNo session matching '{resume_arg}'\033[0m")
+                sys.exit(1)
+        else:
+            session_id = asyncio.run(select_session())
         if session_id:
             try:
                 session_data = load_session(session_id)
@@ -2273,6 +2375,8 @@ def cmd_chat(args):
                 cli = CLI(files=files)
                 cli.history = history
                 cli._session_start_time = session_data.get('start_time', session_data.get('timestamp'))
+                cli._session_id = session_data.get('id', session_id)
+                cli._session_name = session_data.get('name')
                 
                 print(f"\033[32m✓ Resumed session from {session_data.get('timestamp', 'unknown')}\033[0m")
                 print(f"  Files: {len(files)}, Messages: {len(history)}\n")
@@ -2540,7 +2644,8 @@ Examples:
     # chat
     chat_parser = subparsers.add_parser('chat', parents=[common_parent], help='Interactive chat')
     chat_parser.add_argument('files', nargs='*', help='Files/directories for context')
-    chat_parser.add_argument('--resume', action='store_true', help='Resume from a previous session')
+    chat_parser.add_argument('--resume', nargs='?', const=True, default=False, metavar='NAME',
+                             help='Resume a session; optional NAME/id to skip the picker')
     chat_parser.add_argument('--ephemeral', action='store_true', help='Do not save session history')
     chat_parser.set_defaults(func=cmd_chat)
     
