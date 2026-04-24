@@ -16,10 +16,167 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+### Fixed
+### Changed
+
+## [0.6.5.0] - 2026-04-23
+
+### Added
+- **Task Cards**: New workflow automation system for structuring multi-step
+  tasks. Includes a backend executor (`app/agents/task_executor.py`),
+  data models (`task_card`, `task_run`), JSON file storage, REST API routes
+  (`/api/task-cards`, `/api/task-runs`), and a React editor with block-level
+  editing UI. Enables defining reusable sequences of AI-assisted steps with
+  tool/file/skill scope enforcement per block.
+- **Plotly visualization plugin**: New `plotly` fenced code block type renders
+  interactive 2-D and 3-D charts (scatter, bar, line, pie, heatmap, surface,
+  etc.) via `plotly.js-dist-min`. The plugin ships a preprocessing layer that
+  normalises common AI-generated JSON variants and validates the spec before
+  rendering. Registered in the D3 plugin registry at priority 9.
+- **OpenAI GPT-5.4 model family**: Added `gpt-5.4`, `gpt-5.4-pro`,
+  `gpt-5.4-mini`, and `gpt-5.4-nano` to the OpenAI model registry.
+  `gpt-5.4` becomes the new default; `gpt-5.4-pro` supports thinking mode.
+  Token limits updated to 272 K (standard) and 1 M+ (pro). GPT-4.1 and
+  GPT-4.1-mini are retained as legacy options.
+- **SVG drag-and-drop support**: SVG files can now be dropped (or pasted)
+  into the chat input alongside PNG/JPG/GIF/WebP.  SVGs are rasterized to
+  PNG via canvas before sending, since LLM vision APIs only accept raster
+  formats.  SVGs without explicit width/height attributes fall back to
+  1024×1024 rasterization.
+- **Image files in file context**: Raster images (`.png`, `.jpg`, `.gif`,
+  `.webp`) selected in the file tree are now base64-encoded and injected as
+  image content blocks in the user message, with an in-process cache keyed
+  on `(path, mtime, size)` to avoid re-reading unchanged files each turn.
+- **RTF file support with formatted preview**: `.rtf` files can be dropped
+  as document chips.  The preview modal renders formatted content (bold,
+  italic, underline, font sizes, colors) via a zero-dependency RTF-to-HTML
+  converter (`rtfToHtml.ts`) instead of showing raw control codes.
+- **Language badges on file chips**: ~60 common file types display colored
+  2–3 letter badges (PY, TS, GO, RS, `$_` for shell, `</>` for HTML/XML,
+  etc.) using each language's canonical brand color, replacing the generic
+  file icon.
+- **Text/code file drops in edit modal**: `EditSection` now accepts
+  text/code file drops (previously silently ignored) and appends the file
+  content to the edited message.
+- **CLI `/save` checkpoint command and named sessions**: `/save` now
+  checkpoints the current conversation without suspending, so long sessions
+  can be persisted mid-flight without exiting. `/save`, `/suspend`, and
+  `/resume` all accept an optional session name, and `ziya chat --resume NAME`
+  accepts the same.
+  - Sessions track a persistent `_session_id` / `_session_name` on the CLI:
+    once a session has been saved or resumed, subsequent `/save` calls
+    update the same file in place rather than creating a new timestamped
+    file, so checkpoint history doesn't fan out.
+  - Named sessions are exempt from `cleanup_old_sessions()` auto-pruning
+    (the keep-last-10 policy only applies to unnamed sessions).
+  - New `find_session_by_name()` helper resolves a user-supplied token
+    against saved sessions with preference order: exact name → exact id →
+    name prefix → id prefix → name substring, breaking ties by most recent
+    modification.
+  - Session picker shows the friendly `[name]` tag alongside the opening
+    statement, and `/reset` clears the session id/name so the next save
+    starts a fresh file.
 
 ### Fixed
+- **Claude Opus 4.7 rejects sampling parameters**: Models can now declare
+  `unsupported_parameters` to opt out of family-level defaults. Opus 4.7
+  lists `temperature`, `top_p`, and `top_k` as unsupported; these are
+  stripped from outgoing Bedrock requests and hidden in the model config
+  modal to prevent 400 errors from the API.
+- **Model fallback on endpoint switch**: When `ZIYA_MODEL` carries a value
+  from a previous run that is not valid for the current endpoint (e.g.
+  `ZIYA_MODEL=opus4.6` with `--endpoint openai`), Ziya now logs a warning
+  and falls back to the endpoint's default model instead of raising a
+  `ValueError`. `ZIYA_MODEL` is always written on startup to avoid stale
+  env-var carryover.
+- **Hallucination detector — raw patterns bypass code fences**: Added a
+  second pattern category (`_RAW_HALLUCINATION_PATTERNS`) that fires even
+  inside Markdown fences. Catches TOOL_MARKER HTML comments, shell policy
+  block text, and the denial emoji prefix that some models wrap in fences
+  to evade the existing scannable-region filter.
+- **Hallucination detector — false positives on tool-result summaries**:
+  `check_for_parroting` now accepts `skip_after_timestamp` so fingerprints
+  registered mid-turn (current iteration) are excluded from the parroting
+  check. The model legitimately narrates tool results it just received;
+  parroting older stale results is the failure mode to catch.
+- **All text/code file drops now create document chips**: Previously, small
+  source files (<20 KB) were dumped inline as code blocks via
+  `document.execCommand('insertText')`, which froze the editor on large
+  files.  All text/code files now uniformly create `DocumentAttachment`
+  chips regardless of size, matching the PDF/DOCX behavior.
+- **SVG files in file context treated as text**: `.svg` removed from
+  `BINARY_EXTENSIONS` so SVG files selected in the file tree are sent as
+  XML source code context (editable), not silently skipped.
+- **File size guard on text file drops**: Text files over 5 MB now show a
+  warning instead of attempting `file.text()` which could OOM the browser.
+- **Multi-file drop error reports all unsupported files**: Previously only
+  the first file's name was shown; now all unsupported filenames are listed
+  in the warning message.
+- **Folder drops detected and reported**: Dropping a folder from the OS
+  file manager now shows "Folder drops not supported — select individual
+  files" instead of silently doing nothing.
+- **Duplicate file chip detection**: Dropping the same file twice no longer
+  creates duplicate chips; duplicates are detected by filename + size match.
+- **Conversation sync loop never pushed full data (data loss risk)**: The
+  `SERVER_SYNC` loop loaded local conversations as shells
+  (`getConversationShells` — messages stripped to first+last) for memory
+  efficiency, then a blanket `_isShell` guard in the push filter rejected
+  every one of them.  This made the fire-and-forget dual-write in
+  `queueSave` the single point of failure for server persistence — if that
+  write failed (transient 422, network blip, race condition), the
+  conversation was orphaned in IndexedDB with no recovery path.  The sync
+  loop now identifies push candidates using `_fullMessageCount` (the real
+  IDB message count) for the divergence comparison, then hydrates them via
+  `db.getConversation()` to obtain full message arrays before sending.
+  Post-hydration guards still reject records that come back empty or
+  shell-marked.  Conversations that had only 2 messages on the server
+  (original shell push) while having 30–130 locally are now correctly
+  synced.
+- **Sidebar scroll guard**: Conversation list no longer re-scrolls to the
+  active chat when the user expands or collapses a folder (flatNodes change).
+  Auto-scroll now fires only when the active conversation ID actually changes,
+  and re-fires after a search clears.
+- **Diff fallback rendering uses Prism syntax highlighting**: When
+  `parseDiff()` fails on illustrative or non-standard diffs, the fallback
+  now runs Prism's `diff` grammar over the text so `+`/`-` lines are
+  coloured, and the "fallback rendering - parsing failed" label is removed.
+- **CodeBlock no longer subscribes to StreamingContext**: The loading
+  skeleton hid code blocks until language grammars loaded, forcing every
+  CodeBlock to watch the global streaming state. The visibility toggle is
+  removed; code is always visible, eliminating mass re-renders on stream end.
+- **DiffView/DiffViewWrapper use streaming ref instead of context**: Stale
+  `isGlobalStreaming` reads in `useEffect` deps replaced with a stable ref,
+  preventing spurious re-renders after streaming completes.
+- **ChunkLoadError crash recovery**: Added `lazyWithRetry()` utility that
+  retries failed dynamic imports up to 2 times with cache-busting, then
+  performs a single hard page reload (guarded by sessionStorage to prevent
+  loops). All `React.lazy()` call sites in `MarkdownRenderer`, `StreamedContent`,
+  `App`, and `index` now use `lazyWithRetry`. Fixes crashes caused by stale
+  chunk hashes after rebuilds.
+- **ResizeObserver noise suppressed**: `RootErrorBoundary` now filters out
+  `ResizeObserver loop completed with undelivered notifications` from the
+  global error handler and crash log, as these are benign browser warnings.
+- **Full-file replacement fallback requires match confidence**: The
+  single-hunk full-file replacement path in `patch_apply.py` now requires a
+  match confidence of >= 0.30 before clobbering the target file. Previously
+  a diff whose old block had no relation to the current file content could
+  overwrite an unrelated file that happened to be a similar size.
+- **D3Renderer container sizing driven by plugin sizingConfig**: Removed
+  hardcoded per-plugin name checks (`isJointRenderer`, `isDrawioRenderer`,
+  etc.) from `D3Renderer`. Container dimensions and overflow are now derived
+  from the plugin's `sizingConfig` fields (`sizingStrategy`,
+  `needsDynamicHeight`, `needsOverflowVisible`, `minHeight`).
+- **Vega-Lite data detection in compositions**: `vegaLitePlugin` now walks
+  the full spec tree (layers, vconcat, hconcat, concat, facet/repeat sub-specs)
+  when checking for data sources. Previously a layered spec with data only in
+  child layers was rejected as incomplete.
 
 ### Changed
+- **Expanded recognized file extensions**: Added `.ipynb`, `.diff`,
+  `.patch`, `.drawio`, `.plist`, `.gitattributes`, `.dockerignore`,
+  `.npmrc`, `.prettierrc`, `.eslintrc`, `.editorconfig`, and other common
+  dev-tooling dotfiles to the text file recognition lists in both
+  `SendChatContainer` and `EditSection` drop handlers.
 
 ## [0.6.4.10] - 2026-04-21
 
