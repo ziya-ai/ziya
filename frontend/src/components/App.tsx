@@ -29,15 +29,16 @@ import { useConfig } from '../context/ConfigContext'
 import { ServerStatusBanner } from './ServerStatusBanner';
 import { useScrollManager } from '../hooks/useScrollManager';
 import { ScrollIndicator } from './ScrollIndicator';
-const ShellConfigModal = React.lazy(() => import("./ShellConfigModal"));
-const MCPStatusModal = React.lazy(() => import("./MCPStatusModal"));
-const MCPRegistryModal = React.lazy(() => import("./MCPRegistryModal"));
-const ExportConversationModal = React.lazy(() => import("./ExportConversationModal"));
+import { lazyWithRetry } from '../utils/lazyWithRetry';
+const ShellConfigModal = lazyWithRetry(() => import("./ShellConfigModal"));
+const MCPStatusModal = lazyWithRetry(() => import("./MCPStatusModal"));
+const MCPRegistryModal = lazyWithRetry(() => import("./MCPRegistryModal"));
+const ExportConversationModal = lazyWithRetry(() => import("./ExportConversationModal"));
 // Lazy load the Conversation component
-const Conversation = React.lazy(() => import("./Conversation"));
-const MemoryBrowser = React.lazy(() => import("./MemoryBrowser"));
-const AstStatusIndicator = React.lazy(() => import("./AstStatusIndicator"));
-const GraphPanel = React.lazy(() => import("./ConversationGraph/GraphPanel"));
+const Conversation = lazyWithRetry(() => import("./Conversation"));
+const MemoryBrowser = lazyWithRetry(() => import("./MemoryBrowser"));
+const AstStatusIndicator = lazyWithRetry(() => import("./AstStatusIndicator"));
+const GraphPanel = lazyWithRetry(() => import("./ConversationGraph/GraphPanel"));
 
 // Error boundary component to catch extension context errors
 class ExtensionErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
