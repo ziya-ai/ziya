@@ -1598,6 +1598,12 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                     });
 
                     console.log('✅ PLACEMENT: Optimization complete');
+                } // --- END placement-optimizer-only section (auto-layout only) ---
+
+                // Router runs for BOTH auto-layout and explicit-layout diagrams.
+                // Explicit-layout diagrams need obstacle-aware routing too; without
+                // it, edges clip through intermediate shapes.
+                {
 
                     // ROUTER: Orthogonal connector helper types and functions
                     interface Rect {
@@ -1863,7 +1869,7 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                     graph.__orthogonalRoutingApplied = true;
                     console.log('✅ ROUTER: All edges routed');
 
-                } // --- END auto-layout-only section (placement optimizer + router) ---
+                } // --- END router section (runs for all layouts) ---
 
                 if (hasExplicitLayout) {
                     console.log('📐 ELK: Diagram has explicit positioning - SKIPPING automatic layout');
@@ -2538,7 +2544,19 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                             currentStyle['sourcePortConstraint'] = 'center';
                             currentStyle['targetPortConstraint'] = 'center';
 
-                            // Offset the edge routing
+                            // Offset the edge routing perpendicular to the axis the
+                            // edge was actually routed along above. The three branches
+                            // above choose either vertical (top/bottom ports) or
+                            // horizontal (left/right ports); the diagonal fallback
+                            // uses absDx > absDy as its tiebreaker, so we replicate
+                            // that precedence here to stay consistent with whichever
+                            // branch fired.
+                            const routedVertically = isVerticallyAligned || isVerticalDominant;
+                            const routedHorizontally =
+                                !routedVertically &&
+                                (isHorizontallyAligned || isHorizontalDominant || absDx > absDy);
+                            const isHorizontal = routedHorizontally;
+
                             if (isHorizontal) {
                                 currentStyle['exitDy'] = offset;
                                 currentStyle['entryDy'] = offset;
@@ -3008,7 +3026,7 @@ export const drawioPlugin: D3RenderPlugin = {
     sizingConfig: {
         sizingStrategy: 'auto-expand',
         needsDynamicHeight: true,
-        needsOverflowVisible: false,
+        needsOverflowVisible: true,
         observeResize: false,
         containerStyles: {
             width: '100%',
