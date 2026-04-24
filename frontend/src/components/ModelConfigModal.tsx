@@ -257,7 +257,7 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
 
       // Build new values object
       const newValues = {
-        temperature: data.temperature_range.default,
+        temperature: data.temperature_range?.default ?? currentFormValues.temperature ?? 0.3,
         top_k: data.top_k_range?.default || 15,
         max_output_tokens: data.max_output_tokens,
         max_input_tokens: data.token_limit,
@@ -288,6 +288,10 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
   };
 
   // Use selected model capabilities for form limits
+  const activeCapabilities = selectedModelCapabilities || capabilities;
+  const supportsTemperature = activeCapabilities?.temperature_range != null;
+  const supportsTopK = activeCapabilities?.top_k_range != null;
+
   const tempLimits = selectedModelCapabilities?.temperature_range || capabilities?.temperature_range || { min: 0, max: 1, default: 0.3 };
   const topKLimits = selectedModelCapabilities?.top_k_range || capabilities?.top_k_range || { min: 0, max: 500, default: 15 };
 
@@ -429,7 +433,7 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
           />
         </Form.Item>
 
-        <Form.Item
+        {supportsTemperature && <Form.Item
           label={
             <Space align="center">
               <span>
@@ -453,9 +457,9 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
             marks={{ 0: '0', 0.5: '0.5', 1: '1' }}
             tooltip={{ formatter: value => `${value}` }}
           />
-        </Form.Item>
+        </Form.Item>}
 
-        {endpoint === 'bedrock' && (
+        {endpoint === 'bedrock' && supportsTopK && (
           <Form.Item label={
             <Space align="center">
               <span> Top K

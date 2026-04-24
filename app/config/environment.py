@@ -151,8 +151,9 @@ def setup_environment(args: Any) -> None:
             args.endpoint = corrected_endpoint
 
     os.environ["ZIYA_ENDPOINT"] = endpoint
-    if model:
-        os.environ["ZIYA_MODEL"] = model
+    # Always set ZIYA_MODEL so a stale value from a previous run or shell
+    # export doesn't leak across endpoint switches.
+    os.environ["ZIYA_MODEL"] = model or config.DEFAULT_MODELS.get(endpoint, "")
 
     # -- Model parameter flags ----------------------------------------------
     if getattr(args, 'temperature', None) is not None:

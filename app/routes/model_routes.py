@@ -612,13 +612,28 @@ def get_model_capabilities(model: str = None):
         capabilities["max_input_tokens"] = effective_max_input_tokens # Current value
         capabilities["token_limit"] = effective_max_input_tokens # Use max_input_tokens for consistency
         
-        # Add parameter ranges
-        capabilities["temperature_range"] = {"min": 0, "max": 1, "default": effective_settings.get("temperature", base_model_config.get("temperature", 0.3))}
-        # Use base_model_config for top_k range as it's static capability, but default from effective settings
-        base_top_k_range = base_model_config.get("top_k_range", {"min": 0, "max": 500, "default": 15}) if endpoint == "bedrock" else None
-        if base_top_k_range:
-             base_top_k_range["default"] = effective_settings.get("top_k", base_top_k_range.get("default", 15))
-        capabilities["top_k_range"] = base_top_k_range
+        # Add parameter ranges, gated on what the model actually supports.
+        # Some models (e.g. Claude Opus 4.7) reject temperature/top_k/top_p
+        # outright, so we emit null ranges and let the frontend hide those
+        # controls entirely.
+        from app.config.models_config import get_supported_parameters
+        supported_params = get_supported_parameters(endpoint, model_alias)
+
+        if "temperature" in supported_params:
+            capabilities["temperature_range"] = {"min": 0, "max": 1, "default": effective_settings.get("temperature", base_model_config.get("temperature", 0.3))}
+        else:
+            capabilities["temperature_range"] = None
+
+        if "top_k" in supported_params and endpoint == "bedrock":
+            base_top_k_range = base_model_config.get("top_k_range", {"min": 0, "max": 500, "default": 15})
+            base_top_k_range["default"] = effective_settings.get("top_k", base_top_k_range.get("default", 15))
+            capabilities["top_k_range"] = base_top_k_range
+        else:
+            capabilities["top_k_range"] = None
+
+        # get_supported_parameters returns a dict (param → constraints).  Wrap
+        # in set() for the difference operation — `set - dict` is a TypeError.
+        capabilities["unsupported_parameters"] = sorted({"temperature", "top_k", "top_p"} - set(supported_params))
         # Add range for max_output_tokens using the absolute max
         capabilities["max_output_tokens_range"] = {"min": 1, "max": absolute_max_output_tokens, "default": effective_max_output_tokens}
         logger.debug(f"max_output_tokens_range being set: {capabilities['max_output_tokens_range']}") # DEBUG         # Add range for max_input_tokens using the absolute max
