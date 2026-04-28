@@ -1966,6 +1966,7 @@ class CLI:
     async def _show_model_settings_dialog(self, model_name: str, model_config: dict) -> Optional[dict]:
         """Show simple text-based settings configuration."""
         from app.agents.models import ModelManager
+        from app.config.models_config import get_supported_parameters
         
         current_settings = ModelManager.get_model_settings()
         settings = {}
@@ -1975,23 +1976,29 @@ class CLI:
         print(f"\033[1;36m{'─' * 60}\033[0m")
         print("\033[90mPress Enter to keep current value, or type new value\033[0m\n")
         
+        # Consult model capabilities (honors family-level unsupported_parameters,
+        # e.g. Opus 4.7 rejects temperature/top_k/top_p). Same source the web modal uses.
+        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        supported_params = get_supported_parameters(endpoint, model_name)
+
         # Temperature
-        temp_range = model_config.get('parameter_ranges', {}).get('temperature', {'min': 0, 'max': 1, 'default': 0.3})
-        current_temp = current_settings.get('temperature', temp_range.get('default', 0.3))
-        temp_input = input(f"Temperature [{temp_range['min']}-{temp_range['max']}] (current: {current_temp}): ").strip()
-        if temp_input:
-            try:
-                val = float(temp_input)
-                if temp_range['min'] <= val <= temp_range['max']:
-                    settings['temperature'] = val
-                else:
-                    print(f"\033[33mOut of range, using {current_temp}\033[0m")
+        if 'temperature' in supported_params:
+            temp_range = supported_params.get('temperature') or model_config.get('parameter_ranges', {}).get('temperature', {'min': 0, 'max': 1, 'default': 0.3})
+            current_temp = current_settings.get('temperature', temp_range.get('default', 0.3))
+            temp_input = input(f"Temperature [{temp_range.get('min', 0)}-{temp_range.get('max', 1)}] (current: {current_temp}): ").strip()
+            if temp_input:
+                try:
+                    val = float(temp_input)
+                    if temp_range.get('min', 0) <= val <= temp_range.get('max', 1):
+                        settings['temperature'] = val
+                    else:
+                        print(f"\033[33mOut of range, using {current_temp}\033[0m")
+                        settings['temperature'] = current_temp
+                except ValueError:
+                    print(f"\033[33mInvalid, using {current_temp}\033[0m")
                     settings['temperature'] = current_temp
-            except ValueError:
-                print(f"\033[33mInvalid, using {current_temp}\033[0m")
+            else:
                 settings['temperature'] = current_temp
-        else:
-            settings['temperature'] = current_temp
         
         # Max output tokens
         max_output = model_config.get('max_output_tokens', 4096)
@@ -2011,15 +2018,15 @@ class CLI:
         else:
             settings['max_output_tokens'] = current_max
         
-        # Top-k if supported
-        family = model_config.get('family')
-        if family and 'claude' in family:
-            current_top_k = current_settings.get('top_k', 15)
-            top_k_input = input(f"Top-K [0-500] (current: {current_top_k}): ").strip()
+        # Top-K if supported
+        if 'top_k' in supported_params:
+            top_k_range = supported_params.get('top_k') or {'min': 0, 'max': 500, 'default': 15}
+            current_top_k = current_settings.get('top_k', top_k_range.get('default', 15))
+            top_k_input = input(f"Top-K [{top_k_range.get('min', 0)}-{top_k_range.get('max', 500)}] (current: {current_top_k}): ").strip()
             if top_k_input:
                 try:
                     val = int(top_k_input)
-                    if 0 <= val <= 500:
+                    if top_k_range.get('min', 0) <= val <= top_k_range.get('max', 500):
                         settings['top_k'] = val
                     else:
                         print(f"\033[33mOut of range, using {current_top_k}\033[0m")
@@ -2028,7 +2035,26 @@ class CLI:
                     print(f"\033[33mInvalid, using {current_top_k}\033[0m")
                     settings['top_k'] = current_top_k
             else:
-                settings['top_k'] = current_top_k
+                    settings['top_k'] = current_top_k
+
+        # Top-P if supported
+        if 'top_p' in supported_params:
+            top_p_range = supported_params.get('top_p') or {'min': 0.0, 'max': 1.0, 'default': 1.0}
+            current_top_p = current_settings.get('top_p', top_p_range.get('default', 1.0))
+            top_p_input = input(f"Top-P [{top_p_range.get('min', 0.0)}-{top_p_range.get('max', 1.0)}] (current: {current_top_p}): ").strip()
+            if top_p_input:
+                try:
+                    val = float(top_p_input)
+                    if top_p_range.get('min', 0.0) <= val <= top_p_range.get('max', 1.0):
+                        settings['top_p'] = val
+                    else:
+                        print(f"\033[33mOut of range, using {current_top_p}\033[0m")
+                        settings['top_p'] = current_top_p
+                except ValueError:
+                    print(f"\033[33mInvalid, using {current_top_p}\033[0m")
+                    settings['top_p'] = current_top_p
+            else:
+                settings['top_p'] = current_top_p
         
         # Thinking effort if model supports adaptive thinking
         if model_config.get('supports_adaptive_thinking'):
