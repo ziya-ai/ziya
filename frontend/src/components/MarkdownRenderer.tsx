@@ -895,7 +895,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
                             wordBreak: 'break-word',
                             overflow: 'auto'
                         }}>
-                            <code dangerouslySetInnerHTML={{ __html: ansiToHtml(cleanContent) }} />
+                            <code dangerouslySetInnerHTML={{ __html: ansiToHtml(cleanContent, isDarkMode ? 'dark' : 'light') }} />
                         </pre>
                     ) : (
                         <pre style={{
@@ -3734,6 +3734,17 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         // Check first few lines for diff markers
         const linesToCheck = text.split('\n').slice(0, 5);
 
+        // Gate content-based diff detection on the first non-blank line.
+        // Without this, a code block whose prose merely QUOTES a diff (e.g.
+        // an outer ```` fence wrapping narrative that includes a nested
+        // 
+        // incidentally contains "diff --git" and ---/+++ markers.
+        const firstContentLine = (text.split('\n').find(l => l.trim().length > 0) || '').trim();
+        const firstLineLooksLikeDiff =
+            /^(diff --git |Index: |--- [ab]?\/|\+\+\+ [ab]?\/|@@ )/.test(firstContentLine);
+        const firstLineIsNestedFence = /^`{3,}/.test(firstContentLine);
+        const firstLineGatesDiff = firstLineLooksLikeDiff && !firstLineIsNestedFence;
+
         const hasGitHeader = linesToCheck.some(line => line.trim().startsWith('diff --git '));
         const hasMinusHeader = linesToCheck.some(line => line.trim().startsWith('--- a/'));
         const hasPlusHeader = linesToCheck.some(line => line.trim().startsWith('+++ b/'));
@@ -3762,7 +3773,7 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         // An explicit non-diff lang tag must not be overridden by content heuristics.
         const _cl = (('lang' in token ? (token as any).lang : '') as string).toLowerCase().trim();
         const _noExplicitLang = !_cl || _cl === 'diff' || _cl === 'plaintext' || _cl === 'text';
-        if (_noExplicitLang && (containsDiffGit || diffMarkersFound >= 2)) {
+        if (_noExplicitLang && firstLineGatesDiff && (containsDiffGit || diffMarkersFound >= 2)) {
             if (isDebugLoggingEnabled()) {
                 debugLog('DETECTED AS DIFF (content-based)');
             }
@@ -3966,8 +3977,11 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
             }
         }
 
-        // Check if this is a diff block by looking for diff marker
-        if (text.startsWith('diff') || text.includes('\ndiff')) {
+        // Require the first non-blank line to actually be a diff header.
+        // `text.includes('\ndiff')` used to match prose that merely quoted
+        // a diff further down in the block.
+        const firstNB = (text.split('\n').find(l => l.trim().length > 0) || '').trim();
+        if (/^(diff --git |Index: |--- [ab]?\/|\+\+\+ [ab]?\/|@@ )/.test(firstNB)) {
             return 'diff';
         }
 
