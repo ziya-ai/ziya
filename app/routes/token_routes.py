@@ -10,7 +10,7 @@ import logging
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 from app.utils.logging_utils import logger
 
@@ -22,9 +22,29 @@ except ImportError:
 
 router = APIRouter(tags=["tokens"])
 
+class TokenCountImage(BaseModel):
+    model_config = {"extra": "allow"}
+    width: Optional[int] = None
+    height: Optional[int] = None
+    size: Optional[int] = None
+    mediaType: Optional[str] = None
+
+class TokenCountDocument(BaseModel):
+    model_config = {"extra": "allow"}
+    text: Optional[str] = ""
+    pageImages: Optional[List[TokenCountImage]] = None
+
+class TokenCountMessage(BaseModel):
+    model_config = {"extra": "allow"}
+    content: Optional[str] = ""
+    muted: Optional[bool] = False
+    images: Optional[List[TokenCountImage]] = None
+    documents: Optional[List[TokenCountDocument]] = None
+
 class TokenCountRequest(BaseModel):
     model_config = {"extra": "allow"}
-    text: str
+    text: Optional[str] = None
+    messages: Optional[List[TokenCountMessage]] = None
 
 class AccurateTokenCountRequest(BaseModel):
     model_config = {"extra": "allow"}
@@ -48,14 +68,60 @@ def count_tokens_fallback(text: str) -> int:
             # Return character count divided by 4 as very rough approximation
             return int(len(text) / 4)
 
+def _estimate_image_tokens(img: TokenCountImage) -> int:
+    """Estimate tokens for a single image attachment.
+
+    Mirrors app.utils.token_master.TokenMaster._estimate_images: Claude uses
+    ~1500 tokens per 1MP. When width/height are unknown we assume the Claude
+    default of 1024x1024 (~1500 tokens), matching backend behavior.
+    """
+    width = img.width or 1024
+    height = img.height or 1024
+    megapixels = (width * height) / 1_000_000
+    # Floor at 1 token so sub-megapixel images aren't counted as free.
+    return max(1, int(1500 * megapixels))
+
 @router.post('/api/token-count')
 async def count_tokens(request: TokenCountRequest) -> Dict[str, int]:
     try:
         # Use estimate_token_count which tries calibrator first, then tiktoken, then fallback
         # This gives us calibrated estimates when available, with graceful degradation
         from app.agents.agent import estimate_token_count
-        
-        token_count = estimate_token_count(text=request.text)
+
+        if request.messages is not None:
+            # Sum over active (non-muted) messages: text + images + documents.
+            # Images and document page-images are estimated using the same
+            # heuristic as the actual request-time estimator so the GUI token
+            # bar matches what the backend will bill for.
+            text_parts: List[str] = []
+            image_tokens = 0
+            for msg in request.messages:
+                if msg.muted:
+                    continue
+                if msg.content:
+                    text_parts.append(msg.content)
+                if msg.images:
+                    for img in msg.images:
+                        image_tokens += _estimate_image_tokens(img)
+                if msg.documents:
+                    for doc in msg.documents:
+                        if doc.text:
+                            text_parts.append(doc.text)
+                        if doc.pageImages:
+                            for pimg in doc.pageImages:
+                                image_tokens += _estimate_image_tokens(pimg)
+
+            combined_text = '\n'.join(text_parts)
+            text_tokens = estimate_token_count(text=combined_text) if combined_text else 0
+            token_count = text_tokens + image_tokens
+            logger.debug(
+                f"Counted {token_count} tokens over {len(request.messages)} messages "
+                f"(text={text_tokens}, images={image_tokens})"
+            )
+            return {"token_count": token_count}
+
+        # Backward-compatible text-only path.
+        token_count = estimate_token_count(text=request.text or "")
         
         # Log which method was actually used (calibrator logs this internally)
         method_used = "estimate_token_count"
