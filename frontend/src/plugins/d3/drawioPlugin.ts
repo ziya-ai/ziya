@@ -1339,19 +1339,47 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
 
                             const currentStyle = cell.getStyle();
 
+                            // Compute absolute exit/entry coordinates so both endpoints
+                            // of each pair edge land at the SAME absolute position on the
+                            // cross-axis. Using raw fractions (e.g. exitY=0.7, entryY=0.7)
+                            // produces misaligned endpoints when source and target boxes
+                            // have different heights/widths, forcing Manhattan to insert
+                            // an unnecessary perpendicular jog ("crick") mid-edge.
                             if (isHorizontal) {
-                                // For horizontal flow, offset vertically
-                                // One arrow goes above center, one below
-                                currentStyle['exitY'] = 0.5 + offset;
-                                currentStyle['entryY'] = 0.5 + offset;
-                                // Keep X centered on left/right edges
+                                const yTop = Math.max(sourceGeom.y, targetGeom.y);
+                                const yBot = Math.min(
+                                    sourceGeom.y + sourceGeom.height,
+                                    targetGeom.y + targetGeom.height
+                                );
+                                if (yBot > yTop) {
+                                    // Non-empty vertical overlap: pick an absolute Y in
+                                    // that band and convert to per-box fractions.
+                                    const overlap = yBot - yTop;
+                                    const absY = (yTop + yBot) / 2 + offset * overlap;
+                                    currentStyle['exitY'] = (absY - sourceGeom.y) / sourceGeom.height;
+                                    currentStyle['entryY'] = (absY - targetGeom.y) / targetGeom.height;
+                                } else {
+                                    // No overlap: fall back to symmetric fractional offset.
+                                    currentStyle['exitY'] = 0.5 + offset;
+                                    currentStyle['entryY'] = 0.5 + offset;
+                                }
                                 currentStyle['exitX'] = dx > 0 ? 1.0 : 0.0;
                                 currentStyle['entryX'] = dx > 0 ? 0.0 : 1.0;
                             } else {
-                                // For vertical flow, offset horizontally
-                                currentStyle['exitX'] = 0.5 + offset;
-                                currentStyle['entryX'] = 0.5 + offset;
-                                // Keep Y centered on top/bottom edges
+                                const xLeft = Math.max(sourceGeom.x, targetGeom.x);
+                                const xRight = Math.min(
+                                    sourceGeom.x + sourceGeom.width,
+                                    targetGeom.x + targetGeom.width
+                                );
+                                if (xRight > xLeft) {
+                                    const overlap = xRight - xLeft;
+                                    const absX = (xLeft + xRight) / 2 + offset * overlap;
+                                    currentStyle['exitX'] = (absX - sourceGeom.x) / sourceGeom.width;
+                                    currentStyle['entryX'] = (absX - targetGeom.x) / targetGeom.width;
+                                } else {
+                                    currentStyle['exitX'] = 0.5 + offset;
+                                    currentStyle['entryX'] = 0.5 + offset;
+                                }
                                 currentStyle['exitY'] = dy > 0 ? 1.0 : 0.0;
                                 currentStyle['entryY'] = dy > 0 ? 0.0 : 1.0;
                             }
@@ -1600,10 +1628,583 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                     console.log('✅ PLACEMENT: Optimization complete');
                 } // --- END placement-optimizer-only section (auto-layout only) ---
 
-                // Router runs for BOTH auto-layout and explicit-layout diagrams.
-                // Explicit-layout diagrams need obstacle-aware routing too; without
-                // it, edges clip through intermediate shapes.
-                {
+                // For explicit-layout diagrams, delegate edge routing to maxGraph's
+                // ManhattanConnector — a built-in A*-based obstacle-aware orthogonal
+                // router (file: @maxgraph/core/.../edge/Manhattan.js). It builds an
+                // obstacle map over all vertex cells and finds the shortest orthogonal
+                // path avoiding them. Much better than our hand-rolled routing.
+                //
+                // For auto-layout diagrams we keep the A* fallback router (below) —
+                // it runs after ELK and provides a fallback when ELK fails.
+                if (hasExplicitLayout) {
+                    // Column redistribution pass for explicit-layout diagrams.
+                    // Uses GEOMETRIC containment (not model-parent) because many
+                    // DFDs use plain dashed rectangles as trust boundaries with
+                    // every cell flat-parented to cell "1" in the XML. For each
+                    // vertex, find the smallest OTHER vertex whose absolute bbox
+                    // fully contains it — that's the effective container. Leaves
+                    // (vertices that don't themselves contain others) within the
+                    // same container get clustered into columns by center-X
+                    // proximity and redistributed with equal left/inter/right gaps.
+                    // Does not redistribute containers themselves, rows (Y), or
+                    // single-leaf containers.
+                    const COLUMN_CLUSTER_THRESHOLD = 60; // px
+                    const CONTAINER_EDGE_MARGIN = 20;    // px
+                    const getAbs = (cell: any): { x: number; y: number; w: number; h: number } | null => {
+                        const g = cell.getGeometry();
+                        if (!g) return null;
+                        let x = g.x, y = g.y;
+                        let p = cell.getParent();
+                        while (p && p.getId() !== '0' && p.getId() !== '1') {
+                            const pg = p.getGeometry();
+                            if (pg) { x += pg.x; y += pg.y; }
+                            p = p.getParent();
+                        }
+                        return { x, y, w: g.width, h: g.height };
+                    };
+                    const verts: Array<{ id: string; cell: any; abs: { x: number; y: number; w: number; h: number } }> = [];
+                    cellMap.forEach((cell, id) => {
+                        if (id === '0' || id === '1' || !cell.isVertex()) return;
+                        const abs = getAbs(cell);
+                        if (abs) verts.push({ id, cell, abs });
+                    });
+                    const bboxContains = (o: { x: number; y: number; w: number; h: number }, i: { x: number; y: number; w: number; h: number }) =>
+                        i.x >= o.x && i.y >= o.y && i.x + i.w <= o.x + o.w && i.y + i.h <= o.y + o.h;
+                    const containerOf = new Map<string, string>();
+                    const hasChildren = new Set<string>();
+                    verts.forEach((inner) => {
+                        let bestId: string | null = null;
+                        let bestArea = Infinity;
+                        verts.forEach((outer) => {
+                            if (outer.id === inner.id) return;
+                            if (!bboxContains(outer.abs, inner.abs)) return;
+                            hasChildren.add(outer.id);
+                            const area = outer.abs.w * outer.abs.h;
+                            if (area < bestArea) { bestArea = area; bestId = outer.id; }
+                        });
+                        if (bestId) containerOf.set(inner.id, bestId);
+                    });
+                    const vertsById = new Map(verts.map(v => [v.id, v]));
+                    const childrenByContainer = new Map<string, Array<{ cell: any; geom: any; abs: typeof verts[0]['abs'] }>>();
+                    verts.forEach(({ id, cell, abs }) => {
+                        if (hasChildren.has(id)) return; // container itself, not a leaf
+                        const parentId = containerOf.get(id);
+                        if (!parentId) return;
+                        const geom = cell.getGeometry();
+                        if (!geom) return;
+                        if (!childrenByContainer.has(parentId)) childrenByContainer.set(parentId, []);
+                        childrenByContainer.get(parentId)!.push({ cell, geom, abs });
+                    });
+                    childrenByContainer.forEach((kids, parentId) => {
+                        if (kids.length < 2) return;
+                        const parentAbs = vertsById.get(parentId)?.abs;
+                        if (!parentAbs) return;
+                        const sorted = [...kids].sort((a, b) =>
+                            (a.abs.x + a.abs.w / 2) - (b.abs.x + b.abs.w / 2));
+                        const cols: Array<Array<typeof kids[0]>> = [[sorted[0]]];
+                        for (let i = 1; i < sorted.length; i++) {
+                            const curCenter = sorted[i].abs.x + sorted[i].abs.w / 2;
+                            const lastCol = cols[cols.length - 1];
+                            const lastCenter = lastCol[0].abs.x + lastCol[0].abs.w / 2;
+                            if (Math.abs(curCenter - lastCenter) < COLUMN_CLUSTER_THRESHOLD) {
+                                lastCol.push(sorted[i]);
+                            } else {
+                                cols.push([sorted[i]]);
+                            }
+                        }
+                        const colWidths = cols.map(c => Math.max(...c.map(k => k.abs.w)));
+                        const totalW = colWidths.reduce((a, b) => a + b, 0);
+                        const avail = parentAbs.w - 2 * CONTAINER_EDGE_MARGIN;
+                        if (totalW >= avail) return;
+                        const gap = (avail - totalW) / (cols.length + 1);
+                        let absCursor = parentAbs.x + CONTAINER_EDGE_MARGIN + gap;
+                        cols.forEach((col, i) => {
+                            const absColCenter = absCursor + colWidths[i] / 2;
+                            col.forEach(({ cell, geom, abs }) => {
+                                const dx = absColCenter - (abs.x + abs.w / 2);
+                                if (Math.abs(dx) > 1) {
+                                    geom.x += dx;
+                                    cell.setGeometry(geom);
+                                }
+                            });
+                            absCursor += colWidths[i] + gap;
+                        });
+                        console.log(`📐 REDIST: Container ${parentId} — ${cols.length} column(s) redistributed`);
+                    });
+
+                    // Bidirectional-pair trunk separation.
+                    // Manhattan computes each edge independently and picks the
+                    // geometric midpoint of the source/target gap for the trunk.
+                    // For pairs A↔B, both edges choose the same trunk X (or Y),
+                    // producing overlapping/crossing trunks. Fix by writing
+                    // explicit waypoints on each pair edge — Manhattan sees
+                    // non-empty geometry.points and delegates to SegmentConnector,
+                    // which respects waypoints. We offset the two trunks by
+                    // ±TRUNK_OFFSET px on the cross-axis so they run parallel.
+                    // Loses Manhattan's obstacle avoidance for these specific
+                    // edges — acceptable tradeoff since bidirectional pairs
+                    // usually route in clear corridors between two adjacent cells.
+                    const TRUNK_OFFSET = 8; // px each side of midpoint (~16px total separation, matches horizontal-pair endpoint spacing)
+                    const processedPairs = new Set<string>();
+                    edgeCells.forEach(({ id, element }) => {
+                        const sourceId = element.getAttribute('source');
+                        const targetId = element.getAttribute('target');
+                        if (!sourceId || !targetId) return;
+                        const pairKey = sourceId < targetId ? `${sourceId}-${targetId}` : `${targetId}-${sourceId}`;
+                        if (processedPairs.has(pairKey)) return;
+                        const pairIds = edgePairs.get(pairKey) || [];
+                        if (pairIds.length !== 2) return;
+                        processedPairs.add(pairKey);
+
+                        const [aId, bId] = pairIds;
+                        const aCell = cellMap.get(aId);
+                        const bCell = cellMap.get(bId);
+                        if (!aCell || !bCell) return;
+                        const aSrc = cellMap.get(sourceId < targetId ? sourceId : targetId);
+                        const aTgt = cellMap.get(sourceId < targetId ? targetId : sourceId);
+                        if (!aSrc || !aTgt) return;
+                        const sg = aSrc.getGeometry();
+                        const tg = aTgt.getGeometry();
+                        if (!sg || !tg) return;
+
+                        // Compute true gaps (0 when axes overlap, positive when they
+                        // don't). A trunk offset is only needed when BOTH axes have a
+                        // gap — i.e. source and target are diagonally offset. If only
+                        // one axis has a gap (side-by-side or stacked), Manhattan
+                        // draws a single straight segment and our existing endpoint
+                        // alignment handles parallel separation; adding waypoints
+                        // here would introduce an unwanted kink.
+                        const horizGap = Math.max(
+                            0,
+                            Math.max(sg.x, tg.x) - Math.min(sg.x + sg.width, tg.x + tg.width));
+                        const vertGap = Math.max(
+                            0,
+                            Math.max(sg.y, tg.y) - Math.min(sg.y + sg.height, tg.y + tg.height));
+                        if (horizGap <= 0 || vertGap <= 0) {
+                            console.log(`📐 PAIR-TRUNK: skip pair (${pairKey}) — gaps H=${horizGap} V=${vertGap}`);
+                            return;
+                        }
+                        const horizontal = horizGap >= vertGap;
+
+                        pairIds.forEach((pid, idx) => {
+                            const cell = cellMap.get(pid);
+                            if (!cell) return;
+                            const off = (idx === 0 ? -1 : 1) * TRUNK_OFFSET;
+                            const geom = cell.getGeometry();
+                            if (!geom) return;
+
+                            // Waypoints must appear in source→target order. sg/tg
+                            // are the pair's lex-ordered endpoints (sg = min id),
+                            // but this specific edge may go in either direction.
+                            const edgeEl = edgeCells.find(e => e.id === pid)?.element;
+                            const actualSrc = edgeEl?.getAttribute('source');
+                            const canonicalSrc = sourceId < targetId ? sourceId : targetId;
+                            const [near, far] = actualSrc === canonicalSrc ? [sg, tg] : [tg, sg];
+
+                            // Waypoint position on the cross-axis must match the
+                            // port position the earlier bidirectional pre-pass
+                            // wrote into exitY/entryY (horizontal pairs) or
+                            // exitX/entryX (vertical pairs). Any mismatch forces
+                            // SegmentConnector to bridge with a short diagonal
+                            // final segment — which renders as a crooked arrow
+                            // angle at the cell edge.
+                            const cs = cell.getStyle() || {};
+                            if (horizontal) {
+                                const leftRight = Math.min(sg.x + sg.width, tg.x + tg.width);
+                                const rightLeft = Math.max(sg.x, tg.x);
+                                const midX = (leftRight + rightLeft) / 2 + off;
+                                const nearFrac = parseFloat(cs.exitY ?? '0.5');
+                                const farFrac = parseFloat(cs.entryY ?? '0.5');
+                                geom.points = [new Point(midX, near.y + nearFrac * near.height),
+                                               new Point(midX, far.y + farFrac * far.height)];
+                            } else {
+                                const topBottom = Math.min(sg.y + sg.height, tg.y + tg.height);
+                                const bottomTop = Math.max(sg.y, tg.y);
+                                const midY = (topBottom + bottomTop) / 2 + off;
+                                const nearFrac = parseFloat(cs.exitX ?? '0.5');
+                                const farFrac = parseFloat(cs.entryX ?? '0.5');
+                                geom.points = [new Point(near.x + nearFrac * near.width, midY),
+                                               new Point(far.x + farFrac * far.width, midY)];
+                            }
+                            cell.setGeometry(geom);
+                            console.log(`📐 PAIR-TRUNK: ${pid} offset ${off}px (${horizontal ? 'H' : 'V'})`);
+                        });
+                    });
+
+                    console.log('📐 ROUTER: Using maxGraph ManhattanConnector for explicit-layout edges');
+                    edgeCells.forEach(({ id, element }) => {
+                        // Diagnostic: log exit/entry style that will reach Manhattan,
+                        // plus current source/target geometry, for vertical bidirectional
+                        // pairs. Helps us understand why f6/f10 and similar pairs produce
+                        // crossed routes instead of stacked parallel ones.
+                        const sId = element.getAttribute('source');
+                        const tId = element.getAttribute('target');
+                        const c = cellMap.get(id);
+                        const s = sId ? cellMap.get(sId) : null;
+                        const t = tId ? cellMap.get(tId) : null;
+                        const cs = c?.getStyle?.();
+                        const sg = s?.getGeometry?.();
+                        const tg = t?.getGeometry?.();
+                        console.log(`🔎 MANHATTAN-IN ${id}`, { src: sId, tgt: tId, srcGeom: sg && { x: sg.x, y: sg.y, w: sg.width, h: sg.height }, tgtGeom: tg && { x: tg.x, y: tg.y, w: tg.width, h: tg.height }, exitX: cs?.exitX, exitY: cs?.exitY, entryX: cs?.entryX, entryY: cs?.entryY, hasGeomPoints: !!c?.getGeometry()?.points?.length });
+                        const cell = cellMap.get(id);
+                        if (!cell) return;
+                        const style = cell.getStyle() || {};
+                        style['edgeStyle'] = 'manhattanEdgeStyle';
+
+                        // Label positioning: offset perpendicular to the edge's
+                        // dominant axis so text sits beside the line, not on top
+                        // of it. Manhattan may bend the edge, but the dominant
+                        // source→target axis is a reasonable heuristic for
+                        // "which side of the edge has more empty space".
+                        //
+                        // Caveats: this does not detect collisions with OTHER
+                        // edges' lines or with vertex boxes. Two parallel edges
+                        // with the same dominant axis will both offset to the
+                        // same side and may stack their labels.
+                        const sourceId = element.getAttribute('source');
+                        const targetId = element.getAttribute('target');
+                        const sCell = sourceId ? cellMap.get(sourceId) : null;
+                        const tCell = targetId ? cellMap.get(targetId) : null;
+                        const sGeom = sCell?.getGeometry();
+                        const tGeom = tCell?.getGeometry();
+                        if (sGeom && tGeom) {
+                            const dx = Math.abs((tGeom.x + tGeom.width / 2) - (sGeom.x + sGeom.width / 2));
+                            const dy = Math.abs((tGeom.y + tGeom.height / 2) - (sGeom.y + sGeom.height / 2));
+                            if (dx >= dy) {
+                                // Horizontal-dominant edge → label above the line.
+                                style['verticalAlign'] = 'bottom';
+                                style['align'] = 'center';
+                                style['spacingBottom'] = 10;
+                            } else {
+                                // Vertical-dominant edge → label to the LEFT of the line.
+                                style['align'] = 'left';
+                                style['verticalAlign'] = 'middle';
+                                style['spacingLeft'] = 14;
+                            }
+                        }
+
+                        cell.setStyle(style);
+                    });
+                    graph.__orthogonalRoutingApplied = true;
+
+                    // Label collision avoidance (first pass).
+                    // Force Manhattan to run once so absolutePoints are populated,
+                    // then for each edge whose DEFAULT label position (midpoint
+                    // of total path length) overlaps a non-endpoint vertex, shift
+                    // the label via geometry.offset toward the midpoint of the
+                    // edge's longest segment. Does NOT currently handle:
+                    // label-vs-label stacking, overlap with the post-shift position,
+                    // container (trust-boundary) collisions, or width-based wrapping.
+                    try {
+                        graph.view.validate();
+                    } catch (e) {
+                        console.warn('📐 LABEL-AVOID: early validate failed', e);
+                    }
+                    const _scale = graph.view.scale || 1;
+                    // Build the obstacle set for label placement. We must
+                    // EXCLUDE container-like vertices — any vertex whose
+                    // absolute bbox fully encloses another vertex is acting
+                    // as a group/boundary/swimlane (trust boundaries, AWS
+                    // region outlines, etc.), not a leaf shape the label
+                    // should avoid. Without this exclusion the outermost
+                    // boundary covers the entire canvas and every candidate
+                    // label position "hits" it, so LABEL-AVOID gives up on
+                    // every edge. Using geometric containment rather than
+                    // style hints (fillColor, dashed) keeps this robust
+                    // across diagram conventions.
+                    type _Box = { id: string; x: number; y: number; w: number; h: number };
+                    const _allVerts: _Box[] = [];
+                    cellMap.forEach((c, id) => {
+                        if (id === '0' || id === '1' || !c.isVertex()) return;
+                        const st = graph.view.getState(c);
+                        if (!st) return;
+                        _allVerts.push({ id, x: st.x, y: st.y, w: st.width, h: st.height });
+                    });
+                    const _bboxContains = (outer: _Box, inner: _Box) =>
+                        inner.x >= outer.x && inner.y >= outer.y &&
+                        inner.x + inner.w <= outer.x + outer.w &&
+                        inner.y + inner.h <= outer.y + outer.h;
+                    const _isContainer = new Set<string>();
+                    _allVerts.forEach((outer) => {
+                        if (_allVerts.some(inner => inner.id !== outer.id && _bboxContains(outer, inner))) {
+                            _isContainer.add(outer.id);
+                        }
+                    });
+                    const _vbox: _Box[] = _allVerts.filter(v => !_isContainer.has(v.id));
+                    console.log(`📐 LABEL-AVOID: obstacles=${_vbox.length} leaves, excluded ${_isContainer.size} containers [${[..._isContainer].join(',')}]`);
+                    // Text width estimation. The previous halfW used
+                    // txt.length * 3.5 capped at 90, which was both over-
+                    // inclusive (short labels overestimated at 3.5 px/char)
+                    // and under-inclusive (long labels clipped to the cap).
+                    // Canvas 2D measureText with the cell's actual font size
+                    // gives pixel-accurate widths in model coordinates; the
+                    // caller scales by _scale to match view-coord obstacles.
+                    const _measureCanvas = document.createElement('canvas');
+                    const _measureCtx = _measureCanvas.getContext('2d');
+                    const _measureText = (text: string, fontSize: number): { w: number; h: number } => {
+                        if (!_measureCtx) return { w: text.length * fontSize * 0.55, h: fontSize * 1.2 };
+                        _measureCtx.font = `${fontSize}px Arial, Helvetica, sans-serif`;
+                        return { w: _measureCtx.measureText(text).width, h: fontSize * 1.2 };
+                    };
+                    const _pointAtLen = (pts: any[], t: number) => {
+                        let acc = 0;
+                        for (let i = 0; i < pts.length - 1; i++) {
+                            const sl = Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
+                            if (acc + sl >= t) {
+                                const r = sl > 0 ? (t - acc) / sl : 0;
+                                return { x: pts[i].x + r * (pts[i + 1].x - pts[i].x), y: pts[i].y + r * (pts[i + 1].y - pts[i].y) };
+                            }
+                            acc += sl;
+                        }
+                        return pts[pts.length - 1];
+                    };
+                    model.beginUpdate();
+                    try {
+                        edgeCells.forEach(({ id }) => {
+                            const cell = cellMap.get(id);
+                            if (!cell) return;
+                            const st = graph.view.getState(cell);
+                            const pts = st?.absolutePoints;
+                            if (!pts || pts.length < 2) return;
+                            const txt = cell.getValue?.();
+                            if (typeof txt !== 'string' || txt.length === 0) return;
+                            const srcId = cell.getTerminal?.(true)?.getId?.();
+                            const tgtId = cell.getTerminal?.(false)?.getId?.();
+                            // Anchor the edge label so it sits in the geometric gap
+                            // between source and target boxes along the edge's
+                            // dominant axis, while keeping the cross-axis position
+                            // ON the edge line (so the label stays visually attached
+                            // to the route instead of drifting off it).
+                            //
+                            // Horizontal-dominant edge: use the X midpoint between
+                            //   the box centers, keep the path-midpoint Y.
+                            // Vertical-dominant edge: use the Y midpoint between
+                            //   the box centers, keep the path-midpoint X.
+                            const _srcCell = cell.getTerminal?.(true);
+                            const _tgtCell = cell.getTerminal?.(false);
+                            const _srcSt = _srcCell ? graph.view.getState(_srcCell) : null;
+                            const _tgtSt = _tgtCell ? graph.view.getState(_tgtCell) : null;
+                            // For multi-segment routed edges (L-shapes, S-shapes),
+                            // total-length midpoint can land near a bend instead of
+                            // along a visible segment. Use the midpoint of the LONGEST
+                            // segment instead — places labels in the biggest open run.
+                            // For 2-point edges this degenerates to the only segment's
+                            // midpoint, identical to the old behavior.
+                            let _longestSeg = { start: pts[0], end: pts[1], len: 0 };
+                            for (let i = 0; i < pts.length - 1; i++) {
+                                const a = pts[i], b = pts[i + 1];
+                                const l = Math.hypot(b.x - a.x, b.y - a.y);
+                                if (l > _longestSeg.len) {
+                                    _longestSeg = { start: a, end: b, len: l };
+                                }
+                            }
+                            const _pathMid = {
+                                x: (_longestSeg.start.x + _longestSeg.end.x) / 2,
+                                y: (_longestSeg.start.y + _longestSeg.end.y) / 2,
+                            };
+                            let _anchor: { x: number; y: number } | null = null;
+                            if (_srcSt && _tgtSt) {
+                                const sCx = _srcSt.x + _srcSt.width / 2;
+                                const sCy = _srcSt.y + _srcSt.height / 2;
+                                const tCx = _tgtSt.x + _tgtSt.width / 2;
+                                const tCy = _tgtSt.y + _tgtSt.height / 2;
+                                const dx = Math.abs(tCx - sCx);
+                                const dy = Math.abs(tCy - sCy);
+                                if (dx >= dy) {
+                                    // Horizontal-dominant: adjust X only.
+                                    _anchor = { x: (sCx + tCx) / 2, y: _pathMid.y };
+                                } else {
+                                    // Vertical-dominant: adjust Y only.
+                                    _anchor = { x: _pathMid.x, y: (sCy + tCy) / 2 };
+                                }
+                            }
+                            const _cellStyle = cell.getStyle?.() || {};
+                            const _fontSize = parseFloat(_cellStyle.fontSize) || 12;
+                            // Auto-wrap long labels at natural break points if the
+                            // single-line width significantly exceeds the available
+                            // gap between source and target boxes along the edge's
+                            // dominant axis. Natural break points in priority order:
+                            // before '(' (parenthetical), after ',', after ' / '.
+                            // Only accept a wrap if both halves are meaningfully
+                            // smaller than the single line — avoids one-long-one-short
+                            // wraps that don't actually help readability.
+                            // Line-break token: `<br>` for html=1 labels (rendered in
+                            // foreignObject), `\n` for plain SVG labels (rendered as
+                            // <tspan>s). Using the wrong one leaks literal text.
+                            const _br = _cellStyle.html ? '<br>' : '\n';
+                            let _labelText = txt;
+                            if (_srcSt && _tgtSt && !/<br\s*\/?>|\n/.test(txt)) {
+                                const _singleW = _measureText(txt, _fontSize).w;
+                                const _isHoriz = Math.abs((_tgtSt.x + _tgtSt.width / 2) - (_srcSt.x + _srcSt.width / 2))
+                                    >= Math.abs((_tgtSt.y + _tgtSt.height / 2) - (_srcSt.y + _srcSt.height / 2));
+                                // Wrap only for horizontal-dominant edges: label width
+                                // competes with the horizontal gap between boxes. On
+                                // vertical edges the label sits beside the line and
+                                // width isn't the scarce dimension.
+                                const _gap = _isHoriz
+                                    ? Math.max(0, Math.max(_srcSt.x, _tgtSt.x) - Math.min(_srcSt.x + _srcSt.width, _tgtSt.x + _tgtSt.width))
+                                    : Infinity;
+                                console.log(`📐 WRAP-DIAG ${id} txt="${txt.slice(0,30)}" isHoriz=${_isHoriz} singleW=${_singleW.toFixed(0)} gap=${_gap === Infinity ? 'inf' : _gap.toFixed(0)} willTry=${_isHoriz && _singleW > _gap * 1.3 && _gap > 40}`);
+                                // Threshold 1.0: wrap whenever label width exceeds the
+                                // available corridor. Using a multiplier >1 introduced
+                                // false negatives for labels that are just over the gap.
+                                if (_isHoriz && _singleW > _gap && _gap > 40) {
+                                    const _breaks: Array<{ re: RegExp; where: 'before' | 'after' }> = [
+                                        { re: / \(/, where: 'before' },
+                                        { re: /, /, where: 'after' },
+                                        { re: / \/ /, where: 'after' },
+                                    ];
+                                    for (const { re, where } of _breaks) {
+                                        const m = txt.match(re);
+                                        if (!m || m.index === undefined) continue;
+                                        const idx = where === 'before' ? m.index : m.index + m[0].length;
+                                        const left = txt.slice(0, idx).trimEnd();
+                                        const right = txt.slice(idx).trimStart();
+                                        if (!left || !right) continue;
+                                        const lw = _measureText(left, _fontSize).w;
+                                        const rw = _measureText(right, _fontSize).w;
+                                        console.log(`  WRAP-TRY ${id} at /${re.source}/ left="${left.slice(0,25)}"(${lw.toFixed(0)}) right="${right.slice(0,25)}"(${rw.toFixed(0)}) threshold=${(_singleW*0.85).toFixed(0)} accept=${Math.max(lw,rw) < _singleW*0.85}`);
+                                        if (Math.max(lw, rw) < _singleW * 0.85) {
+                                            _labelText = left + _br + right;
+                                            cell.setValue(_labelText);
+                                            console.log(`📐 LABEL-WRAP: ${id} "${txt.slice(0,20)}" ${_singleW.toFixed(0)}px (gap ${_gap.toFixed(0)}px) → 2 lines [${lw.toFixed(0)}/${rw.toFixed(0)}] via ${_br === '\n' ? '\\n' : '<br>'}`);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            // Measure label (multi-line aware).
+                            // html=1 edge labels render <br> as a line break (foreignObject);
+                            // plain edge labels render \n as a line break (<tspan>).
+                            // Measurement splits on either and takes the max line width.
+                            const _lines = _labelText.split(/<br\s*\/?>|\n/i);
+                            const _maxLineW = Math.max(..._lines.map(l => _measureText(l, _fontSize).w));
+                            const _totalLineH = _fontSize * 1.2 * _lines.length;
+                            const halfW = (_maxLineW / 2) * _scale;
+                            const halfH = (_totalLineH / 2) * _scale;
+                            // Bidirectional pair offset: when two edges connect
+                            // the same vertex pair (A↔B), both anchor at the
+                            // exact same point and their labels stack on each
+                            // other. Shift each label perpendicular to the
+                            // edge's dominant axis, one to each side, so the
+                            // viewer can tell which label goes with which
+                            // trunk. The pair's two trunks themselves are
+                            // already separated earlier by PAIR-TRUNK.
+                            const _pairKey = (srcId && tgtId)
+                                ? (srcId < tgtId ? `${srcId}-${tgtId}` : `${tgtId}-${srcId}`)
+                                : null;
+                            const _pairIds = _pairKey ? (edgePairs.get(_pairKey) || []) : [];
+                            if (_anchor && _pairIds.length === 2 && _srcSt && _tgtSt) {
+                                const _idx = _pairIds.indexOf(id);
+                                const _side = _idx === 0 ? -1 : 1;
+                                // Reduced from 8 — the previous value placed wrapped labels
+                                // noticeably above/below their edges.
+                                const _gap = 2;
+                                // Override the earlier Manhattan label-side hint (which sets
+                                // verticalAlign='bottom' / 'middle' + a spacing offset). For
+                                // pair-offset labels we want the label CENTERED on our
+                                // computed anchor so the pair offset math (anchor ± halfH)
+                                // places the label correctly relative to the edge line.
+                                // Without this override, maxGraph's flex-end alignment extends
+                                // the label a full halfH above the anchor, so the label sits
+                                // ~2*halfH above the edge line instead of halfH+gap.
+                                // Clone the style so we pass a distinct object reference to
+                                // model.setStyle — maxGraph's StyleChange uses `style !==
+                                // cell.getStyle()` reference comparison to decide whether to
+                                // fire a change event. Mutating the existing object skips
+                                // the change and the TextShape is never re-applied.
+                                const _ps = { ...(cell.getStyle() || {}) };
+                                _ps['verticalAlign'] = 'middle';
+                                _ps['align'] = 'center';
+                                delete _ps['spacingBottom'];
+                                delete _ps['spacingTop'];
+                                model.setStyle(cell, _ps);
+                                const _pDx = Math.abs((_tgtSt.x + _tgtSt.width / 2) - (_srcSt.x + _srcSt.width / 2));
+                                const _pDy = Math.abs((_tgtSt.y + _tgtSt.height / 2) - (_srcSt.y + _srcSt.height / 2));
+                                if (_pDy >= _pDx) {
+                                    // Vertical pair: offset labels left/right of trunks
+                                    _anchor.x += _side * (halfW + _gap);
+                                } else {
+                                    // Horizontal pair: offset labels above/below trunks
+                                    _anchor.y += _side * (halfH + _gap);
+                                }
+                                console.log(`📐 LABEL-PAIR: ${id} pair ${_pairKey} side=${_side} anchor=(${_anchor.x.toFixed(0)},${_anchor.y.toFixed(0)})`);
+                            }
+                            // Build segment table (length + cumulative start) and
+                            // sort by length desc so longest segments get priority.
+                            const segs: Array<{ start: number; len: number }> = [];
+                            let total = 0;
+                            for (let i = 0; i < pts.length - 1; i++) {
+                                const sl = Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
+                                segs.push({ start: total, len: sl });
+                                total += sl;
+                            }
+                            if (total < 1) return;
+                            segs.sort((a, b) => b.len - a.len);
+                            // `strict=false` permits grazing src/tgt — used for the
+                            // default-midpoint check, since edge labels legitimately
+                            // sit close to their endpoints. `strict=true` forbids
+                            // landing inside src/tgt — used for alternate candidates,
+                            // because a shifted label that ends up inside the very
+                            // box it's supposed to connect is worse than the default.
+                            const hitsAt = (pt: { x: number; y: number }, strict: boolean) => _vbox.some(v =>
+                                (strict || (v.id !== srcId && v.id !== tgtId)) &&
+                                pt.x + halfW >= v.x && pt.x - halfW <= v.x + v.w &&
+                                pt.y + halfH >= v.y && pt.y - halfH <= v.y + v.h
+                            );
+                            // Apply the box-centers anchor as the new default position.
+                            // LABEL-AVOID's hit-check runs against this anchor, not the
+                            // path midpoint.
+                            const defPt_probe = _pointAtLen(pts, total / 2);
+                            const wantDefault = _anchor || defPt_probe;
+                            if (_anchor) {
+                                const geomA = cell.getGeometry();
+                                if (geomA) {
+                                    const adx = (_anchor.x - defPt_probe.x) / _scale;
+                                    const ady = (_anchor.y - defPt_probe.y) / _scale;
+                                    geomA.offset = new Point(adx, ady);
+                                    cell.setGeometry(geomA);
+                                    console.log(`📐 LABEL-ANCHOR: ${id} "${txt.slice(0,20)}" pathMid=(${defPt_probe.x.toFixed(0)},${defPt_probe.y.toFixed(0)}) → centersMid=(${_anchor.x.toFixed(0)},${_anchor.y.toFixed(0)}) offset=(${adx.toFixed(1)},${ady.toFixed(1)})`);
+                                }
+                            }
+                            const defHits = hitsAt(wantDefault, false);
+                            console.log(`📐 LABEL-CHECK: ${id} "${txt.slice(0,20)}" anchor=(${wantDefault.x.toFixed(0)},${wantDefault.y.toFixed(0)}) defHits=${defHits} halfW=${halfW.toFixed(1)} vboxN=${_vbox.length}`);
+                            if (!defHits) return;
+                            // Candidate positions along the edge:
+                            //   1. default (midpoint of total length)
+                            //   2. midpoint of each segment (long → short)
+                            //   3. quarter-points of the 3 longest segments
+                            // Return the first non-overlapping one. If every
+                            // candidate is blocked, fall through to default
+                            // (label stays where maxGraph would have placed it).
+                            const defPt = wantDefault;
+                            const cands: Array<{ x: number; y: number }> = [];
+                            segs.forEach(s => cands.push(_pointAtLen(pts, s.start + s.len / 2)));
+                            segs.slice(0, 3).forEach(s => {
+                                if (s.len < 40) return;
+                                cands.push(_pointAtLen(pts, s.start + s.len * 0.25));
+                                cands.push(_pointAtLen(pts, s.start + s.len * 0.75));
+                            });
+                            const firstFree = cands.find(c => !hitsAt(c, true));
+                            if (!firstFree) {
+                                console.log(`📐 LABEL-AVOID: ${id} "${txt.slice(0,20)}" no free candidate among ${cands.length}`);
+                                return;
+                            }
+                            const wantPt = firstFree;
+                            const dx = (wantPt.x - defPt.x) / _scale;
+                            const dy = (wantPt.y - defPt.y) / _scale;
+                            if (Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
+                            const geom = cell.getGeometry();
+                            if (!geom) return;
+                            geom.offset = new Point(dx, dy);
+                            cell.setGeometry(geom);
+                            console.log(`📐 LABEL-AVOID: ${id} "${txt.slice(0, 24)}" shifted (${dx.toFixed(1)}, ${dy.toFixed(1)})`);
+                        });
+                    } finally {
+                        model.endUpdate();
+                    }
+
+                } else {
 
                     // ROUTER: Orthogonal connector helper types and functions
                     interface Rect {
@@ -1688,70 +2289,121 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                         obstacles: Rect[];
                         shapeMargin: number;
                     }): Point[] => {
-                        const { pointA, pointB, shapeMargin } = config;
-
+                        const { pointA, pointB, obstacles, shapeMargin } = config;
                         const startPoint = getConnectionPoint(pointA);
                         const endPoint = getConnectionPoint(pointB);
 
-                        // Simple 2-segment orthogonal routing
-                        // Start -> intermediate point -> End
-                        const waypoints: Point[] = [startPoint];
-
-                        // Determine intermediate point based on start and end sides
-                        const isStartHorizontal = pointA.side === 'left' || pointA.side === 'right';
-                        const isEndHorizontal = pointB.side === 'left' || pointB.side === 'right';
-
-                        if (isStartHorizontal && !isEndHorizontal) {
-                            // Start horizontal, end vertical: intermediate at (end.x, start.y)
-                            const intermediateX = endPoint.x;
-                            const intermediateY = startPoint.y;
-
-                            // Add intermediate waypoint if not collinear
-                            if (Math.abs(intermediateX - startPoint.x) > 1 && Math.abs(intermediateY - endPoint.y) > 1) {
-                                waypoints.push({ x: intermediateX, y: intermediateY });
+                        // Visibility-grid A*: build a sparse grid of candidate X/Y
+                        // coordinates from obstacle bounds (inflated by shapeMargin)
+                        // plus the endpoints, then A* along grid lines while
+                        // rejecting segments that cross any inflated obstacle.
+                        const infl = shapeMargin;
+                        const hitsObstacle = (p1: Point, p2: Point): boolean => {
+                            const xMin = Math.min(p1.x, p2.x), xMax = Math.max(p1.x, p2.x);
+                            const yMin = Math.min(p1.y, p2.y), yMax = Math.max(p1.y, p2.y);
+                            for (const o of obstacles) {
+                                const l = o.left - infl, r = o.left + o.width + infl;
+                                const t = o.top - infl, b = o.top + o.height + infl;
+                                // Strict inside test: touching the inflated edge is allowed,
+                                // so the corridor along an obstacle margin is usable.
+                                if (xMax <= l || xMin >= r || yMax <= t || yMin >= b) continue;
+                                return true;
                             }
-                        } else if (!isStartHorizontal && isEndHorizontal) {
-                            // Start vertical, end horizontal: intermediate at (start.x, end.y)
-                            const intermediateX = startPoint.x;
-                            const intermediateY = endPoint.y;
+                            return false;
+                        };
 
-                            if (Math.abs(intermediateX - endPoint.x) > 1 && Math.abs(intermediateY - startPoint.y) > 1) {
-                                waypoints.push({ x: intermediateX, y: intermediateY });
-                            }
-                        } else if (isStartHorizontal && isEndHorizontal) {
-                            // Both horizontal: need 3-segment path
-                            const midX = (startPoint.x + endPoint.x) / 2;
+                        const xs = new Set<number>([startPoint.x, endPoint.x]);
+                        const ys = new Set<number>([startPoint.y, endPoint.y]);
+                        for (const o of obstacles) {
+                            xs.add(o.left - infl);
+                            xs.add(o.left + o.width + infl);
+                            ys.add(o.top - infl);
+                            ys.add(o.top + o.height + infl);
+                        }
+                        const xsArr = Array.from(xs).sort((a, b) => a - b);
+                        const ysArr = Array.from(ys).sort((a, b) => a - b);
+                        const xIdx = new Map<number, number>(xsArr.map((x, i) => [x, i]));
+                        const yIdx = new Map<number, number>(ysArr.map((y, i) => [y, i]));
 
-                            if (Math.abs(midX - startPoint.x) > 1) {
-                                waypoints.push({ x: midX, y: startPoint.y });
-                            }
-                            if (Math.abs(midX - endPoint.x) > 1 && Math.abs(startPoint.y - endPoint.y) > 1) {
-                                waypoints.push({ x: midX, y: endPoint.y });
-                            }
-                        } else {
-                            // Both vertical: need 3-segment path
-                            const midY = (startPoint.y + endPoint.y) / 2;
+                        const nodeId = (x: number, y: number) => `${x},${y}`;
+                        const startId = nodeId(startPoint.x, startPoint.y);
+                        const endId = nodeId(endPoint.x, endPoint.y);
+                        const gScore = new Map<string, number>([[startId, 0]]);
+                        const prev = new Map<string, { id: string; x: number; y: number }>();
+                        const open = new Set<string>([startId]);
+                        const h = (x: number, y: number) =>
+                            Math.abs(x - endPoint.x) + Math.abs(y - endPoint.y);
 
-                            if (Math.abs(midY - startPoint.y) > 1) {
-                                waypoints.push({ x: startPoint.x, y: midY });
+                        const TURN_PENALTY = 8;
+                        while (open.size) {
+                            // Pick lowest f = g + h (O(n) per pop — n is small here).
+                            let curId = '', curF = Infinity, curX = 0, curY = 0;
+                            for (const id of open) {
+                                const [sx, sy] = id.split(',').map(Number);
+                                const f = (gScore.get(id) ?? Infinity) + h(sx, sy);
+                                if (f < curF) { curF = f; curId = id; curX = sx; curY = sy; }
                             }
-                            if (Math.abs(midY - endPoint.y) > 1 && Math.abs(startPoint.x - endPoint.x) > 1) {
-                                waypoints.push({ x: endPoint.x, y: midY });
+                            if (!curId || curId === endId) break;
+                            open.delete(curId);
+
+                            const cxi = xIdx.get(curX) ?? -1;
+                            const cyi = yIdx.get(curY) ?? -1;
+                            if (cxi < 0 || cyi < 0) continue;
+                            const p = prev.get(curId);
+                            const curDirX = p ? Math.sign(curX - p.x) : 0;
+                            const curDirY = p ? Math.sign(curY - p.y) : 0;
+
+                            for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+                                let nx = curX, ny = curY;
+                                if (dx !== 0) {
+                                    const ni = cxi + dx;
+                                    if (ni < 0 || ni >= xsArr.length) continue;
+                                    nx = xsArr[ni];
+                                } else {
+                                    const ni = cyi + dy;
+                                    if (ni < 0 || ni >= ysArr.length) continue;
+                                    ny = ysArr[ni];
+                                }
+                                if (hitsObstacle({ x: curX, y: curY }, { x: nx, y: ny })) continue;
+                                const segLen = Math.abs(nx - curX) + Math.abs(ny - curY);
+                                const ndx = Math.sign(nx - curX), ndy = Math.sign(ny - curY);
+                                const turn = (curDirX !== 0 || curDirY !== 0) &&
+                                    (ndx !== curDirX || ndy !== curDirY) ? TURN_PENALTY : 0;
+                                const tentative = (gScore.get(curId) ?? Infinity) + segLen + turn;
+                                const nid = nodeId(nx, ny);
+                                if (tentative < (gScore.get(nid) ?? Infinity)) {
+                                    gScore.set(nid, tentative);
+                                    prev.set(nid, { id: curId, x: curX, y: curY });
+                                    open.add(nid);
+                                }
                             }
                         }
 
-                        waypoints.push(endPoint);
-
-                        // Remove duplicate consecutive points
-                        const cleaned: Point[] = [waypoints[0]];
-                        for (let i = 1; i < waypoints.length; i++) {
-                            const prev = waypoints[i - 1];
-                            const curr = waypoints[i];
-                            if (Math.abs(curr.x - prev.x) > 0.1 || Math.abs(curr.y - prev.y) > 0.1) {
-                                cleaned.push(curr);
-                            }
+                        // Reconstruct. If no path was found, fall back to naive L-bend
+                        // (may clip obstacles, but lets the diagram still render).
+                        if (!prev.has(endId) && startId !== endId) {
+                            return [startPoint, { x: endPoint.x, y: startPoint.y }, endPoint];
                         }
-
+                        const path: Point[] = [];
+                        let cur: string | undefined = endId;
+                        while (cur) {
+                            const [px, py] = cur.split(',').map(Number);
+                            path.unshift({ x: px, y: py });
+                            cur = prev.get(cur)?.id;
+                        }
+                        // Collapse collinear runs so the edge geometry has only corners.
+                        const cleaned: Point[] = [path[0]];
+                        for (let i = 1; i < path.length; i++) {
+                            const a = cleaned[cleaned.length - 1];
+                            const b = path[i];
+                            if (cleaned.length >= 2) {
+                                const pPrev = cleaned[cleaned.length - 2];
+                                const d1x = Math.sign(a.x - pPrev.x), d1y = Math.sign(a.y - pPrev.y);
+                                const d2x = Math.sign(b.x - a.x), d2y = Math.sign(b.y - a.y);
+                                if (d1x === d2x && d1y === d2y) { cleaned[cleaned.length - 1] = b; continue; }
+                            }
+                            cleaned.push(b);
+                        }
                         return cleaned;
                     };
 
@@ -1869,7 +2521,7 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                     graph.__orthogonalRoutingApplied = true;
                     console.log('✅ ROUTER: All edges routed');
 
-                } // --- END router section (runs for all layouts) ---
+                } // --- END router section (auto-layout only; explicit uses Manhattan above) ---
 
                 if (hasExplicitLayout) {
                     console.log('📐 ELK: Diagram has explicit positioning - SKIPPING automatic layout');
@@ -2732,6 +3384,61 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                         // Also re-run the main enhancer so any container-label
                         // clamps survive fitCenter's revalidation pass.
                         DrawIOEnhancer.fixAllForeignObjects(currentSvg, graph);
+                    }
+
+                    // Post-routing label offset correction. LABEL-AVOID
+                    // calculates geometry.offset against absolutePoints at a
+                    // point BEFORE Manhattan routing has finalized its bends,
+                    // so offsets for L/S-shaped edges end up relative to a
+                    // straight-line midpoint that no longer exists. After fit
+                    // settles the routing, we recompute the offset against the
+                    // CURRENT longest segment's midpoint so multi-bend edges
+                    // land on a visible segment.
+                    if (graph.__hasExplicitLayout) {
+                        const Point = window.maxGraph?.Point;
+                        const model = graph.model;
+                        model.beginUpdate();
+                        try {
+                            graph.getDefaultParent().getDescendants().forEach((cell: any) => {
+                                if (!cell.isEdge?.()) return;
+                                const st = graph.view.getState(cell);
+                                const pts = st?.absolutePoints;
+                                if (!pts || pts.length < 3) return;
+                                let longest = { a: pts[0], b: pts[1], len: 0 };
+                                for (let i = 0; i < pts.length - 1; i++) {
+                                    const l = Math.hypot(pts[i+1].x - pts[i].x, pts[i+1].y - pts[i].y);
+                                    if (l > longest.len) longest = { a: pts[i], b: pts[i+1], len: l };
+                                }
+                                const segMid = { x: (longest.a.x + longest.b.x) / 2, y: (longest.a.y + longest.b.y) / 2 };
+                                let total = 0;
+                                for (let i = 0; i < pts.length - 1; i++) total += Math.hypot(pts[i+1].x - pts[i].x, pts[i+1].y - pts[i].y);
+                                let acc = 0;
+                                let pathMid: any = pts[pts.length - 1];
+                                for (let i = 0; i < pts.length - 1; i++) {
+                                    const sl = Math.hypot(pts[i+1].x - pts[i].x, pts[i+1].y - pts[i].y);
+                                    if (acc + sl >= total / 2) {
+                                        const r = sl > 0 ? (total/2 - acc) / sl : 0;
+                                        pathMid = { x: pts[i].x + r * (pts[i+1].x - pts[i].x), y: pts[i].y + r * (pts[i+1].y - pts[i].y) };
+                                        break;
+                                    }
+                                    acc += sl;
+                                }
+                                const scale = graph.view.scale || 1;
+                                const dx = (segMid.x - pathMid.x) / scale;
+                                const dy = (segMid.y - pathMid.y) / scale;
+                                if (Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
+                                const geom = cell.getGeometry();
+                                if (!geom) return;
+                                const base = geom.offset || new Point(0, 0);
+                                const newGeom = geom.clone();
+                                newGeom.offset = new Point(base.x + dx, base.y + dy);
+                                cell.setGeometry(newGeom);
+                                model.setStyle(cell, { ...(cell.getStyle() || {}) });
+                                console.log(`📐 POST-FIT ${cell.getId()}: shift (${dx.toFixed(1)}, ${dy.toFixed(1)}), segLen=${longest.len.toFixed(0)}`);
+                            });
+                        } finally {
+                            model.endUpdate();
+                        }
                     }
 
                     console.log('✅ DrawIO: Fit and center applied successfully');
