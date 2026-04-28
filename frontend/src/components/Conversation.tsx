@@ -4,7 +4,7 @@ import { useConversationList } from '../context/ConversationListContext';
 import { useScrollContext } from '../context/ScrollContext';
 import { EditSection } from "./EditSection";
 import { Spin, Button, Tooltip, Image as AntImage } from 'antd';
-import { RedoOutlined, SoundOutlined, MutedOutlined, PictureOutlined, CodeOutlined, EyeOutlined } from "@ant-design/icons";
+import { RedoOutlined, SoundOutlined, MutedOutlined, PictureOutlined, CodeOutlined, EyeOutlined, CloseOutlined } from "@ant-design/icons";
 
 import { DocumentChip, ImageChip } from './FileChip';
 import ModelChangeNotification from './ModelChangeNotification';
@@ -207,6 +207,19 @@ const MessageActions = memo<MessageActionsProps>(({
         setQuestion('');
     }, [currentConversationId, actualIndex, message.content, message.images, isCurrentlyStreaming, addStreamingConversation, send, setQuestion]);
 
+    const handleDiscard = useCallback(() => {
+        if (isCurrentlyStreaming) return;
+        convListRef.current.setConversations(prev => prev.map(conv =>
+            conv.id === currentConversationId
+                ? {
+                    ...conv,
+                    messages: conv.messages.filter((_, i) => i !== actualIndex),
+                    _version: Date.now(),
+                }
+                : conv
+        ));
+    }, [currentConversationId, actualIndex, isCurrentlyStreaming]);
+
     if (isEditing) return null;
 
     return (
@@ -234,6 +247,12 @@ const MessageActions = memo<MessageActionsProps>(({
                     <Button icon={<RedoOutlined />} type="primary" size="small" onClick={handleRetry}>
                         Retry AI Response
                     </Button>
+                </Tooltip>
+            )}
+            {/* Discard button — paired with Retry; lets user drop a failed/unanswered question */}
+            {showRetry && (
+                <Tooltip title="Discard this question">
+                    <Button icon={<CloseOutlined />} onClick={handleDiscard} />
                 </Tooltip>
             )}
         </div>

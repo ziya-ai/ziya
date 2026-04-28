@@ -10,26 +10,54 @@
  * sequences (cursor movement, etc.) are stripped.
  */
 
-// Standard 4-bit ANSI color palette (foreground codes 30–37, bright 90–97).
-const ANSI_FG_COLORS: Record<number, string> = {
+ export type AnsiTheme = 'dark' | 'light';
+
+ // Dark-mode palette: bright, saturated colors readable on a dark background.
+ const ANSI_FG_COLORS_DARK: Record<number, string> = {
     30: '#4d4d4d', 31: '#cc0000', 32: '#00cc00', 33: '#cccc00',
     34: '#5c5cff', 35: '#cc00cc', 36: '#00cccc', 37: '#cccccc',
     90: '#666666', 91: '#ff3333', 92: '#33ff33', 93: '#ffff33',
     94: '#3333ff', 95: '#ff33ff', 96: '#33ffff', 97: '#ffffff',
 };
 
-const ANSI_BG_COLORS: Record<number, string> = {
+ const ANSI_BG_COLORS_DARK: Record<number, string> = {
     40: '#000000', 41: '#cc0000', 42: '#00cc00', 43: '#cccc00',
     44: '#0000cc', 45: '#cc00cc', 46: '#00cccc', 47: '#cccccc',
     100: '#666666', 101: '#ff3333', 102: '#33ff33', 103: '#ffff33',
     104: '#3333ff', 105: '#ff33ff', 106: '#33ffff', 107: '#ffffff',
 };
 
+ // Light-mode palette: darker, more saturated values so text stays legible
+ // on a white background. Bright variants are shifted toward their normal
+ // counterparts rather than being lightened further.
+ const ANSI_FG_COLORS_LIGHT: Record<number, string> = {
+     30: '#000000', 31: '#c91b00', 32: '#00a600', 33: '#a67f00',
+     34: '#0225c7', 35: '#a700a7', 36: '#00939e', 37: '#5c5c5c',
+     90: '#4d4d4d', 91: '#e50000', 92: '#00bc00', 93: '#b58900',
+     94: '#1a4bd6', 95: '#c700c7', 96: '#009ca8', 97: '#737373',
+ };
+
+ const ANSI_BG_COLORS_LIGHT: Record<number, string> = {
+     40: '#000000', 41: '#c91b00', 42: '#00a600', 43: '#a67f00',
+     44: '#0225c7', 45: '#a700a7', 46: '#00939e', 47: '#cccccc',
+     100: '#4d4d4d', 101: '#e50000', 102: '#00bc00', 103: '#b58900',
+     104: '#1a4bd6', 105: '#c700c7', 106: '#009ca8', 107: '#d9d9d9',
+ };
+
+ function fgPalette(theme: AnsiTheme): Record<number, string> {
+     return theme === 'light' ? ANSI_FG_COLORS_LIGHT : ANSI_FG_COLORS_DARK;
+ }
+
+ function bgPalette(theme: AnsiTheme): Record<number, string> {
+     return theme === 'light' ? ANSI_BG_COLORS_LIGHT : ANSI_BG_COLORS_DARK;
+ }
+
 // 256-color palette helper
-function color256ToHex(n: number): string | null {
+ function color256ToHex(n: number, theme: AnsiTheme = 'dark'): string | null {
     if (n < 0 || n > 255) return null;
-    if (n < 8) return ANSI_FG_COLORS[30 + n] ?? null;
-    if (n < 16) return ANSI_FG_COLORS[82 + n] ?? null;
+     const fg = fgPalette(theme);
+     if (n < 8) return fg[30 + n] ?? null;
+     if (n < 16) return fg[82 + n] ?? null;
     if (n < 232) {
         const idx = n - 16;
         const b = idx % 6, g = Math.floor(idx / 6) % 6, r = Math.floor(idx / 36);
@@ -87,7 +115,7 @@ function escapeHtml(text: string): string {
  * Returns HTML-entity-escaped text.  When no ANSI codes are present the
  * string is simply entity-escaped (no wrapping spans).
  */
-export function ansiToHtml(text: string): string {
+ export function ansiToHtml(text: string, theme: AnsiTheme = 'dark'): string {
     if (!containsAnsi(text)) return escapeHtml(text);
 
     const CSI_RE = /\x1b\[([0-9;]*)([a-zA-Z])/g;
@@ -118,26 +146,26 @@ export function ansiToHtml(text: string): string {
             else if (c === 23) state.italic = false;
             else if (c === 24) state.underline = false;
             else if (c === 29) state.strikethrough = false;
-            else if (c >= 30 && c <= 37) state.fg = ANSI_FG_COLORS[c] ?? null;
+            else if (c >= 30 && c <= 37) state.fg = fgPalette(theme)[c] ?? null;
             else if (c === 38) {
-                if (params[i + 1] === 5 && i + 2 < params.length) { state.fg = color256ToHex(params[i + 2]); i += 2; }
+                if (params[i + 1] === 5 && i + 2 < params.length) { state.fg = color256ToHex(params[i + 2], theme); i += 2; }
                 else if (params[i + 1] === 2 && i + 4 < params.length) {
                     state.fg = `#${params[i+2].toString(16).padStart(2,'0')}${params[i+3].toString(16).padStart(2,'0')}${params[i+4].toString(16).padStart(2,'0')}`;
                     i += 4;
                 }
             }
             else if (c === 39) state.fg = null;
-            else if (c >= 40 && c <= 47) state.bg = ANSI_BG_COLORS[c] ?? null;
+            else if (c >= 40 && c <= 47) state.bg = bgPalette(theme)[c] ?? null;
             else if (c === 48) {
-                if (params[i + 1] === 5 && i + 2 < params.length) { state.bg = color256ToHex(params[i + 2]); i += 2; }
+                if (params[i + 1] === 5 && i + 2 < params.length) { state.bg = color256ToHex(params[i + 2], theme); i += 2; }
                 else if (params[i + 1] === 2 && i + 4 < params.length) {
                     state.bg = `#${params[i+2].toString(16).padStart(2,'0')}${params[i+3].toString(16).padStart(2,'0')}${params[i+4].toString(16).padStart(2,'0')}`;
                     i += 4;
                 }
             }
             else if (c === 49) state.bg = null;
-            else if (c >= 90 && c <= 97) state.fg = ANSI_FG_COLORS[c] ?? null;
-            else if (c >= 100 && c <= 107) state.bg = ANSI_BG_COLORS[c] ?? null;
+            else if (c >= 90 && c <= 97) state.fg = fgPalette(theme)[c] ?? null;
+            else if (c >= 100 && c <= 107) state.bg = bgPalette(theme)[c] ?? null;
             i++;
         }
 
