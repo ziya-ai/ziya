@@ -18,7 +18,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
-from app.hallucination import check_for_parroting, scannable_text
+from app.hallucination import (
+    check_for_parroting,
+    detect_fake_shell_session,
+    scannable_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +286,38 @@ def process_text_delta(
                         ),
                     })
                     return events  # caller will break
+
+    # --- Layer B: structural fake-shell-session detection ---
+    # Fires when the accumulated text contains a completed code fence
+    # whose body looks like real shell output (grep -n numbered lines,
+    # or a $ prompt followed by output lines) but no actual tool call
+    # produced that output.  Runs at the same 256-char cadence as the
+    # shingle check; only completed fences are examined so the check
+    # never fires on a fence still being streamed in.
+    if state.conversation_id:
+        _total = len(state.assistant_text)
+        _delta = len(text)
+        if _total >= 256 and (_total // 256) != ((_total - _delta) // 256):
+            try:
+                _shell_match = detect_fake_shell_session(state.assistant_text)
+            except Exception as _e:
+                logger.debug(f"🔐 FAKE_SHELL_CHECK: skipped: {_e}")
+                _shell_match = None
+
+            if _shell_match is not None:
+                logger.warning(
+                    f"🚨 HALLUCINATION_FAKE_SHELL: signal={_shell_match.signal} "
+                    f"reason={_shell_match.reason}"
+                )
+                state.hallucination_detected = True
+                events.append({
+                    'type': 'text',
+                    'content': (
+                        '\n\n⚠️ Model wrote a fabricated shell session rather than '
+                        'calling the tool — retrying…\n\n'
+                    ),
+                })
+                return events
 
     # --- Content optimizer init ---
     if not hasattr(executor, '_content_optimizer'):

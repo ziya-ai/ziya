@@ -8,6 +8,7 @@ instead of issuing a proper tool_use block.
 See .ziya/hallucination-detection-design.md for the full design.
 """
 from .region_extraction import extract_scannable_regions, scannable_text
+from .fake_shell_detector import FakeShellMatch, detect_fake_shell_session
 from .shingle_index import (
     ShingleIndex,
     ShingleMatch,
@@ -19,6 +20,8 @@ from .shingle_index import (
 )
 
 __all__ = [
+    "FakeShellMatch",
+    "detect_fake_shell_session",
     "extract_scannable_regions",
     "scannable_text",
     "ShingleIndex",
