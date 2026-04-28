@@ -195,36 +195,48 @@ class JavaScriptHandler(LanguageHandler):
         """
         issues = []
         
-        # Check for inconsistent quotes (mixing ' and ")
-        single_quotes = len(re.findall(r"'[^']*'", modified_content))
-        double_quotes = len(re.findall(r'"[^"]*"', modified_content))
-        
-        # If both types are used, check if one is significantly more common
-        if single_quotes > 0 and double_quotes > 0:
-            total = single_quotes + double_quotes
-            if single_quotes / total < 0.2 or double_quotes / total < 0.2:
-                issues.append("Inconsistent quote style (mixing ' and \")")
-        
-        # Check for inconsistent semicolon usage
-        lines_with_semi = 0
-        lines_without_semi = 0
-        
-        for line in modified_content.splitlines():
-            line = line.strip()
-            if not line or line.startswith('//') or line.startswith('/*') or line.endswith('*/'):
-                continue
-                
-            if line.endswith(';'):
-                lines_with_semi += 1
-            elif not line.endswith('{') and not line.endswith('}') and not line.endswith(':'):
-                lines_without_semi += 1
-        
-        # If both styles are used, check if one is significantly more common
-        if lines_with_semi > 0 and lines_without_semi > 0:
-            total = lines_with_semi + lines_without_semi
-            if lines_with_semi / total < 0.2 or lines_without_semi / total < 0.2:
-                issues.append("Inconsistent semicolon usage")
-        
+        # Style checks below only flag when the diff makes a file *more*
+        # inconsistent than it already was. Files with pre-existing mixed
+        # styles should not fail validation for characteristics the diff
+        # did not introduce.
+        def _quote_minority_ratio(content: str) -> float:
+            single = len(re.findall(r"'[^']*'", content))
+            double = len(re.findall(r'"[^"]*"', content))
+            total = single + double
+            if total == 0 or single == 0 or double == 0:
+                return 1.0  # single-style or empty → "perfectly consistent"
+            return min(single, double) / total
+
+        def _semi_minority_ratio(content: str) -> float:
+            with_semi = 0
+            without_semi = 0
+            for line in content.splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith('//') or stripped.startswith('/*') or stripped.endswith('*/'):
+                    continue
+                if stripped.endswith(';'):
+                    with_semi += 1
+                elif not stripped.endswith('{') and not stripped.endswith('}') and not stripped.endswith(':'):
+                    without_semi += 1
+            total = with_semi + without_semi
+            if total == 0 or with_semi == 0 or without_semi == 0:
+                return 1.0
+            return min(with_semi, without_semi) / total
+
+        # Small tolerance: only complain when the modified file is measurably
+        # more inconsistent than the original (>2% drop in minority ratio).
+        TOLERANCE = 0.02
+
+        orig_quote = _quote_minority_ratio(original_content)
+        mod_quote = _quote_minority_ratio(modified_content)
+        if mod_quote < 0.2 and (orig_quote - mod_quote) > TOLERANCE:
+            issues.append("Inconsistent quote style (mixing ' and \")")
+
+        orig_semi = _semi_minority_ratio(original_content)
+        mod_semi = _semi_minority_ratio(modified_content)
+        if mod_semi < 0.2 and (orig_semi - mod_semi) > TOLERANCE:
+            issues.append("Inconsistent semicolon usage")
+
         # Check for potential infinite loops
         if re.search(r'while\s*\(\s*true\s*\)', modified_content) and not re.search(r'break', modified_content):
             issues.append("Potential infinite loop (while(true) without break)")
