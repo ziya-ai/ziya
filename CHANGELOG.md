@@ -16,8 +16,105 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Structural fake-shell-session detector**: New `app/hallucination/fake_shell_detector.py`
+  module detects when the model writes fabricated shell output in a Markdown
+  code fence (e.g. `grep -n` numbered lines or a `$`/`#` prompt followed by
+  output) instead of calling the shell tool. Complements the existing
+  shingle-index parroting check, which fires when the model reproduces real
+  prior tool output — this new layer fires when the model *invents* output
+  that was never produced by any tool call. Two signals:
+  - `grep_output` — 3+ consecutive `NNN: content` lines inside any fence,
+    even without a shell language tag
+  - `prompt_with_output` — shell-tagged fence (or untagged fence whose first
+    non-blank line begins with `$ `) containing ≥1 prompt line and ≥2
+    non-command output lines
+  Wired into `text_delta_processor.py` at the same 256-char cadence as the
+  shingle check; fires on both completed and in-progress (streaming) fences
+  because token-by-token accumulation of output-looking content inside a
+  fence is itself the fabrication signal. Sets `state.hallucination_detected`
+  and emits a corrective message to trigger the existing retry loop.
+- **Hallucination-detection test suite** (`tests/test_hallucination_detection.py`):
+  101 tests covering `fake_shell_detector`, `ShingleIndex` (registration and
+  detection), `region_extraction`, and end-to-end integration. Includes
+  streaming boundary splits, known false-positive hazards (user-quoted shell
+  output, tutorial examples, config comments, shell-script source, diff
+  output), performance / pathological inputs, and verbatim regression cases
+  drawn from reported hallucinations.
+- **MCP prompt hardening against fake shell sessions**: Added an explicit
+  prohibition in `app/extensions/prompt_extensions/mcp_prompt_extensions.py`
+  against writing a shell command in a Markdown code block followed by
+  fabricated output. The existing "Never fabricate output" rule only
+  covered tool-call responses; this closes the gap where the model
+  illustrates a command in prose and invents its output.
+
 ### Fixed
+- **Fake-shell detector false positives on config/comment-starting fences**:
+  Untagged fences whose first line began with `# ` (e.g. ini configs,
+  Python files with `# TODO` headers) were being treated as unmarked root
+  shell sessions. The first-line prompt check now requires `$ ` strictly
+  for untagged fences; `#` inside an explicit shell-tagged fence is still
+  recognized as either comment or root prompt (both legitimate).
+
 ### Changed
+
+- **CLI `/model` settings dialog now respects `unsupported_parameters`**:
+  The interactive parameter prompts in `app/cli.py`'s `_show_model_settings_dialog`
+  previously hardcoded prompts for `temperature`, `max_output_tokens`, and
+  `top_k` (with the latter gated only by a `claude` family check). Models like
+  Opus 4.7 that opt out of `temperature` / `top_k` / `top_p` via their
+  `unsupported_parameters` config were still being prompted for those values.
+  The dialog now consults `get_supported_parameters(endpoint, model_name)` —
+  the same source of truth the web modal uses — and only prompts for
+  parameters the active model actually accepts. Top-K range now comes from
+  config instead of hardcoded `0-500`. Adds a `top_p` prompt for models that
+  support it (parity with the web modal).
+- **Discard button for failed AI responses**: The yellow-highlighted
+  failed/unanswered user message in `Conversation.tsx` now shows an X
+  (discard) button next to the "Retry AI Response" button. Clicking it
+  removes the orphaned question from the conversation, letting users give
+  up on a failed turn rather than only being able to retry it. Button is
+  disabled while streaming.
+- **Theme-aware ANSI shell output rendering**: `frontend/src/utils/ansiToHtml.ts`
+  previously used a single hardcoded dark-background palette (e.g. bright
+  yellow `#ffff33`, bright white `#ffffff`) for all ANSI color codes. When
+  switching from dark mode to light mode after a shell tool call rendered,
+  output became unreadable on the white background. Added a parallel
+  light-mode palette with darker, more saturated values and a `theme`
+  parameter on `ansiToHtml()` / `color256ToHex()`. The call site in
+  `MarkdownRenderer.tsx` now passes `isDarkMode ? 'dark' : 'light'`, so
+  ANSI output re-renders correctly on theme toggle.
+
+### Fixed
+
+- **Diff validator false positives on pre-existing style inconsistency**:
+  `JavaScriptHandler._check_common_issues` in
+  `app/utils/diff_utils/language_handlers/javascript.py` evaluated quote-style
+  and semicolon-style consistency against the modified content alone, with no
+  reference to the original. Files with a legitimate pre-existing ~95/5 mix
+  (e.g. `ansiToHtml.ts`, mostly single-quoted hex strings with a few
+  double-quoted strings) would fail validation for *any* patch, because the
+  minority style was always under the 20% threshold regardless of what the
+  diff changed. The check now compares the minority-style ratio before and
+  after the patch, flagging only when the diff measurably worsens the ratio
+  (>2% drop) *and* the result is under 20%. Files whose balance is unchanged
+  or improved pass. This also repairs a latent bug in the TypeScript handler,
+  which already treated `_check_common_issues` results as "newly introduced
+  issues" without the JS handler actually doing that comparison.
+- **`ansiToHtml.ts` palette lookups** now flow through theme-aware
+  `fgPalette(theme)` / `bgPalette(theme)` accessors rather than the
+  previously-removed `ANSI_FG_COLORS` / `ANSI_BG_COLORS` constants, and
+  256-color lookups propagate the theme via `color256ToHex(n, theme)`.
+
+### Added
+
+- **Regression tests for JavaScript style-check validator**:
+  `app/utils/diff_utils/tests/test_javascript_style_checks.py` covers five
+  cases for `JavaScriptHandler._check_common_issues`: pre-existing mixed
+  quotes should not fail validation, a diff that introduces mixed quotes
+  should fail, consistent single-quote files pass, pre-existing mixed
+  semicolons don't fail, and unrelated non-style checks (infinite-loop
+  detection) still fire regardless of original content. Pins the behavior
+  of the validator fix above so future regressions are caught.
 
 ## [0.6.5.0] - 2026-04-23
 
