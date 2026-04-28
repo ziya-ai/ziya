@@ -11,43 +11,79 @@ import { CheckCircleOutlined, CloseCircleOutlined, DashboardOutlined } from '@an
 // Global request deduplication cache
 const activeRequests = new Map<string, Promise<any>>();
 
-const getTokenCount = async (text: string): Promise<number> => {
-    // Create a cache key based on the text content
-    const cacheKey = `token-count-${text.length}-${text.substring(0, 100)}`;
-
-    // If there's already an active request for this text, return the same promise
+// Post to /api/token-count and return the token_count field, or 0 on error.
+// Uses the activeRequests map to dedupe concurrent identical requests.
+const postTokenCount = async (
+    body: Record<string, unknown>,
+    cacheKey: string,
+): Promise<number> => {
     if (activeRequests.has(cacheKey)) {
         console.debug('Reusing existing token count request');
         return activeRequests.get(cacheKey)!.catch(() => 0);
     }
-
     try {
         const requestPromise = fetch('/api/token-count', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text }),
+            body: JSON.stringify(body),
         }).then(async (response) => {
             if (!response.ok) {
                 const errorData = await response.json();
                 throw new Error(errorData.detail || 'Token count request failed');
             }
             const data = await response.json();
-            return data.token_count;
+            return data.token_count as number;
         });
-
-        // Cache the promise
         activeRequests.set(cacheKey, requestPromise);
-
-        // Clean up cache when request completes
         requestPromise.finally(() => activeRequests.delete(cacheKey));
-
         return requestPromise;
     } catch (error) {
-        // Clean up cache on error
         activeRequests.delete(cacheKey);
         console.warn('Error getting token count:', error);
         return 0;
     }
+};
+
+const getTokenCount = async (text: string): Promise<number> => {
+    const cacheKey = `token-count-${text.length}-${text.substring(0, 100)}`;
+    return postTokenCount({ text }, cacheKey);
+};
+
+// Send full message list (text + image/document metadata) to the backend so
+// it can estimate tokens including inline images and document attachments.
+// The base64 image `data` field is deliberately stripped — only dimensions
+// and size metadata are needed for the estimate.
+const getTokenCountForMessages = async (messages: Message[]): Promise<number> => {
+    const payloadMessages = messages
+        .filter(msg => msg.muted !== true)
+        .map(msg => ({
+            content: msg.content || '',
+            muted: false,
+            images: (msg.images || []).map(img => ({
+                width: img.width,
+                height: img.height,
+                size: img.size,
+                mediaType: img.mediaType,
+            })),
+            documents: (msg.documents || []).map(doc => ({
+                text: doc.text || '',
+                pageImages: (doc.pageImages || []).map(img => ({
+                    width: img.width,
+                    height: img.height,
+                    size: img.size,
+                    mediaType: img.mediaType,
+                })),
+            })),
+        }));
+
+    // Cache key: message count + total text length + image/doc counts. Good
+    // enough to dedupe concurrent identical calls without hashing payload.
+    const totalText = payloadMessages.reduce((n, m) => n + m.content.length, 0);
+    const totalImages = payloadMessages.reduce((n, m) => n + m.images.length, 0);
+    const totalDocs = payloadMessages.reduce((n, m) => n + m.documents.length, 0);
+    const cacheKey = `token-count-msgs-${payloadMessages.length}-${totalText}-${totalImages}-${totalDocs}`;
+
+    return postTokenCount({ messages: payloadMessages }, cacheKey);
 };
 
 export const TokenCountDisplay = memo(() => {
@@ -705,12 +741,14 @@ export const TokenCountDisplay = memo(() => {
         setIsLoading(true);
         try {
             // Only count tokens for non-muted messages
-            const allText = currentMessages.filter(msg => msg.muted !== true).map(msg => msg.content).join('\n');
-            console.debug('Token count calculation:', { totalMessages: currentMessages.length, activeMessages: currentMessages.filter(msg => msg.muted !== true).length });
-            const tokens = await getTokenCount(allText);
+            const activeMessages = currentMessages.filter(msg => msg.muted !== true);
+            console.debug('Token count calculation:', { totalMessages: currentMessages.length, activeMessages: activeMessages.length });
+            const tokens = await getTokenCountForMessages(currentMessages);
             setChatTokenCount(tokens);
             lastMessageCount.current = currentMessages.length;
-            lastMessageContent.current = allText;
+            // Track a lightweight signature for change detection; images/docs
+            // counted server-side so we don't need full text fidelity here.
+            lastMessageContent.current = activeMessages.map(m => m.content).join('\n');
         } catch (error) {
             console.error('Failed to get token count:', error);
             setChatTokenCount(0);
@@ -758,8 +796,7 @@ export const TokenCountDisplay = memo(() => {
                 console.log('Token counter: Received updated messages from mute event');
                 // Calculate tokens directly from the updated messages
                 const updatedMessages = event.detail.updatedMessages;
-                const allText = updatedMessages.filter(msg => msg.muted !== true).map(msg => msg.content).join('\n');
-                getTokenCount(allText).then(tokens => setChatTokenCount(tokens));
+                getTokenCountForMessages(updatedMessages).then(tokens => setChatTokenCount(tokens));
             }
         };
 

@@ -267,7 +267,9 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
         // SVGs are always rasterized to PNG (LLM vision APIs only accept
         // raster formats).  Raster images are resized when the long edge
         // exceeds the model's processing limit (1568px).
-        const resized = await new Promise<string>((resolve) => {
+        const { resized, finalWidth, finalHeight } = await new Promise<{
+          resized: string; finalWidth: number; finalHeight: number;
+        }>((resolve) => {
           const img = new Image();
           img.onload = () => {
             const MAX_EDGE = 1568;
@@ -275,7 +277,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
             const w = img.width || (isSvg ? 1024 : 0);
             const h = img.height || (isSvg ? 1024 : 0);
             if (!isSvg && w <= MAX_EDGE && h <= MAX_EDGE) {
-              resolve(base64);
+              resolve({ resized: base64, finalWidth: w, finalHeight: h });
               return;
             }
             const scale = Math.max(w, h) > MAX_EDGE
@@ -289,9 +291,13 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
             // Use same media type; fall back to PNG for non-lossy formats
             const outputType = file.type === 'image/jpeg' ? 'image/jpeg' : 'image/png';
             const quality = file.type === 'image/jpeg' ? 0.85 : undefined;
-            resolve(canvas.toDataURL(outputType, quality));
+            resolve({
+              resized: canvas.toDataURL(outputType, quality),
+              finalWidth: canvas.width,
+              finalHeight: canvas.height,
+            });
           };
-          img.onerror = () => resolve(base64); // on error, send original
+          img.onerror = () => resolve({ resized: base64, finalWidth: 0, finalHeight: 0 });
           img.src = base64;
         });
 
@@ -299,7 +305,10 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
           id: uuidv4(),
           filename: file.name,
           data: resized.split(',')[1],
-          mediaType: isSvg ? 'image/png' : file.type
+          mediaType: isSvg ? 'image/png' : file.type,
+          size: file.size,
+          width: finalWidth || undefined,
+          height: finalHeight || undefined,
         };
 
         newImages.push(imageAttachment);
