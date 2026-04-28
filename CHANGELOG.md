@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+### Fixed
+### Changed
+
+## [0.6.5.1] - 2026-04-28
+
+### Added
 - **Structural fake-shell-session detector**: New `app/hallucination/fake_shell_detector.py`
   module detects when the model writes fabricated shell output in a Markdown
   code fence (e.g. `grep -n` numbered lines or a `$`/`#` prompt followed by
