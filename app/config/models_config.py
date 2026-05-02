@@ -12,7 +12,7 @@ DEFAULT_ENDPOINT = "bedrock"
 DEFAULT_MODELS = {
     "bedrock": "sonnet4.6",
     "google": "gemini-3.1-pro",
-    "openai": "gpt-5.4",
+    "openai": "gpt-5.5",
     "anthropic": "claude-sonnet-4-6"
 }
 
@@ -25,7 +25,7 @@ DEFAULT_MODELS = {
 DEFAULT_SERVICE_MODELS = {
     "bedrock": "us.amazon.nova-lite-v1:0",
     "google": "gemini-2.0-flash-lite",
-    "openai": "gpt-5.4-mini",
+    "openai": "gpt-5.5-mini",
     "anthropic": "claude-haiku-4-5-20251001",
 }
 
@@ -38,7 +38,7 @@ SERVICE_MODEL_OVERRIDES: dict[str, dict[str, str]] = {
     "memory_extraction": {
         "bedrock": "us.anthropic.claude-3-5-haiku-20241022-v1:0",
         "google": "gemini-2.0-flash",       # flash (not lite) for extraction
-        "openai": "gpt-5.4-mini",           # already strong enough
+        "openai": "gpt-5.5-mini",           # already strong enough
         "anthropic": "claude-haiku-4-5-20251001",
     },
 }
@@ -830,6 +830,43 @@ MODEL_CONFIGS = {
         },
     },
     "openai": {
+        "gpt-5.5": {
+            "model_id": "gpt-5.5",
+            "family": "openai-gpt",
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32768,
+            "supports_vision": True,
+            "native_function_calling": True,
+        },
+        "gpt-5.5-pro": {
+            "model_id": "gpt-5.5-pro",
+            "family": "openai-gpt",
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32768,
+            "supports_thinking": True,
+            "supports_vision": True,
+            "native_function_calling": True,
+        },
+        "gpt-5.5-mini": {
+            "model_id": "gpt-5.5-mini",
+            "family": "openai-gpt",
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32768,
+            "supports_vision": True,
+            "native_function_calling": True,
+        },
+        "gpt-5.5-nano": {
+            "model_id": "gpt-5.5-nano",
+            "family": "openai-gpt",
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32768,
+            "supports_vision": True,
+            "native_function_calling": True,
+        },
         "gpt-5.4": {
             "model_id": "gpt-5.4",
             "family": "openai-gpt",
