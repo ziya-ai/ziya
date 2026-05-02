@@ -439,6 +439,125 @@ def verify_line_delta(hunk_idx: int, hunk: Dict[str, Any], insert_pos: int, end_
             f"got {actual_delta} (inserted={new_lines_count}, removed={actual_removed})"
         )
 
+def _build_low_confidence_diagnostic(
+    hunk_idx: int,
+    h: Dict[str, Any],
+    final_lines_with_endings: List[str],
+    fuzzy_initial_pos_search: int,
+    fuzzy_best_ratio: float,
+) -> Dict[str, Any]:
+    """
+    Build a rich diagnostic for a low-confidence fuzzy match failure.
+
+    The bare (ratio, hunk_idx) signal emitted previously led callers — especially
+    LLM-driven retry loops — to misdiagnose content mismatches as line-number
+    problems and retry with only the @@ header changed. This helper recomputes
+    the best candidate region in the current file, diffs it against the hunk's
+    expected old_block, and classifies the likely cause so the caller can make
+    a corrective edit instead of spinning.
+    """
+    expected = list(h.get('old_block') or [])
+    expected_len = len(expected)
+
+    # Rescan locally for the best candidate window using the same fast
+    # similarity metric the fuzzy matcher uses. This is O(search_radius) and
+    # only runs on failure, so cost is negligible.
+    try:
+        from .fuzzy_match import calculate_fast_similarity
+        from ..core.config import get_search_radius
+        radius = get_search_radius()
+    except Exception:
+        calculate_fast_similarity = None
+        radius = 200
+
+    best_pos = fuzzy_initial_pos_search
+    best_ratio = 0.0
+    if expected_len > 0 and calculate_fast_similarity is not None:
+        lo = max(0, fuzzy_initial_pos_search - radius)
+        hi = min(len(final_lines_with_endings) - expected_len, fuzzy_initial_pos_search + radius)
+        if hi >= lo:
+            for pos in range(lo, hi + 1):
+                slice_ = final_lines_with_endings[pos:pos + expected_len]
+                r = calculate_fast_similarity(expected, slice_)
+                if r > best_ratio:
+                    best_ratio = r
+                    best_pos = pos
+
+    candidate = final_lines_with_endings[best_pos:best_pos + expected_len] if expected_len else []
+
+    # Line-by-line classification (on stripped line endings; preserve indentation).
+    def _strip_eol(s: str) -> str:
+        return s.rstrip('\r\n')
+
+    per_line = []
+    blank_mismatch = False
+    indent_mismatch = False
+    content_mismatch = False
+    ws_trailing_mismatch = False
+    matching = 0
+    for i in range(expected_len):
+        exp = _strip_eol(expected[i]) if i < len(expected) else ''
+        act = _strip_eol(candidate[i]) if i < len(candidate) else ''
+        if exp == act:
+            matching += 1
+            status = 'match'
+        elif exp.strip() == '' and act.strip() == '':
+            # Both blank but differ — trailing whitespace only
+            ws_trailing_mismatch = True
+            status = 'blank_whitespace_differs'
+        elif (exp.strip() == '') != (act.strip() == ''):
+            blank_mismatch = True
+            status = 'blank_line_mismatch'
+        elif exp.strip() == act.strip():
+            indent_mismatch = True
+            status = 'indent_differs'
+        elif exp.rstrip() == act.rstrip():
+            ws_trailing_mismatch = True
+            status = 'trailing_ws_differs'
+        else:
+            content_mismatch = True
+            status = 'content_differs'
+        per_line.append({
+            'offset': i,
+            'file_line': best_pos + i + 1,  # 1-based file line
+            'status': status,
+            'expected': exp,
+            'actual': act,
+        })
+
+    # Cause classification, ordered by actionability.
+    if content_mismatch:
+        likely_cause = 'context_does_not_exist_in_file'
+        hint = ('The hunk\'s context lines do not match the file at or near the '
+                'expected region. Re-read the current file content and regenerate '
+                'the hunk from scratch. Do NOT adjust only the @@ header line '
+                'numbers — the engine locates hunks by content similarity, not by '
+                'the @@ numbers.')
+    elif indent_mismatch:
+        likely_cause = 'indentation_mismatch'
+        hint = ('Context lines match by stripped content but indentation differs. '
+                'Fix the leading whitespace on context lines to match the file exactly.')
+    elif blank_mismatch or ws_trailing_mismatch:
+        likely_cause = 'whitespace_or_blank_line_mismatch'
+        hint = ('Context matches except for blank-line or trailing-whitespace '
+                'differences. Ensure each blank context line in the diff is a '
+                'single space followed by newline, and match trailing whitespace.')
+    else:
+        likely_cause = 'ambiguous_or_duplicate_anchor'
+        hint = ('The hunk\'s leading context appears to match multiple regions '
+                'weakly. Add more unique context lines (function/class/selector '
+                'headers) so the anchor is unambiguous.')
+
+    return {
+        'best_candidate_position': best_pos,
+        'best_candidate_ratio': round(best_ratio, 3),
+        'expected_lines': expected_len,
+        'matching_lines': matching,
+        'per_line': per_line[:expected_len],  # bounded by hunk size
+        'likely_cause': likely_cause,
+        'hint': hint,
+    }
+
 def apply_diff_with_difflib_hybrid_forced_hunks(
     file_path: str, hunks: List[Dict[str, Any]], original_lines_with_endings: List[str],
     skip_hunks: List[int] = None
@@ -1236,13 +1355,24 @@ def apply_diff_with_difflib_hybrid_forced(
                     # --- End Inlined ---
             else:
                 # Fuzzy match failed or confidence too low
-                msg = f"Hunk #{hunk_idx} => low confidence match (ratio={fuzzy_best_ratio:.2f}) near {fuzzy_initial_pos_search}, skipping."
+                diag = _build_low_confidence_diagnostic(
+                    hunk_idx, h, final_lines_with_endings,
+                    fuzzy_initial_pos_search, fuzzy_best_ratio,
+                )
+                msg = (
+                    f"Hunk #{hunk_idx} => low confidence match "
+                    f"(ratio={fuzzy_best_ratio:.2f}, cause={diag['likely_cause']}, "
+                    f"{diag['matching_lines']}/{diag['expected_lines']} context lines match "
+                    f"at candidate line {diag['best_candidate_position'] + 1}), skipping. "
+                    f"Hint: {diag['hint']}"
+                )
                 logger.error(msg)
                 failure_info = {
                     "status": "error",
                     "type": "low_confidence",
                     "hunk": hunk_idx,
-                    "confidence": fuzzy_best_ratio
+                    "confidence": fuzzy_best_ratio,
+                    "diagnostic": diag,
                 }
                 hunk_failures.append((msg, failure_info))
                 continue # Skip applying this hunk
@@ -2268,7 +2398,20 @@ def apply_diff_with_difflib(file_path: str, diff_content: str, skip_hunks: List[
         logger.warning("No hunks parsed from diff content.")
         return original_content
     
-    logger.debug(f"Parsed {len(hunks)} hunks for difflib")
+    # Header/body count mismatches are rescued (not rejected) at parse time:
+    # the parser overwrites old_count / new_count with body-derived values
+    # and leaves a 'malformed_header' marker for diagnostics. Log once so the
+    # repair is visible, then continue — positioning relies on content match,
+    # not on the model's declared counts.
+    malformed = [h for h in hunks if h.get('malformed_header')]
+    if malformed:
+        details = "; ".join(
+            f"hunk #{h.get('number')}: {h['malformed_header']}" for h in malformed
+        )
+        logger.warning(
+            f"Rescuing {len(malformed)} malformed hunk(s) by trusting body over header: {details}"
+        )
+
     
     # Check if all hunks are already applied
     all_already_applied = True
