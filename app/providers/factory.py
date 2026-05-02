@@ -95,6 +95,15 @@ def create_provider(
             api_key=api_key or os.getenv("OPENAI_API_KEY"),
         )
 
+    if endpoint == "google":
+        from app.providers.google_direct import GoogleDirectProvider
+        return GoogleDirectProvider(
+            model_id=model_id,
+            model_config=model_config,
+            api_key=api_key or os.getenv("GOOGLE_API_KEY"),
+            thinking_level=model_config.get("thinking_level"),
+        )
+
     if endpoint == "openrouter":
         from app.providers.openai_direct import OpenAIDirectProvider
         return OpenAIDirectProvider(
@@ -106,5 +115,5 @@ def create_provider(
 
     raise ValueError(
         f"No LLMProvider registered for endpoint '{endpoint}'. "
-        f"Supported: bedrock, anthropic, openai, openrouter"
+        f"Supported: bedrock, anthropic, openai, openrouter, google"
     )
