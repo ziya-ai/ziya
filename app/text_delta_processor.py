@@ -56,6 +56,10 @@ _BACKEND_HALLUCINATION_PATTERNS = [
         r"'(?:path|bytes_written|error)'\s*:",
         re.DOTALL,
     ),
+    # MCP tool-result content-array envelope. Kept in backend-only patterns
+    # (fence-protected) so legitimate protocol analysis and code examples
+    # quoting this structure do not trigger hallucination detection.
+    re.compile(r'"content":\s*\[\s*\{\s*"type":\s*"text",\s*"text":\s*"', re.DOTALL),
 ]
 
 # Tool-output signatures so unambiguous that fenced context is not an
@@ -81,6 +85,59 @@ _CONTAMINATION_RE = re.compile(
 )
 
 
+# Block types the frontend renders as visualizations. When the model nests
+# one of these inside an outer fence, the outer block swallows it as verbatim
+# text and the diagram never renders. We resolve this by injecting a synthetic
+# close of the outer block immediately before the inner viz fence, flattening
+# the nesting into two sequential sibling blocks.
+_VIZ_BLOCK_TYPES = frozenset({
+    'mermaid', 'graphviz', 'vega-lite', 'vega', 'drawio',
+    'designinspector', 'packet', 'html-mockup', 'plotly',
+})
+
+# Matches a named fence opening line (3+ backticks followed by a language tag).
+# The colon in tags like "thinking:step-1" is intentionally excluded so those
+# outer blocks are not themselves treated as viz targets.
+_FENCE_OPEN_RE = re.compile(r'^(`{3,})\s*([a-zA-Z][\w.-]*)(\s*)$')
+
+
+def _resolve_nested_viz_fence(text: str, tracker: dict) -> str:
+    """Flatten a nested viz fence into a sequential sibling block.
+
+    When a model places a renderable fence (mermaid, graphviz, etc.) inside
+    an outer fence, the Markdown parser treats everything as verbatim text.
+    This is common late in context when the model loses structural awareness.
+
+    Strategy: scan each line of the incoming delta. When a named viz fence
+    opener is found while ``tracker['in_block']`` is True, prepend a synthetic
+    closing fence (using the outer block's backtick count) and a blank line
+    before it. This closes the outer block cleanly so the inner viz fence
+    renders as a top-level block.
+
+    The orphaned outer closing fence that arrives later is a bare ````` with no
+    matching opener; ``repairUnbalancedFences`` in the frontend ignores it.
+    """
+    if not tracker.get('in_block'):
+        return text
+
+    lines = text.split('\n')
+    result = []
+    for line in lines:
+        m = _FENCE_OPEN_RE.match(line)
+        if m and tracker.get('in_block'):
+            lang = m.group(2).lower()
+            if lang in _VIZ_BLOCK_TYPES:
+                outer_backticks = '`' * tracker.get('backtick_count', 3)
+                result.append(outer_backticks)  # synthetic close of outer block
+                result.append('')               # blank line for Markdown separation
+                logger.debug(
+                    "🔧 NESTED_VIZ: synthetic close of '%s' before inner '%s'",
+                    tracker.get('block_type'), lang,
+                )
+        result.append(line)
+    return '\n'.join(result)
+
+
 @dataclass
 class TextDeltaState:
     """Mutable state for text delta processing within a single iteration."""
@@ -100,6 +157,11 @@ class TextDeltaState:
     # Output flags — checked by caller after each call
     hallucination_detected: bool = False
     # Populated when a shingle match fires. Consumed by caller to
+    # Position in assistant_text where we last ran the shingle probe.
+    # We probe only the new slice since here, preventing cumulative
+    # re-scanning from building false overlap against prior tool results.
+    last_shingle_probe_pos: int = 0
+
     # build a targeted corrective message citing the parroted tool.
     parrot_match: Optional[Dict[str, Any]] = None
 
@@ -164,6 +226,9 @@ def process_text_delta(
     # --- Fence spacing normalization ---
     text = executor._normalize_fence_spacing(text, state.code_block_tracker)
 
+    # --- Resolve nested viz fences ---
+    text = _resolve_nested_viz_fence(text, state.code_block_tracker)
+
     # --- Accumulate ---
     state.assistant_text += text
 
@@ -218,14 +283,13 @@ def process_text_delta(
 
     # --- Layer A: shingle-index parroting detection ---
     # Checks whether the assistant text is reproducing content from a
-    # previously-registered real tool result. Runs outside fences, at
-    # a coarse cadence (roughly every 256 chars of accumulated text)
-    # to keep cost bounded on long streams. Session-scoped — no
-    # conversation_id means nothing to match against.
-    if (
-        state.conversation_id
-        and not state.code_block_tracker.get('in_block')
-    ):
+    # previously-registered real tool result. Runs at a coarse cadence
+    # (roughly every 256 chars of accumulated text) to keep cost bounded
+    # on long streams. Session-scoped — no conversation_id means nothing
+    # to match against. Probes inside fences too: the model is observed
+    # wrapping fabricated tool output in JSON/code fences to bypass the
+    # scannable-text filter.
+    if state.conversation_id:
         _total = len(state.assistant_text)
         _delta = len(text)
         # Fires when the latest delta carries the cumulative length
@@ -233,28 +297,43 @@ def process_text_delta(
         # chars without needing additional state.
         if _total >= 256 and (_total // 256) != ((_total - _delta) // 256):
             try:
-                _scan_full = scannable_text(state.assistant_text)
-                # Match against the tail window — parroting tends to
-                # happen near the front of the model's output for the
-                # current turn and then continue; a trailing window
-                # catches ongoing parroting without repeatedly
-                # re-matching the same early content.
-                _probe = _scan_full[-1200:] if len(_scan_full) > 1200 else _scan_full
-                # Skip fingerprints registered within the current
-                # iteration: the model legitimately summarizes tool
-                # results it just received, which would otherwise fire
-                # as false-positive parroting. Fingerprints from prior
-                # iterations are still checked -- parroting stale
-                # results is the actual failure mode we're guarding
-                # against.
-                _match = check_for_parroting(
-                    state.conversation_id,
-                    _probe,
-                    skip_after_timestamp=state.iteration_start_time or None,
-                )
+                if state.code_block_tracker.get('in_block'):
+                    _block_type = (
+                        state.code_block_tracker.get('block_type') or ''
+                    ).lower()
+                    if _block_type in ('diff', 'patch'):
+                        # Diff/patch context lines reproduce file content
+                        # by design — shingle matching against file_read
+                        # results would always fire here.
+                        _probe = None
+                    else:
+                        # Other fenced blocks: probe raw tail to catch
+                        # fabricated tool output wrapped in a code fence.
+                        _probe = state.assistant_text[state.last_shingle_probe_pos:] or None
+                else:
+                    _scan_full = scannable_text(state.assistant_text)
+                    _probe_slice = _scan_full[state.last_shingle_probe_pos:]
+                    _probe = _probe_slice if _probe_slice else None
+                if _probe is None:
+                    _match = None
+                else:
+                    # Skip fingerprints registered within the current
+                    # iteration: the model legitimately summarizes tool
+                    # results it just received. Fingerprints from prior
+                    # iterations are still checked.
+                    _match = check_for_parroting(
+                        state.conversation_id,
+                        _probe,
+                        skip_after_timestamp=state.iteration_start_time or None,
+                    )
             except Exception as _e:
                 logger.debug(f"🔐 SHINGLE_CHECK: skipped: {_e}")
                 _match = None
+            # Advance the probe position on a clean pass so we never
+            # re-scan text we already checked. On a match we leave the
+            # position unchanged — the retry will re-probe the same region.
+            if _match is None:
+                state.last_shingle_probe_pos = len(state.assistant_text)
 
             if _match is not None:
                 logger.warning(

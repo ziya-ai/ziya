@@ -1390,6 +1390,13 @@ class StreamingToolExecutor:
     ) -> None:
         """Record actual token usage for future calibration improvement."""
         try:
+            # Cache-read tokens come from prior turns and can't be accurately
+            # attributed to current content — skip calibration to avoid inflated
+            # token counts producing impossible chars/token ratios.
+            if cached > 0:
+                logger.debug(f"📊 CALIBRATION: Skipping (cache hit: {cached:,} tokens from prior turns)")
+                return
+
             from app.utils.token_calibrator import get_token_calibrator
             calibrator = get_token_calibrator()
 
