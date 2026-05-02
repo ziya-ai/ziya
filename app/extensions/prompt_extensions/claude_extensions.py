@@ -74,8 +74,8 @@ When you have determined that a tool is necessary:
 
 CRITICAL: Use ONLY native tool calling. Never generate fake tool calling syntax like ```tool:mcp_run_shell_command. Use the provided tools directly. Regular markdown code blocks like ```bash for examples are perfectly fine.
 
-**CRITICAL: MAXIMUM 100 LINES PER DIFF**
- Diffs over 100 lines will be rejected
+**CRITICAL: MAXIMUM 250 LINES PER DIFF**
+ Diffs over 250 lines will be rejected
  For larger changes: Create multiple separate focused diffs
  Exception: New file creation only
 

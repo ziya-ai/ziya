@@ -80,7 +80,7 @@ def get_session_dir() -> Path:
     return session_dir
 
 
-def save_session(cli: 'CLI', name: Optional[str] = None) -> str:
+def save_session(cli: 'CLI', name: Optional[str] = None, *, cleanup: bool = True) -> str:
     """Save current session and return session ID.
 
     If the CLI already has a _session_id (from resume or a prior save),
@@ -135,10 +135,26 @@ def save_session(cli: 'CLI', name: Optional[str] = None) -> str:
     cli._session_id = session_id
     cli._session_name = resolved_name
 
-    # Cleanup old sessions (keep last 10) — but preserve named sessions
-    cleanup_old_sessions()
+    if cleanup:
+        # Cleanup old sessions (keep last 10) — but preserve named sessions
+        cleanup_old_sessions()
 
     return session_id
+
+
+def _autocheckpoint(cli: 'CLI') -> None:
+    """Silently write a mid-session checkpoint after each completed exchange.
+
+    Skips the cleanup scan so we don't pay the cost of globbing all session
+    files on every message.  Cleanup happens on clean exit / explicit saves.
+    Failures are swallowed so a disk problem never interrupts the conversation.
+    """
+    if getattr(cli, '_ephemeral', False):
+        return
+    try:
+        save_session(cli, cleanup=False)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def load_session(session_id: str) -> dict:
@@ -761,7 +777,7 @@ class CLI:
             print(f"\033[90m[trace] model call attempt={attempt}\033[0m", file=sys.stderr)
             
             response = await self._run_with_tools_from_messages(messages, stream)
-            print(f"\033[90m[trace] model returned, len={len(response)}, has_diff={'```diff' in response}\033[0m", file=sys.stderr)
+            print(f"\033[90m[trace] model returned, len={len(response)}, has_diff={bool(re.search(r'^`{3,}diff\\s*$', response, re.MULTILINE))}\033[0m", file=sys.stderr)
             
             # If no diffs, we're done
             if '```diff' not in response:
@@ -777,8 +793,15 @@ class CLI:
                     messages.append(AIMessage(content=response))
                     messages.append(HumanMessage(content="[System: Your response appears incomplete. Please continue where you left off.]"))
                     continuation = await self._run_with_tools_from_messages(messages, stream)
-                    validation_hook = None
-                    return response + continuation
+                    # Merge and re-evaluate: the continuation may contain diffs
+                    # that must flow through validation + process_response.
+                    # Without re-looping, a truncated-first + diff-bearing
+                    # continuation silently bypasses the applicator.
+                    response = response + continuation
+                    if '```diff' not in response:
+                        validation_hook = None
+                        return response
+                    # fall through to diff validation below with combined response
                 else:
                     # Clean up validation hook
                     validation_hook = None
@@ -812,6 +835,7 @@ class CLI:
 
                 # Process diffs in a loop to handle continuations
                 full_response = response
+                prior_turns = []  # accumulate completed turns across continuation iterations
                 while True:
                     # Show diffs to user for interactive application
                     try:
@@ -854,20 +878,47 @@ class CLI:
                                         )))
                             continue_response = await self._run_with_tools_from_messages(messages, stream)
                             if '```diff' in continue_response:
+                                prior_turns.append(full_response)
                                 full_response = continue_response
                                 continue
-                            return response + "\n\n" + continue_response
+                            return "\n\n".join(prior_turns + [full_response, continue_response])
 
                         # After processing diffs, check if model wants to continue
                         # Add the assistant's response to messages so the model
                         # retains context of what it already said
-                        messages.append(AIMessage(content=response))
+                        messages.append(AIMessage(content=full_response))
                         summary = self._build_diff_summary()
-                        continuation_message = (
-                            f"{summary}\n\n"
-                            "If there are more changes needed or additional steps to complete, "
-                            "please continue. Otherwise, confirm that all necessary changes have been provided."
-                        )
+
+                        # Determine the actual outcome to frame the continuation correctly
+                        applicator = self.diff_applicator
+                        failed = [r for r in getattr(applicator, 'diff_results', []) if r[1] == "failed"]
+                        skipped = [r for r in getattr(applicator, 'diff_results', []) if r[1] == "skipped"]
+                        applied = [r for r in getattr(applicator, 'diff_results', []) if r[1] == "applied"]
+
+                        if failed and not applied:
+                            continuation_message = (
+                                f"{summary}\n\n"
+                                "The diffs above failed to apply. Do NOT assume they were applied. "
+                                "Please re-read the current file content and regenerate corrected diffs."
+                            )
+                        elif failed and applied:
+                            continuation_message = (
+                                f"{summary}\n\n"
+                                "Some diffs applied successfully but others failed. "
+                                "Do NOT assume the failed diffs were applied. "
+                                "Please re-read the current file content and regenerate only the failed diffs."
+                            )
+                        elif skipped and not applied and not failed:
+                            continuation_message = (
+                                f"{summary}\n\n"
+                                "The user skipped all diffs. No changes were made to the files."
+                            )
+                        else:
+                            continuation_message = (
+                                f"{summary}\n\n"
+                                "If there are more changes needed or additional steps to complete, "
+                                "please continue. Otherwise, confirm that all necessary changes have been provided."
+                            )
                         # Continue conversation with the model
                         print("\033[90m[trace] sending continuation to model\033[0m", file=sys.stderr)
                         continue_response = await self._continue_conversation(continuation_message, messages)
@@ -875,11 +926,12 @@ class CLI:
                         
                         # If continuation contains more diffs, process those too
                         if '```diff' in continue_response:
+                            prior_turns.append(full_response)
                             full_response = continue_response
                             continue
                         
                         # Return combined response
-                        return response + "\n\n" + continue_response
+                        return "\n\n".join(prior_turns + [full_response, continue_response])
                     break
                 
                 # Clean up validation hook
@@ -1008,27 +1060,6 @@ class CLI:
         if not tools:
             return await self._simple_invoke(messages, stream)
         
-        # Check for native function calling endpoints - use model loop instead of AWS executor
-        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
-        if endpoint in ("google", "openai", "anthropic"):
-            async def stream_task():
-                async for chunk in self.model.astream(messages, tools=tools):
-                    if self._cancellation_requested:
-                        raise asyncio.CancelledError("User cancelled operation")
-                    yield chunk
-            
-            task = asyncio.create_task(self._stream_handler(stream_task(), stream))
-            self._active_task = task
-            try:
-                return await task
-            except asyncio.CancelledError:
-                task.cancel()
-                raise  # Re-raise to be handled by ask()
-            finally:
-                if not task.done():
-                    task.cancel()
-                self._active_task = None
-
         state = ModelManager.get_state()
         executor = StreamingToolExecutor(
             profile_name=state.get('aws_profile'),
@@ -1361,54 +1392,6 @@ class CLI:
                 # Preserve empty partial and re-raise for consistent handling
                 self._partial_response = ""
                 raise
-    
-    def _remove_tool_blocks(self, text: str, open_tag: str, close_tag: str) -> str:
-        """Remove tool call blocks from text."""
-        pattern = re.escape(open_tag) + r'.*?' + re.escape(close_tag)
-        clean = re.sub(pattern, '', text, flags=re.DOTALL)
-        # Clean up extra whitespace
-        clean = re.sub(r'\n{3,}', '\n\n', clean)
-        return clean.strip()
-    
-    async def _execute_tool_calls(self, response: str, processed: set, 
-                                   open_tag: str, close_tag: str) -> Optional[Tuple[str, str, str]]:
-        """Execute first unprocessed tool call. Returns (block, name, output) or None."""
-        from app.mcp.tools import parse_tool_call
-        from app.mcp.manager import get_mcp_manager
-        
-        # Find tool call blocks
-        pattern = re.escape(open_tag) + r'.*?' + re.escape(close_tag)
-        matches = re.findall(pattern, response, re.DOTALL)
-        
-        if not matches:
-            return None
-        
-        for tool_block in matches:
-            sig = hashlib.md5(tool_block.encode()).hexdigest()
-            if sig in processed:
-                continue
-            
-            processed.add(sig)
-            
-            # Parse the tool call
-            parsed = parse_tool_call(tool_block)
-            if not parsed:
-                continue
-            
-            tool_name, arguments = parsed
-            
-            # Execute via MCP manager
-            try:
-                manager = get_mcp_manager()
-                if manager:
-                    result = await manager.call_tool(tool_name, arguments)
-                    return (tool_block, tool_name, str(result))
-                else:
-                    return (tool_block, tool_name, "Error: MCP manager not available")
-            except (OSError, RuntimeError, asyncio.TimeoutError, json.JSONDecodeError, ValueError) as e:
-                return (tool_block, tool_name, f"Error: {e}")
-        
-        return None
 
     def _print_auth_help(self):
         """Print authentication help based on endpoint."""
@@ -1482,6 +1465,7 @@ class CLI:
                 except asyncio.CancelledError:
                     # Operation was cancelled, continue the loop
                     pass
+                _autocheckpoint(self)
                 sys.stdout.write("\033]133;D\007"); sys.stdout.flush()
                 print("\033[90m[trace] ask() returned, looping to prompt\033[0m", file=sys.stderr)
                 print()
@@ -2403,6 +2387,7 @@ def cmd_chat(args):
                 cli._session_start_time = session_data.get('start_time', session_data.get('timestamp'))
                 cli._session_id = session_data.get('id', session_id)
                 cli._session_name = session_data.get('name')
+                cli._ephemeral = getattr(args, 'ephemeral', False)
                 
                 print(f"\033[32m✓ Resumed session from {session_data.get('timestamp', 'unknown')}\033[0m")
                 print(f"  Files: {len(files)}, Messages: {len(history)}\n")
@@ -2425,6 +2410,7 @@ def cmd_chat(args):
     root = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
     files = resolve_files(args.files, root) if args.files else []
     cli = CLI(files=files)
+    cli._ephemeral = getattr(args, 'ephemeral', False)
     asyncio.run(_run_async_cli(cli))
     
     if not getattr(args, 'ephemeral', False):
