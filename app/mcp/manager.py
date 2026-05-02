@@ -228,7 +228,7 @@ class MCPManager:
                         logger.info(f"MCP server '{name}' skipped: config must be a JSON object, got {type(user_cfg).__name__}")
                         continue
 
-                    if "command" not in user_cfg and "url" not in user_cfg:
+                    if "command" not in user_cfg and "url" not in user_cfg and "installation_path" not in user_cfg:
                         logger.info(f"MCP server '{name}' skipped: missing 'command' (or 'url') in config")
                         continue
 
@@ -357,15 +357,17 @@ class MCPManager:
                 if command and not server_config.get("builtin", False):
                     import shutil
                     skip = False
-                    if not os.path.isabs(command) and not shutil.which(command):
+                    expanded_command = os.path.expanduser(command)
+                    if not os.path.isabs(expanded_command) and not shutil.which(expanded_command):
                         logger.info(f"MCP server '{server_name}' skipped: command '{command}' not found in PATH")
                         skip = True
-                    elif os.path.isabs(command) and not os.path.isfile(command):
+                    elif os.path.isabs(expanded_command) and not os.path.isfile(expanded_command):
                         logger.info(f"MCP server '{server_name}' skipped: command not found at {command}")
                         skip = True
                     if not skip:
                         for arg in args:
-                            if os.path.isabs(arg) and arg.endswith(('.py', '.js')) and not os.path.isfile(arg):
+                            expanded_arg = os.path.expanduser(arg)
+                            if os.path.isabs(expanded_arg) and expanded_arg.endswith(('.py', '.js')) and not os.path.isfile(expanded_arg):
                                 logger.info(f"MCP server '{server_name}' skipped: script not found at {arg}")
                                 skip = True
                                 break
@@ -376,16 +378,17 @@ class MCPManager:
                     # For built-in servers, the command path is already absolute.
                     # For user-defined relative paths, MCPClient will resolve them.
                     if not server_config.get("builtin", False): # For non-builtin, check if script exists if relative
-                        # Check if script is in args (new format) or command (old format)
-                        script_path_part = args[-1] if args and args[-1].endswith('.py') else ""
-                        if script_path_part.endswith('.py') and not os.path.isabs(script_path_part):
-                            # Attempt to resolve relative to project root for user-defined scripts
-                            # This matches MCPClient's behavior for resolving relative paths
-                            # Note: MCPClient tries multiple roots, here we simplify for the check
-                            proj_root_for_check = Path(__file__).resolve().parents[2] # Assuming app/mcp/manager.py
-                            potential_user_script_path = proj_root_for_check / script_path_part
-                            if not potential_user_script_path.exists():
-                                logger.error(f"User-defined MCP server script not found: {script_path_part} (checked relative to {proj_root_for_check})")
+                        script_path_part = args[-1] if args else None
+                        if script_path_part:
+                            expanded_script = os.path.expanduser(script_path_part)
+                            is_path = expanded_script.startswith(('/', '~/', './', '../'))
+                            is_pkg_name = not is_path
+                            if not is_pkg_name and not os.path.isabs(expanded_script) and not os.path.isfile(expanded_script):
+                                proj_root_for_check = Path(__file__).resolve().parents[2]
+                                potential_user_script_path = proj_root_for_check / script_path_part
+                                if not potential_user_script_path.exists():
+                                    logger.error(f"User-defined MCP server script not found: {script_path_part} (checked relative to {proj_root_for_check})")
+                                    continue
                                 continue
                     elif server_config.get("builtin", False):
                         # For built-in, args[-1] should be the absolute path to the script
@@ -1462,6 +1465,59 @@ class MCPManager:
                                 logger.error(f"Error calling tool {name_to_try}: {e}")
                                 continue
             
+            # Builtin "[DIRECT]" tools (ast_get_tree, file_read, nova_web_search, etc.)
+            # are local Python wrappers registered as DirectMCPTool in enhanced_tools.py.
+            # They are not attached to any MCP client/server, so the per-client loop
+            # above never finds them. Dispatch them here before warning "not found".
+            try:
+                from app.mcp.builtin_tools import get_enabled_builtin_tools
+                builtin_map = {t.name: t for t in get_enabled_builtin_tools()}
+                if internal_tool_name in builtin_map:
+                    # Permission check for builtin tools. They are grouped under a
+                    # synthetic "builtin" server in the permissions config; fall back
+                    # to the global tool default if no explicit entry exists.
+                    try:
+                        from app.mcp.permissions import get_permissions_manager
+                        _perms = get_permissions_manager().get_permissions()
+                        _srv_perms = _perms.get('servers', {}).get('builtin', {})
+                        _tool_perms = _srv_perms.get('tools', {}).get(internal_tool_name, {})
+                        _default = _perms.get('defaults', {}).get('tool', 'enabled')
+                        if _tool_perms.get('permission', _default) == 'disabled':
+                            logger.info(f"Builtin tool {internal_tool_name} is disabled")
+                            return {
+                                "error": True,
+                                "message": f"Tool '{internal_tool_name}' is currently disabled. You can enable it in MCP Server Settings.",
+                            }
+                    except Exception as _perm_err:
+                        logger.debug(f"Permission check skipped for builtin {internal_tool_name}: {_perm_err}")
+                    logger.debug(f"🔍 MCP_MANAGER: Dispatching builtin tool: {internal_tool_name}")
+                    try:
+                        result = await builtin_map[internal_tool_name].execute(**arguments)
+                        # Normalize to the {"content": [{"type":"text","text":...}]} shape
+                        # that wrappers' _extract_text_from_mcp_result expects.
+                        if isinstance(result, dict) and isinstance(result.get("content"), list):
+                            normalized = result
+                        elif isinstance(result, dict) and result.get("error"):
+                            return {"error": True, "message": result.get("message", "Unknown error")}
+                        elif isinstance(result, dict) and "content" in result:
+                            normalized = {"content": [{"type": "text", "text": str(result["content"])}]}
+                        else:
+                            normalized = {"content": [{"type": "text", "text": str(result)}]}
+                        # Sign the result for parity with the dynamic-tool branch so
+                        # downstream verification (e.g. google_direct.py) passes.
+                        try:
+                            from app.mcp.signing import sign_tool_result
+                            conversation_id = arguments.get('conversation_id', 'default') if isinstance(arguments, dict) else 'default'
+                            return sign_tool_result(internal_tool_name, arguments, normalized, conversation_id)
+                        except Exception as _sign_err:
+                            logger.debug(f"Signing skipped for builtin {internal_tool_name}: {_sign_err}")
+                            return normalized
+                    except Exception as e:
+                        logger.error(f"Builtin tool execution failed for {internal_tool_name}: {e}", exc_info=True)
+                        return {"error": True, "message": str(e)}
+            except ImportError:
+                pass
+
             logger.warning(f"🔍 MCP_MANAGER: Tool '{internal_tool_name}' not found in any connected server")
             
             # Check if tool exists in a disconnected server

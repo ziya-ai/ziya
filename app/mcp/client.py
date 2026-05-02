@@ -204,7 +204,7 @@ class MCPClient:
             # Combine resolved command with arguments from server_config
             final_popen_command = list(resolved_command) # Start with the resolved executable and its direct flags
             server_specific_args = self.server_config.get("args", [])
-            final_popen_command.extend(server_specific_args)
+            final_popen_command.extend(os.path.expanduser(a) if isinstance(a, str) else a for a in server_specific_args)
 
             logger.debug(f"Starting MCP server with command: {' '.join(final_popen_command)} in {working_dir}")
             # Get environment variables for the process
