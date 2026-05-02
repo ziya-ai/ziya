@@ -380,32 +380,6 @@ class DiffPipeline:
                 position=position,
                 error_details=error_details
             )
-            
-            # Update the appropriate lists based on the status
-            if status == HunkStatus.SUCCEEDED:
-                if hunk_id not in self.result.succeeded_hunks:
-                    self.result.succeeded_hunks.append(hunk_id)
-                # Remove from other lists if present
-                if hunk_id in self.result.failed_hunks:
-                    self.result.failed_hunks.remove(hunk_id)
-                if hunk_id in self.result.already_applied_hunks:
-                    self.result.already_applied_hunks.remove(hunk_id)
-            elif status == HunkStatus.FAILED:
-                if hunk_id not in self.result.failed_hunks:
-                    self.result.failed_hunks.append(hunk_id)
-                # Remove from other lists if present
-                if hunk_id in self.result.succeeded_hunks:
-                    self.result.succeeded_hunks.remove(hunk_id)
-                if hunk_id in self.result.already_applied_hunks:
-                    self.result.already_applied_hunks.remove(hunk_id)
-            elif status == HunkStatus.ALREADY_APPLIED:
-                if hunk_id not in self.result.already_applied_hunks:
-                    self.result.already_applied_hunks.append(hunk_id)
-                # Remove from other lists if present
-                if hunk_id in self.result.succeeded_hunks:
-                    self.result.succeeded_hunks.remove(hunk_id)
-                if hunk_id in self.result.failed_hunks:
-                    self.result.failed_hunks.remove(hunk_id)
     
     def update_stage(self, stage: PipelineStage) -> None:
         """
