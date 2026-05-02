@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
-from app.agents.agent import model, create_agent_chain, create_agent_executor
+from app.agents.agent import model
 from starlette.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -515,11 +515,9 @@ async def _initialize_mcp_background():
             from app.mcp.connection_pool import get_connection_pool as get_secure_pool
             secure_pool = get_secure_pool()
             secure_pool.set_server_configs(mcp_manager.server_configs)
-            
+
             import gc; gc.collect()
-            agent = create_agent_chain(model.get_model())
-            agent_executor = create_agent_executor(agent)
-            
+
             _mcp_ready = True
             logger.info(f"🔧 MCP ready: {connected_servers} servers, {total_tools} tools")
             _check_and_print_completion_banner()
@@ -635,7 +633,7 @@ class _PollingAccessFilter(_logging.Filter):
     """Filter routine polling GETs from uvicorn access log."""
     _quiet = {'/chats?', '/chat-groups', '/skills', '/contexts', '/api/config', '/ws/',
               '/folder-progress', '/model-capabilities', '/current-model', '/static/',
-              '/delegate-status', '/bulk-sync', '/api/ast/status',}
+              '/delegate-status', '/bulk-sync', '/api/ast/status', '/ws/file-tree',}
     # UUID pattern for individual chat GETs: /chats/<uuid>  (re already imported at module top)
     _chat_get_re = re.compile(r'/chats/[0-9a-f]{8}-[0-9a-f]{4}-.*" [23]')
     def filter(self, record: _logging.LogRecord) -> bool:
@@ -652,7 +650,12 @@ class _WebSocketLifecycleFilter(_logging.Filter):
     """Filter noisy WebSocket connection open/close messages from uvicorn."""
     _noise = {'connection open', 'connection closed'}
     def filter(self, record: _logging.LogRecord) -> bool:
-        return record.getMessage().strip() not in self._noise
+        msg = record.getMessage()
+        if msg.strip() in self._noise:
+            return False
+        if '/ws/' in msg and ('[accepted]' in msg or '[disconnected]' in msg):
+            return False
+        return True
 
 _logging.getLogger("uvicorn.error").addFilter(_WebSocketLifecycleFilter())
 

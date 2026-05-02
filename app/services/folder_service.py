@@ -119,6 +119,7 @@ def invalidate_folder_cache():
             else:
                 entry['data'] = None
             entry['timestamp'] = 0
+            entry['scan_complete'] = False
         logger.debug(f"Cache invalidated for {len(_folder_cache)} project(s)")
         _last_cache_invalidation = current_time
 
@@ -530,7 +531,7 @@ def get_cached_folder_structure(directory: str, ignored_patterns, max_depth: int
     directory = os.path.abspath(directory)
 
     if directory not in _folder_cache:
-        _folder_cache[directory] = {'timestamp': 0, 'data': None}
+        _folder_cache[directory] = {'timestamp': 0, 'data': None, 'scan_complete': False}
 
     cache_entry = _folder_cache[directory]
     current_time = time.time()
@@ -549,7 +550,10 @@ def get_cached_folder_structure(directory: str, ignored_patterns, max_depth: int
         if _background_scan_thread and _background_scan_thread.is_alive():
             _background_scan_thread.join(timeout=2.0)
 
-    if cache_entry['data'] is not None:
+    # Only serve cached data if an actual project scan has completed.
+    # Pre-population by add_external_path_to_cache sets data={} + [external]
+    # but does NOT count as a completed scan.
+    if cache_entry['data'] is not None and cache_entry.get('scan_complete'):
         if cache_age > 3600:
             return {**cache_entry['data'], "_stale": True}
         return cache_entry['data']
@@ -560,14 +564,19 @@ def get_cached_folder_structure(directory: str, ignored_patterns, max_depth: int
         if data is not None:
             cache_entry['data'] = data
             cache_entry['timestamp'] = dir_util_entry.get('timestamp', current_time)
+            cache_entry['scan_complete'] = True
             return data
 
     if synchronous:
         logger.info(f"Synchronous folder scan for {directory}")
         try:
             result = get_folder_structure(directory, ignored_patterns, max_depth)
+            # Merge in any externals that were pre-populated
+            if cache_entry['data'] and '[external]' in cache_entry['data']:
+                result.setdefault('[external]', cache_entry['data']['[external]'])
             cache_entry['data'] = result
             cache_entry['timestamp'] = time.time()
+            cache_entry['scan_complete'] = True
             dir_util._folder_cache[directory] = {
                 'timestamp': cache_entry['timestamp'],
                 'data': result,
@@ -591,8 +600,12 @@ def get_cached_folder_structure(directory: str, ignored_patterns, max_depth: int
             try:
                 result = get_folder_structure(directory, ignored_patterns, max_depth)
                 _scan_progress["last_update"] = time.time()
+                # Preserve any externals pre-populated before the scan started
+                if cache_entry['data'] and '[external]' in cache_entry['data']:
+                    result.setdefault('[external]', cache_entry['data']['[external]'])
                 cache_entry['data'] = result
                 cache_entry['timestamp'] = time.time()
+                cache_entry['scan_complete'] = True
                 dir_util._folder_cache[directory] = {
                     'timestamp': cache_entry['timestamp'],
                     'data': result,
