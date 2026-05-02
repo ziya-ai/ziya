@@ -230,7 +230,7 @@ class TestRecordCalibration:
             "app/main.py": "x" * 1000,
         }
         usage = IterationUsage(
-            input_tokens=500, cache_read_tokens=4000, cache_write_tokens=1000,
+            input_tokens=500, cache_read_tokens=0, cache_write_tokens=0,
         )
 
         mock_cal = MagicMock()
@@ -242,7 +242,7 @@ class TestRecordCalibration:
              patch("app.agents.models.ModelManager", mock_model_mgr):
             executor._record_calibration(
                 usage, "conv_1", [], "x" * 2000,
-                fresh=500, cached=4000, total_input=4500,
+                fresh=500, cached=0, total_input=500,
             )
 
             mock_cal.record_actual_usage.assert_called_once()
@@ -250,6 +250,24 @@ class TestRecordCalibration:
             assert call_kwargs[1]['conversation_id'] == "conv_1"
             assert call_kwargs[1]['model_family'] == "claude"
             assert call_kwargs[1]['actual_tokens'] > 0
+
+    def test_skips_when_cache_read_tokens_present(self):
+        """If cache_read_tokens > 0, calibration is skipped to avoid inflated ratios."""
+        executor = _make_executor()
+        executor._extract_file_contents_from_messages.return_value = {
+            "app/main.py": "x" * 1000,
+        }
+        usage = IterationUsage(
+            input_tokens=500, cache_read_tokens=30000, cache_write_tokens=0,
+        )
+
+        with patch("app.utils.token_calibrator.get_token_calibrator") as mock_get_cal:
+            executor._record_calibration(
+                usage, "conv_1", [], "x" * 2000,
+                fresh=500, cached=30000, total_input=30500,
+            )
+            # Should not even reach get_token_calibrator
+            mock_get_cal.assert_not_called()
 
     def test_handles_calibrator_import_error_gracefully(self):
         """ImportError from token_calibrator should not propagate."""

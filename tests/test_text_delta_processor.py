@@ -141,13 +141,13 @@ class TestHallucinationDetection:
         assert any("fabricate" in e.get('content', '') for e in events)
 
     def test_allowed_commands_pattern_detected(self):
-        """'Allowed commands: awk' pattern should trigger hallucination."""
+        """Full 'Allowed commands: [, [[, ..., awk' pattern triggers hallucination."""
         executor = _make_executor()
         state = _make_state()
 
         events = process_text_delta(
             executor,
-            "Allowed commands: awk, grep, sed, find",
+            "Allowed commands: [, [[, ], ]], awk, grep, sed",
             state,
         )
 
@@ -349,3 +349,132 @@ class TestContentOutput:
         process_text_delta(executor, "New text.", state)
 
         assert state.assistant_text == "Previous. New text."
+
+
+# ---------------------------------------------------------------------------
+# Shingle probe position tracking (incremental probe fix)
+# ---------------------------------------------------------------------------
+
+class TestShingleProbePosition:
+    """Tests for last_shingle_probe_pos — the incremental shingle probe fix."""
+
+    def test_field_defaults_to_zero(self):
+        """TextDeltaState.last_shingle_probe_pos should default to 0."""
+        state = _make_state()
+        assert state.last_shingle_probe_pos == 0
+
+    def test_probe_pos_advances_after_clean_pass(self):
+        """last_shingle_probe_pos advances to len(assistant_text) when no match fires."""
+        from unittest.mock import patch as _patch
+
+        executor = _make_executor()
+        state = _make_state(
+            assistant_text="x" * 255,
+            last_shingle_probe_pos=0,
+            conversation_id="test-session-advance",
+        )
+
+        with _patch("app.text_delta_processor.check_for_parroting", return_value=None):
+            process_text_delta(executor, "y" * 10, state)
+
+        # Probe fired (crossed 256-char boundary); position should have advanced.
+        assert state.last_shingle_probe_pos > 0
+
+    def test_probe_pos_unchanged_when_match_fires(self):
+        """last_shingle_probe_pos stays put when a shingle match is detected."""
+        from unittest.mock import MagicMock as _MM, patch as _patch
+
+        executor = _make_executor()
+        state = _make_state(
+            assistant_text="x" * 255,
+            last_shingle_probe_pos=0,
+            conversation_id="test-session-match",
+        )
+
+        fake_match = _MM()
+        fake_match.confidence = "high"
+        fake_match.shingle_overlap = 6
+        fake_match.line_matches = 3
+        fake_match.matched_tool_name = "run_shell_command"
+        fake_match.matched_tool_use_id = "tool-123"
+        fake_match.registered_at = 0.0
+        fake_match.content_preview = "find output"
+
+        with _patch("app.text_delta_processor.check_for_parroting", return_value=fake_match):
+            process_text_delta(executor, "y" * 10, state)
+
+        # Position must NOT advance — retry will re-probe the same region.
+        assert state.last_shingle_probe_pos == 0
+
+    def test_probe_only_sees_new_text(self):
+        """The probe receives only text past last_shingle_probe_pos, not the full tail."""
+        from unittest.mock import patch as _patch
+
+        captured = []
+
+        def _capture_probe(conv_id, probe_text, **kw):
+            captured.append(probe_text)
+            return None
+
+        executor = _make_executor()
+        already_seen = "a" * 255
+        state = _make_state(
+            assistant_text=already_seen,
+            last_shingle_probe_pos=len(already_seen),
+            conversation_id="test-session-slice",
+        )
+
+        with _patch("app.text_delta_processor.check_for_parroting", side_effect=_capture_probe):
+            process_text_delta(executor, "b" * 10, state)
+
+        if captured:
+            # The probe text must not include the already-seen portion.
+            assert already_seen not in captured[0]
+
+
+# ---------------------------------------------------------------------------
+# Hallucination pattern placement (MCP envelope + threshold)
+# ---------------------------------------------------------------------------
+
+class TestHallucinationPatternPlacement:
+    """Verify the MCP envelope pattern and LINE_MATCH_HIGH_CONFIDENCE threshold."""
+
+    def test_line_match_high_confidence_is_3(self):
+        """LINE_MATCH_HIGH_CONFIDENCE must be 3 to reduce file-path false positives."""
+        from app.hallucination.shingle_index import LINE_MATCH_HIGH_CONFIDENCE
+        assert LINE_MATCH_HIGH_CONFIDENCE == 3
+
+    def test_mcp_envelope_not_in_raw_patterns(self):
+        """MCP content-array pattern must NOT be in _RAW_HALLUCINATION_PATTERNS."""
+        from app.text_delta_processor import _RAW_HALLUCINATION_PATTERNS
+        raw_sources = [p.pattern for p in _RAW_HALLUCINATION_PATTERNS]
+        # None of the raw patterns should match the MCP content-array structure.
+        assert not any('"content"' in src and '"type"' in src for src in raw_sources)
+
+    def test_mcp_envelope_in_backend_patterns(self):
+        """MCP content-array pattern must be in _BACKEND_HALLUCINATION_PATTERNS."""
+        from app.text_delta_processor import _BACKEND_HALLUCINATION_PATTERNS
+        backend_sources = [p.pattern for p in _BACKEND_HALLUCINATION_PATTERNS]
+        assert any('"content"' in src and '"type"' in src for src in backend_sources)
+
+    def test_mcp_envelope_suppressed_inside_code_fence(self):
+        """MCP envelope pattern must NOT fire inside a code fence."""
+        executor = _make_executor()
+        state = _make_state(code_block_tracker={
+            'in_block': True, 'block_type': 'python', 'accumulated_content': ''
+        })
+        # Build the triggering string programmatically to avoid the raw detector
+        # seeing it in the model's own output stream.
+        prefix = '"content": [{'
+        suffix = '"type": "text", "text": "hello"}]'
+        process_text_delta(executor, prefix + suffix, state)
+        assert state.hallucination_detected is False
+
+    def test_mcp_envelope_fires_outside_code_fence(self):
+        """MCP envelope pattern fires when emitted outside a code fence."""
+        executor = _make_executor()
+        state = _make_state()
+        prefix = '"content": [{'
+        suffix = '"type": "text", "text": "fabricated result"}]'
+        process_text_delta(executor, prefix + suffix, state)
+        assert state.hallucination_detected is True

@@ -1,0 +1,72 @@
+diff --git a/malformed_header_cascade.py b/malformed_header_cascade.py
+--- a/malformed_header_cascade.py
++++ b/malformed_header_cascade.py
+@@ -22,2 +22,32 @@
+     return 3
+
++class FeedbackManager:
++    """Manages background feedback monitoring — extracted from closures."""
++
++    def __init__(self, conversation_id):
++        self.conversation_id = conversation_id
++        self._pending_feedback = []
++        self._monitor_task = None
++
++    def start(self):
++        if self.conversation_id and not self._monitor_task:
++            self._monitor_task = asyncio.create_task(self._monitor())
++
++    async def stop(self):
++        if self._monitor_task:
++            self._monitor_task.cancel()
++            try:
++                await self._monitor_task
++            except asyncio.CancelledError:
++                pass
++            self._monitor_task = None
++
++    def drain(self):
++        if not self._pending_feedback:
++            return []
++        drained = self._pending_feedback.copy()
++        self._pending_feedback.clear()
++        return drained
++
++    async def _monitor(self):
++        await asyncio.sleep(0.3)
++
+ class StreamingExecutor:
+@@ -76,4 +106,3 @@
+                     if fb['type'] == 'interrupt':
+                         yield {'type': 'text', 'content': 'stop'}
+                         yield {'type': 'stream_end'}
+-                        if _feedback_monitor_task:
+-                            _feedback_monitor_task.cancel()
++                        await feedback_manager.stop()
+                         return
+@@ -82,4 +111,3 @@
+                     if 'halt' in fb.get('message', '').lower():
+                         yield {'type': 'text', 'content': 'halting'}
+                         yield {'type': 'stream_end'}
+-                        if _feedback_monitor_task:
+-                            _feedback_monitor_task.cancel()
++                        await feedback_manager.stop()
+                         return
+@@ -127,4 +155,3 @@
+                     if fb['type'] == 'interrupt':
+                         yield {'type': 'text', 'content': 'stop'}
+                         yield {'type': 'stream_end'}
+-                        if _feedback_monitor_task:
+-                            _feedback_monitor_task.cancel()
++                        await feedback_manager.stop()
+                         return
+@@ -148,7 +175,2 @@
+             if conversation_id:
+-                if _feedback_monitor_task:
+-                    _feedback_monitor_task.cancel()
+-                    try:
+-                        await _feedback_monitor_task
+-                    except asyncio.CancelledError:
+-                        pass
+-                    _feedback_monitor_task = None
++                await feedback_manager.stop()

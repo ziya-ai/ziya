@@ -1,0 +1,9 @@
+{
+    "target_file": "malformed_header_cascade.py",
+    "description": "Reproduces the Gemini-style cascade failure: hunk 1 inserts a 30-line class but its header declares '-2,+32' while the body emits '-3,+34' (malformed). Hunks 2-5 then target lines that are shifted by ~30 from their real positions, and the duplicate-context line 'if _feedback_monitor_task:' appears 9 times in the file, triggering the 'ambiguous blocks' guard. Expected behavior: pipeline detects header/body mismatch, trusts body counts (body > header regime from change 1 of the rescue logic), rebases subsequent hunks, and applies all five changes. False-success failure mode: pipeline reports success but leaves file unchanged or in broken intermediate state.",
+    "date_added": "2026-05-01",
+    "issue_reference": "gemini_cascade_offset",
+    "bug_class": "false_success_no_changes_applied",
+    "expected_to_fail": false,
+    "failure_reason": "Rescued by body-over-header reconciliation (change 1) in diff_parser.py: when body > header (model emitted more than declared), trust body counts so cascade offsets don't propagate."
+}
