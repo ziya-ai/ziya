@@ -4,6 +4,7 @@ CLI diff applicator - Interactive diff application for terminal.
 import logging
 import os
 import re
+import sys
 from typing import List, Tuple, Optional, Set
 from app.utils.logging_utils import logger
 
@@ -367,15 +368,14 @@ class CLIDiffApplicator:
                 # Clean, user-friendly error message
                 error_details = result.get("details", {})
                 failures = result.get("failures", [])
-                
-                # Check for common failure patterns
-                if failures:
-                    has_fuzzy_fail = any(f.get("details", {}).get("type") == "fuzzy_verification_failed" for f in failures)
-                    has_low_confidence = any(f.get("details", {}).get("type") == "low_confidence" for f in failures)
-                    
-                    if has_fuzzy_fail or has_low_confidence:
-                        return False, "Content doesn't match current file (file may have been modified)"
-                
+
+                # Render structured diagnostics for low-confidence / fuzzy-verify
+                # failures so the user (and any LLM driving the CLI) sees *why*
+                # the hunk didn't match, not just that it didn't.
+                rendered = _render_failure_diagnostics(failures)
+                if rendered:
+                    return False, rendered
+
                 # Generic error message
                 error = error_details.get("message") or error_details.get("error") or "Unknown error"
                 if "hunks failed" in str(error).lower():
@@ -409,9 +409,23 @@ class CLIDiffApplicator:
         # Extract all diffs
         diffs = self.extract_diffs(response)
         
+        print(f"\033[90m[trace] extract_diffs found {len(diffs)} block(s), "
+              f"with_path={sum(1 for d in diffs if d.file_path)}, pathless={sum(1 for d in diffs if not d.file_path)}\033[0m", file=sys.stderr)
+
         if not diffs:
             # No diffs to process
             return True
+        
+        # Drop diffs with no detectable file path — these are typically
+        # illustrative snippets, not applicable changes.
+        pathless = [d for d in diffs if not d.file_path]
+        if pathless:
+            print(
+                f"\033[90m⊘ Skipping {len(pathless)} diff(s) with no detectable file path\033[0m"
+            )
+            diffs = [d for d in diffs if d.file_path]
+            if not diffs:
+                return True
         
         # Drop earlier diffs whose hunks were superseded by later revisions
         diffs = self._deduplicate_diffs(diffs)
@@ -441,6 +455,7 @@ class CLIDiffApplicator:
                 elif action == 's':
                     print(f"\033[33m⊘ Skipped\033[0m")
                     self.skipped_count += 1
+                    self.diff_results.append((diff.file_path, "skipped", "Skipped by user"))
                     break
                 
                 elif action == 'v':

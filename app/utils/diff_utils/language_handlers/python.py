@@ -52,7 +52,12 @@ class PythonHandler(LanguageHandler):
             
             return True, None
         except SyntaxError as e:
-            error_msg = f"Syntax error at line {e.lineno}, column {e.offset}: {e.msg}"
+            # Python's parser can chase forward on recovery and report a misleading
+            # location (e.g. "unterminated triple-quoted string" pointing at an
+            # innocent docstring hundreds of lines away). Try to find the real
+            # culprit line when the error message suggests chase-forward.
+            real_line, real_msg = cls._refine_syntax_error(modified_content, e)
+            error_msg = f"Syntax error at line {real_line}, column {e.offset}: {real_msg}"
             logger.error(f"Python syntax validation failed for {file_path}: {error_msg}")
             return False, error_msg
         except Exception as e:
@@ -60,6 +65,48 @@ class PythonHandler(LanguageHandler):
             logger.error(f"Python validation failed for {file_path}: {error_msg}")
             return False, error_msg
     
+    @classmethod
+    def _refine_syntax_error(cls, content: str, err: SyntaxError) -> Tuple[int, str]:
+        """
+        Attempt to locate the true source line for a SyntaxError when Python's
+        parser has chased forward on recovery. Returns (line, message) with a
+        clearer hint when a better candidate is found, else the original values.
+        """
+        orig_line = err.lineno or 1
+        orig_msg = err.msg or "syntax error"
+        lines = content.splitlines()
+        total = len(lines)
+
+        # Heuristic: "unterminated" messages are the canonical chase-forward case.
+        # Also catch "was never closed" variants.
+        misleading = (
+            "unterminated" in orig_msg.lower()
+            or "was never closed" in orig_msg.lower()
+        )
+        if not misleading or total < 2:
+            return orig_line, orig_msg
+
+        # Bisect: find the smallest prefix that still fails to parse. That
+        # prefix's last statement is almost certainly the real culprit.
+        lo, hi = 1, total
+        culprit = orig_line
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            prefix = "\n".join(lines[:mid])
+            try:
+                ast.parse(prefix)
+                lo = mid + 1
+            except SyntaxError:
+                culprit = mid
+                hi = mid - 1
+            except Exception:
+                break
+
+        if culprit != orig_line and culprit < orig_line:
+            hint = f"{orig_msg} (parser recovery pointed at line {orig_line}; likely real issue near line {culprit}: {lines[culprit-1].strip()!r})"
+            return culprit, hint
+        return orig_line, orig_msg
+
     @classmethod
     def _check_common_issues(cls, original_content: str, modified_content: str) -> List[str]:
         """

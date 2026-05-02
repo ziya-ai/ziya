@@ -439,6 +439,65 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
             hunk['old_block'] = old_block[:-1]
             hunk['new_lines'] = new_lines[:-1]
     
+    # Validate hunk header vs body line counts. A hunk header like
+    # "@@ -77,7 +78,7 @@" declares 7 lines on each side; if the body
+    # contains significantly fewer lines it indicates an LLM-malformed
+    # diff (e.g. a context line emitted where a '-' removal was intended).
+    # Flag such hunks so downstream application can reject them with a
+    # clear error instead of producing silently-broken output.
+    for hunk in hunks:
+        declared_old = hunk.get('old_count', 0)
+        declared_new = hunk.get('new_count', 0)
+        # Re-count from raw body lines (excluding '\' metadata lines)
+        body = [ln for ln in hunk.get('lines', []) if not ln.startswith('\\')]
+        actual_old = sum(1 for ln in body if ln.startswith(('-', ' ')))
+        actual_new = sum(1 for ln in body if ln.startswith(('+', ' ')))
+        # Allow a tolerance of 1 for trailing-newline/parser-artifact edge cases.
+        old_delta = abs(actual_old - declared_old)
+        new_delta = abs(actual_new - declared_new)
+        if old_delta > 1 or new_delta > 1:
+            # Dedupe: the same diff gets re-parsed by multiple apply strategies
+            # (strict → shifted → fuzzy), so warn only once per unique hunk.
+            warn_key = (hunk.get('header', '').strip(), declared_old, declared_new, actual_old, actual_new)
+            _seen = getattr(logger, '_malformed_hunk_warned', None)
+            if _seen is None:
+                _seen = set()
+                setattr(logger, '_malformed_hunk_warned', _seen)
+            if warn_key not in _seen:
+                _seen.add(warn_key)
+                logger.warning(
+                    f"Malformed hunk #{hunk.get('number')}: header declares "
+                    f"-{declared_old},+{declared_new} but body has "
+                    f"-{actual_old},+{actual_new} lines. Header: {hunk.get('header', '').strip()}"
+                )
+            hunk['malformed_header'] = (
+                f"hunk header claims {declared_old} old / {declared_new} new lines "
+                f"but body contains {actual_old} old / {actual_new} new lines — "
+                f"likely a missing '-' removal or extra context line"
+            )
+            # Two distinct rescue regimes depending on which side is authoritative:
+            #
+            #   body > header  → model emitted more than it declared (common
+            #                    cascading-offset case from e.g. Gemini).  Body
+            #                    is truth; overwrite counts so downstream
+            #                    truncation / EOF-extension heuristics don't
+            #                    misread the region size.
+            #
+            #   body < header  → truncated diff; model dropped context lines but
+            #                    the header honestly describes the target region.
+            #                    Keep header counts intact so the existing
+            #                    truncation-rescue path (patch_apply.py ~1624)
+            #                    can still detect truncation via
+            #                    old_count > len(old_block).
+            hunk['declared_old_count'] = declared_old
+            hunk['declared_new_count'] = declared_new
+            if actual_old >= declared_old and actual_new >= declared_new:
+                hunk['old_count'] = actual_old
+                hunk['new_count'] = actual_new
+                hunk['header_corrected'] = True
+            else:
+                hunk['header_corrected'] = False
+
     # Check if the diff has a "No newline at end of file" marker
     has_no_newline_marker = "No newline at end of file" in diff_content
     

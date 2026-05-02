@@ -856,6 +856,16 @@ def apply_diff_atomically(file_path: str, git_diff: str) -> Dict[str, Any]:
         
         logger.info(f"Successfully wrote changes to {file_path}")
         return {"status": "success", "details": {"succeeded": list(range(1, len(hunks) + 1)), "changes_written": True}}
+
+    except PatchApplicationError as e:
+        # Preserve the structured diagnostic from patch_apply instead of
+        # falling through to the full pipeline with an opaque None.  The CLI
+        # renderer relies on 'failures[*].details.diagnostic' to show the
+        # user (and any LLM reading stderr) why the hunk didn't match.
+        logger.error(f"Error applying diff: {str(e)}")
+        details = dict(e.details) if isinstance(e.details, dict) else {}
+        details.setdefault("message", str(e))
+        return details
         
     except Exception as e:
         logger.error(f"Error applying diff: {str(e)}")

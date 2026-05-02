@@ -905,7 +905,8 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
     
     if skip_dry_run:
         logger.info(f"Skipping dry-run for small diff ({total_changes} changes, {len(pipeline.result.hunks)} hunks)")
-        return apply_patch_directly(pipeline, user_codebase_dir, git_diff, has_indentation_changes)
+        apply_patch_directly(pipeline, user_codebase_dir, git_diff, has_indentation_changes)
+        return pipeline.result.to_dict()
 
      # Log the exact input being passed to patch
     patch_cmd_dry = ['patch', '-p1', '--forward', '--no-backup-if-mismatch', '--reject-file=-', '--batch']
