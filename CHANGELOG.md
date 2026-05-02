@@ -19,6 +19,599 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 ### Changed
 
+## [0.6.5.2] - 2026-05-02
+
+### Fixed
+- **Google Gemini tool-use pipeline broken across four independent failures**
+  (`app/providers/google_direct.py`, `app/agents/wrappers/google_direct.py`):
+  Gemini requests were failing with `400 Bad Request` on every tool call,
+  skipping most tools at conversion time, emitting `No usage metrics
+  captured` warnings each turn, and producing a noisy
+  `got Future attached to a different loop` traceback at process exit.
+  Four distinct fixes:
+
+    1. **Schema sanitizer** — Gemini's `FunctionDeclaration.parameters`
+       accepts a strict subset of OpenAPI 3.0. The previous converter
+       only stripped `$*` and `title` at the top level, so nested
+       `additionalProperties`, `exclusiveMinimum`/`Maximum`, `examples`
+       (plural), `const`, `patternProperties`, and various draft-7+
+       meta keys leaked through — either Pydantic rejected the tool
+       (`skipping tool X`) or the REST API rejected the whole request
+       with `Unknown name "additional_properties"`. Added
+       `_sanitize_schema_for_gemini` which recursively strips unsupported
+       keys at every depth, renames camelCase keys Google accepts under
+       snake_case (`minLength` → `min_length`, `anyOf` → `any_of`, etc.),
+       coerces `type: [A, null]` unions to single type + `nullable: true`,
+       and stringifies `enum` values **and** coerces the field's `type`
+       to `"string"` (Gemini rejects `enum` on non-STRING types with
+       `only allowed for STRING type`).
+
+    2. **Process-wide client cache** — `StreamingToolExecutor` constructs
+       a fresh `GoogleDirectProvider` per turn, and the legacy wrapper
+       path spawns a new event loop via `asyncio.run()` each invocation.
+       Each provider was creating its own `genai.Client`, which owns an
+       `aiohttp.ClientSession` bound to the loop it was first used on.
+       When Python's GC eventually finalized these clients, `__del__`
+       scheduled `aclose()` against whichever loop happened to be running,
+       producing the cross-loop traceback at shutdown. Added
+       `_CLIENT_CACHE` keyed by API key so a single `Client` is shared
+       across the process; the `Client` is stateless w.r.t. requests so
+       reuse is safe.
+
+    3. **Thought signatures** — Gemini 3+ returns an opaque per-turn
+       `thought_signature` on each `Part` that carries a `functionCall`,
+       and requires the signature to be echoed back on the same `Part`
+       in the follow-up turn or the API rejects with
+       `Function call is missing a thought_signature`. The provider
+       now captures signatures during streaming (keyed by synthetic
+       tool_use_id), stashes them in the assistant message via a
+       `_thought_signature` side-channel, and attaches them to
+       `types.Part` when rebuilding conversation history. Missing on
+       older (2.x) models; only echoed when present.
+
+    4. **Usage metrics emission** — `_do_stream` never yielded a
+       `UsageEvent`, so `StreamingToolExecutor`'s cumulative tracker
+       logged `No usage metrics captured for iteration N` every turn.
+       Gemini attaches `usage_metadata` to streaming chunks (typically
+       the final one); the provider now captures the latest and emits
+       a `UsageEvent` before `StreamEnd`. `prompt_token_count` already
+       includes cached tokens, so cached is subtracted to match other
+       providers' "fresh input" semantics.
+
+  The same sanitizer is imported and applied at the wrapper-level
+  conversion path (`app/agents/wrappers/google_direct.py`) so both
+  tool-serialization entry points go through one source of truth.
+  Regression tests: 18 cases in `tests/test_providers/test_google_direct.py::TestConvertTools`
+  covering each sanitizer clause (exclusive bounds, `examples` plural,
+  type unions with/without null, integer enum value+type coercion,
+  `additionalProperties` at top level and nested inside `items`,
+  camelCase renames), client reuse across provider instances and
+  distinct clients per API key, and `UsageEvent` emission with correct
+  cached-token subtraction.
+
+- **Diff pipeline returning boolean instead of result dict on fast-path failure**
+  (`app/utils/diff_utils/pipeline/pipeline_manager.py`): When
+  `skip_dry_run` was true and `apply_patch_directly` failed, it returned
+  `False` (a boolean) instead of `pipeline.result.to_dict()`. Downstream
+  code in `pipeline_validator.py` called `.get()` on that boolean,
+  raising `AttributeError`, which was silently swallowed by the outer
+  `except Exception` in `validate_and_enhance`, causing it to return
+  `None` (`has_feedback=False`) even when hunks were correctly marked
+  `FAILED` inside the pipeline. The fast path now always returns
+  `pipeline.result.to_dict()` regardless of whether the apply succeeded.
+  Regression test: `tests/test_pipeline_manager_fixes.py`.
+
+- **Skipped diffs not recorded in `diff_results`**
+  (`app/utils/cli_diff_applicator.py`): When a user typed `s` to skip a
+  diff, `skipped_count` was incremented but no entry was appended to
+  `diff_results`. The "all skipped" branch in the post-apply continuation
+  message could therefore never fire (the list it checked was always
+  empty). Skipped diffs now append a `(file_path, "skipped", "Skipped by
+  user")` tuple to `diff_results`. Also added `import sys` which was
+  missing after an earlier trace-log addition.
+  Regression test: `tests/test_pipeline_manager_fixes.py`.
+
+- **Continuation message falsely confirming success after diff skip**
+  (`app/cli.py`): The post-apply continuation sent to the model always
+  used the same "confirm changes are complete" framing regardless of
+  outcome, leading the model to report success even when all diffs were
+  skipped and nothing was written. The message is now conditional: when
+  all diffs were skipped and none applied, the model is told explicitly
+  that no changes were made. Also removed dead `failed`/`failed and
+  applied` branches that could never fire (the `failed_count > 0` guard
+  earlier in the loop handles failures and always `continue`s or
+  `return`s before reaching the continuation block).
+
+- **`has_diff` trace log inaccurate** (`app/cli.py`): The `[trace]`
+  line logged `has_diff=True` whenever the substring `` ```diff ``
+  appeared anywhere in the response, including cases like
+  `` ```diff python `` where `extract_diffs` would reject the fence
+  because its regex requires the line to end immediately after `diff`.
+  The check now uses `re.search(r'^`{3,}diff\s*$', response,
+  re.MULTILINE)` — the same pattern `extract_diffs` uses — so the trace
+  accurately reflects whether any diff blocks will actually be parsed.
+  A second trace line was added inside `process_response` immediately
+  after `extract_diffs` returns, logging the total block count, how many
+  have a resolvable file path, and how many are pathless, to aid
+  diagnosing the gap between "model returned a diff" and "diff was
+  presented to user".
+
+- **Dead no-op mutations in `update_hunk_status`**
+  (`app/utils/diff_utils/pipeline/diff_pipeline.py`): `succeeded_hunks`,
+  `failed_hunks`, and `already_applied_hunks` on `PipelineResult` are
+  `@property` methods that recompute from `self.hunks` on every access.
+  `update_hunk_status` was calling `.append()` and `.remove()` on the
+  temporary lists those properties returned, so all mutations were
+  silently discarded. Hunk state was already being set correctly via
+  `tracker.update_status()`, so there was no functional bug — but the
+  29 lines of dead mutation code were misleading. Removed.
+
+- **Token calibration producing impossible chars/token ratios**
+  (`app/streaming_tool_executor.py`): When a request had cache-read
+  tokens from a prior turn, `_record_calibration` incorporated
+  `cache_read_tokens` into `total_input` and then attributed a
+  proportional share of that inflated count to the current file content.
+  Because the cached tokens came from previous turns (not the current
+  content), `file_only_tokens` could exceed the file's character count,
+  yielding ratios like 0.559 chars/token — physically impossible and
+  correctly rejected by the calibration guard. Calibration is now
+  skipped entirely when `cache_read_tokens > 0`; only clean first-request
+  measurements (no cache hits) are recorded.
+  Regression tests: `tests/test_usage_tracking.py`.
+
+- **`test_malformed_hunks.py` pre-existing test failures**
+  (`tests/test_malformed_hunks.py`): Three tests were failing with
+  incorrect expectations. Two expected `PatchApplicationError` for valid
+  pure-insertion (`@@ -1,0 +1,1 @@`) and pure-deletion (`@@ -1,1 +0,0
+  @@`) hunks — both are legitimate diff syntax the code handles
+  correctly. All three verified the file on disk rather than the
+  function's return value; `apply_diff_with_difflib_hybrid_forced`
+  returns modified lines and does not write to disk itself. Rewrote all
+  three to assert actual correct behavior.
+
+- **Low-confidence hunk failures emitted uselessly coarse errors,
+  causing LLM retry loops to spin on `@@`-header line numbers**
+  (`app/utils/diff_utils/application/patch_apply.py`,
+  `app/utils/diff_utils/application/git_diff.py`,
+  `app/utils/cli_diff_applicator.py`). When fuzzy matching fell below
+  the confidence threshold, the apply engine emitted only
+  `Hunk #N => low confidence match (ratio=X.XX) near Y, skipping` with
+  `failure_info = {type, hunk, confidence}` — no indication of *what*
+  didn't match. Callers (especially LLM-driven retry loops) routinely
+  misdiagnosed content mismatches as line-number problems and re-emitted
+  the same diff with only the `@@` header changed, producing infinite
+  loops (the engine locates hunks by content similarity, not by `@@`
+  numbers). Added `_build_low_confidence_diagnostic` which, on failure,
+  rescans for the best candidate region, diffs it line-by-line against
+  the hunk's expected `old_block`, and classifies the cause into one of:
+  `indentation_mismatch`, `whitespace_or_blank_line_mismatch`,
+  `context_does_not_exist_in_file`, or `ambiguous_or_duplicate_anchor`.
+  The enriched `failure_info['diagnostic']` carries per-line
+  expected-vs-actual data, the best candidate file line, a match ratio
+  (e.g. `5/7 context lines match`), and a cause-specific hint that
+  explicitly warns against the `@@`-header-only retry antipattern.
+  `apply_diff_atomically` now preserves `PatchApplicationError.details`
+  instead of collapsing to `None` (which had forced the CLI into its
+  generic "Diff could not be parsed" path). The CLI renderer now
+  pretty-prints the diagnostic with up to three mismatched lines shown
+  as `expected:` / `actual:` pairs instead of the opaque
+  "Content doesn't match current file".
+
+- **Three duplicate `PatchApplicationError` classes; the one actually
+  imported lacked `.details`** (`app/utils/diff_utils/core/exceptions/`).
+  The `exceptions/` package stub (`class PatchApplicationError(Exception):
+  pass`) shadowed the sibling `exceptions.py` module that had the real
+  class with `message`/`details` attributes. Python prefers packages
+  over same-named modules, so every `raise PatchApplicationError("msg",
+  {...details})` silently dropped the details into `.args[1]` and never
+  set `.details`, producing `'PatchApplicationError' object has no
+  attribute 'details'` at the CLI render site. Gave the canonical class
+  in the package real `message` / `details` attributes matching the
+  sibling module's signature, then deleted the shadowed
+  `core/exceptions.py` module outright (it was unreachable via normal
+  Python resolution and existed only as decay).
+
+- **Toolbox `ziya` launcher failed on macOS with Python 3.14**
+  (`toolbox/bundle/bin/ziya`): First-run pip install used
+  `--only-binary :all:`, which refuses the sdist fallback.
+  `watchdog>=6.0.0` ships wheels only through `cp313`, so on macOS 26
+  (Tahoe, Homebrew `python3` = 3.14) pip reported
+  `Could not find a version that satisfies the requirement
+  watchdog>=6.0.0 (from versions: none)` — the `(from versions: none)`
+  meaning wheels were filtered out by Python version, not by the
+  version spec. Changed to `--prefer-binary`, which still picks wheels
+  when available but lets watchdog (and any future laggard dependency)
+  build from sdist on bleeding-edge Python. Users hitting the old
+  failure must `rm -rf` their stale venv before retrying the new bundle.
+
+### Changed
+- **Per-diff line limit raised from 100 to 250**
+  (`app/extensions/prompt_extensions/claude_extensions.py`): The
+  Claude system-prompt instruction capping diffs at 100 lines was too
+  restrictive for routine refactors. Raised to 250; the guidance to
+  split larger changes into focused diffs is retained.
+
+### Tests
+- `tests/test_pipeline_manager_fixes.py` — 6 new tests: pipeline returns
+  dict (not bool) on `apply_patch_directly` failure; pipeline returns dict
+  on success; skipped diffs recorded in `diff_results`; `extract_diffs`
+  fence variations (clean, language specifier, 4-backtick, trailing
+  whitespace); continuation message branches (all-applied, all-skipped,
+  mixed, empty).
+- `tests/test_extract_diffs.py` — 7 new tests covering `extract_diffs`
+  edge cases: clean fence, language-specifier fence (rejected by regex),
+  4-backtick fence, trailing-whitespace fence, multiple blocks, pathless
+  block, unclosed fence (collects remaining lines).
+- `tests/test_continuation_message.py` — 4 new tests covering
+  continuation message branch logic (all-applied → confirm framing;
+  all-skipped → no-changes framing; mixed applied+skipped → confirm
+  framing; empty results → confirm framing).
+
+### Fixed
+- **Malformed hunk headers rescued instead of rejected**
+  (`app/utils/diff_utils/parsing/diff_parser.py`,
+  `app/utils/diff_utils/application/patch_apply.py`): When a hunk
+  header declared counts that didn't match its body (e.g. header says
+  `-2,+74` but body has `-4,+89`), `apply_diff_with_difflib` raised
+  `PatchApplicationError` and refused to apply the diff. Gemini
+  routinely emits this shape when doing large refactors — the first
+  hunk's malformed counts then cascade offset corruption into every
+  subsequent hunk's `old_start`, producing a wall of `large offset`
+  and `closest match >100 lines away` rejections downstream. The
+  parser now reconciles header vs body counts with two regimes:
+  when body ≥ header (model emitted more than it declared — the
+  cascade case) it overwrites `old_count`/`new_count` with body-derived
+  values so downstream truncation and EOF-extension heuristics see
+  the real region size; when body < header (truncated diff, model
+  dropped context lines) it keeps header counts intact so the existing
+  truncation-rescue path can still fire. Originals are preserved as
+  `declared_old_count`/`declared_new_count` for diagnostics. The
+  unconditional rejection in `patch_apply.py` becomes a warning.
+  Regression fixture: `tests/diff_test_cases/MRE_malformed_header_cascade/`
+  (5-hunk diff with malformed header on hunk 1, cascade offsets, and
+  9 duplicate-context occurrences — reproduces the exact Gemini
+  failure signature).
+
+- **Google Gemini tools routing through `StreamingToolExecutor`**
+  (`app/providers/google_direct.py`, `app/providers/factory.py`):
+  The `google` endpoint was missing from `create_provider()`, causing
+  `StreamingToolExecutor` to get `provider=None` and exit immediately
+  with an error on every request. The executor's fallback to
+  `_simple_invoke` passed no tools to the model, so Gemini never
+  received function declarations. When tools were somehow invoked,
+  they routed through `mcp_manager.call_tool()` directly — which only
+  searches connected MCP server clients and never finds `DirectMCPTool`
+  instances (`file_read`, `file_list`, `file_write`, etc.), producing
+  `"Tool not found in any connected server"` and `│ None` results.
+  A new `GoogleDirectProvider` implementing the full `LLMProvider`
+  interface is now registered for the `google` endpoint. Both the CLI
+  and web paths route through `StreamingToolExecutor` → `GoogleDirectProvider`,
+  so builtin tools dispatch correctly via `tool_execution.py`'s
+  `ctx.all_tools` rather than the MCP client loop. Regression tests:
+  `tests/test_providers/test_google_direct.py` (73 tests covering
+  request building, message conversion, tool conversion, stream
+  parsing, message formatting, `_tool_id_to_name` mapping, retry
+  logic, error classification, and factory wiring).
+
+- **`ToolUseInput` events missing for Google tool calls**
+  (`app/providers/google_direct.py`): Gemini returns complete tool
+  arguments in a single `function_call` part rather than streaming
+  them. The provider emitted `ToolUseStart` → `ToolUseEnd` with no
+  `ToolUseInput` in between, leaving `partial_json` empty in the
+  executor's accumulation loop and dispatching every Google tool call
+  with `{}` arguments instead of the actual args. The provider now
+  emits a single `ToolUseInput(partial_json=json.dumps(args))` between
+  `ToolUseStart` and `ToolUseEnd` when args are present. No-arg calls
+  are unaffected.
+
+- **`DirectGoogleModel.astream()` tool loop bypassing builtin tool
+  dispatch** (`app/agents/wrappers/google_direct.py`): The legacy
+  LangChain wrapper maintained its own multi-turn tool execution loop
+  that called `mcp_manager.call_tool()` directly, exhibiting the same
+  builtin-tool routing bug as the executor path. This loop is now
+  removed — `astream()` is a pure text-streaming fallback used only by
+  `_simple_invoke` when no MCP manager is available. All tool-using
+  paths go through `StreamingToolExecutor` + `GoogleDirectProvider`.
+  The `mcp_manager` import and instance attribute are also removed.
+  Regression tests: `tests/test_providers/test_google_direct_wrapper.py`
+  (17 tests confirming no `mcp_manager` dependency, no `call_tool`
+  reference, warning emitted when tools are passed, function-call
+  parts silently ignored, and text streaming intact).
+
+- **Shingle false-positive hallucination detection**
+  (`app/text_delta_processor.py`, `app/hallucination/shingle_index.py`):
+  Three sources of false positives in the parroting/fabrication
+  detector were causing legitimate analytical responses to be flagged
+  and retried: (1) The shingle probe scanned `assistant_text[-1200:]`
+  on every 256-char interval, so as analysis grew to 2000+ chars,
+  tokens from prior tool results (file paths, identifiers) kept
+  cycling through the tail window and accumulating overlap until
+  crossing the high-confidence threshold — even though the model was
+  legitimately referencing what a real tool returned in a previous
+  iteration. Fixed by adding `last_shingle_probe_pos` to
+  `TextDeltaState` and probing only the new slice since the last
+  check; the position advances on a clean pass and stays put on a
+  match so retries re-probe the same region. (2) The MCP
+  content-array envelope pattern was in `_RAW_HALLUCINATION_PATTERNS`
+  (fires even inside code fences), so quoting MCP protocol structures
+  in analysis or code examples triggered the detector. Moved to
+  `_BACKEND_HALLUCINATION_PATTERNS` where it is skipped inside fences.
+  (3) `LINE_MATCH_HIGH_CONFIDENCE` was 2, making it too easy to
+  trigger on two verbatim file-path lines legitimately referenced from
+  a prior tool result. Raised to 3.
+
+### Changed
+- **Dead `create_agent_chain`/`create_agent_executor` import removed**
+  (`app/server.py`): Both symbols were imported but never called in any
+  request handler — the actual web path uses `StreamingToolExecutor`
+  directly. Import removed to avoid confusion.
+
+- **Google Gemini 400 error on tool results** (`app/agents/wrappers/google_direct.py`):
+  The direct Google wrapper was appending bare `types.FunctionResponse`
+  objects into message `parts` lists, but the google-genai SDK requires
+  each part to be a `types.Part` with its `function_response` oneof
+  initialized. The API rejected requests with
+  `GenerateContentRequest.contents[N].parts[0].data: required oneof
+  field 'data' must have one initialized field` (HTTP 400), breaking
+  any tool-calling turn after the first. All three construction sites
+  (history conversion of `ToolMessage`, successful tool-result append,
+  and verification/exception error append) now wrap the
+  `FunctionResponse` in `types.Part(function_response=...)`. Regression
+  test: `tests/test_google_function_response_wrapping.py` (static scan
+  of the module guarantees no future bare construction slips in, plus
+  a smoke test of the wrapper shape).
+
+- **Builtin `[DIRECT]` tools failing across all direct wrappers**
+  (`app/mcp/manager.py`): Builtin tools (`ast_get_tree`, `ast_search`,
+  `ast_references`, `file_read`, `file_write`, `file_list`,
+  `nova_web_search`, `render_diagram`, `get_skill_details`, memory
+  tools, architecture-shape tools) are local Python wrappers registered
+  as `DirectMCPTool` — they are not attached to any MCP client/server.
+  `MCPManager.call_tool` only iterated `self.clients`, so any wrapper
+  that routed tool calls through the manager (google_direct,
+  anthropic_direct, openai_direct, direct_bedrock, nova_wrapper,
+  nova_tool_execution, streaming_tool_executor, tool_execution) logged
+  `"Tool 'X' not found in any connected server"` and returned `None`.
+  User-visible symptom was Gemini repeatedly calling `ast_get_tree` and
+  receiving `│ None`, plus a 400 error on the next turn because the
+  empty tool response violated the FunctionResponse schema. The manager
+  now dispatches builtin tools after the per-client loop, with the same
+  result-shape normalization, permission check (synthetic `"builtin"`
+  server with fallback to global `defaults.tool`), and HMAC signing
+  that the dynamic-tool branch uses — so every wrapper that routes
+  through `call_tool` now works for builtins without per-wrapper
+  patches. Regression tests:
+  `tests/test_mcp_manager_builtin_dispatch.py` (8 tests covering
+  dispatch, `mcp_` prefix stripping, result normalization from dict /
+  list / raw-string shapes, signing parity, disabled-permission
+  short-circuit, execute()-exception handling, and the
+  unknown-tool-still-returns-None invariant).
+
+- **Duplicate "Malformed hunk" warnings** (`app/utils/diff_utils/parsing/diff_parser.py`):
+  When a diff apply went through the full strict → shifted → fuzzy
+  fallback chain, each strategy re-parsed the diff and each parse
+  re-logged the same warning, producing 3× noise per malformed hunk.
+  `parse_unified_diff_exact_plus` now keeps a per-process dedupe set
+  keyed by `(header, declared_old, declared_new, actual_old,
+  actual_new)` on its module logger and emits the warning at most
+  once per unique key. The per-hunk `malformed_header` metadata flag
+  is still always set so downstream consumers continue to reject
+  broken hunks. Regression test:
+  `tests/test_malformed_hunk_warning_dedupe.py` (3 tests: single-parse
+  emits once, three re-parses emit once total, and `malformed_header`
+  flag survives dedupe).
+
+### Added
+- **Auto-checkpointing for CLI sessions**: The chat loop now silently
+  writes the session to disk after every completed AI exchange, not only
+  on clean exit or explicit `/save`/`/suspend`. A new `_autocheckpoint`
+  helper calls `save_session(cleanup=False)` so the per-message writes
+  skip the session-count enforcement scan (cleanup still runs on clean
+  exit and explicit saves). `--ephemeral` sessions are never
+  auto-checkpointed. Checkpoint failures are swallowed so a transient
+  disk error never interrupts the conversation. The `_ephemeral` flag is
+  now propagated to the `CLI` instance in both the normal and resume
+  startup paths in `cmd_chat`.
+- **OpenAI GPT-5.5 model family** in `app/config/models_config.py` under the
+  `openai` endpoint: `gpt-5.5`, `gpt-5.5-pro`, `gpt-5.5-mini`, `gpt-5.5-nano`.
+  All four are configured as omnimodal (`supports_vision: True`) with a 1M
+  token context window and 128K max output. The pro variant additionally
+  sets `supports_thinking: True`. Registered under the existing
+  `openai-gpt` family so direct OpenAI SDK calls via `openai_direct.py`
+  pick them up with no wrapper changes. Existing 5.4 / 5.3 / 4.1 entries
+  retained — OpenAI's Feb 2026 retirements are ChatGPT-only and API
+  access for those models continues.
+- **GPT-5.5 model test suite** (`tests/test_openai_gpt55_models.py`):
+  21 tests covering registration, family assignment, 1M context / 128K
+  output limits, vision flag across all four variants, thinking flag on
+  pro, provider instantiation via `OpenAIDirectProvider`, and multimodal
+  request-shape preservation (image_url content parts survive
+  `_build_request` for `gpt-5.5`). Includes a regression guard that
+  fails if 5.4-family or 4.1 entries are prematurely marked deprecated
+  or removed.
+
+- **GPT-5.5 is now the default OpenAI model**: Flipped
+  `DEFAULT_MODELS.openai` from `gpt-5.4` to `gpt-5.5`, and the service
+  tasks / memory extraction defaults from `gpt-5.4-mini` to
+  `gpt-5.5-mini`. 5.5 matches 5.4's per-token latency at higher
+  intelligence and uses fewer tokens on equivalent work. 5.4 variants
+  remain registered and selectable for users who need to pin the older
+  model. Registry entries for all four 5.5 variants (`gpt-5.5`,
+  `gpt-5.5-pro`, `gpt-5.5-mini`, `gpt-5.5-nano`) were added in a prior
+  change and are verified against current API specs: 1M context, 128K
+  max output, `supports_thinking: true` on `gpt-5.5-pro`.
+
+- **Retry button for context-too-large errors**: Prompt-too-long /
+  context-limit responses now render an orange banner with an actionable
+  hint, guidance ("unselect files, switch models, or compress the
+  conversation"), collapsible technical details, and a 🔄 Retry Request
+  button — mirroring the existing auth-refresh banner pattern. Detection
+  branches first on backend `errorType` (`context_size_error`,
+  `CONTEXT_LIMIT`) then falls back to content heuristics for paths that
+  didn't classify. `MarkdownRenderer` attaches click handlers via the
+  same MutationObserver scan used for auth/throttle retries (observer
+  filter widened to include `.context-error-retry-button`).
+  `StreamedContent` listens for the new `retryContextError` window event,
+  strips the banner from the conversation, and resends the last
+  non-muted human message through `send()`. Uses a distinct color
+  (`#fa8c16` orange vs. auth-error red) so the two error classes are
+  visually separable at a glance.
+
+### Fixed
+- **Mermaid parse errors no longer pollute the crash log**: Invalid
+  user-supplied diagram syntax (unknown diagram types, lexer errors,
+  parse errors from mermaid / mermaid-parser / individual diagram
+  modules) is an expected validation failure surfaced inline by the
+  renderer — logging it to `ZIYA_CRASH_LOG` buried real bugs.  Added
+  targeted suppression in the global `unhandledrejection` handler.
+
+- **Conversation shows empty on reload despite being highlighted in sidebar**:
+  A user-visible case surfaced where the selected conversation rendered
+  with zero messages on startup, even though the server held the full
+  55-message record. Root cause was a write-side data loss bug: the
+  "fast path" in `saveConversations` (small batches, no shells) wrote
+  directly to IDB without the per-record message-count guard that
+  protects the slow path. An upstream caller passing a conversation
+  with `messages: []` and a bumped `_version` would silently blank the
+  real record. The sync layer then couldn't self-heal because shells
+  are treated as `localVer = Infinity` to prevent redundant full-fetches
+  during lazy-load — so the empty local record with a shell marker
+  appeared infinitely-newer than the server version, permanently
+  blocking the pull. Fixed in two layers:
+  (1) **Fast-path tombstone guard** in `saveConversations`: every
+  fast-path write now reads the existing IDB record first and preserves
+  its `messages` array if it has more messages than the caller
+  (mirrors the per-record guard already present in the slow path and
+  single-record `saveConversation`). Same threshold (`existing > 2`)
+  prevents resurrection of legitimately-short deleted conversations.
+  Logs stack trace on fire so the offending caller can be identified.
+  (2) **Sync-side force-pull** in `ChatContext`: when the local shell
+  reports `_fullMessageCount === 0` but the server summary reports
+  `messageCount > 0`, the sync pins `localVer = 0` instead of Infinity,
+  forcing a full fetch from the server. Closes the trap for any
+  pre-existing corrupt records — they self-heal within one sync cycle.
+  Defense-in-depth: the write guard prevents new bad state, the sync
+  fix recovers from any bad state that already exists or might slip
+  through in the future.
+
+- **Forked conversation garbage-collected on next sync cycle**: The
+  30-second server-sync merge replaced React state with a set derived
+  strictly from IDB shells + server summaries. A freshly forked
+  conversation whose background `db.saveConversation` had not yet landed
+  was in neither, so the `safeConvs` filter silently dropped it. Fixed
+  in two layers: (1) `ChatContext` sync merge now preserves prev-only
+  in-memory conversations, guarded by project match, not-previously-on-
+  server (honors real cross-tab deletes), and a 5-minute `lastAccessedAt`
+  age cap (closes the resurrection race if
+  `knownServerConversationIds` is pruned between a sibling delete and
+  the next sync). (2) Fork logic moved out of `MUIChatHistory` into a
+  new `ChatContext.forkConversation` mutation that matches the
+  architecture of every other conversation mutation: hydrates shells
+  from IDB, optimistic state update + navigation, `await
+  db.saveConversation` with rollback-on-failure and user-visible
+  `message.error`, adds to `dirtyConversationIds` for server
+  dual-write, posts `conversations-changed` on the project
+  BroadcastChannel so sibling tabs update immediately.
+  `MUIChatHistory.handleForkConversation` reduced to a 1-line
+  delegation. Also wires `forkConversation` through the
+  `ConversationListProvider` props, interface, value memo, and deps.
+- **Silent persistence failures surface to users**: `queueSave`'s slow
+  path and the dual-write server push both swallow errors by design so
+  the save queue survives transient issues — but that hid real
+  quota-exceeded / IDB-unavailable / server-outage conditions until the
+  user refreshed and discovered data loss. Added a shared
+  `notifyPersistenceFailure` helper (throttled to one toast per 30s so
+  streaming-chunk-sized failure bursts don't flood the UI) and wired it
+  into both catch sites. Save semantics unchanged; only the notification
+  layer is new.
+
+- **Hallucination detector false positives on diff context lines**: The
+  shingle-index parroting check fired on every context line in a `diff`
+  or `patch` code block because those lines are word-for-word copies of
+  previously `file_read` content by design. The block type is now
+  inspected before building the probe: `diff`/`patch` fences skip the
+  shingle check entirely; other fenced blocks probe the raw tail as
+  normal. This eliminates the retry loop that was interrupting legitimate
+  diff generation after a file had been read.
+- **Hallucinated Slack tool calls not caught when wrapped in code fences**:
+  The model was observed fabricating Slack MCP tool results by wrapping
+  invented output in a JSON code fence that mimicked the raw MCP
+  tool-result payload (`"content": [{"type": "text", "text": "..."}]`).
+  Two compounding issues allowed this to bypass detection: (1) the
+  shingle-index parroting check was gated on `not in_block`, so it never
+  ran inside any code fence; (2) even without that gate, the probe text
+  was built via `scannable_text()` which strips fenced content. Fixed by
+  removing the `not in_block` gate and branching the probe construction —
+  outside fences uses `scannable_text()` as before; inside non-diff
+  fences uses the raw tail so fingerprinted tool output hidden in a code
+  block is still caught. A new entry in `_RAW_HALLUCINATION_PATTERNS`
+  additionally catches the MCP content-array envelope structure
+  (`"content": [{"type": "text", "text": "`) as a format that cannot
+  appear in legitimate assistant prose regardless of prior tool calls.
+- **Forked conversation loses history on first new message**: After
+  forking a conversation, sending any new message would show an empty
+  history to the model (the new message sent without prior context).
+  Two bugs combined to cause this. First, `handleForkConversation` in
+  `MUIChatHistory.tsx` spread the source conversation directly into the
+  fork without stripping the `_isShell` / `_fullMessageCount` metadata
+  fields; when the source had not been opened yet (still a shell in
+  state), these fields carried over and the `SHELL_GUARD` in
+  `addMessageToConversation` immediately classified the fork as an
+  unloaded shell, suppressed the new message, fired an async IDB
+  recovery that fetched the fork's own incomplete record, and silently
+  discarded the message when the record proved unusable. Second,
+  `db.saveConversation` (single-record write path) did not strip shell
+  markers before persisting, so a shell-sourced fork was written to
+  IndexedDB as a shell, making the recovery path permanently unresolvable.
+  Fixed by: (1) making `handleForkConversation` async so it can load the
+  full conversation from IDB before forking when the source is a shell,
+  and (2) always deleting `_isShell` and `_fullMessageCount` from the
+  forked object before adding it to state and saving. `db.saveConversation`
+  now also strips both fields before any IDB write, matching the
+  protection that already existed in the bulk `saveConversations` path.
+- **Auto-continue path bypassed diff applicator**: When the model's first
+  response was truncated (e.g. a BedrockProvider timeout) and the
+  `_run_with_tools_and_validate` loop auto-continued with a follow-up
+  call, the continuation was concatenated and returned directly without
+  re-entering the diff validation/application pipeline. Any diffs
+  arriving in the continuation streamed to the terminal but the
+  interactive apply/skip prompt never appeared, so users could see
+  diffs in output that silently could not be applied. The auto-continue
+  branch now merges the continuation back into `response` and falls
+  through to the existing diff detection + `validate_and_enhance` +
+  `process_response` flow; responses that still contain no diffs after
+  merging return as before.
+- **CLI diff applicator skips path-less diffs**: Diffs that the extractor
+  could not associate with a file path (typically illustrative snippets
+  or malformed fenced blocks) were being presented in the numbered
+  apply/skip prompt sequence as `Diff N/M — Warning: Could not detect
+  file path`, which the user could neither apply nor act on. These are
+  now filtered out of the candidate list in
+  `app/utils/cli_diff_applicator.py` immediately after extraction, with
+  a single gray notice reporting how many were skipped. Remaining diffs
+  are renumbered naturally by the existing loop.
+
+### Changed
+
+### Fixed (MCP)
+- **Tilde expansion in MCP server paths**: `command` and `args` entries
+  in MCP config using `~` (e.g. `~/.mcp/server.py`) were not being
+  expanded before path existence checks in `manager.py`, causing valid
+  servers to be skipped with a misleading "script not found" error.
+  Fixed in both the validation pass (`manager.py`) and at subprocess
+  spawn time (`client.py`) so `~` resolves correctly in all cases.
+- **npm/uvx package names incorrectly treated as file paths**: MCP
+  servers whose last arg is an npm package name (e.g.
+  `@modelcontextprotocol/server-brave-search`, `mcp-server-fetch`) were
+  being tested for file existence and rejected. Added an `is_pkg_name`
+  guard that skips the file-existence check for args that contain no
+  path separator and carry no `.py`/`.js`/`.ts` extension.
+- **`proj_root_for_check` referenced before assignment**: A variable
+  ordering bug introduced alongside the tilde-expansion fix caused
+  `cannot access local variable 'proj_root_for_check'` at MCP manager
+  startup, preventing all MCP servers from loading. Variable is now
+  defined before use.
+
 ## [0.6.5.1] - 2026-04-28
 
 ### Added
@@ -60,6 +653,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shell sessions. The first-line prompt check now requires `$ ` strictly
   for untagged fences; `#` inside an explicit shell-tagged fence is still
   recognized as either comment or root prompt (both legitimate).
+- **Fake-shell detector missed bare-shell sessions in N-backtick fences**:
+  The model sometimes fabricates tool-response envelopes using 4+ backticks
+  with no language tag, containing bare shell commands (no `$` prompt) and
+  invented output.  Two fixes:
+    - Fence parser now follows CommonMark: an N-backtick open requires a
+      close of at least N backticks.  Previously a 3-backtick inside a
+      4-backtick fence was mistakenly treated as the close, truncating
+      scanning to a small body and letting the fabrication slip through.
+    - Added Signal 3: fences containing shell-grammar markers
+      (`2>/dev/null`, `2>&1`, `> /dev/null`, `>> /dev/null`) with 2+
+      non-command lines fire as fabricated sessions.  Scoped to untagged
+      and shell-tagged fences; Python/JS fences with subprocess invocations
+      that include redirect strings are not flagged.
 
 ### Changed
 
