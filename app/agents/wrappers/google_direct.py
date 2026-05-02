@@ -1,14 +1,14 @@
 import json
 import asyncio
 import re
-from typing import List, Dict, Optional, AsyncIterator, Any, Tuple, Union, TYPE_CHECKING
+from typing import List, Dict, Optional, AsyncIterator, Any, Tuple
 import inspect
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage, ToolMessage
 from app.utils.logging_utils import logger
-from app.mcp.manager import get_mcp_manager
 from langchain_core.tools import BaseTool
 from google import genai
 from google.genai import types
+from app.providers.google_direct import _sanitize_schema_for_gemini
 
 class DirectGoogleModel:
     """
@@ -20,20 +20,13 @@ class DirectGoogleModel:
         self.model_name = model_name
         self.temperature = temperature
         self.max_output_tokens = max_output_tokens
-        self.thinking_level = thinking_level  # "low", "medium", "high", or None
-        self.mcp_manager = get_mcp_manager()
-        
+        self.thinking_level = thinking_level
         logger.info(f"DirectGoogleModel initialized: model={model_name}, temp={temperature}, max_output_tokens={max_output_tokens}")
         if thinking_level:
             logger.info(f"Gemini 3 thinking_level: {thinking_level}")
-            # New SDK has full Gemini 3 support
             logger.info(f"Using new Google GenAI SDK with thinking_level support")
-        
-        # Get API key from environment and configure genai
         import os
         api_key = os.getenv('GOOGLE_API_KEY')
-        
-        # Create client with new SDK
         self.client = genai.Client(api_key=api_key) if api_key else genai.Client()
         logger.info("Created Google GenAI client")
 
@@ -65,6 +58,9 @@ class DirectGoogleModel:
                 schema = tool.args_schema.schema() if tool.args_schema else {"type": "object", "properties": {}}
                 if not isinstance(schema, dict):
                     schema = schema.dict()
+
+                # Strip JSON Schema keys Gemini rejects; see provider-level sanitizer.
+                schema = _sanitize_schema_for_gemini(schema)
                 
                 # New SDK format
                 func_decl = types.FunctionDeclaration(
@@ -105,9 +101,11 @@ class DirectGoogleModel:
                 continue
             elif isinstance(message, ToolMessage):
                 # Handle tool results (FunctionResponse)
-                part = types.FunctionResponse(
-                    name=message.name,
-                    response={"content": message.content}
+                part = types.Part(
+                    function_response=types.FunctionResponse(
+                        name=message.name,
+                        response={"content": message.content}
+                    )
                 )
                 # Merge into previous function message if it exists (for parallel tool calls)
                 if google_messages and google_messages[-1]['role'] == 'tool':
@@ -222,26 +220,26 @@ class DirectGoogleModel:
             return [{'text': str(content)}]
     async def astream(self, messages: List[BaseMessage], **kwargs) -> AsyncIterator[Dict]:
         """
-        Streams responses from the Google Gemini model, handling native tool calls correctly.
-        """
-        
-        tools = kwargs.get("tools", [])
-        google_tool = self._convert_langchain_tools_to_google(tools)
-        history, system_instruction = self._convert_messages_to_google_format(messages)
+        Streams text responses from the Google Gemini model.
 
-        # The main loop for handling multi-turn tool calls
-        while True:
-            logger.info("Calling Google model with history...")
-            try:
-                # Build generation config
-                gen_config_params = {
-                    "temperature": self.temperature,
-                    "max_output_tokens": self.max_output_tokens,
-                }
-                
-                # CRITICAL: Disable safety settings for coding tasks
-                # Code generation often triggers false positives (e.g. "unsafe" scripts)
-                gen_config_params["safety_settings"] = [
+        Tool execution is handled upstream by StreamingToolExecutor +
+        GoogleDirectProvider (app/providers/google_direct.py). This method
+        is a pure text-streaming fallback used by _simple_invoke when no MCP
+        manager is available. Any tools= kwarg is ignored.
+        """
+        tools = kwargs.get("tools", [])
+        if tools:
+            logger.warning(
+                "DirectGoogleModel.astream() received tools but cannot dispatch them. "
+                "Route tool-using calls through StreamingToolExecutor + GoogleDirectProvider."
+            )
+        history, system_instruction = self._convert_messages_to_google_format(messages)
+        logger.info("Calling Google model (text-only fallback)...")
+        try:
+            gen_config_params = {
+                "temperature": self.temperature,
+                "max_output_tokens": self.max_output_tokens,
+                "safety_settings": [
                     types.SafetySetting(
                         category=category,
                         threshold=types.HarmBlockThreshold.BLOCK_NONE
@@ -251,163 +249,33 @@ class DirectGoogleModel:
                         types.HarmCategory.HARM_CATEGORY_HARASSMENT,
                         types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
                     ]
-                ]
-                
-                # Add system instruction to config if available
-                if system_instruction:
-                    gen_config_params["system_instruction"] = system_instruction
-                    logger.info(f"Added system instruction to config (length: {len(system_instruction)})")
-                
-                # Add thinking_config for Gemini 3 models (fully supported in new SDK)
-                # Only apply if thinking_level is set AND model supports it
-                supports_thinking = (
-                    "gemini-3" in self.model_name.lower() or 
-                    "thinking" in self.model_name.lower()
+                ],
+            }
+            if system_instruction:
+                gen_config_params["system_instruction"] = system_instruction
+            supports_thinking = (
+                "gemini-3" in self.model_name.lower() or
+                "thinking" in self.model_name.lower()
+            )
+            if self.thinking_level and supports_thinking:
+                gen_config_params["thinking_config"] = types.ThinkingConfig(
+                    thinking_level=self.thinking_level.upper()
                 )
-                if self.thinking_level and supports_thinking:
-                    # Convert thinking_level to ThinkingConfig format
-                    gen_config_params["thinking_config"] = types.ThinkingConfig(
-                        thinking_level=self.thinking_level.upper()  # Convert "low" to "LOW", etc.
-                    )
-                    logger.info(f"Applied thinking_config with level: {self.thinking_level}")
-                
-                # Use new SDK's async streaming API
-                config = types.GenerateContentConfig(**gen_config_params)
-                
-                # Add tools if available
-                if google_tool:
-                    config.tools = [google_tool]
-                    # Explicitly set tool config to AUTO to ensure the model knows it can use them
-                    config.tool_config = types.ToolConfig(
-                        function_calling_config=types.FunctionCallingConfig(
-                            mode=types.FunctionCallingConfigMode.AUTO
-                        )
-                    )
-                # Build request parameters
-                request_params = {
-                    'model': self.model_name,
-                    'contents': history,
-                    'config': config
-                }
-                
-                # Add retry logic for transient errors
-                max_retries = 3
-                base_delay = 1
-                
-                for attempt in range(max_retries):
-                    try:
-                        response = await self.client.aio.models.generate_content_stream(
-                            **request_params
-                        )
-                        break
-                    except Exception as e:
-                        # Check for rate limit (429) or server error (500+)
-                        error_str = str(e).lower()
-                        if attempt < max_retries - 1 and ('429' in error_str or '503' in error_str or 'resource exhausted' in error_str):
-                            delay = base_delay * (2 ** attempt)
-                            logger.warning(f"Google API transient error: {e}. Retrying in {delay}s...")
-                            await asyncio.sleep(delay)
-                        else:
-                            raise e
-                            
-            except Exception as e:
-                error_message = f"Google API Error ({type(e).__name__}): {str(e)}"
-                logger.error(error_message, exc_info=True)
-                yield {"type": "error", "content": error_message}
-                return
-
-            tool_calls = []
-            model_response_parts = []
-            finish_reason = None
-            finish_reason_name = None
-
+            config = types.GenerateContentConfig(**gen_config_params)
+            response = await self.client.aio.models.generate_content_stream(
+                model=self.model_name,
+                contents=history,
+                config=config,
+            )
             async for chunk in response:
-                # Log finish reason if present
-                # New SDK chunk structure
-                if hasattr(chunk, 'candidates'):
-                    for candidate in chunk.candidates:
-                        if hasattr(candidate, 'finish_reason'):
-                            finish_reason = candidate.finish_reason
-                            finish_reason_name = str(finish_reason)
-                            logger.info(f"Google model finish_reason: {finish_reason_name}")
-                        if hasattr(candidate, 'safety_ratings'):
-                            logger.info(f"Google model safety_ratings: {candidate.safety_ratings}")
-                
                 if chunk.parts:
                     for part in chunk.parts:
                         if part.text:
                             yield {"type": "text", "content": part.text}
-                        if hasattr(part, 'function_call') and part.function_call:
-                            tool_calls.append(part.function_call)
-
-                if chunk.candidates:
-                    for candidate in chunk.candidates:
-                        if candidate.content and candidate.content.parts:
-                            model_response_parts.extend(candidate.content.parts)
-            
-            logger.info(f"Stream ended. Tool calls: {len(tool_calls)}, Finish reason: {finish_reason_name or finish_reason}")
-
-            if not tool_calls:
-                logger.info("No tool calls from model. Ending loop.")
-                break
-
-            logger.info(f"Model returned {len(tool_calls)} tool call(s).")
-            history.append({'role': 'model', 'parts': model_response_parts})
-
-            tool_results = []
-            for tool_call in tool_calls:
-                tool_name = tool_call.name
-                # Strip mcp_ prefix if present (models are instructed to use it, but internal tools may not have it)
-                if tool_name.startswith("mcp_"):
-                    tool_name = tool_name[4:]
-                
-                tool_args = dict(tool_call.args) if hasattr(tool_call, 'args') and tool_call.args else {}
-
-                yield {"type": "tool_start", "tool_name": tool_name, "input": tool_args}
-
-                try:
-                    tool_result_obj = await self.mcp_manager.call_tool(tool_name, tool_args)
-
-                    # Sign and verify the tool result (same as Bedrock path)
-                    try:
-                        from app.mcp.signing import sign_tool_result, verify_tool_result, strip_signature_metadata
-
-                        # Sign the result
-                        tool_result_obj = sign_tool_result(tool_name, tool_args, tool_result_obj)
-
-                        # Verify the signature
-                        is_valid, error_message = verify_tool_result(tool_result_obj, tool_name, tool_args)
-                        if not is_valid:
-                            logger.error(f"🔐 SECURITY: Tool result verification failed for {tool_name}: {error_message}")
-                            yield {"type": "error", "content": f"Tool verification failed for {tool_name}: {error_message}"}
-                            tool_results.append(
-                                types.FunctionResponse(name=tool_name, response={"error": f"Verification failed: {error_message}"})
-                            )
-                            continue
-
-                        # Strip signature metadata before using
-                        tool_result_obj = strip_signature_metadata(tool_result_obj)
-                    except ImportError:
-                        logger.warning("Tool signing module not available, proceeding without verification")
-
-                    tool_result_str = self._extract_text_from_mcp_result(tool_result_obj)
-
-                    yield {"type": "tool_display", "tool_name": tool_name, "result": tool_result_str}
-
-                    tool_results.append(
-                        types.FunctionResponse(name=tool_name, response={"content": tool_result_str})
-                    )
-                except Exception as e:
-                    error_message = f"Error executing tool {tool_name}: {e}"
-                    logger.error(error_message)
-                    yield {"type": "error", "content": error_message}
-                    tool_results.append(
-                        types.FunctionResponse(name=tool_name, response={"error": error_message})
-                    )
-
-            # Add tool results to history in new format
-            if tool_results:
-                history.append({'role': 'tool', 'parts': tool_results})
+        except Exception as e:
+            error_message = f"Google API Error ({type(e).__name__}): {str(e)}"
+            logger.error(error_message, exc_info=True)
+            yield {"type": "error", "content": error_message}
 
     async def ainvoke(self, messages: List[BaseMessage], **kwargs) -> Dict[str, Any]:
         """
