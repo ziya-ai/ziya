@@ -42,6 +42,27 @@ window.addEventListener('unhandledrejection', (event) => {
         event.preventDefault();
         return;
     }
+    // Suppress diagram-library parse errors — these are expected validation
+    // failures on invalid user-supplied diagram syntax.  The diagram renderer
+    // surfaces them inline; logging pollutes the crash log and buries real bugs.
+    {
+        const reason = event.reason;
+        const msg = typeof reason === 'string' ? reason : (reason?.message || '');
+        const stack = reason?.stack || '';
+        const name = reason?.name || '';
+        if (
+            name === 'UnknownDiagramError' ||
+            /^Parse error on line \d+/.test(msg) ||
+            /^Lexical error on line \d+/.test(msg) ||
+            /^Parsing failed:.*(Lexer|Parse) error/i.test(msg) ||
+            /mermaid(-parser)?\.core\.mjs/.test(stack) ||
+            /mermaidEnhancer\.ts|mermaidPlugin\.ts/.test(stack) ||
+            /(gitgraph|requirementDiagram|blockDiagram|architecture|diagram-[A-Z0-9]+)[-A-Z0-9]*\.mjs/.test(stack)
+        ) {
+            event.preventDefault();
+            return;
+        }
+    }
     // Persist to crash log for post-mortem diagnosis
     try {
         const reason = event.reason;

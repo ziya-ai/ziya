@@ -1887,6 +1887,92 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                     });
                     graph.__orthogonalRoutingApplied = true;
 
+                    // ROUTE-FIX DETECTION: Manhattan silently falls back to
+                    // OrthogonalConnector when its ObstacleMap can't find a route
+                    // (padded source/target bboxes leave no orthogonal corridor).
+                    // The fallback draws a naive L-bend through any vertices
+                    // between source and target. Detect such edges after routing
+                    // settles so LABEL-AVOID knows which edges are unreliable.
+                    // Logs only in this pass; repair added in a follow-up.
+                    try {
+                        // Force all edges to re-route before checking. Setting
+                        // edgeStyle on cells above doesn't mark them dirty, so a
+                        // plain validate() may return stale 2-point absolutePoints
+                        // from before Manhattan was selected.
+                        edgeCells.forEach(({ id }) => {
+                            const c = cellMap.get(id);
+                            if (c) graph.view.invalidate(c, false, false);
+                        });
+                        graph.view.validate();
+                        type RBox = { id: string; x: number; y: number; w: number; h: number };
+                        const allV: RBox[] = [];
+                        cellMap.forEach((c, id) => {
+                            if (id === '0' || id === '1' || !c.isVertex()) return;
+                            const st = graph.view.getState(c);
+                            if (st) allV.push({ id, x: st.x, y: st.y, w: st.width, h: st.height });
+                        });
+                        const boxContains = (o: RBox, i: RBox) =>
+                            i.x >= o.x && i.y >= o.y &&
+                            i.x + i.w <= o.x + o.w && i.y + i.h <= o.y + o.h;
+                        // Exclude containers (any vertex fully enclosing another).
+                        // Routing through a trust-boundary rectangle is not a bug.
+                        const leaves = allV.filter(v =>
+                            !allV.some(o => o.id !== v.id && boxContains(v, o)));
+                        console.log(`📐 ROUTE-FIX: view scale=${graph.view.scale}, leaves at detection:`,
+                            leaves.map(v => `${v.id}@(${v.x.toFixed(0)},${v.y.toFixed(0)}) ${v.w.toFixed(0)}x${v.h.toFixed(0)}`).join(', '));
+                        const hitsBox = (a: any, b: any, box: RBox): boolean => {
+                            const bx0 = box.x + 1, by0 = box.y + 1;
+                            const bx1 = box.x + box.w - 1, by1 = box.y + box.h - 1;
+                            if (Math.abs(a.x - b.x) < 0.5) {
+                                const x = a.x;
+                                if (x <= bx0 || x >= bx1) return false;
+                                const y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
+                                return y1 > by0 + 1 && y0 < by1 - 1;
+                            }
+                            if (Math.abs(a.y - b.y) < 0.5) {
+                                const y = a.y;
+                                if (y <= by0 || y >= by1) return false;
+                                const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x);
+                                return x1 > bx0 + 1 && x0 < bx1 - 1;
+                            }
+                            return false;
+                        };
+                        const broken: Array<{ id: string; crosses: string[] }> = [];
+                        edgeCells.forEach(({ id }) => {
+                            const cell = cellMap.get(id);
+                            if (!cell) return;
+                            const st = graph.view.getState(cell);
+                            const pts = st?.absolutePoints;
+                            if (!pts || pts.length < 2) {
+                                console.log(`📐 ROUTE-FIX SKIP ${id}: pts=${pts?.length ?? 'nil'}`);
+                                return;
+                            }
+                            console.log(`📐 ROUTE-FIX CHECK ${id}: ${pts.length}pt ${
+                                pts.map((p:any) => `(${Math.round(p.x)},${Math.round(p.y)})`).join('→')
+                            }`);
+                            const sId = cell.getTerminal?.(true)?.getId?.();
+                            const tId = cell.getTerminal?.(false)?.getId?.();
+                            const crosses: string[] = [];
+                            for (let i = 0; i < pts.length - 1; i++) {
+                                leaves.forEach(v => {
+                                    if (v.id === sId || v.id === tId) return;
+                                    if (hitsBox(pts[i], pts[i + 1], v)) crosses.push(v.id);
+                                });
+                            }
+                            const uniq = [...new Set(crosses)];
+                            if (uniq.length > 0) broken.push({ id, crosses: uniq });
+                        });
+                        graph.__brokenRoutes = broken;
+                        if (broken.length > 0) {
+                            console.warn(`📐 ROUTE-FIX DETECT: ${broken.length} edge(s) cross vertex interiors:`,
+                                broken.map(b => `${b.id}→[${b.crosses.join(',')}]`).join(' '));
+                        } else {
+                            console.log('📐 ROUTE-FIX DETECT: all edges clear of vertex interiors');
+                        }
+                    } catch (e) {
+                        console.warn('📐 ROUTE-FIX DETECT failed', e);
+                    }
+
                     // Label collision avoidance (first pass).
                     // Force Manhattan to run once so absolutePoints are populated,
                     // then for each edge whose DEFAULT label position (midpoint
@@ -3429,9 +3515,12 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                                 if (Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
                                 const geom = cell.getGeometry();
                                 if (!geom) return;
-                                const base = geom.offset || new Point(0, 0);
                                 const newGeom = geom.clone();
-                                newGeom.offset = new Point(base.x + dx, base.y + dy);
+                                // Idempotent: write the absolute target offset, not base+delta.
+                                // Previous base+delta accumulated across multiple fitCenter calls
+                                // (50ms/200ms/500ms timeouts + ResizeObserver), pushing labels
+                                // progressively farther each pass.
+                                newGeom.offset = new Point(dx, dy);
                                 cell.setGeometry(newGeom);
                                 model.setStyle(cell, { ...(cell.getStyle() || {}) });
                                 console.log(`📐 POST-FIT ${cell.getId()}: shift (${dx.toFixed(1)}, ${dy.toFixed(1)}), segLen=${longest.len.toFixed(0)}`);
