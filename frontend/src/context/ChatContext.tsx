@@ -98,6 +98,7 @@ interface ChatContext {
     copyConversationToProject: (conversationId: string, targetProjectId: string) => Promise<void>;
     moveFolderToProject: (folderId: string, targetProjectId: string) => Promise<void>;
     toggleFolderGlobal: (folderId: string) => Promise<void>;
+    forkConversation: (conversationId: string) => Promise<string | null>;
     setChatContexts: (chatId: string, contextIds: string[], skillIds: string[], additionalFiles: string[], additionalPrompt: string | null) => Promise<void>;
 }
 
@@ -228,6 +229,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const knownServerConversationIds = useRef<Set<string>>(new Set());
     const dirtyConversationIds = useRef<Set<string>>(new Set());
     const recentlyFetchedFullIds = useRef<Set<string>>(new Set());
+    // Throttle for user-visible persistence-failure toasts.  Without this, a
+    // sustained IDB or server-push outage during streaming would show a toast
+    // per SSE chunk — unusable.
+    const lastSaveErrorNotifyRef = useRef<number>(0);
     const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null);
     const lastManualScrollTime = useRef<number>(0);
     const manualScrollCooldownActive = useRef<boolean>(false);
@@ -446,6 +451,22 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const getProcessingState = useCallback((conversationId: string): ProcessingState => {
         return processingStates.get(conversationId)?.state || 'idle';
     }, [processingStates]);
+
+    // Surface sustained persistence failures to the user without spamming.
+    // queueSave's slow path and the server dual-write both swallow errors by
+    // design (so the save queue doesn't break on transient issues), but that
+    // hides real quota-exceeded / IDB-unavailable conditions from the user
+    // until they refresh and discover data loss.  Throttled to one toast per
+    // 30 seconds so streaming-chunk-sized bursts don't flood the UI.
+    const SAVE_ERROR_NOTIFY_THROTTLE_MS = 30_000;
+    const notifyPersistenceFailure = useCallback((context: string, err: unknown) => {
+        console.error(`❌ ${context}:`, err);
+        const now = Date.now();
+        if (now - lastSaveErrorNotifyRef.current > SAVE_ERROR_NOTIFY_THROTTLE_MS) {
+            lastSaveErrorNotifyRef.current = now;
+            message.warning('Some changes may not be saved — storage may be full or unavailable.');
+        }
+    }, []);
 
     // Queue-based save system to prevent race conditions
     const queueSave = useCallback(async (conversations: Conversation[], options: {
@@ -666,7 +687,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 if (liveConv && mergedIdx >= 0) {
                     const liveMsgCount = liveConv.messages?.length || 0;
                     const mergedMsgCount = finalConversations[mergedIdx].messages?.length || 0;
-                    if (liveMsgCount > mergedMsgCount) {
+                    const liveVerIsNewer = (liveConv._version || 0) > (finalConversations[mergedIdx]._version || 0);
+                    if (liveMsgCount > mergedMsgCount || (liveVerIsNewer && liveMsgCount > 0)) {
                         finalConversations[mergedIdx] = { ...liveConv, _version: Date.now() };
                     }
                 }
@@ -689,9 +711,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 }
             } catch (saveError) {
                 // Log but don't throw - let the app continue functioning
-                console.error('❌ Database save failed:', saveError);
-                // If quota exceeded, we could try to prune old data here
-                // For now, just continue - the data is in React state
+                // Surface to user (throttled) so they aren't blindsided by
+                // data loss after a sustained quota/IDB failure.
+                notifyPersistenceFailure('Database save failed', saveError);
                 return; // Exit early, skip validation
             }
 
@@ -737,7 +759,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                 console.debug(`📡 DUAL_WRITE: Synced ${chatsToSync.length} conversations to project ${pid}`);
                             }
                         } catch (e) {
-                            console.warn('📡 DUAL_WRITE: Server sync failed (non-fatal):', e);
+                            // Non-fatal: IDB is still authoritative and next sync
+                            // cycle will retry.  But surface to user (throttled) so
+                            // persistent server outages don't go unnoticed.
+                            notifyPersistenceFailure('Server sync failed', e);
                         }
                     }, 2000); // 2-second debounce batches streaming writes
                 }
@@ -2171,10 +2196,22 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                 continue;
                             }
                             const serverVer = (sc as any)._version || sc.lastActiveAt || 0;
-                            // Shell conversations have _version: undefined, making them
-                            // appear stale on every sync cycle. Treat them as current to
-                            // prevent repeated full fetches before lazy-load completes.
-                            const localVer = (local as any)._isShell ? Infinity : ((local as any)._version || local.lastAccessedAt || 0);
+                          // Shell conversations have _version: undefined, making them
+                          // appear stale on every sync cycle. Treat them as current to
+                          // prevent repeated full fetches before lazy-load completes.
+                          //
+                          // Exception: if the shell reports _fullMessageCount === 0 but
+                          // the server's summary says messageCount > 0, the local IDB
+                          // record is genuinely empty and the server has the real data.
+                          // Pin localVer to 0 so the comparison below forces a pull.
+                          // Without this, a wiped-local/populated-server state is a
+                          // permanent trap: localVer=Infinity blocks the pull forever.
+                          const localFullCount = (local as any)._fullMessageCount;
+                          const serverSummaryMsgs = typeof (sc as any).messageCount === 'number' ? (sc as any).messageCount : 0;
+                          const emptyLocalPopulatedServer = (local as any)._isShell && localFullCount === 0 && serverSummaryMsgs > 0;
+                          const localVer = emptyLocalPopulatedServer
+                              ? 0
+                              : ((local as any)._isShell ? Infinity : ((local as any)._version || local.lastAccessedAt || 0));
                             // Symmetric message-count divergence check (mirror of the
                             // push-side filter below).  If server reports strictly
                             // more messages than we have locally, fetch — even if
@@ -2458,7 +2495,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             if (liveConv && mergedConv) {
                                 const liveMsgCount = liveConv.messages?.length || 0;
                                 const mergedMsgCount = mergedConv.messages?.length || 0;
-                                if (liveMsgCount > mergedMsgCount) {
+                                const liveVersionIsNewer = (liveConv._version || 0) > (mergedConv._version || 0);
+                                if (liveMsgCount > mergedMsgCount || (liveVersionIsNewer && liveMsgCount > 0)) {
                                     mergedConv.messages = liveConv.messages;
                                     mergedConv._version = Math.max(liveConv._version || 0, mergedConv._version || 0);
                                 }
@@ -2490,9 +2528,42 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         // Don't let a stale sync cycle resurrect a conversation that
                         // was deleted in this tab between when this sync started and now.
                         const prevIds = new Set(prev.map((p: any) => p.id));
-                        const safeConvs = mergedProjectConvs.filter((mc: any) =>
+                        const mergedIds = new Set(mergedProjectConvs.map((mc: any) => mc.id));
+                        const safeConvs: any[] = mergedProjectConvs.filter((mc: any) =>
                             prevIds.has(mc.id) || serverIdSet.has(mc.id)
                         );
+
+                        // Preserve in-memory-only conversations that haven't been
+                        // persisted to IDB yet and aren't on the server — e.g. a
+                        // just-forked conversation whose background db.saveConversation
+                        // hasn't completed before this sync cycle loaded IDB shells.
+                        // Without this, the next sync after a fork drops the fork
+                        // from React state.
+                        // Guard: only keep active, in-this-project entries, and skip
+                        // any id the server previously knew about (those are real
+                        // deletions handled by the block above).
+                        //
+                        // Also cap by lastAccessedAt: prev-only entries by construction
+                        // come from code paths that haven't yet round-tripped IDB.  In
+                        // practice that means the entry was created/touched very
+                        // recently.  An old prev-only entry is an anomaly (e.g.
+                        // knownServerConversationIds was pruned above 5000 entries
+                        // between a sibling-tab delete and now) and resurrecting it
+                        // would fight the delete.  The 5-minute window is much larger
+                        // than any legitimate IDB write latency and comfortably covers
+                        // the 2s dual-write debounce + sync cycle.
+                        const PRESERVATION_MAX_AGE_MS = 5 * 60 * 1000;
+                        const nowTs = Date.now();
+                        for (const p of prev) {
+                            if (mergedIds.has((p as any).id)) continue;
+                            if ((p as any).isActive === false) continue;
+                            if (knownServerConversationIds.current.has((p as any).id)) continue;
+                            const pid = (p as any).projectId;
+                            if (pid && pid !== projectId && !(p as any).isGlobal) continue;
+                            const lastActivity = (p as any).lastAccessedAt || (p as any)._version || 0;
+                            if (lastActivity === 0 || nowTs - lastActivity > PRESERVATION_MAX_AGE_MS) continue;
+                            safeConvs.push(p);
+                        }
 
                         // Preserve in-memory messages that were lazy-loaded during
                         // this session but not yet persisted to IDB.
@@ -2501,8 +2572,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             const inMemory = prevMap.get(mc.id);
                             const inMemoryCount = inMemory?.messages?.length || 0;
                             const isActive = mc.id === currentConversationRef.current;
-                            if (inMemoryCount > mcMsgCount || (isActive && inMemoryCount > 0 && inMemoryCount >= mcMsgCount)) {
+                            const inMemoryIsNewer = (inMemory?._version || 0) > (mc._version || 0);
+                            if (inMemoryCount > mcMsgCount
+                                || (isActive && inMemoryCount > 0 && inMemoryCount >= mcMsgCount)
+                                || (inMemoryIsNewer && inMemoryCount > 0)) {
                                 mc.messages = inMemory.messages;
+                                if (inMemoryIsNewer) mc._version = inMemory._version;
                             }
                         }
 
@@ -3032,6 +3107,79 @@ export function ChatProvider({ children }: ChatProviderProps) {
         console.log(`📁 Folder "${folder.name}" is now ${updatedFolder.isGlobal ? 'global' : 'project-scoped'}`);
     }, [folders, currentProject?.id, updateFolder]);
 
+    // Fork a conversation: create a copy with a new id, select it, and persist.
+    // Goes through the same architecture as other mutations (optimistic state
+    // update + IDB write + projectSync broadcast + dirty-tracking for server
+    // dual-write) so siblings tabs see the fork and the server receives it.
+    // Returns the new conversation id on success, or null on failure.
+    // On persistence failure, rolls back the optimistic state change and
+    // surfaces an error to the user — fork is never silently lost.
+    const forkConversation = useCallback(async (conversationId: string): Promise<string | null> => {
+        if (conversationId.startsWith('conv-')) {
+            conversationId = conversationId.substring(5);
+        }
+
+        let source = conversationsRef.current.find(c => c.id === conversationId);
+        if (!source) {
+            message.error('Cannot fork: conversation not found');
+            return null;
+        }
+
+        // If the source is a shell (messages stripped for sidebar memory),
+        // hydrate from IDB so the fork carries full history.  Read lock is
+        // separate from the write lock, safe during active streaming.
+        if ((source as any)._isShell) {
+            try {
+                const full = await db.getConversation(conversationId);
+                if (full && !((full as any)._isShell) && full.messages.length > 0) {
+                    source = full;
+                }
+            } catch (err) {
+                console.warn('Fork: failed to hydrate source from IDB:', err);
+            }
+        }
+
+        const newId = uuidv4();
+        const forked: Conversation & { _isShell?: boolean; _fullMessageCount?: number } = {
+            ...source,
+            id: newId,
+            title: `Fork: ${source.title}`,
+            lastAccessedAt: Date.now(),
+            _version: Date.now(),
+            hasUnreadResponse: false,
+            isActive: true,
+        };
+        // Strip transient shell metadata — the fork is a full conversation.
+        delete forked._isShell;
+        delete forked._fullMessageCount;
+
+        // Optimistic state update + navigation. Don't await anything on the
+        // click path — the Dropdown overlay is torn down during streaming
+        // re-renders if we yield here.
+        setConversations(prev => [...prev, forked]);
+        setCurrentConversationId(newId);
+
+        // Persist and broadcast.  Direct db.saveConversation gives us a
+        // reliable per-operation success signal; queueSave debounces and
+        // swallows its internal errors, which we don't want for a
+        // user-initiated action that needs rollback-on-failure semantics.
+        try {
+            await db.saveConversation(forked);
+            dirtyConversationIds.current.add(newId);
+            projectSync.post('conversations-changed', { ids: [newId] });
+            message.success('Conversation forked successfully');
+            return newId;
+        } catch (err) {
+            console.error('Fork: failed to persist forked conversation:', err);
+            // Roll back optimistic state so React, IDB, and the server
+            // all agree the fork never happened.
+            setConversations(prev => prev.filter(c => c.id !== newId));
+            setCurrentConversationId(conversationId);
+            message.error('Failed to fork conversation — storage unavailable');
+            return null;
+        }
+    }, [setCurrentConversationId]);
+
     const toggleConversationGlobal = useCallback(async (conversationId: string) => {
         setConversations(prev => {
             const updated = prev.map(conv => {
@@ -3315,6 +3463,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         copyConversationToProject,
         moveFolderToProject,
         toggleFolderGlobal,
+        forkConversation,
         setChatContexts,
     }), [
         currentMessages,
@@ -3368,6 +3517,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         moveConversationToProject,
         moveFolderToProject,
         toggleFolderGlobal,
+        forkConversation,
         setChatContexts,
     ]);
 
@@ -3456,6 +3606,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     moveConversationToProject={moveConversationToProject}
                     copyConversationToProject={copyConversationToProject}
                     moveFolderToProject={moveFolderToProject}
+                    forkConversation={forkConversation}
                     toggleFolderGlobal={toggleFolderGlobal}
                     dbError={dbError}
                     isProjectSwitching={isProjectSwitching}

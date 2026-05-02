@@ -5331,8 +5331,8 @@ function _installThrottleObserver(scanFn: () => void) {
                 Array.from(r.addedNodes).some(n => {
                     if (n.nodeType !== Node.ELEMENT_NODE) return false;
                     const el = n as Element;
-                    return el.matches('.throttle-retry-button, .auth-error-retry-button') ||
-                        el.querySelector('.throttle-retry-button, .auth-error-retry-button') !== null;
+                    return el.matches('.throttle-retry-button, .auth-error-retry-button, .context-error-retry-button') ||
+                        el.querySelector('.throttle-retry-button, .auth-error-retry-button, .context-error-retry-button') !== null;
                 })
             );
             if (!relevant) return;
@@ -6275,6 +6275,33 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         button.addEventListener('click', handleClick);
     }, []);
 
+    // Attach handler to context-error retry buttons.  Same pattern as
+    // auth-retry: dispatch a window event that StreamedContent listens for,
+    // so the resend runs inside the component tree where `send` and conversation
+    // state are accessible.
+    const attachContextRetryHandler = useCallback((button: HTMLButtonElement) => {
+        const conversationId = button.getAttribute('data-conversation-id');
+        if (!conversationId) return;
+
+        console.log(`✅ Attaching context retry handler to button for conversation: ${conversationId}`);
+        button.dataset.handlerAttached = 'true';
+        attachedHandlersRef.current.add(button);
+
+        const handleClick = () => {
+            console.log('🔄 Context error retry button clicked for conversation:', conversationId);
+            button.textContent = '🔄 Retrying...';
+            button.disabled = true;
+            button.style.opacity = '0.6';
+            button.style.cursor = 'not-allowed';
+
+            window.dispatchEvent(new CustomEvent('retryContextError', {
+                detail: { conversationId }
+            }));
+        };
+
+        button.addEventListener('click', handleClick);
+    }, []);
+
     // Helper to attach handlers to all buttons
     const scanAndAttachHandlers = useCallback(() => {
         const allButtons = document.querySelectorAll('.throttle-retry-button');
@@ -6292,6 +6319,14 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             }
         });
 
+        // Also scan for context-error retry buttons
+        const contextButtons = document.querySelectorAll('.context-error-retry-button');
+        contextButtons.forEach(button => {
+            if (!(button as HTMLButtonElement).dataset.handlerAttached) {
+                attachContextRetryHandler(button as HTMLButtonElement);
+            }
+        });
+
         // Prune stale DOM references that are no longer in the document.
         // Elements removed from the DOM stay in the Set and prevent GC
         // of their closures and associated DOM trees.
@@ -6303,7 +6338,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
         // Mark that we've done at least one scan
         hasScannedInitiallyRef.current = true;
-    }, [attachThrottleRetryHandler, attachAuthRetryHandler]);
+    }, [attachThrottleRetryHandler, attachAuthRetryHandler, attachContextRetryHandler]);
 
     // Setup MutationObserver to watch for dynamically added throttle buttons
     useLayoutEffect(() => {

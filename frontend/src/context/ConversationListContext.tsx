@@ -31,6 +31,7 @@ export interface ConversationListContextValue {
   moveConversationToProject: (conversationId: string, targetProjectId: string) => Promise<void>;
   copyConversationToProject: (conversationId: string, targetProjectId: string) => Promise<void>;
   moveFolderToProject: (folderId: string, targetProjectId: string) => Promise<void>;
+  forkConversation: (conversationId: string) => Promise<string | null>;
   toggleFolderGlobal: (folderId: string) => Promise<void>;
   dbError: string | null;
   isProjectSwitching: boolean;
@@ -61,6 +62,7 @@ export const ConversationListProvider: React.FC<
       moveConversationToProject: value.moveConversationToProject,
       copyConversationToProject: value.copyConversationToProject,
       moveFolderToProject: value.moveFolderToProject,
+      forkConversation: value.forkConversation,
       toggleFolderGlobal: value.toggleFolderGlobal,
       dbError: value.dbError,
       isProjectSwitching: value.isProjectSwitching,
@@ -81,6 +83,7 @@ export const ConversationListProvider: React.FC<
       value.moveConversationToFolder, value.moveChatToGroup,
       value.toggleConversationGlobal, value.moveConversationToProject,
       value.copyConversationToProject, value.moveFolderToProject, value.toggleFolderGlobal,
+      value.forkConversation,
     ]
   );
 
