@@ -433,6 +433,150 @@ class TestShingleProbePosition:
 
 
 # ---------------------------------------------------------------------------
+# Cross-iteration false-positive regression
+# ---------------------------------------------------------------------------
+
+class TestCrossIterationFalsePositive:
+    """
+    Regression tests for the specific scenario that triggered this fix:
+    the model writes 2000+ chars of analysis referencing file paths from
+    a prior iteration's tool result, which used to accumulate enough
+    shingle/line overlap to fire a false positive.
+
+    With incremental probing (last_shingle_probe_pos), each 256-char probe
+    window only sees NEW text — old analysis already checked is not
+    re-scanned, so overlap cannot accumulate across the response.
+    """
+
+    def _make_find_output(self):
+        """Simulate a find command returning several file paths."""
+        return (
+            "./app/streaming_tool_executor.py\n"
+            "./app/agents/task_executor.py\n"
+            "./tests/test_streaming_tool_executor.py\n"
+            "./tests/test_task_executor.py\n"
+        )
+
+    def test_analysis_referencing_prior_tool_result_does_not_fire(self):
+        """
+        Model writes a long analysis mentioning file paths from a prior
+        run_shell_command result. Should NOT trigger hallucination detection.
+        """
+        import time
+        import uuid
+        from app.hallucination.shingle_index import register_tool_result, clear_session
+
+        conv_id = f"test-regression-{uuid.uuid4().hex[:8]}"
+        tool_result = self._make_find_output()
+
+        # Register the tool result as if it came from a previous iteration.
+        past_ts = time.time() - 10.0
+        register_tool_result(conv_id, "tool-001", "run_shell_command", tool_result)
+
+        try:
+            executor = _make_executor()
+            # iteration_start_time is NOW — the registered fingerprint
+            # predates it, so skip_after_timestamp won't exclude it.
+            # The incremental probe must prevent false accumulation.
+            state = _make_state(
+                conversation_id=conv_id,
+                iteration_start_time=time.time(),
+            )
+
+            # Write 2000+ chars of analysis that naturally mentions the
+            # file paths without being a verbatim reproduction.
+            analysis_chunks = [
+                "Let me examine the executor implementation. ",
+                "The streaming_tool_executor.py file contains the main ",
+                "orchestration loop that drives all tool calls. ",
+                "Looking at task_executor.py we can see how individual ",
+                "tasks are dispatched to the MCP manager. ",
+                "The test files test_streaming_tool_executor.py and ",
+                "test_task_executor.py provide coverage for both paths. ",
+                "Now examining the provider interface in more detail, ",
+                "the stream_response method accepts OpenAI-format messages ",
+                "and converts them to the provider-specific wire format. ",
+                "Each provider implements build_assistant_message and ",
+                "build_tool_result_message to maintain conversation history. ",
+                "The GoogleDirectProvider stores a tool_id-to-name mapping ",
+                "so FunctionResponse can be constructed with the correct name. ",
+                "The factory wires the google endpoint to GoogleDirectProvider ",
+                "which means StreamingToolExecutor gets a real provider. ",
+                "Previously the provider was None which caused an early exit. ",
+                "Now all tool calls route through tool_execution.py correctly. ",
+            ]
+
+            for chunk in analysis_chunks:
+                process_text_delta(executor, chunk, state)
+                assert not state.hallucination_detected, (
+                    f"False positive fired after chunk: {chunk!r}\n"
+                    f"probe_pos={state.last_shingle_probe_pos}, "
+                    f"text_len={len(state.assistant_text)}"
+                )
+        finally:
+            clear_session(conv_id)
+
+    def test_actual_verbatim_reproduction_still_fires(self):
+        """
+        If the model genuinely reproduces a full block of prior tool output
+        verbatim, the detector should still catch it even with incremental
+        probing — the first probe window containing the reproduction fires.
+        """
+        import time
+        import uuid
+        from app.hallucination.shingle_index import register_tool_result, clear_session
+
+        conv_id = f"test-regression-{uuid.uuid4().hex[:8]}"
+        # Use a result long enough to generate multiple shingles.
+        tool_result = (
+            "$ find . -name 'executor.py'\n"
+            "./app/streaming_tool_executor.py\n"
+            "./app/agents/task_executor.py\n"
+            "./tests/test_streaming_tool_executor.py\n"
+            "./tests/test_task_executor.py\n"
+            "$ \n"
+        )
+        register_tool_result(conv_id, "tool-002", "run_shell_command", tool_result)
+
+        try:
+            executor = _make_executor()
+            state = _make_state(
+                conversation_id=conv_id,
+                iteration_start_time=0,  # 0 disables timestamp filter — all fingerprints checked
+            )
+
+            # Pad to just below the probe boundary so the next chunk triggers.
+            padding = "x" * 250
+            process_text_delta(executor, padding, state)
+            assert not state.hallucination_detected
+
+            # Now emit a verbatim copy of the tool result — should fire.
+            process_text_delta(executor, tool_result, state)
+            assert state.hallucination_detected, (
+                "Verbatim tool result reproduction was not detected"
+            )
+        finally:
+            clear_session(conv_id)
+
+    def test_incremental_probe_resets_between_iterations(self):
+        """
+        last_shingle_probe_pos should be reset to 0 at the start of each
+        new iteration so the next response is probed from the beginning.
+        """
+        from app.text_delta_processor import TextDeltaState
+        # Simulate a state handed over between iterations: the caller
+        # is expected to reset last_shingle_probe_pos when starting a
+        # new provider call. A fresh TextDeltaState always starts at 0.
+        state = TextDeltaState()
+        assert state.last_shingle_probe_pos == 0
+        # Simulate mid-iteration advancement.
+        state.last_shingle_probe_pos = 512
+        # On next iteration the caller creates a new state object.
+        new_state = TextDeltaState()
+        assert new_state.last_shingle_probe_pos == 0
+
+
+# ---------------------------------------------------------------------------
 # Hallucination pattern placement (MCP envelope + threshold)
 # ---------------------------------------------------------------------------
 

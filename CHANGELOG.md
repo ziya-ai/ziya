@@ -246,6 +246,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   continuation message branch logic (all-applied → confirm framing;
   all-skipped → no-changes framing; mixed applied+skipped → confirm
   framing; empty results → confirm framing).
+- `tests/test_diff_low_confidence_diagnostic.py` — 5 new tests covering
+  the low-confidence diagnostic classifier: indentation-only mismatch,
+  wholly different content (must produce the `@@`-header warning in its
+  hint), blank-line mismatch, per-line expected/actual population with
+  1-based file-line numbers, and empty-`old_block` safety fallback to
+  `ambiguous_or_duplicate_anchor`.
 
 ### Fixed
 - **Malformed hunk headers rescued instead of rejected**
