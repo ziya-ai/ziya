@@ -265,6 +265,9 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
     try {
         container.innerHTML = '';
 
+        // Ensure CSS dark-mode selectors can reach this container's contents
+        container.classList.add('mermaid-container');
+
         // Add loading spinner while mermaid renders
         const loadingSpinner = document.createElement('div');
         loadingSpinner.className = 'mermaid-loading-spinner';

@@ -440,7 +440,37 @@ class ConversationDB implements DB {
                             const stripped = { ...conv } as any;
                             delete stripped._isShell;
                             delete stripped._fullMessageCount;
-                            store.put({ ...stripped, _version: conv._version || Date.now() }, conv.id);
+                            // Per-record tombstone guard (mirrors the slow path in
+                            // _saveConversationsWithLock).  Without this the fast
+                            // path could overwrite a populated IDB record with an
+                            // empty-messages version and bump _version, stranding
+                            // the user with a conversation that shows no messages
+                            // on next reload (observed for conv 317c500e).  Uses
+                            // the same threshold as the slow path: only preserve
+                            // when existing.length > caller.length AND existing
+                            // had more than 2 messages (guards against resurrecting
+                            // deleted short conversations).
+                            const guardReq = store.get(conv.id);
+                            guardReq.onsuccess = () => {
+                                const existing = guardReq.result;
+                                const existingLen = Array.isArray(existing?.messages) ? existing.messages.length : 0;
+                                const callerLen = Array.isArray(stripped.messages) ? stripped.messages.length : 0;
+                                if (existingLen > callerLen && existingLen > 2) {
+                                    console.warn(
+                                        `🛡️ FAST_PATH_TOMBSTONE: Preserving ${existingLen} messages ` +
+                                        `for ${conv.id.substring(0, 8)} (caller had ${callerLen}). ` +
+                                        `Title: "${(conv.title || '').substring(0, 60)}"`,
+                                        new Error('fast-path tombstone stack')
+                                    );
+                                    store.put({ ...stripped, messages: existing.messages, _version: conv._version || Date.now() }, conv.id);
+                                } else {
+                                    store.put({ ...stripped, _version: conv._version || Date.now() }, conv.id);
+                                }
+                            };
+                            guardReq.onerror = () => {
+                                // Can't read existing — write anyway (match slow path behavior)
+                                store.put({ ...stripped, _version: conv._version || Date.now() }, conv.id);
+                            };
                         }
                     });
                 }
@@ -725,6 +755,14 @@ class ConversationDB implements DB {
         const writeFn = async (): Promise<void> => {
             const tx = this.db!.transaction([STORE_NAME], 'readwrite');
             const store = tx.objectStore(STORE_NAME);
+
+        // Strip transient shell markers — they must never reach IndexedDB.
+        // saveConversations (bulk path) already blocks shell writes;
+        // this single-record path needs the same protection.
+        const toWrite = { ...conversation } as any;
+        delete toWrite._isShell;
+        delete toWrite._fullMessageCount;
+        conversation = toWrite;
 
             // Per-record guard: check existing message count before overwriting
             const getReq = store.get(conversation.id);

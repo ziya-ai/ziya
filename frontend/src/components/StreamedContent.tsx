@@ -684,9 +684,70 @@ export const StreamedContent: React.FC<{}> = () => {
 
         window.addEventListener('retryAuthError', handleRetryAuthError as EventListener);
 
+        // Handle context-error retry events.  Mirror of handleRetryAuthError:
+        // the user has (hopefully) reduced context or switched models, now resend
+        // the last human message and strip the error banner.
+        const handleRetryContextError = async (event: CustomEvent) => {
+            console.log('🔄 RETRY_CONTEXT: Handler invoked with detail:', event.detail);
+            const { conversationId: retryConversationId } = event.detail;
+
+            if (retryConversationId !== currentConversationId) {
+                console.log('Retry context error for different conversation, ignoring');
+                return;
+            }
+
+            console.log('Retrying request after context error for conversation:', retryConversationId);
+
+            // Remove the error banner message so the user doesn't see a stale
+            // error block once the retry succeeds.
+            setConversations(prev => prev.map(conv => {
+                if (conv.id !== retryConversationId) return conv;
+                const msgs = [...conv.messages];
+                for (let i = msgs.length - 1; i >= 0; i--) {
+                    if (msgs[i].role === 'assistant' &&
+                        typeof msgs[i].content === 'string' &&
+                        msgs[i].content.includes('context-error-retry-button')) {
+                        msgs.splice(i, 1);
+                        break;
+                    }
+                }
+                return { ...conv, messages: msgs, _version: Date.now() };
+            }));
+
+            try {
+                const lastHumanMessage = currentMessages
+                    .filter(msg => msg.role === 'human' && !msg.muted)
+                    .pop();
+
+                if (!lastHumanMessage) {
+                    console.error('No human message found to retry');
+                    return;
+                }
+
+                // Filter out the error message — currentMessages may not yet
+                // reflect the state update above due to React batching.
+                const messagesToSend = currentMessages
+                    .filter(msg => !msg.muted && !(msg.role === 'assistant' && typeof msg.content === 'string' && msg.content.includes('context-error-retry-button')));
+
+                addStreamingConversation(retryConversationId);
+
+                await send({
+                    messages: messagesToSend,
+                    question: lastHumanMessage.content,
+                    isStreamingToCurrentConversation: true,
+                    includeReasoning: true,
+                });
+            } catch (error) {
+                console.error('Retry after context error failed:', error);
+            }
+        };
+
+        window.addEventListener('retryContextError', handleRetryContextError as EventListener);
+
         return () => {
             document.removeEventListener('preservedContent', handlePreservedContent as EventListener);
             window.removeEventListener('retryAuthError', handleRetryAuthError as EventListener);
+            window.removeEventListener('retryContextError', handleRetryContextError as EventListener);
         };
     }, [
         currentConversationId,
