@@ -24,13 +24,14 @@ from dataclasses import dataclass
 # Shell-typed fence opening: ```bash, ```sh, ```shell, ```zsh,
 # ```console, ```terminal (case-insensitive, optional whitespace).
 _SHELL_FENCE_OPEN_RE = re.compile(
-    r'^```[ \t]*(bash|sh|shell|zsh|console|terminal)\s*$',
+    r'^`{3,}[ \t]*(bash|sh|shell|zsh|console|terminal)\s*$',
     re.IGNORECASE | re.MULTILINE,
 )
 
-# Generic fence opening (any language or none).
-_FENCE_OPEN_RE = re.compile(r'^```', re.MULTILINE)
-_FENCE_CLOSE_RE = re.compile(r'^```\s*$', re.MULTILINE)
+# Generic fence opening: 3+ backticks at start of line.  The captured
+# backtick run length is used to build a matching-or-longer close regex
+# per CommonMark rules -- a 4-backtick open requires 4+ to close.
+_FENCE_OPEN_RE = re.compile(r'^(`{3,})', re.MULTILINE)
 
 # grep -n / grep -rn output: one or more digits, colon, space, content.
 # Three or more consecutive such lines is a strong signal.
@@ -45,6 +46,16 @@ _PROMPT_LINE_RE = re.compile(r'^[ \t]*[$#] \S', re.MULTILINE)
 # its first line.  '#' is excluded here because comments in config files
 # (ini, yaml, python) would otherwise false-positive as root prompts.
 _STRICT_DOLLAR_PROMPT_RE = re.compile(r'^[ \t]*\$ \S', re.MULTILINE)
+
+# Shell-grammar markers that have no valid interpretation in non-shell
+# languages: file-descriptor redirects and /dev/null redirects.  These
+# appear on bare-shell command lines the model fabricates without a
+# $ prompt, which Signal 2 cannot see.  Scoped to untagged or shell-
+# tagged fences at the call site so that python/js fences with
+# subprocess.run("... 2>/dev/null") do not false-positive.
+_SHELL_GRAMMAR_RE = re.compile(
+    r'(?:\b2>&1|\b2>/dev/null|>>?[ \t]*/dev/null)',
+)
 
 
 @dataclass(frozen=True)
@@ -73,8 +84,13 @@ def _extract_fence_bodies(text: str) -> list[str]:
         if body_start == -1:
             break
         body_start += 1  # skip the newline itself
-        # Find the matching close fence.
-        close_m = _FENCE_CLOSE_RE.search(text, body_start)
+        # Find the matching close fence -- must have >= as many backticks.
+        open_ticks = open_m.group(1)
+        close_re = re.compile(
+            rf'^`{{{len(open_ticks)},}}\s*$',
+            re.MULTILINE,
+        )
+        close_m = close_re.search(text, body_start)
         if close_m is None:
             break  # unclosed — skip; stream may still be arriving
         bodies.append(text[body_start:close_m.start()])
@@ -109,7 +125,13 @@ def detect_fake_shell_session(text: str) -> FakeShellMatch | None:
         opening_line = text[open_m.start():open_line_end]
 
         body_start = open_line_end + 1
-        close_m = _FENCE_CLOSE_RE.search(text, body_start)
+        # Close fence must have at least as many backticks as the open.
+        open_ticks = open_m.group(1)
+        close_re = re.compile(
+            rf'^`{{{len(open_ticks)},}}\s*$',
+            re.MULTILINE,
+        )
+        close_m = close_re.search(text, body_start)
         if close_m is None:
             # Fence is still open (streaming).  Scan whatever has arrived.
             # If evidence threshold is met we fire now rather than waiting --
@@ -161,6 +183,32 @@ def detect_fake_shell_session(text: str) -> FakeShellMatch | None:
                         f'line(s) but no shell tool was called'
                     ),
                     signal='prompt_with_output',
+                    fence_body=body[:300],
+                )
+
+        # Signal 3: shell-grammar markers in fence body.  Catches bare
+        # shell sessions the model fabricates without any $ prompt, e.g.
+        #   cmd1 2>/dev/null; echo 'header'
+        #   header
+        #   <fabricated output>
+        # Scoped to untagged fences and shell-tagged fences so that
+        # python/js fences containing subprocess calls with redirect
+        # strings do not false-positive.
+        is_untagged = opening_line.rstrip() == open_ticks
+        if (is_untagged or is_shell_tagged) and _SHELL_GRAMMAR_RE.search(body):
+            non_grammar_lines = [
+                l for l in body.splitlines()
+                if l.strip() and not _SHELL_GRAMMAR_RE.search(l)
+            ]
+            if len(non_grammar_lines) >= 2:
+                return FakeShellMatch(
+                    reason=(
+                        'Fence contains shell-grammar markers '
+                        '(file-descriptor redirect or /dev/null) plus '
+                        f'{len(non_grammar_lines)} non-command line(s); '
+                        'no shell tool was called'
+                    ),
+                    signal='shell_grammar',
                     fence_body=body[:300],
                 )
 
