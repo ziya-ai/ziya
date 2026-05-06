@@ -336,7 +336,15 @@ def process_text_delta(
                 state.last_shingle_probe_pos = len(state.assistant_text)
 
             if _match is not None:
-                logger.warning(
+                # Low-confidence matches are non-actionable (allowed to
+                # continue) and fire routinely when the model discusses
+                # code it has legitimately read. Emit those at DEBUG to
+                # avoid swamping the WARNING channel. High-confidence
+                # matches abort the stream and stay at WARNING.
+                _log = (
+                    logger.warning if _match.confidence == 'high' else logger.debug
+                )
+                _log(
                     f"🚨 HALLUCINATION_SHINGLE: confidence={_match.confidence} "
                     f"tool={_match.matched_tool_name} "
                     f"tool_use_id={_match.matched_tool_use_id} "
