@@ -17,6 +17,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 ### Fixed
+- **Sidebar showed conversations from every project after page refresh, and
+  zero-folder/unrooted projects showed stale cross-project data until a manual
+  project switch** (`frontend/src/components/MUIChatHistory.tsx`,
+  `frontend/src/context/ChatContext.tsx`): Three independent bugs compounded
+  into what looked like a single "wrong chats on refresh" symptom.
+
+    1. **Stale tree cache on project switch** — `MUIChatHistory`'s tree-build
+       memo has a guard that returns `lastTreeDataRef.current` when folders
+       haven't synced yet (prevents a flash of conversations-only structure on
+       cold start). For an unrooted project (or any project that legitimately
+       has zero folders) the condition `safeFolders.length === 0 && convs > 0`
+       is permanently true, so the memo kept returning the **previous**
+       project's cached tree forever. The previous project's conversation IDs
+       weren't in the new project's conversation array, so `flatNodes` rendered
+       as 0 rows. Added staleness detection: if none of the cached tree's
+       conversation IDs overlap the current `safeConversations`, invalidate
+       the cache and fall through to a full rebuild. The transient "folders
+       still loading mid-project" case still short-circuits correctly because
+       its conversations DO overlap.
+
+    2. **Unscoped initial shell load** — On startup, ChatContext reads all
+       conversation shells from IndexedDB (which spans every project the user
+       has ever opened) and does `setConversations(savedConversations)`
+       unconditionally. The project-scoped filter only runs later inside the
+       server-sync effect, so for ~hundreds of ms the sidebar renders every
+       project's chats (849 of 852 in one trace). Scoped the initial
+       `setConversations` to the current project id, keeping globals and
+       untagged entries (the latter get migrated to the current project by
+       the existing migration step).
+
+    3. **Project context not yet populated when the filter reads it** —
+       ProjectContext restores asynchronously, so `currentProject?.id` was
+       `undefined` when ChatContext's init effect fired, making the filter a
+       no-op. Added a direct `localStorage.getItem('ZIYA_LAST_PROJECT_ID')`
+       fallback (same key ProjectContext persists to) so the filter engages
+       on the very first render.
+
+    4. **Startup GC undid the filter** — `gcEmptyConversations` was called
+       with the unscoped 852-entry list, then `setConversations(gcKept)`
+       (849 entries) dumped every project's chats back into state, nullifying
+       fix #2. Scoped the GC input to `scopedShells` as well. Cross-project
+       stale empties still get reaped by the periodic GC and by per-project
+       init on each switch.
 ### Changed
 
 ## [0.6.5.2] - 2026-05-02
