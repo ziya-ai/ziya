@@ -1636,6 +1636,13 @@ class StreamingToolExecutor:
             return
 
         max_iterations = int(os.environ.get('ZIYA_MAX_TOOL_ITERATIONS', '200'))
+        # Counts iterations that ended with text-only output (no tools, no
+        # structured blocks) where the heuristic would otherwise have called
+        # the response "complete". Biased toward granting an extra cycle so
+        # announced-but-unexecuted intent ("Let me check X...") gets a chance
+        # to actually run. Bounded to avoid infinite text-only loops when the
+        # model legitimately has nothing more to do.
+        textonly_grace_used = 0
         for iteration in range(max_iterations):
             logger.debug(f"🔍 ITERATION_START: Beginning iteration {iteration}")
             hallucination_this_iteration = False
@@ -2981,9 +2988,26 @@ Please retry the tool call with valid JSON. Ensure:
                         text_after_last_block = self._get_text_after_last_structured_content(assistant_text)
                         word_count_after_block = len(text_after_last_block.split()) if text_after_last_block else 0
                         
-                        # If we have 20+ words after the last block and it ends properly, consider it complete
+                        # If we have 20+ words after the last block and it ends
+                        # properly, the old heuristic declared the response
+                        # complete. That misfires when the model produced only
+                        # narration of intent ("Let me check X before writing…")
+                        # without executing any tools — the sentence ends in a
+                        # period but the work hasn't started. Prefer granting
+                        # one extra continuation cycle over cutting the model
+                        # off mid-plan. Bounded by textonly_grace_used so a
+                        # legitimately-complete short text reply still ends.
                         if (word_count_after_block >= 20 and 
                             text_after_last_block.rstrip().endswith(('.', '!', '?'))):
+                            if (not tools_executed_this_iteration
+                                    and textonly_grace_used < 1):
+                                textonly_grace_used += 1
+                                logger.info(
+                                    f"🔄 TEXTONLY_GRACE: Text-only iteration with "
+                                    f"{word_count_after_block} words and no tools; "
+                                    f"granting one continuation cycle (used={textonly_grace_used})"
+                                )
+                                continue
                             logger.debug(f"🔍 COMPLETE_RESPONSE: Found {word_count_after_block} words after last block, ending stream: '{text_after_last_block[-50:]}'")
                             yield {'type': 'stream_end'}
                             break
