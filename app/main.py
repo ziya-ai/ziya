@@ -73,6 +73,10 @@ def parse_arguments():
                        help="Enable MCP (Model Context Protocol) server integration (enabled by default)")
     parser.add_argument("--no-mcp", action="store_false", dest="mcp",
                        help="Disable MCP (Model Context Protocol) server integration")
+    parser.add_argument("--host", type=str, default="127.0.0.1",
+                        help="Interface to bind the server on (default: 127.0.0.1 — loopback only). "
+                             "Use 0.0.0.0 to bind all interfaces; this exposes the no-auth server to the "
+                             "network and should be combined with an authenticated SSH tunnel or other access control.")
     parser.add_argument("--ephemeral", action="store_true",
                        help="Don't persist conversations or data to database beyond current session")
     return parser.parse_args()
@@ -404,8 +408,6 @@ def start_server(args):
     # Store the original working directory before any imports that might change it
     original_cwd = os.getcwd()
     logger.info(f"Preserving original working directory: {original_cwd}")
-    # Override the default server location from 127.0.0.1 to 0.0.0.0
-    # This allows the server to be accessible from other machines on the network
     try:
         # Pre-initialize the model to catch any credential issues before starting the server
         logger.info("Performing initial authentication check...")
@@ -473,7 +475,22 @@ def start_server(args):
             # Use uvicorn directly instead of langchain_cli.serve()
             # Set the terminal window/tab title to "Ziya:<port>"
             print(f"\033]0;Ziya:{args.port}\007", end="", flush=True)
-            uvicorn.run(app, host="0.0.0.0", port=args.port)
+            # Set OS process title so `ps` / Activity Monitor show "Ziya : <port>"
+            # instead of a generic "python".  Optional — setproctitle is not a
+            # hard dependency.
+            try:
+                from setproctitle import setproctitle
+                setproctitle(f"Ziya : {args.port}")
+                logger.debug(f"Set process title to: Ziya : {args.port}")
+            except ImportError:
+                logger.debug("setproctitle not available — using default process name")
+            bind_host = getattr(args, "host", "127.0.0.1")
+            if bind_host != "127.0.0.1":
+                logger.warning(
+                    f"Binding server on {bind_host}:{args.port} — Ziya has no built-in auth layer. "
+                    f"Ensure network access is restricted (firewall, VPN, or SSH tunnel)."
+                )
+            uvicorn.run(app, host=bind_host, port=args.port)
             
         except ValueError as e:
             # Use a class variable to track if we've already displayed an error
