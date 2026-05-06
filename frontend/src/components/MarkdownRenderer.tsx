@@ -3819,6 +3819,9 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         if (lang === 'vega-lite' || lang === 'vegalite') {
             return 'vega-lite';
         }
+        if (lang === 'vega') {
+            return 'vega-lite';
+        }
         if (lang === 'plotly') {
             return 'plotly';
         }
@@ -3967,7 +3970,7 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
                 }
                 const parsed = JSON.parse(trimmedText);
                 // Check for Vega-Lite schema or typical Vega-Lite structure
-                if (parsed.$schema?.includes('vega-lite') ||
+                if (parsed.$schema?.includes('vega-lite') || parsed.$schema?.includes('/vega/') ||
                     (parsed.mark && (parsed.encoding || parsed.data)) ||
                     (parsed.data && (parsed.mark || parsed.layer || parsed.concat || parsed.facet || parsed.repeat))) {
                     return 'vega-lite';
@@ -5647,6 +5650,27 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                             // Detect prose signals — any of: bold/italic markers,
                             // headings, lists, blockquotes, markdown links,
                             // inline HTML tags (e.g. <strong>), or labelled
+                            // Spurious outer-fence unwrap: when a bare outer fence of
+                            // length >= 4 wraps content that itself contains a
+                            // language-tagged inner fence of strictly shorter length
+                            // (e.g. ````...```diff...```...````), the outer fence is
+                            // almost always a hallucinated wrapper — models sometimes
+                            // emit these late in long contexts. The tagged inner fence
+                            // is an unambiguous signal of intent; strip the outer pair
+                            // so inner fences render as real code blocks instead of
+                            // literal text. Generalizes to N=4,5,6,7+ backticks.
+                            if (fLen >= 4) {
+                                const innerTaggedFence = innerLines.some(l => {
+                                    const m = l.match(/^(`{3,})[A-Za-z]/);
+                                    return m !== null && m[1].length < fLen;
+                                });
+                                if (innerTaggedFence) {
+                                    fenceOutput.push(...innerLines);
+                                    fi = closeIdx + 1;
+                                    continue;
+                                }
+                            }
+
                             // search-result structure like "Title:"/"URL:"/"Description:".
                             // Search-tool output often uses <strong>...</strong> and
                             // [text](url) rather than **bold**, so the original
@@ -6106,6 +6130,15 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
 
             const lexedTokens = marked.lexer(processedMarkdown, markedOptions);
+        // Debug: capture what reaches the lexer when a vega/vega-lite block is present.
+        // Remove after root cause is confirmed.
+        if (processedMarkdown.includes('$schema') &&
+            (processedMarkdown.includes('```vega') || processedMarkdown.includes('```vegalite'))) {
+            const fenceEnd = processedMarkdown.lastIndexOf('```');
+            console.log('[VEGA_DEBUG] chars before last fence (last 120):',
+                JSON.stringify(processedMarkdown.slice(Math.max(0, fenceEnd - 120), fenceEnd + 3)));
+        }
+
             return lexedTokens as (Tokens.Generic | TokenWithText)[] || [];
         } catch (error) {
             // Don't create fallback code blocks for empty content

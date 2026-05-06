@@ -45,6 +45,9 @@ const isVegaLiteObject = (obj: any): boolean => {
     (
       obj.type === 'vega-lite' ||
       (obj.$schema && typeof obj.$schema === 'string' && obj.$schema.includes('vega-lite')) ||
+      // Vega v5 native specs — routed to vega-embed which handles them directly
+      (obj.$schema && typeof obj.$schema === 'string' && obj.$schema.includes('/vega/') && !obj.$schema.includes('/vega-lite/')) ||
+      (Array.isArray(obj.marks) && (Array.isArray(obj.data) || Array.isArray(obj.signals))) ||
       (obj.mark && (obj.encoding || obj.data)) ||
       (obj.layer && Array.isArray(obj.layer)) ||
       (obj.vconcat && Array.isArray(obj.vconcat)) ||
@@ -115,6 +118,13 @@ const isVegaLiteDefinitionComplete = (definition: string): boolean => {
     // Check for incomplete schema URLs (common during streaming)
     if (parsed.$schema && typeof parsed.$schema === 'string' && !parsed.$schema.endsWith('.json')) {
       return false;
+    }
+
+    // Vega v5 uses `marks` (array) not `mark` — check accordingly
+    if (parsed.$schema && typeof parsed.$schema === 'string' &&
+        parsed.$schema.includes('/vega/') && !parsed.$schema.includes('/vega-lite/')) {
+      return Array.isArray(parsed.marks) && parsed.marks.length > 0 &&
+             Array.isArray(parsed.data) && parsed.data.length > 0;
     }
 
     // Check for required Vega-Lite properties.  Data can live in the top
@@ -439,6 +449,14 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
       // Detect Vega-only transforms that Vega-Lite will silently ignore.
       // If found, return the spec unmodified — running our preprocessing on a spec
+  // Vega v5 specs must bypass all Vega-Lite transforms — they use marks/signals/data
+  // at the top level and vega-embed renders them natively via the $schema URL.
+  if (spec.$schema && typeof spec.$schema === 'string' &&
+      spec.$schema.includes('/vega/') && !spec.$schema.includes('/vega-lite/')) {
+    console.log('🔧 VEGA-PREPROCESS: Vega v5 spec — skipping Vega-Lite preprocessing');
+    return spec;
+  }
+
       // whose data pipeline will be dropped causes cascading destruction of encodings.
       const vegaOnlyTransforms = [
         'stratify', 'partition', 'treemap', 'tree', 'pack', 'nest',
@@ -2243,8 +2261,26 @@ export const vegaLitePlugin: D3RenderPlugin = {
       try {
         parsedSpec = JSON.parse(extractedContent);
       } catch (parseError) {
-        console.debug('Vega-Lite: JSON parse error during processing:', parseError);
-        throw parseError; // Re-throw to be handled by outer try-catch
+        const errorPos = (parseError as SyntaxError).message.match(/position (\d+)/)?.[1];
+        const isNearEnd = errorPos && parseInt(errorPos) >= extractedContent.length - 5;
+        if (isNearEnd) {
+          const suffixes = ['}', '}\n', '}]\n}', ']\n}'];
+          let repaired = false;
+          for (const suffix of suffixes) {
+            try {
+              parsedSpec = JSON.parse(extractedContent + suffix);
+              repaired = true;
+              break;
+            } catch (_) { /* try next */ }
+          }
+          if (!repaired) {
+            console.debug('Vega-Lite: JSON parse error during processing:', parseError);
+            throw parseError;
+          }
+        } else {
+          console.debug('Vega-Lite: JSON parse error during processing:', parseError);
+          throw parseError;
+        }
       }
     } else {
       // Use the spec object directly, but remove our custom properties
@@ -4530,8 +4566,14 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
       // WORKAROUND: Remove $schema as it can cause parser issues in some Vega versions
       const embedSpec = { ...finalSpec };
-      delete embedSpec.$schema;
-      console.log('🔧 VEGA-EMBED: Removed $schema for compatibility');
+      // Vega v5 specs must keep $schema so vega-embed selects the Vega runtime.
+      // Removing it causes vega-embed to default to Vega-Lite, which rejects v5 syntax.
+      const isVegaV5 = typeof finalSpec.$schema === 'string' &&
+        finalSpec.$schema.includes('/vega/') && !finalSpec.$schema.includes('/vega-lite/');
+      if (!isVegaV5) {
+        delete embedSpec.$schema;
+      }
+      console.log('🔧 VEGA-EMBED:', isVegaV5 ? 'Preserved $schema for Vega v5' : 'Removed $schema for compatibility');
 
       // Add timeout to detect hanging renders
       const embedPromise = vegaEmbed(renderContainer, embedSpec, embedOptions);
@@ -4906,23 +4948,19 @@ export const vegaLitePlugin: D3RenderPlugin = {
                 </div>
             </div>
             <div class="container" id="svg-container">
-                ${svgData}
             </div>
             <script>
-                const svg = document.querySelector('svg');
                 let currentScale = 1;
                 let isDarkMode = ${isDarkMode};
                 
                 // Store the original Vega-Lite spec
                 const vegaSpec = ${JSON.stringify(vegaSpec, null, 2)};
                 
-                // Make sure SVG is responsive
-                svg.setAttribute('width', '100%');
-                svg.setAttribute('height', '100%');
-                svg.style.maxWidth = '100%';
-                svg.style.maxHeight = '100%';
-                svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
                 ${getZoomScript()}
+                function zoomIn() { const s = document.querySelector('#svg-container svg'); if (s) { currentScale *= 1.2; s.style.transform = 'scale(' + currentScale + ')'; } }
+                function zoomOut() { const s = document.querySelector('#svg-container svg'); if (s) { currentScale /= 1.2; s.style.transform = 'scale(' + currentScale + ')'; } }
+                function resetZoom() { const s = document.querySelector('#svg-container svg'); if (s) { currentScale = 1; s.style.transform = 'scale(1)'; } }
+                reRenderVegaVisualization();
                 function toggleTheme() {
                     isDarkMode = !isDarkMode;
                     const body = document.body;
@@ -4970,6 +5008,8 @@ export const vegaLitePlugin: D3RenderPlugin = {
                 }
                 
                 function downloadSvg() {
+                    const svg = document.querySelector('#svg-container svg');
+                    if (!svg) return;
                     const svgData = new XMLSerializer().serializeToString(svg);
                     const svgDoc = \`<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
