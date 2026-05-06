@@ -11,13 +11,16 @@ from fastapi import APIRouter, HTTPException, Query
 from typing import List
 
 from ..models.task_card import (
-    TaskCard, TaskCardCreate, TaskCardUpdate, TaskCardRun,
+    Block, TaskCard, TaskCardCreate, TaskCardUpdate, TaskCardRun,
 )
-from ..models.task_run import TaskRun, TaskRunCreate
+from ..models.task_run import TaskRun, TaskRunCreate, TaskRunBlockState
 from ..storage.projects import ProjectStorage
 from ..storage.task_cards import TaskCardStorage
 from ..storage.task_runs import TaskRunStorage
-from ..agents.task_executor import execute_task_block, TaskExecutorError
+from ..agents.task_executor import TaskExecutorError
+from ..agents.block_executor import (
+    execute_block, ExecutionContext, BlockExecutionCancelled,
+)
 from ..utils.paths import get_ziya_home, get_project_dir
 from ..utils.logging_utils import logger
 
@@ -83,6 +86,17 @@ async def duplicate_task_card(
     return card
 
 
+def _seed_block_states(run_storage: TaskRunStorage, run_id: str, block: Block) -> None:
+    """Pre-populate TaskRun.block_states so append_iteration_summary
+    has a place to write.  Walks the tree depth-first."""
+    if block.id:
+        run_storage.set_block_state(run_id, TaskRunBlockState(
+            block_id=block.id, block_type=block.block_type, status="queued",
+        ))
+    for child in block.body or []:
+        _seed_block_states(run_storage, run_id, child)
+
+
 @router.post("/{card_id}/launch")
 async def launch_task_card(
     project_id: str, card_id: str, body: TaskCardRun,
@@ -90,24 +104,11 @@ async def launch_task_card(
     """Launch a task card — create a TaskRun and start executing in
     the background.  Returns the run immediately; clients poll the
     task-runs endpoints for status and the final artifact.
-
-    Slice C: only supports cards whose root is a single Task block.
-    Repeat / Parallel root blocks are rejected.
     """
     storage = _get_storage(project_id)
     card = storage.get(card_id)
     if not card:
         raise HTTPException(status_code=404, detail="Task card not found")
-
-    # Validate the root is executable in Slice C before we create a run
-    if card.root.block_type != "task":
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Cards with root block_type='{card.root.block_type}' are not "
-                "yet executable; Slice C supports only Task roots."
-            ),
-        )
 
     run_storage = TaskRunStorage(get_project_dir(project_id))
     run = run_storage.create(TaskRunCreate(
@@ -115,6 +116,7 @@ async def launch_task_card(
         source_conversation_id=body.source_conversation_id,
     ))
     storage.record_run(card_id)
+    _seed_block_states(run_storage, run.id, card.root)
 
     # Fire-and-forget background execution.  Project-scoped ContextVar
     # is captured at dispatch time so the background task has the
@@ -125,10 +127,16 @@ async def launch_task_card(
     async def _run(run_id: str, block, project_root):
         try:
             run_storage.update_status(run_id, "running")
-            artifact = await execute_task_block(block, project_root=project_root)
+            ctx = ExecutionContext(
+                run_id=run_id, project_root=project_root, storage=run_storage,
+            )
+            artifact = await execute_block(block, ctx)
             run_storage.set_artifact(run_id, artifact)
             run_storage.update_status(run_id, "done")
             logger.info(f"✅ Task run complete: {run_id[:8]}")
+        except BlockExecutionCancelled:
+            run_storage.update_status(run_id, "cancelled")
+            logger.info(f"🛑 Task run cancelled: {run_id[:8]}")
         except TaskExecutorError as e:
             run_storage.update_status(run_id, "failed", error=str(e))
             logger.warning(f"❌ Task run failed: {run_id[:8]}: {e}")

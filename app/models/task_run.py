@@ -24,10 +24,31 @@ RunStatus = Literal[
 ]
 
 
-class TaskRunBlockState(BaseModel):
-    """Per-block runtime state.  For Slice C we track only the root;
-    Slice D's loop engine will populate this per iteration / per block.
+IterationStatus = Literal["passed", "failed", "cancelled"]
+
+
+class IterationSummary(BaseModel):
+    """Lightweight per-iteration record — ~100 bytes, always retained
+    for every iteration of a Repeat block regardless of scale.  The
+    full Artifact lives in a separate per-iteration file on disk and
+    is loaded on demand.  See design/task-cards.md §Iteration result
+    storage at scale.
     """
+    model_config = {"extra": "allow"}
+
+    index: int
+    status: IterationStatus
+    signature: Optional[str] = None
+    duration_ms: int = 0
+    tokens: int = 0
+    # True if the full Artifact was persisted alongside this summary.
+    # False when the iteration was a passing run beyond the retention
+    # cap (50 passes per Repeat block).
+    has_artifact: bool = True
+
+
+class TaskRunBlockState(BaseModel):
+    """Per-block runtime state."""
     model_config = {"extra": "allow"}
 
     block_id: str
@@ -37,6 +58,9 @@ class TaskRunBlockState(BaseModel):
     completed_at: Optional[float] = None
     artifact: Optional[Artifact] = None
     error: Optional[str] = None
+    # For Repeat blocks: one summary per iteration.  Empty for Task
+    # and Parallel blocks.
+    iteration_summaries: List[IterationSummary] = Field(default_factory=list)
 
 
 class TaskRun(BaseModel):
@@ -50,6 +74,9 @@ class TaskRun(BaseModel):
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
     error: Optional[str] = None
+    # Soft-cancel flag.  Block executor checks at iteration and
+    # sibling boundaries.  See design/task-cards.md §Cancellation.
+    cancel_requested: bool = False
 
     # Top-level artifact produced by the root block
     artifact: Optional[Artifact] = None
