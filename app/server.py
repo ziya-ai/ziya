@@ -1617,62 +1617,7 @@ from app.services.folder_service import (
 
 # Re-export model route functions for backward compatibility
 from app.routes.model_routes import get_config, get_available_models, get_current_model, get_model_capabilities
-
 # Import scan progress from directory_util
 # from app.utils.directory_util import get_scan_progress, cancel_scan, _scan_progress
 
-if __name__ == "__main__":
-    import argparse
-    
-    # Try to import setproctitle for persistent process naming
-    try:
-        from setproctitle import setproctitle
-        has_setproctitle = True
-    except ImportError:
-        has_setproctitle = False
-        logger.debug("setproctitle not available - process title will use default")
-    
-    parser = argparse.ArgumentParser(description="Run the Ziya server")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port to run the server on")
-    parser.add_argument("--host", type=str, default="127.0.0.1", help="Host to run the server on")
-    parser.add_argument("--model", type=str, default=None, help="Model to use")
-    parser.add_argument("--profile", type=str, default=None, help="AWS profile to use")
-    parser.add_argument("--region", type=str, default=None, help="AWS region to use")
-    
-    args = parser.parse_args()
-    
-    # Set the AWS profile if provided
-    if args.profile:
-        os.environ["AWS_PROFILE"] = args.profile
-        logger.info(f"Using AWS profile: {args.profile}")
-        
-    # Set the AWS region if provided
-    if args.region:
-        os.environ["AWS_REGION"] = args.region
-        logger.info(f"Using AWS region: {args.region}")
-        
-    # Initialize the model if provided
-    if args.model:
-        try:
-            ModelManager.initialize_model(args.model)
-        except (ImportError, ValueError, RuntimeError, KeyError) as e:
-            logger.error(f"Error initializing model: {e}")
-    
-    # Run the server
-    # Set process title using setproctitle if available - this persists through library calls
-    port = args.port
-    if has_setproctitle:
-        setproctitle(f"Ziya : {port}")
-        logger.info(f"Set process title to: Ziya : {port}")
-    
-    uvicorn_log_level = os.environ.get("ZIYA_LOG_LEVEL", "INFO").lower()
-    try:
-        uvicorn.run(app, host=args.host, port=args.port, log_level=uvicorn_log_level)
-    except (KeyboardInterrupt, SystemExit):
-        # Uvicorn re-raises KeyboardInterrupt after its own shutdown.
-        # The lifespan handler has already persisted delegate state
-        # and cleaned up MCP connections. Suppress the stack trace.
-        print("\n✅ Ziya stopped.")
-    except Exception:  # Intentionally broad: top-level server exit handler
-        logger.exception("Server exited with error")
 
