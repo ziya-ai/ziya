@@ -6,14 +6,15 @@ but persist enough for the frontend to poll status and read final
 artifacts across reloads.
 """
 
+import json
 import time
 import uuid
 import logging
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 
 from .base import BaseStorage
-from ..models.task_run import TaskRun, TaskRunCreate, TaskRunBlockState
+from ..models.task_run import TaskRun, TaskRunCreate, TaskRunBlockState, IterationSummary
 from ..models.task_card import Artifact
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,12 @@ class TaskRunStorage(BaseStorage[TaskRun]):
 
     def _run_file(self, run_id: str) -> Path:
         return self.runs_dir / f"{run_id}.json"
+
+    def _iteration_dir(self, run_id: str) -> Path:
+        return self.runs_dir / run_id / "iterations"
+
+    def _iteration_file(self, run_id: str, block_id: str, index: int) -> Path:
+        return self._iteration_dir(run_id) / f"{block_id}_{index}.json"
 
     def get(self, run_id: str) -> Optional[TaskRun]:
         data = self._read_json(self._run_file(run_id))
@@ -115,8 +122,73 @@ class TaskRunStorage(BaseStorage[TaskRun]):
             "set_artifact, or set_block_state"
         )
 
+    def request_cancel(self, run_id: str) -> Optional[TaskRun]:
+        """Set the soft-cancel flag on a running run."""
+        run = self.get(run_id)
+        if not run:
+            return None
+        run.cancel_requested = True
+        run.updated_at = int(time.time() * 1000)
+        self._write_json(self._run_file(run_id), run.model_dump())
+        return run
+
+    def append_iteration_summary(
+        self, run_id: str, block_id: str, summary: IterationSummary,
+    ) -> None:
+        """Append a summary to the given block's iteration_summaries list.
+        Called once per iteration of a Repeat block."""
+        run = self.get(run_id)
+        if not run:
+            return
+        state = run.block_states.get(block_id)
+        if state is None:
+            return
+        state.iteration_summaries.append(summary)
+        run.block_states[block_id] = state
+        run.updated_at = int(time.time() * 1000)
+        self._write_json(self._run_file(run_id), run.model_dump())
+
+    def write_iteration_artifact(
+        self, run_id: str, block_id: str, index: int, artifact: Artifact,
+    ) -> None:
+        """Persist the full Artifact for a single iteration to disk.
+        Each iteration file is small (~10KB typical), scales linearly
+        with retained iterations (failures + first 50 passes per
+        Repeat).  See design/task-cards.md §Iteration result storage."""
+        path = self._iteration_file(run_id, block_id, index)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(artifact.model_dump(), f, default=str)
+
+    def read_iteration_artifact(
+        self, run_id: str, block_id: str, index: int,
+    ) -> Optional[Artifact]:
+        path = self._iteration_file(run_id, block_id, index)
+        if not path.exists():
+            return None
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            return Artifact(**data)
+        except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+            logger.warning(f"Could not read iteration artifact {path}: {e}")
+            return None
+
     def delete(self, run_id: str) -> bool:
         run_file = self._run_file(run_id)
+        # Also clean up the per-iteration directory if it exists.
+        iter_dir = self.runs_dir / run_id
+        if iter_dir.exists() and iter_dir.is_dir():
+            try:
+                for sub in iter_dir.rglob("*"):
+                    if sub.is_file():
+                        sub.unlink()
+                for sub in sorted(iter_dir.rglob("*"), reverse=True):
+                    if sub.is_dir():
+                        sub.rmdir()
+                iter_dir.rmdir()
+            except OSError as e:
+                logger.warning(f"Could not remove iteration dir for {run_id}: {e}")
         if not run_file.exists():
             return False
         run_file.unlink()
