@@ -6,6 +6,7 @@ import inspect
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage, ToolMessage
 from app.utils.logging_utils import logger
 from langchain_core.tools import BaseTool
+from app.providers.base import ErrorEvent, ProviderConfig, TextDelta, ThinkingDelta
 from google import genai
 from google.genai import types
 from app.providers.google_direct import _sanitize_schema_for_gemini
