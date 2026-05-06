@@ -2301,7 +2301,30 @@ const MUIChatHistory = () => {
     // Return whatever prior tree we had (or empty) WITHOUT updating cache refs,
     // so the next render — once folders arrive — rebuilds normally.
     if (safeFolders.length === 0 && safeConversations.length > 0) {
-      return lastTreeDataRef.current.length > 0 ? lastTreeDataRef.current : [];
+      // However, if the cached tree was built for a different project
+      // (e.g. after switching to an unrooted project that legitimately has
+      // zero folders), the cache is stale and returning it would permanently
+      // hide the new project's conversations. Detect staleness by checking
+      // whether any cached conversation id is still present in the current
+      // conversations array — if none overlap, invalidate and fall through
+      // to a full rebuild.
+      const currentConvIds = new Set(safeConversations.map(c => c.id));
+      let cachedConvFound = false;
+      const scan = (nodes: any[], _d = 0): void => {
+        if (cachedConvFound || _d > 20) return;
+        for (const n of nodes) {
+          if (n.conversation && currentConvIds.has(n.conversation.id)) { cachedConvFound = true; return; }
+          if (n.children) scan(n.children, _d + 1);
+        }
+      };
+      scan(lastTreeDataRef.current);
+      if (lastTreeDataRef.current.length > 0 && cachedConvFound) {
+        return lastTreeDataRef.current;
+      }
+      // Cache is empty or belongs to a different project → invalidate and rebuild
+      lastTreeDataInputsRef.current = 0;
+      lastSortHashRef.current = 0;
+      lastTreeDataRef.current = [];
     }
 
     // Two-level hash: structural (folder/conversation identity) vs sort

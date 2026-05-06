@@ -1794,8 +1794,24 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // GC pass runs below after shells are loaded.
             // Messages for the active conversation are loaded below.
             const savedConversations = await db.getConversationShells();
-            console.log('✅ Setting conversation shells immediately:', savedConversations.length);
-            setConversations(savedConversations);
+            // Scope the initial shell load to the current project. IndexedDB
+            // holds shells for every project the user has ever opened in this
+            // browser; dumping all of them into state on refresh produced a
+            // thousands-long sidebar for unrooted projects (and a brief flash
+            // for rooted ones) until the project-scoped server sync ran and
+            // replaced them. We still include conversations with no projectId
+            // — legacy/untagged entries that the migration step will assign.
+            // ProjectContext restores its state asynchronously, so currentProject
+            // is typically still undefined when this init effect fires. Read the
+            // persisted project id directly from localStorage (same key that
+            // ProjectContext uses: LAST_PROJECT_KEY = 'ZIYA_LAST_PROJECT_ID') so
+            // the filter engages on the very first render after refresh.
+            const startupPid = currentProject?.id || (() => { try { return localStorage.getItem('ZIYA_LAST_PROJECT_ID') || undefined; } catch { return undefined; } })();
+            const scopedShells = startupPid
+                ? savedConversations.filter(c => !c.projectId || c.projectId === startupPid || (c as any).isGlobal)
+                : savedConversations;
+            console.log('✅ Setting conversation shells immediately:', scopedShells.length, `(of ${savedConversations.length} total across all projects)`);
+            setConversations(scopedShells);
 
             // Detect corrupt IDB: if shells returned very few valid
             // conversations, check the server to see if we're missing data.
@@ -1832,7 +1848,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             if (savedConversations.length > 0 && conversations.length === 0) {
                 console.log('🔄 FORCE LOAD: shells loaded, state was empty');
-                setConversations(savedConversations);
+                setConversations(scopedShells);
             }
 
             // Immediate startup GC: purge stale empty "New Conversation" entries
@@ -1845,8 +1861,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
             const savedCurrentId = getTabState('ZIYA_CURRENT_CONVERSATION_ID');
             if (savedCurrentId) protectedAtStartup.add(savedCurrentId);
 
+            // GC must operate on the scoped shells — GCing the unfiltered 852
+            // and then setConversations(gcKept) would undo the project filter
+            // above and dump every project's chats back into state.
             const { kept: gcKept, purgedIds: gcPurged } = gcEmptyConversations(
-                savedConversations, protectedAtStartup, STARTUP_GC_MAX_AGE_MS
+                scopedShells, protectedAtStartup, STARTUP_GC_MAX_AGE_MS
             );
             if (gcPurged.length > 0) {
                 console.log(`🗑️ Startup GC: removing ${gcPurged.length} stale empty conversation(s)`);
