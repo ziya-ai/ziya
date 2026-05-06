@@ -39,6 +39,148 @@ const isVegaSpec = (spec: any): boolean => {
   return false;
 };
 
+/**
+ * Rewrite Vega v5 JS-style method calls to Vega v6 function-call equivalents.
+ * Vega v6 dropped MemberExpression callees in its expression evaluator.
+ *   arr.join(sep)       → join(arr, sep)
+ *   str.slice(a,b)      → slice(str, a, b)
+ *   str.split(sep)      → split(str, sep)
+ *   str.replace(a,b)    → replace(str, a, b)
+ *   str.indexOf(v)      → indexof(str, v)
+ *   str.includes(v)     → indexof(str, v) >= 0
+ *   str.toLowerCase()   → lower(str)
+ *   str.toUpperCase()   → upper(str)
+ *   str.trim()          → trim(str)
+ *   arr.reverse()       → reverse(arr)
+ */
+function rewriteMethodCallsInExpr(expr: string): string {
+  const METHOD_MAP: Array<[string, (lhs: string, args: string) => string]> = [
+    ['join',        (e, a) => a ? `join(${e}, ${a})` : `join(${e})`],
+    ['slice',       (e, a) => a ? `slice(${e}, ${a})` : `slice(${e})`],
+    ['split',       (e, a) => a ? `split(${e}, ${a})` : `split(${e})`],
+    ['replace',     (e, a) => `replace(${e}, ${a})`],
+    ['indexOf',     (e, a) => `indexof(${e}, ${a})`],
+    ['includes',    (e, a) => `indexof(${e}, ${a}) >= 0`],
+    ['toLowerCase', (e, _) => `lower(${e})`],
+    ['toUpperCase', (e, _) => `upper(${e})`],
+    ['trim',        (e, _) => `trim(${e})`],
+    ['reverse',     (e, _) => `reverse(${e})`],
+  ];
+  let result = expr;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [method, rewriter] of METHOD_MAP) {
+      const searchStr = `.${method}(`;
+      const dotIdx = result.indexOf(searchStr);
+      if (dotIdx === -1) continue;
+      const prevChar = result[dotIdx - 1];
+      let lhsStart = -1;
+      if (prevChar === ')') {
+        let depth = 1, i = dotIdx - 2;
+        while (i >= 0 && depth > 0) {
+          if (result[i] === ')') depth++;
+          else if (result[i] === '(') depth--;
+          i--;
+        }
+        i++;
+        while (i > 0 && /[\w$]/.test(result[i - 1])) i--;
+        lhsStart = i;
+      } else if (/[\w$'"]/.test(prevChar)) {
+        let i = dotIdx - 1;
+        if (result[i] === "'" || result[i] === '"') {
+          const q = result[i]; i--;
+          while (i >= 0 && result[i] !== q) i--;
+          lhsStart = i;
+        } else {
+          while (i > 0 && /[\w$]/.test(result[i - 1])) i--;
+          lhsStart = i;
+        }
+      }
+      if (lhsStart === -1) continue;
+      const lhs = result.slice(lhsStart, dotIdx);
+      let depth = 1, j = dotIdx + searchStr.length;
+      while (j < result.length && depth > 0) {
+        if (result[j] === '(') depth++;
+        else if (result[j] === ')') depth--;
+        j++;
+      }
+      const args = result.slice(dotIdx + searchStr.length, j - 1);
+      result = result.slice(0, lhsStart) + rewriter(lhs, args) + result.slice(j);
+      changed = true; break;
+    }
+  }
+  return result;
+}
+
+/**
+ * Rewrite Vega v5 let() bindings to inline expressions for v6 compatibility.
+ * let(x = defExpr, bodyExpr)  →  bodyExpr with every \bx\b replaced by (defExpr)
+ * Handles arbitrarily nested parens in both the definition and body.
+ */
+function rewriteLetExpressions(expr: string): string {
+  let result = expr;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const letIdx = result.indexOf('let(');
+    if (letIdx === -1) break;
+    let i = letIdx + 4;
+    while (i < result.length && result[i] === ' ') i++;
+    const varStart = i;
+    while (i < result.length && /[\w$]/.test(result[i])) i++;
+    const varName = result.slice(varStart, i);
+    if (!varName) break;
+    while (i < result.length && result[i] === ' ') i++;
+    if (result[i] !== '=') break;
+    i++;
+    while (i < result.length && result[i] === ' ') i++;
+    let depth = 0;
+    const defStart = i;
+    while (i < result.length) {
+      if (result[i] === '(' || result[i] === '[') depth++;
+      else if ((result[i] === ')' || result[i] === ']') && depth > 0) depth--;
+      else if (result[i] === ',' && depth === 0) break;
+      else if ((result[i] === ')' || result[i] === ']') && depth === 0) break;
+      i++;
+    }
+    if (result[i] !== ',') break;
+    const definition = result.slice(defStart, i).trim();
+    i++;
+    while (i < result.length && result[i] === ' ') i++;
+    const bodyStart = i;
+    depth = 0;
+    while (i < result.length) {
+      if (result[i] === '(' || result[i] === '[') depth++;
+      else if (result[i] === ')' || result[i] === ']') {
+        if (depth === 0) break;
+        depth--;
+      }
+      i++;
+    }
+    const body = result.slice(bodyStart, i);
+    const expanded = body.replace(new RegExp(`\\b${varName}\\b`, 'g'), `(${definition})`);
+    result = result.slice(0, letIdx) + expanded + result.slice(i + 1);
+    changed = true;
+  }
+  return result;
+}
+
+const VEGA_EXPR_KEYS = new Set([
+  'update', 'calculate', 'test', 'expr', 'signal', 'filter', 'where',
+]);
+function rewriteV5Expressions(obj: any): any {
+  if (!obj || typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) return obj.map(rewriteV5Expressions);
+  const out: any = {};
+  for (const [k, v] of Object.entries(obj)) {
+    out[k] = (VEGA_EXPR_KEYS.has(k) && typeof v === 'string')
+      ? rewriteLetExpressions(rewriteMethodCallsInExpr(v))
+      : rewriteV5Expressions(v);
+  }
+  return out;
+}
+
 export const vegaPlugin: D3RenderPlugin = {
   name: 'vega-renderer',
   // Higher than vega-lite-renderer (8) so we claim full Vega specs first.
@@ -96,10 +238,13 @@ export const vegaPlugin: D3RenderPlugin = {
       vegaSpec = rest;
     }
 
-    // Ensure $schema points to Vega v6
-    if (!vegaSpec.$schema) {
+    // Normalise schema — v5 specs must point to v6 to match the installed runtime.
+    if (!vegaSpec.$schema || (vegaSpec.$schema.includes('/vega/') &&
+        !vegaSpec.$schema.includes('vega-lite') && vegaSpec.$schema.includes('v5'))) {
       vegaSpec.$schema = 'https://vega.github.io/schema/vega/v6.json';
     }
+    // Rewrite v5 expression syntax to v6 function-call form
+    vegaSpec = rewriteV5Expressions(vegaSpec);
 
     container.innerHTML = '';
     container.style.position = 'relative';
