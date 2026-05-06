@@ -89,10 +89,170 @@ An artifact is what flows out of a task. Structure:
 - decisions (bulleted list of key choices made)
 - outputs (typed content: text / file / data parts)
 - metadata (tokens consumed, tool calls made, duration)
+- signature (optional hash of error identity, populated only on
+  failure to enable clustering of similar failures; null on success)
 
 Artifacts are referenceable by templating: when a downstream task's
 instructions contain `{{previous.artifact.outputs[0]}}`, it gets
 rendered at dispatch time.
+
+## Runtime semantics
+
+These are the execution contracts a block executor is required to
+honor.  They sit beneath the grammar: a user composing blocks does
+not see them directly, but the authoring surface must render them
+correctly and the execution surface must enforce them.
+
+### One iteration equals one pass through the body
+
+A Task block is the atomic unit of model invocation: one streamed
+conversation in, one Artifact out.  Larger structures produce
+composite artifacts:
+
+- **Sequence** (implicit — stacked blocks in a body) — runs each
+  block top-to-bottom.  The sequence's artifact is the last block's
+  artifact.  Earlier artifacts are available to later blocks via
+  propagation.
+- **Repeat (one iteration)** — one full traversal of the body.  If
+  the body is a single Task, the iteration's artifact is that Task's
+  artifact.  If the body is a sequence, the iteration's artifact is
+  the sequence's last artifact.
+- **Parallel** — runs all body blocks concurrently.  The Parallel's
+  artifact is a composite whose `outputs` is the concatenation of
+  each child's outputs in declared order.
+
+### Propagation — what an iteration sees
+
+An iteration's instructions can reference state from prior iterations
+or prior siblings via template variables.  Substitution happens at
+dispatch time, immediately before the model is invoked; the
+conversation inside the iteration sees only the rendered string,
+never the template.
+
+Inside a Repeat body:
+
+| Variable | When defined | Shape |
+|---|---|---|
+| `{{item}}` | mode `for_each` | the current item from the source list |
+| `{{index}}` | always | 0-based iteration index (integer) |
+| `{{previous}}` | iteration > 0, propagate ≠ `none` | prior iteration's Artifact |
+| `{{all}}` | propagate: `all` | list of every prior iteration's Artifact |
+
+Inside a sequence:
+
+| Variable | Shape |
+|---|---|
+| `{{previous_sibling}}` | the immediately-prior sibling's Artifact |
+| `{{sibling("block-id")}}` | a named sibling's Artifact |
+
+Field access follows the Artifact schema: `{{previous.summary}}`,
+`{{previous.outputs[0].text}}`, `{{previous.decisions}}`.  Missing
+fields substitute to the empty string and log a warning; they do not
+crash dispatch.
+
+### Iteration result storage at scale
+
+A Repeat with count=10,000 cannot serialize 10,000 full Artifacts
+into a single TaskRun JSON file.  The storage shape:
+
+- `TaskRun.block_states[block_id].iteration_summaries` — an array of
+  lightweight records, one per iteration, each ~100 bytes:
+  `{index, status, signature, duration_ms, tokens}`.  Always retained.
+- Full Artifacts stored per-iteration in separate files:
+  `~/.ziya/projects/{pid}/task_runs/{run_id}/iterations/{block_id}_{index}.json`.
+- Every failing iteration persists its full Artifact.
+- Up to the first 50 passing iterations persist their full Artifact;
+  passes beyond that retain only the summary record.
+
+The `signature` on an Artifact is a hash of `(error_type,
+error_location)` derived from a failed iteration's output.  Null on
+success.  This single field is what drives failure-signature
+clustering in observation surfaces — the "10,000 runs, 4 error
+patterns" view is a group-by over this field.
+
+### Live observation
+
+Runs are observable via both REST and WebSocket.
+
+- `GET /task-runs/{id}` — full snapshot.  Always available.  Used on
+  reload and after reconnect.  Source of truth.
+- `WS /ws/task-runs/{id}` — incremental events pushed during
+  execution.  Follows the pattern in `app/agents/delegate_stream_relay.py`.
+
+Event types (server → client):
+
+| Event | Payload |
+|---|---|
+| `run_started` | `{run_id, started_at}` |
+| `block_started` | `{run_id, block_id, at}` |
+| `iteration_started` | `{run_id, block_id, index}` |
+| `iteration_completed` | `{run_id, block_id, index, status, signature?, duration_ms, tokens}` |
+| `block_completed` | `{run_id, block_id, at}` |
+| `run_completed` | `{run_id, status, at}` |
+| `whisper_received` | `{run_id, block_id, text}` — ack of a whispered hint |
+
+Events are transient; persisted storage remains the source of truth.
+Reconnecting clients reconcile by reading the snapshot and then
+resuming the event stream.
+
+### Cancellation
+
+`POST /task-runs/{id}/cancel` sets `TaskRun.cancel_requested = True`
+and returns immediately.  The block executor checks the flag at two
+points:
+
+1. Between iterations of a Repeat.
+2. Between siblings in a sequence.
+
+In-flight Task invocations complete normally; they are not
+interrupted.  When cancellation is observed, the executor stops
+scheduling new work, seals partial results, and transitions the run
+to `status: cancelled`.  Partial artifacts are preserved.
+
+Hard cancel (interrupting a mid-stream LLM invocation) is deferred;
+it requires plumbing `asyncio.CancelledError` through
+`StreamingToolExecutor` and is not needed for any committed use case.
+
+### Relationship to the delegate substrate
+
+The block executor uses `StreamingToolExecutor` directly — the same
+engine that powers the main chat flow and the delegate system.  It
+does not go through `DelegateManager`; task cards and delegates are
+sibling systems that share the underlying model-invocation engine.
+
+Task cards have their own sandboxed conversations per Task (per the
+core invariant).  Delegate conversations have their own sandbox as
+visible chats.  A task card does not spawn a delegate, and a delegate
+does not spawn a task card — they compose only through their shared
+engine, not through each other.
+
+### Queryable runs
+
+A live or completed run is not a blob of state — it is a queryable
+object.  The REST surface supports filtered views over the iteration
+summaries, and the chat surface can call those views in response to
+user questions.
+
+Common queries:
+
+- **By status** — "which iterations failed?"
+- **By signature** — "which iterations hit this crash pattern?"
+- **By range** — "the last 20 iterations" or "iterations 100–200"
+- **Count-only** — lightweight stats for aggregate views without
+  payloads
+
+Concrete shape:
+`GET /task-runs/{id}/iterations?status=failed&signature=abc123&limit=50`
+— server-side filter over `iteration_summaries`, returning the matching
+summaries plus (optionally) the full Artifacts for those entries.
+
+Beyond structured filtering, the Artifacts and summaries are designed
+to be feedable as context into a regular chat turn — so "summarize the
+still-broken cases" is a legitimate interaction: a chat turn loads
+the failed iterations via the query endpoint and the model writes
+prose over them.  The task-card system does not own a bespoke
+summarization path; it owns the queryable substrate that a chat turn
+can draw from.
 
 ## UX shape
 
