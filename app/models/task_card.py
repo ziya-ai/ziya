@@ -55,6 +55,13 @@ class Artifact(BaseModel):
     tool_calls: int = 0
     duration_ms: int = 0
     created_at: float = 0.0
+    # Optional error-identity hash — populated only on failure,
+    # enables clustering similar failures by signature.  Null on
+    # success.  See design/task-cards.md §Runtime semantics.
+    signature: Optional[str] = None
+    # Whether this artifact represents a failed execution.  The
+    # executor sets this when the block exited via an error path.
+    failed: bool = False
 
 
 # ── The recursive Block type ──────────────────────────────
