@@ -17,10 +17,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 ### Fixed
+### Changed
+
+## [0.6.5.3] - 2026-05-05
+
+### Added
+
+- **Task Card block executor with Repeat, Parallel, and soft-cancel support**
+  (`app/agents/block_executor.py`, `app/agents/task_run_stream_relay.py`):
+  Implements the loop controller described in `design/task-cards.md §Runtime
+  semantics`. Supports all three Repeat modes (`count`, `until`, `for_each`),
+  serial and parallel execution variants, and implicit sequences (top-to-bottom
+  body lists). Key properties:
+  - Soft cancel is checked between Repeat iterations and between sequence
+    siblings; in-flight Task invocations are not interrupted.
+  - **Passing-iteration retention cap**: up to 50 passing iteration artifacts
+    are persisted per Repeat block; every failing iteration is always retained
+    in full at
+    `~/.ziya/projects/{pid}/task_runs/{run_id}/iterations/{block_id}_{index}.json`.
+  - A lightweight `IterationSummary` (~100 bytes: index, status, signature,
+    duration_ms, tokens) is written for every iteration regardless of scale,
+    enabling "10,000 runs, 4 error patterns" views without loading full artifacts.
+  - Failure signatures are 12-hex-char SHA-256 hashes of the first few
+    decisions/summary lines, enabling grouping of similar failures.
+  - Live observation events (`block_started`, `iteration_started`,
+    `iteration_completed`, `block_completed`) are pushed via the new
+    `task_run_stream_relay` WebSocket module (best-effort; errors never affect
+    execution).
+
+- **Iteration storage and cancellation in TaskRun model and storage**
+  (`app/models/task_run.py`, `app/storage/task_runs.py`):
+  - `IterationSummary` model: lightweight per-iteration record retained for
+    every iteration of a Repeat block.
+  - `TaskRunBlockState.iteration_summaries`: per-block list populated by the
+    block executor as the run progresses.
+  - `TaskRun.cancel_requested`: soft-cancel flag checked by the block executor
+    at iteration and sibling boundaries.
+  - `TaskRunStorage.request_cancel()`: sets the cancel flag atomically.
+  - `TaskRunStorage.append_iteration_summary()`: appends a summary to a
+    block's list in the run file.
+  - `TaskRunStorage.write_iteration_artifact()` /
+    `read_iteration_artifact()`: per-iteration full-artifact persistence in
+    separate files under `{run_id}/iterations/`.
+  - `TaskRunStorage.delete()` now recursively removes the per-iteration
+    directory alongside the run file.
+
+- **Artifact failure metadata** (`app/models/task_card.py`): `Artifact` gains
+  two new fields — `signature` (nullable 12-hex failure-clustering hash,
+  populated only on error) and `failed` (boolean set by the executor on error
+  paths). These fields are what drive the failure-signature clustering views in
+  observation surfaces.
+
+- **Task card API: Repeat/Parallel roots now executable**
+  (`app/api/task_cards.py`): Removed the Slice-C restriction that rejected
+  launches of cards whose root block was not `task`. All block types are now
+  launchable. Block states are pre-seeded for the entire tree at launch time
+  so `append_iteration_summary` has a target node for every block.
+  `BlockExecutionCancelled` is caught and transitions the run to `cancelled`.
+
+### Fixed
+
 - **Sidebar showed conversations from every project after page refresh, and
   zero-folder/unrooted projects showed stale cross-project data until a manual
   project switch** (`frontend/src/components/MUIChatHistory.tsx`,
-  `frontend/src/context/ChatContext.tsx`): Three independent bugs compounded
+  `frontend/src/context/ChatContext.tsx`): Four independent bugs compounded
   into what looked like a single "wrong chats on refresh" symptom.
 
     1. **Stale tree cache on project switch** — `MUIChatHistory`'s tree-build
@@ -60,7 +120,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
        fix #2. Scoped the GC input to `scopedShells` as well. Cross-project
        stale empties still get reaped by the periodic GC and by per-project
        init on each switch.
+
+- **Vega v5 specs failed to render; Vega-Lite pipeline corrupted their data**
+  (`frontend/src/plugins/d3/vegaPlugin.ts`, `frontend/src/plugins/d3/vegaLitePlugin.ts`,
+  `frontend/src/components/MarkdownRenderer.tsx`):
+
+  - **Expression rewriting** (`vegaPlugin.ts`): Vega v6 dropped JS-style
+    method calls (`arr.join()`, `str.toLowerCase()`, `let(x=e, body)`, etc.)
+    from its expression evaluator. Added `rewriteMethodCallsInExpr` and
+    `rewriteLetExpressions` which rewrite these to v6 function-call form before
+    the spec is handed to vega-embed, fixing "unknown function" errors on specs
+    generated against the v5 evaluator.
+  - **Schema normalisation** (`vegaPlugin.ts`): v5 specs have their `$schema`
+    bumped to the v6 URL at render time.
+  - **Vega v5 routing** (`vegaLitePlugin.ts`): specs with a `/vega/` `$schema`
+    (excluding `/vega-lite/`) are now accepted by `isVegaLiteObject` and
+    `isVegaLiteDefinitionComplete`, skip all Vega-Lite preprocessing transforms
+    (which would have silently dropped their data pipeline), and preserve
+    `$schema` at embed time so vega-embed selects the Vega runtime rather than
+    defaulting to Vega-Lite.
+  - **JSON repair** (`vegaLitePlugin.ts`): when a JSON parse error falls within
+    5 characters of the end of the extracted spec, try appending a set of
+    closing-brace suffixes before giving up. Recovers from truncated streaming
+    output.
+  - **Language tag routing** (`MarkdownRenderer.tsx`): the `vega` language tag
+    now routes to the vega-lite renderer (vega-embed handles both). Bare JSON
+    blocks with a `/vega/` `$schema` are also auto-detected.
+  - **Outer-fence unwrap** (`MarkdownRenderer.tsx`): when a fence of length ≥ 4
+    backticks wraps content that contains a language-tagged inner fence of
+    strictly shorter length, the outer pair is stripped. Fixes a model pattern
+    that emits an extra backtick wrapper around `diff`, `python`, etc. blocks,
+    causing them to render as literal text.
+  - **Export dialog** (`vegaLitePlugin.ts`): SVG reference is now looked up via
+    `querySelector` at call time rather than captured at script load, preventing
+    a null-reference crash when the export button is clicked before the chart
+    renders.
+
+- **Model cut off mid-plan when narrating intent without executing tools**
+  (`app/streaming_tool_executor.py`): The completion heuristic (20+ words
+  ending with sentence-final punctuation) misfired when the model produced
+  only narration of intent ("Let me check X before writing…") without calling
+  any tools. Added a `textonly_grace_used` counter: on a text-only iteration
+  where the counter is below 1, emit a continuation instead of `stream_end`
+  and increment the counter. On the next cycle the model either executes the
+  announced tools (normal flow) or produces another text-only response (grace
+  already used, stream ends). Bounded to prevent infinite text-only loops when
+  the model has genuinely finished.
+
+- **Low-confidence hallucination-shingle matches flooded the WARNING log**
+  (`app/text_delta_processor.py`): Low-confidence matches are non-actionable
+  (execution continues) and fire routinely when the model legitimately
+  discusses code it has already read. These now emit at `DEBUG`. High-confidence
+  matches that abort the stream remain at `WARNING`.
+
+- **Missing imports in Google direct wrapper** (`app/agents/wrappers/google_direct.py`):
+  `ErrorEvent`, `ProviderConfig`, `TextDelta`, and `ThinkingDelta` were used
+  but not imported from `app.providers.base`.
+
 ### Changed
+
+- **Removed dead Google native function-calling code path** (`app/agents/agent.py`):
+  The ~110-line block guarded by `if False:` was unreachable — it predated the
+  current XML-agent architecture and was already disabled. Removed to reduce
+  cognitive load.
 
 ## [0.6.5.2] - 2026-05-02
 
