@@ -116,6 +116,9 @@ def setup_environment(args: Any) -> None:
         os.environ["ZIYA_AWS_PROFILE"] = profile
         os.environ["AWS_PROFILE"] = profile
         logger.info(f"Using AWS profile: {profile}")
+    elif os.environ.get("ZIYA_AWS_PROFILE") and not os.environ.get("AWS_PROFILE"):
+        os.environ["AWS_PROFILE"] = os.environ["ZIYA_AWS_PROFILE"]
+        logger.info(f"Using AWS profile from ZIYA_AWS_PROFILE: {os.environ['ZIYA_AWS_PROFILE']}")
 
     # -- AWS region ---------------------------------------------------------
     # args.region is None when the user didn't pass --region (default changed
