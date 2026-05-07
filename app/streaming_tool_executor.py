@@ -1436,7 +1436,7 @@ class StreamingToolExecutor:
         except (ImportError, KeyError, AttributeError, OSError, ValueError) as calib_error:
             logger.error(f"📊 CALIBRATION ERROR: {calib_error}")
 
-    async def stream_with_tools(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def stream_with_tools(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None, cancel_event: Optional[asyncio.Event] = None) -> AsyncGenerator[Dict[str, Any], None]:
         # --- Concurrent feedback monitor ---
         # Instead of relying solely on discrete polling points, run a
         # background task that continuously drains the feedback queue and
@@ -1645,6 +1645,11 @@ class StreamingToolExecutor:
         textonly_grace_used = 0
         for iteration in range(max_iterations):
             logger.debug(f"🔍 ITERATION_START: Beginning iteration {iteration}")
+            # Check for user-requested cancellation before making a new LLM call.
+            # Catches ^C that arrived during tool execution in the prior iteration.
+            if cancel_event is not None and cancel_event.is_set():
+                logger.debug("stream_with_tools: cancel_event set, stopping before LLM call")
+                return
             hallucination_this_iteration = False
             parrot_match_this_iteration: Optional[Dict[str, Any]] = None
             
@@ -2551,6 +2556,11 @@ Retry with the 'command' parameter included."""
                                 logger.debug(f"🔍 TOOL_EXECUTED_FLAG: Set tools_executed_this_iteration = True for tool {tool_id}")
 
                                 completed_tools.add(tool_id)
+                                # Check after each tool so a multi-tool batch
+                                # stops immediately when cancellation is requested.
+                                if cancel_event is not None and cancel_event.is_set():
+                                    logger.debug("stream_with_tools: cancel_event after tool, stopping")
+                                    return
                             
                             except json.JSONDecodeError as e:
                                 logger.error(f"🔍 JSON_PARSE_ERROR: Failed to parse tool arguments for {tool_name}: {e}")
@@ -2651,7 +2661,27 @@ Please retry the tool call with valid JSON. Ensure:
                         throttle_state['last_cache_efficiency'] = iteration_usage.cache_hit_rate
                         logger.debug(f"✅ CACHE WORKING: {cached:,} tokens reused")
                 else:
-                    logger.warning(f"⚠️ No usage metrics captured for iteration {iteration}")
+                    # No usage is expected when the iteration produced no
+                    # output (early break, error before message_stop, or
+                    # the provider simply didn't emit UsageEvent — the
+                    # latter was a Gemini bug fixed in an earlier release).
+                    # Only warn when output *was* produced but usage wasn't
+                    # recorded, which is a real telemetry attribution gap.
+                    _produced_output = bool(assistant_text.strip()) or bool(tool_results)
+                    if _produced_output:
+                        logger.warning(
+                            f"⚠️ Output produced but no usage metrics captured "
+                            f"for iteration {iteration} "
+                            f"(possible provider UsageEvent gap)"
+                        )
+                        logger.warning(
+                            f"   [diag] assistant_text_len={len(assistant_text)} "
+                            f"stripped_len={len(assistant_text.strip())} "
+                            f"tool_results={len(tool_results)} "
+                            f"all_tool_calls={len(all_tool_calls)}"
+                        )
+                    else:
+                        logger.info(f"No usage metrics for iteration {iteration} (no output)")
 
                 # CRITICAL: Validate tool_results match tool_use blocks before building conversation
                 # Remove any tool_use blocks that don't have corresponding results
@@ -2967,8 +2997,28 @@ Please retry the tool call with valid JSON. Ensure:
                         # If the response is very short (< 50 chars) and we're repeating iterations
                         # with identical output, it's a stable completion - end the stream
                         if iteration >= 1 and len(assistant_text.strip()) < 50:
-                            # Check if output hasn't grown in the last iteration
-                            # (indicates the model has nothing more to add)
+                            _INTENT_PHRASES = (
+                                'let me check', 'let me look', 'let me examine',
+                                'let me search', 'let me verify', 'let me read',
+                                'let me review', 'let me see', 'let me inspect',
+                                'let me explore', 'let me first', 'let me dig',
+                                "i'll check", "i'll look", "i'll examine",
+                                "i'll search", "i'll verify", "i'll read",
+                                "i'll review", "i'll inspect",
+                                "before writing", "before i write",
+                                "before creating", "before i create",
+                                "first, let me", "first let me",
+                                "i need to read", "i need to check",
+                            )
+                            _has_intent = any(p in assistant_text.lower() for p in _INTENT_PHRASES)
+                            if _has_intent and textonly_grace_used < 3:
+                                textonly_grace_used += 1
+                                logger.info(
+                                    f"🔄 SHORT_INTENT_GRACE: Short response ({len(assistant_text)} chars) "
+                                    f"contains tool intent, granting continuation "
+                                    f"(iteration={iteration}, grace={textonly_grace_used}/3)"
+                                )
+                                continue
                             logger.debug(f"🔍 SHORT_STABLE_RESPONSE: Detected short response ({len(assistant_text)} chars) at iteration {iteration}, ending stream")
                             yield {'type': 'stream_end'}
                             break
@@ -3042,7 +3092,30 @@ Please retry the tool call with valid JSON. Ensure:
                         yield {'type': 'stream_end'}
                         break
                     else:
-                        # No tools, no text - we're done
+                        # No tools and no text. If the previous conversation
+                        # turn was tool results, the model likely hit a transient
+                        # empty-response condition (no usage metrics, zero tokens).
+                        # Retry once with a nudge rather than silently ending.
+                        _prev_is_tool_result = (
+                            len(conversation) >= 1 and
+                            isinstance(conversation[-1].get('content'), list) and
+                            any(
+                                b.get('type') == 'tool_result'
+                                for b in conversation[-1]['content']
+                                if isinstance(b, dict)
+                            )
+                        )
+                        if _prev_is_tool_result and textonly_grace_used < 3:
+                            textonly_grace_used += 1
+                            logger.info(
+                                f"🔄 EMPTY_AFTER_TOOLS_RETRY: Model returned nothing after tool results "
+                                f"(iteration={iteration}, grace={textonly_grace_used}/3). Nudging."
+                            )
+                            conversation.append({
+                                "role": "user",
+                                "content": "[System: Please continue — analyze the tool results above and proceed with your task.]"
+                            })
+                            continue
                         logger.debug(f"🔍 NO_ACTIVITY: No tools or text in iteration {iteration}, ending stream")
                         yield {'type': 'stream_end'}
                         break
@@ -3305,6 +3378,22 @@ Please retry the tool call with valid JSON. Ensure:
                     tracker['block_type'] = None
                     tracker['backtick_count'] = 0
                     logger.debug(f"🔍 TRACKER: Closed block ({backtick_count} backticks)")
+                else:
+                    # No language specifier and not currently in a block —
+                    # this is a CommonMark-valid bare fence opener (e.g.
+                    # ```` on its own line). Previously ignored, which meant
+                    # bare-fence blocks were never tracked, so nested-viz
+                    # protection and fence-spacing guards didn't apply
+                    # inside them. Track it as an untyped block so the
+                    # rest of the pipeline knows we're inside a fence.
+                    tracker['in_block'] = True
+                    tracker['block_type'] = None  # untyped
+                    tracker['backtick_count'] = backtick_count
+                    tracker['accumulated_content'] = line + '\n'
+                    logger.debug(
+                        f"🔍 TRACKER: Opened untyped bare fence "
+                        f"({backtick_count} backticks)"
+                    )
         
         # Log state changes for debugging
         if was_in_block != tracker.get('in_block') or was_block_type != tracker.get('block_type'):
