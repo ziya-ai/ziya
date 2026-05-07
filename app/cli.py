@@ -3,6 +3,24 @@
 import os
 os.environ["ZIYA_MODE"] = "chat"
 os.environ.setdefault("ZIYA_LOG_LEVEL", "WARNING")
+
+# Startup optimization: block langchain_core.language_models.base from
+# eagerly importing transformers (which pulls in torch, ~6s cold start).
+# Langchain wraps that import in try/except and falls back to _HAS_TRANSFORMERS=False,
+# which only affects BaseLanguageModel.get_num_tokens() — a path we don't use
+# because tokenization goes through tiktoken (see app/utils/tiktoken_compat.py).
+# Only install the stub if tiktoken is available so the fallback isn't needed.
+import sys as _sys
+try:
+    import tiktoken as _tiktoken  # noqa: F401
+    class _TransformersStub:
+        def __getattr__(self, name):
+            raise ImportError("transformers intentionally stubbed at CLI startup")
+    _sys.modules.setdefault("transformers", _TransformersStub())
+except ImportError:
+    pass  # tiktoken missing — let transformers load normally as the fallback
+del _sys
+
 import logging
 
 """
@@ -1067,9 +1085,11 @@ class CLI:
         )
         
         openai_messages = self._convert_to_openai_format(messages)
+        cancel_event = asyncio.Event()
+        self._cancel_event = cancel_event
         
         async def stream_task():
-            async for chunk in executor.stream_with_tools(openai_messages, tools, conversation_id=self.conversation_id):
+            async for chunk in executor.stream_with_tools(openai_messages, tools, conversation_id=self.conversation_id, cancel_event=cancel_event):
                 if self._cancellation_requested:
                     raise asyncio.CancelledError("User cancelled operation")
                 yield chunk
@@ -1086,6 +1106,7 @@ class CLI:
         finally:
             if not task.done():
                 task.cancel()
+            self._cancel_event = None
             self._active_task = None
     
     def _parse_markdown_state(self, content: str) -> dict:
@@ -1280,7 +1301,33 @@ class CLI:
                     
                             if not is_json_metadata and result != args.get('thought', ''):
                                 from app.utils.terminal_markdown import render_prefixed_markdown
-                                render_prefixed_markdown(result.rstrip('\n'))
+                                # Shell tools format their result as "$ <command>\n<output>".
+                                # Rendering the whole thing through the markdown renderer
+                                # collapses the leading newline and flattens the command
+                                # into the output. Split the command line off so it gets
+                                # distinct styling (bold green $, bold white command) and
+                                # a blank prefixed separator line before the output body.
+                                stripped_result = result.rstrip('\n')
+                                if stripped_result.startswith('$ '):
+                                    nl = stripped_result.find('\n')
+                                    if nl == -1:
+                                        cmd_line = stripped_result[2:]
+                                        body = ''
+                                    else:
+                                        cmd_line = stripped_result[2:nl]
+                                        body = stripped_result[nl + 1:]
+                                    # Prefix bar in grey (matches render_prefixed_markdown),
+                                    # dollar sign in bold green, command in bold white.
+                                    print(
+                                        f"\033[90m│\033[0m "
+                                        f"\033[1;32m$\033[0m \033[1;37m{cmd_line}\033[0m",
+                                        flush=True,
+                                    )
+                                    print("\033[90m│\033[0m", flush=True)
+                                    if body:
+                                        render_prefixed_markdown(body)
+                                else:
+                                    render_prefixed_markdown(stripped_result)
                     
                         print(f"\033[36m└─\033[0m", flush=True)
                     except Exception as e:  # Intentionally broad: display errors must not crash the stream
@@ -2292,6 +2339,8 @@ async def _run_async_cli(cli):
         if cli._active_task and not cli._active_task.done():
             # Mid-stream: request cancellation and cancel the task
             cli._cancellation_requested = True
+            if getattr(cli, '_cancel_event', None) is not None:
+                cli._cancel_event.set()
             cli._active_task.cancel()
         else:
             # At the prompt the terminal is in raw mode, so SIGINT
@@ -2314,6 +2363,20 @@ async def _run_async_cli(cli):
 # Session factory — single source of truth for init → auth → CLI creation
 # ============================================================================
 
+def _enforce_endpoint_policy():
+    """Enforce enterprise endpoint policy for CLI invocations."""
+    if os.environ.get("ZIYA_ALLOW_ALL_ENDPOINTS") != "1":
+        try:
+            from app.plugins import get_allowed_endpoints
+            allowed = get_allowed_endpoints()
+            endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+            if allowed is not None and endpoint not in allowed:
+                print(f"\n\033[31m✗ Policy Violation: Endpoint '{endpoint}' is not permitted.\033[0m", file=sys.stderr)
+                print(f"\033[33mAllowed endpoints: {', '.join(allowed)}\033[0m\n", file=sys.stderr)
+                sys.exit(1)
+        except Exception:
+            pass
+
 def _init_and_authenticate(args, *, skip_setup_env: bool = False):
     """Common initialisation: environment setup, plugin loading, and auth check.
 
@@ -2329,6 +2392,8 @@ def _init_and_authenticate(args, *, skip_setup_env: bool = False):
 
     from app.plugins import initialize as initialize_plugins
     initialize_plugins()
+
+    _enforce_endpoint_policy()
 
     profile = getattr(args, 'profile', None)
     if not _check_auth_quick(profile):
@@ -2362,6 +2427,7 @@ def cmd_chat(args):
     
     # Handle session resume (needs env + plugins but also needs auth)
     if getattr(args, 'resume', False):
+        _enforce_endpoint_policy()
         # Authenticate on resume path — fixes historical auth bypass
         profile = getattr(args, 'profile', None)
         if not _check_auth_quick(profile):
