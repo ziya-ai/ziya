@@ -24,7 +24,6 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
-from app.agents.agent import model
 from starlette.responses import StreamingResponse
 from pydantic import BaseModel, Field
 

@@ -32,7 +32,7 @@ DEFAULT_SHELL_CONFIG = {
         # Network diagnostics
         "dig", "host", "nslookup",
         # Process execution control
-        "timeout",
+        "timeout", "time",
         # Shell flow-control keywords (needed for compound commands split on ; && ||)
         "for", "while", "until", "select",
         "if", "then", "else", "elif", "fi",
