@@ -221,6 +221,18 @@ async def handle_message_stop(
         except (ImportError, KeyError, AttributeError, OSError) as tracking_error:
             logger.error(f"Error recording usage: {tracking_error}")
     elif conversation_id and iteration_usage.input_tokens == 0:
-        logger.warning(f"⚠️ No usage metrics captured for iteration {iteration}")
+        # No usage is expected when the iteration produced no output
+        # (early break, error before message_stop, or the provider
+        # simply didn't emit UsageEvent). Only warn when output *was*
+        # produced but usage wasn't recorded — a real attribution gap.
+        _produced_output = bool(state.assistant_text.strip())
+        if _produced_output:
+            logger.warning(
+                f"⚠️ Output produced but no usage metrics captured "
+                f"for iteration {iteration} "
+                f"(possible provider UsageEvent gap)"
+            )
+        else:
+            logger.info(f"No usage metrics for iteration {iteration} (no output)")
     elif not conversation_id:
         logger.debug(f"No conversation_id, skipping usage tracking")
