@@ -2419,9 +2419,12 @@ def apply_diff_with_difflib(file_path: str, diff_content: str, skip_hunks: List[
         if hunk.get('number') not in skip_hunks:
             # Check if this hunk is already applied anywhere in the file
             hunk_applied = False
+            from ..validation.validators import is_hunk_already_applied, detect_malformed_state
+            _malformed = detect_malformed_state(original_lines, hunk)
+            from ..validation.validators import normalize_line_for_comparison
+            _file_normalized = [normalize_line_for_comparison(l) for l in original_lines]
             for pos in range(len(original_lines) + 1):
-                from ..validation.validators import is_hunk_already_applied
-                if is_hunk_already_applied(original_lines, hunk, pos):
+                if is_hunk_already_applied(original_lines, hunk, pos, _malformed=_malformed, _file_normalized=_file_normalized):
                     hunk_applied = True
                     logger.info(f"Hunk #{hunk.get('number')} is already applied at position {pos}")
                     break

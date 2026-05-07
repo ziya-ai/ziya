@@ -94,15 +94,17 @@ def find_best_chunk_position(
         """Calculate similarity using multiple strategies and return the best ratio."""
         ratios = []
         
-        # Strategy 1: Direct comparison
-        chunk_text = '\n'.join(chunk_lines)
-        file_text = '\n'.join(file_slice)
-        direct_ratio = difflib.SequenceMatcher(None, chunk_text, file_text).ratio()
+        # Strategy 1: Line-level comparison.
+        # List-based SequenceMatcher is O(n_lines^2) vs O(n_chars^2) for
+        # joined strings — orders of magnitude faster for large hunks.
+        direct_ratio = difflib.SequenceMatcher(None, chunk_lines, file_slice).ratio()
+        if direct_ratio == 1.0:
+            return 1.0  # perfect match — skip remaining 7 strategies
         ratios.append(direct_ratio)
         
         # Strategy 2: Normalized whitespace comparison
-        chunk_normalized = '\n'.join(normalize_whitespace_for_comparison(line) for line in chunk_lines)
-        file_normalized = '\n'.join(normalize_whitespace_for_comparison(line) for line in file_slice)
+        chunk_normalized = [normalize_whitespace_for_comparison(l) for l in chunk_lines]
+        file_normalized = [normalize_whitespace_for_comparison(l) for l in file_slice]
         normalized_ratio = difflib.SequenceMatcher(None, chunk_normalized, file_normalized).ratio()
         ratios.append(normalized_ratio)
         
@@ -110,14 +112,14 @@ def find_best_chunk_position(
         chunk_content = ''.join(''.join(line.split()) for line in chunk_lines)
         file_content = ''.join(''.join(line.split()) for line in file_slice)
         if chunk_content and file_content:
-            content_ratio = difflib.SequenceMatcher(None, chunk_content, file_content).ratio()
+            content_ratio = difflib.SequenceMatcher(None, chunk_content[:4000], file_content[:4000]).ratio()
             ratios.append(content_ratio)
         
         # Strategy 4: Token-based comparison (split by whitespace and compare tokens)
-        chunk_tokens = ' '.join('\n'.join(chunk_lines).split())
-        file_tokens = ' '.join('\n'.join(file_slice).split())
+        chunk_tokens = ' '.join(t for l in chunk_lines for t in l.split())
+        file_tokens = ' '.join(t for l in file_slice for t in l.split())
         if chunk_tokens and file_tokens:
-            token_ratio = difflib.SequenceMatcher(None, chunk_tokens, file_tokens).ratio()
+            token_ratio = difflib.SequenceMatcher(None, chunk_tokens[:4000], file_tokens[:4000]).ratio()
             ratios.append(token_ratio)
         
         # Strategy 5: Line-by-line content comparison (ignoring indentation)
@@ -133,12 +135,10 @@ def find_best_chunk_position(
                 ratios.append(line_ratio)
         
         # Strategy 6: Structural similarity (comparing non-empty lines only)
-        chunk_non_empty = [line.strip() for line in chunk_lines if line.strip()]
-        file_non_empty = [line.strip() for line in file_slice if line.strip()]
+        chunk_non_empty = [l.strip() for l in chunk_lines if l.strip()]
+        file_non_empty = [l.strip() for l in file_slice if l.strip()]
         if chunk_non_empty and file_non_empty:
-            struct_ratio = difflib.SequenceMatcher(None, 
-                                                 '\n'.join(chunk_non_empty), 
-                                                 '\n'.join(file_non_empty)).ratio()
+            struct_ratio = difflib.SequenceMatcher(None, chunk_non_empty, file_non_empty).ratio()
             ratios.append(struct_ratio)
         
         # Strategy 7: Indentation-aware comparison for code files
@@ -168,9 +168,7 @@ def find_best_chunk_position(
                 file_logical.append('')
         
         if chunk_logical and file_logical:
-            logical_ratio = difflib.SequenceMatcher(None, 
-                                                  '\n'.join(chunk_logical), 
-                                                  '\n'.join(file_logical)).ratio()
+            logical_ratio = difflib.SequenceMatcher(None, chunk_logical, file_logical).ratio()
             ratios.append(logical_ratio)
         
         # Strategy 8: Semantic similarity for code (ignoring formatting entirely)
@@ -189,7 +187,7 @@ def find_best_chunk_position(
         file_semantic = normalize_code_semantics('\n'.join(file_slice))
         
         if chunk_semantic and file_semantic:
-            semantic_ratio = difflib.SequenceMatcher(None, chunk_semantic, file_semantic).ratio()
+            semantic_ratio = difflib.SequenceMatcher(None, chunk_semantic[:4000], file_semantic[:4000]).ratio()
             ratios.append(semantic_ratio)
         
         # Return the best ratio from all strategies
@@ -224,6 +222,8 @@ def find_best_chunk_position(
         if ratio > best_ratio:
             best_ratio = ratio
             best_pos = pos
+            if best_ratio == 1.0:
+                break  # perfect match found — no need to scan remaining positions
             logger.debug(f"Found better match at position {pos} with enhanced ratio {ratio:.3f}")
             
             # Debug: log first few lines of the match

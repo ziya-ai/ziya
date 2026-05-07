@@ -468,7 +468,7 @@ def _check_indentation_change_applied(file_lines: List[str], removed_lines: List
     logger.debug(f"Indentation change already applied at pos {pos} (file has new indentation)")
     return True
 
-def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: int, ignore_whitespace: bool = True) -> bool:
+def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: int, ignore_whitespace: bool = True, _malformed=None, _file_normalized=None) -> bool:
     """
     Check if a hunk is already applied at the given position with improved handling
     for invisible Unicode characters, escape sequences, and whitespace.
@@ -486,8 +486,9 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
     if not hunk.get('new_lines') or pos >= len(file_lines):
         return False
     
-    # CRITICAL: Check for malformed state first - if detected, never mark as already applied
-    if detect_malformed_state(file_lines, hunk):
+    # Use pre-computed malformed result when provided to avoid rebuilding the
+    # joined file string on every iteration of a position loop.
+    if (_malformed if _malformed is not None else detect_malformed_state(file_lines, hunk)):
         return False
     
     # Extract the removed and added lines from the hunk
@@ -536,7 +537,7 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
     
     # For pure additions, check if content already exists at the expected position
     if len(removed_lines) == 0 and len(added_lines) > 0:
-        return _check_pure_addition_already_applied(file_lines, added_lines, hunk, pos)
+        return _check_pure_addition_already_applied(file_lines, added_lines, hunk, pos, _file_normalized=_file_normalized)
     
     # CRITICAL: For hunks with removals, validate that the content to be removed matches
     # If removal validation fails, check if it's because the hunk was already applied
@@ -831,7 +832,7 @@ def _is_valid_hunk_header(hunk: Dict[str, Any]) -> bool:
             return False
     return True
 
-def _check_pure_addition_already_applied(file_lines: List[str], added_lines: List[str], hunk: Dict[str, Any], pos: int) -> bool:
+def _check_pure_addition_already_applied(file_lines: List[str], added_lines: List[str], hunk: Dict[str, Any], pos: int, _file_normalized=None) -> bool:
     """Check if a pure addition (no removals) is already applied with context validation."""
     
     logger.debug(f"Checking pure addition at pos {pos} - added_lines: {added_lines}")
@@ -846,6 +847,11 @@ def _check_pure_addition_already_applied(file_lines: List[str], added_lines: Lis
     if not added_lines:
         return True
     
+    # Precompute normalized file lines once when caller didn't supply them.
+    # Threading this down from the outer position loop avoids O(n^2) normalize calls.
+    if _file_normalized is None:
+        _file_normalized = [normalize_line_for_comparison(l) for l in file_lines]
+    
     # Get context lines from the hunk
     hunk_lines = hunk.get('lines', [])
     context_lines = [line[1:] for line in hunk_lines if line.startswith(' ')]
@@ -857,8 +863,7 @@ def _check_pure_addition_already_applied(file_lines: List[str], added_lines: Lis
         
         # Search through the file for a matching block
         for search_pos in range(len(file_lines) - len(added_lines) + 1):
-            file_block = [normalize_line_for_comparison(file_lines[search_pos + i]) 
-                         for i in range(len(added_lines))]
+            file_block = _file_normalized[search_pos:search_pos + len(added_lines)]
             if file_block == added_block:
                 logger.debug(f"Found added content at position {search_pos} (no context match)")
                 return True
@@ -881,8 +886,7 @@ def _check_pure_addition_already_applied(file_lines: List[str], added_lines: Lis
         search_start = max(0, pos - 20)
         search_end = min(len(file_lines) - len(new_lines) + 1, pos + 20)
         for search_pos in range(search_start, search_end):
-            file_block = [normalize_line_for_comparison(file_lines[search_pos + j])
-                         for j in range(len(new_lines))]
+            file_block = _file_normalized[search_pos:search_pos + len(new_lines)]
             if file_block == new_lines_normalized:
                 logger.debug(
                     f"Pure addition already applied: new_lines match at pos {search_pos}"
@@ -894,8 +898,7 @@ def _check_pure_addition_already_applied(file_lines: List[str], added_lines: Lis
     
     # Search for context lines in the file (they may have shifted due to other hunks)
     for search_pos in range(len(file_lines) - len(context_lines) + 1):
-        file_context = [normalize_line_for_comparison(file_lines[search_pos + i]) 
-                       for i in range(len(context_lines))]
+        file_context = _file_normalized[search_pos:search_pos + len(context_lines)]
         
         if file_context == context_normalized:
             # Found matching context, check if added lines follow
@@ -905,8 +908,7 @@ def _check_pure_addition_already_applied(file_lines: List[str], added_lines: Lis
                 continue
                         # The added content exists in the file, but before
             
-            file_block = [normalize_line_for_comparison(file_lines[check_pos + i]) 
-                         for i in range(len(added_lines))]
+            file_block = _file_normalized[check_pos:check_pos + len(added_lines)]
             
             if file_block == added_block:
                 logger.debug(f"Pure addition already applied: context at {search_pos}, additions at {check_pos}")
@@ -932,7 +934,7 @@ def _check_pure_addition_already_applied(file_lines: List[str], added_lines: Lis
         # fall back to the whole file if not found.
         def _search(start: int, end: int) -> int:
             for sp in range(start, end):
-                file_block = [normalize_line_for_comparison(file_lines[sp + i]) for i in range(al)]
+                file_block = _file_normalized[sp:sp + al]
                 if file_block == full_added_norm:
                     return sp
             return -1

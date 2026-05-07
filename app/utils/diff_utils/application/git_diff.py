@@ -12,7 +12,7 @@ import io
 from typing import Dict, List, Any, Optional
 
 from app.utils.logging_utils import logger
-from ..validation.validators import is_hunk_already_applied
+from ..validation.validators import is_hunk_already_applied, detect_malformed_state
 from ..application.patch_apply import apply_diff_with_difflib
 from ..core.exceptions import PatchApplicationError
 from ..parsing.diff_parser import extract_target_file_from_diff, split_combined_diff
@@ -786,8 +786,9 @@ def apply_diff_atomically(file_path: str, git_diff: str) -> Dict[str, Any]:
     
     for i, hunk in enumerate(hunks, 1):
         hunk_applied = False
+        _malformed = detect_malformed_state(original_lines, hunk)
         for pos in range(len(original_lines) + 1):  # +1 to allow checking at EOF
-            if is_hunk_already_applied(original_lines, hunk, pos, ignore_whitespace=True):
+            if is_hunk_already_applied(original_lines, hunk, pos, ignore_whitespace=True, _malformed=_malformed):
                 already_applied_hunks.append(i)
                 hunk_applied = True
                 break
