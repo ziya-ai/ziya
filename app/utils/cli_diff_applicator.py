@@ -9,6 +9,28 @@ from typing import List, Tuple, Optional, Set
 from app.utils.logging_utils import logger
 
 
+def _render_failure_diagnostics(failures: list) -> str:
+    """Format hunk failure list into a concise diagnostic string for CLI output.
+
+    Returns an empty string when there is nothing useful to show (e.g. empty
+    failures list), so callers can do ``if rendered: return False, rendered``.
+    """
+    if not failures:
+        return ""
+    parts = []
+    for i, failure in enumerate(failures, 1):
+        msg = failure.get("message", "Unknown error")
+        details = failure.get("details") or {}
+        confidence = details.get("confidence")
+        hunk_num = details.get("hunk_number") or details.get("hunk") or i
+        line = f"  Hunk #{hunk_num}: {msg}"
+        if confidence is not None:
+            line += f" (confidence: {confidence:.0%})"
+        parts.append(line)
+    header = f"Failed to apply ({len(failures)} hunk{'s' if len(failures) != 1 else ''} unmatched):"
+    return "\n".join([header] + parts)
+
+
 class DiffBlock:
     """Represents a single diff block from markdown."""
     
@@ -215,11 +237,25 @@ class CLIDiffApplicator:
                 if self._ranges_overlap(parsed_ranges[i], parsed_ranges[j]):
                     # Exact duplicate — drop the earlier one
                     if diffs[i].content.strip() == diffs[j].content.strip():
-                        superseded.add(i)
+                        # Identical content: drop the later duplicate (j),
+                        # keeping the first occurrence (i).
+                        superseded.add(j)
                         break
                     if self._is_sequential_pair(diffs[i].content, diffs[j].content):
                         continue  # complementary, not superseding
-                    superseded.add(i)
+                    # j's ranges overlap i's and they differ: j is a revision of i.
+                    # But only mark i as superseded if j is a strict superset
+                    # (covers all of i's ranges plus more, or the same ranges).
+                    # If i already covers more ranges than j, i is the superset and
+                    # j is the redundant one.
+                    ranges_i = set(map(tuple, parsed_ranges[i]))
+                    ranges_j = set(map(tuple, parsed_ranges[j]))
+                    if ranges_j >= ranges_i:
+                        # j covers everything i did (and possibly more) — i is stale
+                        superseded.add(i)
+                    else:
+                        # i covers more than j — j is the redundant partial duplicate
+                        superseded.add(j)
                     break
         
         if not superseded:
