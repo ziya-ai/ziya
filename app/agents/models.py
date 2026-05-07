@@ -8,7 +8,6 @@ import boto3
 import gc
 from pathlib import Path
 from langchain_aws import ChatBedrock
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.language_models import BaseChatModel
 from langchain_classic.callbacks.base import BaseCallbackHandler
 from app.utils.logging_utils import logger

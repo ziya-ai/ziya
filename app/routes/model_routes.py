@@ -42,7 +42,7 @@ def get_available_models(endpoint: Optional[str] = None):
 
     # Endpoint restriction from enterprise config.
     # ZIYA_ALLOW_ALL_ENDPOINTS=1 bypasses the policy for dev/testing.
-    if not os.environ.get("ZIYA_ALLOW_ALL_ENDPOINTS"):
+    if os.environ.get("ZIYA_ALLOW_ALL_ENDPOINTS") != "1":
         try:
             from app.plugins import get_allowed_endpoints
             allowed_endpoints = get_allowed_endpoints()
@@ -231,7 +231,7 @@ async def set_model(request: SetModelRequest):
         logger.info(f"Received model change request: {model_id}")
 
         # Enforce endpoint restriction from enterprise config providers
-        if not os.environ.get("ZIYA_ALLOW_ALL_ENDPOINTS"):
+        if os.environ.get("ZIYA_ALLOW_ALL_ENDPOINTS") != "1":
             try:
                 from app.plugins import get_allowed_endpoints
                 allowed_endpoints = get_allowed_endpoints()
