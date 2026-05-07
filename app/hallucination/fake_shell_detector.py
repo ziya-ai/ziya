@@ -33,9 +33,15 @@ _SHELL_FENCE_OPEN_RE = re.compile(
 # per CommonMark rules -- a 4-backtick open requires 4+ to close.
 _FENCE_OPEN_RE = re.compile(r'^(`{3,})', re.MULTILINE)
 
-# grep -n / grep -rn output: one or more digits, colon, space, content.
-# Three or more consecutive such lines is a strong signal.
-_GREP_LINE_RE = re.compile(r'^\d+:[ \t].+', re.MULTILINE)
+# grep -n / grep -rn output: one or more digits, colon, content.  Real
+# grep output has NO whitespace between the colon and the content
+# (`48:## Heading`, not `48: ## Heading`), so the separator is optional.
+# The 3+ consecutive-line threshold in detect_fake_shell_session is what
+# guards against incidental `\d+:.+` content elsewhere; making the
+# whitespace optional here was the actual detection gap — the earlier
+# strict pattern silently matched zero lines against real fabricated
+# grep output and Signal 1 never fired.
+_GREP_LINE_RE = re.compile(r'^\d+:[ \t]?\S.*', re.MULTILINE)
 
 # Shell prompt line: optional leading whitespace then $ or # followed by
 # a space and at least one non-whitespace character (an actual command).

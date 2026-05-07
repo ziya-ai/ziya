@@ -229,9 +229,21 @@ class ShingleIndex:
             ):
                 continue
 
+            # Parroting is distinguished from legitimate reference by
+            # sustained line-level reproduction, not shared vocabulary.
+            # A model authoring new code that calls helper functions it
+            # read earlier will produce high shingle_overlap (shared
+            # word-sequences) and small line_matches (only the call
+            # sites match verbatim) — that is NOT parroting. Real
+            # parroting reproduces multiple contiguous lines verbatim,
+            # which drives line_matches much higher.
+            #
+            # Only escalate to high-confidence when line_matches itself
+            # crosses the threshold. shingle_overlap on its own, or with
+            # minimal line-match corroboration, stays low-confidence
+            # (logged at DEBUG, does not abort the stream).
             high = (
-                shingle_overlap >= SHINGLE_OVERLAP_HIGH_CONFIDENCE
-                or line_matches >= LINE_MATCH_HIGH_CONFIDENCE
+                line_matches >= LINE_MATCH_HIGH_CONFIDENCE
             )
             match = ShingleMatch(
                 matched_tool_use_id=fp.tool_use_id,
