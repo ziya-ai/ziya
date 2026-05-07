@@ -3,7 +3,6 @@ AWS utility functions for Ziya.
 """
 import os
 import sys
-import importlib
 import boto3
 from botocore.client import BaseClient
 from botocore.exceptions import ClientError, NoCredentialsError, ProfileNotFound
@@ -18,57 +17,18 @@ def create_fresh_boto3_session(profile_name=None):
     Returns:
         boto3.Session: A fresh boto3 session
     """
-    # Debug: Check what we're trying to create
-    logger.info(f"create_fresh_boto3_session called with profile_name={profile_name}")
-    
-    # Check if profile exists
-    if profile_name:
-        import botocore.session
-        bs = botocore.session.Session()
-        available = bs.available_profiles
-        logger.info(f"Available profiles: {available}")
-        logger.info(f"Profile '{profile_name}' exists: {profile_name in available}")
-    
-    # First, try to clean up existing modules
-    modules_to_remove = []
-    for module_name in list(sys.modules.keys()):
-        if module_name.startswith('boto3.') or module_name.startswith('botocore.'):
-            modules_to_remove.append(module_name)
-    
-    for module_name in modules_to_remove:
-        try:
-            del sys.modules[module_name]
-        except KeyError:
-            pass
-    
-    # Reload core modules
-    try:
-        import botocore
-        importlib.reload(botocore)
-        importlib.reload(boto3)
-    except Exception as e:
-        logger.warning(f"Error reloading boto3/botocore modules: {e}")
-    
+    logger.debug(f"create_fresh_boto3_session called with profile_name={profile_name}")
     try:
         if profile_name:
-            logger.info(f"Attempting to create session with profile: {profile_name}")
             return boto3.Session(profile_name=profile_name)
         else:
-            logger.info("Attempting to create default boto3 session")
             return boto3.Session()
     except ProfileNotFound as e:
-        logger.error(f"ProfileNotFound error: {e}")
         requested_profile = profile_name or os.environ.get('AWS_PROFILE') or os.environ.get('AWS_DEFAULT_PROFILE')
-        logger.error(f"Requested profile: {requested_profile}")
         _handle_profile_not_found_error(requested_profile)
-        # Don't return None here - _handle_profile_not_found_error will exit
         raise  # Re-raise to ensure we don't continue
     except Exception as e:
         logger.error(f"Error creating fresh boto3 session: {e}")
-        logger.error(f"Exception type: {type(e)}")
-        logger.error(f"Exception details: {e}", exc_info=True)
-        
-        # Attempt fallback with environment cleared of problematic profile settings
         return _create_fallback_session()
 
 def _handle_profile_not_found_error(profile_name: str):
