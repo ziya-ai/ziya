@@ -1670,9 +1670,11 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                     # Search a window around the original hunk's expected position.
                     exp = max(0, orig_hunk.get('old_start', 1) - 1)
                     search_radius = 50
+                    from ..validation.validators import detect_malformed_state
+                    _orig_malformed = detect_malformed_state(original_lines, orig_hunk)
                     for p in range(max(0, exp - search_radius),
                                    min(len(original_lines), exp + search_radius) + 1):
-                        if is_hunk_already_applied(original_lines, orig_hunk, p, ignore_whitespace=True):
+                        if is_hunk_already_applied(original_lines, orig_hunk, p, ignore_whitespace=True, _malformed=_orig_malformed):
                             orig_applied = True
                             break
                     if not orig_applied:
@@ -1737,6 +1739,13 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
             search_positions = sorted(set(search_positions))
             logger.debug(f"Optimized already-applied check: searching {len(search_positions)} positions instead of {len(original_lines) + 1}")
             
+            # Hoist invariants out of the position loop.
+            from ..validation.validators import detect_malformed_state, extract_diff_changes, _validate_removal_content
+            _malformed = detect_malformed_state(original_lines, hunk)
+            _file_content_normalized = "\n".join(
+                normalize_line_for_comparison(line) for line in original_lines
+            )
+
             for pos in search_positions:
                 # First check if the target state (new_lines) is already present in the file
                 # This is the most important check - if the target state is already there, we can mark it as already applied
@@ -1760,11 +1769,9 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                             if removed_lines:
                                 # Check if the content to be deleted still exists anywhere in the file
                                 removed_content = "\n".join([normalize_line_for_comparison(line) for line in removed_lines])
-                                file_content = "\n".join([normalize_line_for_comparison(line) for line in original_lines])
-                                
-                                # If the content to be deleted still exists in the file, 
+                                # If the content to be deleted still exists in the file,
                                 # then the hunk is NOT already applied
-                                if removed_content in file_content:
+                                if removed_content in _file_content_normalized:
                                     logger.debug(f"Deletion hunk not applied - content to be deleted still exists in file at pos {pos}")
                                     continue
                         
@@ -1812,16 +1819,12 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                                 
                                 # Check if the exact added content exists anywhere in the file
                                 added_content = "\n".join([normalize_line_for_comparison(line) for line in added_lines])
-                                file_content = "\n".join([normalize_line_for_comparison(line) for line in original_lines])
-                                
-                                # If the exact added content doesn't exist in the file, it's not already applied
-                                if added_content not in file_content:
+                                if added_content not in _file_content_normalized:
                                     logger.debug(f"Pure addition not found in file content")
                                     continue
                         
                         # CRITICAL: Check for malformed state before marking as already applied
-                        from ..validation.validators import detect_malformed_state, extract_diff_changes, _validate_removal_content
-                        if detect_malformed_state(original_lines, hunk):
+                        if _malformed:
                             logger.info(f"Hunk #{i} (original ID #{original_hunk_id}) detected in malformed state - not marking as already applied")
                             all_hunks_found_applied = False
                             continue
@@ -1868,10 +1871,8 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                         break
                 
                 # If we haven't found it already applied, use the standard check
-                if not found_applied_at_any_pos and is_hunk_already_applied(original_lines, hunk, pos, ignore_whitespace=False):
-                    # CRITICAL: Double-check for malformed state before marking as already applied
-                    from ..validation.validators import detect_malformed_state, extract_diff_changes, _validate_removal_content
-                    if detect_malformed_state(original_lines, hunk):
+                if not found_applied_at_any_pos and is_hunk_already_applied(original_lines, hunk, pos, ignore_whitespace=False, _malformed=_malformed):
+                    if _malformed:
                         logger.info(f"Hunk #{i} (original ID #{original_hunk_id}) detected in malformed state - not marking as already applied")
                         all_hunks_found_applied = False
                         continue
@@ -2109,11 +2110,10 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                         hunk_applied = False
                         hunk_id = hunk.get('number', i)
                         # Check if this hunk is already applied anywhere in the file
+                        from ..validation.validators import detect_malformed_state, extract_diff_changes, _validate_removal_content
+                        _malformed = detect_malformed_state(original_lines, hunk)
                         for pos in range(len(original_lines) + 1):
-                            # CRITICAL: Check for malformed state before marking as already applied
-                            from ..validation.validators import detect_malformed_state, extract_diff_changes, _validate_removal_content
-                            if detect_malformed_state(original_lines, hunk):
-                                logger.info(f"Hunk #{hunk_id} detected in malformed state - not marking as already applied")
+                            if _malformed:
                                 hunk_applied = False
                                 break
                             
@@ -2124,7 +2124,7 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                                 hunk_applied = False
                                 break
                             
-                            if is_hunk_already_applied(original_lines, hunk, pos):
+                            if is_hunk_already_applied(original_lines, hunk, pos, _malformed=_malformed):
                                 hunk_applied = True
                                 logger.info(f"Verified hunk #{hunk_id} is already applied at position {pos}")
                                 break
@@ -2318,11 +2318,10 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                                 hunk_applied = False
                                 hunk_id = hunk.get('number', i)
                                 # Check if this hunk is already applied anywhere in the file
+                                from ..validation.validators import detect_malformed_state, extract_diff_changes, _validate_removal_content
+                                _malformed = detect_malformed_state(original_lines, hunk)
                                 for pos in range(len(original_lines) + 1):
-                                    # CRITICAL: Check for malformed state before marking as already applied
-                                    from ..validation.validators import detect_malformed_state, extract_diff_changes, _validate_removal_content
-                                    if detect_malformed_state(original_lines, hunk):
-                                        logger.info(f"Hunk #{hunk_id} detected in malformed state - not marking as already applied")
+                                    if _malformed:
                                         hunk_applied = False
                                         break
                                     
@@ -2333,7 +2332,7 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                                         hunk_applied = False
                                         break
                                     
-                                    if is_hunk_already_applied(original_lines, hunk, pos):
+                                    if is_hunk_already_applied(original_lines, hunk, pos, _malformed=_malformed):
                                         hunk_applied = True
                                         logger.info(f"Verified hunk #{hunk_id} is already applied at position {pos}")
                                         break
