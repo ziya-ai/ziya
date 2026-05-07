@@ -19,6 +19,210 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 ### Changed
 
+## [0.6.5.4] - 2026-05-07
+
+### Added
+
+- **`time` added to the default allowed shell command list**
+  (`app/config/shell_config.py`): grouped with `timeout` under process
+  execution control, covering both the shell builtin and `/usr/bin/time`.
+
+### Fixed
+
+- **`ziya-public` credential check ignored `ZIYA_AWS_PROFILE` environment
+  variable** (`public/app/config/environment.py`,
+  `public/app/utils/aws_utils.py`): When `AWS_PROFILE` was not set in the
+  shell but `ZIYA_AWS_PROFILE` was (the recommended configuration pattern),
+  `ziya-public` failed at startup with an `ExpiredToken` error while `ziya`
+  worked correctly. Two root causes:
+  1. `setup_environment` only promoted `ZIYA_AWS_PROFILE` to `AWS_PROFILE`
+     when `--profile` was explicitly passed on the command line. Added a
+     fallback that promotes `ZIYA_AWS_PROFILE` → `AWS_PROFILE` when
+     `AWS_PROFILE` is absent, so boto3 picks up the correct profile before
+     the credential check runs.
+  2. `create_fresh_boto3_session` was evicting all `boto3.*` / `botocore.*`
+     submodules from `sys.modules` and reloading the top-level packages on
+     every call. In environments where the reload chain reached
+     `urllib3 → pyopenssl → OpenSSL → typing_extensions → asyncio`, a
+     stale site-packages `asyncio` shadowed the stdlib version and raised a
+     `SyntaxError`, forcing the code into `_create_fallback_session`, which
+     stripped `AWS_PROFILE` from the environment before creating a bare
+     boto3 session — resulting in expired default-profile credentials being
+     used instead. Removed the module-reload block entirely; `boto3.Session()`
+     already constructs an independent session with a fresh credential chain
+     on each call. The mid-service restart path (`bedrock_client_cache`) is
+     unaffected — it relies on `clear_cache()` plus an explicit profile
+     argument, not module reloading.
+
+- **Diff-apply performance on large files (≥3,000 lines) collapsed from up to
+  ~60s per hunk to sub-second** (`app/utils/diff_utils/pipeline/pipeline_manager.py`,
+  `app/utils/diff_utils/application/patch_apply.py`,
+  `app/utils/diff_utils/application/git_diff.py`,
+  `app/utils/diff_utils/application/fuzzy_match.py`,
+  `app/utils/diff_utils/validation/validators.py`): The diff-application
+  pipeline had multiple O(n²) hotspots that only surfaced on large source
+  files. Root causes and fixes:
+  1. `detect_malformed_state(file_lines, hunk)` rebuilt
+     `"\n".join(file_lines)` and `"\n".join(normalize_line_for_comparison(l)
+     for l in file_lines)` on every call. It was being invoked from inside
+     `is_hunk_already_applied`, which in turn was called inside
+     `for pos in range(len(file_lines) + 1)` loops in five places across
+     `pipeline_manager.py`, `patch_apply.py`, and `git_diff.py`. For a
+     3,600-line file that was ~3,600 × ~6ms = 22+ seconds per hunk per
+     pipeline stage. `is_hunk_already_applied` now accepts a precomputed
+     `_malformed` parameter and every loop site computes it once before
+     entering the loop.
+  2. Two additional `"\n".join([normalize_line_for_comparison(l) for l in
+     original_lines])` rebuilds inside the `for pos in search_positions`
+     loop in `pipeline_manager.py` (covering up to 101 positions) have
+     been hoisted to a single precomputation before the loop.
+  3. `_check_pure_addition_already_applied` performed four separate
+     full-file scans and each scan ran
+     `[normalize_line_for_comparison(file_lines[sp + i]) for i in range(n)]`
+     on every iteration. Added a `_file_normalized` cache parameter threaded
+     from the outer position loop down through `is_hunk_already_applied`;
+     inner scans now slice the cached list instead of renormalizing per
+     position.
+  4. `calculate_enhanced_similarity` in `fuzzy_match.py` ran all 8
+     `SequenceMatcher` strategies for every candidate position even when
+     Strategy 1 (direct match) was already 1.0, and the outer
+     `find_best_chunk_position` search kept scanning remaining positions
+     after finding a perfect match. Added early-exit in both locations.
+  5. `calculate_enhanced_similarity` compared `'\n'.join(chunk_lines)`
+     against `'\n'.join(file_slice)` at the character level, giving
+     O(n_chars²) `SequenceMatcher` complexity. For a 197-line context hunk
+     that was ~248M character comparisons per position × 200 positions ×
+     8 strategies. Strategies 1, 2, 6, 7 now pass lists of lines directly
+     to `SequenceMatcher`, collapsing the cost to O(n_lines²). Strategies
+     3, 4, 8 (which strip whitespace before comparing) now cap the compared
+     string length at 4,000 chars. Semantics preserved: identical lines
+     still score 1.0.
+
+  Combined impact measured against the `tests/run_diff_tests.py` suite:
+  total reported time 110s → 54s; wall-clock time ~15 min → ~1 min; tests
+  taking >5s reduced from 8 to 1; the remaining slow test
+  (`drawio_edge_removal` at 6.3s) is an `expected_to_fail=True` case where
+  the fuzzy matcher legitimately exhausts its search space. No regressions:
+  138/150 passing before → 139/150 passing after (unchanged set of
+  pre-existing failures).
+
+- **Diff test suite ran every case 2–3× due to bulk test methods duplicating
+  individually-named tests** (`tests/run_diff_tests.py`): `test_all_cases` and
+  `test_all_reverse_cases` iterated every test case in `TEST_CASES_DIR` as
+  `subTest` blocks. Because ~150 individual `test_X` methods were also
+  dynamically generated one-per-case, each case was executed up to three
+  times per suite run (once forward via `test_all_cases`, once forward and
+  once reverse via `test_all_reverse_cases`, and once via its own
+  `test_X`). Renamed the bulk methods to `_all_cases_bulk` and
+  `_all_reverse_cases_bulk` so `unittest` test discovery no longer picks
+  them up; the individually-named tests provide the same coverage without
+  the duplication.
+
+- **Missing `_render_failure_diagnostics` helper** (`app/utils/cli_diff_applicator.py`):
+  A referenced-but-undefined `_render_failure_diagnostics(failures)` function
+  produced a `NameError: name '_render_failure_diagnostics' is not defined`
+  whenever the CLI diff applicator fell into its failure-reporting path.
+  Added the helper, which formats the `{"message": ..., "details": ...}`
+  failure list into a concise per-hunk diagnostic string for CLI output.
+
+- **CLI endpoint policy enforcement bypass** (`app/cli.py`, `app/main.py`,
+  `app/routes/model_routes.py`, `app/config/common_args.py`): Fixed an issue
+  where the `ZIYA_ALLOW_ALL_ENDPOINTS` environment variable was incorrectly
+  evaluated for truthiness rather than strictly checking for `"1"`. This
+  allowed users to bypass the enterprise endpoint policy by setting
+  `ZIYA_ALLOW_ALL_ENDPOINTS=0`. Additionally, added the endpoint policy
+  enforcement gate directly to the CLI initialization flow
+  (`_enforce_endpoint_policy()` in `app/cli.py`) to ensure that local CLI
+  invocations (`ziya chat`, `ask`, `review`, etc.) strictly enforce the
+  policy before initializing the model or authenticating.
+
+- **Hallucination detection false-positive on legitimate code quoting**
+  (`app/hallucination/shingle_index.py`): The shingle-parroting detector was
+  escalating to high-confidence (and aborting the stream with the "Max retries
+  reached" banner) whenever `shingle_overlap >= 5` OR `line_matches >= 3`.
+  A single quoted line of non-trivial code easily contains 5+ word-level
+  5-grams, so any legitimate reference to code the model had read earlier
+  — via `file_read`, RAG, or a prior `run_shell_command` — tripped the
+  shingle signal alone and killed the response. High-confidence now requires
+  `line_matches` to corroborate: either enough lines matched on their own
+  (sustained parroting), or the shingle signal is backed by at least 2
+  matching lines (multi-line copy). Single-line quotes stay low-confidence
+  and are allowed to continue.
+
+- **Noisy WARNING logs from non-actionable shingle matches**
+  (`app/text_delta_processor.py`): Low-confidence shingle matches were
+  logged at WARNING even though the code explicitly allows them to continue
+  ("logged for observability but allowed to continue"). These fired on
+  every turn where the model discussed code it had legitimately read,
+  swamping the operator channel. Low-confidence matches now log at DEBUG;
+  high-confidence matches (which actually abort the stream) remain at
+  WARNING.
+
+- **Premature stream termination when model announces intent without tools**
+  (`app/streaming_tool_executor.py`): The "complete response" heuristic at
+  iteration end treated any text with 20+ words ending in `.`/`!`/`?` as
+  complete and cut the stream. This misfired when the model produced only
+  narration of intent ("Let me check X before writing…") without executing
+  any tools — the sentence ended in a period but the work hadn't started.
+  Text-only iterations (no tools executed, no structured blocks) now get
+  one extra continuation cycle before the heuristic ends the stream,
+  bounded to one grace cycle per response to avoid infinite text-only
+  loops. Biased toward continuation per user feedback: "continuing an
+  extra cycle is preferable to stopping in the middle of an answer."
+
+- **Fake-shell grep detector silently matched zero lines of real grep output**
+  (`app/hallucination/fake_shell_detector.py`): `_GREP_LINE_RE` required a
+  `[ \t]` separator after the colon (`^\d+:[ \t].+`), but real `grep -n`
+  output has no whitespace between the colon and the content
+  (`48:## Heading`, not `48: ## Heading`). The pattern never matched real
+  fabricated grep output, so Signal 1 in `detect_fake_shell_session` was
+  effectively dead code. The separator is now optional (`^\d+:[ \t]?\S.*`);
+  the existing 3+ consecutive-line threshold continues to guard against
+  incidental `\d+:.+` content elsewhere.
+
+- **Noisy WARNING logs for expected missing usage metrics**
+  (`app/streaming_tool_executor.py`, `app/message_stop_handler.py`): The
+  `No usage metrics captured for iteration N` warning fired on every
+  iteration that produced no output (early breaks, errors before
+  `message_stop`, empty iterations) — none of which are actionable. The
+  warning is now demoted to INFO in the no-output case and reserved at
+  WARNING only for the genuinely anomalous case where output was produced
+  but input-token usage wasn't recorded, which is a real telemetry
+  attribution gap worth surfacing.
+
+- **Streaming fence tracker ignored bare (untagged) fence openers**
+  (`app/streaming_tool_executor.py`): The code-block tracker only opened
+  a tracked block when the fence had a language specifier; bare `` ``` ``
+  or `` ```` `` openers were treated exclusively as closer candidates and
+  silently dropped when no block was open. As a result, nested-viz
+  protection, fence-spacing normalization, and the shingle-probe
+  region-tracking logic all failed to recognize "we are inside a fence"
+  for bare-fence content, cascading into rendering failures when the
+  model emitted 4-backtick untagged fences. Bare-fence openers are now
+  registered as untyped blocks (`block_type=None`) so downstream pipeline
+  stages correctly apply in-fence behavior.
+
+- **Shell command output rendering in CLI tool blocks** (`app/cli.py`): Shell
+  tool results were formatted as `$ <command>\n<output>` and piped through
+  `render_prefixed_markdown` as a single unit, which collapsed the leading
+  newline and flattened the command into the output — making it hard to tell
+  where the command ended and its output began. The CLI now splits the
+  `$ <command>` line off before markdown rendering, prints it with distinct
+  styling (bold green `$`, bold white command text) followed by a blank
+  prefixed separator line, then renders the body through the normal markdown
+  path. Non-shell tool results (no `$ ` prefix) are unaffected.
+
+### Changed
+
+- **Superseded-diff detection incorrectly dropped the wrong diff block**
+  (`app/utils/cli_diff_applicator.py`): When two overlapping diff blocks
+  were compared, the logic always marked index `i` (the earlier block) as
+  superseded regardless of which block was actually broader. Fixed: if
+  block `j`'s ranges are a superset of `i`'s, `i` is marked superseded;
+  when `i` covers more ranges than `j`, `j` is the redundant duplicate
+  and is dropped instead. The duplicate-content case now drops the later
+  occurrence (`j`) rather than the first.
+
 ## [0.6.5.3] - 2026-05-05
 
 ### Added
