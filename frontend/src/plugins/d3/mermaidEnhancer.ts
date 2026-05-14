@@ -2704,8 +2704,11 @@ export function initMermaidEnhancer(): void {
     // Fix gantt diagram date format issues
     let processedDef = def;
 
-    // Fix date format - convert "50s" style dates to proper format
-    processedDef = processedDef.replace(/(\d+)s/g, '$1');
+    // Fix date format - convert "50s" style dates to proper format.
+    // Negative lookbehind prevents stripping the trailing 's' from task IDs
+    // like `p2s` or `v1s` — without it, identifiers ending in <digit>s get
+    // corrupted and any `after <id>` reference to them fails to resolve.
+    processedDef = processedDef.replace(/(?<![a-zA-Z])(\d+)s\b/g, '$1');
 
     // Ensure proper date format is set
     if (!processedDef.includes('dateFormat')) {

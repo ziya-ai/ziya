@@ -678,8 +678,8 @@ export const sendPayload = async (
     question: string,
     checkedItems: string[],
     conversationId: string,
-    activeSkillPrompts?: string,
-    images?: ImageAttachment[],
+    activeSkillPrompts: string | undefined,
+    images: ImageAttachment[] | undefined,
     streamedContentMap: Map<string, string>,
     setStreamedContentMap: Dispatch<SetStateAction<Map<string, string>>>,
     setIsStreaming: Dispatch<SetStateAction<boolean>>,
@@ -962,6 +962,11 @@ export const sendPayload = async (
             for (const sseMessage of messages) {
                 if (!sseMessage.trim()) continue;
                 if (!sseMessage.startsWith('data:')) {
+                    // SSE comment lines (starting with ':') are normal keepalives per the spec.
+                    // Silently ignore them unless they contain something other than a keepalive marker.
+                    const trimmed = sseMessage.trim();
+                    if (trimmed.startsWith(':')) continue;
+
                     console.warn('🚨 ORPHAN SSE FRAGMENT (len=' + sseMessage.length + '):',
                         sseMessage.substring(0, 300));
                 }
@@ -2792,6 +2797,10 @@ export const sendPayload = async (
     } finally {
         if (eventSource && typeof eventSource.close === 'function') eventSource.close();
         document.removeEventListener('abortStream', abortListener as EventListener);
+        // Also drop the window-level reference set when the listener was
+        // registered; without this, each sendPayload call leaks a closure
+        // that pins streamedContentMap and message arrays for the session.
+        try { delete (window as any)[`abortListener_${conversationId}`]; } catch (_) {}
         // Release Screen Wake Lock and stop listening for visibility changes
         document.removeEventListener('visibilitychange', _onVisibilityChangeForWakeLock);
         if (_wakeLock) {

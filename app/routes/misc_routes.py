@@ -50,6 +50,7 @@ async def extract_document(file: UploadFile = File(...)):
     pdfplumber / pypdf / python-docx / openpyxl / python-pptx.
     """
     from app.utils.document_extractor import extract_document_text, is_document_file
+    from app.context import get_project_root
 
     filename = file.filename or "upload"
     ext = os.path.splitext(filename)[1].lower()
@@ -61,6 +62,7 @@ async def extract_document(file: UploadFile = File(...)):
         )
 
     tmp_path = None
+    kept_path: Optional[str] = None  # Persistent copy for large PDFs (RAG-indexed)
     try:
         # Write to a temp file so the extractor can work with a real path
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
@@ -73,7 +75,38 @@ async def extract_document(file: UploadFile = File(...)):
                 )
             tmp.write(contents)
 
-        text = extract_document_text(tmp_path)
+        # For PDFs, check whether RAG should kick in BEFORE extraction so we
+        # can promote the temp file to a persistent location — large PDFs
+        # get replaced with a stub that references the file by path, and
+        # that path has to survive the upload handler.
+        rag_used = False
+        if ext == '.pdf':
+            try:
+                from app.utils.pdf_rag import should_use_pdf_rag
+                if should_use_pdf_rag(tmp_path):
+                    project_root = get_project_root()
+                    uploads_dir = os.path.join(project_root, ".ziya", "pdf_uploads")
+                    os.makedirs(uploads_dir, exist_ok=True)
+                    # Keep a stable, collision-free filename under .ziya/.
+                    safe_name = os.path.basename(filename) or "upload.pdf"
+                    kept_path = os.path.join(uploads_dir, safe_name)
+                    # If a file with that name already exists, suffix with the temp id.
+                    if os.path.exists(kept_path):
+                        base, extpart = os.path.splitext(safe_name)
+                        kept_path = os.path.join(
+                            uploads_dir,
+                            f"{base}-{os.path.basename(tmp_path)}{extpart}",
+                        )
+                    # Move the temp file into place; clear tmp_path so the
+                    # finally-block doesn't unlink it.
+                    os.replace(tmp_path, kept_path)
+                    tmp_path = None
+                    rag_used = True
+            except Exception as e:
+                logger.warning(f"PDF RAG pre-check failed for {filename}: {e}")
+
+        extract_source = kept_path if rag_used else tmp_path
+        text = extract_document_text(extract_source)
 
         if text is None:
             from app.utils.document_extractor import _check_libraries, _AVAILABLE_LIBRARIES
@@ -83,7 +116,7 @@ async def extract_document(file: UploadFile = File(...)):
                 # For PDFs, try rendering pages as images (scanned docs)
                 if ext == '.pdf':
                     from app.utils.document_extractor import extract_pdf_page_images
-                    page_images = extract_pdf_page_images(tmp_path)
+                    page_images = extract_pdf_page_images(extract_source)
                     if page_images:
                         logger.info(f"Extracted {len(page_images)} page images from {filename}")
                         return {
@@ -109,7 +142,13 @@ async def extract_document(file: UploadFile = File(...)):
                                         "Ensure the required library is installed (e.g. pip install pypdf pdfplumber python-docx openpyxl python-pptx)."}
                 )
 
-        return {"filename": filename, "text": text, "chars": len(text)}
+        return {
+            "filename": filename,
+            "text": text,
+            "chars": len(text),
+            "rag": rag_used,
+            **({"indexed_path": kept_path} if rag_used else {}),
+        }
     except Exception as e:
         logger.error(f"Document extraction failed for {filename}: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"error": "server_error", "message": str(e)})
@@ -255,10 +294,11 @@ async def abort_stream(request: Request):
                 content={"error": "conversation_id is required"}
             )
             
-        from app.server import cleanup_stream
-
+        # Stream lifecycle is managed by the SSE generator and the
+        # frontend AbortController; the server has no state to clean up.
+        # This endpoint is retained so the client's abort POST lands in
+        # the server log, which is useful for debugging.
         logger.info(f"Explicitly aborting stream for conversation: {conversation_id}")
-        await cleanup_stream(conversation_id)
         return JSONResponse(content={"status": "success", "message": "Stream aborted"})
     except Exception as e:
         logger.error(f"Error aborting stream: {str(e)}")

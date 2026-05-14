@@ -15,7 +15,7 @@ from app.utils.logging_utils import logger
 # Project-keyed enhancer instances: project_root -> enhancer
 _enhancers: Dict[str, Any] = {}
 # Cap the number of cached enhancer instances to prevent unbounded memory growth
-_MAX_ENHANCER_INSTANCES = 3
+_MAX_ENHANCER_INSTANCES = 10
 _enhancer_lock = threading.Lock()
 # Track which projects are currently being indexed (prevent double-start)
 _indexing_in_progress: Set[str] = set()
@@ -147,8 +147,9 @@ def initialize_ast_capabilities(codebase_path: str, exclude_patterns: Optional[L
                 to_remove = list(_enhancers.keys())[:len(_enhancers) - _MAX_ENHANCER_INSTANCES]
                 for key in to_remove:
                     del _enhancers[key]
-                    _initialized_projects.discard(key)
-                    logger.info(f"Evicted stale AST enhancer for: {key}")
+                    # Do not remove from _initialized_projects: the project was indexed and
+                    # should not be re-indexed just because its enhancer was freed from memory.
+                    logger.info(f"Evicted AST enhancer from memory cache (already indexed): {key}")
         
         # Mark this project as initialized
         _initialized_projects.add(abs_path)

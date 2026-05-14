@@ -458,13 +458,7 @@ async def restart_stream_with_context(request: Request):
         logger.info(f"🔄 CONTEXT_ENHANCEMENT: Restarting stream for {conversation_id} with {len(added_files)} additional files")
         
         # First, cleanly abort the current stream if it exists
-        from app.server import active_streams, cleanup_stream, _keepalive_wrapper, stream_chunks
-
-        if conversation_id in active_streams:
-            logger.info(f"🔄 CONTEXT_ENHANCEMENT: Aborting existing stream for {conversation_id}")
-            await cleanup_stream(conversation_id)
-            # Give it a moment to clean up
-            await asyncio.sleep(0.1)
+        from app.server import _keepalive_wrapper, stream_chunks
         
         # Combine current files with newly added files
         all_files = list(set(current_files + added_files))

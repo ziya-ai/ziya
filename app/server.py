@@ -60,7 +60,7 @@ from app.utils.pcap_analyzer import analyze_pcap_file, is_pcap_supported
 from app.utils.conversation_exporter import export_conversation_for_paste
 
 # Session management API routers
-from app.api import projects, contexts, skills, chats, tokens, task_cards, task_runs
+from app.api import projects, contexts, skills, chats, tokens, task_cards, task_runs, task_bindings
 from app.api import delegates as delegates_api
 from app.api import memory as memory_api
 from app.utils.paths import get_ziya_home
@@ -68,21 +68,6 @@ from app.utils.logging_utils import logger as app_logger
 
 active_feedback_connections: dict[str, list[dict]] = {}  # conversation_id → list of connection dicts
  
-# Stream lifecycle tracking.  Previously `cleanup_stream` managed an
-# `active_streams` dict, but streaming is now self-contained within
-# `stream_chunks` (SSE generator) + the frontend's abort mechanism.
-# These survive as thin stubs so call-sites in stream_chunks, diff_routes,
-# and misc_routes don't crash with NameError.
-active_streams: dict[str, Any] = {}
-
-async def cleanup_stream(conversation_id: str) -> None:
-    """Clean up any server-side state for a finished/aborted stream.
-
-    Currently a no-op — stream lifecycle is managed by the SSE generator
-    and the frontend abort controller.  Retained for call-site compatibility.
-    """
-    active_streams.pop(conversation_id, None)
-
 # Track active WebSocket connections for feedback
 # (Delegate streaming connections are managed by app.agents.delegate_stream_relay)
 
@@ -787,6 +772,32 @@ async def delegate_stream_websocket(websocket: WebSocket, conversation_id: str):
     finally:
         await disconnect(conversation_id, websocket)
 
+@app.websocket("/ws/task-runs/{run_id}")
+async def task_run_stream_websocket(websocket: WebSocket, run_id: str):
+    """WebSocket endpoint for live task-run event streaming.
+
+    Clients receive block_started / iteration_started / iteration_completed
+    / block_completed events pushed by the block executor.  Events are
+    transient; GET /task-runs/{run_id} is the source of truth for
+    reconnecting clients.  See design/task-cards.md §Live observation.
+    """
+    await websocket.accept()
+    logger.debug(f"📡 TASK_RUN: WebSocket connected for {run_id[:8]}")
+
+    from app.agents.task_run_stream_relay import connect, disconnect
+    await connect(run_id, websocket)
+
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        logger.debug(f"📡 TASK_RUN: WebSocket disconnected for {run_id[:8]}")
+    except Exception:
+        logger.debug(f"📡 TASK_RUN: Connection lost for {run_id[:8]}")
+    finally:
+        await disconnect(run_id, websocket)
+
+
 # PRIORITY ROUTE: /api/chat - MUST BE FIRST TO TAKE PRECEDENCE
 
 @app.post('/api/chat')
@@ -1026,6 +1037,7 @@ app.include_router(delegates_api.router)
 app.include_router(memory_api.router)
 app.include_router(task_cards.router)
 app.include_router(task_runs.router)
+app.include_router(task_bindings.router)
 app_logger.info("Session management API routes loaded")
 
 # Import and include model routes
@@ -1217,9 +1229,6 @@ async def stream_chunks(body):
                 state = ModelManager.get_state()
                 if state.get('last_auth_error') and 'i/o timeout' in str(state.get('last_auth_error')):
                     yield f"data: {json.dumps({'error': 'Network connectivity issue detected. Please check your internet connection and try again.', 'error_type': 'connectivity'})}\n\n"
-                    # Clean up stream before returning
-                    if conversation_id:
-                        await cleanup_stream(conversation_id)
                     return
             except (OSError, RuntimeError, asyncio.TimeoutError) as conn_check_error:
                 logger.debug(f"Connectivity pre-check failed: {conn_check_error}")
@@ -1532,9 +1541,6 @@ async def stream_chunks(body):
                 
                 yield f"data: {json.dumps({'done': True})}\n\n"
                 
-                # Clean up stream before returning
-                await cleanup_stream(conversation_id)
-                
                 logger.debug(f"🚀 DIRECT_STREAMING: Completed streaming with {chunk_count} chunks")
                 return
                 
@@ -1550,8 +1556,6 @@ async def stream_chunks(body):
                         f"sent — NOT falling through to LangChain: {ve}"
                     )
                     yield f"data: {json.dumps({'done': True})}\n\n"
-                    if conversation_id:
-                        await cleanup_stream(conversation_id)
                     return
                 # No content streamed yet — return error to client
                 logger.warning(f"🚀 DIRECT_STREAMING: {ve} (pre-stream)")
@@ -1577,9 +1581,6 @@ async def stream_chunks(body):
                 if is_auth_error:
                     error_message = auth_provider.get_credential_help_message() if auth_provider else "AWS credentials have expired."
                     yield f"data: {json.dumps({'error': error_message, 'error_type': 'authentication_error', 'can_retry': True})}\n\n"
-                    # Clean up stream before returning
-                    if conversation_id:
-                        await cleanup_stream(conversation_id)
                     return
                 
                 # Check for connectivity errors
@@ -1589,9 +1590,6 @@ async def stream_chunks(body):
                 
                 # Generic error - always send to frontend
                 yield f"data: {json.dumps({'error': f'Error: {str(e)[:200]}', 'error_type': type(e).__name__})}\n\n"
-                # Clean up stream before returning
-                if conversation_id:
-                    await cleanup_stream(conversation_id)
                 return
         
         # No question provided — nothing to stream

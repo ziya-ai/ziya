@@ -605,8 +605,6 @@ async def memstats(top: int = 25, by_type: int = 20):
 
     probes.append(_probe("server.active_feedback_connections",
         lambda: __import__('app.server', fromlist=['active_feedback_connections']).active_feedback_connections))
-    probes.append(_probe("server.active_streams",
-        lambda: __import__('app.server', fromlist=['active_streams']).active_streams))
     probes.append(_probe("server.active_file_tree_connections",
         lambda: __import__('app.server', fromlist=['active_file_tree_connections']).active_file_tree_connections))
 

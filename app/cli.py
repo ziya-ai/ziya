@@ -861,8 +861,10 @@ class CLI:
                         completed_normally = self.diff_applicator.process_response(full_response)
                         print(f"\033[90m[trace] process_response done, completed_normally={completed_normally}\033[0m", file=sys.stderr)
                     except (OSError, ValueError, RuntimeError, KeyError, IndexError) as e:
+                        import traceback
+                        print(f"\n\033[33mNote: Could not process diffs: {e}\033[0m", file=sys.stderr)
                         if os.environ.get('ZIYA_LOG_LEVEL') == 'DEBUG':
-                            print(f"\n\033[33mNote: Could not process diffs: {e}\033[0m", file=sys.stderr)
+                            traceback.print_exc(file=sys.stderr)
                         break
                     
                     if completed_normally:
@@ -942,6 +944,11 @@ class CLI:
                         continue_response = await self._continue_conversation(continuation_message, messages)
                         print(f"\033[90m[trace] continuation returned, len={len(continue_response)}\033[0m", file=sys.stderr)
                         
+                        # Persist the diff results and continuation to history so the
+                        # model knows what was applied on subsequent turns.
+                        self.history.append({'type': 'human', 'content': continuation_message})
+                        self.history.append({'type': 'ai', 'content': continue_response})
+
                         # If continuation contains more diffs, process those too
                         if '```diff' in continue_response:
                             prior_turns.append(full_response)
@@ -1002,8 +1009,16 @@ class CLI:
             else:
                 # Final attempt failed
                 print(f"\n\033[31m✗ Diff validation failed after {max_attempts} attempts\033[0m")
-                print(f"\033[90mThe model couldn't generate a valid diff. Showing response anyway.\033[0m")
-                print(f"\033[90mReview carefully before applying any changes.\033[0m\n")
+            print(f"\033[33mThe diff could not be validated against the current file content after {max_attempts} attempts.\033[0m")
+            print(f"\033[33mIt was NOT presented for application automatically.\033[0m")
+            print(f"\033[33mYou can still attempt to apply it below, but it may not apply cleanly.\033[0m\n")
+            try:
+                self.diff_applicator.process_response(response)
+            except (OSError, ValueError, RuntimeError, KeyError, IndexError) as e:
+                import traceback
+                print(f"\n\033[33mNote: Could not process diffs: {e}\033[0m", file=sys.stderr)
+                if os.environ.get('ZIYA_LOG_LEVEL') == 'DEBUG':
+                    traceback.print_exc(file=sys.stderr)
         
         # Clean up validation hook after all attempts
         # Sync any auto-added files even on failure path
@@ -2321,7 +2336,16 @@ async def _run_with_mcp(coro):
     Avoids the double-asyncio.run() bug where the first run tears down MCP connections.
     """
     await _initialize_mcp()
-    return await coro
+    try:
+        return await coro
+    finally:
+        try:
+            from app.mcp.manager import get_mcp_manager
+            mcp_manager = get_mcp_manager()
+            if mcp_manager and mcp_manager.is_initialized:
+                await mcp_manager.shutdown()
+        except Exception:
+            pass
 
 
 async def _run_async_cli(cli):
