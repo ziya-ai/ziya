@@ -137,6 +137,28 @@ def extract_pdf_text(file_path: str) -> Optional[str]:
     """
     _check_libraries()
     
+    # Large-PDF RAG path: if the file exceeds the configured size/page
+    # threshold, return a stub (metadata + outline + first/last pages +
+    # instructions) instead of the full extracted text.  The agent can
+    # then pull specific pages or search the document via the
+    # pdf_read_pages / pdf_search / pdf_outline MCP tools.
+    try:
+        from app.utils.pdf_rag import should_use_pdf_rag, get_pdf_stub
+        if should_use_pdf_rag(file_path):
+            stub = get_pdf_stub(file_path)
+            if stub:
+                logger.info(
+                    f"PDF {file_path} routed through RAG stub "
+                    f"(returning outline + excerpts instead of full text)"
+                )
+                return stub
+            logger.warning(
+                f"PDF {file_path} flagged as large but stub generation failed; "
+                f"falling back to full extraction"
+            )
+    except Exception as e:
+        logger.warning(f"PDF RAG check failed for {file_path}: {e} — falling back to atomic extraction")
+
     # Try pdfplumber first (better text extraction)
     if _AVAILABLE_LIBRARIES['pdfplumber']:
         try:
