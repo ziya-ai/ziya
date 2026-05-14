@@ -55,6 +55,14 @@
   background: var(--tc-canvas-bg, #0a0e13);
 }
 
+.tc-root-type-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 14px;
+  background: var(--tc-card-header-bg, #161b22);
+  border-bottom: 1px solid var(--tc-card-border, #30363d);
+  font-size: 11px;
+}
+
 /* Block base */
 .tc-block {
   border: 1px solid; border-radius: 8px;
@@ -114,6 +122,20 @@
 }
 .tc-block-label-repeat { color: #f2cc60; margin-left: 0; }
 .tc-block-body-repeat { padding: 10px 12px 10px 12px; }
+
+/* Parallel block — purple/violet */
+.tc-block-parallel {
+  border-color: #a78bfa;
+  background: linear-gradient(180deg, rgba(167,139,250,0.07), transparent 30%);
+  box-shadow: inset 3px 0 0 #a78bfa;
+}
+.tc-block-parallel > .tc-block-header {
+  background: rgba(167,139,250,0.08);
+  border-bottom-color: rgba(167,139,250,0.2);
+}
+.tc-block-label-parallel { color: #a78bfa; margin-left: 0; }
+.tc-block-body-parallel { padding: 10px 12px 10px 12px; }
+
 .tc-sequence-label {
   font-size: 9px; text-transform: uppercase; letter-spacing: 1px;
   color: #5a6370; margin-bottom: 4px;
@@ -126,6 +148,13 @@
   font-size: 11px; outline: none;
 }
 .tc-num-input { width: 48px; text-align: center; }
+.tc-text-input {
+  background: var(--tc-card-header-bg, #161b22);
+  border: 1px solid var(--tc-card-border, #30363d);
+  color: inherit; padding: 2px 6px; border-radius: 3px;
+  font-size: 11px; outline: none;
+  min-width: 180px; flex: 1;
+}
 .tc-select-right { margin-left: auto; }
 .tc-label-dim { font-size: 11px; color: var(--tc-muted, #7d8590); }
 .tc-checkbox-label {

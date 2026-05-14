@@ -7,8 +7,11 @@
  */
 
 import React from 'react';
-import type { TaskCard, Block } from '../../types/task_card';
+import type { TaskCard, Block, BlockType } from '../../types/task_card';
 import { BlockEditor } from './BlockEditor';
+import {
+  makeTaskBlock, makeRepeatBlock, makeParallelBlock,
+} from '../../utils/taskCardBlocks';
 import './task-card-editor.css';
 
 interface Props {
@@ -25,6 +28,28 @@ export const TaskCardEditor: React.FC<Props> = ({
   const setRoot = (root: Block) => onChange({ ...card, root });
   const setName = (name: string) => onChange({ ...card, name });
   const setDescription = (description: string) => onChange({ ...card, description });
+
+  const changeRootType = (nextType: BlockType) => {
+    if (nextType === card.root.block_type) return;
+    // Build a fresh block of the requested type.  We reuse the
+    // existing root's name so the user doesn't lose that label.
+    const name = card.root.name || 'Root';
+    let next: Block;
+    if (nextType === 'task') next = makeTaskBlock(name);
+    else if (nextType === 'repeat') next = makeRepeatBlock(name);
+    else next = makeParallelBlock(name);
+    // Preserve the existing body when switching between
+    // Repeat↔Parallel (both are wrappers with a body).  Task has
+    // no body so we drop it.  For Task→Repeat/Parallel we keep the
+    // existing Task as a child of the new wrapper so the user
+    // doesn't lose their instructions.
+    if (card.root.block_type === 'task' && nextType !== 'task') {
+      next = { ...next, body: [card.root] };
+    } else if (card.root.block_type !== 'task' && nextType !== 'task') {
+      next = { ...next, body: card.root.body };
+    }
+    onChange({ ...card, root: next });
+  };
 
   return (
     <div className="tc-card">
@@ -58,6 +83,18 @@ export const TaskCardEditor: React.FC<Props> = ({
         onChange={e => setDescription(e.target.value)}
         placeholder="Optional description"
       />
+      <div className="tc-root-type-row">
+        <span className="tc-label-dim">Root block:</span>
+        <select
+          className="tc-select"
+          value={card.root.block_type}
+          onChange={e => changeRootType(e.target.value as BlockType)}
+        >
+          <option value="task">🔵 Task</option>
+          <option value="repeat">🔁 Repeat</option>
+          <option value="parallel">⚡ Parallel</option>
+        </select>
+      </div>
       <div className="tc-card-canvas">
         <BlockEditor block={card.root} onChange={setRoot} />
       </div>
