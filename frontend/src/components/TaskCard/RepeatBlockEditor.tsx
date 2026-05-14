@@ -5,7 +5,9 @@
 import React from 'react';
 import type { Block, RepeatMode, PropagateMode } from '../../types/task_card';
 import { BlockEditor } from './BlockEditor';
-import { makeTaskBlock, makeRepeatBlock } from '../../utils/taskCardBlocks';
+import {
+  makeTaskBlock, makeRepeatBlock, makeParallelBlock,
+} from '../../utils/taskCardBlocks';
 import './task-card-editor.css';
 
 interface Props {
@@ -26,8 +28,11 @@ export const RepeatBlockEditor: React.FC<Props> = ({ block, onChange, onDelete }
     body.splice(idx, 1);
     update({ body });
   };
-  const addChild = (kind: 'task' | 'repeat') => {
-    const child = kind === 'task' ? makeTaskBlock() : makeRepeatBlock();
+  const addChild = (kind: 'task' | 'repeat' | 'parallel') => {
+    const child =
+      kind === 'task' ? makeTaskBlock() :
+      kind === 'repeat' ? makeRepeatBlock() :
+      makeParallelBlock();
     update({ body: [...block.body, child] });
   };
 
@@ -68,6 +73,15 @@ export const RepeatBlockEditor: React.FC<Props> = ({ block, onChange, onDelete }
               value={block.repeat_max ?? 3}
               onChange={e => update({ repeat_max: parseInt(e.target.value, 10) || 1 })}
             />
+            <span className="tc-label-dim">until summary contains</span>
+            <input
+              type="text"
+              className="tc-text-input"
+              placeholder="(or leave blank for: first success)"
+              value={block.repeat_until ?? ''}
+              onChange={e => update({ repeat_until: e.target.value || null })}
+              title="Substring the iteration's summary must contain (case-insensitive) to terminate the loop. Leave blank to stop on the first non-failed iteration."
+            />
           </>
         )}
         <label className="tc-checkbox-label">
@@ -104,6 +118,7 @@ export const RepeatBlockEditor: React.FC<Props> = ({ block, onChange, onDelete }
         <div className="tc-add-row">
           <button className="tc-add-btn" onClick={() => addChild('task')}>+ Task</button>
           <button className="tc-add-btn" onClick={() => addChild('repeat')}>+ Repeat</button>
+          <button className="tc-add-btn" onClick={() => addChild('parallel')}>+ Parallel</button>
         </div>
       </div>
     </div>
