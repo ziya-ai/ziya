@@ -88,6 +88,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const lastProcessedSelectionRef = useRef<string>('');
   const accurateTokenCountsRef = useRef(accurateTokenCounts);
   const fileTreeWsRef = useRef<WebSocket | null>(null);
+  const externalRefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Monitor FolderProvider render performance
   // Get current project from ProjectContext
@@ -605,7 +606,14 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
           // insert won't work.  Trigger a full refetch instead.
           if (filePath.startsWith('[external]')) {
             console.log(`📂 FILE_TREE_WS: External ${type} — ${filePath}, triggering refetch`);
-            if (fetchFoldersRef.current) fetchFoldersRef.current();
+            // Debounce: persisted external paths are all broadcast on startup at once
+            // (one event per path). Without debouncing, 5 paths × N connected tabs =
+            // a large burst of simultaneous folder fetches.
+            if (externalRefetchTimerRef.current) clearTimeout(externalRefetchTimerRef.current);
+            externalRefetchTimerRef.current = setTimeout(() => {
+              externalRefetchTimerRef.current = null;
+              if (fetchFoldersRef.current) fetchFoldersRef.current();
+            }, 150);
             return;
           }
 

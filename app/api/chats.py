@@ -4,6 +4,7 @@ Chat and chat group API endpoints.
 from fastapi import APIRouter, HTTPException, Query
 from typing import List, Optional
 from datetime import timedelta
+import time
 import uuid
 
 from ..utils.logging_utils import get_mode_aware_logger
@@ -11,7 +12,7 @@ from ..models.chat import Chat, ChatCreate, ChatUpdate, ChatSummary, Message, Ch
 from ..models.group import ChatGroup, ChatGroupCreate, ChatGroupUpdate
 from ..storage.projects import ProjectStorage
 from ..storage.chats import ChatStorage
-from ..storage.global_items import collect_global_chats, collect_global_groups
+from ..storage.global_items import collect_global_chats, collect_global_chat_summaries, collect_global_groups
 from ..storage.groups import ChatGroupStorage
 from ..utils.paths import get_ziya_home, get_project_dir
 
@@ -165,7 +166,10 @@ async def list_chats(
     include_messages: bool = Query(False)
 ):
     """List all chats for a project. Use include_messages=true for full chat data."""
+    t_start = time.perf_counter()
+    t_phase = time.perf_counter()
     storage = get_chat_storage(project_id)
+    t_storage_setup = time.perf_counter() - t_phase
     
     if include_messages:
         chats = storage.list(group_id=group_id)
@@ -180,19 +184,34 @@ async def list_chats(
             chats = chats[offset:offset + limit]
         return chats
     
+    t_phase = time.perf_counter()
     summaries = storage.list_summaries(group_id=group_id)
+    t_list_summaries = time.perf_counter() - t_phase
 
-    # Include global chat summaries from other projects
+    t_phase = time.perf_counter()
+    # Include global chat summaries from other projects (fast path: skips Chat validation)
     existing_ids = {s.id for s in summaries}
     ziya_home = get_ziya_home()
-    for global_chat in collect_global_chats(ziya_home, exclude_project_id=project_id):
-        if global_chat.id not in existing_ids:
-            summaries.append(_chat_to_summary(global_chat))
-            existing_ids.add(global_chat.id)
+    n_global = 0
+    for global_summary in collect_global_chat_summaries(ziya_home, exclude_project_id=project_id):
+        if global_summary.id not in existing_ids:
+            summaries.append(global_summary)
+            existing_ids.add(global_summary.id)
+            n_global += 1
+    t_globals = time.perf_counter() - t_phase
     
+    t_phase = time.perf_counter()
     # Apply pagination
     if limit:
         summaries = summaries[offset:offset + limit]
+    t_paginate = time.perf_counter() - t_phase
+
+    elapsed_ms = (time.perf_counter() - t_start) * 1000
+    logger.info(
+        f"list_chats[{project_id[:8]}] {len(summaries)} summaries in {elapsed_ms:.0f}ms "
+        f"(setup={t_storage_setup*1000:.0f}ms list_summaries={t_list_summaries*1000:.0f}ms "
+        f"globals={t_globals*1000:.0f}ms[+{n_global}] paginate={t_paginate*1000:.0f}ms)"
+    )
     
     return summaries
 
@@ -292,11 +311,17 @@ async def bulk_sync_chats(project_id: str, data: ChatBulkSync):
                 else:
                     results["skipped"] += 1
             else:
-                # Create new
-                storage._write_json(
-                    storage._chat_file(chat_data.id),
-                    chat_data.model_dump()
-                )
+                # Create new — apply the same folderId → groupId mapping the
+                # update branch uses.  Without this, the first push of a chat
+                # the frontend calls `folderId` gets persisted with groupId=null
+                # and the chat appears ungrouped until a subsequent update
+                # triggers the mapping.  That intermittent "forgets folder on
+                # first save" is observationally identical to the class of
+                # sync bugs we've been chasing.
+                payload = chat_data.model_dump()
+                if payload.get('folderId') and not payload.get('groupId'):
+                    payload['groupId'] = payload['folderId']
+                storage._write_json(storage._chat_file(chat_data.id), payload)
                 results["created"] += 1
         except Exception as e:
             results["errors"].append({"id": chat_data.id, "error": str(e)})

@@ -14,12 +14,38 @@ declare global {
 }
 
 // Get database name from localStorage or use default
+const DB_ROOT_NAME = 'ZiyaDB';
+const DB_NAME_KEY = 'ZIYA_DB_NAME';
+const DB_RECOVERY_MAX = 9; // ZiyaDB_r1 … ZiyaDB_r9
+
+/** Return the next promoted database name (ZiyaDB → ZiyaDB_r1 → ZiyaDB_r2 …). */
+function promoteDbName(name: string): string | null {
+    if (name === DB_ROOT_NAME) return `${DB_ROOT_NAME}_r1`;
+    const m = name.match(/^(.+)_r(\d+)$/);
+    if (!m) return `${DB_ROOT_NAME}_r1`;
+    const next = parseInt(m[2], 10) + 1;
+    if (next > DB_RECOVERY_MAX) return null; // exhausted
+    return `${m[1]}_r${next}`;
+}
+
+/** Persist the active database name so future page loads reuse it. */
+function persistDbName(name: string): void {
+    try {
+        if (name === DB_ROOT_NAME) {
+            localStorage.removeItem(DB_NAME_KEY);
+        } else {
+            localStorage.setItem(DB_NAME_KEY, name);
+            console.log(`IDB promotion: now using database "${name}"`);
+        }
+    } catch { /* localStorage may be blocked in some private-browse modes */ }
+}
+
 const DB_BASE_NAME = (() => {
-    const storedName = localStorage.getItem('ZIYA_DB_NAME');
-    if (storedName) {
-        console.log('Using custom database name:', storedName);
-    }
-    return storedName || 'ZiyaDB';
+    try {
+        const stored = localStorage.getItem(DB_NAME_KEY);
+        if (stored) console.log('Using promoted database name:', stored);
+        return stored || DB_ROOT_NAME;
+    } catch { return DB_ROOT_NAME; }
 })();
 let currentDbName = DB_BASE_NAME;
 let currentVersion = 3; // Increment version to force upgrade
@@ -63,11 +89,27 @@ class ConversationDB implements DB {
     private _pendingMigrationData: Conversation[] | null = null;
     private initializing = false;
     private initPromise: Promise<void> | null = null;
+    /** Set permanently true when every promoted name is exhausted. */
+    private isUnavailable = false;
+
+    // Shell-array cache for getConversationShells().  The cursor scan
+    // structured-clones every record's full message bodies on each
+    // cursor.value access before stripping them, which dominates project
+    // switch latency on large IDBs (~8s for 750 conversations × tens of
+    // messages each).  Without this cache, the scan ran twice per switch
+    // (preload + sync) and again on every 30s periodic poll.  Mutating
+    // methods (save/delete/migrate/import) invalidate the cache; a 60s
+    // TTL bounds staleness for any path that bypasses those methods.
+    private shellCache: Conversation[] | null = null;
+    private shellCacheTs: number = 0;
+    private static readonly SHELL_CACHE_TTL_MS = 60_000;
+    private invalidateShellCache(): void { this.shellCache = null; this.shellCacheTs = 0; }
 
     db: IDBDatabase | null = null;
 
     async init(): Promise<void> {
         if (this.initPromise) return this.initPromise;
+        if (this.isUnavailable) throw new Error('IDB backing store permanently unavailable');
 
         this.initializing = true;
         if (navigator.locks) {
@@ -93,7 +135,66 @@ class ConversationDB implements DB {
             console.debug('Checking existing database version');
             const checkRequest = indexedDB.open(currentDbName);
 
-            return new Promise((resolve, reject) => {
+            return await new Promise<void>((resolve, reject) => {
+                // Without this handler, an UnknownError on the backing store
+                // (e.g. Opera Air with a corrupt IDB file) leaves the Promise
+                // permanently pending, freezing all of initialization.  On
+                // UnknownError we try a promoted database name instead.
+                checkRequest.onerror = () => {
+                    const err = checkRequest.error;
+                    // Promote on any backing-store error except SecurityError.
+                    // SecurityError = IDB intentionally blocked (private mode / file://).
+                    // For all other errors: try one promotion.  If the promoted name
+                    // also fails, the entire IDB engine is broken — give up immediately
+                    // rather than exhausting all 9 slots (each attempt adds ~500ms).
+                    if (err?.name !== 'SecurityError') {
+                        const alreadyPromoted = currentDbName !== DB_ROOT_NAME;
+                        if (alreadyPromoted) {
+                            // Already on a promoted name and it also failed.
+                            // Try deleting the corrupt backing store before giving up —
+                            // a successful delete means we can reopen fresh on the same name.
+                            const nameToDelete = currentDbName;
+                            const delReq = indexedDB.deleteDatabase(nameToDelete);
+                            delReq.onsuccess = () => {
+                                console.warn(`IDB: deleted corrupt "${nameToDelete}", retrying fresh open`);
+                                persistDbName(nameToDelete); // keep using same name
+                                this._initWithLock().then(resolve).catch(reject);
+                            };
+                            delReq.onerror = () => {
+                                // Delete failed — the entire IDB engine is broken at the OS level.
+                                console.error(`IDB engine broken — could not delete "${nameToDelete}" (${err?.name ?? String(err)}). Giving up.`);
+                                this.isUnavailable = true;
+                                reject(err);
+                            };
+                            return;
+                        }
+                        const nextName = promoteDbName(currentDbName);
+                        if (nextName) {
+                            // First attempt: try deleting the corrupt root database before promoting.
+                            const nameToDelete = currentDbName;
+                            const delReq = indexedDB.deleteDatabase(nameToDelete);
+                            delReq.onsuccess = () => {
+                                console.warn(`IDB: deleted corrupt "${nameToDelete}", retrying fresh open`);
+                                currentVersion = 3;
+                                this._initWithLock().then(resolve).catch(reject);
+                            };
+                            delReq.onerror = () => {
+                                // Delete failed — promote to next name instead.
+                                console.warn(`IDB "${nameToDelete}" error (${err?.name ?? String(err)}), delete failed, promoting to "${nextName}"`);
+                                currentDbName = nextName;
+                                currentVersion = 3;
+                                persistDbName(nextName);
+                                this._initWithLock().then(resolve).catch(reject);
+                            };
+                            return;
+                        }
+                        // All recovery slots exhausted — mark permanently unavailable.
+                        console.error('IDB: all recovery slots exhausted, running in server-only mode');
+                        this.isUnavailable = true;
+                    }
+                    reject(err);
+                };
+
                 checkRequest.onsuccess = () => {
                     const existingVersion = checkRequest.result.version;
 
@@ -270,6 +371,7 @@ class ConversationDB implements DB {
         if (!this.db) return;
 
         const tx = this.db.transaction([STORE_NAME], 'readwrite');
+        this.invalidateShellCache();
         const store = tx.objectStore(STORE_NAME);
 
         return new Promise<void>((resolve, reject) => {
@@ -395,18 +497,21 @@ class ConversationDB implements DB {
     }
 
     async saveConversations(conversations: Conversation[]): Promise<void> {
+        this.invalidateShellCache();
         if (!this.db || !this.db.objectStoreNames.contains(STORE_NAME)) {
             try {
                 await this.init();
             } catch (error) {
-                console.error('Failed to initialize database:', error);
-                try {
-                    const recovered = await this.handleMissingStore();
-                    if (!recovered) {
-                        console.error('Failed to recover database');
+                if (!this.isUnavailable) {
+                    console.error('Failed to initialize database:', error);
+                    try {
+                        const recovered = await this.handleMissingStore();
+                        if (!recovered) {
+                            console.error('Failed to recover database');
+                        }
+                    } catch (e) {
+                        console.error('Failed to handle missing store:', e);
                     }
-                } catch (e) {
-                    console.error('Failed to handle missing store:', e);
                 }
                 throw new Error('Database initialization failed');
             }
@@ -452,24 +557,36 @@ class ConversationDB implements DB {
                             // deleted short conversations).
                             const guardReq = store.get(conv.id);
                             guardReq.onsuccess = () => {
-                                const existing = guardReq.result;
-                                const existingLen = Array.isArray(existing?.messages) ? existing.messages.length : 0;
-                                const callerLen = Array.isArray(stripped.messages) ? stripped.messages.length : 0;
-                                if (existingLen > callerLen && existingLen > 2) {
-                                    console.warn(
-                                        `🛡️ FAST_PATH_TOMBSTONE: Preserving ${existingLen} messages ` +
-                                        `for ${conv.id.substring(0, 8)} (caller had ${callerLen}). ` +
-                                        `Title: "${(conv.title || '').substring(0, 60)}"`,
-                                        new Error('fast-path tombstone stack')
-                                    );
-                                    store.put({ ...stripped, messages: existing.messages, _version: conv._version || Date.now() }, conv.id);
-                                } else {
-                                    store.put({ ...stripped, _version: conv._version || Date.now() }, conv.id);
+                                try {
+                                    const existing = guardReq.result;
+                                    const existingLen = Array.isArray(existing?.messages) ? existing.messages.length : 0;
+                                    const callerLen = Array.isArray(stripped.messages) ? stripped.messages.length : 0;
+                                    if (existingLen > callerLen && existingLen > 2) {
+                                        console.warn(
+                                            `🛡️ FAST_PATH_TOMBSTONE: Preserving ${existingLen} messages ` +
+                                            `for ${conv.id.substring(0, 8)} (caller had ${callerLen}). ` +
+                                            `Title: "${(conv.title || '').substring(0, 60)}"`,
+                                            new Error('fast-path tombstone stack')
+                                        );
+                                        store.put({ ...stripped, messages: existing.messages, _version: conv._version || Date.now() }, conv.id);
+                                    } else {
+                                        store.put({ ...stripped, _version: conv._version || Date.now() }, conv.id);
+                                    }
+                                } catch (e) {
+                                    // Transaction may have finished/aborted between get and put.
+                                    // Swallow — tx.onerror/onabort will reject the outer promise.
+                                    console.debug('FAST_PATH guard put skipped (tx inactive):', e);
                                 }
                             };
                             guardReq.onerror = () => {
-                                // Can't read existing — write anyway (match slow path behavior)
-                                store.put({ ...stripped, _version: conv._version || Date.now() }, conv.id);
+                                // get() failed — the transaction is almost certainly aborting.
+                                // Attempting store.put() here throws TransactionInactiveError
+                                // synchronously and escapes as an uncaught global error.
+                                try {
+                                    store.put({ ...stripped, _version: conv._version || Date.now() }, conv.id);
+                                } catch (e) {
+                                    console.debug('FAST_PATH guard put-on-error skipped (tx inactive):', e);
+                                }
                             };
                         }
                     });
@@ -644,22 +761,32 @@ class ConversationDB implements DB {
                 for (const conv of conversationsToSave) {
                     const guardReq = store.get(conv.id);
                     guardReq.onsuccess = () => {
-                        const existing = guardReq.result;
-                        // Per-record message-count guard
-                        if (existing?.id && existing.messages?.length > conv.messages?.length
-                            && existing.messages.length > 2) {
-                            console.warn(
-                                `🛡️ IDB_WRITE_GUARD: Preserving ${existing.messages.length} messages ` +
-                                `for ${conv.id.substring(0, 8)} (caller had ${conv.messages?.length || 0})`
-                            );
-                            store.put({ ...conv, messages: existing.messages }, conv.id);
-                        } else {
-                            store.put(conv, conv.id);
+                        try {
+                            const existing = guardReq.result;
+                            // Per-record message-count guard
+                            if (existing?.id && existing.messages?.length > conv.messages?.length
+                                && existing.messages.length > 2) {
+                                console.warn(
+                                    `🛡️ IDB_WRITE_GUARD: Preserving ${existing.messages.length} messages ` +
+                                    `for ${conv.id.substring(0, 8)} (caller had ${conv.messages?.length || 0})`
+                                );
+                                store.put({ ...conv, messages: existing.messages }, conv.id);
+                            } else {
+                                store.put(conv, conv.id);
+                            }
+                        } catch (e) {
+                            // Transaction may have finished between get and put.
+                            console.debug('SAVE_GUARD put skipped (tx inactive):', e);
                         }
                     };
                     guardReq.onerror = () => {
-                        // Can't read existing — write anyway
-                        store.put(conv, conv.id);
+                        // get() failed — transaction is likely aborting.  Synchronous
+                        // put() would throw TransactionInactiveError and escape globally.
+                        try {
+                            store.put(conv, conv.id);
+                        } catch (e) {
+                            console.debug('SAVE_GUARD put-on-error skipped (tx inactive):', e);
+                        }
                     };
                 }
 
@@ -747,6 +874,7 @@ class ConversationDB implements DB {
      * guard to prevent regressions.
      */
     async saveConversation(conversation: Conversation): Promise<void> {
+        this.invalidateShellCache();
         if (!this.db || !this.db.objectStoreNames.contains(STORE_NAME)) {
             try { await this.init(); } catch { throw new Error('Database not initialized'); }
             if (!this.db) throw new Error('Database not initialized');
@@ -767,20 +895,28 @@ class ConversationDB implements DB {
             // Per-record guard: check existing message count before overwriting
             const getReq = store.get(conversation.id);
             getReq.onsuccess = () => {
-                const existing = getReq.result;
-                if (existing?.messages?.length > conversation.messages?.length
-                    && existing.messages.length > 2) {
-                    console.warn(
-                        `🛡️ SAVE_GUARD: Preserving ${existing.messages.length} messages ` +
-                        `for ${conversation.id.substring(0, 8)} (caller had ${conversation.messages?.length || 0})`
-                    );
-                    conversation = { ...conversation, messages: existing.messages };
+                try {
+                    const existing = getReq.result;
+                    if (existing?.messages?.length > conversation.messages?.length
+                        && existing.messages.length > 2) {
+                        console.warn(
+                            `🛡️ SAVE_GUARD: Preserving ${existing.messages.length} messages ` +
+                            `for ${conversation.id.substring(0, 8)} (caller had ${conversation.messages?.length || 0})`
+                        );
+                        conversation = { ...conversation, messages: existing.messages };
+                    }
+                    store.put(conversation, conversation.id);
+                } catch (e) {
+                    console.debug('saveConversation guard put skipped (tx inactive):', e);
                 }
-                store.put(conversation, conversation.id);
             };
             getReq.onerror = () => {
-                // Can't read existing — write anyway
-                store.put(conversation, conversation.id);
+                // get() failed — transaction is likely aborting.
+                try {
+                    store.put(conversation, conversation.id);
+                } catch (e) {
+                    console.debug('saveConversation put-on-error skipped (tx inactive):', e);
+                }
             };
 
             return new Promise<void>((resolve, reject) => {
@@ -799,6 +935,7 @@ class ConversationDB implements DB {
      * Delete a single conversation by ID.
      */
     async deleteConversation(id: string): Promise<void> {
+        this.invalidateShellCache();
         if (!this.db || !this.db.objectStoreNames.contains(STORE_NAME)) {
             try { await this.init(); } catch { return; }
             if (!this.db) return;
@@ -819,8 +956,10 @@ class ConversationDB implements DB {
             try {
                 await this.init();
             } catch (error) {
-                console.warn('Failed to initialize database, returning empty conversations array');
-                console.error('Failed to initialize database:', error);
+                if (!this.isUnavailable) {
+                    console.warn('Failed to initialize database, returning empty conversations array');
+                    console.error('Failed to initialize database:', error);
+                }
                 return this.restoreFromBackup();
             }
             if (!this.db) throw new Error('Database not initialized');
@@ -903,6 +1042,17 @@ class ConversationDB implements DB {
      * or by the server sync that fetches individual chats.
      */
     async getConversationShells(): Promise<Conversation[]> {
+        // Serve from cache when fresh.  Shallow-clone each shell so callers
+        // that mutate fields on returned objects (e.g. ChatContext's sync
+        // merge patches messages onto local entries) don't poison the cache
+        // for subsequent reads.  The clone is cheap because shells already
+        // have message bodies stripped.
+        const cacheNow = Date.now();
+        if (this.shellCache !== null
+            && cacheNow - this.shellCacheTs < ConversationDB.SHELL_CACHE_TTL_MS) {
+            return this.shellCache.map(c => ({ ...c }));
+        }
+
         if (!this.db || !this.db.objectStoreNames.contains(STORE_NAME)) {
             try { await this.init(); } catch { return []; }
             if (!this.db) return [];
@@ -959,13 +1109,19 @@ class ConversationDB implements DB {
             });
         };
 
-        if (navigator.locks) {
-            return navigator.locks.request('ziya-db-read', () => readFn());
-        }
-        return readFn();
+        const shells = navigator.locks
+            ? await navigator.locks.request('ziya-db-read', () => readFn())
+            : await readFn();
+        this.shellCache = shells;
+        this.shellCacheTs = Date.now();
+        // Return a clone so caller mutations don't affect the cached copy.
+        return shells.map(c => ({ ...c }));
     }
 
     private async handleMissingStore(): Promise<boolean> {
+        // When the backing store is permanently unavailable, don't log or retry.
+        if (this.isUnavailable) return false;
+
         console.warn('Handling missing store issue (seen in Safari migration)');
 
         // Close any existing connection
@@ -1230,6 +1386,7 @@ class ConversationDB implements DB {
 
             // Write imported conversations as individual records
             const tx = this.db.transaction([STORE_NAME], 'readwrite');
+            this.invalidateShellCache();
             const store = tx.objectStore(STORE_NAME);
 
             for (const conv of validConversations) {
@@ -1258,7 +1415,7 @@ class ConversationDB implements DB {
             try {
                 await this.init();
             } catch (error) {
-                console.error('Failed to initialize database:', error);
+                if (!this.isUnavailable) console.error('Failed to initialize database:', error);
                 return [];
             }
         }
@@ -1340,6 +1497,7 @@ class ConversationDB implements DB {
     async moveConversationToFolder(conversationId: string, folderId: string | null): Promise<boolean> {
         await this.init();
         const tx = this.db!.transaction(STORE_NAME, 'readwrite');
+        this.invalidateShellCache();
         const store = tx.objectStore(STORE_NAME);
 
         return new Promise((resolve, reject) => {
@@ -1410,6 +1568,7 @@ class ConversationDB implements DB {
         if (!this.db) throw new Error('Database not initialized');
 
         const tx = this.db.transaction([STORE_NAME], 'readwrite');
+        this.invalidateShellCache();
         const store = tx.objectStore(STORE_NAME);
 
         return new Promise((resolve, reject) => {
@@ -1454,6 +1613,7 @@ class ConversationDB implements DB {
                     this.initPromise = null;
                     this.saveInProgress = false;
                     this.migrated = false;
+                    this.invalidateShellCache();
 
                     // Reinitialize the database
                     await this.init();
