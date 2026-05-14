@@ -1,0 +1,357 @@
+/* TaskCardInlineTile — inline chat tile for task card bindings */
+
+.tc-tile {
+  margin: 8px 0;
+  border-radius: 8px;
+  font-size: 12px;
+  border: 1px solid rgba(128,128,128,0.2);
+  background: var(--tc-card-bg, #0d1117);
+  color: var(--tc-card-text, #e0e0e0);
+  transition: border-color 0.2s;
+}
+
+.tc-tile--running { border-color: #1f6feb; animation: tc-pulse 2s ease-in-out infinite; }
+.tc-tile--done    { border-color: #3fb950; }
+.tc-tile--failed  { border-color: #f85149; }
+.tc-tile--cancelled { border-color: #d29922; }
+.tc-tile--loading, .tc-tile--error {
+  padding: 8px 12px; display: flex; align-items: center; gap: 8px;
+  color: var(--tc-muted, #7d8590);
+}
+
+@keyframes tc-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(31,111,235,0); }
+  50%      { box-shadow: 0 0 0 3px rgba(31,111,235,0.15); }
+}
+
+/* Receipt (collapsed) */
+.tc-tile--receipt {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px; cursor: pointer;
+}
+.tc-tile--receipt:hover { background: rgba(255,255,255,0.03); }
+
+.tc-tile__chevron { font-size: 10px; color: var(--tc-muted, #7d8590); }
+.tc-tile__status-icon { font-size: 13px; }
+.tc-tile__text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tc-tile__meta { color: var(--tc-muted, #7d8590); font-size: 11px; }
+
+/* Expanded */
+.tc-tile--expanded { overflow: hidden; }
+
+.tc-tile__header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; cursor: pointer;
+  background: rgba(255,255,255,0.02);
+  border-bottom: 1px solid rgba(128,128,128,0.15);
+}
+.tc-tile__header:hover { background: rgba(255,255,255,0.04); }
+.tc-tile__title { font-weight: 600; font-size: 12px; }
+
+.tc-tile__cancel {
+  background: transparent; border: 1px solid #f85149;
+  color: #f85149; border-radius: 4px; padding: 2px 6px;
+  cursor: pointer; font-size: 11px; line-height: 1;
+}
+.tc-tile__cancel:hover { background: rgba(248,81,73,0.1); }
+
+.tc-tile__body { padding: 10px 12px; }
+
+.tc-tile__progress {
+  display: flex; align-items: center; gap: 8px;
+  color: #1f6feb; margin-bottom: 6px;
+}
+
+.tc-tile__artifact { margin-top: 4px; }
+.tc-tile__summary {
+  font-size: 12px; line-height: 1.4;
+  color: var(--tc-card-text, #e0e0e0);
+  margin-bottom: 6px;
+}
+.tc-tile__summary--empty {
+  font-style: italic;
+  opacity: 0.6;
+}
+
+/* Expandable summary — long artifact.summary lives inside <details>
+   so the tile doesn't balloon.  The preview row acts as the summary
+   element (clickable); the full text reveals below it. */
+.tc-tile__summary-expandable {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--tc-card-text, #e0e0e0);
+  margin-bottom: 6px;
+}
+.tc-tile__summary-expandable summary.tc-tile__summary-preview {
+  list-style: none;
+  cursor: pointer;
+  display: block;
+}
+.tc-tile__summary-expandable summary.tc-tile__summary-preview::-webkit-details-marker {
+  display: none;
+}
+.tc-tile__summary-expandable summary.tc-tile__summary-preview::after {
+  content: ' show more';
+  font-size: 10px;
+  opacity: 0.6;
+  font-style: italic;
+}
+.tc-tile__summary-expandable[open] summary.tc-tile__summary-preview {
+  display: none;  /* Preview replaced by full text when open. */
+}
+.tc-tile__summary-full {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 400px;
+  overflow: auto;
+}
+
+/* Decisions list — bullet summary of per-run notes (scope warnings,
+   compaction decisions).  Kept quiet visually; count is capped in TSX. */
+.tc-tile__decisions {
+  margin: 4px 0 6px;
+  padding-left: 18px;
+  font-size: 11px;
+  line-height: 1.5;
+  opacity: 0.85;
+}
+.tc-tile__decisions-more {
+  list-style: none;
+  opacity: 0.6;
+  font-style: italic;
+}
+
+/* Typed output parts.  Rendered only when leaf blocks actually emit
+   structured outputs — no leaf type populates this today but the
+   render path is wired for when they do. */
+.tc-tile__outputs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 6px;
+}
+.tc-tile__output-text {
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.tc-tile__output-file {
+  font-size: 11px;
+}
+.tc-tile__output-meta {
+  opacity: 0.6;
+}
+.tc-tile__output-data summary {
+  cursor: pointer;
+  font-size: 11px;
+  opacity: 0.8;
+  padding: 2px 0;
+}
+.tc-tile__output-data pre {
+  font-size: 10px;
+  max-height: 200px;
+  overflow: auto;
+  background: rgba(0,0,0,0.15);
+  padding: 6px 8px;
+  border-radius: 3px;
+  margin: 2px 0;
+}
+
+.tc-tile__metrics {
+  display: flex; gap: 12px; font-size: 11px;
+  color: var(--tc-muted, #7d8590);
+}
+
+.tc-tile__error-msg {
+  margin-top: 6px; padding: 6px 8px;
+  background: rgba(248,81,73,0.08);
+  border: 1px solid rgba(248,81,73,0.2);
+  border-radius: 4px; color: #f85149; font-size: 11px;
+}
+
+.tc-tile__description {
+  font-size: 12px;
+  opacity: 0.75;
+  margin-bottom: 8px;
+  line-height: 1.4;
+}
+
+.tc-tile__instructions {
+  font-size: 12px;
+  margin: 4px 0 8px;
+}
+.tc-tile__instructions summary {
+  cursor: pointer;
+  opacity: 0.7;
+  font-size: 11px;
+  padding: 2px 0;
+}
+.tc-tile__instructions pre {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  background: rgba(0,0,0,0.03);
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 120px;
+  overflow: auto;
+}
+
+.tc-tile__iter-list {
+  margin-top: 8px;
+  font-size: 12px;
+}
+.tc-tile__iter-list summary {
+  cursor: pointer;
+  opacity: 0.75;
+  font-size: 11px;
+  padding: 2px 0;
+}
+.tc-tile__iter-items {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 240px;
+  overflow: auto;
+}
+.tc-tile__iter {
+  display: grid;
+  grid-template-columns: 32px 56px 1fr auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.tc-tile__iter:hover { background: rgba(0,0,0,0.03); }
+.tc-tile__iter--passed .tc-tile__iter-status { color: #3fb950; }
+.tc-tile__iter--failed .tc-tile__iter-status { color: #f85149; }
+.tc-tile__iter-num {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  opacity: 0.55;
+}
+.tc-tile__iter-status {
+  font-weight: 500;
+  text-transform: lowercase;
+}
+.tc-tile__iter-summary {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  word-break: break-word;
+  opacity: 0.85;
+}
+.tc-tile__iter-dur {
+  opacity: 0.5;
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+}
+
+.tc-tile__iterations {
+  margin-top: 6px; display: flex; gap: 10px; font-size: 11px;
+}
+.tc-tile__iter-passed { color: #3fb950; }
+.tc-tile__iter-failed { color: #f85149; }
+
+/* Light mode overrides */
+@media (prefers-color-scheme: light) {
+  .tc-tile {
+/* Failure clusters — shown in place of the flat iteration list when
+   failures repeat by signature.  See FailureClusters.tsx. */
+.tc-clusters {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tc-clusters__header {
+  font-size: 11px;
+  opacity: 0.8;
+  margin-bottom: 2px;
+}
+
+.tc-cluster {
+  border: 1px solid rgba(248,81,73,0.25);
+  border-radius: 4px;
+  background: rgba(248,81,73,0.04);
+}
+.tc-cluster summary.tc-cluster__summary {
+  cursor: pointer;
+  padding: 4px 8px;
+  list-style: none;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+}
+.tc-cluster summary.tc-cluster__summary::-webkit-details-marker { display: none; }
+.tc-cluster summary.tc-cluster__summary::before {
+  content: '▸';
+  display: inline-block;
+  width: 10px;
+  opacity: 0.6;
+  font-size: 9px;
+}
+.tc-cluster[open] summary.tc-cluster__summary::before {
+  content: '▾';
+}
+
+.tc-cluster__count {
+  color: #f85149;
+  font-weight: 600;
+  min-width: 32px;
+}
+.tc-cluster__sig {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  opacity: 0.7;
+}
+.tc-cluster__exemplar-preview {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  opacity: 0.75;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.tc-cluster__body {
+  padding: 6px 10px 8px 20px;
+  border-top: 1px solid rgba(248,81,73,0.15);
+  font-size: 11px;
+}
+.tc-cluster__exemplar {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow: auto;
+  margin-bottom: 6px;
+}
+.tc-cluster__decisions {
+  margin: 4px 0 6px;
+  padding-left: 18px;
+  opacity: 0.85;
+}
+.tc-cluster__indices {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  opacity: 0.6;
+}
+.tc-cluster__error {
+  color: #f85149;
+  font-size: 11px;
+}
+
+    background: #ffffff;
+    color: #1f2328;
+    border-color: rgba(0,0,0,0.1);
+  }
+  .tc-tile--receipt:hover { background: rgba(0,0,0,0.03); }
+  .tc-tile__header { background: rgba(0,0,0,0.02); }
+  .tc-tile__header:hover { background: rgba(0,0,0,0.04); }
+}

@@ -70,5 +70,19 @@ async def push(run_id: str, event: Dict[str, Any]) -> None:
                     del _active_connections[run_id]
 
 
+async def safe_push(run_id: str, event: Dict[str, Any]) -> None:
+    """Best-effort push that never raises.
+
+    Live observation is optional — if the relay module fails to import,
+    the connection registry is corrupt, or any other error escapes
+    ``push``, we swallow it.  Task execution progress must not depend
+    on whether anyone is listening.
+    """
+    try:
+        await push(run_id, event)
+    except Exception as exc:
+        logger.debug(f"task_run_stream_relay.safe_push failed (non-fatal): {exc}")
+
+
 def has_clients(run_id: str) -> bool:
     return bool(_active_connections.get(run_id))

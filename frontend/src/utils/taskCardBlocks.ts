@@ -31,8 +31,19 @@ export const makeRepeatBlock = (name: string = 'Repeat'): Block => ({
   body: [makeTaskBlock('Iteration body')],
 });
 
+export const makeParallelBlock = (name: string = 'Parallel'): Block => ({
+  block_type: 'parallel',
+  id: nextId('p'),
+  name,
+  // Parallel blocks have no loop/scope fields — just a body of children
+  // that execute concurrently.  See app/agents/block_executor.py
+  // _execute_parallel.
+  body: [makeTaskBlock('Parallel branch A'), makeTaskBlock('Parallel branch B')],
+});
+
 export const makeBlock = (type: BlockType, name?: string): Block => {
   if (type === 'repeat') return makeRepeatBlock(name);
+  if (type === 'parallel') return makeParallelBlock(name);
   return makeTaskBlock(name);
 };
 

@@ -7,6 +7,7 @@ import React from 'react';
 import type { Block } from '../../types/task_card';
 import { TaskBlockEditor } from './TaskBlockEditor';
 import { RepeatBlockEditor } from './RepeatBlockEditor';
+import { ParallelBlockEditor } from './ParallelBlockEditor';
 
 interface Props {
   block: Block;
@@ -16,7 +17,7 @@ interface Props {
 
 export const BlockEditor: React.FC<Props> = (props) => {
   if (props.block.block_type === 'repeat') return <RepeatBlockEditor {...props} />;
+  if (props.block.block_type === 'parallel') return <ParallelBlockEditor {...props} />;
   if (props.block.block_type === 'task') return <TaskBlockEditor {...props} />;
-  // 'parallel' not implemented yet in this slice
   return <div className="tc-block tc-block-unknown">Unsupported block type: {props.block.block_type}</div>;
 };

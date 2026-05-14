@@ -33,6 +33,9 @@ export interface Artifact {
   tool_calls: number;
   duration_ms: number;
   created_at: number;
+  // Optional error-identity hash for failure clustering.  Null on success.
+  signature?: string | null;
+  failed?: boolean;
 }
 
 // ── The recursive Block type ──────────────────────────────
