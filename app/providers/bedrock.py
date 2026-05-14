@@ -377,9 +377,15 @@ class BedrockProvider(LLMProvider):
             else:
                 body["system"] = system_content
 
-        # Temperature
+        # Temperature — defense-in-depth: some models (e.g. Claude Opus 4.7)
+        # reject `temperature` with a 400 ValidationException. The ziya_bedrock
+        # wrapper strips it at construction time, but any caller that builds a
+        # ProviderConfig directly could re-introduce it. Filter here against
+        # the model's declared unsupported_parameters as a final safeguard.
         if config.temperature is not None:
-            body["temperature"] = config.temperature
+            unsupported = set(self.model_config.get("unsupported_parameters", []) or [])
+            if "temperature" not in unsupported:
+                body["temperature"] = config.temperature
 
         # Thinking configuration
         if config.thinking:

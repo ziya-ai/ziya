@@ -227,6 +227,120 @@ Rules:
         'color': '#6366f1',
     },
     {
+        'id': 'task_cards',
+        'name': 'Task Cards & Loops',
+        'description': 'Compose a repeatable/loopable task card and launch it inline in the chat',
+        'visibility': MODEL_DISCOVERABLE,
+        'catalog_description': 'Author a Task Card: Task / Repeat / Parallel blocks, runs inline in chat with live status',
+        'keywords': ['task', 'card', 'loop', 'repeat', 'iterate', 'fuzz',
+                     'until', 'for each', 'retry', 'attempts', 'passes',
+                     'parallel', 'count', 'do this N times', 'try again',
+                     'keep trying', 'until it passes', 'over and over',
+                     'batch', 'iteration', 'explore', 'sweep'],
+        'prompt': '''You can author a **Task Card** — a small block tree the user launches
+from the conversation.  A task card runs inline in the chat and reports live
+status; the user can cancel, inspect, and query it.  Use a task card when:
+
+- The user asks to repeat an action N times, retry until it passes, run a
+  for-each over a list, or otherwise *iterate* structured work
+- The same task needs to produce many outcomes (fuzz-testing, exploration,
+  sampling) so failures can be clustered and inspected
+- A piece of work has a clear loop/sequence/parallel shape that benefits
+  from being a reusable object rather than an ad-hoc chat turn
+
+Use `delegate-tasks` instead (not this) when the work is a *fan-out of
+different specialized roles* (planner → workers → verifier) with
+dependencies and crystal handoff.  Task cards are for iteration and
+structured repetition; delegates are for multi-agent orchestration.
+
+## Block grammar
+
+Three block shapes compose the tree.  Any block's `body` can contain any
+other block.
+
+**Task** — atomic action, one model invocation, returns one Artifact.
+
+```
+{
+  "block_type": "task",
+  "name": "Generate a random spec",
+  "instructions": "Emit a random but plausible packet-diagram JSON spec.",
+  "scope": {
+    "files": ["app/services/diagram_renderer.py"],
+    "tools": ["render_diagram"],
+    "skills": []
+  }
+}
+```
+
+**Repeat** — wraps a body, runs it N times.  Modes:
+- `"count"` — run exactly `repeat_count` times
+- `"until"` — run until the body artifact does not fail, max `repeat_max`
+- `"for_each"` — run once per item in a list
+Orthogonal: `repeat_parallel: true|false`, `repeat_propagate: "none"|"last"|"all"`.
+
+```
+{
+  "block_type": "repeat",
+  "name": "Fuzz loop",
+  "repeat_mode": "count",
+  "repeat_count": 10,
+  "repeat_parallel": true,
+  "body": [ ]
+}
+```
+
+**Parallel** — runs its body blocks concurrently (different work, not copies
+of one block — that is Repeat's job).  Implicit sequence: stacking multiple
+blocks in any `body` runs them top-to-bottom.
+
+```
+{ "block_type": "parallel", "name": "Fan out", "body": [ ] }
+```
+
+## Propagation (templating)
+
+A block's `instructions` may reference prior results via `{{ }}` templates,
+rendered at dispatch time:
+- Inside a Repeat body: `{{index}}`, `{{item}}` (for_each), `{{previous}}`
+  (propagate=last), `{{all}}` (propagate=all) — field access like
+  `{{previous.summary}}`, `{{previous.outputs[0].text}}`.
+- Inside a sequence: `{{previous_sibling}}`, `{{sibling("block-id")}}`.
+Missing fields render as empty strings — never crash.
+
+## Output format
+
+Emit a fenced JSON block with language tag `task-card`.  The user can
+preview it and click **Start**; launching creates a run bound to the chat
+and the inline tile shows live status.
+
+## Example: fuzz test the renderer 10 times
+
+Root is a Repeat(count=10, parallel=true) wrapping a Task that generates
+a random spec, followed by a Task that renders it.  The renderer's
+instructions reference the generator output via templating.  On failure,
+the iteration is marked failed and its signature clustered automatically.
+
+## Example: keep trying to fix X until the tests pass
+
+Root is a Repeat(until, max=4) wrapping a sequence: Task(propose fix) then
+Task(apply and re-test).  Exits as soon as the re-test artifact does not fail.
+
+## Rules
+
+- The root is ONE block; use a Repeat/Parallel root to run a body of
+  multiple steps.
+- `instructions` should be self-contained — the Task runs in a sandboxed
+  conversation and cannot see anything outside its scope.
+- Don't over-decorate: if the user asks for a single action, emit a card
+  with a single Task root, not a trivial Repeat(count=1).
+- Keep `repeat_count` reasonable for default runs (5-50).  Larger sweeps
+  (1000+) are supported but should be explicit in the user's request.
+- Do not include `id`, `created_at`, or other server-assigned fields —
+  they are filled in on create.''',
+        'color': '#eab308',
+    },
+    {
         'id': 'packet_diagrams',
         'visibility': MODEL_DISCOVERABLE,
         'catalog_description': 'Render bit-level protocol frame / header / wire-format layout diagrams',

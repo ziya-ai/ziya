@@ -77,7 +77,8 @@ CRITICAL: Use ONLY native tool calling. Never generate fake tool calling syntax 
 **CRITICAL: MAXIMUM 250 LINES PER DIFF**
  Diffs over 250 lines will be rejected
  For larger changes: Create multiple separate focused diffs
- Exception: New file creation only
+ Exception: NEW FILE CREATION — when creating a brand-new file (--- /dev/null), the limit
+ is 5000 lines. Do NOT split a new file into multiple 250-line chunks; emit it as a single diff.
 
 If the provided context doesn't fully answer the user's request, use tools to gather the missing information. However, if file contents or directory structures are already shown in the context, work with that information directly instead of re-examining files. When you find relevant files through exploration, examine their contents. Check that all the required parameters for each tool call are provided or can reasonably be inferred from context. IF there are no relevant tools or there are missing values for required parameters, ask the user to supply these values; otherwise proceed with the tool calls. If the user provides a specific value for a parameter (for example provided in quotes), make sure to use that value EXACTLY. DO NOT make up values for or ask about optional parameters. Carefully analyze descriptive terms in the request as they may indicate required parameter values that should be included even if not explicitly quoted.
 """
