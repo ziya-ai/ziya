@@ -1,16 +1,7 @@
 import React from 'react';
 
-/**
- * Drop-in replacement for React.lazy() that retries failed chunk loads.
- *
- * On the first failure the dynamic import is retried up to `maxRetries`
- * times with a cache-busting query parameter so the browser fetches a
- * fresh copy instead of replaying a cached 404 / old hash.
- *
- * If all retries are exhausted the page is hard-reloaded once (guarded
- * by a sessionStorage flag so it doesn't loop).
- */
 const RELOAD_FLAG = '__ziya_chunk_reload';
+const RELOAD_FLAG_TS = '__ziya_chunk_reload_ts';
 
 export function lazyWithRetry<T extends React.ComponentType<any>>(
   factory: () => Promise<{ default: T }>,
@@ -19,34 +10,51 @@ export function lazyWithRetry<T extends React.ComponentType<any>>(
   return React.lazy(() => retryImport(factory, maxRetries));
 }
 
+function wait(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function retryImport<T extends React.ComponentType<any>>(
   factory: () => Promise<{ default: T }>,
   retries: number,
 ): Promise<{ default: T }> {
+  // Clear a stale reload flag so a new session can still trigger a hard
+  // reload if chunks keep failing.  Stale = set more than 30s ago, or
+  // flag exists but no timestamp (written by old code without timestamp).
+  try {
+    const ts = sessionStorage.getItem(RELOAD_FLAG_TS);
+    if (!ts || Date.now() - parseInt(ts, 10) > 30_000) {
+      sessionStorage.removeItem(RELOAD_FLAG);
+      sessionStorage.removeItem(RELOAD_FLAG_TS);
+    }
+  } catch { /* sessionStorage may be unavailable */ }
+
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      // On retry attempts, bust the module cache by appending a timestamp.
-      // The first attempt (attempt === 0) uses the normal import so the
-      // browser can serve a cached chunk when nothing has changed.
-      if (attempt > 0) {
-        const bustCache = `?t=${Date.now()}`;
-        // Inject cache-buster by wrapping the factory
-        return await factory().catch(() =>
-          import(/* webpackIgnore: true */ `${bustCache}`) as any
-        );
-      }
       return await factory();
     } catch (err) {
-      if (attempt === retries) {
-        // All retries failed — hard-reload once to pick up new chunks
+      const isChunkError = err instanceof Error &&
+        (err.name === 'ChunkLoadError' || err.message.includes('Loading chunk'));
+
+      if (isChunkError) {
+        // Webpack marks failed chunks in its internal JSONP registry.
+        // Retrying factory() won't issue a new network request — only a
+        // full reload clears the internal chunk state.
         if (!sessionStorage.getItem(RELOAD_FLAG)) {
           sessionStorage.setItem(RELOAD_FLAG, '1');
+          sessionStorage.setItem(RELOAD_FLAG_TS, String(Date.now()));
           window.location.reload();
+          // Never-settling promise prevents React rendering the error
+          // boundary during the brief window before the page unloads.
+          return new Promise(() => {});
         }
+        // Already reloaded once and still failing — genuine problem.
         throw err;
       }
+
+      if (attempt === retries) throw err;
+      await wait(2_000 * (attempt + 1));
     }
   }
-  // Unreachable, but satisfies TypeScript
   return factory();
 }

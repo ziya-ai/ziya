@@ -221,8 +221,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const streamingConversationsRef = useRef(streamingConversations);
 
     const removedStreamingIds = useRef<Set<string>>(new Set());
-    // Module-level sync guard — persists across effect re-runs
-    const syncInProgressRef = useRef<boolean>(false);
+    // Epoch counter — bumped on every project-switch effect firing.  Stale
+    // syncs (from a previously-mounted effect, or from an in-flight periodic
+    // poll that started before the user switched) detect the mismatch at
+    // every commit/write site and bail without overwriting state.
+    const syncEpochRef = useRef<number>(0);
     // Track which project has been server-synced to avoid duplicate syncs
     const serverSyncedForProject = useRef<string | null>(null);
     // Conversations confirmed present on the server (used to distinguish imports from server-deletions)
@@ -843,6 +846,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
             return;
         }
 
+        // Stable ID assignment: every message gets a uuid on the way in.
+        // This is what lets task-card bindings and any future
+        // message-anchored features reference specific messages.  Existing
+        // messages that already carry an id (e.g. model-change system
+        // messages constructed earlier in this file) keep theirs.
+        if (!message.id) {
+            message = { ...message, id: uuidv4() };
+        }
+
         // Temporary: unconditional trace to identify spam caller
         if (!(window as any).__addMsgTraced) {
             (window as any).__addMsgTraced = true;
@@ -1159,7 +1171,14 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
                 setTimeout(async () => {
                     try {
-                        await queueSave([...updatedConversations, newConversation], { skipValidation: true, changedIds: [newConversation.id] });
+                        // Use live state, not the snapshot from 2s ago.
+                        // Any messages added or edits made during the
+                        // retry window would otherwise be rolled back
+                        // when this save lands.
+                        await queueSave(conversationsRef.current, {
+                            skipValidation: true,
+                            changedIds: [newConversation.id],
+                        });
                     } catch (e) {
                         console.warn('Background save retry failed:', e);
                     }
@@ -1558,14 +1577,28 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     // Highlight search term within the target message
                     const searchTerm = (window as any).__ziyaSearchHighlight;
                     if (searchTerm) {
-                        const escaped = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                        // textContent extraction is safe, but when the captured
+                        // match is spliced into a <mark>$1</mark> replacement
+                        // and assigned via innerHTML, any literal HTML chars in
+                        // the message (e.g. <img src=x onerror=…>) become live
+                        // markup and execute. Escape both the haystack and the
+                        // search term before matching, so the regex operates on
+                        // HTML-safe text and the reinsert stays literal.
+                        const escapeHtml = (s: string) => s
+                            .replace(/&/g, '&amp;')
+                            .replace(/</g, '&lt;')
+                            .replace(/>/g, '&gt;')
+                            .replace(/"/g, '&quot;');
+                        const escapedTerm = escapeHtml(searchTerm)
+                            .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                         const walk = (node: Node) => {
                             if (node.nodeType === Node.TEXT_NODE) {
                                 const text = node.textContent || '';
                                 if (text.toLowerCase().includes(searchTerm.toLowerCase())) {
                                     const span = document.createElement('span');
-                                    span.innerHTML = text.replace(new RegExp(`(${escaped})`, 'gi'),
-                                        `<mark style="background:${isDarkMode ? '#b8860b' : '#fff176'};color:${isDarkMode ? '#fff' : '#000'};border-radius:2px;padding:0 1px">$1</mark>`);
+                                    span.innerHTML = escapeHtml(text).replace(
+                                        new RegExp(`(${escapedTerm})`, 'gi'),
+                                        (m) => `<mark style="background:${isDarkMode ? '#b8860b' : '#fff176'};color:${isDarkMode ? '#fff' : '#000'};border-radius:2px;padding:0 1px">${m}</mark>`);
                                     node.parentNode?.replaceChild(span, node);
                                 }
                             } else if (node.nodeType === Node.ELEMENT_NODE && !['SCRIPT', 'STYLE', 'CODE', 'PRE'].includes((node as Element).tagName)) {
@@ -1579,7 +1612,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     setTimeout(() => tryScroll(attempt + 1), 200);
                 }
             };
-            setTimeout(() => tryScroll(0), 300);
             setTimeout(() => tryScroll(0), 100);
         } catch (error) {
             console.error('Error loading conversation and scrolling to message:', error);
@@ -1819,9 +1851,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // corrupt record (e.g. a single entry with id: undefined) while
             // the server still has the full history.
             const validShells = savedConversations.filter(c => c.id && c.title);
-            if (validShells.length <= 1 && currentProject?.id && isServerReachable) {
+            if (validShells.length <= 1 && startupPid && isServerReachable) {
                 try {
-                    const serverSummaries = await syncApi.listChats(currentProject.id, false);
+                    const serverSummaries = await syncApi.listChats(startupPid, false);
                     if (serverSummaries.length > 10 && validShells.length <= 1) {
                         console.warn(`🔧 IDB_REPAIR: IDB has ${validShells.length} valid conversations but server has ${serverSummaries.length}. Clearing corrupt IDB store.`);
                         // Clear the corrupt store so SERVER_SYNC can repopulate cleanly
@@ -1837,6 +1869,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                 await db.saveConversations([]);
                                 console.log('🔧 IDB_REPAIR: Cleared corrupt conversations record.');
                             }
+                            // Immediately populate from server rather than waiting for the
+                            // next syncWithServer cycle — which depends on currentProject being
+                            // set, a condition that may not hold yet at this point in startup.
+                            const recovered = serverSummaries.map(s => ({ ...s, projectId: startupPid }));
+                            setConversations(recovered);
+                            console.log(`🔧 IDB_REPAIR: Set ${recovered.length} conversations directly from server.`);
                         } catch (repairErr) {
                             console.warn('🔧 IDB_REPAIR: Repair failed (non-fatal):', repairErr);
                         }
@@ -1916,15 +1954,28 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
         } catch (error) {
             console.error('❌ INIT: Database initialization failed:', error);
-            isDatabaseHealthy = false;
+            console.warn('⚠️ INIT: IndexedDB failed. Loading conversations directly from server.');
 
-            // CRITICAL FIX: Set initialized flag even on failure
-            // The app should be able to create new conversations even if DB initialization failed
+            // Don't wait for the 30s sync cycle — fetch immediately so the
+            // conversation list isn't blank for users with a corrupted IDB.
+            try {
+                const startupPid = currentProject?.id ||
+                    (() => { try { return localStorage.getItem('ZIYA_LAST_PROJECT_ID') || undefined; } catch { return undefined; } })();
+                if (startupPid && isServerReachable) {
+                    const serverChats = await syncApi.listChats(startupPid, false);
+                    if (serverChats.length > 0) {
+                        console.log(`✅ INIT: Loaded ${serverChats.length} conversations from server (IDB unavailable)`);
+                        // Stamp projectId so project-switch filtering works correctly.
+                        setConversations(serverChats.map((c: any) => ({ ...c, projectId: c.projectId || startupPid })));
+                    }
+                }
+            } catch (serverFallbackErr) {
+                console.warn('⚠️ INIT: Server fallback also failed, starting fresh:', serverFallbackErr);
+            }
+
+            // Set initialized AFTER the server fetch so conversations.length > 0
+            // when the effect fires, preventing a blank placeholder from being created.
             setIsInitialized(true);
-
-            // IndexedDB failed. INIT_SYNC will try the server next.
-            // If server also fails, the user starts fresh.
-            console.warn('⚠️ INIT: IndexedDB failed. Server sync will attempt recovery.');
         } finally {
             isRecovering.current = false;
             // Schedule retention purge AFTER initialization, off the critical
@@ -1984,30 +2035,39 @@ export function ChatProvider({ children }: ChatProviderProps) {
         if (!isInitialized) return;
 
         const projectId = currentProject?.id;
+        if (!projectId) return;
 
         const loadFoldersIndependently = async () => {
             try {
                 console.log("Loading folders from database...");
-                // Add a small delay to ensure conversations are loaded first
                 await new Promise(resolve => setTimeout(resolve, 100));
-                let folders = await db.getFolders();
 
-                // Migrate folders without projectId
-                const folderNeedsMigration = folders.some(f => !f.projectId);
-                if (folderNeedsMigration && projectId) {
-                    console.log('🔄 MIGRATION: Assigning folders without projectId to current project');
-                    folders = folders.map(f => {
-                        if (!f.projectId) {
-                            return { ...f, projectId, updatedAt: Date.now() };
-                        }
-                        return f;
-                    });
-                    await Promise.all(folders.map(f => db.saveFolder(f)));
-                    console.log('✅ MIGRATION: All folders now have projectId');
+                // Load from IDB first (may be unavailable — that's OK, we fall back to server)
+                let folders: ConversationFolder[] = [];
+                try {
+                    folders = await db.getFolders();
+
+                    // Migrate folders without projectId
+                    const folderNeedsMigration = folders.some(f => !f.projectId);
+                    if (folderNeedsMigration && projectId) {
+                        console.log('🔄 MIGRATION: Assigning folders without projectId to current project');
+                        const migrated: ConversationFolder[] = [];
+                        folders = folders.map(f => {
+                            if (f.projectId) return f;
+                            const next = { ...f, projectId, updatedAt: Date.now() };
+                            migrated.push(next);
+                            return next;
+                        });
+                        await Promise.all(migrated.map(f => db.saveFolder(f)));
+                        console.log('✅ MIGRATION: All folders now have projectId');
+                    }
+                } catch (idbErr) {
+                    // IDB unavailable — continue with empty local set; server merge below recovers folders.
+                    console.warn('📡 INIT_FOLDERS: IDB unavailable, loading folders from server only');
                 }
 
-                // Merge with server folders to pick up TaskPlan folders that
-                // may not be in IndexedDB yet (e.g. after page refresh)
+                // Always merge with server folders.  This is the authoritative source when
+                // IDB is unavailable, and also picks up TaskPlan folders after a page refresh.
                 try {
                     const { listServerFolders } = await import('../api/folderSyncApi');
                     const serverFolders = await listServerFolders(projectId);
@@ -2022,7 +2082,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     }
                     if (changed) {
                         folders = Array.from(localMap.values());
-                        // Persist to IndexedDB (non-blocking)
                         Promise.all(folders.map(f => db.saveFolder(f))).catch(e =>
                             console.warn('📡 INIT_FOLDERS: Failed to persist server folders:', e)
                         );
@@ -2074,6 +2133,18 @@ export function ChatProvider({ children }: ChatProviderProps) {
         if (!isInitialized || !currentProject?.id) return;
         if (isEphemeralMode) return;
         const projectId = currentProject.id;
+        const tEffect = performance.now();
+        console.log(`⏱️ SWITCH[${projectId.substring(0, 8)}]: project-switch effect fired`);
+        const logSwitchTotal = (label: string) => console.log(`⏱️ SWITCH[${projectId.substring(0, 8)}]: ${label} at +${(performance.now() - tEffect).toFixed(0)}ms`);
+
+        // Bump the epoch as the very first thing this effect does.  Every
+        // sync invocation captures it locally; if a later project switch
+        // bumps it again, in-flight syncs see the mismatch and bail.
+        // This replaces the old "drop new sync if previous in-flight" guard
+        // which made the new project's sync wait up to 30s for the next
+        // interval tick — a long stall on large projects.
+        const myEpoch = ++syncEpochRef.current;
+        const isStale = () => syncEpochRef.current !== myEpoch;
 
         // Detect whether this is an actual project switch (vs a periodic poll
         // or a dependency re-fire).  We need this flag below to decide whether
@@ -2096,15 +2167,98 @@ export function ChatProvider({ children }: ChatProviderProps) {
             }
         }
 
-        // Immediately clear stale data from the previous project so the UI
-        // shows an empty/loading state rather than a mix of old and new data.
-        // Only clear on ACTUAL project switches — not on initial load.
-        // Clearing on initial load races with the lazy-hydration of the active
-        // conversation in initializeWithRecovery, destroying full message data.
-        if (isActualProjectSwitch) {
-            setConversations([]);
-        }
         recentlyFetchedFullIds.current.clear();
+
+        // On an actual project switch, immediately load the new project's
+        // conversations from local IndexedDB and show them in the sidebar
+        // before the server sync completes.  This gets the left pane
+        // populated within a few hundred milliseconds rather than waiting
+        // for all the network round-trips in syncWithServer().
+        // The server sync still runs in the background and will merge any
+        // newer data from the server once it finishes.
+        if (isActualProjectSwitch) {
+            const preloadForSwitch = async () => {
+                try {
+                    let shells: Conversation[];
+                    try {
+                        shells = await db.getConversationShells();
+                    } catch {
+                        shells = [];
+                    }
+                    const projectShells = shells.filter(
+                        (c: any) => (c.projectId === projectId || c.isGlobal) && c.isActive !== false
+                    );
+
+                    // If the user has switched to yet another project while
+                    // db.getConversationShells() was running, bail — committing
+                    // this project's shells now would clobber the newer
+                    // project's preload.
+                    if (isStale()) return;
+                    logSwitchTotal(`preload commit (${projectShells.length} shells)`);
+
+                    // Replace stale conversations with the new project's local data.
+                    // Use startTransition so the paint isn't blocked.
+                    React.startTransition(() => {
+                        setConversations(projectShells);
+                    });
+
+                    // Select the appropriate conversation for the new project.
+                    const savedId = loadProjectConversationId(projectId);
+                    const savedExists = savedId && projectShells.some(c => c.id === savedId);
+                    let activeId: string | null = null;
+                    if (savedExists) {
+                        setCurrentConversationId(savedId!);
+                        setTabState('ZIYA_CURRENT_CONVERSATION_ID', savedId!);
+                        activeId = savedId!;
+                    } else if (projectShells.length > 0) {
+                        const mostRecent = projectShells.reduce((a, b) =>
+                            (b.lastAccessedAt || 0) > (a.lastAccessedAt || 0) ? b : a
+                        );
+                        setCurrentConversationId(mostRecent.id);
+                        setTabState('ZIYA_CURRENT_CONVERSATION_ID', mostRecent.id);
+                        activeId = mostRecent.id;
+                    }
+
+                    // Hydrate the active conversation's body from IDB right away.
+                    // Without this, the chat pane shows empty until either the
+                    // user clicks the conversation again (forcing loadConversation)
+                    // or the periodic sync's finally-block rehydration runs —
+                    // a 30-second window of "I see the title selected but the
+                    // body is blank" after every switch into a large project.
+                    // Single-record IDB read is cheap (~1–5ms) and cross-project
+                    // safe: db.getConversation reads only the requested record.
+                    if (activeId) {
+                        try {
+                            const fullConv = typeof db.getConversation === 'function'
+                                ? await db.getConversation(activeId)
+                                : null;
+                            const fcMsgs = fullConv?.messages ?? [];
+                            const idbIsShell = !!fullConv && (
+                                (fullConv as any)._isShell ||
+                                ((fullConv as any)._fullMessageCount && fcMsgs.length < (fullConv as any)._fullMessageCount)
+                            );
+                            if (fullConv && fcMsgs.length > 0 && !idbIsShell && !isStale()) {
+                                React.startTransition(() => {
+                                    setConversations(prev => prev.map(c =>
+                                        c.id === activeId ? { ...c, messages: fcMsgs, _isShell: false, _fullMessageCount: undefined } : c
+                                    ));
+                                });
+                            }
+                        } catch (err) {
+                            console.warn('⚠️ PRELOAD: Active conversation hydration failed:', err);
+                        }
+                    }
+                } finally {
+                    // Unblock the sidebar tree immediately — the server sync
+                    // will continue in the background and refine the data.
+                    // Only clear if we're still the current epoch; a stale
+                    // preload should not flip the spinner off underneath the
+                    // active project's switch.
+                    if (!isStale()) setIsProjectSwitching(false);
+                }
+            };
+            preloadForSwitch();
+        }
 
         // Migrate conversations without a projectId to the current project
         const migrateUntaggedConversations = async (conversations: Conversation[], projectId: string): Promise<Conversation[]> => {
@@ -2127,12 +2281,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
         };
 
         const syncWithServer = async () => {
-            if (syncInProgressRef.current) return;
-            syncInProgressRef.current = true;
-            // Outer try-finally guarantees setIsProjectSwitching(false) runs
-            // even when an early-return guard exits before the inner try block.
-            // Without this, the switching flag stays true and the chat-selection
-            // UI deadlocks until the next 30s poll succeeds.
+            // No "drop if another sync in flight" guard here: a project switch
+            // mid-sync used to wait up to 30s for the next interval tick.  We
+            // now let concurrent syncs run and use the epoch check to discard
+            // stale results at every commit site.  setIsProjectSwitching(false)
+            // still runs unconditionally in the finally so the UI unblocks.
             try {
                 // Skip sync entirely when server is known to be unreachable.
                 if (!isServerReachable) {
@@ -2151,11 +2304,14 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 try {
                     // 1. Fetch from server
                     // Use summaries (no messages) for polling — only fetch full data on version mismatch
+                    const t0 = performance.now();
                     const serverChats = await syncApi.listChats(projectId, false);
-                    console.debug(`📡 SERVER_SYNC: Got ${serverChats.length} chat summaries from server`);
+                    const tListChats = performance.now() - t0;
+                    console.log(`⏱️ SYNC[${projectId.substring(0, 8)}]: listChats=${tListChats.toFixed(0)}ms, ${serverChats.length} summaries`);
 
                     // 2. Load current IndexedDB state
                     let allConversations: Conversation[];
+                    const t1 = performance.now();
                     try {
                         // Use shells (metadata only) for sync — we only need versions/ids
                         // Loading full message arrays for all 695 conversations causes OOM
@@ -2166,6 +2322,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         // Fall through with empty local state so server data still gets applied.
                         allConversations = [];
                     }
+                    const tShells = performance.now() - t1;
+                    console.log(`⏱️ SYNC[${projectId.substring(0, 8)}]: getConversationShells=${tShells.toFixed(0)}ms, ${allConversations.length} shells (cache=${tShells < 100 ? 'HIT' : 'MISS'})`);
 
                     // 2a. Migrate untagged conversations (only on first sync)
                     if (serverSyncedForProject.current !== projectId) {
@@ -2245,9 +2403,14 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             const serverMsgCount = typeof (sc as any).messageCount === 'number'
                                 ? (sc as any).messageCount
                                 : 0;
-                            if (serverVer > localVer || serverMsgCount > localMsgCount) {
-                                // Skip if we already fetched this conversation this session
-                                if (recentlyFetchedFullIds.current.has(sc.id)) {
+                            const countDiverged = serverMsgCount > localMsgCount;
+                            const versionDiverged = serverVer > localVer;
+                            if (countDiverged || versionDiverged) {
+                                // For version divergence, skip if already fetched this session.
+                                // For count divergence, always fetch — local state is behind
+                                // right now regardless of what was fetched earlier this session.
+                                if (versionDiverged && !countDiverged
+                                    && recentlyFetchedFullIds.current.has(sc.id)) {
                                     continue;
                                 }
                                 needFullFetch.push(sc.id);
@@ -2258,11 +2421,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     // Fetch full data only for conversations that are new or updated
                     const fullFetchMap = new Map<string, any>();
                     if (needFullFetch.length > 0) {
-                        console.log(`📡 SERVER_SYNC: Fetching full data for ${needFullFetch.length} new/updated conversation(s)`);
+                        const tFetchStart = performance.now();
+                        console.log(`⏱️ SYNC[${projectId.substring(0, 8)}]: needFullFetch=${needFullFetch.length} — starting parallel fetch`);
                         const results = await Promise.allSettled(
                             // Each fetched ID is recorded so subsequent cycles don't re-fetch
                             needFullFetch.map(id => syncApi.getChat(projectId, id))
                         );
+                        const tFetchEnd = performance.now() - tFetchStart;
+                        const failed = results.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value)).length;
+                        console.log(`⏱️ SYNC[${projectId.substring(0, 8)}]: needFullFetch DONE in ${tFetchEnd.toFixed(0)}ms (${results.length - failed} ok, ${failed} failed)`);
                         results.forEach((result, i) => {
                             if (result.status === 'fulfilled' && result.value) {
                                 fullFetchMap.set(needFullFetch[i], result.value);
@@ -2295,7 +2462,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             // re-importing them defeats the cleanup.
                             const isEmptyShell = sc.title === 'New Conversation'
                                 && (!full?.messages || full.messages.length === 0);
-                            if (isEmptyShell) return;
+                            if (isEmptyShell) {
+                                console.debug(`📡 SERVER_SYNC: skipping empty-shell ${sc.id?.substring(0,8)} title="${sc.title}"`);
+                                return;
+                            }
 
                             if (full) {
                                 mergedMap.set(sc.id, {
@@ -2334,7 +2504,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                 // messages than local, keep local messages but
                                 // update metadata from server.  This prevents
                                 // partial syncs from destroying conversation history.
-                                const localMsgCount = local.messages?.length || 0;
+                                // For shell entries (messages stripped for memory),
+                                // _fullMessageCount carries the real on-disk count.
+                                const localMsgCount = (local as any)._isShell
+                                    ? ((local as any)._fullMessageCount || 0)
+                                    : (local.messages?.length || 0);
                                 const serverMsgCount = full.messages?.length || 0;
                                 if (serverMsgCount < localMsgCount && localMsgCount > 2) {
                                     console.warn(`🛡️ SYNC_GUARD: Keeping ${localMsgCount} local messages for ${sc.id?.substring(0, 8)} (server had ${serverMsgCount})`);
@@ -2352,7 +2526,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                     _version: full._version || Date.now(),
                                 });
                             } else {
-                                // Summary-only update (full fetch wasn't needed or failed)
+                                // Summary-only update (full fetch wasn't needed or failed).
+                                // \`local\` came from getConversationShells() which strips
+                                // \`messages\`, so we must preserve \`_isShell\` on the merged
+                                // entry — otherwise step 5 (saveConversations) will write
+                                // it as a real (empty-messages) record and trigger
+                                // FAST_PATH_TOMBSTONE on every sync cycle.
                                 mergedMap.set(sc.id, {
                                     ...local,
                                     title: sc.title || local.title,
@@ -2360,6 +2539,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                     folderId: sc.groupId || sc.folderId || local.folderId || null,
                                     lastActiveAt: sc.lastActiveAt || local.lastActiveAt,
                                     _version: serverVersion,
+                                    _isShell: (local as any)._isShell,
                                 });
                             }
                         }
@@ -2526,7 +2706,22 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         // conversations that actually changed — writing all 674 every 30s
                         // causes OOM from cloning every message array.
                         const nonShells = changedConvs.filter(c => !(c as any)._isShell);
-                        if (nonShells.length > 0) await db.saveConversations(nonShells);
+                        if (nonShells.length > 0) {
+                            // Bail before touching IDB if the user has already
+                            // moved on — a stale write for a different project
+                            // would persist its own merged-but-now-irrelevant
+                            // state onto disk and confuse the next session.
+                            if (isStale()) return;
+                            const tWrite = performance.now();
+                            try {
+                                await db.saveConversations(nonShells);
+                                console.log(`⏱️ SYNC[${projectId.substring(0, 8)}]: saveConversations=${(performance.now() - tWrite).toFixed(0)}ms (${nonShells.length} records)`);
+                            } catch (saveErr) {
+                                // IDB may be permanently unavailable (e.g. corrupt backing store).
+                                // Log and continue so the state update below still runs.
+                                console.warn('📡 SERVER_SYNC: IDB write failed (non-fatal):', saveErr);
+                            }
+                        }
                     }
 
                     // 6. Update React state — only if something actually changed
@@ -2549,7 +2744,16 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         const prevIds = new Set(prev.map((p: any) => p.id));
                         const mergedIds = new Set(mergedProjectConvs.map((mc: any) => mc.id));
                         const safeConvs: any[] = mergedProjectConvs.filter((mc: any) =>
-                            prevIds.has(mc.id) || serverIdSet.has(mc.id)
+                            prevIds.has(mc.id) ||
+                            serverIdSet.has(mc.id) ||
+                            // Preserve IDB-resident conversations that belong to this project
+                            // but have never been pushed to the server (e.g. empty new chats).
+                            // Without this third condition, once they fall out of React state
+                            // they can never re-enter — safeConvs drops them and the
+                            // preservation loop skips them because mergedIds already has them.
+                            (mc.isActive !== false &&
+                             mc.projectId === projectId &&
+                             !knownServerConversationIds.current.has(mc.id))
                         );
 
                         // Preserve in-memory-only conversations that haven't been
@@ -2598,6 +2802,33 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                 mc.messages = inMemory.messages;
                                 if (inMemoryIsNewer) mc._version = inMemory._version;
                             }
+                            // Preserve locally-mutated fields when the in-memory
+                            // _version is newer than what the server returned.
+                            // A higher local _version means we made a change that
+                            // hasn't round-tripped through the server yet (e.g.
+                            // a drag-drop folder move whose 2s debounced push is
+                            // still in flight, a rename, or a global toggle).
+                            // Without this, the next sync tick overwrites those
+                            // fields with the stale server values and the change
+                            // visibly reverts a few seconds after the user acts.
+                            if (inMemory && inMemoryIsNewer) {
+                                mc.folderId = inMemory.folderId;
+                                mc.isGlobal = inMemory.isGlobal;
+                                mc.title = inMemory.title;
+                            }
+                            // Preserve user-read state across syncs.
+                            // hasUnreadResponse is cleared on conversation view
+                            // without a _version bump (loadConversation avoids
+                            // the 35s-freeze cost of touching every record),
+                            // so version-based merging can't keep it cleared
+                            // when a full fetch returns the stale value.
+                            // Guard on message count so a genuinely-new unread
+                            // signal from a sibling tab isn't suppressed.
+                            if (inMemory && inMemory.hasUnreadResponse === false
+                                && mc.hasUnreadResponse
+                                && mcMsgCount <= inMemoryCount) {
+                                mc.hasUnreadResponse = false;
+                            }
                         }
 
                         // PERF: Reuse prev object references for conversations whose
@@ -2626,6 +2857,18 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     }
 
                     if (mergedResult !== null) {
+                        // The headline guard for the stale-sync clobber bug:
+                        // mergedResult was built from `projectId` captured in
+                        // closure.  If the user has since switched away,
+                        // committing it now would replace the new project's
+                        // sidebar with the old project's conversations — the
+                        // exact "wrong project's chats visible" symptom.
+                        if (isStale()) return;
+                        logSwitchTotal(`server-sync commit (${mergedResult.length} conversations)`);
+                        const localCount = mergedResult.filter((c: any) => c.projectId === projectId && !c.isGlobal).length;
+                        const globalCount = mergedResult.filter((c: any) => c.isGlobal).length;
+                        const otherCount = mergedResult.length - localCount - globalCount;
+                        console.log(`📡 SERVER_SYNC: commit breakdown for ${projectId.substring(0,8)}: ${localCount} local, ${globalCount} global, ${otherCount} other`);
                         React.startTransition(() => {
                             setConversations(mergedResult!);
                         });
@@ -2639,14 +2882,19 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     // belongs to the new project.  The old conversation from the
                     // previous project is irrelevant and confusing if left visible.
                     if (isActualProjectSwitch) {
+                        // Stale syncs must not change the active conversation
+                        // — that would yank the user from a chat the user
+                        // actually clicked into for the current project.
+                        if (isStale()) return;
                         const currentId = currentConversationRef.current;
-                        // Check if the current conversation belongs to the new project
-                        // (or is global, which is visible everywhere).
                         const currentConv = mergedProjectConvs.find(c => c.id === currentId);
                         const belongsToNewProject = currentConv &&
                             (currentConv.isGlobal || currentConv.projectId === projectId);
 
-                        if (!belongsToNewProject) {
+                        // The preload already selected a conversation for this project.
+                        // Only override if what's currently selected still doesn't belong
+                        // to the new project (can happen if the preload found no shells).
+                        if (!belongsToNewProject || !currentId) {
                             // Try to restore the saved conversation for this project
                             const savedId = loadProjectConversationId(projectId);
                             const savedExists = savedId && mergedProjectConvs.some(c => c.id === savedId);
@@ -2711,6 +2959,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                 return !local || (mf.updatedAt || 0) > (local.updatedAt || 0);
                             });
                         if (foldersChanged) {
+                            if (isStale()) return;
                             await Promise.all(mergedFolders.map(f => db.saveFolder(f)));
                         }
 
@@ -2720,6 +2969,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         // bailout.  With a 30s sync that leaked ~100 folder objects per
                         // tick.  Reuse the foldersChanged flag computed just above.
                         if (foldersChanged) {
+                            // Same epoch guard as the conversations commit:
+                            // stale folder data must not overwrite the new
+                            // project's hierarchy.
+                            if (isStale()) return;
                             setFolders(mergedFolders);
                         }
                     } catch (e) {
@@ -2734,7 +2987,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 // sync.  This catches the race where initializeWithRecovery's
                 // lazy-load was clobbered by the sync's setConversations.
                 const activeId = currentConversationRef.current;
-                if (activeId) {
+                // Stale syncs skip rehydration: their `activeId` is the
+                // previous project's active conversation; rehydrating it now
+                // would push messages into a chat the user can't see anyway.
+                if (activeId && !isStale()) {
                     const activeConv = conversationsRef.current.find(c => c.id === activeId);
                     if (activeConv && ((activeConv as any)._isShell || (activeConv.messages?.length || 0) <= 2)) {
                         try {
@@ -2743,6 +2999,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                 : null;
                             const fcMsgs = fullConv?.messages ?? [];
                             if (fullConv && fcMsgs.length > (activeConv.messages?.length || 0)) {
+                                if (isStale()) return;
                                 React.startTransition(() => {
                                     setConversations(prev => prev.map(c =>
                                         c.id === activeId
@@ -2757,8 +3014,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         }
                     }
                 }
+                // Always clear the switching spinner.  Even a stale sync
+                // exit should release the UI — by the time we get here, a
+                // newer epoch has its own setIsProjectSwitching flow.
                 setIsProjectSwitching(false);
-                syncInProgressRef.current = false;
             }
         };
         syncWithServer();
