@@ -61,9 +61,16 @@ class BaseStorage(ABC, Generic[T]):
             if is_encrypted(raw):
                 encryptor = get_encryptor()
                 plaintext = encryptor.decrypt(raw)
-                return json.loads(plaintext)
+                result = json.loads(plaintext)
             else:
-                return json.loads(raw)
+                result = json.loads(raw)
+            if not isinstance(result, dict):
+                logger.error(
+                    f"Corrupt data in {filepath}: expected a JSON object, "
+                    f"got {type(result).__name__}. Ignoring file."
+                )
+                return None
+            return result
         except (json.JSONDecodeError, IOError) as e:
             logger.error(f"Error reading {filepath}: {e}")
             return None

@@ -13,6 +13,7 @@ import {
     ApiOutlined,
     CloudServerOutlined,
     SettingOutlined,
+    AppstoreOutlined,
     NodeIndexOutlined
 } from "@ant-design/icons";
 import { useTheme } from '../context/ThemeContext';
@@ -30,14 +31,14 @@ import { ServerStatusBanner } from './ServerStatusBanner';
 import { useScrollManager } from '../hooks/useScrollManager';
 import { ScrollIndicator } from './ScrollIndicator';
 import { lazyWithRetry } from '../utils/lazyWithRetry';
+import Conversation from "./Conversation";
 const ShellConfigModal = lazyWithRetry(() => import("./ShellConfigModal"));
 const MCPStatusModal = lazyWithRetry(() => import("./MCPStatusModal"));
 const MCPRegistryModal = lazyWithRetry(() => import("./MCPRegistryModal"));
 const ExportConversationModal = lazyWithRetry(() => import("./ExportConversationModal"));
-// Lazy load the Conversation component
-const Conversation = lazyWithRetry(() => import("./Conversation"));
 const MemoryBrowser = lazyWithRetry(() => import("./MemoryBrowser"));
 const AstStatusIndicator = lazyWithRetry(() => import("./AstStatusIndicator"));
+const TaskCardsLibrary = lazyWithRetry(() => import("./TaskCard/TaskCardsLibrary"));
 const GraphPanel = lazyWithRetry(() => import("./ConversationGraph/GraphPanel"));
 
 // Error boundary component to catch extension context errors
@@ -143,6 +144,7 @@ export const App: React.FC = () => {
     const [showMCPStatus, setShowMCPStatus] = useState(false);
     const [showMCPRegistry, setShowMCPRegistry] = useState(false);
     const [showExportModal, setShowExportModal] = useState(false);
+    const [showTaskCards, setShowTaskCards] = useState(false);
     const [showMemoryBrowser, setShowMemoryBrowser] = useState(false);
     const [mcpEnabled, setMcpEnabled] = useState(false);
 
@@ -467,6 +469,9 @@ export const App: React.FC = () => {
                                         </Tooltip>
                                     </>
                                 )}
+                                <Tooltip title="Task Cards">
+                                    <Button icon={<AppstoreOutlined />} onClick={() => setShowTaskCards(true)} />
+                                </Tooltip>
                                 {memoryEnabled && (
                                     <Tooltip title="Memory Browser">
                                         <Button icon={<NodeIndexOutlined />} onClick={() => setShowMemoryBrowser(true)} />
@@ -531,30 +536,42 @@ export const App: React.FC = () => {
                     <Suspense fallback={null}>
                         {mcpEnabled && (
                             <>
-                                <ShellConfigModal
+                                {showShellConfig && <ShellConfigModal
                                     visible={showShellConfig}
                                     onClose={() => setShowShellConfig(false)}
-                                />
-                                <MCPStatusModal
+                                />}
+                                {showMCPStatus && <MCPStatusModal
                                     visible={showMCPStatus}
                                     onClose={() => setShowMCPStatus(false)}
-                                />
-                                <MCPRegistryModal
+                                />}
+                                {showMCPRegistry && <MCPRegistryModal
                                     visible={showMCPRegistry}
                                     onClose={() => setShowMCPRegistry(false)}
-                                />
+                                />}
                             </>
                         )}
                     </Suspense>
 
                     <Suspense fallback={null}>
-                        <ExportConversationModal visible={showExportModal} onClose={() => setShowExportModal(false)} />
+                        {showExportModal && <ExportConversationModal visible={showExportModal} onClose={() => setShowExportModal(false)} />}
                     </Suspense>
 
                     {showMemoryBrowser && <Suspense fallback={null}>
                         <MemoryBrowser
                             visible={showMemoryBrowser}
                             onClose={() => setShowMemoryBrowser(false)} />
+                    </Suspense>}
+
+                    {showTaskCards && <Suspense fallback={null}>
+                        <TaskCardsLibrary
+                            visible={showTaskCards}
+                            onClose={() => setShowTaskCards(false)}
+                            chatId={currentConversationId || undefined}
+                            anchorMessageId={
+                                currentMessages.length > 0
+                                    ? currentMessages[currentMessages.length - 1]?.id
+                                    : null
+                            } />
                     </Suspense>}
 
                     <div style={{

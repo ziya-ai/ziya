@@ -515,7 +515,9 @@ function sortComparator(a: any, b: any, taskPlanBoost: Map<string, number>): num
     if (item.folder) return item.lastActivityTime > 0 ? item.lastActivityTime : item.createdAt;
     const ct = item.conversation?.lastAccessedAt ?? 0;
     const boost = item.conversation?.id ? (taskPlanBoost.get(item.conversation.id) || 0) : 0;
-    return Math.max(ct, boost);
+    // Server summaries use lastActiveAt; IDB-hydrated conversations use lastAccessedAt.
+    const serverTs = item.conversation?.lastActiveAt ?? 0;
+    return Math.max(ct, serverTs, boost);
   };
   const aT = getTime(a), bT = getTime(b);
   if (aT > 0 && bT > 0) return bT - aT;
@@ -846,6 +848,20 @@ const MUIChatHistory = () => {
   const [isSearching, setIsSearching] = useState(false);
   const [searchAllProjects, setSearchAllProjects] = useState(false);
 
+  // Drop context survives even if the insertion-line DOM element is torn
+  // down between the last mousemove and mouseup (pointer briefly leaves
+  // the container, scroll rebuild, etc). Previously the context was
+  // encoded in data-* attributes on the line itself; when the line was
+  // gone, mouseup fell back to elementFromPoint, which may resolve to a
+  // row the user wasn't targeting. The ref is the source of truth;
+  // data-* attrs are retained for DOM inspection / debugging only.
+  const dropContextRef = useRef<{
+    type: 'above' | 'below' | 'inside';
+    targetNodeId?: string;
+    level: number;
+    target?: string;
+  } | null>(null);
+
   // Custom drag state to replace HTML5 drag and drop
   const [customDragState, setCustomDragState] = useState<{
     isDragging: boolean;
@@ -919,7 +935,11 @@ const MUIChatHistory = () => {
     } catch (error) {
       console.error('Error loading pinned folders:', error);
     }
-  }, [searchAllProjects, currentProject?.id, projects]);
+    // Mount-only. Previously had [searchAllProjects, currentProject?.id, projects]
+    // deps, which made every project switch or search-scope toggle re-read
+    // localStorage and overwrite any pin changes the user had just made in
+    // the current session.
+  }, []);
 
   // Re-run search when scope changes
   useEffect(() => {
@@ -1002,9 +1022,11 @@ const MUIChatHistory = () => {
 
   // Save pinned folders to localStorage when they change
   useEffect(() => {
-    if (pinnedFolders.size > 0) {
-      localStorage.setItem('ZIYA_PINNED_FOLDERS', JSON.stringify([...pinnedFolders]));
-    }
+    // Always persist — including the empty case.  Previous "size > 0"
+    // guard combined with the mount-only loader above meant unpinning
+    // every folder wouldn't save, so reopening the app restored the
+    // last non-empty snapshot.
+    localStorage.setItem('ZIYA_PINNED_FOLDERS', JSON.stringify([...pinnedFolders]));
   }, [pinnedFolders]);
 
   // Handle panel width measurement for dynamic title length
@@ -1122,6 +1144,13 @@ const MUIChatHistory = () => {
 
     if (isMove) {
       await moveConversationToProject(nodeId, targetProjectId);
+      // If the conversation was shared across all projects (globe icon),
+      // moving it to a specific project should scope it there — clear the
+      // isGlobal flag so it stops showing in other projects.
+      const conv = conversations.find(c => c.id === nodeId);
+      if (conv?.isGlobal) {
+        await toggleConversationGlobal(nodeId);
+      }
       message.success(`Moved to project "${targetName}"`);
     } else {
       await copyConversationToProject(nodeId, targetProjectId);
@@ -1365,6 +1394,7 @@ const MUIChatHistory = () => {
 
     // Restore native text selection
     document.body.style.userSelect = '';
+    dropContextRef.current = null;
 
     setCustomDragState({
       isDragging: false,
@@ -1377,6 +1407,11 @@ const MUIChatHistory = () => {
 
   // Global mouse tracking for custom drag
   useEffect(() => {
+    // Tracks pointer position so scroll handlers can re-run hit detection
+    // with the same coords. Mouse-wheel / programmatic scroll doesn't fire
+    // mousemove, so without this the insertion line freezes on the row it
+    // was anchored to and visibly detaches once that row scrolls away.
+    const lastMousePos = { x: -1, y: -1 };
     const handleMouseLeave = (e: MouseEvent) => {
       // Check if mouse left the chat history panel
       const chatHistoryContainer = chatHistoryRef.current;
@@ -1399,6 +1434,9 @@ const MUIChatHistory = () => {
 
     const handleMouseMove = (e: MouseEvent) => {
       if (!customDragState.isDragging || !customDragState.ghostElement) return;
+
+            lastMousePos.x = e.clientX;
+            lastMousePos.y = e.clientY;
 
       // Only handle mouse events within the chat history area
       const chatHistoryContainer = chatHistoryRef.current;
@@ -1423,6 +1461,8 @@ const MUIChatHistory = () => {
       document.querySelectorAll('.drop-insertion-line').forEach(line => {
         line.remove();
       });
+      // Line is gone — ref will be repopulated below if a new line is drawn
+      dropContextRef.current = null;
 
       // Check for root drop zone hover
       const rootDropZone = document.elementFromPoint(e.clientX, e.clientY)?.closest('[data-root-drop-zone]') as HTMLElement | null;
@@ -1515,11 +1555,16 @@ const MUIChatHistory = () => {
         const containerRect = treeContainer?.getBoundingClientRect();
 
         if (containerRect) {
+                    // The insertion line is an absolute child of the scroll
+                    // container, so its `top` is content-relative and must
+                    // include scrollTop. Without this the line renders too
+                    // high once the list has been scrolled down.
+                    const scrollTop = (treeContainer as HTMLElement).scrollTop || 0;
           const lineY = insertionType === 'above' ?
-            rect.top - containerRect.top - 2 :
+                        rect.top - containerRect.top - 2 + scrollTop :
             insertionType === 'inside' ?
-              rect.top - containerRect.top :
-              rect.bottom - containerRect.top + 2;
+                            rect.top - containerRect.top + scrollTop :
+                            rect.bottom - containerRect.top + 2 + scrollTop;
 
           insertionLine.style.top = lineY + 'px';
 
@@ -1535,18 +1580,26 @@ const MUIChatHistory = () => {
         insertionLine.setAttribute('data-target-node-id', targetNodeId || '');
         insertionLine.setAttribute('data-target-level', targetLevel.toString());
         insertionLine.setAttribute('data-target-node', dropTargetText || '');
+        dropContextRef.current = {
+          type: insertionType,
+          targetNodeId,
+          level: targetLevel,
+          target: dropTargetText,
+        };
       }
     };
 
     const handleMouseUp = (e: MouseEvent) => {
       if (customDragState.isDragging) {
-        // Read insertion context BEFORE clearing visual feedback
-        const insertionLine = document.querySelector('.drop-insertion-line');
-        const insertionContext = insertionLine ? {
-          type: insertionLine.getAttribute('data-insertion-type') || 'below',
-          targetNodeId: insertionLine.getAttribute('data-target-node-id') || undefined,
-          level: insertionLine.getAttribute('data-target-level'),
-          target: insertionLine.getAttribute('data-target-node')
+        // Read from ref, not the DOM. The insertion line may have been
+        // removed between the last mousemove and this mouseup (pointer
+        // leaving the container, scroll teardown, etc); the ref holds
+        // the last valid drop target regardless of DOM state.
+        const insertionContext = dropContextRef.current ? {
+          type: dropContextRef.current.type,
+          targetNodeId: dropContextRef.current.targetNodeId,
+          level: String(dropContextRef.current.level),
+          target: dropContextRef.current.target,
         } : null;
 
         console.log('📍 Insertion context captured:', insertionContext);
@@ -1638,9 +1691,26 @@ const MUIChatHistory = () => {
       document.addEventListener('mousemove', handleMouseMove);
       document.addEventListener('mouseup', handleMouseUp);
 
+            // Re-run hit detection when the list scrolls under a stationary
+            // pointer. handleMouseMove only reads clientX/clientY and target
+            // from the event, so a minimal synthetic event suffices.
+            const treeEl = treeContainerRef.current?.querySelector('.chat-history-tree') as HTMLElement | null;
+            const handleScroll = () => {
+                if (lastMousePos.x < 0) return;
+                const target = document.elementFromPoint(lastMousePos.x, lastMousePos.y);
+                if (!target) return;
+                handleMouseMove({
+                    clientX: lastMousePos.x,
+                    clientY: lastMousePos.y,
+                    target,
+                } as unknown as MouseEvent);
+            };
+            treeEl?.addEventListener('scroll', handleScroll, { passive: true });
+
       return () => {
         document.removeEventListener('mousemove', handleMouseMove);
         document.removeEventListener('mouseup', handleMouseUp);
+                treeEl?.removeEventListener('scroll', handleScroll);
       };
     }
   }, [customDragState, endCustomDrag, folders, conversations, pinnedFolders]);
@@ -1664,6 +1734,7 @@ const MUIChatHistory = () => {
           item.style.boxShadow = '';
         });
         document.body.style.userSelect = '';
+        dropContextRef.current = null;
         setCustomDragState({
           isDragging: false, draggedNodeId: null, draggedNodeType: null,
           ghostElement: null, draggedText: ''
@@ -2308,19 +2379,32 @@ const MUIChatHistory = () => {
       // whether any cached conversation id is still present in the current
       // conversations array — if none overlap, invalidate and fall through
       // to a full rebuild.
+      //
+      // Three reasons to invalidate this cache:
+      //   1. Cross-project switch (zero overlap with cached IDs).
+      //   2. Set grew: server sync added conversations that weren't in the
+      //      preload commit.  This is the normal path on first visit to a
+      //      folder-less project — preload writes the cache from globals only,
+      //      then server adds the project's locals.  Without invalidation here
+      //      the locals never appear in the sidebar.
+      //   3. Set shrank or membership shifted (deletion, rare but defensive).
+      // Reuse only when cached IDs and current IDs are equal as sets.
       const currentConvIds = new Set(safeConversations.map(c => c.id));
-      let cachedConvFound = false;
-      const scan = (nodes: any[], _d = 0): void => {
-        if (cachedConvFound || _d > 20) return;
+      const cachedConvIds = new Set<string>();
+      const collect = (nodes: any[], _d = 0): void => {
+        if (_d > 20) return;
         for (const n of nodes) {
-          if (n.conversation && currentConvIds.has(n.conversation.id)) { cachedConvFound = true; return; }
-          if (n.children) scan(n.children, _d + 1);
+          if (n.conversation?.id) cachedConvIds.add(n.conversation.id);
+          if (n.children) collect(n.children, _d + 1);
         }
       };
-      scan(lastTreeDataRef.current);
-      if (lastTreeDataRef.current.length > 0 && cachedConvFound) {
+      collect(lastTreeDataRef.current);
+      const sameSize = cachedConvIds.size === currentConvIds.size;
+      const isSubset = sameSize && [...currentConvIds].every(id => cachedConvIds.has(id));
+      if (lastTreeDataRef.current.length > 0 && sameSize && isSubset) {
         return lastTreeDataRef.current;
       }
+      console.debug('[TREE-CACHE-INVALIDATE]', { cached: cachedConvIds.size, current: currentConvIds.size, sameSize, isSubset });
       // Cache is empty or belongs to a different project → invalidate and rebuild
       lastTreeDataInputsRef.current = 0;
       lastSortHashRef.current = 0;

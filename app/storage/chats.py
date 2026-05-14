@@ -56,6 +56,8 @@ class ChatStorage(BaseStorage[Chat]):
             # Skip _groups.json
             if chat_file.name.startswith('_'):
                 continue
+            if chat_file.name.endswith('.bindings.json'):
+                continue
             
             data = self._read_json(chat_file)
             if data:
@@ -87,6 +89,8 @@ class ChatStorage(BaseStorage[Chat]):
         for chat_file in self.chats_dir.glob("*.json"):
             if chat_file.name.startswith('_'):
                 continue
+            if chat_file.name.endswith('.bindings.json'):
+                continue
             data = self._read_json(chat_file)
             if data:
                 chat = Chat(**data)
@@ -97,26 +101,103 @@ class ChatStorage(BaseStorage[Chat]):
         return purged
     
     def list_summaries(self, group_id: Optional[str] = None) -> List[ChatSummary]:
-        """List chats without messages for performance."""
+        """List chats without messages for performance.
+
+        Reads each chat file as a raw dict and pulls only the summary fields,
+        skipping Pydantic validation of the full ``messages`` array.  On a
+        project with several hundred chats the old path (``self.list()`` →
+        ``Chat(**data)`` for every file) was the dominant backend cost on
+        ``GET /api/v1/projects/{pid}/chats`` (~3 s for 850 chats).  Skipping
+        message validation drops it by an order of magnitude because the
+        ``Chat`` model validates every entry in ``messages: List[Message]``.
+        """
+        t0 = time.perf_counter()
         summaries = []
-        for chat in self.list(group_id):
-            # Extract _version from extra fields for polling comparisons
-            chat_extra = chat.model_dump()
-            version = chat_extra.get('_version')
-            version = version or chat.lastActiveAt
+        if not self.chats_dir.exists():
+            return summaries
+
+        raw_entries: List[dict] = []
+        n_files = 0
+        n_kept = 0
+        t_read_total = 0.0
+        t_retention_total = 0.0
+        files = list(self.chats_dir.glob("*.json"))
+        t_glob = time.perf_counter() - t0
+        for chat_file in files:
+            if chat_file.name.startswith('_'):
+                continue
+            if chat_file.name.endswith('.bindings.json'):
+                continue
+            n_files += 1
+
+            t_r = time.perf_counter()
+            data = self._read_json(chat_file)
+            t_read_total += time.perf_counter() - t_r
+            if not data:
+                continue
+
+            # Expiry check — uses lastActiveAt only, no message validation needed.
+            last_active = data.get('lastActiveAt') or 0
+            t_e = time.perf_counter()
+            try:
+                if self.enforcer.is_expired(last_active / 1000.0, "conversation_data"):
+                    chat_id = data.get('id')
+                    if chat_id:
+                        logger.info(f"Chat {chat_id} expired per retention policy, removing")
+                        self.delete(chat_id)
+                    t_retention_total += time.perf_counter() - t_e
+                    continue
+            except Exception:
+                # If retention enforcement fails, keep the chat — better than dropping it.
+                pass
+            t_retention_total += time.perf_counter() - t_e
+
+            # Filter by group if requested
+            chat_group_id = data.get('groupId')
+            if group_id is not None:
+                if group_id == "ungrouped" and chat_group_id is None:
+                    raw_entries.append(data)
+                elif chat_group_id == group_id:
+                    raw_entries.append(data)
+            else:
+                raw_entries.append(data)
+
+        t_after_loop = time.perf_counter()
+        # Sort by lastActiveAt descending (matches self.list()'s ordering)
+        raw_entries.sort(key=lambda d: d.get('lastActiveAt') or 0, reverse=True)
+        t_sort = time.perf_counter() - t_after_loop
+
+        t_build_start = time.perf_counter()
+        for data in raw_entries:
+            messages = data.get('messages') or []
+            chat_group_id = data.get('groupId')
+            version = data.get('_version') or data.get('lastActiveAt')
+            delegate_meta = data.get('delegateMeta')
             summaries.append(ChatSummary(
-                id=chat.id,
-                title=chat.title,
-                groupId=chat.groupId,
-                contextIds=chat.contextIds,
-                skillIds=chat.skillIds,
-                additionalFiles=chat.additionalFiles,
-                messageCount=len(chat.messages),
-                createdAt=chat.createdAt,
-                lastActiveAt=chat.lastActiveAt,
-                delegateMeta=chat.delegateMeta,
+                id=data['id'],
+                title=data.get('title') or '',
+                groupId=chat_group_id,
+                contextIds=data.get('contextIds') or [],
+                skillIds=data.get('skillIds') or [],
+                additionalFiles=data.get('additionalFiles') or [],
+                messageCount=len(messages) if isinstance(messages, list) else 0,
+                createdAt=data.get('createdAt') or 0,
+                lastActiveAt=data.get('lastActiveAt') or 0,
+                delegateMeta=delegate_meta,
                 **({'_version': version} if version else {})
             ))
+            n_kept += 1
+        t_build = time.perf_counter() - t_build_start
+        t_total = time.perf_counter() - t0
+        logger.info(
+            f"list_summaries: total={t_total*1000:.0f}ms "
+            f"glob={t_glob*1000:.0f}ms "
+            f"read={t_read_total*1000:.0f}ms "
+            f"retention={t_retention_total*1000:.0f}ms "
+            f"sort={t_sort*1000:.0f}ms "
+            f"build={t_build*1000:.0f}ms "
+            f"files={n_files} kept={n_kept}"
+        )
         return summaries
     
     def create(self, data: ChatCreate, default_context_ids: Optional[List[str]] = None, default_skill_ids: Optional[List[str]] = None) -> Chat:
