@@ -190,6 +190,32 @@ This is a deliberate alternative to automatic context compaction (used by Claude
 
 ---
 
+## Large PDF Reference Documents
+
+PDFs that would blow past the context window (reference manuals, specs,
+textbooks) are handled through a built-in per-document RAG path:
+
+- Below the threshold (25k tokens / 60 pages by default, tunable via
+  `ZIYA_PDF_RAG_TOKEN_THRESHOLD`), PDFs are extracted in full as before.
+- Above the threshold, the PDF is replaced in context with a **stub**
+  containing the native bookmark tree / table of contents (or a
+  heuristic figure & table list if the PDF has no bookmarks), along
+  with the first and last pages verbatim.
+- The model can then pull specific sections on demand using three
+  built-in MCP tools:
+  - `pdf_outline(path)` — re-fetch the full outline, figures, tables
+  - `pdf_read_pages(path, start_page, end_page, include_images?)` —
+    read a page range verbatim, optionally with rendered page images
+    (helpful for scanned or diagram-heavy pages)
+  - `pdf_search(path, query, top_k?, mode?)` — BM25 keyword search
+    across pages and figure/table captions; set `mode="embedding"` to
+    use semantic search when `sentence-transformers` is installed
+
+Indexes are cached under `.ziya/pdf_index/`, keyed by file path + mtime
++ size, and persist across restarts.
+
+---
+
 ## Vision / Multimodal
 
 Drag images into the chat input, paste from clipboard, or use the image button. Supported on: Claude Sonnet/Opus 4.x, Claude 3.x, Nova Pro/Lite/Premier, Gemini.
