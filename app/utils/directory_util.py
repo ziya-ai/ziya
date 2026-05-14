@@ -913,6 +913,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     while deferred_dirs:
         if _scan_progress.get("cancelled"):
             break
+        elapsed = time.time() - scan_stats['start_time']
         if elapsed > max_scan_time * 2:
             logger.warning(f"Timeout during BFS phase 2 at {elapsed:.1f}s, {len(deferred_dirs)} dirs remaining")
             break
@@ -1104,6 +1105,20 @@ def estimate_tokens_fast(file_path: str) -> int:
             elif cached:
                 # Return cached estimate if available
                 return cached.get('estimated_tokens', 0)
+
+            # Large PDFs get replaced by a stub (outline + head/tail excerpts)
+            # at context-include time, so the heuristic file_size/40 massively
+            # overstates actual context cost.  Short-circuit to the stub's
+            # approximate token budget so the file-tree display matches reality.
+            # should_use_pdf_rag only does a cheap pypdf page-count check, not
+            # a full index build.
+            if ext == '.pdf':
+                try:
+                    from app.utils.pdf_rag import should_use_pdf_rag
+                    if should_use_pdf_rag(file_path):
+                        return 3000  # approximate stub size: metadata + outline + 4 pages + instructions
+                except Exception as e:
+                    logger.debug(f"should_use_pdf_rag check failed for {file_path}: {e}")
             
             # Use calibrator's heuristic which has correct compression ratios
             return calibrator.get_document_estimate_heuristic(file_path, file_size)
@@ -1342,6 +1357,20 @@ def get_accurate_token_count(file_path: str) -> int:
         # Handle document files (PDF, DOCX, XLSX, PPTX) by extracting text
         _, ext = os.path.splitext(file_path.lower())
         if ext in {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'}:
+            # For large PDFs, extract_document_text would synchronously build
+            # a BM25 index over every page — for a 5000-page manual this can
+            # block the event loop for minutes and hang the server.  Detect
+            # that case early and return the stub-size estimate.  The index
+            # gets built lazily when the model first calls a pdf_* MCP tool.
+            if ext == '.pdf':
+                try:
+                    from app.utils.pdf_rag import should_use_pdf_rag
+                    if should_use_pdf_rag(file_path):
+                        logger.info(f"📄 Large PDF {os.path.basename(file_path)} — returning stub-size estimate (index build deferred)")
+                        return 3000
+                except Exception as e:
+                    logger.debug(f"should_use_pdf_rag check failed for {file_path}: {e}")
+
             from app.utils.document_extractor import extract_document_text
             
             if not is_document_file(file_path):

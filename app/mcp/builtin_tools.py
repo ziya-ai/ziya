@@ -35,6 +35,13 @@ BUILTIN_TOOL_CATEGORIES: Dict[str, Dict[str, any]] = {
         "requires_dependencies": [],
         "tools": [],
     },
+    "pdf_rag": {
+        "name": "PDF RAG",
+        "description": "On-demand access to large PDF reference documents — outline, page range, BM25 search",
+        "enabled_by_default": True,
+        "requires_dependencies": [],
+        "tools": [],
+    },
     "ast": {
         "name": "AST Code Intelligence",
         "description": "Search and inspect the AST-indexed codebase — symbols, references, dependencies, file structure",
@@ -120,6 +127,18 @@ def get_fileio_tools() -> List[Type[BaseMCPTool]]:
         return []
 
 
+def get_pdf_rag_tools() -> List[Type[BaseMCPTool]]:
+    """Get PDF RAG tools for on-demand large-PDF access."""
+    try:
+        from app.mcp.tools.pdf_tools import (
+            PdfOutlineTool, PdfReadPagesTool, PdfSearchTool
+        )
+        return [PdfOutlineTool, PdfReadPagesTool, PdfSearchTool]
+    except ImportError as e:
+        logger.warning(f"Could not import PDF RAG tools: {e}")
+        return []
+
+
 def get_ast_tools() -> List[Type[BaseMCPTool]]:
     """Get AST code intelligence tools."""
     try:
@@ -181,6 +200,7 @@ def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
         "pcap_analysis": get_pcap_analysis_tools,
         "architecture_shapes": get_architecture_shapes_tools,
         "fileio": get_fileio_tools,
+        "pdf_rag": get_pdf_rag_tools,
         "ast": get_ast_tools,
         "nova_grounding": get_nova_grounding_tools,
         "diagram_render": get_diagram_render_tools,
