@@ -15,9 +15,574 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
 ### Fixed
+
+- **`FAST_PATH_TOMBSTONE` warning fired on every sync cycle for the same conversations** (`frontend/src/context/ChatContext.tsx`).  When the server reported a newer \`_version\` for a chat but the metadata-only merge path was taken (no full fetch needed because only metadata changed), the merged entry was constructed by spreading the shell-form local record — \`{...local, ...}\` — without preserving the \`_isShell\` marker.  The merged entry inherited the shell's \`messages: []\` but no longer looked like a shell, so the \`!_isShell\` filter at the IDB write step accepted it and called \`saveConversations\` with a zero-message record.  The \`FAST_PATH_TOMBSTONE\` guard in \`db.ts\` correctly preserved the real on-disk messages so no data was lost, but the warning fired on every 30 s poll for any conversation whose \`_version\` had drifted between tabs.  Same root cause was hiding the \`SYNC_GUARD\` from ever firing on shell-based merges (it compared \`local.messages?.length\` which is always 0 for shells; switched to \`_fullMessageCount\`).  Two-line fix: preserve \`_isShell\` on the metadata-only merge, and use \`_fullMessageCount\` for shell-aware count comparison.
+
+### Fixed
+
+- **Sidebar showed only globals on first visit to a folder-less project** (`frontend/src/components/MUIChatHistory.tsx`).  On the first visit to a project with zero folders, the preload commit wrote the tree-build cache from globals only (because the project's locals weren't yet in IndexedDB).  When the server sync arrived ~1 s later with the project's locals merged in, the tree memo's reuse guard returned the cached preload result anyway — the staleness check accepted the cache as long as *any* cached conversation id was still present in the current set, and globals are present in both.  React state had `[3 local, 13 global]` but the rendered sidebar kept showing only the 13 globals indefinitely.  Confirmed via the `commit breakdown` diagnostic added in the previous round: server commit fires, breakdown is correct, but no subsequent `[TREE-CACHE-WRITE]` ever lands.  The reuse guard now requires exact set equality (same size and same membership) between cached and current conversation IDs, not just non-empty overlap.  Cross-project switches still invalidate correctly because they have zero overlap.  Visiting the project a second time worked previously because the locals had been written to IDB by the first sync, so the preload commit already included them and the cache was correct from the start — that explains the "missing on first visit, fine on return" symptom exactly.
+
+### Diagnostics
+
+- **`syncWithServer` commit visibility** (`frontend/src/context/ChatContext.tsx`).  Added two debug-level console logs: one when a server-side empty-shell conversation is dropped from the merge (was silently skipped, made the 63→54 delta on `10c0345b` invisible to debugging), and one breakdown of `local`/`global`/`other` counts at every commit point.  No behavioral change.  Used to diagnose the "first visit shows only globals" symptom on cold project switches.
+
+### Fixed
+
+- **`/chats` endpoint re-read every other project's chat files on every request, even when none had changed** (`app/storage/global_items.py`). After the previous fix dropped the 27 s outlier to ~2 s, the residual cost was an unconditional `read_bytes + decrypt + json.loads` on every chat file in every other project — N_other_projects × N_chats reads per request, repeated on every 30 s sync poll across every active tab. Added a per-file mtime cache keyed on absolute path with `(st_mtime, st_size, ChatSummary|None)` as the value. Negative results (non-global files) are cached too, since they're the 99% case. On a subsequent call the cache is consulted via a single `Path.stat()` per file (~50 µs vs ~1.8 ms for read+decrypt+parse); cached entries skip I/O entirely. Self-heals on file change because mtime+size differ. No eviction needed — cache is bounded by total chat file count, which retention policy bounds. Process-local, so multi-server deployments against the same ziya-home each maintain their own cache and detect each other's writes via mtime. Added `stat=`, `hit=`, `miss=` fields to the per-call timing log for observability.
+
+- **`/chats` endpoint spent 27 s on globally-shared-chat scan even on small projects** (`app/storage/global_items.py`, `app/api/chats.py`).  The summary listing path called `collect_global_chats`, which read every chat file in every *other* project, decrypted it, JSON-parsed it, and ran full `Chat(**data)` Pydantic validation (including every entry in `messages: List[Message]`) just to check `data["isGlobal"]`.  On a workspace with one large 850-chat project plus several small ones, opening any small project paid the full validation cost on the large project's 850 files — measured at 27 s of the 27 s wall time on an 18-chat project.  Added `collect_global_chat_summaries`, which checks `data.get("isGlobal")` against the raw dict before constructing anything, and builds `ChatSummary` records directly when the flag is set.  Non-global files now cost only read+decrypt+json.loads+dict.get; the `Chat(**data)` path is gone from the summary listing.  The full `collect_global_chats` is still used for `include_messages=true` listings and the `get_chat` cross-project fallback, where the message bodies are actually needed.  Added per-phase timing to both functions for ongoing observability.
+
 ### Changed
+
+- **Diagnostics**: Added per-phase timing inside `ChatStorage.list_summaries` (glob, file read, retention check, sort, summary build) and inside the `GET /api/v1/projects/{project_id}/chats` endpoint (storage setup, list_summaries call, global-chat merge, pagination). One log line per call, used to localize project-switch latency on projects with many conversations.
+
+
+- **Task Cards — artifact preview in the inline tile.**  The tile
+  already showed `artifact.summary` and run metrics; this round adds
+  the rest of the Artifact surface that the design doc §Artifacts
+  defines:
+    - Long summaries (>280 chars) collapse behind a `<details>`
+      preview with a max-height cap so the tile stays compact.
+    - `decisions` renders as a short bulleted list (capped at 8) —
+      this is where scope-enforcement warnings ("skill 'foo' not
+      found") now reach users instead of being silently swallowed.
+    - `outputs` (text, file, data parts) render per type.  No block
+      type populates this today, but the rendering path is wired so
+      later work that gives Task blocks a way to emit structured
+      outputs doesn't need a UI change.
+    - Empty-summary artifacts get an explicit "(No summary produced)"
+      fallback rather than rendering as an invisible block.
+
+- **Task Cards — failure-cluster view in the inline tile.**  When a run
+  has three or more failures AND at least two share a signature, the
+  tile now renders a grouped cluster view instead of the flat iteration
+  list: one collapsible row per signature, count-weighted descending,
+  with the exemplar artifact fetched lazily on first expand.  This is
+  the "10,000 runs, 4 error patterns" primitive from
+  design/task-cards.md §Queryable runs finally surfaced to users.
+  Runs with fully distinct failure signatures continue to show the
+  flat list (clustering would just add noise).  The exemplar-on-open
+  pattern means a 10,000-iteration run with 4 signatures costs 4
+  artifact fetches, not 10,000.
+
+- **Task Cards — run-level lifecycle events.**  The WebSocket relay
+  now emits `run_started` when a task run transitions into the
+  running state and `run_completed` when it reaches a terminal
+  state (`done`, `failed`, or `cancelled`), completing the seven
+  event types listed in design/task-cards.md §Live observation.
+  `TaskRunStreamRelay.safe_push` factored out the best-effort
+  error-swallowing logic that was duplicated in
+  `block_executor._emit`, so every emission site goes through one
+  defensive path.
+- **Task Cards — terminal status reflects artifact.failed.**  When
+  the root block's artifact reports `failed=true` (e.g. a Repeat
+  that exhausted `repeat_max` without meeting its `until` condition),
+  the run now transitions to `status=failed` rather than `status=done`.
+
+- **Task Cards — scope enforcement.**  Task blocks with a declared
+  scope now honour all three dimensions at execution time:
+    - `scope.tools`: strict allowlist (unchanged; already worked)
+    - `scope.skills`: skill prompts are resolved via `SkillStorage`
+      and prepended to the task's system prompt, matching the
+      delegate-manager pattern.  Missing skills are recorded in the
+      artifact's `decisions` field rather than aborting the run.
+    - `scope.files`: declared files are preloaded into the system
+      prompt as fenced blocks.  Per-file cap 128 KB; total preload
+      cap 512 KB; path-escape attempts rejected.  Advisory — the
+      model can still use `file_read` for other project files.
+  `ExecutionContext` now carries `project_id` alongside
+  `project_root`; skill resolution requires it.
+
+- **Task Cards — iteration templating and propagation.**  Task block
+  `instructions` now support Mustache-style placeholders substituted at
+  iteration dispatch time: `{{index}}`, `{{item}}`, `{{item.field}}`,
+  `{{previous.summary}}`, `{{previous.decisions}}`, and
+  `{{all.summaries}}`.  Unknown placeholders are preserved verbatim so
+  authoring typos surface to the user.
+- **Task Cards — for_each mode.**  `repeat_for_each_source` now parses
+  as a JSON array literal (strings or objects); each iteration binds
+  `{{item}}` to the corresponding element.
+- **Task Cards — propagation modes.**  `repeat_propagate` (`none` |
+  `last` | `all`) is now honoured: serial Repeat iterations can see
+  prior artifacts per the design §Propagation spec.  Parallel Repeats
+  still bind `{{index}}` and `{{item}}` but not `previous`/`all` (the
+  ordering is ill-defined when iterations run concurrently).
+
+- **Task Cards — inline tile behaviour: tail-bucket tiles now persist
+  after completion.**  Previously, task-card bindings with no
+  `anchor_message_id` (which is every binding created from the library
+  modal until message-ID anchoring landed) rendered at the chat tail
+  with `hideWhenTerminal`, causing the tile to vanish the moment the
+  run finished.  The tile now stays visible — it collapses to a
+  receipt-form one-liner 8 s after terminal, with a click to re-expand.
+  (`frontend/src/components/Conversation.tsx`)
+
+- **Task Cards — stable message IDs for binding anchors.**
+  `addMessageToConversation` now assigns a UUID to every message on
+  the way in (messages that already carry an id — e.g. model-change
+  system messages — keep theirs).  This lets `TaskCardsLibrary`'s
+  "Launch in chat" flow anchor bindings to specific messages, so the
+  inline tile renders inline below the message the task was launched
+  from rather than clustering at the chat tail.
+  (`frontend/src/context/ChatContext.tsx`)
+
+  **Migration note:** messages persisted in IndexedDB from prior
+  sessions have no id; bindings against them will land in the tail
+  bucket (which now persists after completion — see above), so no data
+  is lost and no forced migration is needed.
+
+- **Task Cards — `ParallelBlockEditor` for authoring concurrent branches.**
+  The block editor now supports the `parallel` block type alongside `task`
+  (blue) and `repeat` (yellow).  Parallel blocks render with a purple
+  accent and a `⚡` emoji; their body renders with the label "All at
+  once" (mirroring Repeat's "In order") and allows nesting any block
+  type.  Adds `makeParallelBlock()` factory, updates `makeBlock()` and
+  `BlockEditor` dispatcher, and adds "+ Parallel" affordances to
+  Repeat's add-row.  The backend executor (`_execute_parallel`) was
+  already in place — this closes the authoring gap.
+
+- **PDF RAG — on-demand access for large reference PDFs.** PDFs that
+  would exceed the context budget (>25k tokens or >60 pages by default,
+  tunable via `ZIYA_PDF_RAG_TOKEN_THRESHOLD`) are now represented in
+  context as a compact stub (native bookmarks/table of contents or a
+  heuristic figure/table list, plus the first and last pages verbatim).
+  Three new MCP tools — `pdf_outline`, `pdf_read_pages` (with optional
+  page-image rendering), and `pdf_search` (BM25 by default, optional
+  `sentence-transformers`-backed embedding mode) — let the model pull
+  specific sections on demand.  Page / caption / figure indexes are
+  cached under `.ziya/pdf_index/` and survive restarts.
+- **Task Card inline tiles** — when a task card is launched from a chat,
+  a compact tile renders at the anchor point in the conversation.  Shows
+  live status while running (with cancel button), expands to show artifact
+  summary/metrics on completion, and auto-collapses to a one-liner receipt
+  after 8 seconds.  New files: `TaskCardInlineTile.tsx`, `useTaskBindings`
+  hook, `task-card-inline-tile.css`.
+
+### Fixed
+
+- **`/api/v1/projects/{pid}/chats` endpoint took 2–5 s per request on
+  large projects** (`app/storage/chats.py`).  `ChatStorage.list_summaries`
+  delegated to `self.list()`, which read every chat file and constructed
+  a full `Chat(**data)` Pydantic model — validating every entry in
+  `messages: List[Message]` — only to throw the messages away when
+  building `ChatSummary` records.  On a project with 857 chats × ~50
+  messages each, that meant ~42 000 unnecessary `Message` instantiations
+  per request, dominating the 2.9–4.5 s observed wall time.  Frontend
+  project-switch latency was bottlenecked on this call (the periodic 30 s
+  poll re-paid the cost too).  `list_summaries` now reads each chat file
+  as a raw dict, runs the expiry check from `lastActiveAt` directly, and
+  builds `ChatSummary` records by plucking the summary fields without
+  ever instantiating `Chat`/`Message`.  File-I/O semantics, sort order,
+  group filtering, and expiry behaviour are unchanged.  Added a single
+  INFO-level timing log per `list_chats` call for observability.
+
+- **SSE keepalive comments logged as orphan fragments**
+  (`frontend/src/apis/chatApi.ts`).  The streaming parser warned
+  `🚨 ORPHAN SSE FRAGMENT (len=11): : keepalive` on every server
+  keepalive (~every 15s during long thinking phases), spamming the
+  console.  Lines beginning with `:` are normal SSE comments per the
+  spec and are now silently skipped; non-comment, non-`data:` fragments
+  still log as before.
+
+- **TS1016 in `sendPayload` signature** (`frontend/src/apis/chatApi.ts`).
+  `activeSkillPrompts?` and `images?` were optional parameters followed
+  by required ones, which TypeScript rejects.  Changed to explicit
+  `string | undefined` / `ImageAttachment[] | undefined` — call sites
+  already pass these positionally so behavior is unchanged.
+
+- **8-second delay before chat titles appeared after switching into a
+  large project, and the active chat's body stayed empty for ~30 s after
+  the switch** (`frontend/src/utils/db.ts`,
+  `frontend/src/context/ChatContext.tsx`).  Two issues:
+  (1) `db.getConversationShells()` cursor-iterates the entire IDB
+  conversations store and structured-clones every record's full message
+  bodies on each `cursor.value` access before stripping them.  On a
+  project with ~750 conversations × tens of messages each, that scan
+  alone took ~8 s and ran twice per project switch (preload + sync) plus
+  again on every 30-second periodic poll.  Added a TTL-bounded shell
+  cache on the `ConversationDB` instance: hot reads serve from cache;
+  every method that mutates the conversations store
+  (\`saveConversations\`, \`saveConversation\`, \`deleteConversation\`,
+  \`moveConversationToFolder\`, \`_importConversations\`,
+  \`_migrateBulkToPerRecord\`, \`_clearDatabase\`, \`forceReset\`)
+  invalidates the cache, and a 60-second TTL bounds staleness for any
+  path that bypasses those methods.  Returned shells are shallow-cloned
+  so caller mutations don't poison the cache.
+  (2) The project-switch preload committed shells into state and
+  selected an active conversation but never hydrated that conversation's
+  messages from IDB.  The body stayed empty until either the user
+  clicked off and back (forcing \`loadConversation\`) or the periodic
+  sync's finally-block rehydration ran (~30 s).  The preload now
+  performs a single-record \`db.getConversation\` for the chosen active
+  conversation immediately after selection.
+
+- **Project switches with large conversation counts ran for many minutes
+  and could display the wrong project's conversations**
+  (`frontend/src/context/ChatContext.tsx`).  Two compounding bugs in the
+  project-switch sync flow.
+  (1) `syncWithServer` captured `projectId` in closure at entry; its
+  final `setConversations(mergedResult!)`, `setFolders(mergedFolders)`,
+  `setCurrentConversationId(...)` and `db.saveConversations(...)` calls
+  ran with no check that the project was still current.  When the user
+  switched projects mid-sync, the in-flight sync's later commit
+  overwrote the new project's preloaded sidebar with the old project's
+  conversations — the "wrong project's chats visible while still
+  lagging" symptom.
+  (2) The `syncInProgressRef` guard at the top of `syncWithServer`
+  early-returned any new sync invocation while a previous one was in
+  flight.  Because the project-switch `useEffect` doesn't re-fire when
+  `currentProject?.id` matches the value it just committed, the new
+  project's sync was deferred until the next 30-second interval tick —
+  and on a 750-conversation cold-start where the previous sync was
+  itself running long, the gap could stretch to minutes during which
+  only IDB-preloaded shells were visible and folder hierarchy was
+  absent.
+  Replaced the boolean in-progress guard with an epoch counter that
+  bumps on every effect firing.  Each sync captures its epoch at start;
+  every state-mutation and IDB-write site (`setConversations`,
+  `setFolders`, `setCurrentConversationId`, `db.saveConversations`,
+  `db.saveFolder`, the post-sync active-conversation rehydration, and
+  the preload's own `setConversations`) now checks `isStale()` and
+  bails if a later switch has bumped the epoch past it.  Concurrent
+  syncs are now allowed — the latest one wins at commit time, the
+  others discard their results harmlessly.
+  `setIsProjectSwitching(false)` still runs unconditionally in the
+  `finally` so the switching spinner releases even when a stale sync
+  exits.  The preload's spinner-clear is gated on `!isStale()` so a
+  stale preload doesn't flip the spinner off underneath the newer
+  switch's flow.
+
+- **Continuation requests for Claude Opus 4.7 truncated mid-stream with
+  `ValidationException: temperature is deprecated for this model`**
+  (`app/streaming_tool_executor.py`, `app/providers/bedrock.py`): the
+  continuation path hardcoded `temperature=0.1` in its
+  `ProviderConfig`, bypassing the per-model capability check that the
+  primary streaming path honors (which passes `temperature=None` for
+  models that list it in `unsupported_parameters`).  Bedrock rejected
+  the continuation call, the stream ended at `🛑 NO_PREFILL_END`, and
+  long multi-diff responses were cut off mid-block.  Fixed by having
+  the continuation path consult `model_config["unsupported_parameters"]`
+  before setting `temperature`, and by adding a defense-in-depth filter
+  in `BedrockProvider._build_request_body` so any future caller that
+  builds a `ProviderConfig` directly can't re-introduce the bug.
+
+- **Drag-drop folder moves silently reverted a few seconds later**
+  (`frontend/src/context/ChatContext.tsx`): the periodic server-sync
+  merge loop preserved local `messages` and `_version` when the local
+  copy was newer, but did not preserve `folderId`, `isGlobal`, or
+  `title` — so a drag-drop folder move (or a rename / global toggle)
+  could silently revert on the next sync tick before the debounced
+  `bulkSync` had pushed the change.  The preservation loop now also
+  carries those three fields forward when the in-memory `_version` is
+  strictly newer than the server copy.
+
+- **Drag-drop insertion line disappeared or rendered at the wrong offset
+  when the chat list scrolled mid-drag**
+  (`frontend/src/components/MUIChatHistory.tsx`): the insertion marker
+  is absolutely positioned inside the scrollable tree container, but
+  its `top` was computed as viewport-relative (`rect.top -
+  containerRect.top`) without adding `scrollTop`.  At scroll offset 0
+  this happened to be correct; once scrolled, the line rendered too
+  high.  Separately, the marker was rebuilt only on `mousemove`, so
+  mousewheel / programmatic scroll under a stationary pointer left it
+  stranded at its old DOM position.  Fixed by adding `scrollTop` to
+  the computed `top` and by wiring a scroll listener on the tree
+  container during drag that re-runs hit detection with the last
+  known mouse coordinates.
+
+- **PDF RAG cache key diverged for symlinked paths**
+  (`app/utils/pdf_rag.py`): `_cache_key_for` used `os.path.abspath`
+  while the MCP tool path resolver used `Path.resolve()`.  On macOS
+  those produce different strings for the same file (`/var/folders/...`
+  vs `/private/var/folders/...`), which would silently cause the
+  per-PDF index to be rebuilt on every MCP tool call that took a
+  different path form from the one used by the context extractor.  Both
+  `_cache_key_for` and `_project_relative_path` now fully resolve paths
+  (symlinks followed), and
+  `test_cache_key_identical_for_symlinked_and_direct_path` pins the
+  invariant.
+
+- **Spurious continuation cycles on text-only responses**
+  (`app/streaming_tool_executor.py`): the `textonly_grace` mechanism — added
+  to prevent cutting off responses that announce intent before executing tools
+  ("Let me check X...") — fired on every text-only completion regardless of
+  iteration count.  Explanations, console commands, diffs, and any other
+  genuinely complete response that happened to use no tools in the final
+  iteration all received an unnecessary extra continuation cycle.  The
+  problem it was solving only occurs at iteration 0 (model narrates intent
+  before running tools); on later iterations a text-only ending is a real
+  conclusion.  Fixed by adding `and iteration == 0` to the grace condition.
+
+- **New conversations permanently dropped from chat browser after sync**
+  (`frontend/src/context/ChatContext.tsx`): conversations created locally
+  with zero messages (e.g. a freshly opened chat before any message is sent)
+  were silently filtered out of React state on every sync cycle and could
+  never recover.  The `safeConvs` filter only preserved conversations that
+  were either already in React state (`prevIds`) or known to the server
+  (`serverIdSet`).  Once a new conversation fell out of state — e.g. because
+  the sync fired before the IDB write completed — it failed both checks, and
+  the preservation loop skipped it because `mergedIds` already contained it
+  from IDB.  Fixed by adding a third condition that passes IDB-resident,
+  project-local conversations that have never been synced to the server,
+  guarded by `!knownServerConversationIds.current.has(mc.id)` to prevent
+  resurrecting server-deleted records.
+
+- **Stale truncated conversation state persisted across sessions**
+  (`frontend/src/context/ChatContext.tsx`): when a conversation's in-memory
+  message count fell below the server's `messageCount` (e.g. after a
+  dehydration or partial load), the sync's `recentlyFetchedFullIds` session
+  cache blocked a corrective re-fetch because it treated the cache as an
+  unconditional skip gate for all divergence types.  A conversation could
+  show missing early exchanges indefinitely — surviving overnight — until the
+  user opened a fresh tab.  Fixed by only applying the session cache guard to
+  version divergence (`serverVer > localVer`); count divergence
+  (`serverMsgCount > localMsgCount`) always triggers a full re-fetch
+  regardless of session cache state.
+
+- **Self-healing IDB recovery via deleteDatabase before promotion**
+  (`frontend/src/utils/db.ts`):
+  the previous strategy on a corrupt backing store was to immediately
+  promote to a new database name (`ZiyaDB_r1`, `ZiyaDB_r2`, …).  This
+  worked around the corruption but abandoned the old database file, which
+  accumulated across reloads.  The new strategy first attempts
+  `indexedDB.deleteDatabase()` on the corrupt name.  If the delete
+  succeeds (the common case where a single file is corrupt rather than the
+  entire engine), the same name is reused with a fresh clean backing store
+  and no promotion is needed.  If the delete fails (Opera Air with a
+  fully broken IDB engine at the OS level), the code falls back to the
+  existing promotion path.  For an already-promoted name that is also
+  failing, the same delete-first logic applies: successful delete reuses
+  the promoted name; failed delete marks `isUnavailable` and drops to
+  server-only mode immediately rather than exhausting all remaining slots.
+
+- **Chat folder headings missing when IndexedDB is unavailable**
+  (`frontend/src/context/ChatContext.tsx`):
+  `loadFoldersIndependently` called `db.getFolders()` and the server
+  merge (`listServerFolders`) inside a single `try` block.  When IDB
+  threw `permanently unavailable`, the catch handler set `setFolders([])`
+  and the server was never queried — so all folder structure was lost for
+  the session even though the server stores the full chat-group hierarchy.
+  Fixed by wrapping the IDB load in its own inner try/catch that falls
+  through silently on failure, while the server merge runs unconditionally
+  afterward.  When IDB is restored, the `db.saveFolder` calls at the end
+  of the merge repopulate the local cache automatically.
+
+- **Conversations sorted incorrectly and repeated IDB error spam when
+  IndexedDB is permanently unavailable**
+  (`frontend/src/components/MUIChatHistory.tsx`, `frontend/src/utils/db.ts`):
+  two bugs in the server-only fallback path.
+  (1) The tree sort comparator read `conversation?.lastAccessedAt` (the
+  IDB-hydrated field name) but server chat summaries populate
+  `lastActiveAt` (the server API field name).  With `lastAccessedAt`
+  always `undefined`, every conversation resolved to timestamp 0 and the
+  list appeared in arbitrary insertion order instead of most-recent-first.
+  Fixed by taking `Math.max(lastAccessedAt, lastActiveAt, boost)` so both
+  field names are honoured.
+  (2) `handleMissingStore` unconditionally cleared `initPromise` and
+  retried `init()` on every call, bypassing the `isUnavailable` fast-path
+  that `init()` sets after a permanent backing-store failure.  This
+  generated five console errors per 30-second sync cycle indefinitely.
+  Fixed by returning `false` immediately when `this.isUnavailable` is set.
+
+- **Wrong project's conversations shown after project switch when IDB is
+  unavailable** (`frontend/src/context/ChatContext.tsx`):
+  when IndexedDB is permanently unavailable the startup fallback loads
+  conversations directly from the server and calls
+  `setConversations(serverChats)` with the raw API response.  The server
+  does not include `projectId` in chat summary objects, so every
+  conversation entered state without a `projectId`.  When the user switched
+  projects, `syncWithServer`'s preservation loop checked
+  `if (pid && pid !== projectId)` — with `pid = undefined` the condition
+  was always false, so the old project's conversations were never evicted
+  and leaked into every subsequent project's list.  Fixed by stamping
+  `projectId: c.projectId || startupPid` on each conversation at load time,
+  matching the pattern already used in the IDB repair path.
+
+- **ChunkLoadError caused root crash instead of page reload**
+- **Lazy-loaded modal chunks fetched at startup causing 2-minute blank screen**
+  (`frontend/src/components/App.tsx`):
+  `ShellConfigModal`, `MCPStatusModal`, `MCPRegistryModal`, and
+  `ExportConversationModal` were always present in the JSX tree with
+  `visible={false}`.  React resolves lazy components when they first appear
+  in the render tree regardless of props, so their webpack chunks were
+  requested on every page load.  With 12+ open tabs each holding a
+  WebSocket connection, Opera Air's per-host HTTP connection pool was
+  saturated; the chunk fetch queued behind active connections and timed out
+  after webpack's 2-minute JSONP deadline, crashing the app before the
+  server conversation fetch could complete.  Fixed by guarding each modal
+  with `{show* && <Modal ...>}` so chunks are only fetched when the modal
+  is actually opened, matching the pattern already used by `MemoryBrowser`
+  and `TaskCardsLibrary`.
+
+  (`frontend/src/utils/lazyWithRetry.ts`):
+  when webpack fails to load a lazy chunk it marks that chunk as failed in
+  its internal JSONP registry.  Subsequent calls to the same `factory()`
+  function return the cached failure immediately without issuing a new
+  network request, making the retry loop useless for this error class.
+  The previous code ran all retries against the cached failure before
+  triggering a hard reload — but by then the `RELOAD_FLAG` in
+  `sessionStorage` was set, so on the reloaded page any further chunk
+  failure threw directly to the error boundary.  Fixed by detecting
+  `ChunkLoadError` on the first occurrence, skipping retries, and
+  reloading immediately.  A never-settling `Promise` is returned after
+  `window.location.reload()` is called so React does not attempt to render
+  the error boundary during the brief window before the page unloads.
+
+- **Root crash on lazy-loaded chunk retry** (`frontend/src/utils/lazyWithRetry.ts`):
+  the cache-bust retry path called
+  `import(`?t=\${Date.now()}`)` — a bare timestamp with no module path —
+  which always throws `TypeError: Failed to resolve module specifier`.
+  React's error boundary caught it as a root crash and unmounted the entire
+  app.  Fixed by removing the broken import and simply re-calling `factory()`
+  on retry; the surrounding retry loop already handles repeated attempts, and
+  the hard-reload path that fires after all retries are exhausted handles
+  genuine stale-cache eviction without needing a manual cache-buster.
+
+- **IDB auto-promotion on corrupt backing store** (`frontend/src/utils/db.ts`):
+  instead of falling back permanently to server-only mode when Opera Air
+  (or any browser) presents an `UnknownError` on `indexedDB.open`, the
+  database is promoted to a fresh name (`ZiyaDB_r1` → `ZiyaDB_r2` → … →
+  `ZiyaDB_r9`) and initialization retries transparently.  The active name
+  is persisted under `ZIYA_DB_NAME` in localStorage so future page loads
+  reuse the promoted database directly.  An `isUnavailable` flag on the
+  `ConversationDB` class is set permanently if all nine recovery slots are
+  exhausted, making every subsequent `init()` call throw immediately rather
+  than retry on each 30-second sync cycle.  A secondary bug in the
+  promotion path was also fixed: the retry handler was clearing
+  `this.initPromise` before calling `_initWithLock()` recursively, which
+  caused post-promotion `init()` calls to see a null promise and
+  unnecessarily re-open the already-working database; the null assignment
+  was removed so the outer `navigator.locks.request` promise stays assigned
+  and resolves normally when the retry succeeds.
+  A further refinement limits promotion to a single attempt: if the first
+  promoted name (`ZiyaDB_r1`) also fails, the IDB engine itself is broken
+  (not just one corrupt database), and all remaining slots are skipped
+  immediately rather than exhausting all nine and adding ~5 seconds of
+  failed open attempts before falling back to server-only mode.
+
+- **IndexedDB permanently dead (corrupt backing store) caused blank sidebar
+  and wrong-project conversations after reload**
+  (`frontend/src/context/ChatContext.tsx`, `frontend/src/utils/db.ts`):
+  three compounding bugs produced an unusable UI when Opera Air's IDB
+  backing store was physically corrupt (`UnknownError: Internal error
+  opening backing store`).
+  (1) `_initWithLock` had no `onerror` handler on the initial version-check
+  `indexedDB.open()` call (`checkRequest`).  When Opera Air fired `onerror`
+  on that open, the Promise returned by `new Promise<void>(...)` never
+  settled — neither resolving nor rejecting — so `await db.initialize()`
+  in `initializeWithRecovery` hung forever, `isInitialized` never became
+  `true`, and `syncWithServer` never ran.  Fixed by adding
+  `checkRequest.onerror = () => reject(checkRequest.error)`.
+  (2) After that fix unblocked the `catch` path, `setIsInitialized(true)`
+  was called before the `await syncApi.listChats(...)` server-fallback
+  fetch completed.  The `useEffect` that guards against an empty
+  conversation list fired immediately with `conversations.length === 0`
+  and created a blank placeholder UUID; when the 18 server conversations
+  arrived moments later that UUID was absent from the list, triggering
+  `HISTORY_CORRUPTION` and displaying the wrong project's conversations.
+  Fixed by moving `setIsInitialized(true)` to after the server fetch
+  resolves.
+  (3) `syncWithServer` called `await db.saveConversations(nonShells)` inside
+  a bare `try` block; when IDB was dead the throw propagated to the outer
+  `catch (syncError)` and aborted the function before `setConversations`
+  ran.  Every 30-second sync cycle failed the same way, so switching
+  projects never showed the correct conversations.  Fixed by wrapping the
+  `db.saveConversations` call in its own `try/catch` so IDB write failures
+  are non-fatal and the state update proceeds regardless.
+
+- **Conversation list empty after reload on Opera Air / Chromium-family browsers**
+  (`frontend/src/context/ChatContext.tsx`, `frontend/src/context/FolderContext.tsx`):
+  two startup bugs combined to produce a blank sidebar that persisted for up to
+  5 minutes.  (1) The IDB corruption repair check gated on `currentProject?.id`,
+  which is resolved asynchronously by `ProjectContext` and is typically `undefined`
+  when `initializeWithRecovery` runs; the guard always evaluated to `false`,
+  silently skipping the repair for every startup where IDB contained zero valid
+  conversations.  Fixed by using `startupPid` (derived from `localStorage` before
+  any async call) instead of `currentProject?.id`, and immediately populating
+  `conversations` state from the server response rather than waiting for the next
+  `syncWithServer` cycle.  (2) The five persisted external file paths that the
+  server re-broadcasts as `file_added` WebSocket events on startup each triggered
+  an independent `fetchFolders()` call with no debouncing.  With multiple
+  connected WS clients this produced up to 60 simultaneous folder-fetch requests,
+  all returning `_scanning: true`, which restarted progress polling and kept the
+  scanning indicator alive for the full AST indexing duration (~5 min).  Fixed by
+  debouncing the external `file_added` refetch to 150 ms, coalescing the burst
+  into a single request.
+
+- **Corrupted IDB backing store left `initPromise` permanently rejected**
+  (`frontend/src/utils/db.ts`): `_initWithLock` used `return new Promise(...)`
+  without `await`, so when the IndexedDB backing store was corrupt the outer
+  `try/catch` never fired, `this.initPromise` was never cleared, and every
+  subsequent `init()` call returned the same stale rejected Promise rather than
+  retrying.  Fixed with `return await new Promise(...)`.
+
+- **Blank conversation list when IndexedDB is unavailable**
+  (`frontend/src/context/ChatContext.tsx`): when `db.init()` threw
+  `UnknownError: Internal error opening backing store`, the app set
+  `isDatabaseHealthy = false` and waited up to 30 seconds for the background
+  sync cycle to populate conversations from the server.  During that window
+  the sidebar showed no conversations with no explanation.  Fixed by
+  immediately fetching the current project's conversations directly from the
+  server in the `catch` block and calling `setConversations` with the result,
+  so the UI is populated right away regardless of IDB health.
+
+- **Diff application results not persisted to conversation history**
+  (`app/cli.py`): after processing diffs the CLI sent a summary of applied /
+  skipped / failed diffs to the model as a continuation message but never
+  appended it to `self.history`.  On every subsequent turn the model had no
+  record of what had been applied, causing it to re-ask for confirmation or
+  mis-state which changes were pending.  Fixed by appending both the diff
+  summary (as a `human` message) and the model's continuation response (as an
+  `ai` message) to `self.history` immediately after the continuation call
+  returns.
+
+- **PDF RAG search missed sub-words in hyphenated or dotted tokens**
+  (`app/utils/pdf_rag.py`): the BM25 tokeniser's word pattern
+  (`[A-Za-z0-9][A-Za-z0-9_\-]*`) kept hyphens and periods inside tokens,
+  so a query for `needle` would not match a page containing
+  `unique-needle`, and a query for `3.2` would not match `Figure 3.2`.
+  Hyphens and periods now act as token separators (underscores remain
+  part of the token so identifier-like strings stay whole).
+
+### Changed
+
+- **Diff validation failure now notifies the user instead of silently discarding
+  the diff** (`app/cli.py`): when a diff fails all validation retry attempts the
+  user now receives an explicit message stating the diff was not auto-presented and
+  why, and the interactive apply/skip prompt is still offered so the diff can be
+  attempted manually.  Previously the model retried silently and the diff
+  disappeared without explanation.
+
+- **`process_response` errors are now always surfaced** (`app/cli.py`): internal
+  errors during diff application were silently swallowed unless
+  `ZIYA_LOG_LEVEL=DEBUG` was set, causing diffs to vanish with no user-visible
+  output.  Errors now always print to stderr; full tracebacks are shown in DEBUG
+  mode.
+
+- **New-file creation diff limit raised to 5 000 lines** (`app/extensions/
+  prompt_extensions/claude_extensions.py`): the 250-line per-diff cap now
+  explicitly exempts brand-new file creation (`--- /dev/null` diffs) up to
+  5 000 lines and forbids splitting new files into multiple 250-line chunks, which
+  some models were doing incorrectly.
+
+### Fixed
+
+- **Infinite AST re-index loop with more than 3 simultaneous projects**
+  (`app/utils/ast_parser/integration.py`): the LRU eviction logic removed evicted
+  projects from `_initialized_projects`, causing every subsequent polling request
+  to `/api/ast/resolutions` to re-trigger indexing.  Each completed index evicted
+  a different project, which then re-indexed, creating a cycle across all active
+  projects.  Fix: eviction no longer clears `_initialized_projects` (the project
+  was already indexed; only the in-memory enhancer is freed).  `_MAX_ENHANCER_INSTANCES`
+  raised from 3 → 10 to prevent eviction from firing at all under typical
+  multi-project usage.
+
+- **Browse button in Project Settings modal appeared non-functional** (`frontend/
+  src/components/ProjectManagerModal.tsx`): the file-browser dialog was rendering
+  behind the parent settings modal because both used the same default Ant Design
+  z-index (1000).  Added `zIndex={1001}` to the browse modal so it layers above
+  the parent.
 
 ## [0.6.5.4] - 2026-05-07
 
