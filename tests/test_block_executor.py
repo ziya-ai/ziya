@@ -61,7 +61,7 @@ def _stub_executor(responses):
     """Returns an async function that returns responses in sequence."""
     it = iter(responses)
 
-    async def _stub(block, project_root=None):
+    async def _stub(block, project_root=None, project_id=None):
         try:
             return next(it)
         except StopIteration:
@@ -240,7 +240,7 @@ class TestSoftCancel:
 
         call_count = {"n": 0}
 
-        async def stub(b, project_root=None):
+        async def stub(b, project_root=None, project_id=None):
             call_count["n"] += 1
             if call_count["n"] == 2:
                 # Trip cancel after second iteration
@@ -269,7 +269,7 @@ class TestPassRetentionCap:
         )
         ctx = ExecutionContext(run_id=run.id, storage=storage)
 
-        async def stub(b, project_root=None):
+        async def stub(b, project_root=None, project_id=None):
             return _mk_artifact("pass")
 
         with patch("app.agents.block_executor.execute_task_block", stub):
@@ -294,7 +294,7 @@ class TestPassRetentionCap:
         )
         ctx = ExecutionContext(run_id=run.id, storage=storage)
 
-        async def stub(b, project_root=None):
+        async def stub(b, project_root=None, project_id=None):
             return _mk_artifact("oops", failed=True)
 
         with patch("app.agents.block_executor.execute_task_block", stub):
@@ -318,7 +318,7 @@ class TestSignatureHashing:
         )
         ctx = ExecutionContext(run_id=run.id, storage=storage)
 
-        async def stub(b, project_root=None):
+        async def stub(b, project_root=None, project_id=None):
             return _mk_artifact(
                 "TypeError: section.rows is undefined\npacketPlugin.ts:82",
                 failed=True,
