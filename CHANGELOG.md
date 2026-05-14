@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+### Fixed
+
+### Changed
+
+## [0.6.5.5] - 2026-05-14
+
 ### Fixed
 
 - **`FAST_PATH_TOMBSTONE` warning fired on every sync cycle for the same conversations** (`frontend/src/context/ChatContext.tsx`).  When the server reported a newer \`_version\` for a chat but the metadata-only merge path was taken (no full fetch needed because only metadata changed), the merged entry was constructed by spreading the shell-form local record — \`{...local, ...}\` — without preserving the \`_isShell\` marker.  The merged entry inherited the shell's \`messages: []\` but no longer looked like a shell, so the \`!_isShell\` filter at the IDB write step accepted it and called \`saveConversations\` with a zero-message record.  The \`FAST_PATH_TOMBSTONE\` guard in \`db.ts\` correctly preserved the real on-disk messages so no data was lost, but the warning fired on every 30 s poll for any conversation whose \`_version\` had drifted between tabs.  Same root cause was hiding the \`SYNC_GUARD\` from ever firing on shell-based merges (it compared \`local.messages?.length\` which is always 0 for shells; switched to \`_fullMessageCount\`).  Two-line fix: preserve \`_isShell\` on the metadata-only merge, and use \`_fullMessageCount\` for shell-aware count comparison.
