@@ -781,6 +781,7 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
                 open={showBrowseModal}
                 onCancel={() => setShowBrowseModal(false)}
                 width={500}
+                zIndex={1001}
                 footer={null}
             >
                 <div style={{ marginBottom: 12 }}>

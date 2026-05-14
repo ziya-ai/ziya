@@ -98,6 +98,7 @@ const LazyD3Renderer = (props: React.ComponentProps<typeof D3Renderer>) => {
 };
 
 const DelegateLaunchButton = lazyWithRetry(() => import('./DelegateLaunchButton'));
+const TaskCardLaunchButton = lazyWithRetry(() => import('./TaskCardLaunchButton'));
 const { Panel } = Collapse;
 
 // Helper function to make "Shell Configuration settings" clickable in security error messages
@@ -3714,7 +3715,7 @@ type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' |
     'd3' | 'mermaid' | 'plotly' | 'file-operation' | 'tool' |
     'joint' | 'jointjs' | 'code' | 'html' | 'text' | 'list' | 'table' | 'escape' | 'math' |
     'paragraph' | 'heading' | 'hr' | 'blockquote' | 'space' | 'packet' | 'drawio' |
-    'circuitikz' | 'html-mockup' | 'delegate-tasks' |
+    'circuitikz' | 'html-mockup' | 'delegate-tasks' | 'task-card' |
     'codespan' | 'strong' | 'em' | 'del' | 'link' | 'image' |
     'br' | 'list_item' |
     'unknown';
@@ -3812,6 +3813,10 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
 
         if (lang === 'delegate-tasks') {
             return 'delegate-tasks';
+        }
+
+        if (lang === 'task-card') {
+            return 'task-card';
         }
 
         // Check for visualization types BEFORE tool types
@@ -4093,7 +4098,19 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
         for (let i = 0; i < tokens.length; i++) {
             const tok = tokens[i] as TokenWithText;
-            if (determineTokenType(tok) !== 'diff' || !tok.text) continue;
+            // Only merge truly back-to-back diff fences.  Any non-trivial
+            // intervening token (prose, tool block, heading, list, etc.)
+            // breaks the continuation chain — otherwise an "@@"-only diff
+            // appearing many tokens later gets absorbed into an unrelated
+            // earlier headed diff and disappears from its inline position.
+            if (determineTokenType(tok) !== 'diff' || !tok.text) {
+                // Whitespace-only tokens (marked emits 'space' between
+                // blocks) don't break adjacency.  Anything else does.
+                if (tok.type !== 'space') {
+                    lastHeadedDiffIndex = null;
+                }
+                continue;
+            }
 
             const text = tok.text.trimStart();
             const hasDiffGitHeader = text.startsWith('diff --git ') ||
@@ -4224,6 +4241,16 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     return (
                         <React.Suspense key={sk} fallback={<div style={{ padding: '1em', opacity: 0.5 }}>Loading delegate plan...</div>}>
                             <DelegateLaunchButton messageContent={delegateContent} />
+                        </React.Suspense>
+                    );
+
+                case 'task-card':
+                    if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
+                    // \x60 is a backtick char; keeps literal fence chars out of source.
+                    const taskCardContent = '\x60\x60\x60task-card\n' + tokenWithText.text + '\n\x60\x60\x60';
+                    return (
+                        <React.Suspense key={sk} fallback={<div style={{ padding: '1em', opacity: 0.5 }}>Loading task card…</div>}>
+                            <TaskCardLaunchButton messageContent={taskCardContent} />
                         </React.Suspense>
                     );
 
@@ -4451,7 +4478,8 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     try {
                         d3Spec = parseD3Spec(tokenWithText.text);
                         if (d3Spec && !d3Spec.type) {
-                            d3Spec.type = 'd3';
+                            // Treat "chart" as an alias for "type" (some LLMs emit {"chart":"mermaid",...})
+                            d3Spec.type = d3Spec.chart || 'd3';
                         }
                     } catch (_) {
                         // Parsing failed — pass the raw string for D3Renderer

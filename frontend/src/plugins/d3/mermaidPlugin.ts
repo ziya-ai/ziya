@@ -28,7 +28,7 @@ export interface MermaidSpec {
 // Type guard to check if a spec is for Mermaid
 const isMermaidSpec = (spec: any): spec is MermaidSpec => {
     // Handle JSON-wrapped mermaid specs
-    if (typeof spec === 'object' && spec !== null && spec.type === 'mermaid' && spec.definition) {
+    if (typeof spec === 'object' && spec !== null && (spec.type === 'mermaid' || spec.chart === 'mermaid') && spec.definition) {
         return typeof spec.definition === 'string' && spec.definition.trim().length > 0;
     }
 
@@ -36,7 +36,7 @@ const isMermaidSpec = (spec: any): spec is MermaidSpec => {
     return (
         typeof spec === 'object' &&
         spec !== null &&
-        spec.type === 'mermaid' &&
+        (spec.type === 'mermaid' || spec.chart === 'mermaid') &&
         typeof spec.definition === 'string' &&
         spec.definition.trim().length > 0
     );
@@ -194,7 +194,7 @@ export const mermaidPlugin: D3RenderPlugin = {
 
     canHandle: (spec: any): boolean => {
         // Handle JSON-wrapped mermaid specs like {"type": "mermaid", "definition": "..."}
-        if (typeof spec === 'object' && spec !== null && spec.type === 'mermaid' && spec.definition) {
+        if (typeof spec === 'object' && spec !== null && (spec.type === 'mermaid' || spec.chart === 'mermaid') && spec.definition) {
             return typeof spec.definition === 'string' && spec.definition.trim().length > 0;
         }
 

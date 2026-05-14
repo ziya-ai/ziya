@@ -3050,7 +3050,8 @@ Please retry the tool call with valid JSON. Ensure:
                         if (word_count_after_block >= 20 and 
                             text_after_last_block.rstrip().endswith(('.', '!', '?'))):
                             if (not tools_executed_this_iteration
-                                    and textonly_grace_used < 1):
+                                    and textonly_grace_used < 1
+                                    and iteration == 0):
                                 textonly_grace_used += 1
                                 logger.info(
                                     f"🔄 TEXTONLY_GRACE: Text-only iteration with "
@@ -3500,9 +3501,13 @@ Please retry the tool call with valid JSON. Ensure:
             
             # Use provider abstraction for continuation
             from app.providers.base import ProviderConfig
+            # Respect per-model capability: some models (e.g. Opus 4.7) reject
+            # `temperature` with a 400 ValidationException. Only include it when
+            # the model supports it.
+            unsupported = set((self.model_config or {}).get("unsupported_parameters", []))
             continuation_config = ProviderConfig(
                 max_output_tokens=self.model_config.get('max_output_tokens', 2000) if self.model_config else 2000,
-                temperature=0.1,
+                temperature=None if "temperature" in unsupported else 0.1,
                 enable_cache=False,
                 suppress_tools=True,
                 model_config=self.model_config or {},

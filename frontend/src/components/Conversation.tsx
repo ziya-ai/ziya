@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, memo, useCallback, useMemo, useState } from "react";
+import React, { useEffect, useRef, memo, useCallback, useMemo, useState, Suspense, lazy } from "react";
 import { useActiveChat } from '../context/ActiveChatContext';
 import { useConversationList } from '../context/ConversationListContext';
 import { useScrollContext } from '../context/ScrollContext';
@@ -14,8 +14,12 @@ import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 import { useProject } from '../context/ProjectContext';
 import { useSendPayload } from '../hooks/useSendPayload';
 
+import { useTaskBindings } from '../hooks/useTaskBindings';
+import { MessageIdContext } from '../context/MessageIdContext';
+
 // Lazy load the MarkdownRenderer
 import { MarkdownRenderer } from "./MarkdownRenderer";
+const TaskCardInlineTile = lazy(() => import('./TaskCard/TaskCardInlineTile'));
 // --- Deferred markdown rendering ---------------------------------------------
 // Rendering MarkdownRenderer for a single large message (heavy diffs, syntax
 // highlighting, tool-blocks) can cost 1-2 seconds.  Mounting 8 of them in a
@@ -300,6 +304,9 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     const projectCtx = useProject();
     activeChatRef.current = activeChat;
     convListRef.current = convList;
+
+    // Task card bindings for the current chat
+    const { bindingsByAnchor } = useTaskBindings(currentConversationId);
 
     // Earliest possible signal that a project switch is happening
     const isSwitchingProject = projectCtx.isLoadingProject || isProjectSwitching;
@@ -613,9 +620,9 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                         renderedSystemMessagesRef.current.add(systemMessageKey);
                     }
 
-                    return <div
+                    const anchorBindings = msg.id ? bindingsByAnchor.get(msg.id) : undefined;
+                    return <React.Fragment key={`msg-frag-${msg.id || actualIndex}`}><div
                         // Use message ID as key instead of index
-                        key={`message-${msg.id || actualIndex}`}
                         data-message-index={actualIndex}
                         className={`message ${msg.role || ''}${msg.muted ? ' muted' : ''}${needsResponse
                             ? ' needs-response' : ''
@@ -708,13 +715,15 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                                 {isRawMode ? (
                                                     <pre className="raw-markdown-view">{msg.content}</pre>
                                                 ) : (
-                                                    <LazyMarkdownRenderer
-                                                        markdown={msg.content}
-                                                        enableCodeApply={enableCodeApply}
-                                                        onOpenShellConfig={onOpenShellConfig}
-                                                        isStreaming={false}
-                                                        role={msg.role as 'human' | 'assistant' | 'system'}
-                                                    />
+                                                    <MessageIdContext.Provider value={msg.id}>
+                                                        <LazyMarkdownRenderer
+                                                            markdown={msg.content}
+                                                            enableCodeApply={enableCodeApply}
+                                                            onOpenShellConfig={onOpenShellConfig}
+                                                            isStreaming={false}
+                                                            role={msg.role as 'human' | 'assistant' | 'system'}
+                                                        />
+                                                    </MessageIdContext.Provider>
                                                 )}
                                             </div>}
                                         </>
@@ -735,13 +744,15 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                                 {isRawMode ? (
                                                     <pre className="raw-markdown-view">{msg.content}</pre>
                                                 ) : (
-                                                    <LazyMarkdownRenderer
-                                                        markdown={msg.content}
-                                                        enableCodeApply={enableCodeApply}
-                                                        onOpenShellConfig={onOpenShellConfig}
-                                                        isStreaming={false}
-                                                        role={msg.role as 'human' | 'assistant' | 'system'}
-                                                    />
+                                                    <MessageIdContext.Provider value={msg.id}>
+                                                        <LazyMarkdownRenderer
+                                                            markdown={msg.content}
+                                                            enableCodeApply={enableCodeApply}
+                                                            onOpenShellConfig={onOpenShellConfig}
+                                                            isStreaming={false}
+                                                            role={msg.role as 'human' | 'assistant' | 'system'}
+                                                        />
+                                                    </MessageIdContext.Provider>
                                                 )}
                                             </div>
                                         </>
@@ -749,8 +760,27 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                 </>
                             ) : null
                         )}
-                    </div>;
+                    </div>
+                    {anchorBindings?.map(binding => (
+                        <Suspense key={binding.id} fallback={null}>
+                            <TaskCardInlineTile binding={binding} />
+                        </Suspense>
+                    ))}
+                    </React.Fragment>;
                 })}
+
+                {/* Unbound task card tiles (bindings without an anchor_message_id).
+                    Rendered at the tail of the conversation.  Kept visible
+                    after completion (the tile collapses to a receipt form
+                    8 s after terminal) so users can see the result of
+                    anything they launched.  Bindings with a real anchor
+                    message are rendered inline above, attached to the
+                    specific message they were launched from. */}
+                {(bindingsByAnchor.get('__no_anchor__') ?? []).map(binding => (
+                    <Suspense key={binding.id} fallback={null}>
+                        <TaskCardInlineTile binding={binding} />
+                    </Suspense>
+                ))}
 
                 {/* Fallback for when no messages to display */}
                 {(!displayMessages || displayMessages.length === 0) && (
