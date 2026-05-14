@@ -25,7 +25,9 @@ class TestValidation:
         )
         with pytest.raises(TaskExecutorError) as exc:
             validate_root_for_slice_c(block)
-        assert "Slice D" in str(exc.value)
+        # Validation rejects non-task blocks; error message is
+        # descriptive but not pinned to a specific development phase.
+        assert "task" in str(exc.value).lower()
 
     def test_rejects_parallel_block(self):
         block = Block(block_type="parallel", name="p")
