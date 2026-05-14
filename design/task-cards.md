@@ -324,6 +324,34 @@ route it through artifacts and instructions.
 - Agent marketplace / community templates — local library first
 - Streaming artifacts — artifacts are final outputs, not streamed
 
+### Queryable runs
+
+A live or completed run is not a blob of state — it is a queryable
+object.  The REST surface supports filtered views over the iteration
+summaries, and the chat surface can call those views in response to
+user questions.
+
+Common queries:
+
+- **By status** — "which iterations failed?"
+- **By signature** — "which iterations hit this crash pattern?"
+- **By range** — "the last 20 iterations" or "iterations 100–200"
+- **Count-only** — lightweight stats for aggregate views without
+  payloads
+
+Concrete shape:
+`GET /task-runs/{id}/iterations?status=failed&signature=abc123&limit=50`
+— server-side filter over `iteration_summaries`, returning the matching
+summaries plus (optionally) the full Artifacts for those entries.
+
+Beyond structured filtering, the Artifacts and summaries are designed
+to be feedable as context into a regular chat turn — so "summarize the
+still-broken cases" is a legitimate interaction: a chat turn loads
+the failed iterations via the query endpoint and the model writes
+prose over them.  The task-card system does not own a bespoke
+summarization path; it owns the queryable substrate that a chat turn
+can draw from.
+
 ## What this replaces
 
 The existing TaskPlan folder + delegate conversation model is not
