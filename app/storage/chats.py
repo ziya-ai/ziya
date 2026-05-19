@@ -11,6 +11,15 @@ from app.utils.logging_utils import logger
 from .base import BaseStorage
 from ..models.chat import Chat, ChatCreate, ChatUpdate, ChatSummary, Message
 
+# Per-file mtime cache for ChatStorage.list_summaries().
+# Keyed by absolute path string; value is
+#   (st_mtime, st_size, ChatSummary|None, group_id|None).
+# Self-heals on any write because _write_json renames a temp file
+# (new inode, new mtime).  Process-local — ChatStorage is constructed
+# per-request so an instance attribute would be useless.  Summaries are
+# tiny (~hundreds of bytes) so the cache is unbounded.
+_summary_cache: dict = {}
+
 class ChatStorage(BaseStorage[Chat]):
     """Storage for chats within a project."""
     
@@ -115,12 +124,16 @@ class ChatStorage(BaseStorage[Chat]):
         summaries = []
         if not self.chats_dir.exists():
             return summaries
-
-        raw_entries: List[dict] = []
         n_files = 0
-        n_kept = 0
         t_read_total = 0.0
         t_retention_total = 0.0
+        t_stat_total = 0.0
+        n_hit = 0
+        n_miss = 0
+        # (group_id, summary) pairs collected in-loop.  Group filter and
+        # sort applied once at the end so the hot path stays branch-free
+        # for the common case (no group_id).
+        built: List[tuple] = []
         files = list(self.chats_dir.glob("*.json"))
         t_glob = time.perf_counter() - t0
         for chat_file in files:
@@ -130,13 +143,46 @@ class ChatStorage(BaseStorage[Chat]):
                 continue
             n_files += 1
 
+            try:
+                t_s = time.perf_counter()
+                st = chat_file.stat()
+                t_stat_total += time.perf_counter() - t_s
+            except OSError:
+                continue
+
+            path_str = str(chat_file)
+            cached = _summary_cache.get(path_str)
+            if cached is not None and cached[0] == st.st_mtime and cached[1] == st.st_size:
+                n_hit += 1
+                cached_summary = cached[2]
+                cached_group_id = cached[3]
+                if cached_summary is None:
+                    continue
+                # Retention is wall-clock-driven; re-check from cached lastActiveAt
+                # so an entry cached as "live" earlier gets evicted if expired now.
+                t_e = time.perf_counter()
+                try:
+                    if self.enforcer.is_expired(cached_summary.lastActiveAt / 1000.0, "conversation_data"):
+                        logger.info(f"Chat {cached_summary.id} expired per retention policy, removing")
+                        self.delete(cached_summary.id)
+                        _summary_cache.pop(path_str, None)
+                        t_retention_total += time.perf_counter() - t_e
+                        continue
+                except Exception:
+                    pass
+                t_retention_total += time.perf_counter() - t_e
+                built.append((cached_group_id, cached_summary))
+                continue
+            n_miss += 1
+
             t_r = time.perf_counter()
             data = self._read_json(chat_file)
             t_read_total += time.perf_counter() - t_r
             if not data:
+                _summary_cache[path_str] = (st.st_mtime, st.st_size, None, None)
                 continue
 
-            # Expiry check — uses lastActiveAt only, no message validation needed.
+            # Expiry check — uses lastActiveAt only, no message validation.
             last_active = data.get('lastActiveAt') or 0
             t_e = time.perf_counter()
             try:
@@ -145,35 +191,19 @@ class ChatStorage(BaseStorage[Chat]):
                     if chat_id:
                         logger.info(f"Chat {chat_id} expired per retention policy, removing")
                         self.delete(chat_id)
+                    # Don't cache — file is being deleted; next glob won't see it.
                     t_retention_total += time.perf_counter() - t_e
                     continue
             except Exception:
-                # If retention enforcement fails, keep the chat — better than dropping it.
+                # Retention failure is non-fatal; keep the chat rather than dropping it.
                 pass
             t_retention_total += time.perf_counter() - t_e
 
-            # Filter by group if requested
             chat_group_id = data.get('groupId')
-            if group_id is not None:
-                if group_id == "ungrouped" and chat_group_id is None:
-                    raw_entries.append(data)
-                elif chat_group_id == group_id:
-                    raw_entries.append(data)
-            else:
-                raw_entries.append(data)
-
-        t_after_loop = time.perf_counter()
-        # Sort by lastActiveAt descending (matches self.list()'s ordering)
-        raw_entries.sort(key=lambda d: d.get('lastActiveAt') or 0, reverse=True)
-        t_sort = time.perf_counter() - t_after_loop
-
-        t_build_start = time.perf_counter()
-        for data in raw_entries:
             messages = data.get('messages') or []
-            chat_group_id = data.get('groupId')
             version = data.get('_version') or data.get('lastActiveAt')
             delegate_meta = data.get('delegateMeta')
-            summaries.append(ChatSummary(
+            summary = ChatSummary(
                 id=data['id'],
                 title=data.get('title') or '',
                 groupId=chat_group_id,
@@ -185,18 +215,30 @@ class ChatStorage(BaseStorage[Chat]):
                 lastActiveAt=data.get('lastActiveAt') or 0,
                 delegateMeta=delegate_meta,
                 **({'_version': version} if version else {})
-            ))
-            n_kept += 1
-        t_build = time.perf_counter() - t_build_start
+            )
+            _summary_cache[path_str] = (st.st_mtime, st.st_size, summary, chat_group_id)
+            built.append((chat_group_id, summary))
+
+        t_after_loop = time.perf_counter()
+        if group_id is not None:
+            if group_id == "ungrouped":
+                built = [(g, s) for (g, s) in built if g is None]
+            else:
+                built = [(g, s) for (g, s) in built if g == group_id]
+        built.sort(key=lambda gs: gs[1].lastActiveAt, reverse=True)
+        summaries = [s for (_g, s) in built]
+        n_kept = len(summaries)
+        t_sort = time.perf_counter() - t_after_loop
         t_total = time.perf_counter() - t0
-        logger.info(
+        logger.debug(
             f"list_summaries: total={t_total*1000:.0f}ms "
             f"glob={t_glob*1000:.0f}ms "
+            f"stat={t_stat_total*1000:.0f}ms "
             f"read={t_read_total*1000:.0f}ms "
             f"retention={t_retention_total*1000:.0f}ms "
-            f"sort={t_sort*1000:.0f}ms "
-            f"build={t_build*1000:.0f}ms "
-            f"files={n_files} kept={n_kept}"
+            f"sort+filter={t_sort*1000:.0f}ms "
+            f"files={n_files} kept={n_kept} "
+            f"cache={n_hit}H/{n_miss}M"
         )
         return summaries
     
