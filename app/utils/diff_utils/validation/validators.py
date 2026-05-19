@@ -913,6 +913,22 @@ def _check_pure_addition_already_applied(file_lines: List[str], added_lines: Lis
             if file_block == added_block:
                 logger.debug(f"Pure addition already applied: context at {search_pos}, additions at {check_pos}")
                 return True
+
+    # Before falling through to the context-free whole-file search, check
+    # whether the hunk's context lines match at the expected position `pos`.
+    # If they do, the file is in the pre-application state at the target and
+    # the hunk is NOT already applied. Without this guard, the fallback below
+    # can find the added block in an unrelated part of the file (e.g. a
+    # sibling function with similar boilerplate) and falsely report "already
+    # applied".
+    if context_lines and 0 <= pos <= len(file_lines) - len(context_lines):
+        file_context_at_pos = _file_normalized[pos:pos + len(context_lines)]
+        if file_context_at_pos == context_normalized:
+            logger.debug(
+                f"Pure addition NOT already applied: context matches at expected pos {pos} "
+                f"but added lines are absent there; suppressing context-free fallback"
+            )
+            return False
     
     # Fallback: the diff's context lines may not match the file exactly (e.g.
     # the diff was generated against a slightly different version of the file,
@@ -941,8 +957,11 @@ def _check_pure_addition_already_applied(file_lines: List[str], added_lines: Lis
         wstart = max(0, pos - 50)
         wend = min(len(file_lines) - al + 1, pos + 50)
         found_at = _search(wstart, wend)
-        if found_at < 0:
-            found_at = _search(0, len(file_lines) - al + 1)
+        # NOTE: deliberately do NOT fall back to a whole-file search here.
+        # A whole-file match outside the ±50 window is far more likely to be
+        # a similar block in an unrelated function (e.g. sibling boilerplate)
+        # than a genuine "already applied" signal, and triggers false
+        # positives that silently drop legitimate hunks.
         if found_at >= 0:
             logger.debug(f"Pure addition already applied: distinctive added block found at pos {found_at} (context-free match)")
             return True
