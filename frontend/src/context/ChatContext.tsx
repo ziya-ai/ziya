@@ -230,6 +230,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const serverSyncedForProject = useRef<string | null>(null);
     // Conversations confirmed present on the server (used to distinguish imports from server-deletions)
     const knownServerConversationIds = useRef<Set<string>>(new Set());
+    // Tab-scoped record of IDs we've already issued a server-side
+    // empty-shell delete for.  Without this, overlapping sync cycles
+    // re-stage the same IDs and produce a flurry of 404 deletes after
+    // the first successful one.
+    const serverGcAttemptedIds = useRef<Set<string>>(new Set());
     const dirtyConversationIds = useRef<Set<string>>(new Set());
     const recentlyFetchedFullIds = useRef<Set<string>>(new Set());
     // Throttle for user-visible persistence-failure toasts.  Without this, a
@@ -581,7 +586,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
             }
             const toWrite = validatedConversations.filter(c => _fastPathIds.has(c.id));
             if (toWrite.length > 0) {
-                await db.saveConversations(toWrite);
+                const nonShells = toWrite.filter(c => !(c as any)._isShell);
+                if (nonShells.length > 0) await db.saveConversations(nonShells);
                 if (options.changedIds && options.changedIds.length > 0) {
                     projectSync.post('conversations-changed', { ids: options.changedIds });
                 }
@@ -1932,6 +1938,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // Lazy-load full messages for the active conversation
             const activeId = getTabState('ZIYA_CURRENT_CONVERSATION_ID') || savedConversations[0]?.id;
             if (activeId) {
+                let idbLoaded = false;
                 try {
                     const fullConv = typeof db.getConversation === 'function'
                         ? await db.getConversation(activeId)
@@ -1946,9 +1953,27 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             c.id === activeId ? { ...c, messages: fcMsgs, _isShell: false, _fullMessageCount: undefined } : c
                         ));
                         console.log(`✅ Lazy-loaded ${fcMsgs.length} messages for active conversation`);
+                        idbLoaded = true;
                     }
                 } catch (err) {
                     console.warn('⚠️ Failed to lazy-load active conversation messages:', err);
+                }
+                // Fall back to server when IDB has no usable messages (corrupted shell record)
+                if (!idbLoaded && startupPid && isServerReachable) {
+                    try {
+                        const serverChat = await syncApi.getChat(startupPid, activeId);
+                        const srvMsgs = serverChat?.messages ?? [];
+                        if (srvMsgs.length > 0) {
+                            setConversations(prev => prev.map(c =>
+                                c.id === activeId
+                                    ? { ...c, messages: srvMsgs, _isShell: false, _fullMessageCount: undefined, _version: Date.now() }
+                                    : c
+                            ));
+                            console.log(`✅ Lazy-loaded ${srvMsgs.length} messages for active conversation (server fallback)`);
+                        }
+                    } catch (err) {
+                        console.warn('⚠️ Server fallback for active conversation failed:', err);
+                    }
                 }
             }
 
@@ -2418,26 +2443,25 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         }
                     }
 
-                    // Fetch full data only for conversations that are new or updated
+                    // DEFERRED HYDRATION: Don't block the project-switch commit on
+                    // full-fetches.  Build mergedMap from local + summary data now
+                    // (marking server-only entries as shells), commit immediately
+                    // so the sidebar populates within ~1s, then hydrate in the
+                    // background as fetches complete.  needFullFetch IDs are
+                    // recorded in pendingHydration; the actual fetches kick off
+                    // after the first commit lands.
                     const fullFetchMap = new Map<string, any>();
-                    if (needFullFetch.length > 0) {
-                        const tFetchStart = performance.now();
-                        console.log(`⏱️ SYNC[${projectId.substring(0, 8)}]: needFullFetch=${needFullFetch.length} — starting parallel fetch`);
-                        const results = await Promise.allSettled(
-                            // Each fetched ID is recorded so subsequent cycles don't re-fetch
-                            needFullFetch.map(id => syncApi.getChat(projectId, id))
-                        );
-                        const tFetchEnd = performance.now() - tFetchStart;
-                        const failed = results.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value)).length;
-                        console.log(`⏱️ SYNC[${projectId.substring(0, 8)}]: needFullFetch DONE in ${tFetchEnd.toFixed(0)}ms (${results.length - failed} ok, ${failed} failed)`);
-                        results.forEach((result, i) => {
-                            if (result.status === 'fulfilled' && result.value) {
-                                fullFetchMap.set(needFullFetch[i], result.value);
-                            }
-                        });
-                        // Mark all attempted IDs to prevent re-fetch before state commits
-                        needFullFetch.forEach(id => recentlyFetchedFullIds.current.add(id));
-                    }
+                    const pendingHydration = needFullFetch.slice();
+                    // Server-side empty-shell IDs we'll DELETE after the commit.
+                    // These are stale "New Conversation" entries the server still
+                    // has on disk that no client wants — they accumulate when an
+                    // empty chat is created and never receives a message before
+                    // the user navigates away.  We only delete entries older than
+                    // STALE_SHELL_AGE_MS to avoid racing with other tabs that may
+                    // have just created a chat.
+                    const staleEmptyShellIds: string[] = [];
+                    const STALE_SHELL_AGE_MS = 60 * 60 * 1000;  // 1 hour
+                    const STALE_SHELL_DELETE_CAP = 25;           // per sync cycle
 
                     // 3. Three-way merge: use _version to determine winner, keep all unique
                     const mergedMap = new Map<string, any>();
@@ -2464,6 +2488,20 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                 && (!full?.messages || full.messages.length === 0);
                             if (isEmptyShell) {
                                 console.debug(`📡 SERVER_SYNC: skipping empty-shell ${sc.id?.substring(0,8)} title="${sc.title}"`);
+                                // Stage for server-side delete if this empty
+                                // shell belongs to the current project (don't
+                                // delete cross-project globals — those are
+                                // someone else's problem) and is stale enough
+                                // that no live tab is mid-creation.
+                                const shellProjectId = sc.projectId || projectId;
+                                const shellAge = Date.now() - (sc.lastActiveAt || 0);
+                                if (shellProjectId === projectId
+                                    && shellAge > STALE_SHELL_AGE_MS
+                                    && !serverGcAttemptedIds.current.has(sc.id)
+                                    && staleEmptyShellIds.length < STALE_SHELL_DELETE_CAP) {
+                                    staleEmptyShellIds.push(sc.id);
+                                    serverGcAttemptedIds.current.add(sc.id);
+                                }
                                 return;
                             }
 
@@ -2480,14 +2518,20 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                     _version: full._version || Date.now(),
                                 });
                             }
-                            // Full fetch failed — add as metadata-only with _version: 0
-                            // so it appears in the sidebar immediately, and the low version
-                            // ensures a full fetch is retried on the next sync cycle.
+                            // Server-only conversation, full fetch deferred (or failed).
+                            // Add as a SHELL with the server's _version so the sidebar
+                            // populates immediately.  The pendingHydration loop below
+                            // will fetch and replace it with the full body.  Marking
+                            // _isShell prevents the IDB write step from saving a
+                            // zero-message record (FAST_PATH_TOMBSTONE) and prevents
+                            // the push step from sending it back to the server.
                             if (!full && !isEmptyShell) {
                                 mergedMap.set(sc.id, {
                                     id: sc.id,
                                     title: sc.title || 'Loading...',
                                     messages: [],
+                                    _isShell: true,
+                                    _fullMessageCount: typeof (sc as any).messageCount === 'number' ? (sc as any).messageCount : 0,
                                     projectId: sc.projectId || projectId,
                                     folderId: sc.groupId || sc.folderId || null,
                                     lastAccessedAt: sc.lastActiveAt || 0,
@@ -2871,6 +2915,99 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         console.log(`📡 SERVER_SYNC: commit breakdown for ${projectId.substring(0,8)}: ${localCount} local, ${globalCount} global, ${otherCount} other`);
                         React.startTransition(() => {
                             setConversations(mergedResult!);
+                        });
+                    }
+
+                    // DEFERRED HYDRATION: now that the sidebar is rendered, fetch
+                    // full message bodies for shell entries in the background and
+                    // fold each one in as it lands.  Each fetch is independent —
+                    // a slow chat (cross-project getChat fallback) doesn't block
+                    // the rest from arriving.  recentlyFetchedFullIds is updated
+                    // for both success and "server returns 0 messages" outcomes,
+                    // so we never retry IDs that fundamentally have no body.
+                    // Network errors leave the entry unmarked for next-cycle retry.
+                    //
+                    // Filter against mergedMap: IDs skipped during the merge
+                    // (empty-shell "New Conversation" stubs) won't be in the
+                    // merged set, so hydrating them is pointless and burns
+                    // server time.  Without this filter they retried forever
+                    // because each retry returned 0 messages → nFailed++ →
+                    // never added to recentlyFetchedFullIds → next sync
+                    // re-fetches.
+                    const hydrationTargets = pendingHydration.filter(id => mergedMap.has(id));
+                    if (hydrationTargets.length > 0) {
+                        const tHydrateStart = performance.now();
+                        console.log(`⏱️ SYNC[${projectId.substring(0, 8)}]: hydrating ${hydrationTargets.length} shells in background${pendingHydration.length !== hydrationTargets.length ? ` (skipped ${pendingHydration.length - hydrationTargets.length} empty-shells)` : ''}`);
+                        let nDone = 0;
+                        let nFailed = 0;
+                        let nEmpty = 0;
+                        hydrationTargets.forEach(id => {
+                            syncApi.getChat(projectId, id).then(full => {
+                                if (isStale()) return;
+                                if (!full) {
+                                    // Network error or chat actually missing; don't
+                                    // mark as fetched, allow next-cycle retry.
+                                    nFailed++;
+                                    return;
+                                }
+                                if (!full.messages || full.messages.length === 0) {
+                                    // Server confirmed: chat has no messages.  Mark
+                                    // as fetched so we don't ask again every 30 s.
+                                    recentlyFetchedFullIds.current.add(id);
+                                    nEmpty++;
+                                    return;
+                                }
+                                recentlyFetchedFullIds.current.add(id);
+                                React.startTransition(() => {
+                                    setConversations(prev => prev.map(c => {
+                                        if (c.id !== id) return c;
+                                        // Don't overwrite if a newer in-memory version exists
+                                        // (e.g. user is actively editing while hydration lands).
+                                        if ((c._version || 0) > (full._version || 0)) return c;
+                                        return {
+                                            ...c,
+                                            ...full,
+                                            _isShell: false,
+                                            _fullMessageCount: undefined,
+                                            projectId: full.projectId || projectId,
+                                            folderId: full.groupId || full.folderId || c.folderId || null,
+                                            delegateMeta: full.delegateMeta || c.delegateMeta || null,
+                                            isActive: full.isActive !== false,
+                                            _version: full._version || Date.now(),
+                                        };
+                                    }));
+                                });
+                                nDone++;
+                            }).catch(err => {
+                                nFailed++;
+                                console.warn(`⏱️ SYNC[${projectId.substring(0, 8)}]: hydration failed for ${id.substring(0,8)}:`, err);
+                            }).finally(() => {
+                                if (nDone + nFailed + nEmpty === hydrationTargets.length) {
+                                    console.log(`⏱️ SYNC[${projectId.substring(0, 8)}]: hydration complete in ${(performance.now() - tHydrateStart).toFixed(0)}ms (${nDone} ok, ${nEmpty} empty, ${nFailed} failed)`);
+                                }
+                            });
+                        });
+                    }
+
+                    // Server-side garbage collection of stale empty-shell chats.
+                    // The merge loop staged staleEmptyShellIds; issue DELETEs in
+                    // the background.  Capped at STALE_SHELL_DELETE_CAP per cycle
+                    // to avoid storming the server on first sync of a project
+                    // with a large backlog of accumulated empties.  Subsequent
+                    // cycles will pick up the rest.  Errors are non-fatal: the
+                    // chat will be re-skipped next cycle and we'll retry the
+                    // delete then.  Stale guard prevents racing with another
+                    // tab that just created a conversation.
+                    if (staleEmptyShellIds.length > 0) {
+                        console.log(`🗑️ SERVER_GC[${projectId.substring(0,8)}]: deleting ${staleEmptyShellIds.length} stale server-side empty-shells`);
+                        staleEmptyShellIds.forEach(id => {
+                            syncApi.deleteChat(projectId, id).then(ok => {
+                                if (!ok) {
+                                    console.debug(`🗑️ SERVER_GC: delete returned non-ok for ${id.substring(0,8)}`);
+                                }
+                            }).catch(err => {
+                                console.debug(`🗑️ SERVER_GC: delete failed for ${id.substring(0,8)}:`, err);
+                            });
                         });
                     }
 
