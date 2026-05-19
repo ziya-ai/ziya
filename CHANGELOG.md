@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+### Changed
+
+## [0.6.5.6] - 2026-05-19
+
+### Added
+
+### Fixed
+
 - **`getChat` cross-project fallback rebuilt every other project's chat list on every call** (`app/storage/global_items.py`). After the summary-side cache landed, the `include_messages=true` listing path and the `get_chat` cross-project fallback still ran the un-cached `collect_global_chats`, paying read+decrypt+`Chat(**data)` Pydantic validation on every chat file in every other project per call. Observed in production as a 50-second wait for a single `getChat` during a cold-start project switch (frontend log: `needFullFetch DONE in 50488ms (1 ok, 0 failed)`). Added the same `(st_mtime, st_size, Chat|None)` per-file cache as `collect_global_chat_summaries`, with negative caching for non-global files. Subsequent calls cost one `Path.stat()` per file (~50 µs) plus full-Chat construction only for changed/added globals.
 - **Project switch waited for every server-only chat to fully fetch before populating the sidebar** (`frontend/src/context/ChatContext.tsx`). The `syncWithServer` merge was awaiting `Promise.allSettled` over every `needFullFetch` ID before the first `setConversations` commit. On a cold start where one of those fetches hit the un-cached `collect_global_chats` path, the project switch blocked for the duration of the slowest fetch — measured at 50 s for a single chat in production. Replaced with deferred hydration: the merge now constructs server-only entries as shells (`_isShell: true`, `messages: []`, `_fullMessageCount` from the summary's `messageCount`) using only the summary data, commits immediately so the sidebar populates within ~1 s, then kicks off `getChat` in the background. Each fetch folds its full body into state as it lands via `React.startTransition`; the existing `_isShell` filter at the IDB write site keeps unhydrated entries off disk.
 - **Deferred-hydration retry loop hammered the server with 29 doomed `getChat` calls every 30 s** (`frontend/src/context/ChatContext.tsx`). The `pendingHydration` list was built from `needFullFetch.slice()` before the merge loop ran and dropped server-side empty-shell `"New Conversation"` entries via `isEmptyShell`. Those dropped IDs stayed in `pendingHydration`, so background hydration tried to fetch them every cycle. Each fetch returned `messages: []`, was counted as `nFailed`, and was therefore not added to `recentlyFetchedFullIds` — so the next cycle re-flagged them and the loop repeated forever. On a project with 29 such empties, this fired 29 parallel requests every 30 s, with one cycle taking 17.9 s end-to-end and locking UI scrolling. Fixed by (1) filtering `pendingHydration` against `mergedMap` so IDs dropped by the merge never enter the hydration loop, (2) treating "server returned 0 messages" as a permanent fetched state (added to `recentlyFetchedFullIds`) rather than a failure.
