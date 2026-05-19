@@ -27,9 +27,11 @@ selective file removal — not automatic summarization.
 
 I've also flown in the face of the idea that sessions should be kept to as few
 turns as possible. I've worked around that by making extremely long-lived
-sessions of 30+ turns my operating norm, and I don't feel the model degradation
-that everyone talks about. My conversations tend to split naturally when my
-mental path forks.
+sessions of 30+ turns my operating norm. I haven't run into the model
+degradation people warn about, but I can't claim that generalizes — it might
+just be that the way I work happens to keep things on track, or that aggressive
+context curation hides effects I'd otherwise see. My conversations tend to
+split naturally when my mental path forks, which probably helps.
 
 The argument against recency-weighted compaction is specific: the first messages
 in a conversation establish the objective, the constraints, the vocabulary. A
@@ -164,6 +166,15 @@ using agents to perform transforms multiple times versus using them to build
 structured code that performs the function. You have to hold the reins at exactly
 the right distance.
 
+I'm still actively working out where that distance is, and the answer changes
+every few months as model capabilities shift. The agent, task, and swarm
+interfaces in Ziya are deliberate constructions that I keep iterating on rather
+than committing to — I'm careful about every affordance because once it ships
+people build habits around it. The swarm in particular may turn out to be a
+dead paradigm; it's been deemphasized in the UI for a while now as I've
+watched longer single-thread sessions outperform decomposition for most of the
+work I actually do. I'm not ready to remove it, but I'm not selling it either.
+
 ---
 
 ## Refactor Incrementally, Never Rewrite
@@ -190,6 +201,36 @@ ships working at every intermediate step.
 
 ---
 
+## On the Bitter Lesson
+
+Rich Sutton's "Bitter Lesson" — that general methods leveraging computation
+eventually beat hand-crafted approaches built on human knowledge of the problem
+— hangs over a project like this. Many of the things Ziya does carefully today
+are things that, at some point, the underlying models will just do. The
+four-stage patch pipeline exists because LLM-produced diffs are imperfect; one
+day they won't be. The fabrication detection and tool-result signing exist
+because models hallucinate tool calls; one day they won't, or the protocol will
+evolve to make it impossible. The visualization preprocessing layers fix
+broken syntax that future models will simply produce correctly. The agentic
+swarm orchestration compensates for the fact that current models can only stay
+on task for so long; that's clearly a temporary state of affairs.
+
+I'm not under any illusion that the specific scaffolding I'm building will be
+permanently relevant. Some of it is already short-lived — every time a new
+model rolls out, parts of the patch regression suite get easier and parts
+become unnecessary. The honest framing is: this is a tool I use today to do
+work that benefits from these affordances today, in a window where the models
+aren't quite there yet on their own. That window is closing in pieces.
+
+The compensating value is that the work of building it has been an extremely
+good way to learn how all of this actually behaves under sustained real use —
+which classes of failure compound across long sessions, which kinds of model
+output need normalization and which don't, what users actually reach for when
+the visual options are right there. Whatever ends up replacing tools like this
+will benefit from the things people learned by building them. Including me.
+
+---
+
 ## Who This Is For
 
 Primarily, senior technical ICs dealing with very complex distributed
@@ -205,6 +246,38 @@ and finds that no existing AI tool covers that full surface.
 
 ## What I'd Do Differently
 
-Honestly, I'm really happy with where this is. My biggest challenges have been
-in telling others about it and coming up with effective pitches — not in the
-technical decisions.
+The biggest one is that almost all of my attention has gone to the backend.
+The frontend works, and it does the things the backend exposes, but it doesn't
+sell what's underneath. Someone landing on the UI cold would reasonably
+conclude they're looking at a chat interface with a file tree, and miss the
+rest. If growing the user base were a real goal, there would be considerably
+more design investment — onboarding, surfacing the visualization capability
+without the user having to discover it, making the swarm legible, making the
+context curation tools obvious instead of expecting people to find them. I've
+told myself that polish can come later, partly because the underlying model
+capabilities are advancing fast enough that whether this project stays
+relevant at all is genuinely uncertain. The honest version is: I hope someone
+else sees value here and helps with the design side before the bitter lesson
+catches up.
+
+The other one I feel daily is memory. Ziya has persistent context, projects,
+skills, and crystals that carry within a swarm — but cross-session memory in
+the sense people increasingly mean it (the model knowing what we figured out
+last week without me reminding it) isn't right yet. I keep trying things, and
+I think I feel the deficiency less than peers using other systems do, but
+enough to know this work is only just beginning. It's an active area for
+everyone, and Ziya doesn't have a better answer than anyone else does yet.
+
+The deeper version of both of those is that I iterate slowly and deliberately
+toward what I think of as functional maxima for how I actually work — and I
+have a lot of confidence I get there. The trouble is that the maxima I find
+often don't look much like what other people are doing, and without good
+onboarding and discovery documentation that's a problem: I'm probably the
+project's best user, possibly its only fully-fluent one, because everything
+I've found valuable is something I had to discover by living in the tool.
+There are scars of all this experimentation in the code, despite effort to
+keep it clean, because the experiments are still going. If anyone reading
+this finds something here that resonates and has the patience to figure out
+what it does differently, I'd genuinely like the help — both with surfacing
+the parts that work and with telling me which of my supposed maxima are just
+local to me.
