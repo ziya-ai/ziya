@@ -125,7 +125,7 @@
 
 ## 7. Visualizations
 
-Ziya's visualization suite is the most comprehensive of any AI coding assistant. All renderers have a preprocessing normalization layer that handles imperfect output from any LLM.
+Ziya supports a wide range of inline visualization formats. All renderers have a preprocessing normalization layer that handles the imperfect output models tend to produce.
 
 | Renderer | Use cases |
 |---|---|
