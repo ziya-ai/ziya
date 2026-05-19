@@ -61,9 +61,41 @@ def _chat_to_summary(chat: Chat) -> ChatSummary:
     )
 
 
+# TaskPlan fields that are large and only needed while a plan is active.
+# Once a plan reaches a terminal status, the frontend's polling/launch
+# code paths short-circuit on `status` before reading these.  Stripping
+# them on terminal plans keeps the chat-groups list response small
+# (this user's project: ~587 KB → ~7 KB of taskPlan data).
+_TERMINAL_PLAN_STATUSES = {"completed", "completed_partial", "cancelled"}
+_TASKPLAN_HEAVY_FIELDS = ("task_list", "delegate_specs", "crystals", "task_graph")
+
+
+def _strip_terminal_taskplans(groups):
+    """Return a copy of `groups` with heavy taskPlan fields removed on terminal plans.
+
+    Active (non-terminal) plans pass through untouched because the frontend
+    polling loop reads delegate_specs/crystals on them.
+    """
+    out = []
+    for g in groups:
+        tp = getattr(g, "taskPlan", None)
+        if tp and tp.get("status") in _TERMINAL_PLAN_STATUSES:
+            slim = {k: v for k, v in tp.items() if k not in _TASKPLAN_HEAVY_FIELDS}
+            # Pydantic BaseModel.copy(update=...) returns a shallow-modified copy.
+            out.append(g.copy(update={"taskPlan": slim}))
+        else:
+            out.append(g)
+    return out
+
+
 @router.get("/api/v1/projects/{project_id}/chat-groups", response_model=List[ChatGroup])
 async def list_chat_groups(project_id: str):
-    """List all chat groups, including global groups from other projects."""
+    """List all chat groups, including global groups from other projects.
+
+    Heavy taskPlan fields (task_list, delegate_specs, crystals, task_graph)
+    are stripped from groups whose plan has reached a terminal status —
+    the frontend never reads them after that point.
+    """
     storage = get_group_storage(project_id)
     groups = storage.list()
 
@@ -75,7 +107,7 @@ async def list_chat_groups(project_id: str):
             groups.append(global_group)
             existing_ids.add(global_group.id)
 
-    return sorted(groups, key=lambda g: g.order)
+    return _strip_terminal_taskplans(sorted(groups, key=lambda g: g.order))
 
 @router.post("/api/v1/projects/{project_id}/chat-groups", response_model=ChatGroup)
 async def create_chat_group(project_id: str, data: ChatGroupCreate):
@@ -207,7 +239,7 @@ async def list_chats(
     t_paginate = time.perf_counter() - t_phase
 
     elapsed_ms = (time.perf_counter() - t_start) * 1000
-    logger.info(
+    logger.debug(
         f"list_chats[{project_id[:8]}] {len(summaries)} summaries in {elapsed_ms:.0f}ms "
         f"(setup={t_storage_setup*1000:.0f}ms list_summaries={t_list_summaries*1000:.0f}ms "
         f"globals={t_globals*1000:.0f}ms[+{n_global}] paginate={t_paginate*1000:.0f}ms)"
@@ -297,12 +329,20 @@ async def bulk_sync_chats(project_id: str, data: ChatBulkSync):
                         merged['delegateMeta'] = existing.delegateMeta.model_dump() \
                             if hasattr(existing.delegateMeta, 'model_dump') \
                             else existing.delegateMeta
-                    # Preserve groupId when frontend sends folderId instead
-                    if merged.get('groupId') is None and existing.groupId is not None:
-                        merged['groupId'] = existing.groupId
-                    # Map frontend's folderId to server's groupId if present
+                    # Map frontend's folderId to server's groupId FIRST.  The
+                    # frontend's authoritative field is folderId; groupId is
+                    # absent from its payload.  This must run before the
+                    # "preserve existing groupId" guard below, otherwise a
+                    # move-to-folder push (folderId=<new>, groupId absent)
+                    # gets reverted: the guard sees groupId=None and restores
+                    # the previous groupId from disk, then this mapping is
+                    # skipped because groupId is no longer None.
                     if merged.get('folderId') and not merged.get('groupId'):
                         merged['groupId'] = merged['folderId']
+                    # Preserve existing groupId only when the incoming payload
+                    # specified neither groupId nor folderId.
+                    if merged.get('groupId') is None and existing.groupId is not None:
+                        merged['groupId'] = existing.groupId
                     storage._write_json(
                         storage._chat_file(chat_data.id),
                         merged
