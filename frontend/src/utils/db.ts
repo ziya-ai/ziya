@@ -95,15 +95,32 @@ class ConversationDB implements DB {
     // Shell-array cache for getConversationShells().  The cursor scan
     // structured-clones every record's full message bodies on each
     // cursor.value access before stripping them, which dominates project
-    // switch latency on large IDBs (~8s for 750 conversations × tens of
+    // switch latency on large IDBs (~45s for 914 conversations × tens of
     // messages each).  Without this cache, the scan ran twice per switch
     // (preload + sync) and again on every 30s periodic poll.  Mutating
-    // methods (save/delete/migrate/import) invalidate the cache; a 60s
-    // TTL bounds staleness for any path that bypasses those methods.
-    private shellCache: Conversation[] | null = null;
+    // methods that touch a small number of records (save/delete/move)
+    // mark the affected IDs dirty rather than blowing the whole cache
+    // away — the next getConversationShells() call re-reads only those
+    // IDs from IDB and patches the cache in place.  This keeps the
+    // dual-write debouncer's per-30s save from forcing a full 45s
+    // rebuild on the next sync.  Full-rebuild paths (migration, import,
+    // clear, forceReset, missing-store recovery) still invalidate
+    // entirely.  A 60s TTL bounds staleness for any path that bypasses
+    // both mechanisms.
+    private shellCache: Map<string, Conversation> | null = null;
     private shellCacheTs: number = 0;
+    private shellCacheDirtyIds: Set<string> = new Set();
+    // If a single mutation touches more than this many IDs, fall back
+    // to full invalidation — the cost of an N-record incremental
+    // refresh approaches the cost of the full cursor scan.
+    private static readonly SHELL_CACHE_DIRTY_LIMIT = 50;
     private static readonly SHELL_CACHE_TTL_MS = 60_000;
-    private invalidateShellCache(): void { this.shellCache = null; this.shellCacheTs = 0; }
+    private invalidateShellCache(): void { this.shellCache = null; this.shellCacheTs = 0; this.shellCacheDirtyIds.clear(); }
+    private markShellDirty(id: string): void { this.shellCacheDirtyIds.add(id); }
+    private markShellsDirty(ids: string[]): void {
+        if (ids.length > ConversationDB.SHELL_CACHE_DIRTY_LIMIT) { this.invalidateShellCache(); return; }
+        for (const id of ids) this.shellCacheDirtyIds.add(id);
+    }
 
     db: IDBDatabase | null = null;
 
@@ -497,7 +514,7 @@ class ConversationDB implements DB {
     }
 
     async saveConversations(conversations: Conversation[]): Promise<void> {
-        this.invalidateShellCache();
+        this.markShellsDirty(conversations.map(c => c.id).filter(Boolean) as string[]);
         if (!this.db || !this.db.objectStoreNames.contains(STORE_NAME)) {
             try {
                 await this.init();
@@ -874,7 +891,7 @@ class ConversationDB implements DB {
      * guard to prevent regressions.
      */
     async saveConversation(conversation: Conversation): Promise<void> {
-        this.invalidateShellCache();
+        if (conversation?.id) this.markShellDirty(conversation.id);
         if (!this.db || !this.db.objectStoreNames.contains(STORE_NAME)) {
             try { await this.init(); } catch { throw new Error('Database not initialized'); }
             if (!this.db) throw new Error('Database not initialized');
@@ -935,7 +952,7 @@ class ConversationDB implements DB {
      * Delete a single conversation by ID.
      */
     async deleteConversation(id: string): Promise<void> {
-        this.invalidateShellCache();
+        this.markShellDirty(id);  // Refresh on next read will see the deletion (store.get returns undefined → cache.delete).
         if (!this.db || !this.db.objectStoreNames.contains(STORE_NAME)) {
             try { await this.init(); } catch { return; }
             if (!this.db) return;
@@ -1042,21 +1059,86 @@ class ConversationDB implements DB {
      * or by the server sync that fetches individual chats.
      */
     async getConversationShells(): Promise<Conversation[]> {
-        // Serve from cache when fresh.  Shallow-clone each shell so callers
+        // Cache structure: Map<id, shell>.  Two refresh modes:
+        //   1. Full rebuild: cursor-scan every record (cold path).
+        //   2. Incremental: re-read only IDs in shellCacheDirtyIds via
+        //      store.get(id), patch the cache, then return.
+        //
+        // Shallow-clone each shell on the way out so callers
         // that mutate fields on returned objects (e.g. ChatContext's sync
         // merge patches messages onto local entries) don't poison the cache
         // for subsequent reads.  The clone is cheap because shells already
         // have message bodies stripped.
+        const stripToShell = (conv: any): Conversation | null => {
+            if (!conv?.id || typeof conv.id !== 'string' || !Array.isArray(conv.messages)) return null;
+            const stripMessage = (m: any) => m ? ({
+                id: m.id, role: m.role, content: '', _timestamp: m._timestamp,
+            }) : m;
+            const firstMsg = conv.messages.length > 0 ? stripMessage(conv.messages[0]) : null;
+            const lastMsg = conv.messages.length > 1 ? stripMessage(conv.messages[conv.messages.length - 1]) : null;
+            return {
+                ...conv,
+                messages: firstMsg ? (lastMsg ? [firstMsg, lastMsg] : [firstMsg]) : [],
+                _isShell: true,
+                _fullMessageCount: conv.messages?.length || 0,
+            } as Conversation;
+        };
+
         const cacheNow = Date.now();
+        const ttlExpired = cacheNow - this.shellCacheTs >= ConversationDB.SHELL_CACHE_TTL_MS;
+
+        // Fast path: cache valid, no dirty IDs.
         if (this.shellCache !== null
-            && cacheNow - this.shellCacheTs < ConversationDB.SHELL_CACHE_TTL_MS) {
-            return this.shellCache.map(c => ({ ...c }));
+            && !ttlExpired
+            && this.shellCacheDirtyIds.size === 0) {
+            return Array.from(this.shellCache.values()).map(c => ({ ...c }));
         }
 
         if (!this.db || !this.db.objectStoreNames.contains(STORE_NAME)) {
             try { await this.init(); } catch { return []; }
             if (!this.db) return [];
         }
+
+        // Incremental refresh: cache is fresh enough, but some IDs are dirty.
+        // Re-read only those IDs from IDB and patch in place.
+        if (this.shellCache !== null && !ttlExpired) {
+            const dirty = Array.from(this.shellCacheDirtyIds);
+            this.shellCacheDirtyIds.clear();
+            const refreshFn = async (): Promise<void> => {
+                const tx = this.db!.transaction([STORE_NAME], 'readonly');
+                const store = tx.objectStore(STORE_NAME);
+                await Promise.all(dirty.map(id => new Promise<void>((resolveOne) => {
+                    const req = store.get(id);
+                    req.onsuccess = () => {
+                        const result = req.result;
+                        if (!result) {
+                            // Record was deleted between mutation and read.
+                            this.shellCache!.delete(id);
+                        } else {
+                            const shell = stripToShell(result);
+                            if (shell) this.shellCache!.set(id, shell);
+                            else this.shellCache!.delete(id);
+                        }
+                        resolveOne();
+                    };
+                    req.onerror = () => resolveOne();  // Skip on error; will refresh next cycle.
+                })));
+                return new Promise<void>((resolve) => {
+                    tx.oncomplete = () => resolve();
+                    tx.onerror = () => resolve();
+                });
+            };
+            if (navigator.locks) {
+                await navigator.locks.request('ziya-db-read', () => refreshFn());
+            } else {
+                await refreshFn();
+            }
+            this.shellCacheTs = cacheNow;
+            return Array.from(this.shellCache.values()).map(c => ({ ...c }));
+        }
+
+        // Full rebuild: cursor-scan everything (cold start, TTL expired,
+        // or cache was explicitly invalidated).
         const readFn = async (): Promise<Conversation[]> => {
             const tx = this.db!.transaction([STORE_NAME], 'readonly');
             const store = tx.objectStore(STORE_NAME);
@@ -1074,33 +1156,8 @@ class ConversationDB implements DB {
                     }
 
                     const conv = cursor.value;
-
-                    // Skip non-conversation records (legacy bulk array, artifacts)
-                    if (!conv?.id || typeof conv.id !== 'string' || !Array.isArray(conv.messages)) {
-                        cursor.continue();
-                        return;
-                    }
-
-                    // Build shell: drop message content entirely.  V8's String.slice
-                    // returns a SlicedString that retains the parent string, so even
-                    // "truncated" previews hold the full original content alive.
-                    // The sidebar only reads title/id/timestamps from shells, never
-                    // content, so dropping it is safe and essential to keep shells
-                    // actually lightweight.
-                    const stripMessage = (m: any) => m ? ({
-                        id: m.id,
-                        role: m.role,
-                        content: '',
-                        _timestamp: m._timestamp,
-                    }) : m;
-                    const firstMsg = conv.messages.length > 0 ? stripMessage(conv.messages[0]) : null;
-                    const lastMsg = conv.messages.length > 1 ? stripMessage(conv.messages[conv.messages.length - 1]) : null;
-                    shells.push({
-                        ...conv,
-                        messages: firstMsg ? (lastMsg ? [firstMsg, lastMsg] : [firstMsg]) : [],
-                        _isShell: true,
-                        _fullMessageCount: conv.messages?.length || 0,
-                    } as Conversation);
+                    const shell = stripToShell(conv);
+                    if (shell) shells.push(shell);
 
                     cursor.continue();
                 };
@@ -1112,8 +1169,9 @@ class ConversationDB implements DB {
         const shells = navigator.locks
             ? await navigator.locks.request('ziya-db-read', () => readFn())
             : await readFn();
-        this.shellCache = shells;
+        this.shellCache = new Map(shells.map(s => [s.id, s]));
         this.shellCacheTs = Date.now();
+        this.shellCacheDirtyIds.clear();
         // Return a clone so caller mutations don't affect the cached copy.
         return shells.map(c => ({ ...c }));
     }
@@ -1497,7 +1555,7 @@ class ConversationDB implements DB {
     async moveConversationToFolder(conversationId: string, folderId: string | null): Promise<boolean> {
         await this.init();
         const tx = this.db!.transaction(STORE_NAME, 'readwrite');
-        this.invalidateShellCache();
+        this.markShellDirty(conversationId);
         const store = tx.objectStore(STORE_NAME);
 
         return new Promise((resolve, reject) => {
