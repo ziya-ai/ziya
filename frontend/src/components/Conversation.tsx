@@ -48,7 +48,11 @@ const __processMessageQueue = () => {
         if (entry) {
             try { entry.task(); } catch (e) { console.warn('deferred markdown render threw:', e); }
         }
-        if (__messageRenderQueue.length > 0) __processMessageQueue();
+        // Yield to scroll/input between mounts.  Without this delay the queue
+        // self-reschedules immediately and rIC fires back-to-back, blocking
+        // the main thread for hundreds of ms across consecutive heavy mounts.
+        // setTimeout yields a macrotask so any queued events run first.
+        if (__messageRenderQueue.length > 0) setTimeout(__processMessageQueue, 50);
     }, { timeout: 500 });
 };
 
@@ -90,8 +94,18 @@ const LazyMarkdownRenderer: React.FC<React.ComponentProps<typeof MarkdownRendere
             observer = new IntersectionObserver((entries) => {
                 for (const e of entries) {
                     if (e.isIntersecting) {
-                        entry.priority = 100;
-                        __processMessageQueue();
+                        // Bypass the queue: mount visible items immediately
+                        // instead of waiting for an rIC slot.  Going through
+                        // the queue serializes mounts one-per-idle-callback,
+                        // which causes observable scroll freezes — each rIC
+                        // can fire mid-scroll and block for 100-300ms while a
+                        // heavy MarkdownRenderer mounts.  Direct setMounted
+                        // lets React batch concurrent mounts that arrive in
+                        // the same frame.
+                        const idx = __messageRenderQueue.indexOf(entry);
+                        if (idx >= 0) __messageRenderQueue.splice(idx, 1);
+                        mountedRef.current = true;
+                        setMounted(true);
                         observer?.disconnect();
                         break;
                     }

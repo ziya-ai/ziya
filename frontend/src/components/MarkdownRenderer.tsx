@@ -60,7 +60,9 @@ const __processDiagramQueue = () => {
         if (cb) {
             try { cb(); } catch (e) { console.warn('deferred diagram render threw:', e); }
         }
-        if (__diagramRenderQueue.length > 0) __processDiagramQueue();
+        // Yield between heavy diagram mounts (mermaid layout, vega-embed,
+        // drawio parse) so scroll/input handlers can run between renders.
+        if (__diagramRenderQueue.length > 0) setTimeout(__processDiagramQueue, 50);
     }, { timeout: 2000 });
 };
 
@@ -6105,22 +6107,38 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             );
 
             // Pass 2: End-of-string — short orphaned content after last closing fence
-            processedMarkdown = processedMarkdown.replace(
+            // Restrict the regex to a small tail window to avoid catastrophic
+            // backtracking on long markdown.  The pattern
+            //   (?:[^\n]{0,80}\n?){1,5}
+            // with no start anchor and a `$` end anchor is O(N · 2^k) on
+            // strings that don't match — observed at 13s on a 113KB message.
+            // The leak guard caps content at 120 chars, so a 1000-char tail
+            // window is more than enough to find any real leak (5 lines × 80
+            // chars + fence = ~410 chars worst case).
+            {
+                const TAIL_LEN = 1000;
+                const tailStart = Math.max(0, processedMarkdown.length - TAIL_LEN);
+                const tail = processedMarkdown.slice(tailStart);
                 // (?<!`) lookbehind prevents matching ``` inside longer fences
                 // like ```` (4-backtick tool blocks).
-                /(?<!`)```([ \t]*\n)((?:[^\n]{0,80}\n?){1,5})$/,
-                (_match, newline, leaked) => {
+                const tailRe = /(?<!`)```([ \t]*\n)((?:[^\n]{0,80}\n?){1,5})$/;
+                const m = tail.match(tailRe);
+                if (m && typeof m.index === 'number') {
+                    const newline = m[1];
+                    const leaked = m[2];
                     const trimmed = leaked.trim();
-                    if (!trimmed || trimmed.length > 120) {
-                        return _match; // Too long to be a leak — leave it alone
+                    const tooLong = !trimmed || trimmed.length > 120;
+                    const hasBlankLine = (newline + leaked).includes('\n\n');
+                    const hasInnerFence = leaked.includes('```');
+                    if (!tooLong && !hasBlankLine && !hasInnerFence) {
+                        console.debug('🔧 Fence fix (tail): reabsorbed leaked content:', trimmed);
+                        processedMarkdown =
+                            processedMarkdown.slice(0, tailStart) +
+                            tail.slice(0, m.index) +
+                            trimmed + '\n```';
                     }
-                    // Same two guards as Pass 1
-                    if ((newline + leaked).includes('\n\n')) return _match;
-                    if (leaked.includes('```')) return _match;
-                    console.debug('🔧 Fence fix (tail): reabsorbed leaked content:', trimmed);
-                    return trimmed + '\n```';
                 }
-            );
+            }
 
             // Fix code fences with invalid language tags.
             // LLMs sometimes produce fences like 
