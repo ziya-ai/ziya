@@ -1,17 +1,35 @@
-Helpful coding assistant that explains what it is suggesting and why, and allows you to selectively apply changes once you understand and agree with them.
-Comprehensive in-line techncial visualizations, encompassing more than [ ] diagram types, using a D3 plugin architecture that incorporates graphviz, mermaid, vegalite, drawio, joint, mathml/katex, and others. Each visualization plugin has a preprocessing layer that normalizes content from any supported LLM.
-Support for multiple backend providers, including Amazon Bedrock and Google Gemini. Models may be changed mid-conversation for second opinions.
-Content aware text highlighting covering [ ] unique languages
-Display and application of Diffs and patches. The patch application system automatically compensates for thousands of inexact patterns provided by LLMs, allowing patches to be applied instantly. A regression suite of over 345 edge-case patches ensures patches will apply cleanly regardless of language or source LLM.
-Native reading of common file formats including pdf, docx, xlsx, and dynamic loading context helpers for more obscure file types like network pcap files.
-Support for standard MCPs, and built-in system and shell access MCPs. Browsing and in-browser installation and configuration of many MCPs through mcp-registries.
-Per-MCP pluggable prettyprint / output management.
-Context management, with constant display of number of consumed tokens, allowing users to selectively remove content that may no longer be relevant, and perhaps most importantly, to preload entire source files or repositories that will help models answer questions rapidly without having to search around for relevant context.
-Persistent conversation history. Conversations will never 'reset' and lose their brains because context is overflowing.
-Images can be attached to conversation streams for models to interpret.
-Conversations can be forked to follow tangential paths or fixes.
-Conversations can be organized by project.
-Individual conversations or entire histories can be exported or imported.
-Any item in conversational history may be edited, resubmitted, forked, truncated, or removed. 
-In-line HTML mockups for discussion of interfaces.
-Pluggable stencil library for image generation.
+Ziya is a self-hosted AI workbench that runs alongside your editor rather than
+replacing it. You point it at a codebase, run it locally, and talk to it in a
+browser or terminal. It started about two years ago as a small project to put a
+usable frontend on AWS Bedrock and fix the things that were frustrating about
+other AI tools at the time — auto-compaction throwing away the parts of a
+conversation that mattered, copy-paste-from-chat as the primary diff workflow,
+visual output treated as a niche concern. It's been mine to evolve for the last
+year and a half, and is now used daily by a few hundred engineers at a large
+company.
+
+The shape of it:
+
+- Diffs come back rendered with per-hunk Apply/Undo. A four-stage patch pipeline
+  handles the not-quite-right output models produce; a regression suite of
+  ~345 awkward patches keeps it honest.
+- Context is user-controlled. No auto-compaction. Mute, fork, truncate, drop
+  files. 30+ turn sessions are normal.
+- Inline visualizations through seven renderers (Mermaid, Graphviz, Vega-Lite,
+  DrawIO, KaTeX, HTML mockups, packet diagrams) — the model picks the format.
+- MCP tool integration with HMAC-signed results, fabrication detection in the
+  text stream, and a three-strike kill on hallucinated tool calls.
+- AST-indexed code intelligence with reference tracing, importer/caller queries,
+  and symbol search.
+- Parallel agent swarms with dependency ordering, memory crystals, and
+  crash-resilient checkpointing — useful when work is genuinely parallel.
+- Same backend in browser UI and CLI (`ziya chat`, `ziya ask`, `ziya review`).
+- Multiple model providers (Bedrock, Google, OpenAI, Anthropic) with mid-
+  conversation switching for second opinions and rate-limit routing.
+
+Self-hosted, MIT licensed, no telemetry, no account.
+
+It is not an IDE and isn't trying to become one. If your workflow moves between
+code, architecture, operational data, and visual debugging across many threads
+and you find that existing AI tools cover only part of that surface, this is
+the kind of thing that's worth twenty minutes of your time.
