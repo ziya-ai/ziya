@@ -8,6 +8,7 @@ directories to find globally-shared items.
 """
 
 import json
+from collections import OrderedDict
 import time
 from pathlib import Path
 from typing import List
@@ -26,6 +27,35 @@ from ..models.group import ChatGroup
 # Self-heals on file change because mtime+size differ.
 _summary_cache = {}
 
+# Per-file mtime cache for collect_global_chats() (full Chat objects).
+# Keyed by absolute path string; value is (st_mtime, st_size, Chat|None).
+# Same self-healing pattern as _summary_cache: stat is ~50µs vs the
+# read+decrypt+json.loads+Chat(**data) cost of ~5-20ms per file (Pydantic
+# Chat validation iterates every Message).  This is hit by include_messages=true
+# listings and the get_chat cross-project fallback path; on the cold-start
+# path observed in production, a single getChat call that fell through to
+# this function blocked a project switch for 50 seconds.
+#
+# Bounded LRU because each cached Chat carries its full message array — a
+# user with many large conversations could otherwise grow this cache to
+# hundreds of MB.  200 entries × ~1MB worst-case = ~200MB ceiling.  The
+# summary cache stays unbounded (entries are tiny).
+#
+# Invariant: callers must NOT mutate the returned Chat objects.  They are
+# shared across requests via this cache.  Constructing a defensive deep
+# copy on every hit would defeat most of the perf win; the contract is
+# read-only at the call sites today and we rely on that.
+_FULL_CACHE_MAX = 200
+_full_cache: "OrderedDict[str, tuple]" = OrderedDict()
+
+
+def _full_cache_put(path_str: str, value: tuple) -> None:
+    """Insert into _full_cache with LRU eviction."""
+    _full_cache[path_str] = value
+    _full_cache.move_to_end(path_str)
+    while len(_full_cache) > _FULL_CACHE_MAX:
+        _full_cache.popitem(last=False)
+
 
 def collect_global_chats(
     ziya_home: Path,
@@ -43,6 +73,9 @@ def collect_global_chats(
     t0 = time.perf_counter()
     n_files = 0
     n_globals = 0
+    n_hit = 0
+    n_miss = 0
+    t_stat = 0.0
     t_read = 0.0
     t_parse = 0.0
     results: List[Chat] = []
@@ -57,11 +90,29 @@ def collect_global_chats(
         for chat_file in chats_dir.glob("*.json"):
             if chat_file.name.startswith("_"):
                 continue
+            if chat_file.name.endswith(".bindings.json"):
+                continue
             n_files += 1
             try:
+                t_s = time.perf_counter()
+                st = chat_file.stat()
+                t_stat += time.perf_counter() - t_s
+
+                path_str = str(chat_file)
+                cached = _full_cache.get(path_str)
+                if cached is not None and cached[0] == st.st_mtime and cached[1] == st.st_size:
+                    n_hit += 1
+                    _full_cache.move_to_end(path_str)
+                    if cached[2] is not None:
+                        results.append(cached[2])
+                        n_globals += 1
+                    continue
+                n_miss += 1
+
                 t_r = time.perf_counter()
                 raw = chat_file.read_bytes()
                 if not raw:
+                    _full_cache_put(path_str, (st.st_mtime, st.st_size, None))
                     continue
 
                 from app.utils.encryption import is_encrypted, get_encryptor
@@ -71,17 +122,23 @@ def collect_global_chats(
 
                 t_p = time.perf_counter()
                 data = json.loads(raw)
-                if data.get("isGlobal"):
-                    results.append(Chat(**data))
-                    n_globals += 1
+                if not data.get("isGlobal"):
+                    _full_cache_put(path_str, (st.st_mtime, st.st_size, None))
+                    t_parse += time.perf_counter() - t_p
+                    continue
+
+                chat = Chat(**data)
+                _full_cache_put(path_str, (st.st_mtime, st.st_size, chat))
+                results.append(chat)
+                n_globals += 1
                 t_parse += time.perf_counter() - t_p
             except Exception as exc:
                 logger.debug(f"Skipping {chat_file} during global scan: {exc}")
 
-    logger.info(
+    logger.debug(
         f"collect_global_chats: total={(time.perf_counter()-t0)*1000:.0f}ms "
-        f"read={t_read*1000:.0f}ms parse={t_parse*1000:.0f}ms "
-        f"files={n_files} globals={n_globals}"
+        f"stat={t_stat*1000:.0f}ms read={t_read*1000:.0f}ms parse={t_parse*1000:.0f}ms "
+        f"files={n_files} globals={n_globals} hit={n_hit} miss={n_miss}"
     )
     return results
 
@@ -183,7 +240,7 @@ def collect_global_chat_summaries(
             except Exception as exc:
                 logger.debug(f"Skipping {chat_file} during global summary scan: {exc}")
 
-    logger.info(
+    logger.debug(
         f"collect_global_chat_summaries: total={(time.perf_counter()-t0)*1000:.0f}ms "
         f"stat={t_stat*1000:.0f}ms read={t_read*1000:.0f}ms parse={t_parse*1000:.0f}ms "
         f"files={n_files} globals={n_globals} hit={n_hit} miss={n_miss}"
