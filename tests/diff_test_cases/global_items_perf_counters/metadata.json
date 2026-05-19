@@ -1,0 +1,6 @@
+{
+    "target_file": "app/storage/global_items.py",
+    "description": "Reproduce diff application failure: adding three perf-counter initializations (n_hit, n_miss, t_stat) inside collect_global_chats(). The body of collect_global_chats already references these names (n_hit, n_miss, t_stat) without initialization, mirroring the structure of collect_global_chat_summaries which DOES initialize them. The diff inserts the missing initializations at @@ -73,6 +73,9 @@. This test references the actual current state of app/storage/global_items.py.",
+    "date_added": "2026-05-15",
+    "issue_reference": "global_items_perf_counters_init"
+}

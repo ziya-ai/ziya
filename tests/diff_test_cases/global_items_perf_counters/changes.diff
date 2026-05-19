@@ -1,0 +1,13 @@
+diff --git a/app/storage/global_items.py b/app/storage/global_items.py
+--- a/app/storage/global_items.py
++++ b/app/storage/global_items.py
+@@ -73,6 +73,9 @@
+     t0 = time.perf_counter()
+     n_files = 0
+     n_globals = 0
++    n_hit = 0
++    n_miss = 0
++    t_stat = 0.0
+     t_read = 0.0
+     t_parse = 0.0
+     results: List[Chat] = []

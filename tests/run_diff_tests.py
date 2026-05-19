@@ -379,6 +379,10 @@ class DiffRegressionTest(unittest.TestCase):
         """
         self.run_diff_test('model_defaults_config')
 
+    def test_global_items_perf_counters(self):
+        """Reproduce diff failure: insert n_hit/n_miss/t_stat counter inits in collect_global_chats."""
+        self.run_diff_test('global_items_perf_counters')
+
 
 
 
