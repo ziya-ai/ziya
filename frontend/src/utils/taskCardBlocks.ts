@@ -27,7 +27,7 @@ export const makeRepeatBlock = (name: string = 'Repeat'): Block => ({
   repeat_count: 3,
   repeat_max: null,
   repeat_parallel: false,
-  repeat_propagate: 'none',
+  repeat_propagate: 'last',
   body: [makeTaskBlock('Iteration body')],
 });
 
@@ -41,9 +41,43 @@ export const makeParallelBlock = (name: string = 'Parallel'): Block => ({
   body: [makeTaskBlock('Parallel branch A'), makeTaskBlock('Parallel branch B')],
 });
 
+export const makeUntilBlock = (name: string = 'Until'): Block => ({
+  block_type: 'until',
+  id: nextId('u'),
+  name,
+  until_mode: 'model',
+  until_condition: '',
+  until_max: 5,
+  body: [makeTaskBlock('Iteration body')],
+});
+
+/**
+ * Schedule = the "outer-outer" trigger decorator.  Wraps any body
+ * (Task / Repeat / Parallel / Until / nested Schedule) and fires
+ * recurring TaskRuns when the in-process scheduler ticks.
+ * See app/agents/task_scheduler.py.
+ */
+export const makeScheduleBlock = (name: string = 'Schedule'): Block => ({
+  block_type: 'schedule',
+  id: nextId('s'),
+  name,
+  schedule_mode: 'interval',
+  schedule_interval_value: 1,
+  schedule_interval_unit: 'hours',
+  schedule_at_iso: null,
+  schedule_daily_at: null,
+  schedule_cron: null,
+  schedule_enabled: true,
+  schedule_catch_up: true,
+  schedule_max_runs: null,
+  body: [makeTaskBlock('Scheduled action')],
+});
+
 export const makeBlock = (type: BlockType, name?: string): Block => {
   if (type === 'repeat') return makeRepeatBlock(name);
   if (type === 'parallel') return makeParallelBlock(name);
+  if (type === 'until') return makeUntilBlock(name);
+  if (type === 'schedule') return makeScheduleBlock(name);
   return makeTaskBlock(name);
 };
 

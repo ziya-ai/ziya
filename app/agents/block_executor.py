@@ -33,6 +33,7 @@ from ..storage.task_runs import TaskRunStorage
 from . import task_templating
 from .task_executor import TaskExecutorError, execute_task_block
 from . import task_run_stream_relay as _relay
+from .until_evaluator import evaluate_condition as _evaluate_until_condition_with_model
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,10 @@ async def execute_block(block: Block, ctx: ExecutionContext) -> Artifact:
         return await _execute_repeat(block, ctx)
     if block.block_type == "parallel":
         return await _execute_parallel(block, ctx)
+    if block.block_type == "until":
+        return await _execute_until(block, ctx)
+    if block.block_type == "schedule":
+        return await _execute_schedule_passthrough(block, ctx)
     raise TaskExecutorError(f"Unknown block_type: {block.block_type!r}")
 
 
@@ -129,17 +134,57 @@ def _until_condition_met(
     return cond.lower() in (artifact.summary or "").lower()
 
 
+def _build_iteration_context(bindings: "task_templating.IterationBindings") -> str:
+    """Build a plain-language context block describing prior iteration
+    state for the model.  Prepended to a Task's instructions inside
+    Repeat/Until so users can write "use the last result" in plain
+    English without knowing about Mustache templating.
+
+    Returns the empty string when there's nothing useful to surface
+    (e.g. parallel count-mode iterations, where bindings carry only
+    \`index\` -- not informative on its own).
+    """
+    has_previous = bindings.previous is not None
+    has_item = bindings.item is not None
+    has_history = bool(bindings.all_summaries)
+    if not (has_previous or has_item or has_history):
+        return ""
+    lines = ["[Iteration context -- automatically provided to help your task]"]
+    lines.append(f"- Iteration number: {bindings.index}")
+    if has_item:
+        lines.append(f"- Current item: {bindings.item}")
+    if has_previous:
+        prev = (bindings.previous.summary or "").strip()
+        if prev:
+            lines.append(f"- Previous iteration produced: {prev}")
+    if has_history:
+        prior = [s.strip() for s in bindings.all_summaries if s.strip()]
+        if prior:
+            # Cap at 10 to keep the context block bounded on long Repeats.
+            shown = prior[-10:]
+            ellipsis = " ..." if len(prior) > 10 else ""
+            lines.append(
+                f"- All prior results (oldest->newest):{ellipsis} "
+                + " | ".join(shown)
+            )
+    return "\n".join(lines)
+
+
 def _apply_templating_to_task(block: Block, ctx: ExecutionContext) -> Block:
     """Return a shallow copy of the task block with instructions rendered
-    against the innermost active iteration bindings.  If no Repeat is
-    active, returns the block unchanged."""
+    against the innermost active iteration bindings, then prepended with
+    an auto-generated iteration-context block so prior results are
+    surfaced to the model without requiring explicit templating.
+    Returns the block unchanged when no Repeat/Until is active."""
     if not ctx.binding_stack or not block.instructions:
         return block
     bindings = ctx.binding_stack[-1]
     rendered = task_templating.render(block.instructions, bindings)
-    if rendered == block.instructions:
+    context = _build_iteration_context(bindings)
+    if not context and rendered == block.instructions:
         return block
-    return block.model_copy(update={"instructions": rendered})
+    final = f"{context}\n\n{rendered}" if context else rendered
+    return block.model_copy(update={"instructions": final})
 
 
 async def _execute_sequence(
@@ -315,9 +360,12 @@ async def _execute_repeat(
         for i in range(len(iterations)):
             if ctx.cancel_requested():
                 raise BlockExecutionCancelled()
-            # Honour the propagate mode: none = empty, last = prior artifact,
-            # all = prior artifact + running list of summaries.
-            prev_for_binding = last_artifact if propagate in ("last", "all") else None
+            # Honour propagate mode.  "none" isolates iterations entirely
+            # (no prior info reaches templating or auto-injection).
+            # Anything else surfaces the previous artifact; "all" also
+            # surfaces the full history.
+            isolate = propagate == "none"
+            prev_for_binding = None if isolate else last_artifact
             prior_for_binding = prior_summaries if propagate == "all" else None
             artifact = await _run_one(
                 i,
@@ -402,3 +450,101 @@ def _derive_signature(artifact: Artifact) -> str:
     Extracted from the artifact's decisions/summary as a best-effort."""
     probe = "\n".join(artifact.decisions[:3]) or artifact.summary[:300]
     return hashlib.sha256(probe.encode("utf-8", errors="replace")).hexdigest()[:12]
+
+
+async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
+    """Repeat the body until a model-evaluated condition is true.
+
+    On each iteration:
+      1. Run the body sequence (top-to-bottom).
+      2. Ask the evaluator model: given this artifact, is
+         <condition> true?  Reply yes or no.
+      3. If yes → terminate; if no and max not hit → continue.
+
+    Hard upper bound is `until_max` (defaults to 5 if unset) so a
+    never-satisfied condition cannot hang the run.
+    """
+    n_max = max(1, int(block.until_max or 5))
+    condition = (block.until_condition or "").strip()
+    mode = (block.until_mode or "model").lower()
+    start = time.time()
+    last_artifact: Optional[Artifact] = None
+    outputs: List[ArtifactPart] = []
+    decisions: List[str] = []
+
+    await _emit(ctx, {
+        "type": "block_started",
+        "block_id": block.id, "block_type": "until",
+        "planned": n_max, "at": time.time(),
+    })
+
+    for i in range(n_max):
+        if ctx.cancel_requested():
+            raise BlockExecutionCancelled()
+        await _emit(ctx, {
+            "type": "iteration_started",
+            "block_id": block.id, "index": i,
+        })
+        bindings = task_templating.IterationBindings(
+            index=i, item=None, previous=last_artifact, all_summaries=[],
+        )
+        ctx.binding_stack.append(bindings)
+        try:
+            artifact = await _execute_sequence(block.body, ctx)
+        finally:
+            ctx.binding_stack.pop()
+        await _record_iteration(block, ctx, i, artifact)
+        await _emit(ctx, {
+            "type": "iteration_completed",
+            "block_id": block.id, "index": i,
+            "status": ("failed" if artifact.failed else "passed"),
+            "signature": artifact.signature,
+            "duration_ms": artifact.duration_ms, "tokens": artifact.tokens,
+        })
+        last_artifact = artifact
+        outputs.extend(artifact.outputs)
+
+        if not condition:
+            # No condition → behave like Repeat-until-success.
+            if not artifact.failed:
+                break
+            continue
+        if mode == "expression":
+            # Reserved for a future expression evaluator.  Until then,
+            # treat as never-satisfied so the loop runs to until_max.
+            decisions.append("until_mode='expression' not yet implemented; running to max")
+            continue
+        # mode == "model"
+        try:
+            satisfied = await _evaluate_until_condition_with_model(condition, artifact)
+        except Exception as e:
+            logger.warning(f"until condition eval failed (continuing): {e}")
+            satisfied = False
+        if satisfied:
+            decisions.append(f"until condition satisfied at iter {i}")
+            break
+
+    elapsed_ms = int((time.time() - start) * 1000)
+    await _emit(ctx, {
+        "type": "block_completed", "block_id": block.id, "at": time.time(),
+    })
+    return Artifact(
+        summary=(last_artifact.summary if last_artifact else "(until ran 0 iterations)"),
+        decisions=(last_artifact.decisions if last_artifact else []) + decisions,
+        outputs=outputs, duration_ms=elapsed_ms,
+        created_at=time.time(),
+        failed=bool(last_artifact and last_artifact.failed),
+    )
+
+
+async def _execute_schedule_passthrough(
+    block: Block, ctx: ExecutionContext,
+) -> Artifact:
+    """A schedule block executed directly (rather than fired by the
+    scheduler) runs its body once.  This makes "Run now" on a
+    scheduled card behave intuitively and keeps tests simple.
+    """
+    if not block.body:
+        return Artifact(summary="(empty schedule block)", created_at=time.time())
+    logger.info(f"schedule block {block.id} executed directly (passthrough)")
+    return await _execute_sequence(block.body, ctx)

@@ -6,7 +6,7 @@ import React from 'react';
 import type { Block, RepeatMode, PropagateMode } from '../../types/task_card';
 import { BlockEditor } from './BlockEditor';
 import {
-  makeTaskBlock, makeRepeatBlock, makeParallelBlock,
+  makeTaskBlock, makeRepeatBlock, makeParallelBlock, makeUntilBlock, makeScheduleBlock,
 } from '../../utils/taskCardBlocks';
 import './task-card-editor.css';
 
@@ -28,16 +28,18 @@ export const RepeatBlockEditor: React.FC<Props> = ({ block, onChange, onDelete }
     body.splice(idx, 1);
     update({ body });
   };
-  const addChild = (kind: 'task' | 'repeat' | 'parallel') => {
+  const addChild = (kind: 'task' | 'repeat' | 'parallel' | 'until' | 'schedule') => {
     const child =
       kind === 'task' ? makeTaskBlock() :
       kind === 'repeat' ? makeRepeatBlock() :
-      makeParallelBlock();
+      kind === 'parallel' ? makeParallelBlock() :
+      kind === 'until' ? makeUntilBlock() :
+      makeScheduleBlock();
     update({ body: [...block.body, child] });
   };
 
   const mode: RepeatMode = block.repeat_mode ?? 'count';
-  const propagate: PropagateMode = block.repeat_propagate ?? 'none';
+  const propagate: PropagateMode = block.repeat_propagate ?? 'last';
 
   return (
     <div className="tc-block tc-block-repeat">
@@ -95,11 +97,11 @@ export const RepeatBlockEditor: React.FC<Props> = ({ block, onChange, onDelete }
           className="tc-select tc-select-right"
           value={propagate}
           onChange={e => update({ repeat_propagate: e.target.value as PropagateMode })}
-          title="What prior-iteration info is templated into the next iteration's instructions"
+          title="How much prior-iteration context the model sees on each iteration"
         >
-          <option value="none">no propagation</option>
-          <option value="last">last artifact</option>
-          <option value="all">all artifacts</option>
+          <option value="none">isolated (no context)</option>
+          <option value="last">previous result</option>
+          <option value="all">all prior results</option>
         </select>
         {onDelete && (
           <button className="tc-icon-btn" onClick={onDelete} title="Delete">⋯</button>
@@ -119,6 +121,8 @@ export const RepeatBlockEditor: React.FC<Props> = ({ block, onChange, onDelete }
           <button className="tc-add-btn" onClick={() => addChild('task')}>+ Task</button>
           <button className="tc-add-btn" onClick={() => addChild('repeat')}>+ Repeat</button>
           <button className="tc-add-btn" onClick={() => addChild('parallel')}>+ Parallel</button>
+          <button className="tc-add-btn" onClick={() => addChild('until')}>+ Until</button>
+          <button className="tc-add-btn" onClick={() => addChild('schedule')}>+ Schedule</button>
         </div>
       </div>
     </div>
