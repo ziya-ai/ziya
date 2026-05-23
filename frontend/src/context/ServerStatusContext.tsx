@@ -79,9 +79,9 @@ export const ServerStatusProvider: React.FC<{ children: ReactNode }> = ({
   }, []);
 
   useEffect(() => {
-    // Initial check
-    checkHealth();
-
+    // No initial check on mount — if the page loaded, the server is reachable
+    // and ConfigContext has already fetched /api/config. The first real poll
+    // fires after POLL_INTERVAL_HEALTHY (30s).
     const schedule = () => {
       const interval = consecutiveFailures.current >= FAILURE_THRESHOLD
         ? POLL_INTERVAL_UNHEALTHY

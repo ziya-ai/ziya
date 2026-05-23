@@ -162,7 +162,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                                 "status_code": 500
                             }
                         
-                        yield f"data: {json.dumps(error_data)}\n\n"
+                        yield self._log_sse_error(error_data)
                         yield "data: [DONE]\n\n"
                         return
                     
@@ -412,7 +412,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                             if json_start >= 0 and json_end > json_start:
                                 error_json = chunk[json_start:json_end]
                                 error_data = json.loads(error_json)
-                                yield f"data: {json.dumps(error_data)}\n\n"
+                                yield self._log_sse_error(error_data)
                                 yield "data: [DONE]\n\n"
                                 return
                         except Exception as e:
@@ -451,7 +451,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                             json_part = json_part.rstrip()
                             logger.info(f"Extracted JSON part: {json_part}")
                             error_data = json.loads(json_part)
-                            yield f"data: {json.dumps(error_data)}\n\n"
+                            yield self._log_sse_error(error_data)
                             yield "data: [DONE]\n\n"
                             return
                         except json.JSONDecodeError:
@@ -459,7 +459,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                     
                     # Fallback: treat as regular chunk processing error
                     error_msg = {"error": "chunk_processing_error", "detail": str(chunk_error)}
-                    yield f"data: {json.dumps(error_msg)}\n\n"
+                    yield self._log_sse_error(error_msg)
                     
                     # Preserve accumulated content before error
                     if accumulated_content and not partial_response_preserved:
@@ -500,6 +500,15 @@ class StreamingMiddleware(BaseHTTPMiddleware):
             except Exception as done_error:
                 logger.error(f"Error sending DONE marker: {str(done_error)}")
     
+    def _log_sse_error(self, error_data: dict) -> str:
+        """Log an error at ERROR level and return the SSE-formatted data line.
+
+        Use this instead of bare yield for every error event sent to the client
+        so that SSE errors are always visible in the server log.
+        """
+        logger.error(f"SSE error sent to client: {json.dumps(error_data)}")
+        return f"data: {json.dumps(error_data)}\n\n"
+
     def _contains_partial(self, content: str) -> bool:
         """Check if content contains the start of a tool call but not the end."""
         
