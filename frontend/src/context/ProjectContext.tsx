@@ -19,6 +19,8 @@ import * as contextApi from '../api/contextApi';
 import * as skillApi from '../api/skillApi';
 import * as tokenApi from '../api/tokenApi';
 import { db } from '../utils/db';
+import * as syncApi from '../api/conversationSyncApi';
+import * as folderSyncApi from '../api/folderSyncApi';
 
 const LAST_PROJECT_KEY = 'ZIYA_LAST_PROJECT_ID';
 
@@ -486,9 +488,10 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
 
     // Reassign conversations and folders directly in IndexedDB
     const allConversations = await db.getConversations();
+    const reassignedConvIds = allConversations.filter(c => c.projectId === sourceId).map(c => c.id);
     const updated = allConversations.map(c =>
       c.projectId === sourceId
-        ? { ...c, projectId: targetId, _version: Date.now() }
+        ? (reassignedConvIds.push(c.id), { ...c, projectId: targetId, _version: Date.now() })
         : c
     );
     await db.saveConversations(updated);
@@ -497,6 +500,54 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     const foldersToUpdate = allFolders.filter(f => f.projectId === sourceId);
     for (const folder of foldersToUpdate) {
       await db.saveFolder({ ...folder, projectId: targetId });
+    }
+
+    // Push the reassigned records to the server under targetId BEFORE deleting
+    // sourceId.  deleteProject below wipes the server's per-project chat
+    // storage for sourceId; without this push, the reassigned conversations
+    // exist only in local IDB and are invisible to any other browser /
+    // machine — and lost entirely if this IDB is cleared.
+    try {
+      if (reassignedConvIds.length > 0) {
+        const reassignedConvs = updated
+          .filter(c => reassignedConvIds.includes(c.id))
+          .map(c => syncApi.conversationToServerChat(c, targetId));
+        await syncApi.bulkSync(targetId, reassignedConvs);
+        console.log(`📡 MERGE: Pushed ${reassignedConvs.length} reassigned conversations to ${targetId}`);
+      }
+      if (foldersToUpdate.length > 0) {
+        const reassignedFolders = foldersToUpdate.map(f => ({ ...f, projectId: targetId }));
+        await folderSyncApi.bulkSyncFolders(targetId, reassignedFolders);
+        console.log(`📡 MERGE: Pushed ${reassignedFolders.length} reassigned folders to ${targetId}`);
+      }
+    } catch (e) {
+      console.error('📡 MERGE: Failed to push reassigned records to target project — aborting merge to avoid data loss:', e);
+      throw new Error('Failed to migrate conversations to target project. Source project not deleted.');
+    }
+
+    // Push the reassigned records to the server under targetId BEFORE
+    // calling deleteProject below.  deleteProject wipes the server's
+    // per-project chat storage for sourceId; without this push, the
+    // reassigned conversations exist only in local IDB and are invisible
+    // to any other browser / machine — and lost entirely if this IDB is
+    // cleared.  We abort the merge if the push fails so the user does not
+    // silently lose data.
+    try {
+      if (reassignedConvIds.length > 0) {
+        const reassignedConvs = updated
+          .filter(c => reassignedConvIds.includes(c.id))
+          .map(c => syncApi.conversationToServerChat(c, targetId));
+        await syncApi.bulkSync(targetId, reassignedConvs);
+        console.log(`📡 MERGE: Pushed ${reassignedConvs.length} reassigned conversations to ${targetId}`);
+      }
+      if (foldersToUpdate.length > 0) {
+        const reassignedFolders = foldersToUpdate.map(f => ({ ...f, projectId: targetId }));
+        await folderSyncApi.bulkSyncFolders(targetId, reassignedFolders);
+        console.log(`📡 MERGE: Pushed ${reassignedFolders.length} reassigned folders to ${targetId}`);
+      }
+    } catch (e) {
+      console.error('📡 MERGE: Failed to push reassigned records to target project — aborting:', e);
+      throw new Error('Failed to migrate conversations to target project. Source project not deleted.');
     }
 
     console.log(
