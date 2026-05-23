@@ -18,6 +18,13 @@ _request_project_root: contextvars.ContextVar[Optional[str]] = contextvars.Conte
     'request_project_root', default=None
 )
 
+# Per-request conversation ID — set when a streaming turn begins, read
+# by code paths that retrieve memories without going through MCP tool
+# kwargs (notably the system-prompt builder).
+_request_conversation_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    'request_conversation_id', default=None
+)
+
 
 def set_project_root(path: str) -> None:
     """Set the project root for the current request context."""
@@ -42,3 +49,18 @@ def get_project_root() -> str:
 def get_project_root_or_none() -> Optional[str]:
     """Get the request-scoped project root, or None if not in a request context."""
     return _request_project_root.get()
+
+
+def set_conversation_id(conversation_id: str) -> None:
+    """Set the conversation ID for the current request context.
+
+    Called by the streaming entry point so deeper code paths
+    (memory retrieval, prompt builder) can attribute work to the
+    correct conversation without threading it through every call.
+    """
+    _request_conversation_id.set(conversation_id)
+
+
+def get_conversation_id_or_none() -> Optional[str]:
+    """Get the request-scoped conversation ID, or None if not set."""
+    return _request_conversation_id.get()

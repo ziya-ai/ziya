@@ -1097,6 +1097,39 @@ export const sendPayload = async (
                     }
                 }
 
+                // Live UI sync for model-driven context-management tools.
+                // When the model adds or removes a file via context_add_file /
+                // context_remove_file, the chat record on the server is updated
+                // immediately — but the file tree and ActiveContextBar still
+                // show the user's view. Reuse the same syncContextFromBackend
+                // event the diff-validation flow uses so the file tree picks
+                // up the change without waiting for a chat reload.
+                if (unwrappedData.type === 'tool_display'
+                    && (unwrappedData.tool_name === 'context_add_file'
+                        || unwrappedData.tool_name === 'context_remove_file')) {
+                    try {
+                        // Tool result may arrive as an object or as a JSON
+                        // string depending on which provider stringified it.
+                        const raw = unwrappedData.result;
+                        const result = typeof raw === 'string'
+                            ? (() => { try { return JSON.parse(raw); } catch { return null; } })()
+                            : raw;
+                        if (result && result.success && result.path) {
+                            const isAdd = unwrappedData.tool_name === 'context_add_file';
+                            window.dispatchEvent(new CustomEvent('syncContextFromBackend', {
+                                detail: {
+                                    addedFiles: isAdd ? [result.path] : [],
+                                    removedFiles: isAdd ? [] : [result.path],
+                                    reason: 'model_context_management',
+                                },
+                            }));
+                            console.log(`📂 MODEL_CONTEXT: ${isAdd ? 'added' : 'removed'} ${result.path}`);
+                        }
+                    } catch (e) {
+                        console.warn('Failed to parse context-management tool result:', e);
+                    }
+                }
+
                 // Handle diff validation status (informational only - no rewind)
                 if (unwrappedData.type === 'diff_validation_failed' ||
                     unwrappedData.type === 'diff_validation_status' ||
