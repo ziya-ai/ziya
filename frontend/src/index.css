@@ -58,6 +58,17 @@ table.diff, .diff-table {
   width: fit-content;
 }
 
+/* Soft-wrap variant for prose diffs (markdown / plaintext).
+   Overrides the no-wrap defaults above with stronger specificity. */
+.diff-line-content.diff-line-content-wrap {
+  white-space: pre-wrap;
+  word-break: break-word;
+  min-width: 0;
+  width: auto;
+  text-indent: -2ch;
+  padding-left: 2ch;
+}
+
 /* Gutter columns */
 .diff-gutter-col {
   width: 50px;
