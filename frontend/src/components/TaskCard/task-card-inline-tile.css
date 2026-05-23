@@ -199,6 +199,34 @@
   overflow: auto;
 }
 
+.tc-tile__wrappers {
+  list-style: none;
+  margin: 6px 0 8px;
+  padding: 0;
+  font-size: 12px;
+}
+
+.tc-tile__wrappers li {
+  padding: 2px 0;
+  color: var(--tile-wrapper-text, #5a6370);
+  line-height: 1.4;
+}
+
+.tc-tile__wrapper-arrow {
+  display: inline-block;
+  width: 14px;
+  color: var(--tile-wrapper-arrow, #7d8590);
+  font-weight: 600;
+}
+
+.tc-tile__wrapper-divider {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--tile-wrapper-arrow, #7d8590);
+  margin: 6px 0 4px;
+}
+
 .tc-tile__iter-list {
   margin-top: 8px;
   font-size: 12px;
