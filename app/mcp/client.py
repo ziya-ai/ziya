@@ -78,6 +78,13 @@ class MCPClient:
         self._tool_rate_limits: Dict[str, float] = {}
         self._default_rate_limit: float = 2.0  # Default 2 seconds between consecutive calls
         
+        # Serialize stdout reads.  asyncio.StreamReader rejects concurrent
+        # readers with "readuntil() called while another coroutine is
+        # already waiting for incoming data"; without this lock, two
+        # parallel _send_request calls race and the failure cascades into
+        # the consecutive-failure / cooldown machinery.
+        self._io_lock = asyncio.Lock()
+
         # External server health monitoring
         self._consecutive_failures = 0
         self._last_health_check = 0
@@ -219,7 +226,13 @@ class MCPClient:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=working_dir,
                  env=full_env,
-                 limit=1024 * 1024  # 1MB buffer limit for large tool lists
+                 limit=1024 * 1024,  # 1MB buffer limit for large tool lists
+                 # Put each MCP server in its own session so terminal
+                 # SIGINT (^C) does not reach the child.  Otherwise the
+                 # foreground process group receives SIGINT and every
+                 # MCP server exits with code 0, leaving clients
+                 # unhealthy mid-conversation.
+                 start_new_session=True,
             )
             
             # Start background task to capture logs
@@ -759,10 +772,11 @@ class MCPClient:
                     read_attempts += 1
                     
                     try:
-                        response_line_bytes = await asyncio.wait_for(
-                            self.process.stdout.readline(),
-                            timeout=timeout_duration
-                        )
+                        async with self._io_lock:
+                            response_line_bytes = await asyncio.wait_for(
+                                self.process.stdout.readline(),
+                                timeout=timeout_duration
+                            )
                     except asyncio.TimeoutError:
                         # For external servers, try one immediate retry before giving up
                         if is_external_server and _retry_count == 0:

@@ -337,6 +337,23 @@ class ShellServer:
             if not args:
                 continue
             
+            # Handle `cd` in-process: update effective_cwd for subsequent
+            # segments instead of spawning a subprocess (which would change
+            # directory only in its own process and immediately exit).
+            if args[0] == 'cd':
+                target = args[1] if len(args) > 1 else os.path.expanduser('~')
+                # Resolve relative paths against the current effective cwd.
+                if not os.path.isabs(target):
+                    target = os.path.join(effective_cwd or os.getcwd(), target)
+                target = os.path.normpath(target)
+                if os.path.isdir(target):
+                    effective_cwd = target
+                    last_result = subprocess.CompletedProcess(args=args, returncode=0, stdout='', stderr='')
+                else:
+                    last_result = subprocess.CompletedProcess(args=args, returncode=1, stdout='', stderr=f'cd: {target}: No such file or directory\n')
+                accumulated_stderr += last_result.stderr
+                continue
+
             # Extract redirections (2>&1, >/dev/null, etc.) from args
             args, redir_kwargs = self._extract_redirections(args)
 
@@ -539,12 +556,23 @@ class ShellServer:
             
             # Check for command substitution in the segment
             if '$(' in cmd_segment or '`' in cmd_segment:
-                # Extract and validate substituted commands
-                # Pattern for $(...) 
-                substitutions = re.findall(r'\$\(([^)]+)\)', cmd_segment)
-                # Pattern for `...`
-                substitutions.extend(re.findall(r'`([^`]+)`', cmd_segment))
+                # Extract and validate substituted commands.
+                # Bash does not perform command substitution inside
+                # single-quoted strings, and ` inside double quotes is
+                # a literal backtick — both must be excluded or this
+                # validator throws false positives on grep/sed patterns
+                # that legitimately contain backticks.
+                scan_target = re.sub(r"'[^']*'", "", cmd_segment)
+                # Mask escaped backticks so they don't pair with real ones.
+                scan_target = scan_target.replace(r'`', '')
+                substitutions = re.findall(r'\$\(([^)]+)\)', scan_target)
+                substitutions.extend(re.findall(r'`([^`]+)`', scan_target))
                 for sub_cmd in substitutions:
+                    # An empty / whitespace-only capture is not a real
+                    # substitution; skip rather than recursing into a
+                    # nonsense "Empty command" denial.
+                    if not sub_cmd.strip():
+                        continue
                     print(f"Validating command substitution: '{sub_cmd}'", file=sys.stderr)
                     sub_ok, _sub_reason = self.is_command_allowed(sub_cmd)
                     if not sub_ok:

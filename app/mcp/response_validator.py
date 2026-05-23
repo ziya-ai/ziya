@@ -100,7 +100,11 @@ _DANGEROUS_INPUT_PATTERNS: List[re.Pattern] = [
         r"\.\./\.\.",                                          # directory traversal
         r";\s*(?:rm|curl|wget|bash|sh|python|nc|ncat)\b",     # command chaining
         r"\$\{.*?\}",                                          # template injection
-        r"`[^`]*`",                                            # backtick command sub
+        # Backtick command substitution.  Require non-whitespace content
+        # and explicitly exclude adjacent backticks so markdown fences
+        # (```...```) and empty `` pairs do not trip a warning when the
+        # model legitimately passes literal backticks (e.g. grep patterns).
+        r"(?<!`)`(?!`)[^`\s][^`]*?`(?!`)",                     # backtick command sub
     ]
 ]
 
