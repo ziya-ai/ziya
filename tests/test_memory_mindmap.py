@@ -194,6 +194,17 @@ class TestAutoPlacement:
 
 class TestProgressivePrompt:
 
+    @pytest.fixture(autouse=True)
+    def _enable_memory(self, monkeypatch):
+        # Memory category defaults to disabled in production; enable it
+        # for prompt-rendering tests and clear the env-driven cache so
+        # the override is picked up regardless of test ordering.
+        monkeypatch.setenv("ZIYA_ENABLE_MEMORY", "true")
+        from app.mcp.builtin_tools import invalidate_category_cache
+        invalidate_category_cache()
+        yield
+        invalidate_category_cache()
+
     def test_mindmap_triggers_handles_only(self, populated_tree):
         with patch("app.storage.memory.get_memory_storage", return_value=populated_tree):
             from app.utils.memory_prompt import get_memory_prompt_section
