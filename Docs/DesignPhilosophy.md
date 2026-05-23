@@ -17,6 +17,33 @@ like recency-weighted auto-compaction, because we know that the first few
 messages in a conversation set the tone and objective for everything that
 follows. That's hard to justify.
 
+Over time the project has become something more specific than its origin: a
+personal research vehicle for thinking through how agent interactions, task
+decomposition, memory, and context curation should actually feel from the
+user's side. The features that exist are the ones that survived me using them
+daily. The features that don't exist are mostly the ones I haven't yet figured
+out how I want them to work. The pleasant surprise — and the reason this
+document exists at all — is that thinking-through-by-building has produced
+something that other engineers find useful even though I wasn't optimizing for
+them.
+
+If you're also thinking about these questions — how memory should work across
+sessions, how much autonomy to grant an agent and where the right handles are,
+what context curation looks like when the user is competent and informed,
+whether decomposition into parallel agents actually pays off versus a single
+well-aimed thread, what the right interaction surface looks like for a user
+who is competent rather than being onboarded — Ziya is a place you can try
+things. The plumbing is here. The provider abstraction is thin. The
+orchestrator is documented and being pulled apart into smaller pieces. The
+frontend is deliberately not modeled on any of the dominant paradigms (IDE
+plugin, chat-with-tools, wizard-led plan/act) — it's its own ongoing experiment
+in what the workspace looks like when the user is steering, and it's open to
+being redirected or extended in directions I haven't tried. Adding a new
+memory backend, a new coordination primitive, a new agent topology, or a new
+interaction paradigm is a tractable amount of code rather than a research
+project on its own. I would genuinely enjoy comparing notes with people who
+are running their own experiments and want a working substrate to run them on.
+
 ---
 
 ## The User Controls Context, Not the Machine
@@ -35,29 +62,51 @@ split naturally when my mental path forks, which probably helps.
 
 The argument against recency-weighted compaction is specific: the first messages
 in a conversation establish the objective, the constraints, the vocabulary. A
-compaction scheme that weights recent messages higher will eventually discard the
-messages that tell the model *what we're trying to do*. The user knows which
-messages still matter. The machine doesn't.
+compaction scheme that weights recent messages higher will eventually discard
+the messages that tell the model *what we're trying to do*. The literature on
+how models actually use long contexts also suggests the middle of a long
+conversation is the part most likely to be under-attended even when it *is*
+retained — which means a curation policy that keeps recent and discards
+middle-of-conversation context can compound the effect rather than fix it. So
+the failure mode I'm worried about isn't only "the compactor threw away the
+goal-setting"; it's that the parts of a long conversation most at risk of
+being dropped or de-weighted are also the parts the model is least likely to
+attend to in the first place.
+
+The user knows which messages still matter. The machine doesn't — yet. The
+"yet" is doing real work. I'm not philosophically committed to manual curation
+forever; I'm committed to it for as long as automatic curation can't be
+trusted to keep the right things and discard the right things. The reason I
+don't think automatic curation is trustworthy yet is connected to the open
+problem with cross-session memory. They're the same problem at different time
+scales: deciding what's still important about a conversation that ended last
+week is the same capability as deciding what's still important about the last
+fifty messages of this conversation. If a system can't do the first reliably,
+it also can't do the second reliably. I keep working on memory partly because
+I think solving it is the precursor to ever trusting auto-curation. When that
+changes, Ziya's curation surface should change with it.
 
 ---
 
-## Security Is Not Optional — It's the Price of Admission
+## Security Is Load-Bearing
 
 Ziya is built primarily for enterprise users in environments that have strict
 controls about how information is handled and awareness of risks. Ideas like
 encryption at rest are just sensible to win over enterprise users.
 
-In my case, I was operating as an underdog — a mostly subversive project inside
-a company that makes sort-of-competing products. I needed to answer any
-criticism about the risks of security- and privacy-conscious enterprise users
-adopting this tool. That's why it has things like pluggable expiration policies,
-data retention controls, and encryption providers.
+I also developed Ziya inside a large enterprise where security review is a real
+gate, not a checkbox, and where any tool offered to colleagues had to defensibly
+answer questions about credential handling, retention, and data egress before
+anyone would adopt it. That experience shaped the architecture more than any
+abstract philosophy: pluggable expiration policies, configurable data retention,
+the encryption-provider interface, and the auth-provider plugin all exist
+because at some point I needed to point a security reviewer at them.
 
-Also: I was frustrated by tools that interrupted constantly for approval of
-obviously safe operations — and then destroyed my work by doing an irresponsible
-git operation without asking. That's built in. Safe
-operations are trusted from the start. Less safe ones can be approved globally,
-or on a project, discussion, or file basis, with reasonable inheritance models.
+On the day-to-day side: I was frustrated by tools that interrupted constantly
+for approval of obviously safe operations — and then destroyed my work by doing
+something risky without asking. The trust model in Ziya inverts that. Safe
+operations are trusted from the start; less safe ones can be approved globally,
+or per-project, per-conversation, or per-file, with reasonable inheritance.
 
 ### Hallucinated Tool Results Are Dishonest
 
@@ -80,7 +129,7 @@ layers exist to prevent that poisoned-well failure mode.
 
 ---
 
-## Visual Thinking Is Not a Nice-to-Have
+## Visualization as a Normal Mode of Conversation
 
 I work visually. Honestly, timing diagrams have been the most valuable thing —
 they are tedious to implement by hand. But I found that the more structured
@@ -104,27 +153,21 @@ perfect specifications that don't.
 
 ## Deliberate Isolation from Competitors
 
-I tried to never look at what anyone else was doing, because I didn't want to be
-tainted by their interface or architectural decisions. That's not blindness to
-standards and learnings — it's a belief that if I want to build something whose
-experience matches my workflow and thought patterns, I would be unlikely to find
-that in the few clusters of interfaces being built around IDE integration or
-wizard-driven planning.
+For most of the project's life I tried not to look at what anyone else was
+doing, because I didn't want to be tainted by their interface or architectural
+decisions. That's not blindness to standards or to what other people are
+learning — it's the belief that if I'm trying to build something whose
+experience matches *my* workflow and thought patterns, I'm unlikely to find it
+by imitating tools optimized for someone else's. The frontend in particular
+looks the way it does because it was designed against my own working
+constraints rather than against any of the dominant interaction paradigms.
 
-I don't want to necessarily make things too easy for users. I want to provide the
-right level of interface that gives them the power-multiplicative potential of the
-tooling, not something that dumbs them down while trying to do that. That is a
-difficult balance.
-
-Eventually I said: nobody knew or cared that I was building this thing while they
-flocked to Claude Code or Cline or Codex. At some point I needed to understand
-why people were using those tools, because if I was going to win users, I needed
-to either have all the major green checkmarks or have a better way and be ready
-to be specific about that.
-
-That's why the competitive analysis exists and why it opens with "The
-Uncomfortable Summary" listing everything we're missing. It was written for me,
-to force an honest accounting.
+I do periodic sweeps now — captured in the field-notes document — both to keep
+honest about where Ziya is behind the rest of the field on capabilities I
+haven't built, and to notice ideas worth stealing. The point isn't to win users
+against a comparison chart; it's to keep my mental model of the field current
+enough that I'm not building things that have already been done better
+elsewhere, and to admit it openly when they have been.
 
 ---
 
@@ -179,10 +222,12 @@ work I actually do. I'm not ready to remove it, but I'm not selling it either.
 
 ## Refactor Incrementally, Never Rewrite
 
-The orchestrator was monolithic for a long time. That was intentional — it worked,
-and I had other things that were more important. I decided to clean it up when I
-wanted to make the code generally available and encourage others to look at it.
-At that point, unclear code is a liability.
+Several pieces of the codebase have been monolithic for long stretches — the
+request server, the streaming orchestrator, the diff pipeline. That was
+usually intentional: they worked, and I had other things that were more
+important. The cleanup work happens when I'm ready to make a piece generally
+legible (to me later, or to anyone else looking at it), because at that point
+unclear code becomes a liability rather than a tradeoff.
 
 The protocol is always the same:
 
@@ -191,13 +236,10 @@ The protocol is always the same:
 3. Replace the inline code with a call to the extracted module
 4. Verify all tests still pass
 
-`server.py` went from 7,177 lines to 2,879 (−60%). The orchestrator went from
-3,935 to 3,312 with four extracted modules. 74 tests were added during the
-extraction. No behavior changed.
-
-The remaining bulk in the orchestrator is documented in `REFACTORING_HANDOFF.md`
-with exact line counts and extraction candidates. It will be finished, but it
-ships working at every intermediate step.
+Each pass extracts a few modules, adds tests, and leaves the project working
+at every intermediate step. No behavior changes during a refactor — that's the
+rule, and it's what makes the refactors safe to do incrementally rather than
+saving them up for a Big Rewrite that never happens.
 
 ---
 
@@ -233,14 +275,19 @@ will benefit from the things people learned by building them. Including me.
 
 ## Who This Is For
 
-Primarily, senior technical ICs dealing with very complex distributed
-multi-domain problems who want the right interface. It's great for others too,
-all the way to beginners, but the differentiation starts to show when things go
-well beyond "fix this function," "explain this thing," or chat interfaces.
+I built it for myself, so the most honest answer is "people whose work looks
+like mine." Concretely, that's people who spend their day moving between code,
+architecture, operational data, and visual debugging across several parallel
+threads, who hit the limits of "fix this function" / "explain this file"
+interactions pretty quickly, and who would rather curate their own context than
+have a tool decide for them. It works fine for simpler use cases too, but the
+differentiation only really shows up once the problem is messy enough that the
+standard chat-and-autocomplete model starts to feel cramped.
 
-The target user is someone who moves between code, architecture diagrams,
-operational analysis, and visual debugging across many parallel workstreams —
-and finds that no existing AI tool covers that full surface.
+It's also for people who want to *tinker* with the environment they're working
+in. Right now the project is in a state where its rough edges and its research
+questions are visible — the people likely to enjoy it are the ones who see that
+as an opportunity rather than a defect.
 
 ---
 
@@ -250,15 +297,16 @@ The biggest one is that almost all of my attention has gone to the backend.
 The frontend works, and it does the things the backend exposes, but it doesn't
 sell what's underneath. Someone landing on the UI cold would reasonably
 conclude they're looking at a chat interface with a file tree, and miss the
-rest. If growing the user base were a real goal, there would be considerably
-more design investment — onboarding, surfacing the visualization capability
-without the user having to discover it, making the swarm legible, making the
-context curation tools obvious instead of expecting people to find them. I've
-told myself that polish can come later, partly because the underlying model
-capabilities are advancing fast enough that whether this project stays
-relevant at all is genuinely uncertain. The honest version is: I hope someone
-else sees value here and helps with the design side before the bitter lesson
-catches up.
+rest. The capabilities that took the most thought — visualization as a normal
+mode of conversation, the parallel-work model, user-controlled context
+curation, the multi-agent system — are the ones least visible from a cold
+landing. Onboarding is thin, visualizations only appear when the model reaches
+for one, swarm work is more legible from the API than the UI. I've told myself
+the design pass can come later, partly because the underlying model
+capabilities are advancing fast enough that the project's long-term relevance
+is genuinely uncertain (see *On the Bitter Lesson*). The honest version is: I
+hope someone else sees value here and helps with the legibility problem before
+the bitter lesson catches it up.
 
 The other one I feel daily is memory. Ziya has persistent context, projects,
 skills, and crystals that carry within a swarm — but cross-session memory in

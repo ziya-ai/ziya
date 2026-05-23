@@ -1,7 +1,6 @@
 # Ziya Feature Inventory
 
-> **Purpose**: Authoritative, discoverable record of what Ziya actually does — for competitive comparison, marketing, and roadmap decisions.  
-> **Maintainer note**: Update this file when features ship. If it isn't here, it doesn't exist for comparison purposes.
+> Reference list of what Ziya currently does. Useful as a quick check of what's available, and as the place to update when features land. Less polished than the philosophy or README — read those first if you're trying to decide whether the project is for you.
 
 ---
 

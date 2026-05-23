@@ -1,14 +1,18 @@
-# Competitive Gap Analysis: What Ziya Doesn't Have
+# Notes from the Field: What I See When I Look at Other Tools
 
-*Generated: July 2025 — Based on research across 16 competitors*
+I deliberately don't spend much time looking at what other AI tools do — partly because I want Ziya's design to come from how I actually work rather than from imitation, and partly because keeping my head down has been more productive than benchmark-watching. But periodically I do a sweep, both to keep an honest accounting of where Ziya is behind and to notice ideas I should consider stealing. This document is a snapshot of one of those sweeps. It's organized by what I'm missing rather than what I have, because the gaps are the more useful thing to look at — features Ziya already ships only show up here when a competitor does them materially better.
 
-This document is about **what we're missing**, not what we have. Features Ziya already ships are not discussed except where competitors do them materially better.
+A caveat on the methodology: most of what's in this document is paper-based. I've read project READMEs, release notes, and feature pages, but I haven't run most of these tools as a daily driver. The exceptions are Kiro (which I use extensively because of where I work) and Claude's various surfaces — Claude Chat, Claude Code, and Cline — which I've used enough to have real opinions about. Where my judgment about another tool is grounded in actual use, I'll say so. Otherwise: a feature listed on a competitor's marketing page can be anything from "deeply integrated and load-bearing" to "shipped once and abandoned" and I can't always tell which from the outside. Where I cite a number (GitHub stars, plugin counts), the number is probably correct; where I cite a *qualitative* judgment about whether their version is better than ours, I'm usually working from claims rather than experience. Treat the gap inventory as "things worth investigating further" rather than as settled comparisons.
 
 ---
 
 ## The Uncomfortable Summary
 
-Ziya's visualization and diff/patch systems are genuinely best-in-class. But in almost every other dimension of a modern AI chat frontend — multi-user, voice, image generation, plugin ecosystems, mobile, enterprise auth, live preview — the field has moved ahead and Ziya hasn't kept up. Several competitors with 10-60x our community size ship weekly updates across feature areas we haven't started on.
+The first thing that comes out of this exercise is that Ziya is missing most of what a "modern AI chat frontend" is now expected to have — multi-user accounts, voice, image generation, plugin ecosystems, mobile, enterprise auth as a deployable consumer feature, live preview. Several of the tools I look at have communities 10-60x the size of Ziya's and ship weekly across feature areas Ziya hasn't started on. That's the honest bottom line and it's worth keeping it in front of me.
+
+The second thing, less comfortable in a different direction, is that I don't actually know where Ziya fits relative to these tools because I'm not optimizing for the same things they are. The visualization breadth, the patch pipeline, the AST integration, and the parallel-work model — running multiple Ziya servers against the same project against different provider backends with conversations that travel across them — are pieces I haven't seen combined this way elsewhere. I genuinely don't know whether that's because nobody is doing it or because I'm not looking hard enough; I'd rather state the uncertainty than overclaim.
+
+The point of this document is to keep both of those true at the same time. There are large surfaces where Ziya is behind and the catch-up cost would be substantial. There are smaller surfaces where Ziya might be doing something the rest of the field isn't, and those are worth understanding too — partly because they tell me what's worth protecting as the project evolves, and partly because if I'm wrong about them being unusual I'd like to know.
 
 ---
 
@@ -26,9 +30,9 @@ Ziya is single-user only. No login, no user accounts, no role-based access, no s
 
 ### 2. Enterprise Authentication (SAML / LDAP / OAuth2)
 
-**Who has it:** LibreChat (SAML + LDAP + OAuth2), Open WebUI (OAuth2 + RBAC), LobeChat (Clerk/Auth.js)
+**Who ships it as a deployable feature:** LibreChat (SAML + LDAP + OAuth2), Open WebUI (OAuth2 + RBAC), LobeChat (Clerk/Auth.js)
 
-Related to multi-user but distinct: enterprise SSO integration. Any corporate deployment will require this. LibreChat is the gold standard here — it supports Azure AD, Google Workspace, GitHub, Discord, and generic OIDC providers, plus LDAP/AD directory integration. Ziya has no auth layer at all.
+Related to multi-user but distinct: enterprise SSO integration. Ziya has a pluggable `AuthProvider` interface, and the internal Amazon deployment uses it to run against Midway (corporate SSO + credential refresh) — the architecture is real and proven in production. What's not there is a community-edition build that ships SAML/LDAP/OIDC adapters configurable from the UI without writing a plugin. LibreChat is the gold standard at the consumer-deployable end of that spectrum, supporting Azure AD, Google Workspace, GitHub, Discord, and generic OIDC, plus LDAP/AD. Ziya has the substrate for enterprise auth but expects deployers to bring (or write) the adapter for their environment.
 
 ### 3. Image Generation
 
@@ -106,9 +110,9 @@ Ziya is web-only (`localhost:6969`). Several competitors ship installable deskto
 
 ### 13. Cloud Storage Backends
 
-**Who has it:** Open WebUI (S3, GCS, Azure Blob, Google Drive, SharePoint), LibreChat (cloud file storage)
+**Who advertises it:** Open WebUI (S3, GCS, Azure Blob, Google Drive, SharePoint connectors listed), LibreChat (cloud file storage)
 
-For enterprise deployments: store conversation history, uploaded files, and embeddings in cloud storage instead of local disk. Ziya stores everything locally.
+For enterprise deployments: store conversation history, uploaded files, and embeddings in cloud storage instead of local disk. Ziya stores everything locally. I haven't audited how the cloud backends are actually used in either project — connector count is a feature-page metric, not a usage one — but the local-only assumption is a real architectural fact about Ziya regardless.
 
 ### 14. Mobile / PWA Support
 
@@ -154,9 +158,11 @@ Jan.ai can act as a local model server that other tools connect to. This turns i
 
 ---
 
-## Where Competitors Do What We Do, But Better
+## Areas Where Other Tools Do Similar Things More Capably
 
-These are areas where Ziya has the feature, but a competitor's implementation is materially superior.
+Places where Ziya has the feature in some form, but someone else's implementation is materially better and worth learning from.
+
+A caveat for this whole section: I've read these projects' documentation but haven't used them as daily drivers. The judgments below are based on what each project claims to do, not on direct comparison.
 
 ### Bedrock Integration Depth
 
@@ -164,45 +170,53 @@ These are areas where Ziya has the feature, but a competitor's implementation is
 
 ### MCP Ecosystem
 
-**LobeChat** has ~10,000 MCP skills in a browsable marketplace with one-click install. Ziya supports MCP and has registry browsing, but the scale of LobeChat's ecosystem dwarfs it.
+**LobeChat** is reported to have ~10,000 MCP skills in a browsable marketplace with one-click install. I should note that LobeChat hasn't come up much among engineers I've talked to despite its star count, so I can't speak to how heavily that marketplace is actually used; the reach of the ecosystem may not match the catalog size. Either way, Ziya supports MCP and has registry browsing, but isn't trying to host its own marketplace at that scale.
 
-### Conversation Management UX
+### RAG and Document Processing Architecture
 
-**Open WebUI** has folders, tags, auto-tagging, pinning, archiving, search, and conversation flow visualization. Ziya has projects, forking, and export/import, but Open WebUI's organization system is more polished for users with hundreds of conversations.
-
-### File Upload + Enterprise Document Processing
-
-**Open WebUI** supports 9 vector databases, enterprise document extraction (OCR for images in PDFs, table parsing from Excel), and cloud storage integration (S3/GCS/Azure/Drive/SharePoint). Ziya reads PDFs, DOCX, and XLSX natively and has RAG capabilities, but Open WebUI's document pipeline is more enterprise-grade.
+**Open WebUI** lists integration with nine vector databases, document extraction tooling (OCR for images-in-PDFs, table parsing from Excel), and cloud storage backends. Ziya takes a different approach: tool-driven RAG with AST-aware code intelligence, and native readers for PDF / DOCX / XLSX / PPTX without a separate vector store. Whether that's actually a worse outcome for any given workload is something I'd have to test rather than infer from feature lists — connector counts say nothing about how content gets used downstream. If Open WebUI has found a category of work where their pipeline produces better answers, that belongs in my "to-study" backlog rather than in a comparative judgment I haven't actually run.
 
 ---
 
-## Competitor Community Size (Context for Urgency)
+## What I've Actually Felt the Pain of Elsewhere
 
-These numbers matter because community size correlates with development velocity, plugin availability, and long-term viability.
+Speaking only about the tools I've used as daily drivers — Kiro, Claude Chat, Claude Code, and Cline — the consistent friction point that motivates Ziya's design is context management. All four of them lose the thread at points where I don't want them to. The compaction is automatic, the heuristic is recency-weighted or model-driven, and the thing that gets dropped is regularly the part of the conversation that established what we were trying to do in the first place. I find myself either re-pasting setup material into long sessions or starting over more often than I'd like to.
 
-| Competitor | GitHub Stars | Implication |
+I should be careful about how I frame the response, though, because it's not that I'm philosophically opposed to automatic curation — I'm not. If a tool could reliably identify which parts of a long conversation are still load-bearing and which have served their purpose, I'd use it. The position Ziya takes is narrower: I haven't seen automatic curation that I trust to make those decisions for me yet, and until I do, I'd rather curate manually than let a model selectively discard my context. Ziya's mute / fork / truncate / drop-files toolkit is the manual workaround for a problem the field hasn't solved, not a stand against the idea of solving it.
+
+The reason I'm uncertain that automatic curation can be done well yet is connected to the open problem with memory I mentioned in the philosophy doc: the experiments I've run on various cross-session memory architectures keep showing me that "knowing what was important about an earlier conversation" is harder than it looks, and a tool that can't do that reliably also can't reliably decide what to keep mid-conversation. The two problems are the same problem at different time scales. I keep working on memory partly because I think solving it is the precursor to ever trusting auto-curation, and the other tools I'm comparing to are doing auto-curation without (in my read) having solved the precursor. I don't fault them for shipping the heuristic — it works often enough to be useful — but it also makes the failure mode I described above predictable rather than surprising.
+
+So the gap between Ziya and the other tools isn't "manual is right, automatic is wrong." It's that I haven't seen anyone solve the underlying problem well enough to deploy automatic curation without losing data the user cares about, and I'd rather pay the cost of manual curation in the meantime than pay the cost of unpredictable loss. When someone — possibly me, possibly someone else — gets memory and importance-detection working well enough that auto-curation becomes trustworthy, Ziya should adopt it. I just don't think we're there yet, and I'm not willing to pretend we are.
+
+---
+
+## Competitor Community Size (Context for Velocity)
+
+These numbers matter because community size correlates with development velocity, plugin availability, and long-term viability. They aren't a measure of which tools are *better*; they're a measure of which projects have momentum and people building on top of them, which is a different question.
+
+| Competitor | GitHub Stars | Notes |
 |---|---|---|
-| **LobeChat** | ~60,000+ | Massive community, very fast development, plugin ecosystem |
-| **Open WebUI** | ~40,000+ | Large community, enterprise-focused development |
-| **Aider** | ~30,000+ | Large coding-agent community (CLI, not web) |
-| **Chatbot UI** | ~29,000+ | Large but stalled — cautionary tale |
-| **LibreChat** | ~25,000+ | Active development, strong enterprise features |
-| **Dyad** | ~20,000+ | Fast-growing vibe-coding tool |
+| **LobeChat** | ~60,000+ | Plugin marketplace, fast release cadence |
+| **Open WebUI** | ~40,000+ | Enterprise-deployment focus, large contributor pool |
+| **Aider** | ~30,000+ | Terminal/CLI; large coding-agent community |
+| **Chatbot UI** | ~29,000+ | Largely inactive at the time of this snapshot |
+| **LibreChat** | ~25,000+ | Active; strong on auth/SSO and provider breadth |
+| **Dyad** | ~20,000+ | Newer entrant in the "vibe-coding" space |
 | **Kilo Code** | ~15,800+ | IDE-based coding agent |
-| **Jan.ai** | ~10,000+ | Desktop/local-first community |
-| **big-AGI** | ~5,000+ | Smaller but innovative (Beam, personas) |
-| **AnythingLLM** | ~5,000+ | RAG-focused niche |
-| **Bedrock Chat** | ~1,200 | AWS-specific niche |
-| **Bedrock Engineer** | ~160 | Minimal adoption |
+| **Jan.ai** | ~10,000+ | Desktop-native, local-first |
+| **big-AGI** | ~5,000+ | Beam (multi-model fusion), personas |
+| **AnythingLLM** | ~5,000+ | RAG-focused |
+| **Bedrock Chat** | ~1,200 | AWS-focused niche |
+| **Bedrock Engineer** | ~160 | Small project |
 
 **Note:** OpenCode was reported at ~101k stars by researchers but this number seems suspect and should be verified independently before citing.
 
 ---
 
-## What This Means
+## What I Take Away from This
 
-Ziya's differentiation is real but narrow: visualization breadth, diff/patch quality, AST code understanding, and architecture stencils. No competitor matches this combination.
+The pieces of Ziya I'd most like to keep are the ones that don't show up in the gap inventories above because most of the field isn't building toward them: visualization breadth used as a *normal mode of conversation* rather than a special feature, the patch pipeline that means you don't copy-paste from a chat window, AST-based code intelligence integrated as a tool the model can call, and the parallel-work model where conversations are durable across windows, servers, and provider backends. Whether any of those turn out to be lasting contributions or just the particular shape of one person's working tool is genuinely an open question, and one of the reasons I do this exercise is to keep that question honest.
 
-But the gaps are wide. The field's center of gravity — multi-user, voice, image generation, plugin ecosystems, enterprise auth, mobile — represents a large surface area of missing capability. Competitors aren't standing still; LobeChat and Open WebUI ship features weekly with contributor communities orders of magnitude larger.
+The gaps are real and several of them — multi-user accounts, voice, image generation, mobile, a community plugin marketplace at LobeChat scale — represent large surfaces of work that Ziya simply hasn't done. The other tools aren't standing still: LobeChat and Open WebUI ship features weekly with contributor communities orders of magnitude larger than mine. For any deployment that needs teams, non-developers, or mobile access, Ziya isn't in the conversation, and that's not a surprise — it's a research vehicle that turned out to be a usable working tool, not a product targeting that surface.
 
-The strategic question isn't "do we have unique features" (yes), it's "are the features we're missing the ones that determine where users go first." For individual developer use on Bedrock, Ziya is arguably the best tool available. For anything involving teams, non-developers, mobile access, or enterprise deployment, it isn't in the conversation.
+The more interesting question this exercise raises is what the right shape of the gap inventory will look like in another year. A lot of what's listed above is genuinely necessary work that the field has done and Ziya hasn't. Some of it is feature-checklist material that won't matter in retrospect. And some of what currently looks like Ziya's quirks may turn out to be either widely adopted (in which case good) or convincingly demonstrated to be local maxima of one person's workflow (in which case also good — it's information). I revisit this document partly to keep an honest accounting and partly because it's the most useful place to notice when my mental model of the field is out of date.
