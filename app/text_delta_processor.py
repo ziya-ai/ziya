@@ -21,6 +21,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 from app.hallucination import (
     check_for_parroting,
     detect_fake_shell_session,
+    detect_fake_tool_result,
     scannable_text,
 )
 
@@ -62,6 +63,17 @@ _BACKEND_HALLUCINATION_PATTERNS = [
     re.compile(r'"content":\s*\[\s*\{\s*"type":\s*"text",\s*"text":\s*"', re.DOTALL),
 ]
 
+# Matches the opening line of a fake tool-call fence as emitted by the model
+# mimicking the frontend's tool-display format from chatApi.ts:2243.
+# Format: ` `tool:TOOLNAME|HEADER|SYNTAX\n...\n` `
+# We capture the backtick run so we can match a same-width closer.
+_FAKE_TOOL_OPEN_RE = re.compile(r'(`{3,})tool:[^\s|`]+\|')
+# Full block parser used when we have the closing fence in hand.
+_FAKE_TOOL_BLOCK_RE = re.compile(
+    r'^(`{3,})tool:([^|]+)\|([^|]*)\|([^\n]*)\n+(.*?)\n+(`{3,})\s*$',
+    re.DOTALL,
+)
+
 # Tool-output signatures so unambiguous that fenced context is not an
 # excuse — these strings are generated exclusively by Ziya's tool
 # plumbing (TOOL_MARKER comments from chatApi.ts / memory_extractor) or
@@ -79,6 +91,38 @@ _RAW_HALLUCINATION_PATTERNS = [
     # Denial emoji + "BLOCKED:" prefix from shell_server.py line 724.
     re.compile(r'🚫 (?:WRITE )?BLOCKED:'),
 ]
+
+# Cue phrases that, when they appear in the ~120 chars immediately preceding
+# a raw-pattern match, indicate the model is *describing* the pattern rather
+# than fabricating tool output.  Examples: "the regex matches <!-- TOOL_MARKER",
+# "Pattern: <!-- TOOL_MARKER", "looks for <!-- TOOL_MARKER".  This narrow
+# escape hatch lets the model discuss the detection system without the
+# raw-pattern check retry-looping.  Fabrications never have these cues — the
+# model emits the marker as if it were real output, with no explanatory framing.
+_META_DISCUSSION_CUES = re.compile(
+    r'(?:'
+    r'pattern[s]?\s*[:=]?|regex(?:es)?|matches?\b|match(?:ing|ed)\b|'
+    r'marker[s]?|literal|string|comment|expression|signature|'
+    r'looks?\s+for|fires?\s+on|detects?|triggers?|catches?|'
+    r'discuss(?:ing|es|ed)?|explain(?:ing|s|ed)?|describ(?:ing|es|ed)?|'
+    r'mention(?:ing|s|ed)?|quote[ds]?|example[s]?|such\s+as|like'
+    r')\b',
+    re.IGNORECASE,
+)
+
+
+def _is_meta_discussion(text: str, match_start: int) -> bool:
+    """True when the ~120 chars before ``match_start`` look like the model
+    is talking *about* the pattern rather than emitting it as tool output.
+    """
+    window_start = max(0, match_start - 120)
+    window = text[window_start:match_start]
+    # Inline code span immediately wrapping the marker is also a strong
+    # meta-discussion signal — the model is quoting the pattern verbatim.
+    if window.endswith('`') or '``' in window[-8:]:
+        return True
+    return bool(_META_DISCUSSION_CUES.search(window))
+
 
 _CONTAMINATION_RE = re.compile(
     r'(\$ |ERROR:|SECURITY BLOCK|Allowed commands:|```+tool:)'
@@ -138,6 +182,84 @@ def _resolve_nested_viz_fence(text: str, tracker: dict) -> str:
     return '\n'.join(result)
 
 
+def _dispatch_fake_tool_block(block_text: str, ts: str) -> List[Dict[str, Any]]:
+    """Parse a complete fake tool-call fence and decide execute vs passthrough.
+
+    Returns events.  When the heuristic indicates a real intended tool call,
+    emits ``{'type': 'fake_tool_detected', ...}`` for the caller in
+    ``streaming_tool_executor`` to dispatch to ``_execute_fake_tool``.
+    Otherwise emits a sanitized text passthrough so conversational references
+    to tool calls still render as a normal code block.
+    """
+    events: List[Dict[str, Any]] = []
+
+    m = _FAKE_TOOL_BLOCK_RE.match(block_text)
+    if not m:
+        logger.warning(
+            "🔧 FAKE_TOOL_PARSE_FAIL: could not parse %d-char block; "
+            "preview=%r",
+            len(block_text), block_text[:200],
+        )
+        events.append({'type': 'text', 'content': block_text, 'timestamp': ts})
+        return events
+
+    open_ticks, tool_name, label, syntax, body, _close_ticks = m.groups()
+    body = body.strip('\n')
+    syntax = syntax.strip() or 'text'
+
+    # Normalize tool name (matches StreamingToolExecutor._normalize_tool_name)
+    normalized = tool_name
+    while normalized.startswith('mcp_') or '_mcp_' in normalized:
+        normalized = normalized.replace('mcp_', '', 1).lstrip('$_')
+
+    # Strip the frontend's loading sentinel if the model copied it
+    body_no_sentinel = '\n'.join(
+        ln for ln in body.split('\n') if ln.strip() != '⏳ Running...'
+    ).strip('\n')
+    nonempty_lines = [ln for ln in body_no_sentinel.split('\n') if ln.strip()]
+
+    is_shell = (normalized == 'run_shell_command')
+    has_shell_prompt = bool(nonempty_lines) and nonempty_lines[0].startswith('$ ')
+
+    if is_shell and has_shell_prompt:
+        # Real intent: extract everything from the $ line through the end of
+        # the pre-output region.  Heuristic: the command may span multiple
+        # lines if continued with backslash; output begins after a blank
+        # line or an obvious result marker.  Start simple: take the first
+        # $-prefixed line stripped of its prompt.
+        command = nonempty_lines[0][2:].rstrip()
+        logger.info(
+            "🔧 FAKE_TOOL_DETECTED: tool=%r normalized=%r command_len=%d "
+            "body_lines=%d label=%r syntax=%r",
+            tool_name, normalized, len(command),
+            len(nonempty_lines), label, syntax,
+        )
+        events.append({
+            'type': 'fake_tool_detected',
+            'tool_name': tool_name,
+            'normalized_tool_name': normalized,
+            'command': command,
+            'label': label,
+            'syntax': syntax,
+            'raw_block': block_text,
+            'timestamp': ts,
+        })
+        return events
+
+    # Heuristic failed — passthrough as plain code block so the user still
+    # sees the content but no fake widget is rendered.
+    logger.info(
+        "🔧 FAKE_TOOL_PASSTHROUGH: tool=%r normalized=%r is_shell=%s "
+        "has_prompt=%s body_lines=%d body_preview=%r",
+        tool_name, normalized, is_shell, has_shell_prompt,
+        len(nonempty_lines), body[:160],
+    )
+    fence = open_ticks
+    rewritten = f"{fence}{syntax}\n{body_no_sentinel}\n{fence}"
+    events.append({'type': 'text', 'content': rewritten, 'timestamp': ts})
+    return events
+
+
 @dataclass
 class TextDeltaState:
     """Mutable state for text delta processing within a single iteration."""
@@ -164,6 +286,18 @@ class TextDeltaState:
 
     # build a targeted corrective message citing the parroted tool.
     parrot_match: Optional[Dict[str, Any]] = None
+
+    # Layer C: per-fence dedup so we don't relog the same fabricated
+    # tool-result block on every subsequent chunk.  Keyed by
+    # ``(fence_start_offset, fence_lang)``.
+    fake_result_logged_keys: set = field(default_factory=set)
+
+    # Layer B suppression: count of fake-tool fences dispatched this
+    # iteration.  Each dispatch ran a real tool, so the assistant text
+    # legitimately contains shell-output-shaped content (the dispatched
+    # command + its returned output).  Layer B's "no shell tool was
+    # called" check must not fire on those.
+    fake_tool_dispatch_count: int = 0
 
 
 def process_text_delta(
@@ -192,6 +326,68 @@ def process_text_delta(
     if not hasattr(executor, '_block_opening_buffer'):
         executor._block_opening_buffer = ""
 
+    # --- Fake tool-call fence accumulator ---
+    # When the model mimics the frontend's tool-display format (e.g. opens a
+    # ``` ``tool:NAME|...|bash`` `` fence), we buffer the entire block until
+    # we see the matching closer, then dispatch it to either real execution
+    # (via a ``fake_tool_detected`` event) or passthrough rendering.
+    # State lives on the executor so it survives across chunks.
+    if not hasattr(executor, '_fake_tool_buffer'):
+        executor._fake_tool_buffer = ""
+        executor._fake_tool_ticks = 0
+
+    if executor._fake_tool_ticks > 0:
+        # Already inside a fake tool block — keep eating until closer arrives.
+        executor._fake_tool_buffer += text
+        close_re = re.compile(
+            r'(?:^|\n)' + ('`' * executor._fake_tool_ticks) + r'`*\s*(?:\n|$)'
+        )
+        m = close_re.search(executor._fake_tool_buffer)
+        if not m:
+            return events  # still accumulating
+        # Found closer — split into block + trailing text.
+        block_end = m.end()
+        block_text = executor._fake_tool_buffer[:block_end].rstrip()
+        trailing = executor._fake_tool_buffer[block_end:]
+        executor._fake_tool_buffer = ""
+        executor._fake_tool_ticks = 0
+        logger.debug(
+            "🔧 FAKE_TOOL_CLOSED: block_len=%d trailing_len=%d",
+            len(block_text), len(trailing),
+        )
+        events.extend(_dispatch_fake_tool_block(block_text, ts))
+        # Track whether a real dispatch fired.  ``_dispatch_fake_tool_block``
+        # emits a ``fake_tool_detected`` event only when the heuristic
+        # decides to execute (vs. passthrough as documentation).
+        for _ev in events:
+            if _ev.get('type') == 'fake_tool_detected':
+                state.fake_tool_dispatch_count += 1
+        if not trailing.strip():
+            return events
+        text = trailing  # fall through to process anything after the close
+
+    # Detect a *new* opening fence in this chunk.  We need it to match
+    # against the full accumulated text including any block-opening buffer.
+    probe = (executor._block_opening_buffer or "") + text
+    open_m = _FAKE_TOOL_OPEN_RE.search(probe)
+    if open_m:
+        ticks = len(open_m.group(1))
+        # Drain any normal text that precedes the fake fence so it still
+        # streams to the user before we start buffering.
+        prefix = probe[:open_m.start()]
+        executor._block_opening_buffer = ""
+        executor._fake_tool_buffer = probe[open_m.start():]
+        executor._fake_tool_ticks = ticks
+        logger.info(
+            "🔧 FAKE_TOOL_OPENED: ticks=%d prefix_len=%d buffer_preview=%r",
+            ticks, len(prefix), executor._fake_tool_buffer[:120],
+        )
+        # Replace `text` with just the safe prefix so the rest of the
+        # pipeline (optimizer, code-block tracker) sees clean content.
+        text = prefix
+        if not text:
+            return events
+
     if executor._block_opening_buffer:
         text = executor._block_opening_buffer + text
         executor._block_opening_buffer = ""
@@ -214,14 +410,6 @@ def process_text_delta(
             else:
                 executor._block_opening_buffer = text
                 return events  # skip — buffered
-
-    # --- Suppress fake tool-call syntax ---
-    if '\x60\x60\x60tool:' in text or '\x60tool:' in text:
-        if hasattr(executor, '_content_optimizer'):
-            remaining = executor._content_optimizer.flush_remaining()
-            if remaining:
-                events.append({'type': 'text', 'content': remaining, 'timestamp': ts})
-        return events  # skip the fake tool text
 
     # --- Fence spacing normalization ---
     text = executor._normalize_fence_spacing(text, state.code_block_tracker)
@@ -246,10 +434,19 @@ def process_text_delta(
         if len(state.assistant_text) > 500
         else state.assistant_text
     )
-    _match = next(
-        (p for p in _RAW_HALLUCINATION_PATTERNS if p.search(_tail_raw)),
-        None,
-    )
+    _match = None
+    for _p in _RAW_HALLUCINATION_PATTERNS:
+        _m = _p.search(_tail_raw)
+        if _m is None:
+            continue
+        if _is_meta_discussion(_tail_raw, _m.start()):
+            logger.info(
+                "🔐 HALLUCINATION_BACKEND_SKIP: meta-discussion context "
+                "for pattern=%r at offset=%d", _p.pattern, _m.start(),
+            )
+            continue
+        _match = _p
+        break
     if _match is None and not state.code_block_tracker.get('in_block'):
         _scan = scannable_text(state.assistant_text)
         _tail = _scan[-500:] if len(_scan) > 500 else _scan
@@ -384,7 +581,19 @@ def process_text_delta(
     if state.conversation_id:
         _total = len(state.assistant_text)
         _delta = len(text)
-        if _total >= 256 and (_total // 256) != ((_total - _delta) // 256):
+        # Skip Layer B entirely if any fake-tool dispatches fired this
+        # iteration.  Each dispatch ran a real tool and its command +
+        # output legitimately appears in the assistant text — Layer B's
+        # "no shell tool was called" attribution check has no way to
+        # distinguish that from a fabricated session, and would
+        # false-positive on the dispatched command's own body.
+        if state.fake_tool_dispatch_count > 0:
+            logger.debug(
+                "🔍 LAYER_B_SKIP: %d fake-tool dispatch(es) this iteration "
+                "— skipping fake-shell detection",
+                state.fake_tool_dispatch_count,
+            )
+        elif _total >= 256 and (_total // 256) != ((_total - _delta) // 256):
             try:
                 _shell_match = detect_fake_shell_session(state.assistant_text)
             except Exception as _e:
@@ -405,6 +614,54 @@ def process_text_delta(
                     ),
                 })
                 return events
+
+    # --- Layer C: fabricated tool-result echo detection ---
+    # Fires when accumulated text contains a closed fenced block whose body
+    # opens with a Python-dict / JSON literal whose first key is one of our
+    # canonical Ziya tool-result keys (``success``, ``path``, ...).  Walks
+    # only closed fences so partially-streamed legitimate code never trips
+    # it.  Matches Layer B's cadence and dedup pattern; logs at WARNING
+    # without aborting — Layer A handles abort decisions when a real result
+    # has been registered.
+    if state.conversation_id:
+        _total = len(state.assistant_text)
+        _delta = len(text)
+        if _total >= 256 and (_total // 256) != ((_total - _delta) // 256):
+            _accum = state.assistant_text
+            _pos = 0
+            _fence_open_re = re.compile(r'^(`{3,})([^\n`]*)\n', re.MULTILINE)
+            while _pos < len(_accum):
+                _om = _fence_open_re.search(_accum, _pos)
+                if _om is None:
+                    break
+                _open_ticks = _om.group(1)
+                _lang = (_om.group(2) or '').strip()
+                _body_start = _om.end()
+                _close_re = re.compile(
+                    rf'^`{{{len(_open_ticks)},}}\s*$', re.MULTILINE,
+                )
+                _cm = _close_re.search(_accum, _body_start)
+                if _cm is None:
+                    break  # fence still streaming — skip until closed
+                _body = _accum[_body_start:_cm.start()]
+                _pos = _cm.end()
+                _key = (_om.start(), _lang)
+                if _key in state.fake_result_logged_keys:
+                    continue
+                try:
+                    _ftr = detect_fake_tool_result(_lang, _body)
+                except Exception as _e:  # noqa: BLE001
+                    logger.debug(f"🔐 FAKE_RESULT_CHECK: skipped: {_e}")
+                    _ftr = None
+                if _ftr is not None:
+                    state.fake_result_logged_keys.add(_key)
+                    logger.warning(
+                        "🚨 HALLUCINATION_FAKE_TOOL_RESULT: "
+                        "confidence=%s fence_lang=%r matched_keys=%r "
+                        "snippet=%r reason=%s",
+                        _ftr.confidence, _ftr.fence_lang,
+                        _ftr.matched_keys, _ftr.snippet, _ftr.reason,
+                    )
 
     # --- Content optimizer init ---
     if not hasattr(executor, '_content_optimizer'):

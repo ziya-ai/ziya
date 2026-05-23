@@ -615,7 +615,7 @@ class StreamingToolExecutor:
             ),
         }
 
-    async def _execute_fake_tool(self, tool_name, command, assistant_text, tool_results, mcp_manager):
+    async def _execute_fake_tool(self, tool_name, command, assistant_text, tool_results, mcp_manager, tool_id=None):
         """Execute a fake tool call detected in the text stream."""
         actual_tool_name = self._normalize_tool_name(tool_name)
         if actual_tool_name == 'run_shell_command':
@@ -631,21 +631,28 @@ class StreamingToolExecutor:
                 else:
                     result_text = str(result)
 
-                tool_results.append({
-                    'tool_id': f'fake_{len(tool_results)}',
-                    'tool_name': tool_name,
-                    'result': result_text
-                })
-
-                return {
+                # Caller-supplied tool_id when available so the consumer can
+                # synchronize all_tool_calls + tool_results bookkeeping
+                # without races; fall back to length-based ID for direct
+                # callers (legacy compatibility).
+                _id = tool_id or f'fake_{len(tool_results)}'
+                display = {
                     'type': 'tool_display',
-                    'tool_id': f'fake_{len(tool_results)}',
+                    'tool_id': _id,
                     'tool_name': tool_name,
                     'result': result_text
                 }
+                # Return BOTH the display and the result.  The consumer is
+                # responsible for atomically appending to all_tool_calls
+                # and tool_results together — this avoids the off-by-one
+                # case where tool_results gets a row but all_tool_calls
+                # doesn't (which silently corrupts the assistant message
+                # and hangs the conversation when filtered for orphans).
+                return display, result_text
             except (OSError, RuntimeError, asyncio.TimeoutError, json.JSONDecodeError) as e:
                 logger.error(f"Error executing intercepted tool call: {e}")
-                return None
+                return None, None
+        return None, None
 
     def _extract_file_contents_from_messages(self, messages: List[Dict[str, Any]], system_content=None) -> Dict[str, str]:
         """
@@ -2198,6 +2205,73 @@ class StreamingToolExecutor:
                             _td_state.assistant_text = assistant_text
                             _td_events = process_text_delta(self, text, _td_state)
                             for _td_evt in _td_events:
+                                # Fake tool-call dispatch: the text-delta
+                                # processor detected a complete fake fence
+                                # block.  Execute it via the real tool
+                                # mechanism instead of letting the synthetic
+                                # display leak to the frontend.
+                                if _td_evt.get('type') == 'fake_tool_detected':
+                                    _ft_name = _td_evt.get('tool_name')
+                                    _ft_cmd = _td_evt.get('command', '')
+                                    # Generate the fake_id ourselves so the
+                                    # display, result, and all_tool_calls
+                                    # entry all reference the same ID.
+                                    _ft_id = f'fake_{len(tool_results)}'
+                                    logger.info(
+                                        "🔧 FAKE_TOOL_DISPATCH: tool=%r "
+                                        "normalized=%r cmd_len=%d id=%s",
+                                        _ft_name,
+                                        _td_evt.get('normalized_tool_name'),
+                                        len(_ft_cmd), _ft_id,
+                                    )
+                                    try:
+                                        _ft_display, _ft_result = await self._execute_fake_tool(
+                                            _ft_name, _ft_cmd, assistant_text,
+                                            tool_results, mcp_manager, tool_id=_ft_id,
+                                        )
+                                    except Exception as _ft_err:  # noqa: BLE001
+                                        logger.error(
+                                            "🔧 FAKE_TOOL_EXEC_ERROR: %s",
+                                            _ft_err, exc_info=True,
+                                        )
+                                        _ft_display = None
+                                        _ft_result = None
+                                    if _ft_display:
+                                        # Atomically append to BOTH lists.
+                                        # An off-by-one mismatch (tool_results
+                                        # has an entry but all_tool_calls
+                                        # doesn't) silently corrupts the
+                                        # assistant message — the orphan
+                                        # filter strips the matched call from
+                                        # all_tool_calls, the unmatched result
+                                        # has no corresponding tool_use block,
+                                        # and Bedrock receives a malformed
+                                        # message that can hang the request.
+                                        tool_results.append({
+                                            'tool_id': _ft_id,
+                                            'tool_name': _ft_name,
+                                            'result': _ft_result,
+                                        })
+                                        all_tool_calls.append({
+                                            'id': _ft_id,
+                                            'name': _ft_name,
+                                            'args': {'command': _ft_cmd},
+                                        })
+                                        tools_executed_this_iteration = True
+                                        # Emit synthetic tool_start so the
+                                        # frontend gets a unique marker per
+                                        # fake call — without this, multiple
+                                        # fake_displays overwrite each other
+                                        # in the rendered output (the
+                                        # "rewinding" symptom).
+                                        yield track_yield({
+                                            'type': 'tool_start',
+                                            'tool_id': _ft_id,
+                                            'tool_name': _ft_name,
+                                            'tool_input': {'command': _ft_cmd},
+                                        })
+                                        yield track_yield(_ft_display)
+                                    continue
                                 yield track_yield(_td_evt)
                             # Sync mutable state back to local vars
                             assistant_text = _td_state.assistant_text
@@ -2487,32 +2561,6 @@ Retry with the 'command' parameter included."""
                                 
                                 # Create signature to detect duplicates
                                 tool_signature = f"{actual_tool_name}:{json.dumps(args, sort_keys=True)}"
-                                
-                                # Check for recently executed similar commands to prevent duplicates across iterations
-                                if actual_tool_name == 'run_shell_command' and args.get('command'):
-                                    current_command = args['command']
-                                    
-                                    # Check if this command is similar to recent commands
-                                    skip_execution = False
-                                    for recent_cmd in recent_commands[-10:]:  # Check last 10 commands
-                                        if self._commands_similar(current_command, recent_cmd):
-                                            logger.debug(f"🔍 DUPLICATE_COMMAND_SKIP: Skipping duplicate command '{current_command}' (similar to recent '{recent_cmd}')")
-                                            
-                                            # Add a helpful message instead of executing
-                                            duplicate_result = f"Command '{current_command}' was already executed recently. Result should be available above."
-                                            tool_results.append({
-                                                'tool_id': tool_id,
-                                                'tool_name': tool_name,
-                                                'result': duplicate_result
-                                            })
-                                            
-                                            completed_tools.add(tool_id)
-                                            tools_executed_this_iteration = True
-                                            skip_execution = True
-                                            break
-                                    
-                                    if skip_execution:
-                                        continue  # Skip to next tool in the content_block_stop processing
                                 
                                 # Execute tool via extracted helper
                                 from app.tool_execution import ToolExecContext, execute_single_tool
@@ -3351,6 +3399,17 @@ Please retry the tool call with valid JSON. Ensure:
         was_in_block = tracker.get('in_block', False)
         was_block_type = tracker.get('block_type')
             
+        # Plausible language-tag pattern.  Real language identifiers are
+        # short, start with a letter, and contain only word-class chars
+        # plus a small set of separators (``c++``, ``vega-lite``, ``c#``).
+        # Prose fragments like ``Acknowledged. I won't fabricate...`` end
+        # up here when the tracker miscounts backticks inside narrative
+        # text and have previously been interpolated verbatim into the
+        # continuation prompt — see the recursive-loop incident.  Anything
+        # not matching this is treated as an untyped fence (``block_type``
+        # = None), which the continuation path already handles via the
+        # ``block_type or 'code'`` fallback.
+        _LANG_TAG_RE = re.compile(r'^[a-zA-Z][a-zA-Z0-9+#_\-]{0,30}$')
         lines = text.split('\n')
         for line in lines:
             stripped = line.strip()
@@ -3365,6 +3424,19 @@ Please retry the tool call with valid JSON. Ensure:
                     # This handles cases like: ```mermaid\n...\n```vega-lite (no closing ```)
                     if tracker['in_block']:
                         logger.debug(f"🔍 TRACKER: Implicitly closing {tracker['block_type']} block, opening {lang_or_type} block")
+                    if not _LANG_TAG_RE.match(lang_or_type):
+                        # Implausible tag (likely prose with stray backticks).
+                        # Treat as untyped fence rather than letting the
+                        # value flow into continuation-prompt interpolation.
+                        logger.debug(
+                            f"🔍 TRACKER: Rejecting implausible language tag "
+                            f"{lang_or_type[:60]!r}; treating as untyped fence"
+                        )
+                        tracker['in_block'] = True
+                        tracker['block_type'] = None
+                        tracker['backtick_count'] = backtick_count
+                        tracker['accumulated_content'] = line + '\n'
+                        continue
                     tracker['in_block'] = True
                     tracker['block_type'] = lang_or_type
                     tracker['backtick_count'] = backtick_count
@@ -3455,11 +3527,43 @@ Please retry the tool call with valid JSON. Ensure:
             block_type = code_block_tracker['block_type']
             fence_width = code_block_tracker.get('backtick_count', 3)
             closing_fence = '`' * fence_width
-            # Preserve diff context in continuation prompt
+            # ``block_type`` may legitimately be ``None`` when the fence
+            # tracker recorded an untyped bare-fence opener (``\`\`\``` with
+            # no language).  Treat that as a generic code block in the
+            # prompt rather than f-stringing the literal word "None" into
+            # user-visible text.
+            block_type_label = block_type if block_type else 'code'
+            # Open-ended continuation prompt.  The previous wording
+            # ("Output ONLY the continuation ... no explanations") format-locked
+            # the model into producing fenced content even when the "incomplete"
+            # block was actually a malformed/hallucinated fence (e.g. a
+            # ```python block with fabricated tool-result output that the
+            # fence-counter mistook for an unclosed real block).  That framing
+            # had no escape hatch for the model to refuse or correct, which
+            # actively prompted further hallucination.
+            #
+            # The new wording: tell the model what we observed, ask it to
+            # continue if appropriate, and explicitly permit it to explain
+            # instead if the apparent open fence was unintentional.
             if block_type == 'diff':
-                continuation_prompt = f"Continue the incomplete diff block from where it left off. Maintain all + and - line prefixes. Output ONLY the continuation of the diff content, preserving the exact diff format. Close with {closing_fence}"
+                continuation_prompt = (
+                    f"Your previous response appears to have left an unclosed diff block. "
+                    f"If the diff is genuinely incomplete, continue it from where it left off, "
+                    f"maintaining + and - line prefixes, and close it with {closing_fence}. "
+                    f"If instead the apparent open fence was unintentional (for example a "
+                    f"malformed or hallucinated block, or a stray fence in narrative text), "
+                    f"please say so and clarify what you actually meant — do not invent diff "
+                    f"content to satisfy the format."
+                )
             else:
-                continuation_prompt = f"Continue the incomplete {block_type} code block from where it left off and close it with {closing_fence}. Output ONLY the continuation of the code block, no explanations."
+                continuation_prompt = (
+                    f"Your previous response appears to have left an unclosed {block_type_label} "
+                    f"code block. If the block is genuinely incomplete, continue it from where "
+                    f"it left off and close it with {closing_fence}. If instead the apparent "
+                    f"open fence was unintentional (for example a malformed or hallucinated "
+                    f"block, or a stray fence in narrative text), please say so and clarify "
+                    f"what you actually meant — do not invent code to satisfy the format."
+                )
             
             continuation_conversation = conversation.copy()
             
