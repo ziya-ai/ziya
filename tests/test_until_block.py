@@ -1,0 +1,228 @@
+"""Tests for the Until block — model-judged loop exit."""
+
+import pytest
+from unittest.mock import patch, AsyncMock
+
+from app.models.task_card import Artifact, Block
+from app.agents.block_executor import execute_block, ExecutionContext
+from app.agents import until_evaluator
+from app.storage.task_runs import TaskRunStorage
+
+
+def _task(name: str = "t") -> Block:
+    return Block(
+        block_type="task", id=f"task-{name}", name=name,
+        instructions=f"do {name}",
+    )
+
+
+@pytest.fixture
+def storage(tmp_path):
+    return TaskRunStorage(tmp_path)
+
+
+@pytest.fixture
+def ctx(storage):
+    from app.models.task_run import TaskRunCreate
+    run = storage.create(TaskRunCreate(card_id="c"))
+    return ExecutionContext(run_id=run.id, storage=storage)
+
+
+@pytest.mark.asyncio
+async def test_until_terminates_when_model_says_yes(ctx):
+    """Two iterations: first 'no', second 'yes' → loop stops at iter 1."""
+    call_log = []
+
+    async def fake_eval(condition, artifact):
+        call_log.append(condition)
+        return len(call_log) >= 2  # yes on 2nd call
+
+    async def fake_task(block, **kw):
+        return Artifact(summary=f"done iter", failed=False)
+
+    block = Block(
+        block_type="until", id="u", name="u",
+        until_mode="model", until_condition="all green", until_max=10,
+        body=[_task("x")],
+    )
+    with patch("app.agents.block_executor.execute_task_block", side_effect=fake_task), \
+         patch("app.agents.block_executor._evaluate_until_condition_with_model",
+               side_effect=fake_eval):
+        artifact = await execute_block(block, ctx)
+    assert len(call_log) == 2
+    assert not artifact.failed
+
+
+@pytest.mark.asyncio
+async def test_until_respects_max_when_condition_never_met(ctx):
+    """Condition never satisfied → loop runs until_max times then stops."""
+    eval_calls = []
+
+    async def fake_eval(condition, artifact):
+        eval_calls.append(condition)
+        return False
+
+    async def fake_task(block, **kw):
+        return Artifact(summary="done", failed=False)
+
+    block = Block(
+        block_type="until", id="u", name="u",
+        until_mode="model", until_condition="impossible", until_max=3,
+        body=[_task("x")],
+    )
+    with patch("app.agents.block_executor.execute_task_block", side_effect=fake_task), \
+         patch("app.agents.block_executor._evaluate_until_condition_with_model",
+               side_effect=fake_eval):
+        await execute_block(block, ctx)
+    assert len(eval_calls) == 3  # exactly until_max
+
+
+@pytest.mark.asyncio
+async def test_until_no_condition_falls_back_to_repeat_until_success(ctx):
+    """Empty condition → behave like Repeat-until-success."""
+    iter_count = 0
+
+    async def fake_task(block, **kw):
+        nonlocal iter_count
+        iter_count += 1
+        # Fail twice then succeed
+        return Artifact(summary="x", failed=(iter_count < 3))
+
+    block = Block(
+        block_type="until", id="u", name="u",
+        until_mode="model", until_condition=None, until_max=10,
+        body=[_task("x")],
+    )
+    with patch("app.agents.block_executor.execute_task_block", side_effect=fake_task):
+        await execute_block(block, ctx)
+    assert iter_count == 3
+
+
+@pytest.mark.asyncio
+async def test_until_expression_mode_runs_to_max():
+    """Expression mode is reserved; in current build it runs to max."""
+    parsed_yes = until_evaluator._parse_yes_no("yes")
+    parsed_no = until_evaluator._parse_yes_no("no")
+    parsed_garbage = until_evaluator._parse_yes_no("maybe?")
+    assert parsed_yes is True
+    assert parsed_no is False
+    # Ambiguous → conservative no.
+    assert parsed_garbage is False
+    assert until_evaluator._parse_yes_no("") is False
+
+
+# ── until_evaluator transport-level coverage ────────────────
+
+def test_parse_yes_no_variants():
+    """Each accepted yes/no synonym maps correctly."""
+    assert until_evaluator._parse_yes_no("YES") is True
+    assert until_evaluator._parse_yes_no("y") is True
+    assert until_evaluator._parse_yes_no("true") is True
+    assert until_evaluator._parse_yes_no("done") is True
+    assert until_evaluator._parse_yes_no("satisfied") is True
+    assert until_evaluator._parse_yes_no("NO.") is False
+    assert until_evaluator._parse_yes_no("not yet") is False
+    assert until_evaluator._parse_yes_no("incomplete") is False
+    assert until_evaluator._parse_yes_no(None) is False
+
+
+def test_build_user_message_includes_condition_summary_decisions():
+    """The prompt the model sees contains all three input fields."""
+    art = Artifact(
+        summary="server returned 200",
+        decisions=["chose POST", "added auth header", "retried once"],
+        failed=False,
+    )
+    msg = until_evaluator._build_user_message("status is 200", art)
+    assert "status is 200" in msg
+    assert "server returned 200" in msg
+    assert "chose POST" in msg
+    assert "added auth header" in msg
+
+
+def test_build_user_message_truncates_decisions_to_five():
+    """Decisions list is capped at 5 to bound the prompt size."""
+    art = Artifact(
+        summary="x",
+        decisions=[f"d{i}" for i in range(20)],
+        failed=False,
+    )
+    msg = until_evaluator._build_user_message("c", art)
+    assert "d0" in msg
+    assert "d4" in msg
+    assert "d5" not in msg
+    assert "d19" not in msg
+
+
+@pytest.mark.asyncio
+async def test_evaluate_condition_empty_returns_false():
+    """An empty condition short-circuits to False without calling the model."""
+    art = Artifact(summary="anything", failed=False)
+    assert await until_evaluator.evaluate_condition("", art) is False
+    assert await until_evaluator.evaluate_condition("   ", art) is False
+
+
+@pytest.mark.asyncio
+async def test_evaluate_condition_yes_response():
+    """Model says yes → True."""
+    art = Artifact(summary="all green", failed=False)
+    with patch("app.services.model_resolver.call_service_model",
+               new=AsyncMock(return_value="yes")):
+        assert await until_evaluator.evaluate_condition("done?", art) is True
+
+
+@pytest.mark.asyncio
+async def test_evaluate_condition_no_response():
+    """Model says no → False."""
+    art = Artifact(summary="still failing", failed=True)
+    with patch("app.services.model_resolver.call_service_model",
+               new=AsyncMock(return_value="no")):
+        assert await until_evaluator.evaluate_condition("done?", art) is False
+
+
+@pytest.mark.asyncio
+async def test_evaluate_condition_transport_error_returns_false():
+    """Any transport exception resolves to False (loop continues)."""
+    art = Artifact(summary="x", failed=False)
+    with patch("app.services.model_resolver.call_service_model",
+               new=AsyncMock(side_effect=RuntimeError("network down"))):
+        assert await until_evaluator.evaluate_condition("done?", art) is False
+
+
+# ── _execute_schedule_passthrough ───────────────────────────
+
+@pytest.mark.asyncio
+async def test_schedule_block_executed_directly_runs_body_once(ctx):
+    """Running a schedule block via execute_block (not via the
+    scheduler's fire path) executes its body exactly once.
+    This is the 'Run now' button behavior."""
+    from app.models.task_card import Block
+    calls = []
+
+    async def fake_task(block, **kw):
+        calls.append(block.id)
+        return Artifact(summary=f"ran {block.id}", failed=False)
+
+    sched = Block(
+        block_type="schedule", id="s", name="s",
+        schedule_mode="interval",
+        schedule_interval_value=1, schedule_interval_unit="hours",
+        body=[_task("a")],
+    )
+    with patch("app.agents.block_executor.execute_task_block", side_effect=fake_task):
+        artifact = await execute_block(sched, ctx)
+    assert calls == ["task-a"]
+    assert not artifact.failed
+
+
+@pytest.mark.asyncio
+async def test_schedule_block_with_empty_body_returns_marker(ctx):
+    """Empty schedule body yields a marker artifact, not a crash."""
+    from app.models.task_card import Block
+    sched = Block(
+        block_type="schedule", id="s", name="s",
+        schedule_mode="interval", body=[],
+    )
+    artifact = await execute_block(sched, ctx)
+    assert "empty" in artifact.summary.lower()
+    assert not artifact.failed

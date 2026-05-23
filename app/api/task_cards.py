@@ -189,3 +189,33 @@ async def launch_task_card(
         project_id=project_id, card_id=card_id,
         source_conversation_id=body.source_conversation_id,
     )
+
+
+@router.get("/{card_id}/schedule-state")
+async def get_schedule_state(project_id: str, card_id: str) -> dict:
+    """Return the scheduler's per-card fire-history record.
+
+    Empty dict if the card has no schedule block, or has one but has
+    never fired yet.  When populated:
+
+        {
+          "block_id":      "<schedule block id>",
+          "next_fire_at":  <epoch ms or null>,
+          "last_fire_at":  <epoch ms or null>,
+          "fires_so_far":  <int>,
+          "run_ids":       ["<run_id>", ...]   # most-recent first, capped
+        }
+
+    Drives the "next fire in 2h 14m / fired 47 times so far" surface
+    in the schedule editor.  Read-only; the scheduler owns writes via
+    its internal `_write_state` path.
+    """
+    storage = _get_storage(project_id)
+    if not storage.get(card_id):
+        raise HTTPException(status_code=404, detail="Task card not found")
+    # Lazy-import the scheduler so this endpoint stays cheap when the
+    # caller is just listing cards (and to avoid pulling croniter at
+    # module load).
+    from ..agents.task_scheduler import _read_state
+    state = _read_state(project_id)
+    return state.get(card_id) or {}
