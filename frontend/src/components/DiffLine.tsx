@@ -12,6 +12,12 @@ interface DiffLineProps {
     showLineNumbers?: boolean;
     similarity?: number;
     style?: React.CSSProperties;
+    /**
+     * If true, soft-wrap long lines instead of horizontal-scroll.
+     * Used for prose diffs (markdown/plaintext) where wrapping is more
+     * readable than scrolling and there's no whitespace-significant code.
+     */
+    wrap?: boolean;
 }
 
 // Add a cache for whitespace visualization
@@ -26,6 +32,7 @@ export const DiffLine = React.memo(({
     newLineNumber,
     viewType,
     showLineNumbers = true,
+    wrap = false,
     style
 }: DiffLineProps) => {
 
@@ -221,7 +228,7 @@ export const DiffLine = React.memo(({
     const baseStyles: React.CSSProperties = {
         fontFamily: 'ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace',
         font: '12px/20px ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace',
-        whiteSpace: 'pre'
+        whiteSpace: wrap ? 'pre-wrap' : 'pre'
     };
 
     // Add theme-specific colors
@@ -244,8 +251,14 @@ export const DiffLine = React.memo(({
     // Common content style
     const contentStyle: React.CSSProperties = {
         visibility: isHighlighting ? 'hidden' : 'visible',
-        whiteSpace: 'pre',
-        minWidth: 'max-content',
+        whiteSpace: wrap ? 'pre-wrap' : 'pre',
+        wordBreak: wrap ? 'break-word' : 'normal',
+        // For wrap, hang continuation lines past the diff marker (~2ch)
+        // so readers can still tell where each line begins.
+        textIndent: wrap ? '-2ch' : undefined,
+        paddingLeft: wrap ? '2ch' : undefined,
+        minWidth: wrap ? 0 : 'max-content',
+        width: wrap ? 'auto' : undefined,
         display: 'block',
         overflow: 'visible',
         ...(isLoading ? { ...baseStyles, ...themeStyles } : {}),
@@ -282,7 +295,7 @@ export const DiffLine = React.memo(({
                 >
                     {type !== 'insert' ? (
                         <div
-                            className="diff-line-content token-container"
+                            className={`diff-line-content token-container${wrap ? ' diff-line-content-wrap' : ''}`}
                             ref={contentRef}
                             style={contentStyle}
                             dangerouslySetInnerHTML={{ __html: lastGoodRenderRef.current || visualizeWhitespace(content || ' ') }} />
@@ -312,7 +325,7 @@ export const DiffLine = React.memo(({
                 >
                     {type !== 'delete' ? (
                         <div
-                            className="diff-line-content token-container"
+                            className={`diff-line-content token-container${wrap ? ' diff-line-content-wrap' : ''}`}
                             ref={contentRef}
                             style={contentStyle}
                             dangerouslySetInnerHTML={{ __html: lastGoodRenderRef.current || visualizeWhitespace(content || ' ') }} />
@@ -343,7 +356,7 @@ export const DiffLine = React.memo(({
                 }}
             >
                 <div
-                    className="diff-line-content token-container"
+                    className={`diff-line-content token-container${wrap ? ' diff-line-content-wrap' : ''}`}
                     ref={contentRef}
                     style={contentStyle}
                     dangerouslySetInnerHTML={{ __html: lastGoodRenderRef.current || visualizeWhitespace(content || ' ') }} />
@@ -355,5 +368,6 @@ export const DiffLine = React.memo(({
     return prev.content === next.content &&
         prev.type === next.type &&
         prev.showLineNumbers === next.showLineNumbers &&
-        prev.viewType === next.viewType;
+        prev.viewType === next.viewType &&
+        prev.wrap === next.wrap;
 });

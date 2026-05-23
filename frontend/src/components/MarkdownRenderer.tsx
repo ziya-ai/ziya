@@ -2,7 +2,7 @@ import React, { useState, useEffect, memo, useMemo, useCallback, useRef, useId, 
 import { lazyWithRetry } from '../utils/lazyWithRetry';
 import { marked, Tokens } from 'marked';
 import { Alert, Button, message, Tooltip, Collapse } from 'antd';
-import { parseDiff } from 'react-diff-view';
+import { parseDiff, Diff, Hunk } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
 import { DiffLine } from './DiffLine';
 import { useActiveChat } from '../context/ActiveChatContext';
@@ -31,6 +31,88 @@ import { useProject } from '../context/ProjectContext';
 import { useSendPayload } from '../hooks/useSendPayload';
 import { useStreamingContext } from '../context/StreamingContext';
 import { parseD3Spec } from '../utils/d3SpecParser';
+
+/**
+ * Determine whether a diff for the given language should soft-wrap long lines
+ * instead of horizontal-scroll.  Wrapping is appropriate for prose
+ * (markdown, plain text) where whitespace isn't load-bearing; code stays
+ * `pre` so indentation and alignment remain meaningful.
+ */
+export function shouldWrapForLanguage(language: string | undefined): boolean {
+    if (!language) return true;  // unknown extensions → treat as plain text
+    const lang = language.toLowerCase();
+    return lang === 'markdown' || lang === 'plaintext' || lang === 'text';
+}
+
+/**
+ * Wrapper around the per-hunk horizontal-scroll container that preserves
+ * the user's `scrollLeft` across re-renders.
+ *
+ * During streaming the inner table briefly narrows when a partial line
+ * arrives — at that moment the browser clamps `scrollLeft` to the new
+ * (smaller) `scrollWidth - clientWidth`.  When the table widens again
+ * the next render, the clamp is permanent: the user's right-scroll is
+ * gone.  We restore it by:
+ *
+ * 1. Recording the user's intended scroll position from real \`scroll\` events
+ *    (which fire for both user input and browser-clamping; we filter the
+ *    clamping case by checking that the change isn't a strict shrink).
+ * 2. Watching the inner content size with a ResizeObserver and, whenever
+ *    \`scrollWidth\` grows back, restoring \`scrollLeft\` to the recorded value.
+ */
+const HunkScrollContainer: React.FC<{
+    style?: React.CSSProperties;
+    overflowX?: 'auto' | 'visible';
+    children?: React.ReactNode;
+}> = React.memo(({ style, overflowX = 'auto', children }) => {
+    const containerRef = useRef<HTMLDivElement | null>(null);
+    // The scroll position the user actually intended.  Preserved across
+    // re-renders so we can restore it after the browser clamps.
+    const userScrollLeftRef = useRef<number>(0);
+
+    const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+        const el = e.currentTarget;
+        const maxScroll = Math.max(0, el.scrollWidth - el.clientWidth);
+        // Only treat this as user-intent if the position isn't pinned at
+        // the new (clamped) maximum.  When the browser clamps during a
+        // shrink it leaves scrollLeft === maxScroll; an actual user scroll
+        // is usually < maxScroll.  Either way, recording max-equal values
+        // is also safe — they'll just be re-restored on the next grow.
+        if (el.scrollLeft <= maxScroll) {
+            userScrollLeftRef.current = el.scrollLeft;
+        }
+    }, []);
+
+    useLayoutEffect(() => {
+        const el = containerRef.current;
+        if (!el || typeof ResizeObserver === 'undefined') return;
+        const ro = new ResizeObserver(() => {
+            const wanted = userScrollLeftRef.current;
+            if (wanted <= 0) return;
+            const maxScroll = Math.max(0, el.scrollWidth - el.clientWidth);
+            const target = Math.min(wanted, maxScroll);
+            if (el.scrollLeft < target) {
+                el.scrollLeft = target;
+            }
+        });
+        // Observe the container itself; scrollWidth changes when its
+        // children's intrinsic width changes, and that's reflected as a
+        // size change on the scroll viewport.
+        ro.observe(el);
+        return () => ro.disconnect();
+    }, []);
+
+    return (
+        <div
+            ref={containerRef}
+            className="hunk-scroll-container"
+            style={{ ...style, overflowX }}
+            onScroll={handleScroll}
+        >
+            {children}
+        </div>
+    );
+});
 
 // Lazy-load heavy diagram and mockup renderers.
 // mermaid + vega + d3 + graphviz + drawio together account for ~4 MB of JS that most
@@ -325,6 +407,45 @@ interface ToolBlockProps {
     verificationError?: string;  // Verification error message if failed
 }
 
+// Lightweight diff preview for tool-block bodies (e.g. file_write patch
+// previews).  Uses the same react-diff-view engine as inline chat diffs
+// but skips the apply button, hunk-status registry, and context-check
+// machinery — none of which apply to "show what was just written".
+const ToolDiffPreview: React.FC<{ diff: string; isDarkMode: boolean }> = ({ diff, isDarkMode }) => {
+    let files: ReturnType<typeof parseDiff> = [];
+    try {
+        files = parseDiff(diff);
+    } catch (e) {
+        // parseDiff failed — fall back to raw text so the user still
+        // sees something useful instead of a blank panel.
+        return (
+            <pre style={{
+                margin: 0, padding: '16px',
+                whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflow: 'auto',
+                color: isDarkMode ? '#e6e6e6' : '#24292e',
+            }}>{diff}</pre>
+        );
+    }
+    if (!files.length) {
+        return (
+            <pre style={{
+                margin: 0, padding: '16px',
+                whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflow: 'auto',
+                color: isDarkMode ? '#e6e6e6' : '#24292e',
+            }}>{diff}</pre>
+        );
+    }
+    return (
+        <div style={{ padding: '8px', overflow: 'auto' }}>
+            {files.map((file, fi) => (
+                <Diff key={fi} viewType="unified" diffType={file.type} hunks={file.hunks} gutterType="none" className="diff-view smaller-diff-view">
+                    {hunks => hunks.map((h, hi) => <Hunk key={hi} hunk={h} />)}
+                </Diff>
+            ))}
+        </div>
+    );
+};
+
 const ToolBlock: React.FC<ToolBlockProps> = ({
     toolName, content, isDarkMode, toolInput, onOpenShellConfig,
     verified: verifiedProp,
@@ -566,6 +687,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
     // Destructure formatted output and compute cleanContent before any early returns,
     // so the useEffect below (which is a hook) always runs in the same order.
     const { content: formattedContent, collapsed, summary } = formattedOutput;
+    const renderAsDiff = (formattedOutput as any).renderAs === 'diff';
     const hierarchicalResults = formattedOutput.hierarchicalResults;
     const shouldShowCollapsed = collapsed !== false && (summary || formattedContent.length > 500);
 
@@ -867,7 +989,9 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
                     );
                 })()
             ) : (
-                hasSyntaxHighlighting && isShellHighlightLoaded && highlightedShellOutput ? (
+                renderAsDiff ? (
+                    <ToolDiffPreview diff={cleanContent} isDarkMode={isDarkMode} />
+                ) : hasSyntaxHighlighting && isShellHighlightLoaded && highlightedShellOutput ? (
                     <pre style={{
                         margin: 0,
                         padding: '16px',
@@ -1650,7 +1774,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     useEffect(() => {
         const parseAndSetFiles = () => {
             try {
-                const normalizedDiff = normalizeGitDiff(diff);                
+                const normalizedDiff = normalizeGitDiff(diff);
                 let parsedFiles = validateAndFixParsedFiles(
                     safeParseDiff(normalizedDiff)
                 );
@@ -1969,6 +2093,8 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     const renderContent = (hunk: any, filePath: string, status?: any, fileIndex?: number, hunkIndex?: number): JSX.Element[] => {
 
         // Define base style for rows
+        const language = detectLanguage(filePath);
+        const wrap = shouldWrapForLanguage(language);
         // Add defensive check for changes array
         const rowStyle: React.CSSProperties = {};
         if (!hunk.changes || !Array.isArray(hunk.changes)) return [];
@@ -2029,12 +2155,13 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                 <DiffLine
                     key={i}
                     content={change.content}
-                    language={detectLanguage(filePath)}
+                    language={language}
                     viewType={viewType}
                     type={change.type}
                     oldLineNumber={oldLine}
                     newLineNumber={newLine}
                     showLineNumbers={showLineNumbers}
+                    wrap={wrap}
                     similarity={change.similarity}
                     style={style}
                     {...rowProps}
@@ -2257,7 +2384,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                     diff={diff}
                                     fileIndex={fileIndex}
                                     diffElementId={elementId}
-                                    filePath={file.newPath || file.oldPath}
+                                    filePath={file.type === 'delete' ? file.oldPath : (file.newPath || file.oldPath)}
                                     isStreaming={isGlobalStreaming}
                                     setHunkStatuses={setInstanceHunkStatusMap}
                                     enabled={window.enableCodeApply === 'true'}
@@ -2277,6 +2404,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                             const isApplied = status?.applied;
                             const isAlreadyApplied = status?.alreadyApplied;
                             const statusReason = status?.reason || '';
+                            const hunkWrap = shouldWrapForLanguage(detectLanguage(file.newPath || file.oldPath));
 
                             // Create the status indicator component
                             const hunkStatusIndicator = status && (
@@ -2306,11 +2434,10 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                 linesBetween === 1 ? '... (1 line)' : `... (${linesBetween} lines)`;
 
                             return (
-                                <div
+                                <HunkScrollContainer
                                     key={`hunk-wrapper-${fileIndex}-${hunkIndex}-${elementId}`}
-                                    className="hunk-scroll-container"
+                                    overflowX={hunkWrap ? 'visible' : 'auto'}
                                     style={{
-                                        overflowX: 'auto',
                                         marginBottom: '1em',
                                         border: status ?
                                             `1px solid ${isApplied ? (isAlreadyApplied ? '#faad14' : '#52c41a') : '#ff4d4f'}` :
@@ -2375,7 +2502,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                             {renderContent(hunk, file.newPath || file.oldPath, status, fileIndex, hunkIndex)}
                                         </tbody>
                                     </table>
-                                </div>
+                                </HunkScrollContainer>
                             );
                         })}
 
@@ -2418,6 +2545,12 @@ const isDiffComplete = (diffContent: string, isStreaming: boolean): boolean => {
 
     // If not streaming, assume diff is complete
     if (!isStreaming) return true;
+
+    // Deletion diffs are structurally complete as soon as the file header
+    // appears — they have no hunk content to wait for.
+    if (diffContent.includes('deleted file mode') || diffContent.includes('+++ /dev/null')) {
+        return true;
+    }
 
     // For streaming diffs, check if they have the essential structure
     const lines = diffContent.split('\n');
@@ -4088,50 +4221,52 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
     // Pre-scan diff tokens to detect superseded diffs (earlier revision for
     // the same file with overlapping hunk ranges).
     let supersededIndices = new Set<number>();
-
-    // Pre-pass: merge headerless continuation diff blocks into the preceding
     // headed diff.  LLMs (especially Opus) sometimes emit multiple ```diff
-    // fenced blocks for the same file where only the first has the
-    // "diff --git" header and subsequent blocks start directly with "@@".
-    // We merge these into the headed block so they parse as a single diff.
     const absorbedDiffIndices = new Set<number>();
-    if (!isSubRender) {
-        let lastHeadedDiffIndex: number | null = null;
 
+    if (!isSubRender) {
+    // Pre-pass: synthesize headers for headerless continuation diff blocks.
+    // LLMs (especially Opus) sometimes emit multiple 
+    // for the same file where only the first has the "diff --git" header
+    // and subsequent blocks start directly with "@@".  Rather than merging
+    // (which would collapse them onto the first block's location and lose
+    // their inline position next to the surrounding prose), we SYNTHESIZE
+    // the missing "diff --git" / "--- a/" / "+++ b/" headers using the
+    // last seen headed diff's file path.  Each block then parses standalone
+    // and renders inline with its own Apply button.
+    if (!isSubRender) {
+        // Path (without a/ or b/ prefix) of the most recent headed diff.
+        // We assume any subsequent headerless "@@"-only block targets the
+        // same file — true in every observed case.  Intervening prose,
+        // lists, or tool blocks no longer break the chain because the
+        // model frequently narrates between fixes to the same file.
+        let lastHeadedDiffPath: string | null = null;
         for (let i = 0; i < tokens.length; i++) {
             const tok = tokens[i] as TokenWithText;
-            // Only merge truly back-to-back diff fences.  Any non-trivial
-            // intervening token (prose, tool block, heading, list, etc.)
-            // breaks the continuation chain — otherwise an "@@"-only diff
-            // appearing many tokens later gets absorbed into an unrelated
-            // earlier headed diff and disappears from its inline position.
-            if (determineTokenType(tok) !== 'diff' || !tok.text) {
-                // Whitespace-only tokens (marked emits 'space' between
-                // blocks) don't break adjacency.  Anything else does.
-                if (tok.type !== 'space') {
-                    lastHeadedDiffIndex = null;
-                }
-                continue;
-            }
-
+            if (determineTokenType(tok) !== 'diff' || !tok.text) continue;
             const text = tok.text.trimStart();
             const hasDiffGitHeader = text.startsWith('diff --git ') ||
                 text.split('\n').slice(0, 3).some(l => l.startsWith('diff --git '));
-
             if (hasDiffGitHeader) {
-                lastHeadedDiffIndex = i;
-            } else if (lastHeadedDiffIndex !== null && text.startsWith('@@')) {
-                // Continuation hunk block — merge into the headed diff
-                const headedTok = tokens[lastHeadedDiffIndex] as TokenWithText;
-                headedTok.text = headedTok.text.trimEnd() + '\n' + tok.text;
-                absorbedDiffIndices.add(i);
+                // Extract path from "diff --git a/PATH b/PATH" so subsequent
+                // headerless continuations can synthesize matching headers.
+                // Prefer the b/ path (post-image) when both are present.
+                const pathMatch = text.match(/^diff --git a\/(\S+) b\/(\S+)/m);
+                if (pathMatch) lastHeadedDiffPath = pathMatch[2] || pathMatch[1];
+            } else if (lastHeadedDiffPath !== null && text.startsWith('@@')) {
+                // Headerless continuation — synthesize git + unified headers
+                // using the last headed diff's path so this block parses
+                // standalone (and stays at its original inline position).
+                const p = lastHeadedDiffPath;
+                tok.text =
+                    `diff --git a/${p} b/${p}\n` +
+                    `--- a/${p}\n` +
+                    `+++ b/${p}\n` +
+                    tok.text;
             }
-            // If it's a diff block without a header AND doesn't start with @@,
-            // leave it alone (might be a malformed diff handled elsewhere).
         }
     }
 
-    if (!isSubRender) {
         const diffTexts: { index: number; text: string }[] = [];
         tokens.forEach((token, index) => {
             if (absorbedDiffIndices.has(index)) return;
@@ -5625,7 +5760,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
                     // Detect opening of a language-tagged fence (e.g. ```diff, ```python)
                     if (!insideLangFence) {
-                        const langFenceMatch = fLine.match(/^(`{3,})\S/);
+                        const langFenceMatch = fLine.match(/^(`{3,})[^`\s]/);
                         if (langFenceMatch) {
                             insideLangFence = true;
                             langFenceLen = langFenceMatch[1].length;
@@ -5672,7 +5807,6 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                             });
                             if (firstNonBlank >= 0 && /^`{3,}\S/.test(innerLines[firstNonBlank])) {
                                 fenceOutput.push(...innerLines);
-                                fenceOutput.push(fenceLines[closeIdx]);
                                 fi = closeIdx + 1;
                                 continue;
                             }
@@ -6176,14 +6310,14 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
 
             const lexedTokens = marked.lexer(processedMarkdown, markedOptions);
-        // Debug: capture what reaches the lexer when a vega/vega-lite block is present.
-        // Remove after root cause is confirmed.
-        if (processedMarkdown.includes('$schema') &&
-            (processedMarkdown.includes('```vega') || processedMarkdown.includes('```vegalite'))) {
-            const fenceEnd = processedMarkdown.lastIndexOf('```');
-            console.log('[VEGA_DEBUG] chars before last fence (last 120):',
-                JSON.stringify(processedMarkdown.slice(Math.max(0, fenceEnd - 120), fenceEnd + 3)));
-        }
+            // Debug: capture what reaches the lexer when a vega/vega-lite block is present.
+            // Remove after root cause is confirmed.
+            if (processedMarkdown.includes('$schema') &&
+                (processedMarkdown.includes('```vega') || processedMarkdown.includes('```vegalite'))) {
+                const fenceEnd = processedMarkdown.lastIndexOf('```');
+                console.log('[VEGA_DEBUG] chars before last fence (last 120):',
+                    JSON.stringify(processedMarkdown.slice(Math.max(0, fenceEnd - 120), fenceEnd + 3)));
+            }
 
             return lexedTokens as (Tokens.Generic | TokenWithText)[] || [];
         } catch (error) {

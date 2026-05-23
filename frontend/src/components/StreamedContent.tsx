@@ -370,10 +370,17 @@ export const StreamedContent: React.FC<{}> = () => {
     useEffect(() => {
         const checkConnection = () => {
             if (streamingConversations.has(currentConversationId) && navigator.onLine === false) {
-                console.log('Connection lost while streaming');
+                // navigator.onLine is unreliable: browsers fire spurious
+                // offline events when the tab backgrounds, the OS sleeps
+                // wifi, or the network briefly changes.  Show a UI hint
+                // but do NOT abort the stream — if the connection is
+                // genuinely broken the fetch reader will throw and the
+                // chatApi error path handles it.  Aborting here on a
+                // false alarm kills a healthy in-flight stream (common
+                // when the user briefly switches tabs during a long
+                // Bedrock response).
+                console.log('navigator.onLine reports offline while streaming (UI hint only — not aborting)');
                 setConnectionLost(true);
-                // Automatically stop streaming when connection is lost
-                stopStreaming();
             } else {
                 setConnectionLost(false);
             }
@@ -393,7 +400,7 @@ export const StreamedContent: React.FC<{}> = () => {
             window.removeEventListener('online', checkConnection);
             window.removeEventListener('offline', checkConnection);
         };
-    }, [currentConversationId, streamingConversations, stopStreaming]);
+    }, [currentConversationId, streamingConversations]);
 
     const LoadingIndicator = () => (
         <Space direction="vertical" style={{ width: '100%' }}>
