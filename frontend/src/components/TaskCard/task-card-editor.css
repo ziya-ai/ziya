@@ -136,6 +136,34 @@
 .tc-block-label-parallel { color: #a78bfa; margin-left: 0; }
 .tc-block-body-parallel { padding: 10px 12px 10px 12px; }
 
+/* Until block — orange (loop with model-judged exit) */
+.tc-block-until {
+  border-color: #f0883e;
+  background: linear-gradient(180deg, rgba(240,136,62,0.06), transparent 30%);
+  box-shadow: inset 3px 0 0 #f0883e;
+}
+.tc-block-until > .tc-block-header {
+  background: rgba(240,136,62,0.08);
+  border-bottom-color: rgba(240,136,62,0.2);
+}
+.tc-block-label-until { color: #f0883e; margin-left: 0; }
+.tc-block-body-until { padding: 10px 12px 10px 12px; }
+
+/* Schedule block — green (the outer-outer trigger) */
+.tc-block-schedule {
+  border-color: #56d364;
+  background: linear-gradient(180deg, rgba(86,211,100,0.06), transparent 30%);
+  box-shadow: inset 4px 0 0 #56d364;
+  /* Slightly heavier outline so the "outer-outer box" reads as a wrapper */
+  border-width: 2px;
+}
+.tc-block-schedule > .tc-block-header {
+  background: rgba(86,211,100,0.10);
+  border-bottom-color: rgba(86,211,100,0.25);
+}
+.tc-block-label-schedule { color: #56d364; margin-left: 0; font-weight: 600; }
+.tc-block-body-schedule { padding: 10px 12px 10px 12px; }
+
 .tc-sequence-label {
   font-size: 9px; text-transform: uppercase; letter-spacing: 1px;
   color: #5a6370; margin-bottom: 4px;
@@ -198,4 +226,29 @@
 .tc-block-unknown {
   padding: 8px 12px; border-color: #da3633; color: #f85149;
   font-size: 11px;
+}
+
+/* Template-hint chips below Task instructions in loops */
+.tc-template-hints {
+  display: flex; flex-wrap: wrap; align-items: center;
+  gap: 4px; margin-top: 4px;
+  font-size: 10px;
+}
+.tc-template-hints-label {
+  color: var(--tc-muted, #7d8590);
+  margin-right: 2px;
+}
+.tc-template-hint-chip {
+  background: rgba(31,111,235,0.10);
+  border: 1px solid rgba(31,111,235,0.30);
+  color: #4a9eff;
+  padding: 2px 8px; border-radius: 10px;
+  cursor: pointer; font-size: 10px;
+  font-family: inherit;
+}
+.tc-template-hint-chip:hover {
+  background: rgba(31,111,235,0.18);
+}
+.tc-template-hint-chip:disabled {
+  opacity: 0.4; cursor: not-allowed;
 }

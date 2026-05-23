@@ -77,7 +77,18 @@ class Block(BaseModel):
     """
     model_config = {"extra": "allow"}
 
-    block_type: Literal["task", "repeat", "parallel"]
+    # Block taxonomy:
+    #   task     — atomic model invocation (the leaf)
+    #   repeat   — count / until-substring / for_each loop
+    #   parallel — concurrent execution of distinct children
+    #   until    — loop until a model-evaluated yes/no condition holds
+    #              (separate from repeat's substring-based until — this
+    #              one runs an evaluator sub-call on each iteration)
+    #   schedule — recurring trigger decorator (interval / at /
+    #              daily_at / cron).  Does NOT execute its body on its
+    #              own; the in-process scheduler dispatches each fire as
+    #              an independent TaskRun rooted at the body.
+    block_type: Literal["task", "repeat", "parallel", "until", "schedule"]
     id: str = ""
     name: str = ""
 
@@ -91,12 +102,34 @@ class Block(BaseModel):
     repeat_count: Optional[int] = None
     repeat_max: Optional[int] = None
     repeat_parallel: bool = False
-    repeat_propagate: Literal["none", "last", "all"] = "none"
+    repeat_propagate: Literal["none", "last", "all"] = "last"
     repeat_until: Optional[str] = None
     repeat_for_each_source: Optional[str] = None
     repeat_item_template: Optional[str] = None
 
-    # Repeat / Parallel body (ignored by Task)
+    # Until-only fields.  A separate block from Repeat-with-until
+    # because the evaluation surface is different: Repeat's
+    # `repeat_until` is a substring match against artifact.summary;
+    # Until uses a small LLM call (mode="model") or an expression
+    # evaluator (mode="expression", not yet implemented — UI greys
+    # this option out so the shape is reserved).
+    until_mode: Optional[Literal["model", "expression"]] = None
+    until_condition: Optional[str] = None
+    until_max: Optional[int] = None
+
+    # Schedule-only fields.  See app/agents/task_scheduler.py.
+    schedule_mode: Optional[Literal["interval", "at", "daily_at", "cron"]] = None
+    schedule_interval_value: Optional[int] = None
+    schedule_interval_unit: Optional[Literal["minutes", "hours", "days"]] = None
+    schedule_at_iso: Optional[str] = None         # one-shot ISO-8601
+    schedule_daily_at: Optional[str] = None       # "HH:MM" local
+    schedule_cron: Optional[str] = None           # 5-field cron expr
+    schedule_timezone: Optional[str] = None       # default: local
+    schedule_enabled: bool = True
+    schedule_catch_up: bool = True                # run-once-on-recovery
+    schedule_max_runs: Optional[int] = None       # None = unlimited
+
+    # Body — used by repeat / parallel / until / schedule (Task ignores)
     body: List["Block"] = []
 
 
