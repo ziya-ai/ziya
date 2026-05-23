@@ -217,6 +217,34 @@ def _recount_hunks(diff_text: str) -> str:
 
         body_old = ctx + rem
         body_new = ctx + add
+        # When a pure-addition hunk declares more old-side lines than the body
+        # shows (small mismatch, not truncation), the model counted trailing blank
+        # lines in old_count but omitted them from the visible context.  Append
+        # one blank removal line so patch consumes that orphaned trailing blank
+        # instead of leaving it behind.  The context match offset is typically
+        # within fuzz=2 so the hunk still applies cleanly.
+        last_add_idx = max((i for i, l in enumerate(body) if l.startswith('+')), default=-1)
+        has_trailing_context = any(
+            not l.startswith(('+', '-', '\\')) and l != ''
+            for l in body[last_add_idx + 1:]
+        )
+        if rem == 0 and 0 < (header_old_count - body_old) < 10 and not has_trailing_context:
+            # Insert before the first addition — unified diff requires removals
+            # to precede additions within a hunk (appending after + lines is
+            # rejected as malformed by the OS patch binary).
+            first_add = next((i for i, l in enumerate(body) if l.startswith('+')), len(body))
+            body.insert(first_add, '-')
+            rem = 1
+            # Strip the trailing split artifact now — with the removal line
+            # inserted, that phantom '' context line would produce a wrong
+            # header count and a malformed trailing context match at EOF.
+            if body and body[-1] == '':
+                body.pop()
+            # Recount from the cleaned body so header stays consistent.
+            ctx = sum(1 for l in body if not l.startswith(('+', '-', '\\')) and l != '')
+            add = sum(1 for l in body if l.startswith('+'))
+            body_old = ctx + rem
+            body_new = ctx + add
         # Detect truncated diffs: when the header claims significantly more
         # old-side lines than the body contains, the LLM omitted trailing
         # context.  Preserve the header count so downstream full-file
