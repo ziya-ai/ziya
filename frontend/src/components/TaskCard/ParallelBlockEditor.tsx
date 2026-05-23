@@ -11,7 +11,7 @@ import React from 'react';
 import type { Block } from '../../types/task_card';
 import { BlockEditor } from './BlockEditor';
 import {
-  makeTaskBlock, makeRepeatBlock, makeParallelBlock,
+  makeTaskBlock, makeRepeatBlock, makeParallelBlock, makeUntilBlock, makeScheduleBlock,
 } from '../../utils/taskCardBlocks';
 import './task-card-editor.css';
 
@@ -33,11 +33,13 @@ export const ParallelBlockEditor: React.FC<Props> = ({ block, onChange, onDelete
     body.splice(idx, 1);
     update({ body });
   };
-  const addChild = (kind: 'task' | 'repeat' | 'parallel') => {
+  const addChild = (kind: 'task' | 'repeat' | 'parallel' | 'until' | 'schedule') => {
     const child =
       kind === 'task' ? makeTaskBlock() :
       kind === 'repeat' ? makeRepeatBlock() :
-      makeParallelBlock();
+      kind === 'parallel' ? makeParallelBlock() :
+      kind === 'until' ? makeUntilBlock() :
+      makeScheduleBlock();
     update({ body: [...block.body, child] });
   };
 
@@ -70,6 +72,8 @@ export const ParallelBlockEditor: React.FC<Props> = ({ block, onChange, onDelete
           <button className="tc-add-btn" onClick={() => addChild('task')}>+ Task</button>
           <button className="tc-add-btn" onClick={() => addChild('repeat')}>+ Repeat</button>
           <button className="tc-add-btn" onClick={() => addChild('parallel')}>+ Parallel</button>
+          <button className="tc-add-btn" onClick={() => addChild('until')}>+ Until</button>
+          <button className="tc-add-btn" onClick={() => addChild('schedule')}>+ Schedule</button>
         </div>
       </div>
     </div>
