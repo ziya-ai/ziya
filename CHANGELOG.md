@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+### Fixed
+### Changed
+
+## [0.7.0.1] - 2026-05-22
+
+### Added
 
 - **Model-driven context management tools** (`app/mcp/tools/context_management.py`, registered as builtin category `context_management`, enabled by default). Three new MCP tools let the model curate its own conversation context across turns: `context_add_file` adds a project-relative path to the chat record's `additionalFiles` (so it persists on every subsequent turn) AND returns the file content inline in the same tool result (ephemeral — for immediate use this turn before the normal context pipeline picks it up next turn); `context_remove_file` removes a path *only if the model added it* (user-pinned files via the file tree are protected by a sentinel `_modelAddedFiles` ownership list on the chat record); `context_list_files` returns the current `additionalFiles` with ownership tags (`owner: 'model'|'user'`, `removable: bool`) so the model can see what's already in scope before adding more. Resolves the chat record via the request-scoped ContextVars (`conversation_id` from `stream_chunks`, `project_root` from `ProjectContextMiddleware`) → `ProjectStorage.get_by_path` → `ChatStorage(project_dir)`, mutates the JSON record directly, and bumps `_version` + `lastActiveAt` so a sibling tab's stale copy doesn't clobber the change on the next sync. Live UI sync reuses the existing `syncContextFromBackend` event pipeline (`frontend/src/apis/chatApi.ts`, `frontend/src/context/FolderContext.tsx`): when one of these tools fires successfully, `chatApi.ts` parses the `tool_display` event and dispatches the same CustomEvent the diff-validation context-add flow uses, with the FolderContext listener extended to handle `removedFiles` alongside `addedFiles`. Inline content is capped at 64 KB per add (truncation flagged in the result with `content_truncated: true`); the full file is still in context for next turn regardless of inline truncation. Path traversal, missing files, non-files, and empty paths are all rejected before persistence; CLI/non-chat invocation paths return a clear error. Regression tests in `tests/test_context_management_tools.py` cover add/remove/list happy paths, ownership-scope enforcement (user-pinned file refuses removal), idempotent re-add, traversal rejection, missing-file rejection, large-file inline truncation, missing-conversation-id error, and builtin registration.
 
