@@ -42,11 +42,20 @@ def find_similar_memories(
     candidate: Dict[str, Any],
     existing: List[Dict[str, Any]],
     top_n: int = 5,
+    min_similarity: float = 0.55,
 ) -> List[Dict[str, Any]]:
     """Find the most similar existing memories.
 
     Uses embedding similarity when available, falls back to tag + word
     overlap scoring.
+
+    ``min_similarity`` filters embedding-based hits below the cosine
+    threshold.  Without it, ``cache.search`` returns the top-K unconditionally
+    even when the active store has nothing topically related to the candidate
+    — wasting an LLM comparator call on guaranteed-ADD decisions.
+    Empirically, scores below ~0.55 are random co-occurrence (e.g. an MCP
+    infra fact "matching" a React performance fact); 0.55+ starts capturing
+    genuine topical overlap.
     """
     if not existing:
         return []
@@ -63,13 +72,32 @@ def find_similar_memories(
             vec = provider.embed_text(candidate.get("content", ""))
             if vec is not None:
                 cache = get_embedding_cache()
-                results = cache.search(vec, top_k=top_n)
+                # Cache may contain both m_* (active) and prop_* (probationary)
+                # entries.  Only m_* are valid as "existing memories" the
+                # comparator decides against — prop_* would let a candidate
+                # match its OWN freshly-embedded probationary proposal at
+                # ~0.98 cosine, falsely reporting itself as a similar memory.
+                # Bump top_k to leave headroom for prop_* filtering.
+                results = cache.search(vec, top_k=top_n * 4)
                 if results:
-                    result_ids = {mid for mid, _ in results}
-                    matched = [m for m in existing if m.get("id") in result_ids]
-                    if matched:
-                        return matched
-                    # Embedding hits didn't overlap with provided existing list — fall through
+                    # Filter by minimum cosine AND restrict to m_* keys.
+                    # Without the m_* gate, candidates re-discover their own
+                    # prop_* embeddings and the comparator wastes calls
+                    # disambiguating self-matches.
+                    above_threshold = [
+                        (mid, score) for mid, score in results
+                        if score >= min_similarity
+                        and isinstance(mid, str)
+                        and mid.startswith("m_")
+                    ][:top_n]
+                    if above_threshold:
+                        active_ids = {mid for mid, _ in above_threshold}
+                        matched = [m for m in existing
+                                   if m.get("id") in active_ids]
+                        if matched:
+                            return matched
+                    # No active-memory hits cleared the threshold — fall
+                    # through to keyword scoring.
     except Exception as e:
         logger.debug(f"Embedding similarity unavailable, using keyword fallback: {e}")
 
@@ -79,6 +107,29 @@ def find_similar_memories(
         w.lower() for w in candidate.get("content", "").split() if len(w) > 3
     )
 
+    # Generic English filler words that two unrelated technical facts will
+    # routinely share (e.g. "system", "with", "from", "the", "this") and
+    # which create false matches when the score floor is just `total > 0`.
+    # Excluding them sharpens the keyword-fallback signal considerably.
+    _STOPWORDS = {
+        "this", "that", "with", "from", "have", "been", "their", "them",
+        "they", "these", "those", "also", "more", "than", "such", "when",
+        "where", "what", "which", "while", "system", "systems", "type",
+        "types", "case", "cases", "user", "users", "data",
+    }
+    cand_words = cand_words - _STOPWORDS
+
+    # Minimum overlap required to even be a candidate.  Two genuinely
+    # unrelated facts typically share 0-1 content words once stopwords
+    # are excluded; a single tag like "design" or "system" is too
+    # generic to count as topical similarity on its own.
+    #   - Tag-only path:    require >= 2 tags in common.
+    #   - Word-only path:   require >= 2 content words in common.
+    #   - Hybrid path:      1 tag + 1 word counts.
+    # This prevents single-tag matches like "design" from triggering
+    # the LLM comparator across totally unrelated technical domains.
+    MIN_KEYWORD_OVERLAP = 2
+
     scored = []
     for mem in existing:
         if mem.get("status", "active") != "active":
@@ -86,11 +137,20 @@ def find_similar_memories(
         mem_tags = set(t.lower() for t in mem.get("tags", []))
         mem_words = set(
             w.lower() for w in mem.get("content", "").split() if len(w) > 3
-        )
+        ) - _STOPWORDS
         tag_score = len(cand_tags & mem_tags)
         word_score = len(cand_words & mem_words)
-        total = tag_score * 2 + word_score  # weight tags higher
-        if total > 0:
+        # Combined-evidence floor: total signal must be >= 2.
+        # A single matching tag (tag_score=1, word_score=0) → total=2 looks
+        # like signal but in practice means "shared a generic vocabulary
+        # bucket" — bumped from total>=1 (the original logic) to total>=3
+        # so a lone tag isn't enough.
+        if tag_score == 0 and word_score < MIN_KEYWORD_OVERLAP:
+            continue
+        if tag_score >= 1 and word_score == 0 and tag_score < 2:
+            continue
+        total = tag_score * 2 + word_score
+        if total >= 3:
             scored.append((total, mem))
 
     scored.sort(key=lambda x: x[0], reverse=True)

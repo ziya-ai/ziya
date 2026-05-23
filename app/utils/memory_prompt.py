@@ -25,6 +25,15 @@ CORE_TOKEN_BUDGET_CHARS = 2000
 # Layers that always qualify for core tier regardless of importance
 CORE_PRIORITY_LAYERS = {"preference", "negative_constraint", "lexicon"}
 
+# Layers that are NEVER auto-injected into the system prompt regardless
+# of importance.  They remain searchable via memory_search and reachable
+# by embedding similarity when the conversation is genuinely on-topic --
+# but they don't pollute the assistant's view during unrelated work.
+# `personal` is the canonical example: the user's family, hobbies, etc.
+# are durable knowledge worth storing, but irrelevant to a debugging
+# conversation about packet loss.
+EXCLUDED_FROM_CORE_LAYERS = {"personal"}
+
 
 def get_memory_activation_directive() -> str:
     """
@@ -189,6 +198,12 @@ def _select_core_memories(memories: list) -> tuple:
     rest = []
 
     for m in memories:
+        # Personal autobiography (family, hobbies, dating, etc.) is
+        # retrieval-only — never auto-injected.  The assistant only
+        # sees these via memory_search when the conversation is
+        # genuinely on-topic.
+        if m.layer in EXCLUDED_FROM_CORE_LAYERS:
+            continue
         if m.layer in CORE_PRIORITY_LAYERS:
             priority.append(m)
         else:
