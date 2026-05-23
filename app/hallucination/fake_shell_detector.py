@@ -148,6 +148,18 @@ def detect_fake_shell_session(text: str) -> FakeShellMatch | None:
             body = text[body_start:close_m.start()]
             pos = close_m.end()
 
+        # Structural skip: if the fence body contains another fence
+        # opener, this fence is documenting / quoting / nesting other
+        # fenced content, not claiming to execute commands.  Examples
+        # the detector previously fired on (false positives):
+        #   - A 4-backtick wrapper containing example bash usage
+        #   - Markdown documentation showing what shell output looks like
+        #   - Analysis text quoting a code fence from a prior log
+        # In all of these cases the inner backticks are content, so the
+        # outer fence is not a shell-session claim.
+        if '```' in body or '\`\`\`' in body:
+            continue
+
         # Signal 1: grep-n output — 3+ consecutive numbered lines.
         grep_matches = _GREP_LINE_RE.findall(body)
         if len(grep_matches) >= 3:
