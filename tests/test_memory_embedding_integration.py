@@ -64,8 +64,13 @@ class TestEmbeddingDedup:
         assert len(result) == 1
         assert result[0]["tags"] == ["other"]
 
-    def test_embedding_dedup_rejects_paraphrases(self, tmp_path):
-        """With a mock provider, high-similarity candidates are rejected."""
+    def test_embedding_dedup_paraphrases_active_memory_records_corroboration(self, tmp_path):
+        """High-similarity match against an ACTIVE memory (`m_*`) is NOT
+        dropped — it falls through to the comparator with a corroboration
+        signal recorded via the sink.  Dropping here would lose both the
+        candidate AND the comparator's NOOP/UPDATE/ADD decision.
+        Paraphrase-against-proposal (`prop_*`) is dropped instead.
+        """
         from app.utils.memory_extractor import deduplicate
         import app.services.embedding_service as es
 
@@ -89,8 +94,48 @@ class TestEmbeddingDedup:
             existing = [
                 {"id": "m_existing", "content": "VPC overlay networking", "tags": ["net"]},
             ]
+            sink: list = []
+            result = deduplicate(candidates, existing, corroboration_sink=sink)
+            # Active-memory paraphrase: kept (deferring to comparator),
+            # corroboration recorded via sink.
+            assert len(result) == 1
+            assert sink == ["m_existing"]
+        finally:
+            es._provider = None
+            es._cache = None
+
+    def test_embedding_dedup_drops_paraphrase_of_proposal(self, tmp_path):
+        """High-similarity match against a probationary `prop_*` IS dropped
+        (no active-memory comparator path to defer to).  This is the
+        original noise-suppression role embedding dedup plays.
+        """
+        from app.utils.memory_extractor import deduplicate
+        import app.services.embedding_service as es
+
+        mock_provider = MagicMock()
+        mock_provider.embed_text.return_value = np.array([1.0, 0, 0, 0], dtype=np.float32)
+
+        cache = EmbeddingCache(tmp_path, dim=4)
+        # Put both an unrelated active memory (so the "no existing → bypass"
+        # short-circuit doesn't fire) and a near-duplicate proposal that
+        # will trigger the embedding-dedup drop.
+        unrelated_vec = np.array([0, 0, 0, 1.0], dtype=np.float32)
+        cache.put("m_unrelated", unrelated_vec)
+        existing_vec = np.array([0.99, 0.1, 0, 0], dtype=np.float32)
+        existing_vec /= np.linalg.norm(existing_vec)
+        cache.put("prop_pending", existing_vec)
+
+        es._provider = mock_provider
+        es._cache = cache
+
+        try:
+            candidates = [
+                {"content": "Network virtualization via overlays", "tags": ["net"]},
+            ]
+            existing = [
+                {"id": "m_unrelated", "content": "Some unrelated fact", "tags": ["misc"]},
+            ]
             result = deduplicate(candidates, existing)
-            # The embedding similarity > 0.92 threshold should catch this
             assert len(result) == 0
         finally:
             es._provider = None
@@ -167,11 +212,15 @@ class TestReEmbedOnUpdate:
             from app.utils.memory_extractor import run_post_conversation_extraction
             # Messages must be long enough to survive strip_conversation (>200 chars)
             messages = [
-                {"role": "user", "content": "I need to understand how VPC networking works at the overlay level, including all the encapsulation and tunneling details"},
+                # The "to be clear" / "remember" phrases hit the
+                # salience pre-pass; without them the pipeline short-
+                # circuits with no_salience_signal before reaching the
+                # mocked extract_memories call.
+                {"role": "user", "content": "To be clear: I need to understand how VPC networking works at the overlay level, including all the encapsulation and tunneling details. Remember this for future sessions."},
                 {"role": "assistant", "content": "VPC uses overlay networking with VXLAN encapsulation to provide tenant isolation across the physical infrastructure"},
-                {"role": "user", "content": "What has changed in the latest architecture revision with respect to the overlay and underlay separation?"},
+                {"role": "user", "content": "Note that the architecture revision changed the overlay and underlay separation. To be clear about what's different."},
                 {"role": "assistant", "content": "The updated VPC content includes significant changes to how overlays interact with the physical underlay network"},
-                {"role": "user", "content": "Can you explain the implications for cross-region traffic routing and failover?"},
+                {"role": "user", "content": "The key point for cross-region traffic routing and failover is the new transit gateway design."},
                 {"role": "assistant", "content": "Cross-region traffic now uses dedicated transit gateways with automatic failover and health checking"},
             ]
             result = await run_post_conversation_extraction(messages)
@@ -202,7 +251,12 @@ class TestReEmbedOnUpdate:
             mock_compare.return_value = {"action": "UPDATE", "target_id": m1.id}
 
             from app.utils.memory_extractor import run_post_conversation_extraction
-            messages = [{"role": "user", "content": f"msg {i}"} for i in range(6)]
+            # Salience triggers ("to be clear", "remember this") needed
+            # so the pipeline doesn't short-circuit before the comparator.
+            messages = [
+                {"role": "user", "content": f"To be clear about message {i}, remember this point about the topic."}
+                for i in range(6)
+            ]
             await run_post_conversation_extraction(messages)
 
             updated = tmp_store.get(m1.id)

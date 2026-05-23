@@ -22,10 +22,21 @@ def storage(tmp_path):
 
 
 @pytest.fixture
-def patch_storage(storage):
-    """Patch the singleton so get_memory_prompt_section() uses our test store."""
+def patch_storage(storage, monkeypatch):
+    """Patch the singleton so get_memory_prompt_section() uses our test store.
+
+    The memory category defaults to disabled in production; tests that
+    exercise the prompt need it enabled.  ZIYA_ENABLE_MEMORY=true is
+    consulted by is_builtin_category_enabled().  We also clear the
+    enabled-cache so the env override actually takes effect when other
+    tests have already populated the cache.
+    """
+    monkeypatch.setenv("ZIYA_ENABLE_MEMORY", "true")
+    from app.mcp.builtin_tools import invalidate_category_cache
+    invalidate_category_cache()
     with patch("app.storage.memory.get_memory_storage", return_value=storage):
         yield storage
+    invalidate_category_cache()
 
 
 class TestActivationDirective:
