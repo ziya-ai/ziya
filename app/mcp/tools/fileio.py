@@ -160,8 +160,8 @@ class FileReadTool(BaseMCPTool):
     async def execute(self, **kwargs) -> Dict[str, Any]:
         project_root = _get_project_root(kwargs)
         path_str: str = kwargs.get("path", "")
-        max_lines: Optional[int] = kwargs.get("max_lines")
-        offset: int = kwargs.get("offset") or 1
+        max_lines: Optional[int] = int(kwargs["max_lines"]) if kwargs.get("max_lines") is not None else None
+        offset: int = int(kwargs.get("offset") or 1)
 
         try:
             resolved = _resolve_and_validate(path_str, project_root, allowed_absolute_prefixes=_get_safe_write_paths())
