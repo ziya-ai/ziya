@@ -70,6 +70,13 @@ BUILTIN_TOOL_CATEGORIES: Dict[str, Dict[str, any]] = {
         "requires_dependencies": [],
         "tools": [],
     },
+    "context_management": {
+        "name": "Context Management",
+        "description": "Lets the model add/remove/list files in the current conversation's persistent context",
+        "enabled_by_default": True,
+        "requires_dependencies": [],
+        "tools": [],
+    },
     "diagram_render": {
         "name": "Diagram Render",
         "description": "Render diagrams to images for visual inspection and iterative refinement",
@@ -194,6 +201,18 @@ def get_memory_tools() -> List[Type[BaseMCPTool]]:
         return []
 
 
+def get_context_management_tools() -> List[Type[BaseMCPTool]]:
+    """Get model-driven context-management tools."""
+    try:
+        from app.mcp.tools.context_management import (
+            ContextAddFileTool, ContextRemoveFileTool, ContextListFilesTool
+        )
+        return [ContextAddFileTool, ContextRemoveFileTool, ContextListFilesTool]
+    except ImportError as e:
+        logger.warning(f"Could not import context management tools: {e}")
+        return []
+
+
 def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
     """Get builtin tools for a specific category."""
     tool_getters = {
@@ -206,6 +225,7 @@ def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
         "diagram_render": get_diagram_render_tools,
         "skills": get_skill_tools,
         "memory": get_memory_tools,
+        "context_management": get_context_management_tools,
     }
 
     getter = tool_getters.get(category)
