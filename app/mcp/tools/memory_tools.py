@@ -54,6 +54,7 @@ class MemorySearchTool(BaseMCPTool):
         query = kwargs.get("query", "")
         tags = kwargs.get("tags")
         layer = kwargs.get("layer")
+        _conversation_id = kwargs.pop("conversation_id", None)
         if isinstance(tags, str):
             tags = [t.strip() for t in tags.split(",") if t.strip()]
         limit = kwargs.get("limit", 10)
@@ -119,6 +120,11 @@ class MemorySearchTool(BaseMCPTool):
                         if mem.tags:
                             entry += f"  tags: {', '.join(mem.tags)}"
                         formatted.append(entry)
+                    try:
+                        from app.utils.memory_feedback import record_load
+                        record_load(_conversation_id, [m.id for m in promoted])
+                    except Exception as fb_err:
+                        logger.debug(f"record_load (auto-promoted) failed: {fb_err}")
                     return {
                         "content": "\n\n".join(formatted),
                         "count": len(promoted),
@@ -148,6 +154,14 @@ class MemorySearchTool(BaseMCPTool):
             # Maturity boost: repeated retrieval increases importance (caps at 1.0)
             mem.importance = min(1.0, mem.importance + 0.05)
             store.save(mem)
+
+        # Record retrieval-load for the feedback loop.  Use signal happens
+        # later when the assistant's response gets scored against these.
+        try:
+            from app.utils.memory_feedback import record_load
+            record_load(_conversation_id, [m.id for m in results])
+        except Exception as fb_err:
+            logger.debug(f"record_load (search) failed: {fb_err}")
 
         formatted = []
         for mem in results:
@@ -326,6 +340,7 @@ class MemoryContextTool(BaseMCPTool):
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
         node_id = kwargs.get("node_id")
+        _conversation_id = kwargs.pop("conversation_id", None)
 
         from app.storage.memory import get_memory_storage
         store = get_memory_storage()
@@ -357,6 +372,17 @@ class MemoryContextTool(BaseMCPTool):
         else:
             lines.append("\n(No sub-topics)")
 
+        # Record loads for any memories directly attached to this node.
+        # Children's memories are loaded only when the model calls
+        # memory_expand, so they're not counted here.
+        memory_refs = node.get("memory_refs") or []
+        if memory_refs:
+            try:
+                from app.utils.memory_feedback import record_load
+                record_load(_conversation_id, list(memory_refs))
+            except Exception as fb_err:
+                logger.debug(f"record_load (context) failed: {fb_err}")
+
         return {"content": "\n".join(lines), "node": node, "children": children}
 
 
@@ -386,6 +412,7 @@ class MemoryExpandTool(BaseMCPTool):
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
         node_id = kwargs.get("node_id", "")
+        _conversation_id = kwargs.pop("conversation_id", None)
         if not node_id:
             return {"error": True, "message": "node_id is required."}
 
@@ -405,5 +432,12 @@ class MemoryExpandTool(BaseMCPTool):
             if mem.tags:
                 entry += f"  tags: {', '.join(mem.tags)}"
             formatted.append(entry)
+
+        # Record retrieval-load for the feedback loop.
+        try:
+            from app.utils.memory_feedback import record_load
+            record_load(_conversation_id, [m.id for m in memories])
+        except Exception as fb_err:
+            logger.debug(f"record_load (expand) failed: {fb_err}")
 
         return {"content": "\n\n".join(formatted), "count": len(memories)}
