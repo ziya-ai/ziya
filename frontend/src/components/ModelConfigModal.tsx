@@ -20,7 +20,7 @@ interface ModelConfigModalProps {
   availableModels: ModelInfo[];
   onModelChange: (modelId: string) => Promise<boolean>;
   capabilities: ModelCapabilities | null; // Use the imported type
-  onSave: (settings: ModelSettings) => void;
+  onSave: (settings: ModelSettings) => Promise<void>;
   currentSettings: ModelSettings;
 }
 
@@ -326,9 +326,10 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
         console.log('Model change succeeded');
       }
       // Then save the settings
-      onSave(values);
-      onClose();
+      await onSave(values);
+      onClose(); // Only close on successful save
     } catch (error: any) {
+      console.error('Apply failed:', error);
       message.error('Failed to update model configuration');
     } finally {
       // Ensure loading state is reset
