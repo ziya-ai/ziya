@@ -176,6 +176,9 @@ ALLOWED:
 
 For ALL code changes to project files, provide git diffs.
 Shell is for reading, analyzing, and running computations — not modifying project files.
+
+Do NOT prefix commands with `cd` to the current working directory — the shell
+already runs there. Use `cd` only to enter a different subdirectory.
 """
     
     logger.debug(f"MCP_GUIDELINES: Appending guidelines for {len(available_tools)} tools")

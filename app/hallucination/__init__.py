@@ -9,6 +9,7 @@ See .ziya/hallucination-detection-design.md for the full design.
 """
 from .region_extraction import extract_scannable_regions, scannable_text
 from .fake_shell_detector import FakeShellMatch, detect_fake_shell_session
+from .fake_tool_result_detector import FakeToolResultMatch, detect_fake_tool_result
 from .shingle_index import (
     ShingleIndex,
     ShingleMatch,
@@ -22,6 +23,8 @@ from .shingle_index import (
 __all__ = [
     "FakeShellMatch",
     "detect_fake_shell_session",
+    "FakeToolResultMatch",
+    "detect_fake_tool_result",
     "extract_scannable_regions",
     "scannable_text",
     "ShingleIndex",

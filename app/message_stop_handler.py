@@ -118,7 +118,16 @@ async def handle_message_stop(
     )
 
     continuation_count = 0
-    max_continuations = 10
+    # Capped at 2 (was 10).  This loop only fires when the stream ends
+    # with an *unclosed* code fence — it re-prompts the model with
+    # "close this fence" and counts the retries.  It is NOT the long-
+    # output continuation path (that's MAX_CONTINUATIONS in
+    # app/agents/streaming_loop.py, unaffected here).  In practice if
+    # the model hasn't closed a real fence after 2 attempts, further
+    # attempts don't converge — they typically mean the fence tracker
+    # mis-read backticks in narrative prose, and each extra loop costs
+    # an API call.
+    max_continuations = 2
     state.continuation_happened = False
 
     continuation_marker_id = f"continuation_{time.time_ns()}"
