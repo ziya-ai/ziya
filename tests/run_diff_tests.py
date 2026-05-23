@@ -1291,6 +1291,69 @@ class DiffRegressionTest(unittest.TestCase):
         )
 
 
+    def test_readme_quickstart_false_already_applied(self):
+        """Regression test: Quick Start diff is falsely reported as already applied
+        and simultaneously applied non-idempotently, producing duplicate content.
+
+        The original production failure:
+          - Pipeline reported status=already_applied AND changes_written=True
+          - Each retry added another copy of the Quick Start block
+          - README.md ended up with 11 copies of the section
+
+        Root cause: malformed hunk header declares old_count=6 but body only
+        shows 3 context lines. This confuses both the already-applied detector
+        (false positive) and the application itself (wrong lines consumed).
+
+        This test verifies three things:
+          1. First application: status is NOT already_applied, content IS written
+          2. Result matches expected (no trailing-blank corruption)
+          3. Second application: file does NOT change (true idempotency)
+        """
+        from app.utils.code_util import use_git_to_apply_code_diff
+
+        metadata, original, diff, expected = self.load_test_case(
+            'readme_quickstart_false_already_applied'
+        )
+
+        test_file_path = os.path.join(self.temp_dir, metadata['target_file'])
+        os.makedirs(os.path.dirname(test_file_path), exist_ok=True)
+
+        with open(test_file_path, 'w', encoding='utf-8') as f:
+            f.write(original)
+
+        # First application — must write changes and must NOT claim already_applied
+        first_result = use_git_to_apply_code_diff(diff, test_file_path)
+        self.assertTrue(
+            first_result.get('changes_written', False),
+            "First application must write changes (content was absent)"
+        )
+        self.assertNotEqual(
+            first_result.get('status'), 'already_applied',
+            "First application must not falsely report already_applied "
+            "(original bug: pipeline reported already_applied while still writing content)"
+        )
+
+        with open(test_file_path, 'r', encoding='utf-8') as f:
+            after_first = f.read()
+
+        self.assertEqual(
+            after_first, expected,
+            "After first application content must exactly match expected"
+        )
+
+        # Second application — file must be unchanged (true idempotency)
+        use_git_to_apply_code_diff(diff, test_file_path)
+
+        with open(test_file_path, 'r', encoding='utf-8') as f:
+            after_second = f.read()
+
+        self.assertEqual(
+            after_first, after_second,
+            "Second application must not modify the file "
+            "(original bug: each retry added another copy of the Quick Start block)"
+        )
+
+
 # Dynamically generate test methods for all test case directories
 # This allows -k filtering to work without hardcoding every test
 def _generate_test_method(case_name):

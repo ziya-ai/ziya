@@ -1,0 +1,47 @@
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -53,6 +53,42 @@
+ 
+ ## Quick start
+ 
++
++```bash
++pip install ziya
++# or: pipx install ziya
++```
++
++Set credentials for whichever provider you want to use:
++
++```bash
++# AWS Bedrock (default)
++export AWS_ACCESS_KEY_ID=...
++export AWS_SECRET_ACCESS_KEY=...
++
++# Or Google Gemini
++export GOOGLE_API_KEY=...
++
++# Or OpenAI
++export OPENAI_API_KEY=...
++
++# Or Anthropic direct
++export ANTHROPIC_API_KEY=...
++```
++
++Then point it at a project and start it:
++
++```bash
++cd /path/to/your/project
++ziya
++```
++
++Open [http://localhost:6969](http://localhost:6969). Or use the CLI:
++
++```bash
++ziya chat                              # interactive terminal session
++ziya ask "what does this code do?"     # one-shot question
++ziya review --staged                   # review your staged git changes
++git diff main | ziya review            # pipe anything for review
++```
++
++For more detail (model selection, configuration, troubleshooting), see [Getting Started](Docs/NewUser.md).
