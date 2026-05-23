@@ -145,6 +145,30 @@ async def call_service_model(
         return await _call_bedrock(config, system_prompt, user_message, max_tokens, temperature)
 
 
+def _unsupported_params_for_model_id(model_id: str) -> set:
+    """Look up which inference parameters a Bedrock model rejects.
+
+    Some models (e.g. Opus 4.7) reject sampling parameters with a 400
+    ValidationException.  The list is declared on the per-model entry
+    in MODEL_CONFIGS as ``unsupported_parameters``.  Walk the config
+    looking for an entry whose ``model_id`` matches (handling both
+    bare-string and {us,eu} dict forms).
+    """
+    try:
+        from app.config.models_config import MODEL_CONFIGS
+    except ImportError:
+        return set()
+    for endpoint_cfg in MODEL_CONFIGS.values():
+        for entry in endpoint_cfg.values():
+            mid = entry.get("model_id")
+            if isinstance(mid, dict):
+                if model_id in mid.values():
+                    return set(entry.get("unsupported_parameters", []))
+            elif mid == model_id:
+                return set(entry.get("unsupported_parameters", []))
+    return set()
+
+
 async def _call_bedrock(config, system_prompt, user_message, max_tokens, temperature) -> str:
     """Call via Bedrock Converse API."""
     import boto3
@@ -157,11 +181,15 @@ async def _call_bedrock(config, system_prompt, user_message, max_tokens, tempera
         region_name=config.get("region", "us-east-1"),
         config=BotoConfig(read_timeout=30, retries={"max_attempts": 2, "mode": "adaptive"}),
     )
+    unsupported = _unsupported_params_for_model_id(config["model_id"])
+    inference_config: dict = {"maxTokens": max_tokens}
+    if "temperature" not in unsupported:
+        inference_config["temperature"] = temperature
     response = client.converse(
         modelId=config["model_id"],
         system=[{"text": system_prompt}],
         messages=[{"role": "user", "content": [{"text": user_message}]}],
-        inferenceConfig={"maxTokens": max_tokens, "temperature": temperature},
+        inferenceConfig=inference_config,
     )
     return _extract_converse_text(response)
 
