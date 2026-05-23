@@ -122,6 +122,46 @@ class ConversationDB implements DB {
         for (const id of ids) this.shellCacheDirtyIds.add(id);
     }
 
+    // localStorage key for the persisted shell cache.  Keyed by DB name so
+    // a promoted recovery DB (ZiyaDB_r1, etc.) never reads stale data.
+    private get shellCacheLSKey(): string {
+        return `ZIYA_SHELL_CACHE_${DB_BASE_NAME}`;
+    }
+
+    // Write the current in-memory shell cache to localStorage so the next
+    // page load can skip the 600-860ms IDB cursor scan.
+    private _persistShellCacheToLS(): void {
+        if (!this.shellCache) return;
+        try {
+            const payload = {
+                ts: this.shellCacheTs,
+                shells: Array.from(this.shellCache.values()),
+            };
+            localStorage.setItem(this.shellCacheLSKey, JSON.stringify(payload));
+        } catch {
+            // localStorage may be full or blocked — not fatal.
+        }
+    }
+
+    // Seed the in-memory shell cache from localStorage.  Returns true if the
+    // cache was populated (skipping the IDB scan), false if a scan is needed.
+    private _seedShellCacheFromLS(): boolean {
+        try {
+            const raw = localStorage.getItem(this.shellCacheLSKey);
+            if (!raw) return false;
+            const { ts, shells } = JSON.parse(raw) as { ts: number; shells: Conversation[] };
+            const age = Date.now() - ts;
+            // Treat LS data as valid if it's less than 5 minutes old.  The
+            // server-sync that runs right after init will correct any stale state.
+            if (age > 5 * 60_000 || !Array.isArray(shells)) return false;
+            this.shellCache = new Map(shells.map((s: Conversation) => [s.id, s]));
+            this.shellCacheTs = ts;
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
     db: IDBDatabase | null = null;
 
     async init(): Promise<void> {
@@ -1134,7 +1174,14 @@ class ConversationDB implements DB {
                 await refreshFn();
             }
             this.shellCacheTs = cacheNow;
+            this._persistShellCacheToLS();
             return Array.from(this.shellCache.values()).map(c => ({ ...c }));
+        }
+
+        // Before running the expensive full cursor scan, check if localStorage
+        // has a recent snapshot we can use instead.
+        if (this._seedShellCacheFromLS()) {
+            return Array.from(this.shellCache!.values()).map(c => ({ ...c }));
         }
 
         // Full rebuild: cursor-scan everything (cold start, TTL expired,
@@ -1172,6 +1219,7 @@ class ConversationDB implements DB {
         this.shellCache = new Map(shells.map(s => [s.id, s]));
         this.shellCacheTs = Date.now();
         this.shellCacheDirtyIds.clear();
+        this._persistShellCacheToLS();
         // Return a clone so caller mutations don't affect the cached copy.
         return shells.map(c => ({ ...c }));
     }

@@ -890,24 +890,33 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   // Listen for context sync events from backend
   useEffect(() => {
     const handleContextSync = (event: CustomEvent) => {
-      const { addedFiles, reason } = event.detail;
+      const { addedFiles, removedFiles, reason } = event.detail;
+      const added = Array.isArray(addedFiles) ? addedFiles : [];
+      const removed = Array.isArray(removedFiles) ? removedFiles : [];
 
-      if (!addedFiles || addedFiles.length === 0) return;
+      if (added.length === 0 && removed.length === 0) return;
 
-      console.log('📂 CONTEXT_SYNC: Backend added files to context:', addedFiles);
+      if (added.length > 0) {
+        console.log('📂 CONTEXT_SYNC: Backend added files to context:', added);
+      }
+      if (removed.length > 0) {
+        console.log('📂 CONTEXT_SYNC: Backend removed files from context:', removed);
+      }
 
-      // Update checkedKeys to include the new files
+      // Update checkedKeys: union of (existing - removed) + added.
       setCheckedKeys(prev => {
-        const newKeys = [...prev];
-        addedFiles.forEach((file: string) => {
-          if (!newKeys.includes(file)) {
-            newKeys.push(file);
-          }
+        const removedSet = new Set(removed);
+        const newKeys = prev.filter(k => !removedSet.has(k as string));
+        added.forEach((file: string) => {
+          if (!newKeys.includes(file)) newKeys.push(file);
         });
         return newKeys;
       });
 
-      console.log(`✅ UI synced: ${addedFiles.length} file(s) added to context`);
+      const reasonLabel = reason ? ` (${reason})` : '';
+      console.log(
+        `✅ UI synced${reasonLabel}: +${added.length} / -${removed.length} file(s)`
+      );
     };
 
     window.addEventListener('syncContextFromBackend', handleContextSync as EventListener);
