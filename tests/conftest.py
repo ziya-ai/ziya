@@ -33,6 +33,56 @@ def temp_config_dir(tmp_path):
     return config_dir
 
 
+@pytest.fixture(autouse=True)
+def _isolate_embedding_singletons(tmp_path, monkeypatch):
+    """Force every test to use an isolated embedding cache and Noop provider.
+
+    Without this, tests that exercise MemoryStorage.save() walk through
+    embed_and_cache() -> get_embedding_cache() -> the real
+    ~/.ziya/memory/embeddings.npz singleton.  Even tests that look harmless
+    (e.g. building an in-memory store with a few demo memories) write
+    embeddings into the user's real cache.  Earlier audit found 7 of 15
+    memory test files leaking.
+
+    Behaviour:
+      - Provider singleton is reset and ZIYA_EMBEDDING_PROVIDER=none is set
+        so embed_and_cache short-circuits before hitting Bedrock.
+      - Cache singleton is reset and pointed at a per-test tmp_path so
+        any code path that builds a fresh cache (or that bypasses the
+        provider check) writes to a sandbox instead of the real npz.
+      - Singletons are restored after the test.
+
+    Tests that need a real embedding cache (the embedding-integration
+    file, for example) replace `_provider`/`_cache` directly and don't
+    rely on this fixture.
+    """
+    monkeypatch.setenv("ZIYA_EMBEDDING_PROVIDER", "none")
+    try:
+        import app.services.embedding_service as _es
+    except Exception:
+        # embedding service not importable in this environment — nothing to do
+        yield
+        return
+
+    saved_provider = getattr(_es, "_provider", None)
+    saved_cache = getattr(_es, "_cache", None)
+    _es._provider = None  # Force NoopProvider on next get_embedding_provider()
+
+    # Build a sandbox cache pointing at tmp_path.  Lazy import to avoid
+    # circular issues if EmbeddingCache isn't importable here.
+    try:
+        sandbox_dir = tmp_path / "embed_sandbox"
+        sandbox_dir.mkdir(parents=True, exist_ok=True)
+        _es._cache = _es.EmbeddingCache(sandbox_dir)
+    except Exception:
+        _es._cache = None
+    try:
+        yield
+    finally:
+        _es._provider = saved_provider
+        _es._cache = saved_cache
+
+
 # Safety-net per-test timeout.  Prevents any single test from blocking
 # the entire suite when pytest-timeout is not installed.
 _TEST_TIMEOUT_SECS = 60

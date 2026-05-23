@@ -58,7 +58,7 @@ class TestMemoryStatus:
 class TestMemoryCRUD:
     def test_save_and_list(self, client):
         tc, _ = client
-        resp = tc.post("/api/v1/memory", json={"content": "test fact", "layer": "decision", "tags": ["test"]})
+        resp = tc.post("/api/v1/memory", json={"content": "a test fact for crud", "layer": "decision", "tags": ["test"]})
         assert resp.status_code == 200
         mem_id = resp.json()["id"]
 
