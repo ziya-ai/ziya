@@ -488,6 +488,7 @@ class CLI:
         self._active_task = None  # Track active streaming task for cancellation
         self._cancellation_requested = False
         self._diff_applicator = None  # Lazy-load diff applicator
+        self._background_init_task = None  # Background MCP + plugins init task
         self._last_ctrl_c_time = 0   # Track last Ctrl+C press for double-tap exit
         self._partial_response = ""  # Accumulates streaming content for crash recovery
         self._last_keypress_time = 0  # Track last keypress for paste detection
@@ -700,6 +701,20 @@ class CLI:
     
     async def ask(self, question: str, stream: bool = True) -> str:
         """Send a question and get response."""
+        # Wait for background initialization (MCP + plugins) to complete before
+        # processing the first message. This runs concurrently with the user
+        # typing their first prompt so it's usually already done by send time.
+        if self._background_init_task is not None and not self._background_init_task.done():
+            print("\033[90m⟳ Finishing setup...\033[0m", file=sys.stderr, end="\r")
+            try:
+                await self._background_init_task
+            except Exception:
+                pass  # Errors are reported inside the task itself
+            finally:
+                # Clear the "finishing setup" line
+                print("\033[2K", file=sys.stderr, end="\r")
+        self._background_init_task = None
+
         if self.model is None:
             error_msg = self._init_error or "Model not available"
             print(f"\n\033[31mError: {error_msg}\033[0m", file=sys.stderr)
@@ -1193,9 +1208,21 @@ class CLI:
             md_renderer = StreamingMarkdownRenderer()
         
         try:
+            _debug_chunks = os.environ.get('ZIYA_DEBUG_CHUNKS') == '1'
             async for chunk in stream_generator:
                 chunk_type = chunk.get('type')
-            
+
+                if _debug_chunks:
+                    # One-line trace per chunk — lets us see in real time what
+                    # the executor is yielding during apparent "silent" gaps,
+                    # including chunk types this handler intentionally drops.
+                    _summary = ''
+                    if chunk_type == 'text':
+                        _summary = repr(chunk.get('content', '')[:60])
+                    elif chunk_type in ('tool_start', 'tool_display', 'tool_execution', 'tool_use', 'tool_result_for_model'):
+                        _summary = f"tool={chunk.get('tool_name')!r} id={chunk.get('tool_id') or chunk.get('tool_use_id')!r}"
+                    print(f"\033[90m[chunk] {chunk_type} {_summary}\033[0m", file=sys.stderr, flush=True)
+
                 if chunk_type == 'text':
                     content = chunk.get('content', '')
                 
@@ -2350,8 +2377,21 @@ async def _run_with_mcp(coro):
 
 async def _run_async_cli(cli):
     """Run CLI in async context with MCP initialized."""
-    # Initialize MCP in this event loop
-    await _initialize_mcp()
+    # Start MCP and any pending plugin policy enforcement as a background task
+    # so the prompt appears immediately rather than waiting ~10s for servers to
+    # connect and the registry to respond.
+    async def _background_init(plugins_future):
+        # Wait for plugin initialization thread to finish, then enforce policy.
+        if plugins_future is not None:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, plugins_future.result)
+            _enforce_endpoint_policy()
+        await _initialize_mcp()
+
+    plugins_future = getattr(cli, '_plugins_future', None)
+    cli._background_init_task = asyncio.create_task(
+        _background_init(plugins_future)
+    )
 
     # Install a custom SIGINT handler on the event loop so that ^C during
     # streaming cancels the active task gracefully instead of tearing down
@@ -2366,6 +2406,16 @@ async def _run_async_cli(cli):
             if getattr(cli, '_cancel_event', None) is not None:
                 cli._cancel_event.set()
             cli._active_task.cancel()
+            # Immediate user feedback — task.cancel() may take time to
+            # propagate through shielded reads in the provider, and the
+            # prompt_toolkit ^C binding only runs at the prompt, not
+            # during streaming.  Without this print the user sees no
+            # reaction until cancellation fully unwinds.
+            try:
+                sys.stdout.write("\n\033[33m^C - Cancelling...\033[0m\n")
+                sys.stdout.flush()
+            except Exception:
+                pass
         else:
             # At the prompt the terminal is in raw mode, so SIGINT
             # won't fire — prompt_toolkit handles ^C as a character.
@@ -2444,15 +2494,23 @@ def _create_cli_session(args, files=None) -> 'CLI':
 
 def cmd_chat(args):
     """Handle: ziya chat [FILES...]"""
-    # Environment + plugins needed before --resume early path
+    # Environment setup must happen before anything else.
     setup_env(args)
+
+    # Kick off plugin initialization in a background thread immediately so the
+    # network calls inside internal_plugins.register() overlap with auth and
+    # CLI setup rather than blocking them.
+    import concurrent.futures
+    _plugins_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="ziya-plugins")
     from app.plugins import initialize as initialize_plugins
-    initialize_plugins()
+    _plugins_future = _plugins_executor.submit(initialize_plugins)
     
     # Handle session resume (needs env + plugins but also needs auth)
     if getattr(args, 'resume', False):
+        # Resume path: must wait for plugins before enforcing policy.
+        _plugins_future.result()
         _enforce_endpoint_policy()
-        # Authenticate on resume path — fixes historical auth bypass
+        # Authenticate on resume path.
         profile = getattr(args, 'profile', None)
         if not _check_auth_quick(profile):
             _print_auth_error()
@@ -2495,11 +2553,16 @@ def cmd_chat(args):
                 print("\033[90mStarting new session instead\033[0m\n")
     
     # Normal (non-resume) path — skip setup_env/plugins (already ran above)
-    _init_and_authenticate(args, skip_setup_env=True)
+    # Auth check doesn't need plugins; policy enforcement is deferred to the
+    # background init task inside _run_async_cli.
+    if not _check_auth_quick(getattr(args, 'profile', None)):
+        _print_auth_error()
+        sys.exit(1)
     
     root = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
     files = resolve_files(args.files, root) if args.files else []
     cli = CLI(files=files)
+    cli._plugins_future = _plugins_future
     cli._ephemeral = getattr(args, 'ephemeral', False)
     asyncio.run(_run_async_cli(cli))
     
