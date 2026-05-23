@@ -41,6 +41,18 @@ SERVICE_MODEL_OVERRIDES: dict[str, dict[str, str]] = {
         "openai": "gpt-5.5-mini",           # already strong enough
         "anthropic": "claude-haiku-4-5-20251001",
     },
+    # Memory eval needs the strongest available judgment model — its
+    # purpose is to grade the mid-tier extractor and salience heuristic.
+    # Cost is bounded (~50-conversation samples, ~human-supervised cadence)
+    # so the per-call expense is acceptable.  Routes to Opus on Bedrock /
+    # Anthropic, top-tier on others.  Override per-user via
+    # ZIYA_MEMORY_EVAL_MODEL.
+    "memory_eval": {
+        "bedrock": "us.anthropic.claude-opus-4-7",
+        "google": "gemini-3-pro",
+        "openai": "gpt-5.5",
+        "anthropic": "claude-opus-4-7",
+    },
 }
 
 # Default regions for specific models
