@@ -112,15 +112,87 @@ const OutputPart: React.FC<{ part: ArtifactPart; idx: number }> = ({ part, idx }
   return null;
 };
 
-/** Walk a block tree and return the first leaf Task's instructions. */
-function findPrimaryTaskInstructions(block: Block | undefined | null): string | null {
-  if (!block) return null;
-  if (block.block_type === 'task') return block.instructions?.trim() || null;
-  for (const child of block.body ?? []) {
-    const found = findPrimaryTaskInstructions(child);
-    if (found) return found;
+/**
+ * Render a single wrapper block as a one-line plain-language summary.
+ * Returns \`null\` for Task blocks (those carry the actual instructions
+ * shown below the wrapper chain).
+ */
+function describeWrapper(block: Block): string | null {
+  if (block.block_type === 'task') return null;
+
+  if (block.block_type === 'repeat') {
+    const mode = block.repeat_mode || 'count';
+    const parallel = block.repeat_parallel ? ' in parallel' : '';
+    if (mode === 'count') {
+      const n = block.repeat_count ?? 1;
+      return \`Repeat ${n} time${n === 1 ? '' : 's'}${parallel}\`;
+    }
+    if (mode === 'until') {
+      const max = block.repeat_max ?? 1;
+      const cond = (block.repeat_until || '').trim();
+      return cond
+        ? \`Repeat until summary contains "${cond}" (max ${max})${parallel}\`
+        : \`Repeat until first success (max ${max})${parallel}\`;
+    }
+    if (mode === 'for_each') {
+      const src = (block.repeat_for_each_source || '').trim();
+      return src
+        ? \`For each item in: ${src.length > 60 ? src.slice(0, 60) + '…' : src}${parallel}\`
+        : \`For each item${parallel}\`;
+    }
   }
+
+  if (block.block_type === 'until') {
+    const max = block.until_max ?? 5;
+    const cond = (block.until_condition || '').trim();
+    return cond
+      ? \`Loop until: ${cond} (max ${max})\`
+      : \`Loop until first success (max ${max})\`;
+  }
+
+  if (block.block_type === 'parallel') {
+    return \`Run all branches in parallel\`;
+  }
+
+  if (block.block_type === 'schedule') {
+    const mode = block.schedule_mode || 'interval';
+    if (mode === 'interval') {
+      const n = block.schedule_interval_value ?? 1;
+      const u = block.schedule_interval_unit || 'hours';
+      return \`Schedule: every ${n} ${u}\`;
+    }
+    if (mode === 'at') return \`Schedule: once at ${block.schedule_at_iso || '?'}\`;
+    if (mode === 'daily_at') return \`Schedule: daily at ${block.schedule_daily_at || '?'}\`;
+    if (mode === 'cron') return \`Schedule: cron ${block.schedule_cron || '?'}\`;
+  }
+
   return null;
+}
+
+/**
+ * Walk a block tree and return both the wrapper-condition chain and the
+ * first leaf Task's instructions.  The chain is top-down (outermost
+ * first) so users can read it like a sentence: "Repeat 100 times → For
+ * each file → <task instructions>".
+ */
+function findInstructionsAndWrappers(
+  block: Block | undefined | null,
+): { wrappers: string[]; instructions: string | null } {
+  if (!block) return { wrappers: [], instructions: null };
+  const wrap = describeWrapper(block);
+  if (block.block_type === 'task') {
+    return { wrappers: [], instructions: block.instructions?.trim() || null };
+  }
+  for (const child of block.body ?? []) {
+    const inner = findInstructionsAndWrappers(child);
+    if (inner.instructions) {
+      return {
+        wrappers: wrap ? [wrap, ...inner.wrappers] : inner.wrappers,
+        instructions: inner.instructions,
+      };
+    }
+  }
+  return { wrappers: wrap ? [wrap] : [], instructions: null };
 }
 
 export const TaskCardInlineTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }) => {
@@ -229,7 +301,7 @@ export const TaskCardInlineTile: React.FC<Props> = ({ binding, hideWhenTerminal 
 
   const statusColor = STATUS_COLORS[run.status];
   const title = card?.name || 'Task Run';
-  const instructions = findPrimaryTaskInstructions(card?.root);
+  const { wrappers, instructions } = findInstructionsAndWrappers(card?.root);
 
   // Collapsed receipt view
   if (!expanded) {
@@ -282,9 +354,21 @@ export const TaskCardInlineTile: React.FC<Props> = ({ binding, hideWhenTerminal 
           <div className="tc-tile__description">{card.description}</div>
         )}
 
-        {instructions && (
+        {(wrappers.length > 0 || instructions) && (
           <details className="tc-tile__instructions">
             <summary>Instructions</summary>
+            {wrappers.length > 0 && (
+              <ul className="tc-tile__wrappers">
+                {wrappers.map((w, i) => (
+                  <li key={i}>
+                    <span className="tc-tile__wrapper-arrow">{i === 0 ? '▸' : '↳'}</span> {w}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {instructions && wrappers.length > 0 && (
+              <div className="tc-tile__wrapper-divider">Task instructions:</div>
+            )}
             <pre>{instructions}</pre>
           </details>
         )}

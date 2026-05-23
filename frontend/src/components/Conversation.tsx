@@ -322,6 +322,54 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     // Task card bindings for the current chat
     const { bindingsByAnchor } = useTaskBindings(currentConversationId);
 
+    // Chronological placement for unanchored bindings.
+    //
+    // Bindings whose anchor_message_id is null (e.g. created when no
+    // prior anchor message id was available, or whose anchor was later
+    // deleted) used to render at the chat tail unconditionally.  That
+    // produced wrong ordering: a task launched, finished, and then a
+    // follow-up query was added — the tile would still render *after*
+    // the follow-up because the tail is "after everything".
+    //
+    // Instead, we splice unanchored bindings inline using their
+    // \`created_at\` timestamp.  Each binding is attached to the most
+    // recent message whose timestamp is <= its created_at.  Bindings
+    // older than the first message (or for chats with no messages) are
+    // rendered at the head.  Bindings newer than the last message
+    // remain at the tail (correct: they were created after everything).
+    const unanchoredBindings = bindingsByAnchor.get('__no_anchor__') ?? [];
+    const splicedUnanchored = useMemo(() => {
+        const byMessageIdx = new Map<number, typeof unanchoredBindings>();
+        const head: typeof unanchoredBindings = [];
+        const tail: typeof unanchoredBindings = [];
+        if (unanchoredBindings.length === 0) {
+            return { byMessageIdx, head, tail };
+        }
+        const msgs = currentMessages || [];
+        const lastIdx = msgs.length - 1;
+        for (const b of unanchoredBindings) {
+            const t = b.created_at || 0;
+            // Find last message whose _timestamp <= binding.created_at.
+            // Messages without a _timestamp don't qualify as anchors
+            // but still occupy positions in the array.
+            let anchorIdx = -1;
+            for (let i = 0; i < msgs.length; i++) {
+                const mt = (msgs[i] as any)._timestamp;
+                if (typeof mt === 'number' && mt <= t) anchorIdx = i;
+            }
+            if (anchorIdx === -1) {
+                head.push(b);
+            } else if (anchorIdx === lastIdx) {
+                tail.push(b);
+            } else {
+                const arr = byMessageIdx.get(anchorIdx) ?? [];
+                arr.push(b);
+                byMessageIdx.set(anchorIdx, arr);
+            }
+        }
+        return { byMessageIdx, head, tail };
+    }, [unanchoredBindings, currentMessages]);
+
     // Earliest possible signal that a project switch is happening
     const isSwitchingProject = projectCtx.isLoadingProject || isProjectSwitching;
     scrollRef.current = scrollCtx;
@@ -605,6 +653,15 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                         >Rendered</Button>
                     </div>
                 )}
+                {/* Unanchored task tiles whose created_at predates the
+                    earliest message in the chat (or the chat has no
+                    messages at all).  Rendered at the head so the tile
+                    sits above subsequent conversational turns. */}
+                {splicedUnanchored.head.map(binding => (
+                    <Suspense key={binding.id} fallback={null}>
+                        <TaskCardInlineTile binding={binding} />
+                    </Suspense>
+                ))}
                 {displayMessages?.map((msg, index) => {
                     // Convert display index to actual index for bottom-up mode
                     const windowOffset = currentMessages.length - windowedMessages.length;
@@ -634,7 +691,16 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                         renderedSystemMessagesRef.current.add(systemMessageKey);
                     }
 
-                    const anchorBindings = msg.id ? bindingsByAnchor.get(msg.id) : undefined;
+                    // Bindings rendered just below this message:
+                    //   - anchored (binding.anchor_message_id === msg.id)
+                    //   - chronologically placed unanchored bindings whose
+                    //     created_at falls between this message's timestamp
+                    //     and the next message's timestamp
+                    const explicitAnchored = msg.id ? bindingsByAnchor.get(msg.id) : undefined;
+                    const unanchoredHere = splicedUnanchored.byMessageIdx.get(actualIndex);
+                    const anchorBindings = (explicitAnchored || unanchoredHere)
+                        ? [...(explicitAnchored ?? []), ...(unanchoredHere ?? [])]
+                        : undefined;
                     return <React.Fragment key={`msg-frag-${msg.id || actualIndex}`}><div
                         // Use message ID as key instead of index
                         data-message-index={actualIndex}
@@ -783,14 +849,15 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                     </React.Fragment>;
                 })}
 
-                {/* Unbound task card tiles (bindings without an anchor_message_id).
-                    Rendered at the tail of the conversation.  Kept visible
-                    after completion (the tile collapses to a receipt form
-                    8 s after terminal) so users can see the result of
-                    anything they launched.  Bindings with a real anchor
-                    message are rendered inline above, attached to the
-                    specific message they were launched from. */}
-                {(bindingsByAnchor.get('__no_anchor__') ?? []).map(binding => (
+                {/* Unanchored task card tiles whose created_at is newer
+                    than every existing message.  Bindings created
+                    earlier are spliced inline above (see
+                    splicedUnanchored.byMessageIdx in the render loop)
+                    so they appear in the correct chronological position
+                    rather than always at the chat tail.  Tiles stay
+                    visible after completion (collapsing to receipt form
+                    8 s after terminal) so users can see the result. */}
+                {splicedUnanchored.tail.map(binding => (
                     <Suspense key={binding.id} fallback={null}>
                         <TaskCardInlineTile binding={binding} />
                     </Suspense>

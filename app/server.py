@@ -97,6 +97,134 @@ def record_verification_result(tool_name: str, is_valid: bool, error_message: st
             # Keep only last 100 attempts
             _security_stats['hallucination_attempts'] = _security_stats['hallucination_attempts'][-100:]
 
+def _inject_task_results(processed_chat_history: List, conversation_id: str) -> None:
+    r"""
+    Mutate \`processed_chat_history\` in place to add synthetic system
+    messages summarising any terminal task-card runs in this chat.
+
+    Why: task-card results are persisted server-side as TaskBinding
+    records (one per launch) pointing at TaskRun records.  The inline
+    tile renders them visually, but the model never sees them — chat
+    history sent upstream is just \`[user, assistant, ...]\`.  Without
+    this injection, "what was the result of that task?" can't be
+    answered because the result isn't in context.
+
+    Placement: each binding is spliced in right after the message it
+    was anchored to (matched by id against the persisted chat record).
+    Bindings without an anchor (or whose anchor isn't in the persisted
+    chat) are placed using \`created_at\` relative to message
+    \`_timestamp\` values when available, falling back to head-of-list.
+
+    Only terminal runs (done / failed / cancelled) are injected;
+    in-flight runs have nothing useful to say yet and would otherwise
+    be re-injected on every subsequent message in this chat.
+    """
+    if not conversation_id:
+        return
+    try:
+        from app.context import get_project_root_or_none
+        from app.storage.projects import ProjectStorage
+        from app.storage.chats import ChatStorage
+        from app.storage.task_bindings import TaskBindingStorage
+        from app.storage.task_runs import TaskRunStorage
+        from app.storage.task_cards import TaskCardStorage
+        from app.utils.paths import get_ziya_home, get_project_dir
+    except ImportError:
+        return
+
+    project_root = get_project_root_or_none() or os.environ.get("ZIYA_USER_CODEBASE_DIR")
+    if not project_root:
+        return
+
+    try:
+        ziya_home = get_ziya_home()
+        project = ProjectStorage(ziya_home).get_by_path(project_root)
+        if not project:
+            return
+        project_dir = get_project_dir(project.id)
+        chat_storage = ChatStorage(project_dir)
+        chat = chat_storage.get(conversation_id)
+        if not chat:
+            return
+        binding_storage = TaskBindingStorage(project_dir)
+        bindings = binding_storage.list_for_chat(conversation_id)
+        if not bindings:
+            return
+        run_storage = TaskRunStorage(project_dir)
+        card_storage = TaskCardStorage(project_dir)
+    except Exception as e:
+        logger.debug(f"_inject_task_results: lookup failed: {e}")
+        return
+
+    # Build a map: persisted_message_id → index in processed_chat_history.
+    # The wire format strips ids, but persisted chat.messages and
+    # processed_chat_history share the same role sequence, so a 1:1
+    # index mapping is reliable when lengths match.
+    persisted_msgs = list(chat.messages or [])
+    id_to_idx: Dict[str, int] = {}
+    if len(persisted_msgs) == len(processed_chat_history):
+        for i, m in enumerate(persisted_msgs):
+            mid = getattr(m, 'id', None)
+            if mid:
+                id_to_idx[mid] = i
+
+    # Each entry: (insertion_index, synthetic_message_dict)
+    inserts: List[tuple] = []
+    for binding in bindings:
+        try:
+            run = run_storage.get(binding.run_id)
+        except Exception:
+            run = None
+        if not run:
+            continue
+        # Only terminal runs contribute durable context.
+        if run.status not in ("done", "failed", "cancelled"):
+            continue
+        artifact = getattr(run, 'artifact', None)
+        if not artifact:
+            continue
+        summary = (getattr(artifact, 'summary', None) or "").strip()
+        decisions = list(getattr(artifact, 'decisions', None) or [])
+        # Card name (best-effort; missing card → fall back to id)
+        card_name = binding.card_id
+        try:
+            card = card_storage.get(binding.card_id)
+            if card and card.name:
+                card_name = card.name
+        except Exception:
+            pass
+
+        body_lines = [f'[Task Card "{card_name}" completed — status: {run.status}]']
+        if summary:
+            body_lines.append(f"Summary: {summary}")
+        if decisions:
+            body_lines.append("Decisions:")
+            for d in decisions[:8]:
+                body_lines.append(f"  - {d}")
+        synth = {"role": "system", "content": "\n".join(body_lines)}
+
+        # Determine insertion index.
+        idx = None
+        if binding.anchor_message_id and binding.anchor_message_id in id_to_idx:
+            idx = id_to_idx[binding.anchor_message_id] + 1
+        else:
+            # Chronological splice based on created_at.
+            ca = binding.created_at or 0
+            best = -1
+            for i, m in enumerate(processed_chat_history):
+                ts = m.get('_timestamp') if isinstance(m, dict) else None
+                if isinstance(ts, (int, float)) and ts <= ca:
+                    best = i
+            idx = (best + 1) if best >= 0 else 0
+        inserts.append((idx, synth))
+
+    # Apply inserts in descending index order so earlier insertions
+    # don't shift later ones.
+    for idx, synth in sorted(inserts, key=lambda p: p[0], reverse=True):
+        if 0 <= idx <= len(processed_chat_history):
+            processed_chat_history.insert(idx, synth)
+
+
 def build_messages_for_streaming(question: str, chat_history: List, files: List, conversation_id: str, use_langchain_format: bool = False, system_prompt_addition: str = "") -> List:
     """
     Build messages for streaming using the extended prompt template.
@@ -192,6 +320,15 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
                     processed_chat_history.append({'type': role, 'content': content})
         else:
             processed_chat_history.append(msg)
+
+    # Inject task-run results as synthetic system messages so the model
+    # can see what task cards were launched in this chat and how they
+    # finished.  Without this, task results live only in the inline
+    # tile UI — completely invisible to the model on subsequent turns.
+    try:
+        _inject_task_results(processed_chat_history, conversation_id)
+    except Exception as e:
+        logger.warning(f"Task-result injection failed (non-fatal): {e}")
 
     # Extract conversation start timestamp from first message
     conv_start_ts = None
@@ -322,6 +459,15 @@ async def lifespan(app: FastAPI):
 
     # Periodic cleanup of stale delegate plans and prompt cache
     asyncio.create_task(_periodic_memory_cleanup())
+
+    # Task-card scheduler — fires scheduled cards on interval / at /
+    # daily_at / cron.  Single-writer across multiple servers via a
+    # ~/.ziya/scheduler.lock heartbeat file.
+    try:
+        from app.agents.task_scheduler import start_scheduler
+        start_scheduler()
+    except Exception as e:
+        logger.warning(f"Task scheduler failed to start (non-fatal): {e}")
 
     # Register deferred plugin routes (plugins may have loaded before server)
     if os.environ.get('ZIYA_LOAD_INTERNAL_PLUGINS') == '1':
@@ -1218,6 +1364,14 @@ async def stream_chunks(body):
         conversation_id = body.get("conversation_id")
         project_root = body.get("config", {}).get("project_root") or body.get("project_root")
         
+        # Set conversation_id in the request-scoped ContextVar so
+        # retrieval-feedback hooks (deep in memory_prompt and tools)
+        # can record which conversation loaded each memory without
+        # threading conversation_id through every call.
+        if conversation_id:
+            from app.context import set_conversation_id
+            set_conversation_id(conversation_id)
+
         if question:
             # Log the user's question at INFO level for operational visibility
             if question.strip():
@@ -1501,6 +1655,16 @@ async def stream_chunks(body):
                 # Always send done message at the end
                 # Log complete response at INFO level before sending done marker
                 if accumulated_content and accumulated_content.strip():
+                    # Apply retrieval feedback FIRST so importance bumps happen
+                    # before extraction's UPDATE/corroboration logic checks
+                    # importance.  Fire-and-forget; failures must not block
+                    # extraction or stream completion.
+                    try:
+                        from app.utils.memory_feedback import apply_feedback
+                        asyncio.create_task(
+                            apply_feedback(conversation_id, accumulated_content))
+                    except (ImportError, OSError, RuntimeError) as fb_err:
+                        logger.debug(f"Memory feedback dispatch failed (non-fatal): {fb_err}")
                     # Fire-and-forget: extract memories from the conversation
                     # in the background. Never blocks the stream completion.
                     try:
