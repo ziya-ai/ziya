@@ -344,21 +344,24 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
       const supportedParams = currentSettings.capabilities?.supported_parameters || [];
       console.log('Supported parameters for verification:', supportedParams);
       
-      // Helper to check if a parameter is supported
+      // Check if a parameter is supported by this model based on its capabilities
       const isSupported = (param: string): boolean => {
-        // Always check core parameters
-        if (['temperature', 'max_output_tokens', 'max_input_tokens', 'thinking_mode', 'thinking_level'].includes(param)) {
-          // For top_k, only include if explicitly supported
-          if (param === 'top_k') {
-            return supportedParams.includes('top_k');
-          }
-          // For thinking_level, only include if model supports it
-          if (param === 'thinking_level') {
+        switch (param) {
+          case 'temperature':
+            return currentSettings.capabilities?.temperature_range != null;
+          case 'top_k':
+            return currentSettings.capabilities?.top_k_range != null || supportedParams.includes('top_k');
+          case 'thinking_level':
             return currentSettings.capabilities?.supports_thinking_level || false;
-          }
-          return true;
+          case 'thinking_effort':
+            return currentSettings.capabilities?.supports_adaptive_thinking || false;
+          case 'thinking_mode':
+          case 'max_output_tokens':
+          case 'max_input_tokens':
+            return true;
+          default:
+            return supportedParams.includes(param);
         }
-        return supportedParams.includes(param);
       };
       
       // Build normalized settings objects with ONLY supported parameters
@@ -366,14 +369,14 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
       const normalizedExpectedSettings: any = {};
       
       // Only include supported parameters in comparison
-      const paramsToCheck = ['temperature', 'top_k', 'max_output_tokens', 'max_input_tokens', 'thinking_mode', 'thinking_level'];
+      const paramsToCheck = ['temperature', 'top_k', 'max_output_tokens', 'max_input_tokens', 'thinking_mode', 'thinking_level', 'thinking_effort'];
       
       for (const param of paramsToCheck) {
         if (isSupported(param)) {
           // Normalize actual settings
           if (param === 'thinking_mode') {
             normalizedActualSettings[param] = currentSettings.settings[param] === "1" || currentSettings.settings[param] === true || currentSettings.settings[param] === 1;
-          } else if (param === 'top_k' && currentSettings.settings[param]) {
+          } else if (param === 'top_k') {
             normalizedActualSettings[param] = parseInt(currentSettings.settings[param]);
           } else {
             normalizedActualSettings[param] = currentSettings.settings[param];
@@ -391,13 +394,15 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
       // Helper function to compare numbers with tolerance
       const isClose = (a: number, b: number, tolerance = 0.001) => Math.abs(a - b) <= tolerance;
 
-      // Check if SUPPORTED settings match what we tried to set
+      // Check if SUPPORTED settings match what we tried to set.
+      // Skip comparison when expected value is undefined (param not submitted by form).
       const settingsMatch = {
-        temperature: isSupported('temperature') ? isClose(normalizedActualSettings.temperature, normalizedExpectedSettings.temperature) : true,
-        top_k: isSupported('top_k') ? normalizedActualSettings.top_k === normalizedExpectedSettings.top_k : true,
-        max_output_tokens: isSupported('max_output_tokens') ? normalizedActualSettings.max_output_tokens === normalizedExpectedSettings.max_output_tokens : true,
-        thinking_mode: isSupported('thinking_mode') ? normalizedActualSettings.thinking_mode === normalizedExpectedSettings.thinking_mode : true,
-        thinking_level: isSupported('thinking_level') ? normalizedActualSettings.thinking_level === normalizedExpectedSettings.thinking_level : true
+        temperature: (isSupported('temperature') && normalizedExpectedSettings.temperature !== undefined) ? isClose(normalizedActualSettings.temperature, normalizedExpectedSettings.temperature) : true,
+        top_k: (isSupported('top_k') && normalizedExpectedSettings.top_k !== undefined) ? normalizedActualSettings.top_k === normalizedExpectedSettings.top_k : true,
+        max_output_tokens: (isSupported('max_output_tokens') && normalizedExpectedSettings.max_output_tokens !== undefined) ? normalizedActualSettings.max_output_tokens === normalizedExpectedSettings.max_output_tokens : true,
+        thinking_mode: (isSupported('thinking_mode') && normalizedExpectedSettings.thinking_mode !== undefined) ? normalizedActualSettings.thinking_mode === normalizedExpectedSettings.thinking_mode : true,
+        thinking_level: (isSupported('thinking_level') && normalizedExpectedSettings.thinking_level !== undefined) ? normalizedActualSettings.thinking_level === normalizedExpectedSettings.thinking_level : true,
+        thinking_effort: (isSupported('thinking_effort') && normalizedExpectedSettings.thinking_effort !== undefined) ? normalizedActualSettings.thinking_effort === normalizedExpectedSettings.thinking_effort : true
       };
 
       const allMatch = Object.values(settingsMatch).every(match => match);
@@ -410,10 +415,6 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
           settingsMatch
         });
         throw new Error('Some settings did not update correctly');
-      }
-
-      if (!settingsMatch) {
-        throw new Error('Settings verification failed');
       }
 
       // Only update local state if verification succeeds
