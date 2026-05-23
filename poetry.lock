@@ -581,6 +581,22 @@ files = [
 markers = {main = "platform_system == \"Windows\" or sys_platform == \"win32\"", dev = "sys_platform == \"win32\""}
 
 [[package]]
+name = "croniter"
+version = "3.0.4"
+description = "croniter provides iteration for datetime object with cron like format"
+optional = false
+python-versions = "!=3.0.*,!=3.1.*,!=3.2.*,!=3.3.*,>=2.6"
+groups = ["main"]
+files = [
+    {file = "croniter-3.0.4-py2.py3-none-any.whl", hash = "sha256:96e14cdd5dcb479dd48d7db14b53d8434b188dfb9210448bef6f65663524a6f0"},
+    {file = "croniter-3.0.4.tar.gz", hash = "sha256:f9dcd4bdb6c97abedb6f09d6ed3495b13ede4d4544503fa580b6372a56a0c520"},
+]
+
+[package.dependencies]
+python-dateutil = "*"
+pytz = ">2021.1"
+
+[[package]]
 name = "cryptography"
 version = "46.0.5"
 description = "cryptography is a package which provides cryptographic recipes and primitives to Python developers."
@@ -6380,4 +6396,4 @@ tokens = ["tiktoken"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.15"
-content-hash = "1367afe192baa43aa8fc6897e159c8d47b01991716d231cc2e95924f563ecf3e"
+content-hash = "ecd2d2efa856f066a5c6b893995c8d4777ea34d2080c9dc91c127bb68c219b13"
