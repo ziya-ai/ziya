@@ -26,6 +26,7 @@ _data_retention_providers = []
 _tool_enhancement_providers = []
 _encryption_providers = []
 _export_providers = []
+_extraction_pattern_providers = []
 _initialized = False
 
 def register_auth_provider(provider):
@@ -317,6 +318,19 @@ def get_enabled_service_tool_categories() -> set:
         except Exception as e:
             logger.warning(f"Service model provider error: {e}")
     return enabled
+
+def register_extraction_pattern_provider(provider):
+    """Register an extraction-pattern provider for memory extraction.
+
+    Providers can contribute organization-specific URI patterns and
+    salience phrases that don't belong in the open-source codebase.
+    """
+    _extraction_pattern_providers.append(provider)
+    logger.debug(f"Registered extraction pattern provider: {getattr(provider, 'provider_name', 'unknown')}")
+
+def get_extraction_pattern_providers() -> List:
+    """Get all registered extraction pattern providers."""
+    return _extraction_pattern_providers.copy()
 
 def get_effective_retention_policy() -> DataRetentionPolicy:
     """
