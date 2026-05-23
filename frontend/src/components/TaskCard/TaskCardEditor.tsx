@@ -11,6 +11,7 @@ import type { TaskCard, Block, BlockType } from '../../types/task_card';
 import { BlockEditor } from './BlockEditor';
 import {
   makeTaskBlock, makeRepeatBlock, makeParallelBlock,
+  makeUntilBlock, makeScheduleBlock,
 } from '../../utils/taskCardBlocks';
 import './task-card-editor.css';
 
@@ -35,9 +36,17 @@ export const TaskCardEditor: React.FC<Props> = ({
     // existing root's name so the user doesn't lose that label.
     const name = card.root.name || 'Root';
     let next: Block;
-    if (nextType === 'task') next = makeTaskBlock(name);
-    else if (nextType === 'repeat') next = makeRepeatBlock(name);
-    else next = makeParallelBlock(name);
+    if (nextType === 'task') {
+      next = makeTaskBlock(name);
+    } else if (nextType === 'repeat') {
+      next = makeRepeatBlock(name);
+    } else if (nextType === 'parallel') {
+      next = makeParallelBlock(name);
+    } else if (nextType === 'until') {
+      next = makeUntilBlock(name);
+    } else {
+      next = makeScheduleBlock(name);
+    }
     // Preserve the existing body when switching between
     // Repeat↔Parallel (both are wrappers with a body).  Task has
     // no body so we drop it.  For Task→Repeat/Parallel we keep the
@@ -93,6 +102,8 @@ export const TaskCardEditor: React.FC<Props> = ({
           <option value="task">🔵 Task</option>
           <option value="repeat">🔁 Repeat</option>
           <option value="parallel">⚡ Parallel</option>
+          <option value="until">🔄 Until</option>
+          <option value="schedule">⏰ Schedule</option>
         </select>
       </div>
       <div className="tc-card-canvas">

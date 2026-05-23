@@ -40,9 +40,12 @@ export interface Artifact {
 
 // ── The recursive Block type ──────────────────────────────
 
-export type BlockType = 'task' | 'repeat' | 'parallel';
+export type BlockType = 'task' | 'repeat' | 'parallel' | 'until' | 'schedule';
 export type RepeatMode = 'count' | 'until' | 'for_each';
 export type PropagateMode = 'none' | 'last' | 'all';
+export type UntilMode = 'model' | 'expression';
+export type ScheduleMode = 'interval' | 'at' | 'daily_at' | 'cron';
+export type IntervalUnit = 'minutes' | 'hours' | 'days';
 
 export interface Block {
   block_type: BlockType;
@@ -63,6 +66,23 @@ export interface Block {
   repeat_until?: string | null;
   repeat_for_each_source?: string | null;
   repeat_item_template?: string | null;
+
+  // Until-only
+  until_mode?: UntilMode | null;
+  until_condition?: string | null;
+  until_max?: number | null;
+
+  // Schedule-only (the "outer-outer" trigger decorator)
+  schedule_mode?: ScheduleMode | null;
+  schedule_interval_value?: number | null;
+  schedule_interval_unit?: IntervalUnit | null;
+  schedule_at_iso?: string | null;
+  schedule_daily_at?: string | null;
+  schedule_cron?: string | null;
+  schedule_timezone?: string | null;
+  schedule_enabled?: boolean;
+  schedule_catch_up?: boolean;
+  schedule_max_runs?: number | null;
 
   // Body (Task ignores this)
   body: Block[];
