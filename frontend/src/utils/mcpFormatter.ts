@@ -154,6 +154,10 @@ export interface FormattedOutput {
     language?: string;
     metadata?: Record<string, any>;
   }>;
+  // When set to 'diff', `content` is a unified-diff string suitable for
+  // react-diff-view's parseDiff().  ToolBlock routes this to the diff
+  // renderer instead of marked.parse / pre.
+  renderAs?: 'diff';
 }
 
 /**
@@ -710,13 +714,14 @@ function formatFileRead(result: any, input: any, options: any): FormattedOutput 
   };
 }
 
-function formatFileWrite(result: any, input: any, _options: any): FormattedOutput {
+function formatFileWrite(result: any, input: any, options: any): FormattedOutput {
+  const { defaultCollapsed = true } = options || {};
   // Parse string results into structured objects
   if (typeof result === 'string') {
     try {
       const parsed = JSON.parse(result);
       if (parsed && typeof parsed === 'object') {
-        return formatFileWrite(parsed, input, _options);
+        return formatFileWrite(parsed, input, options);
       }
     } catch {
       return { content: result, type: 'text', collapsed: false };
@@ -757,11 +762,89 @@ function formatFileWrite(result: any, input: any, _options: any): FormattedOutpu
     summary += ' (new file)';
   }
 
+  // Build an expandable body showing what was written.  For full writes,
+  // show the file content; for patches, show the find/replace pair so the
+  // reader can see exactly what changed without diffing.  The bytes-only
+  // summary line lacked any way to inspect the actual content.
+  const writtenContent = typeof input?.content === 'string' ? input.content : '';
+  const patchFind = typeof input?.patch === 'string' ? input.patch : '';
+  let body = '';
+  if (isPatch && patchFind) {
+    body =
+      `--- find ---\n${patchFind}\n` +
+      `--- replace ---\n${writtenContent}`;
+  } else if (writtenContent) {
+    body = writtenContent;
+  }
+
+  if (!body) {
+    // Nothing to expand into — keep prior compact, non-collapsible form.
+    return {
+      content: summary,
+      type: 'text',
+      showInput: false,
+      collapsed: false,
+    };
+  // Build an expandable body so the reader can inspect what was actually
+  // written, not just the byte count.  Two cases:
+  //
+  //   1. Patch mode: synthesize a unified diff with `patch` as removals
+  //      and `content` as additions, then mark renderAs='diff' so
+  //      ToolBlock routes through react-diff-view.  Real diff coloring,
+  //      no `+ `/`- ` prefix noise on the displayed lines.
+  //
+  //   2. Full write / new file: we don't have the previous file content,
+  //      so a synthetic diff would be all-additions and misleading.
+  //      Show the new content as plain text instead (same UX as file_read).
+  const writtenContent = typeof input?.content === 'string' ? input.content : '';
+  const patchFind = typeof input?.patch === 'string' ? input.patch : '';
+
+  if (isPatch && patchFind) {
+    const diffPath = filePath || 'file';
+    const findLines = patchFind.split('\n');
+    const replaceLines = writtenContent.split('\n');
+    const diffStr =
+      `diff --git a/${diffPath} b/${diffPath}\n` +
+      `--- a/${diffPath}\n` +
+      `+++ b/${diffPath}\n` +
+      `@@ -1,${findLines.length} +1,${replaceLines.length} @@\n` +
+      findLines.map(l => '-' + l).join('\n') + '\n' +
+      replaceLines.map(l => '+' + l).join('\n');
+    const totalLines = findLines.length + replaceLines.length;
+    const shouldCollapse = totalLines > 6 || diffStr.length > 400;
+    return {
+      content: diffStr,
+      type: 'text',
+      showInput: false,
+      collapsed: shouldCollapse && defaultCollapsed,
+      summary,
+      renderAs: 'diff',
+    };
+  }
+
+  if (writtenContent) {
+    const lines = writtenContent.split('\n');
+    const shouldCollapse = writtenContent.length > 600 || lines.length > 8;
+    return {
+      content: writtenContent,
+      type: 'text',
+      showInput: false,
+      collapsed: shouldCollapse && defaultCollapsed,
+      summary,
+    };
+  }
+
+  // No content available (odd backend response) — keep prior compact form.
+  }
+
+  const lines = body.split('\n');
+  const shouldCollapse = body.length > 600 || lines.length > 8;
   return {
-    content: summary,
+    content: body,
     type: 'text',
     showInput: false,
-    collapsed: false,
+    collapsed: shouldCollapse && defaultCollapsed,
+    summary,
   };
 }
 
