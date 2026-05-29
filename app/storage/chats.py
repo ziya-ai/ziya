@@ -266,6 +266,13 @@ class ChatStorage(BaseStorage[Chat]):
         d = chat.model_dump()
         d["_version"] = now
         self._write_json(self._chat_file(chat_id), d)
+        # Update cross-project chat index so subsequent bulk-get calls
+        # can locate this chat without scanning every project's chats dir.
+        try:
+            from app.storage import chat_index
+            chat_index.on_chat_written(chat_id, self.chats_dir.parent.name)
+        except Exception:
+            pass
         return chat
     
     def update(self, chat_id: str, data: ChatUpdate) -> Optional[Chat]:
@@ -287,6 +294,14 @@ class ChatStorage(BaseStorage[Chat]):
         if not chat_file.exists():
             return False
         chat_file.unlink()
+        # Drop from the cross-project chat index.  Stale entries would
+        # self-heal on next lookup, but eager removal saves a failed
+        # file-stat per stale lookup.
+        try:
+            from app.storage import chat_index
+            chat_index.on_chat_deleted(chat_id)
+        except Exception:
+            pass
         return True
     
     def add_message(self, chat_id: str, message: Message) -> Optional[Chat]:

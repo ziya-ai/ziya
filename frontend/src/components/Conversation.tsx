@@ -12,6 +12,7 @@ import { useSetQuestion } from '../context/QuestionContext';
 import { useFolderContext } from '../context/FolderContext';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 import { useProject } from '../context/ProjectContext';
+import { useChatContext } from '../context/ChatContext';
 import { useSendPayload } from '../hooks/useSendPayload';
 
 import { useTaskBindings } from '../hooks/useTaskBindings';
@@ -321,6 +322,42 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
 
     // Task card bindings for the current chat
     const { bindingsByAnchor } = useTaskBindings(currentConversationId);
+
+    // Reconciler for the "running task" gear in the conversation
+    // list.  Launch handlers eagerly add the conversation to
+    // runningTaskConversations the moment a binding is created, but
+    // only this hook sees authoritative run statuses from the
+    // backend.  Whenever bindings reload we compare and add/remove
+    // so opening a conversation whose task finished while we were
+    // elsewhere clears the gear, and opening one with a
+    // still-running task we never saw before adds it.
+    //
+    // Trade-off: a task that
+    // finishes while the user is in a *different* conversation
+    // leaves the gear stale until that conversation is reopened.
+    // Full reactivity across all chats was deferred.
+    const {
+        runningTaskConversations,
+        addRunningTaskConversation,
+        removeRunningTaskConversation,
+    } = useChatContext();
+    useEffect(() => {
+        if (!currentConversationId) return;
+        const TERMINAL = new Set(['done', 'failed', 'canceled']);
+        let hasRunning = false;
+        for (const arr of bindingsByAnchor.values()) {
+            for (const b of arr) {
+                if (b.run_status && !TERMINAL.has(b.run_status)) { hasRunning = true; break; }
+            }
+            if (hasRunning) break;
+        }
+        const isMarked = runningTaskConversations.has(currentConversationId);
+        if (hasRunning && !isMarked) addRunningTaskConversation(currentConversationId);
+        else if (!hasRunning && isMarked) removeRunningTaskConversation(currentConversationId);
+    }, [
+        bindingsByAnchor, currentConversationId, runningTaskConversations,
+        addRunningTaskConversation, removeRunningTaskConversation,
+    ]);
 
     // Chronological placement for unanchored bindings.
     //

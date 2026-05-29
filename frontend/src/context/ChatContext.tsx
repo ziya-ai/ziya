@@ -1,4 +1,4 @@
-import React, { createContext, ReactNode, useContext, useState, useEffect, Dispatch, SetStateAction, useRef, useCallback, useMemo } from 'react';
+import React, { createContext, ReactNode, useContext, useState, useEffect, useLayoutEffect, Dispatch, SetStateAction, useRef, useCallback, useMemo } from 'react';
 import { StreamingProvider } from './StreamingContext';
 import { ScrollProvider } from './ScrollContext';
 import { ConversationListProvider } from './ConversationListContext';
@@ -63,6 +63,13 @@ interface ChatContext {
     streamingConversations: Set<string>;
     addStreamingConversation: (id: string) => void;
     removeStreamingConversation: (id: string) => void;
+    // Conversations whose bound task card has a run in flight.
+    // Distinct from streamingConversations so the conversation list
+    // can render a different affordance (gear) for "task running"
+    // vs the dots-spinner used for chat streaming.
+    runningTaskConversations: Set<string>;
+    addRunningTaskConversation: (id: string) => void;
+    removeRunningTaskConversation: (id: string) => void;
     setCurrentConversationId: (id: string) => void;
     addMessageToConversation: (message: Message, targetConversationId: string, isNonCurrentConversation?: boolean) => void;
     currentMessages: Message[];
@@ -125,6 +132,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [processingStates, setProcessingStates] = useState(() => new Map<string, ConversationProcessingState>());
     const [conversations, setConversations] = useState<Conversation[]>([]);
     const [streamingConversations, setStreamingConversations] = useState<Set<string>>(() => new Set());
+    const [runningTaskConversations, setRunningTaskConversations] = useState<Set<string>>(() => new Set());
     const [isLoadingConversation, setIsLoadingConversation] = useState(false);
     const [isProjectSwitching, setIsProjectSwitching] = useState(false);
     const [isInitialized, setIsInitialized] = useState(false);
@@ -463,6 +471,33 @@ export function ChatProvider({ children }: ChatProviderProps) {
         // Relay to other same-project tabs so they can stop showing streaming UI
         projectSync.post('streaming-ended', { conversationId: id });
     }, [currentConversationId]);
+
+    // Conversation has a task run in flight.  Drives a distinct
+    // gear affordance in the conversation list — chat streaming uses
+    // the dots-spinner; this uses a different icon so the user can
+    // tell at a glance whether they're waiting on the model directly
+    // or on a task card.  Both states can be true at once (rare:
+    // user types in the chat while a task is also running) and the
+    // list should show both indicators.
+    const addRunningTaskConversation = useCallback((id: string) => {
+        if (!id) return;
+        setRunningTaskConversations(prev => {
+            if (prev.has(id)) return prev;
+            const next = new Set(prev);
+            next.add(id);
+            return next;
+        });
+    }, []);
+
+    const removeRunningTaskConversation = useCallback((id: string) => {
+        if (!id) return;
+        setRunningTaskConversations(prev => {
+            if (!prev.has(id)) return prev;
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+        });
+    }, []);
 
     const getProcessingState = useCallback((conversationId: string): ProcessingState => {
         return processingStates.get(conversationId)?.state || 'idle';
@@ -2140,6 +2175,43 @@ export function ChatProvider({ children }: ChatProviderProps) {
         };
     }, [initializeWithRecovery, isEphemeralMode]);
 
+    // Fix 3: Synchronous clear on project switch.
+    //
+    // When currentProject.id changes, drop the previous project's folders
+    // and conversations from React state IMMEDIATELY — before any async
+    // loader has a chance to commit new data, before any memoized tree
+    // builder runs, before the next paint.
+    //
+    // Previously the pattern was "keep showing the old project's data
+    // until the new project's data finishes loading, then swap."  In
+    // practice the new project's load takes long enough (multi-second
+    // hydration loop, server round-trips, IDB scans) that the user sees
+    // a fully-populated sidebar belonging to the wrong project for tens
+    // of seconds.  Worse, every memo/cache layer that runs during that
+    // window (tree builder, sort hash) snapshots the wrong project's
+    // data and may reuse it on subsequent renders.  Root cause of the
+    // "open new project shows hundreds of stale folders and swarm
+    // containers" symptom.
+    //
+    // useLayoutEffect (rather than useEffect) so the clear is applied
+    // in the same synchronous render pass that observes the new project
+    // id — no commit-then-paint window where the previous project's
+    // data is on screen with the new project active.
+    const lastProjectIdRef = useRef<string | undefined>(undefined);
+    useLayoutEffect(() => {
+        const newPid = currentProject?.id;
+        const prevPid = lastProjectIdRef.current;
+        if (prevPid === undefined) {
+            lastProjectIdRef.current = newPid;
+            return;
+        }
+        if (prevPid === newPid) return;
+        console.log(`🧹 PROJECT_CLEAR: switching ${prevPid?.substring(0, 8) ?? 'none'} → ${newPid?.substring(0, 8) ?? 'none'}, clearing folders/conversations`);
+        setFolders([]);
+        setConversations([]);
+        lastProjectIdRef.current = newPid;
+    }, [currentProject?.id]);
+
     // Load folders independently of initialization state
     // This ensures folder loading doesn't block conversation loading
     useEffect(() => {
@@ -2177,57 +2249,70 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     console.warn('📡 INIT_FOLDERS: IDB unavailable, loading folders from server only');
                 }
 
-                // Always merge with server folders.  This is the authoritative source when
-                // IDB is unavailable, and also picks up TaskPlan folders after a page refresh.
-                try {
-                    const { listServerFolders } = await import('../api/folderSyncApi');
-                    const serverFolders = await listServerFolders(projectId);
-                    const localMap = new Map(folders.map(f => [f.id, f]));
-                    let changed = false;
-                    for (const sf of serverFolders) {
-                        const local = localMap.get(sf.id);
-                        if (serverFolderWins(local, sf)) {
-                            localMap.set(sf.id, { ...sf, projectId: sf.projectId || projectId });
-                            changed = true;
+                // Render IDB folders immediately — do NOT await the server fetch.
+                // The server call can be blocked behind a long-running hydration
+                // request (~23s observed), and previously the entire folder render
+                // waited on it.  Filter, repair, and commit IDB folders now;
+                // background-merge server data after.
+                const renderFolders = (src: ConversationFolder[], label: string) => {
+                    const projectFolders = projectId
+                        ? src.filter(f => f.projectId === projectId || f.isGlobal)
+                        : src;
+                    // Repair circular parentId references — clear the parentId of
+                    // any folder whose ancestor chain forms a cycle.  Without this,
+                    // treeDataRaw re-detects the same cycles on every render, which
+                    // floods the console and wastes CPU.
+                    for (const f of projectFolders) {
+                        if (!f.parentId) continue;
+                        const visited = new Set<string>([f.id]);
+                        let cur: string | null | undefined = f.parentId;
+                        while (cur) {
+                            if (visited.has(cur)) {
+                                console.warn(`🔧 CYCLE_REPAIR: Clearing parentId of "${f.name}" (${f.id}) to break cycle`);
+                                f.parentId = null;
+                                db.saveFolder(f).catch(e => console.warn('Cycle repair persist failed:', e));
+                                break;
+                            }
+                            visited.add(cur);
+                            cur = projectFolders.find(pf => pf.id === cur)?.parentId;
                         }
                     }
-                    if (changed) {
-                        folders = Array.from(localMap.values());
-                        Promise.all(folders.map(f => db.saveFolder(f))).catch(e =>
-                            console.warn('📡 INIT_FOLDERS: Failed to persist server folders:', e)
-                        );
-                    }
-                } catch (e) {
-                    console.warn('📡 INIT_FOLDERS: Server folder fetch failed:', e);
-                }
+                    setFolders(projectFolders);
+                    console.log(`✅ Folders loaded for project ${projectId} (${label}): ${projectFolders.length} of ${src.length} total`);
+                };
 
-                // Filter to current project only
-                const projectFolders = projectId
-                    ? folders.filter(f => f.projectId === projectId || f.isGlobal)
-                    : folders;  // Show all only if no project loaded
+                // First commit: IDB-only folders.
+                renderFolders(folders, 'idb');
 
-                // Repair circular parentId references — clear the parentId of
-                // any folder whose ancestor chain forms a cycle.  Without this,
-                // treeDataRaw re-detects the same cycles on every render, which
-                // floods the console and wastes CPU.
-                for (const f of projectFolders) {
-                    if (!f.parentId) continue;
-                    const visited = new Set<string>([f.id]);
-                    let cur: string | null | undefined = f.parentId;
-                    while (cur) {
-                        if (visited.has(cur)) {
-                            console.warn(`🔧 CYCLE_REPAIR: Clearing parentId of "${f.name}" (${f.id}) to break cycle`);
-                            f.parentId = null;
-                            db.saveFolder(f).catch(e => console.warn('Cycle repair persist failed:', e));
-                            break;
+                // Background server merge — does not block the render above.
+                (async () => {
+                    try {
+                        const { listServerFolders } = await import('../api/folderSyncApi');
+                        const serverFolders = await listServerFolders(projectId);
+                        // Bail if the user has switched projects since we started.
+                        if (currentProject?.id !== projectId) return;
+                        const localMap = new Map(folders.map(f => [f.id, f]));
+                        let changed = false;
+                        for (const sf of serverFolders) {
+                            const local = localMap.get(sf.id);
+                            if (serverFolderWins(local, sf)) {
+                                localMap.set(sf.id, { ...sf, projectId: sf.projectId || projectId });
+                                changed = true;
+                            }
                         }
-                        visited.add(cur);
-                        cur = projectFolders.find(pf => pf.id === cur)?.parentId;
+                        if (changed) {
+                            const merged = Array.from(localMap.values());
+                            Promise.all(merged.map(f => db.saveFolder(f))).catch(e =>
+                                console.warn('📡 INIT_FOLDERS: Failed to persist server folders:', e)
+                            );
+                            // Re-render with server enrichment (e.g. TaskPlan folders that
+                            // exist on the server but haven't reached IDB yet, plus globals).
+                            if (currentProject?.id === projectId) renderFolders(merged, 'idb+server');
+                        }
+                    } catch (e) {
+                        console.warn('📡 INIT_FOLDERS: Server folder fetch failed:', e);
                     }
-                }
-
-                setFolders(projectFolders);
-                console.log(`✅ Folders loaded for project ${projectId}: ${projectFolders.length} of ${folders.length} total`);
+                })();
             } catch (error) {
                 console.error('Error loading folders:', error);
                 // Don't let folder errors block the app
@@ -2488,22 +2573,22 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                 continue;
                             }
                             const serverVer = (sc as any)._version || sc.lastActiveAt || 0;
-                          // Shell conversations have _version: undefined, making them
-                          // appear stale on every sync cycle. Treat them as current to
-                          // prevent repeated full fetches before lazy-load completes.
-                          //
-                          // Exception: if the shell reports _fullMessageCount === 0 but
-                          // the server's summary says messageCount > 0, the local IDB
-                          // record is genuinely empty and the server has the real data.
-                          // Pin localVer to 0 so the comparison below forces a pull.
-                          // Without this, a wiped-local/populated-server state is a
-                          // permanent trap: localVer=Infinity blocks the pull forever.
-                          const localFullCount = (local as any)._fullMessageCount;
-                          const serverSummaryMsgs = typeof (sc as any).messageCount === 'number' ? (sc as any).messageCount : 0;
-                          const emptyLocalPopulatedServer = (local as any)._isShell && localFullCount === 0 && serverSummaryMsgs > 0;
-                          const localVer = emptyLocalPopulatedServer
-                              ? 0
-                              : ((local as any)._isShell ? Infinity : ((local as any)._version || local.lastAccessedAt || 0));
+                            // Shell conversations have _version: undefined, making them
+                            // appear stale on every sync cycle. Treat them as current to
+                            // prevent repeated full fetches before lazy-load completes.
+                            //
+                            // Exception: if the shell reports _fullMessageCount === 0 but
+                            // the server's summary says messageCount > 0, the local IDB
+                            // record is genuinely empty and the server has the real data.
+                            // Pin localVer to 0 so the comparison below forces a pull.
+                            // Without this, a wiped-local/populated-server state is a
+                            // permanent trap: localVer=Infinity blocks the pull forever.
+                            const localFullCount = (local as any)._fullMessageCount;
+                            const serverSummaryMsgs = typeof (sc as any).messageCount === 'number' ? (sc as any).messageCount : 0;
+                            const emptyLocalPopulatedServer = (local as any)._isShell && localFullCount === 0 && serverSummaryMsgs > 0;
+                            const localVer = emptyLocalPopulatedServer
+                                ? 0
+                                : ((local as any)._isShell ? Infinity : ((local as any)._version || local.lastAccessedAt || 0));
                             // Symmetric message-count divergence check (mirror of the
                             // push-side filter below).  If server reports strictly
                             // more messages than we have locally, fetch — even if
@@ -2583,7 +2668,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                 && (!full?.messages || full.messages.length === 0);
                             const isActiveConv = sc.id === currentConversationRef.current;
                             if (isEmptyShell && !isActiveConv) {
-                                console.debug(`📡 SERVER_SYNC: skipping empty-shell ${sc.id?.substring(0,8)} title="${sc.title}"`);
+                                console.debug(`📡 SERVER_SYNC: skipping empty-shell ${sc.id?.substring(0, 8)} title="${sc.title}"`);
                                 // Stage for server-side delete if this empty
                                 // shell belongs to the current project (don't
                                 // delete cross-project globals — those are
@@ -2632,6 +2717,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                     folderId: sc.groupId || sc.folderId || null,
                                     lastAccessedAt: sc.lastActiveAt || 0,
                                     isActive: true,
+                                    isGlobal: sc.isGlobal ?? false,
                                     _version: serverVersion,
                                 });
                             }
@@ -2672,12 +2758,18 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                 // entry — otherwise step 5 (saveConversations) will write
                                 // it as a real (empty-messages) record and trigger
                                 // FAST_PATH_TOMBSTONE on every sync cycle.
+                                // `isGlobal` is authoritative on the server: a chat marked
+                                // global on disk must render with the global label in every
+                                // project, regardless of whether IDB has caught up.  Without
+                                // this overlay, IDB's stale `isGlobal: undefined` wins and
+                                // global chats render as plain project chats.
                                 mergedMap.set(sc.id, {
                                     ...local,
                                     title: sc.title || local.title,
                                     projectId: sc.projectId || local.projectId || projectId,
                                     folderId: sc.groupId || sc.folderId || local.folderId || null,
                                     lastActiveAt: sc.lastActiveAt || local.lastActiveAt,
+                                    isGlobal: sc.isGlobal ?? local.isGlobal,
                                     _version: serverVersion,
                                     _isShell: (local as any)._isShell,
                                 });
@@ -2743,7 +2835,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             const localMsgCount = (c as any)._fullMessageCount
                                 || (Array.isArray(c.messages) ? c.messages.length : 0);
                             const sc = serverChats.find(sc => sc.id === c.id);
-                            if (!sc) return true; // local-only, needs push
+                            if (!sc) {
+                                // Local-only conversation — only push if it has
+                                // actual content.  Empty local-only records
+                                // (e.g. task-card scratch shells, conversations
+                                // created but never used) would otherwise be
+                                // flagged every sync cycle, hydrated, found
+                                // empty, and warned about indefinitely.
+                                return localMsgCount > 0;
+                            }
                             // Message-count divergence check.  If local has strictly
                             // more messages than server, push regardless of _version.
                             // Without this, a once-synced conversation whose _version
@@ -2760,8 +2860,21 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                 ? (sc as any).messageCount
                                 : Array.isArray((sc as any).messages) ? (sc as any).messages.length : 0;
                             if (localMsgCount > serverMsgCount) {
-                                console.log(`📡 SERVER_SYNC: msg-count divergence for ${c.id.substring(0,8)} (local=${localMsgCount} server=${serverMsgCount}) — pushing`);
+                                console.log(`📡 SERVER_SYNC: msg-count divergence for ${c.id.substring(0, 8)} (local=${localMsgCount} server=${serverMsgCount}) — pushing`);
                                 return true;
+                            }
+                            // No-op push guard: if both sides are empty there is
+                            // nothing meaningful to send.  This commonly fires on
+                            // freshly-created delegate chats (DelegateLaunchButton
+                            // stamps lastAccessedAt=Date.now() at insert time, which
+                            // outruns the server's lastActiveAt; the version-only
+                            // check below would then flag every empty delegate chat
+                            // for push every sync cycle, hydrate it with 0 messages
+                            // and warn).  Server already has the empty record, so a
+                            // metadata-only push would just churn _version and
+                            // produce another round-trip.
+                            if (localMsgCount === 0 && serverMsgCount === 0) {
+                                return false;
                             }
                             // Only push if local has a _version AND it's strictly greater than server's
                             // If server has no _version (old data), compare lastActiveAt instead
@@ -2787,11 +2900,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             // Guard: if the hydrated record is itself truncated
                             // (e.g. IDB was corrupted), don't push garbage.
                             if (fullMsgCount === 0) {
-                                console.warn(`📡 SERVER_SYNC: Skipping push for ${full.id.substring(0,8)} — hydrated with 0 messages`);
+                                console.warn(`📡 SERVER_SYNC: Skipping push for ${full.id.substring(0, 8)} — hydrated with 0 messages`);
                                 return;
                             }
                             if ((full as any)._isShell) {
-                                console.warn(`📡 SERVER_SYNC: Skipping push for ${full.id.substring(0,8)} — still marked as shell after hydration`);
+                                console.warn(`📡 SERVER_SYNC: Skipping push for ${full.id.substring(0, 8)} — still marked as shell after hydration`);
                                 return;
                             }
                             chatsToSync.push(syncApi.conversationToServerChat(full, projectId));
@@ -2896,8 +3009,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             // they can never re-enter — safeConvs drops them and the
                             // preservation loop skips them because mergedIds already has them.
                             (mc.isActive !== false &&
-                             mc.projectId === projectId &&
-                             !knownServerConversationIds.current.has(mc.id))
+                                mc.projectId === projectId &&
+                                !knownServerConversationIds.current.has(mc.id))
                         );
 
                         // Preserve in-memory-only conversations that haven't been
@@ -3021,7 +3134,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         const localCount = mergedResult.filter((c: any) => c.projectId === projectId && !c.isGlobal).length;
                         const globalCount = mergedResult.filter((c: any) => c.isGlobal).length;
                         const otherCount = mergedResult.length - localCount - globalCount;
-                        console.log(`📡 SERVER_SYNC: commit breakdown for ${projectId.substring(0,8)}: ${localCount} local, ${globalCount} global, ${otherCount} other`);
+                        console.log(`📡 SERVER_SYNC: commit breakdown for ${projectId.substring(0, 8)}: ${localCount} local, ${globalCount} global, ${otherCount} other`);
                         React.startTransition(() => {
                             setConversations(prev => {
                                 // Late preservation: catch in-memory conversations created
@@ -3094,56 +3207,70 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     const hydrationTargets = pendingHydration.filter(id => mergedMap.has(id));
                     if (hydrationTargets.length > 0) {
                         const tHydrateStart = performance.now();
-                        console.log(`⏱️ SYNC[${projectId.substring(0, 8)}]: hydrating ${hydrationTargets.length} shells in background${pendingHydration.length !== hydrationTargets.length ? ` (skipped ${pendingHydration.length - hydrationTargets.length} empty-shells)` : ''}`);
+                        // Use the bulk endpoint to avoid the lock-contention storm
+                        // that made 56 parallel /chats/{id} requests take 23s.
+                        // Chunk at 50 to stay under the server's 200-id limit
+                        // and keep payloads reasonable for proxies / browsers.
+                        const BULK_CHUNK = 50;
+                        const chunks: string[][] = [];
+                        for (let i = 0; i < hydrationTargets.length; i += BULK_CHUNK) {
+                            chunks.push(hydrationTargets.slice(i, i + BULK_CHUNK));
+                        }
+                        console.log(`⏱️ SYNC[${projectId.substring(0, 8)}]: bulk-hydrating ${hydrationTargets.length} shells in ${chunks.length} chunk(s)${pendingHydration.length !== hydrationTargets.length ? ` (skipped ${pendingHydration.length - hydrationTargets.length} empty-shells)` : ''}`);
                         let nDone = 0;
                         let nFailed = 0;
                         let nEmpty = 0;
-                        hydrationTargets.forEach(id => {
-                            syncApi.getChat(projectId, id).then(full => {
+                        const processBulk = async () => {
+                            // Run chunks in parallel — each chunk is one HTTP
+                            // request so the lock-contention issue doesn't apply
+                            // (server pays decryption setup once per chunk).
+                            await Promise.all(chunks.map(async (chunk) => {
                                 if (isStale()) return;
-                                if (!full) {
-                                    // Network error or chat actually missing; don't
-                                    // mark as fetched, allow next-cycle retry.
-                                    nFailed++;
+                                const result = await syncApi.bulkGetChats(projectId, chunk);
+                                if (isStale()) return;
+                                if (!result) {
+                                    // Whole chunk failed — count all as failed,
+                                    // don't mark as fetched so next sync retries.
+                                    nFailed += chunk.length;
                                     return;
                                 }
-                                if (!full.messages || full.messages.length === 0) {
-                                    // Server confirmed: chat has no messages.  Mark
-                                    // as fetched so we don't ask again every 30 s.
+                                // Confirmed-missing IDs (server returned them in
+                                // the missing list rather than as null/error).
+                                for (const id of result.missing) {
                                     recentlyFetchedFullIds.current.add(id);
                                     nEmpty++;
-                                    return;
                                 }
-                                recentlyFetchedFullIds.current.add(id);
+                                // Apply each returned chat.
                                 React.startTransition(() => {
+                                    const byId = new Map(result.chats.map(c => [c.id, c]));
                                     setConversations(prev => prev.map(c => {
-                                        if (c.id !== id) return c;
+                                        const full = byId.get(c.id);
+                                        if (!full) return c;
                                         // Don't overwrite if a newer in-memory version exists
-                                        // (e.g. user is actively editing while hydration lands).
-                                        if ((c._version || 0) > (full._version || 0)) return c;
+                                        // (user is actively editing while hydration lands).
+                                        if ((c._version || 0) > ((full as any)._version || 0)) return c;
                                         return {
                                             ...c,
                                             ...full,
                                             _isShell: false,
                                             _fullMessageCount: undefined,
-                                            projectId: full.projectId || projectId,
-                                            folderId: full.groupId || full.folderId || c.folderId || null,
-                                            delegateMeta: full.delegateMeta || c.delegateMeta || null,
-                                            isActive: full.isActive !== false,
-                                            _version: full._version || Date.now(),
+                                            projectId: (full as any).projectId || projectId,
+                                            folderId: (full as any).groupId || (full as any).folderId || c.folderId || null,
+                                            delegateMeta: (full as any).delegateMeta || c.delegateMeta || null,
+                                            isActive: (full as any).isActive !== false,
+                                            _version: (full as any)._version || Date.now(),
                                         };
                                     }));
                                 });
-                                nDone++;
-                            }).catch(err => {
-                                nFailed++;
-                                console.warn(`⏱️ SYNC[${projectId.substring(0, 8)}]: hydration failed for ${id.substring(0,8)}:`, err);
-                            }).finally(() => {
-                                if (nDone + nFailed + nEmpty === hydrationTargets.length) {
-                                    console.log(`⏱️ SYNC[${projectId.substring(0, 8)}]: hydration complete in ${(performance.now() - tHydrateStart).toFixed(0)}ms (${nDone} ok, ${nEmpty} empty, ${nFailed} failed)`);
+                                // Mark each returned chat as fetched.
+                                for (const c of result.chats) {
+                                    recentlyFetchedFullIds.current.add(c.id);
+                                    nDone++;
                                 }
-                            });
-                        });
+                            }));
+                            console.log(`⏱️ SYNC[${projectId.substring(0, 8)}]: bulk hydration complete in ${(performance.now() - tHydrateStart).toFixed(0)}ms (${nDone} ok, ${nEmpty} empty, ${nFailed} failed)`);
+                        };
+                        processBulk();
                     }
 
                     // Server-side garbage collection of stale empty-shell chats.
@@ -3156,14 +3283,14 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     // delete then.  Stale guard prevents racing with another
                     // tab that just created a conversation.
                     if (staleEmptyShellIds.length > 0) {
-                        console.log(`🗑️ SERVER_GC[${projectId.substring(0,8)}]: deleting ${staleEmptyShellIds.length} stale server-side empty-shells`);
+                        console.log(`🗑️ SERVER_GC[${projectId.substring(0, 8)}]: deleting ${staleEmptyShellIds.length} stale server-side empty-shells`);
                         staleEmptyShellIds.forEach(id => {
                             syncApi.deleteChat(projectId, id).then(ok => {
                                 if (!ok) {
-                                    console.debug(`🗑️ SERVER_GC: delete returned non-ok for ${id.substring(0,8)}`);
+                                    console.debug(`🗑️ SERVER_GC: delete returned non-ok for ${id.substring(0, 8)}`);
                                 }
                             }).catch(err => {
-                                console.debug(`🗑️ SERVER_GC: delete failed for ${id.substring(0,8)}:`, err);
+                                console.debug(`🗑️ SERVER_GC: delete failed for ${id.substring(0, 8)}:`, err);
                             });
                         });
                     }
@@ -3708,21 +3835,44 @@ export function ChatProvider({ children }: ChatProviderProps) {
     }, []);
 
     const toggleFolderGlobal = useCallback(async (folderId: string) => {
-        const folder = folders.find(f => f.id === folderId);
-        if (!folder) return;
+        // Capture the prior folder state so we can roll back if the
+        // server rejects the toggle.  Optimistic update first, then
+        // server confirm; on failure restore the original.
+        const prevState = folders.find(f => f.id === folderId);
+        if (!prevState) return;
+        const wasGlobal = prevState.isGlobal === true;
+        const newIsGlobal = !wasGlobal;
+        const ownerProjectId = prevState.projectId || currentProject?.id;
+        if (!ownerProjectId) {
+            console.warn('toggleFolderGlobal: no owner project id available');
+            return;
+        }
 
-        const wasGlobal = folder.isGlobal;
-        const updatedFolder: ConversationFolder = {
-            ...folder,
-            isGlobal: !wasGlobal,
-            // When un-globaling, pin to current project
-            projectId: wasGlobal ? currentProject?.id : folder.projectId,
+        // Optimistic local update.
+        const optimistic: ConversationFolder = {
+            ...prevState,
+            isGlobal: newIsGlobal,
+            projectId: wasGlobal ? currentProject?.id : prevState.projectId,
             updatedAt: Date.now()
         };
+        setFolders(prev => prev.map(f => f.id === folderId ? optimistic : f));
 
-        await updateFolder(updatedFolder);
-        console.log(`📁 Folder "${folder.name}" is now ${updatedFolder.isGlobal ? 'global' : 'project-scoped'}`);
-    }, [folders, currentProject?.id, updateFolder]);
+        // Server is authoritative for the isGlobal flag.  Hit the dedicated
+        // endpoint with the folder's owner project, not the currently-viewed
+        // project (which may differ for globals surfaced from other projects).
+        const result = await folderSyncApi.setFolderGlobal(ownerProjectId, folderId, newIsGlobal);
+        if (!result) {
+            console.error('toggleFolderGlobal: server rejected, rolling back');
+            setFolders(prev => prev.map(f => f.id === folderId ? prevState : f));
+            message.error('Failed to update global flag — server unavailable');
+            return;
+        }
+        // Persist confirmed state to IDB so it survives reloads.  Use the
+        // server's response (authoritative) rather than our optimistic copy.
+        await db.saveFolder(result);
+        projectSync.post('folders-changed');
+        console.log(`📁 Folder "${prevState.name}" is now ${result.isGlobal ? 'global' : 'project-scoped'}`);
+    }, [folders, currentProject?.id]);
 
     // Fork a conversation: create a copy with a new id, select it, and persist.
     // Goes through the same architecture as other mutations (optimistic state
@@ -3812,14 +3962,26 @@ export function ChatProvider({ children }: ChatProviderProps) {
     }, [setCurrentConversationId, currentProject?.id]);
 
     const toggleConversationGlobal = useCallback(async (conversationId: string) => {
+        // Capture the current state before any mutation so we can roll back
+        // on server failure.  The optimistic update gives the user immediate
+        // visual feedback; the server call confirms it durably.  If the
+        // server rejects, we restore the original state and surface an error.
+        const prevState = conversationsRef.current.find(c => c.id === conversationId);
+        if (!prevState) {
+            console.warn(`toggleConversationGlobal: ${conversationId.substring(0, 8)} not in state`);
+            return;
+        }
+        const wasGlobal = prevState.isGlobal === true;
+        const newIsGlobal = !wasGlobal;
+
+        // Optimistic local update.
         setConversations(prev => {
             const updated = prev.map(conv => {
                 if (conv.id === conversationId) {
-                    const wasGlobal = conv.isGlobal;
                     return {
                         ...conv,
                         lastAccessedAt: Date.now(),
-                        isGlobal: !wasGlobal,
+                        isGlobal: newIsGlobal,
                         // When un-globaling, pin to current project
                         projectId: wasGlobal ? currentProject?.id : conv.projectId,
                         _version: Date.now()
@@ -3827,9 +3989,33 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 }
                 return conv;
             });
-            queueSave(updated, { changedIds: [conversationId] }).catch(console.error);
             return updated;
         });
+
+        // Server is authoritative for the isGlobal flag.  Hit the dedicated
+        // endpoint with the chat's owner project — that's the project whose
+        // on-disk file holds this chat — rather than the currently-viewed
+        // project, which may differ for global chats surfaced from other
+        // projects.
+        const ownerProjectId = prevState.projectId || currentProject?.id;
+        if (!ownerProjectId) {
+            console.warn('toggleConversationGlobal: no owner project id available');
+            return;
+        }
+        const result = await syncApi.setChatGlobal(ownerProjectId, conversationId, newIsGlobal);
+        if (!result) {
+            // Server failure — roll back the optimistic update so React,
+            // IDB, and the server all agree the toggle never happened.
+            console.error('toggleConversationGlobal: server rejected, rolling back');
+            setConversations(prev => prev.map(c =>
+                c.id === conversationId ? prevState : c
+            ));
+            message.error('Failed to update global flag — server unavailable');
+            return;
+        }
+        // Persist the confirmed state to IDB (server already has it).
+        // queueSave is debounced, so this won't fight the next periodic sync.
+        queueSave(conversationsRef.current, { changedIds: [conversationId] }).catch(console.error);
     }, [currentProject?.id, queueSave]);
     const moveConversationToProject = useCallback(async (conversationId: string, targetProjectId: string) => {
         const sourceProjectId = currentProject?.id;
@@ -4053,6 +4239,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
         streamingConversations,
         addStreamingConversation,
         removeStreamingConversation,
+        runningTaskConversations,
+        addRunningTaskConversation,
+        removeRunningTaskConversation,
         setConversations,
         setIsStreaming,
         conversations,
@@ -4257,6 +4446,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         isStreaming={isStreaming}
                         setIsStreaming={setIsStreaming}
                         streamingConversations={streamingConversations}
+                        runningTaskConversations={runningTaskConversations}
                         addStreamingConversation={addStreamingConversation}
                         removeStreamingConversation={removeStreamingConversation}
                         streamedContentMap={streamedContentMap}

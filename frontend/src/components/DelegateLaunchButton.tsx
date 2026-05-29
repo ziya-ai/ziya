@@ -152,7 +152,11 @@ const DelegateLaunchButton: React.FC<DelegateLaunchButtonProps> = ({
             id: sc.id,
             title: sc.title || 'Untitled',
             messages: sc.messages || [],
-            lastAccessedAt: sc.lastActiveAt || Date.now(),
+            // Preserve the server's authoritative timestamp.  Falling back
+            // to Date.now() here used to set lastAccessedAt > server's
+            // lastActiveAt at insert time, which then made every empty
+            // delegate chat look "newer locally" on the next sync cycle.
+            lastAccessedAt: sc.lastActiveAt || (sc as any).createdAt || 0,
             isActive: true,
             projectId: pid,
             folderId: sc.groupId || sc.folderId || null,

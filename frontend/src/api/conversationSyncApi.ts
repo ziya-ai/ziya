@@ -146,3 +146,69 @@ export function conversationToServerChat(conv: any, projectId: string): ServerCh
     })),
   };
 }
+
+/**
+ * Atomically set a chat's isGlobal flag on the server.
+ *
+ * Server is the single source of truth for the global flag.  Frontend
+ * should call this rather than mutating the flag locally and waiting
+ * for the bulk-sync debounce to round-trip — the dedicated endpoint
+ * gives immediate, durable, race-free semantics.  The next periodic
+ * sync mirrors the on-disk state into IDB.
+ *
+ * Returns the updated chat on success, null on failure.
+ */
+export async function setChatGlobal(
+  projectId: string,
+  chatId: string,
+  isGlobal: boolean
+): Promise<ServerChat | null> {
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', ...projectHeaders() };
+    const res = await fetch(
+      `${BASE}/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(chatId)}/global`,
+      { method: 'POST', headers, body: JSON.stringify({ isGlobal }) }
+    );
+    if (!res.ok) {
+      console.warn(`📡 setChatGlobal: ${res.status} ${res.statusText}`);
+      return null;
+    }
+    return await res.json();
+  } catch (e) {
+    console.warn('📡 setChatGlobal failed:', e);
+    return null;
+  }
+}
+
+/**
+ * Fetch many chats in a single request.
+ *
+ * Per-request /chats/{id} fetches under high parallelism are an order
+ * of magnitude slower than isolated fetches due to server-side lock
+ * contention.  This endpoint bundles N reads into one call, paying
+ * the per-request overhead once.
+ *
+ * Returns {chats, missing} on success, null on network failure.
+ * Caller is responsible for chunking large id lists if needed.
+ */
+export async function bulkGetChats(
+  projectId: string,
+  ids: string[]
+): Promise<{ chats: ServerChat[]; missing: string[] } | null> {
+  if (ids.length === 0) return { chats: [], missing: [] };
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', ...projectHeaders() };
+    const res = await fetch(
+      `${BASE}/${encodeURIComponent(projectId)}/chats/bulk-get`,
+      { method: 'POST', headers, body: JSON.stringify({ ids }) }
+    );
+    if (!res.ok) {
+      console.warn(`📡 bulkGetChats: ${res.status} ${res.statusText}`);
+      return null;
+    }
+    return await res.json();
+  } catch (e) {
+    console.warn('📡 bulkGetChats failed:', e);
+    return null;
+  }
+}

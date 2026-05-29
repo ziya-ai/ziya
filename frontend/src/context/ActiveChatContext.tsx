@@ -30,6 +30,7 @@ export interface ActiveChatContextValue {
   isStreaming: boolean;
   setIsStreaming: Dispatch<SetStateAction<boolean>>;
   streamingConversations: Set<string>;
+    runningTaskConversations: Set<string>;
   addStreamingConversation: (id: string) => void;
   removeStreamingConversation: (id: string) => void;
   // Streaming content maps
@@ -71,6 +72,7 @@ export const ActiveChatProvider: React.FC<
       isStreaming: value.isStreaming,
       setIsStreaming: value.setIsStreaming,
       streamingConversations: value.streamingConversations,
+      runningTaskConversations: value.runningTaskConversations,
       addStreamingConversation: value.addStreamingConversation,
       removeStreamingConversation: value.removeStreamingConversation,
       streamedContentMap: value.streamedContentMap,
@@ -95,6 +97,7 @@ export const ActiveChatProvider: React.FC<
       value.editingMessageIndex,
       value.isStreaming,
       value.streamingConversations,
+      value.runningTaskConversations,
       value.streamedContentMap,
       value.reasoningContentMap,
       value.dynamicTitleLength,

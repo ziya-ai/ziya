@@ -73,3 +73,50 @@ export async function deleteServerFolder(projectId: string, folderId: string): P
   });
   return res.ok;
 }
+
+/**
+ * Atomically set a folder's isGlobal flag on the server.
+ *
+ * Server is the single source of truth for the global flag.  Frontend
+ * should call this rather than mutating the flag locally and waiting
+ * for the bulk-sync debounce to round-trip — the dedicated endpoint
+ * gives immediate, durable, race-free semantics.
+ *
+ * Returns the updated folder on success, null on failure.
+ */
+export async function setFolderGlobal(
+  projectId: string,
+  folderId: string,
+  isGlobal: boolean
+): Promise<ConversationFolder | null> {
+  try {
+    const res = await fetch(
+      `${BASE}/${encodeURIComponent(projectId)}/chat-groups/${encodeURIComponent(folderId)}/global`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...projectHeaders() },
+        body: JSON.stringify({ isGlobal }),
+      }
+    );
+    if (!res.ok) {
+      console.warn(`📡 setFolderGlobal: ${res.status} ${res.statusText}`);
+      return null;
+    }
+    const g: any = await res.json();
+    return {
+      id: g.id,
+      name: g.name,
+      projectId: g.projectId,
+      parentId: g.parentId ?? null,
+      useGlobalContext: g.useGlobalContext ?? true,
+      useGlobalModel: g.useGlobalModel ?? true,
+      createdAt: g.createdAt,
+      updatedAt: g.updatedAt || g.createdAt,
+      isGlobal: g.isGlobal,
+      taskPlan: g.taskPlan ?? null,
+    };
+  } catch (e) {
+    console.warn('📡 setFolderGlobal failed:', e);
+    return null;
+  }
+}
