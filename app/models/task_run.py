@@ -88,6 +88,13 @@ class TaskRun(BaseModel):
     total_tokens: int = 0
     total_tool_calls: int = 0
 
+    # Snapshot of effective permissions (write policy + per-block task
+    # scopes + project root) captured at launch.  Stored as a dict so
+    # the schema can evolve without migrations; see
+    # ``app/utils/permissions_snapshot.py`` for the active shape.
+    # Populated by ``_launch_run_for_card`` immediately after create.
+    permissions_snapshot: Optional[Dict[str, Any]] = None
+
     created_at: int = 0
     updated_at: int = 0
 
