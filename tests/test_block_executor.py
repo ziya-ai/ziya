@@ -140,7 +140,6 @@ class TestRepeatUntil:
         ctx = ExecutionContext(run_id=run.id, storage=storage)
         stub = _stub_executor([
             _mk_artifact("fail", failed=True),
-            _mk_artifact("fail", failed=True),
             _mk_artifact("pass"),
             _mk_artifact("never-reached"),
         ])
@@ -373,3 +372,72 @@ class TestIterationArtifactRoundTrip:
         a1 = storage.read_iteration_artifact(run.id, "repeat-1", 1)
         assert a0 is not None and a0.summary == "alpha"
         assert a1 is not None and a1.summary == "beta"
+
+
+class TestIterationContext:
+    """The block executor stamps a contextvar around body execution so
+    nested ``task_executor`` emissions can re-tag streaming deltas with
+    the iteration owner's block_id (see app/context.py:
+    ``set_task_iteration_context``).  Without this the frontend reducer
+    routes deltas by the inner task's id and every iteration's output
+    collapses into a single "Iteration 0" bucket on the Live and Tools
+    tabs.
+    """
+
+    @pytest.mark.asyncio
+    async def test_repeat_stamps_iteration_context(self, storage, run):
+        from app.context import get_task_iteration_context
+        block = Block(
+            block_type="repeat", id="repeat-1", name="r",
+            repeat_mode="count", repeat_count=3,
+            body=[_task("inner")],
+        )
+        ctx = ExecutionContext(run_id=run.id, storage=storage)
+        seen_iter_ctx = []
+
+        async def iter_ctx_capture(b, project_root=None, project_id=None, run_id=None):
+            seen_iter_ctx.append(get_task_iteration_context())
+            return _mk_artifact("ok")
+
+        with patch("app.agents.block_executor.execute_task_block", iter_ctx_capture):
+            await execute_block(block, ctx)
+
+        assert seen_iter_ctx == [
+            {"block_id": "repeat-1", "index": 0},
+            {"block_id": "repeat-1", "index": 1},
+            {"block_id": "repeat-1", "index": 2},
+        ]
+        # Cleared after the block finishes
+        assert get_task_iteration_context() is None
+
+    @pytest.mark.asyncio
+    async def test_until_stamps_iteration_context(self, storage, run):
+        from app.context import get_task_iteration_context
+        block = Block(
+            block_type="repeat", id="repeat-1", name="r",
+            repeat_mode="until", repeat_max=3,
+            body=[_task("inner")],
+        )
+        ctx = ExecutionContext(run_id=run.id, storage=storage)
+        seen_iter_ctx = []
+
+        async def iter_ctx_capture_fail(b, project_root=None, project_id=None, run_id=None):
+            seen_iter_ctx.append(get_task_iteration_context())
+            # Fail every iteration so until runs to repeat_max
+            return _mk_artifact("nope", failed=True)
+
+        async def never_satisfied(*args, **kwargs):
+            return False
+
+        with patch("app.agents.block_executor.execute_task_block", iter_ctx_capture_fail):
+            with patch(
+                "app.agents.block_executor._evaluate_until_condition_with_model",
+                new=never_satisfied,
+            ):
+                await execute_block(block, ctx)
+
+        assert all(
+            s and s["block_id"] == "repeat-1" for s in seen_iter_ctx
+        )
+        assert [s["index"] for s in seen_iter_ctx] == list(range(len(seen_iter_ctx)))
+        assert get_task_iteration_context() is None
