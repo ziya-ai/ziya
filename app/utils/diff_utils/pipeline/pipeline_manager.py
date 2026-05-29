@@ -56,6 +56,76 @@ def _diff_has_indentation_changes(git_diff: str) -> bool:
     
     return False
 
+def _run_language_validation(pipeline: "DiffPipeline", file_path: str, original_content: str) -> None:
+    """
+    Run post-patch language-level validation against ``file_path``.
+
+    ``git apply --check`` and the difflib applicator only verify that
+    hunks line up *structurally*.  A patch can apply cleanly and still
+    produce a syntactically broken file (e.g. a Python f-string with
+    an unclosed ``(``).  We catch that here by re-reading the
+    post-patch content and running the language handler's
+    ``verify_changes``; on failure we roll the file back to its
+    pre-patch state and demote every succeeded hunk to ``failed`` so
+    the apply prompt upstream is not surfaced for a change we know
+    breaks the file.
+
+    This helper is a no-op when no hunks succeeded or no changes were
+    written — it is safe to call from every successful exit path of
+    ``apply_diff_pipeline``.  It must never raise: language validation
+    failures roll back; helper-internal errors are logged and swallowed.
+    """
+    if not (pipeline.result.succeeded_hunks and pipeline.result.changes_written):
+        return
+    try:
+        from ..language_handlers import LanguageHandlerRegistry
+        handler_class = LanguageHandlerRegistry.get_handler(file_path)
+        try:
+            with open(file_path, 'r', encoding='utf-8') as _f:
+                post_patch_content = _f.read()
+        except (OSError, UnicodeDecodeError) as _read_exc:
+            logger.warning(f"Language validation skipped — could not re-read {file_path}: {_read_exc}")
+            return
+        is_valid, lang_err = handler_class.verify_changes(
+            original_content, post_patch_content, file_path,
+        )
+        if is_valid:
+            return
+        logger.warning(f"Language validation failed for {file_path}: {lang_err}")
+        # Roll the file back so the user is never left with broken code on disk.
+        try:
+            with open(file_path, 'w', encoding='utf-8') as _f:
+                _f.write(original_content)
+            logger.info(f"Rolled back {file_path} after language validation failure")
+        except OSError as _roll_exc:
+            logger.error(f"Failed to roll back {file_path}: {_roll_exc}")
+        # Demote every succeeded hunk to a language_validation failure so
+        # downstream treats this as patch-failed.
+        for hunk_id, tracker in pipeline.result.hunks.items():
+            if tracker.status == HunkStatus.SUCCEEDED:
+                tracker.status = HunkStatus.FAILED
+                tracker.error_details = {
+                    "error": "language_validation",
+                    "message": lang_err or "language validator rejected the patched result",
+                    "stage": "language_validation",
+                }
+        # ``succeeded_hunks`` / ``failed_hunks`` are read-only properties
+        # derived from ``pipeline.result.hunks``; demoting every hunk above
+        # already causes them to recompute to ``[]`` / all-ids respectively.
+        # ``status`` is likewise recomputed by ``to_dict()`` from the hunk
+        # statuses — once every hunk is FAILED the computed status is "error".
+        pipeline.result.changes_written = False
+        if hasattr(pipeline.result, "error"):
+            pipeline.result.error = (
+                f"Language validation rejected patched result: {lang_err}"
+            )
+    except ImportError:
+        logger.debug("Language handlers not available — skipping post-patch validation")
+    except Exception as _lang_exc:
+        # Language validation must never crash the pipeline.
+        logger.warning(f"Language validation skipped (error): {_lang_exc}")
+
+
 def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str] = None, skip_already_applied_check: bool = False) -> Dict[str, Any]:
     """
     Apply a git diff using a structured pipeline approach.
@@ -326,6 +396,7 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
         # System patch has all-or-nothing behavior - if any hunk fails, no changes are written
         if system_patch_result:
             pipeline.result.changes_written = True
+        _run_language_validation(pipeline, file_path, original_content)
         pipeline.complete()
         return pipeline.result.to_dict()
     
@@ -336,6 +407,7 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
     if not remaining_diff.strip():
         logger.warning("No valid hunks remaining to process")
         if pipeline.result.changes_written or pipeline.result.succeeded_hunks:
+            _run_language_validation(pipeline, file_path, original_content)
             pipeline.complete()
             return pipeline.result.to_dict()
         else:
@@ -403,6 +475,7 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
         # Only mark changes as written if git apply actually succeeded
         if git_apply_result:
             pipeline.result.changes_written = True
+        _run_language_validation(pipeline, file_path, original_content)
         pipeline.complete()
         return pipeline.result.to_dict()
     
@@ -421,6 +494,7 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
     if not remaining_diff.strip():
         logger.warning("No valid hunks remaining to process after git apply")
         if pipeline.result.changes_written or pipeline.result.succeeded_hunks:
+            _run_language_validation(pipeline, file_path, original_content)
             pipeline.complete()
             return pipeline.result.to_dict()
         else:
@@ -493,6 +567,12 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
     n_skip = len(pipeline.result.already_applied_hunks)
     logger.debug(f"📋 Diff result: {n_ok} applied, {n_fail} failed, {n_skip} already applied — {os.path.basename(file_path)}")
     
+    # Stage 5 — language-level validation against the post-patch file.
+    # See ``_run_language_validation`` for rationale.  This is also
+    # invoked at every successful early-exit site above so the fast
+    # paths get the same protection as the fallthrough path.
+    _run_language_validation(pipeline, file_path, original_content)
+
     final_result_dict = pipeline.result.to_dict()
 
     # Clean up any .rej files from workspace root
