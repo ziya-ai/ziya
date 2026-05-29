@@ -10,6 +10,7 @@ This follows the SkillMesh / Claude Skills pattern:
   catalog (cheap)  →  model decides  →  load full prompt (on-demand)
 """
 
+import os
 from typing import Any, Dict, List
 
 from pydantic import BaseModel, Field
@@ -75,6 +76,32 @@ class GetSkillDetailsTool(BaseMCPTool):
                 if skill_id in (cid, cname) or skill_id in ckw:
                     skill = candidate
                     break
+
+        # Fall back to project-discovered SKILL.md files marked
+        # visibility: model_discoverable.  Loads the full body on demand
+        # (agentskills.io progressive disclosure stage 2).
+        if not skill:
+            try:
+                from app.services.skill_discovery import discover_project_skills
+                from app.services.token_service import TokenService
+
+                workspace = os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
+                if workspace:
+                    for ps in discover_project_skills(
+                        workspace, TokenService(), load_body=True,
+                    ):
+                        if ps.visibility != "model_discoverable":
+                            continue
+                        ps_kw = [k.lower() for k in (ps.keywords or [])]
+                        if skill_id in (ps.name, ps.id) or skill_id in ps_kw:
+                            logger.info(
+                                f"🎓 SKILL_ACTIVATED (project): {ps.name}"
+                            )
+                            return {
+                                "content": f"[Skill: {ps.name}]\n\n{ps.prompt}"
+                            }
+            except Exception as e:
+                logger.debug(f"Project skill lookup failed: {e}")
 
         if not skill:
             available = [s["id"] for s in get_model_discoverable_skills()]

@@ -7,6 +7,7 @@ it deems relevant.  This follows the SkillMesh pattern: cheap catalog in
 context, expensive details loaded on-demand.
 """
 
+import os
 from app.utils.logging_utils import logger
 
 
@@ -32,15 +33,35 @@ def get_skill_catalog_section() -> str:
         logger.debug(f"Could not load skill catalog: {e}")
         return ""
 
-    if not skills:
-        return ""
-
     # Build compact catalog — one line per skill
     rows = []
     for skill in skills:
         sid = skill.get("id", "")
         desc = skill.get("catalog_description") or skill.get("description", "")
         rows.append(f"  • {sid} — {desc}")
+
+    # Also include project-discovered SKILL.md files marked
+    # visibility: model_discoverable (agentskills.io progressive disclosure
+    # stage 1 — frontmatter only, no body).
+    try:
+        workspace = os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
+        if workspace:
+            from app.services.skill_discovery import discover_project_skills
+            from app.services.token_service import TokenService
+            project_skills = discover_project_skills(
+                workspace, TokenService(), load_body=False,
+            )
+            for ps in project_skills:
+                if ps.visibility != "model_discoverable":
+                    continue
+                # Use skill name as the catalog ID (matches what the model
+                # will pass to get_skill_details).
+                rows.append(f"  • {ps.name} — {ps.description}")
+    except Exception as e:
+        logger.debug(f"Project skill catalog merge failed: {e}")
+
+    if not rows:
+        return ""
 
     catalog = "\n".join(rows)
 
