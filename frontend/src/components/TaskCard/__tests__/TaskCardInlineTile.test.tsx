@@ -6,6 +6,14 @@
  */
 import React from 'react';
 
+// MarkdownRenderer pulls in ``marked`` (ESM-only) which jest's
+// default transform can't load.  Mock to a passthrough.
+jest.mock('../../MarkdownRenderer', () => ({
+  __esModule: true,
+  MarkdownRenderer: ({ markdown }: { markdown: string }) =>
+    require('react').createElement('pre', null, markdown),
+}));
+
 // Mock the API modules before component import
 jest.mock('../../../services/taskRunApi', () => ({
   getTaskRun: jest.fn(),
