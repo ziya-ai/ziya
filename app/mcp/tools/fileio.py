@@ -107,6 +107,76 @@ def _get_project_root(kwargs: Dict[str, Any]) -> str:
     return get_project_root()
 
 
+def _get_task_readable_prefixes() -> list:
+    """Return absolute-path prefixes the active task is granted read access to.
+
+    Built from the ``_task_readable_paths`` contextvar.  Each entry
+    becomes a string suitable for ``allowed_absolute_prefixes`` in
+    ``_resolve_and_validate``.  Symlinks/``~`` are expanded; relative
+    entries (which would be inside the project root anyway and thus
+    already permitted) are skipped.
+
+    Returns an empty list when no task scope is active or the list
+    contains no out-of-project entries.
+    """
+    from app.context import get_task_readable_paths
+    entries = get_task_readable_paths() or []
+    out: list = []
+    for entry in entries:
+        try:
+            raw = (entry.get("path") or "").strip()
+            if not raw:
+                continue
+            expanded = os.path.expanduser(raw)
+            # Inside-project reads are always allowed by ``_resolve_and_validate``
+            # via the project_root containment check; only out-of-project
+            # entries need to appear in this allowlist.
+            if not os.path.isabs(expanded):
+                continue
+            out.append(expanded)
+        except Exception:
+            continue
+    return out
+
+
+def _check_task_scope_write(relative_path: str, project_root: str) -> bool:
+    """Return True iff an active task scope grants write to *relative_path*.
+
+    Task scope is additive on top of the base WritePolicy: if the base
+    policy allows the write, this check is irrelevant; if it doesn't,
+    a task scope grant can still permit it.  When no task scope is
+    active (i.e. we're not inside ``execute_task_block``), this returns
+    False and the base policy decides alone.
+    """
+    from app.context import get_task_writable_paths
+    entries = get_task_writable_paths()
+    if not entries:
+        return False
+    if not project_root:
+        return False
+    raw = (relative_path or "").strip().strip("'\"")
+    expanded = os.path.expanduser(raw)
+    target_abs = expanded if os.path.isabs(expanded) else os.path.join(project_root, expanded)
+    target_norm = os.path.normpath(target_abs)
+    root_norm = os.path.normpath(project_root)
+    for entry in entries:
+        try:
+            ep = (entry.get("path") or "").strip()
+            if not ep:
+                continue
+            ep_abs = ep if os.path.isabs(ep) else os.path.join(root_norm, ep)
+            ep_norm = os.path.normpath(ep_abs)
+            if entry.get("is_dir"):
+                if target_norm == ep_norm or target_norm.startswith(ep_norm + os.sep):
+                    return True
+            else:
+                if target_norm == ep_norm:
+                    return True
+        except Exception:
+            continue
+    return False
+
+
 def _check_write_allowed(relative_path: str, project_root: str, file_exists: bool = True) -> str:
     """
     Check whether a write to *relative_path* is allowed.
@@ -118,6 +188,11 @@ def _check_write_allowed(relative_path: str, project_root: str, file_exists: boo
     # YOLO mode: opened up via `/shell yolo` — unrestricted writes in-process
     # (mirrors the shell server's YOLO_MODE env handling).
     if os.environ.get("ZIYA_YOLO_MODE", "").lower() in ("1", "true", "yes"):
+        return ""
+    # Task scope grant (additive on top of base policy).  Checked first
+    # so a Task with explicit write paths can write outside the base
+    # allowlist for the duration of its execution.
+    if _check_task_scope_write(relative_path, project_root):
         return ""
     from app.config.write_policy import get_write_policy_manager
     pm = get_write_policy_manager()
@@ -164,7 +239,11 @@ class FileReadTool(BaseMCPTool):
         offset: int = int(kwargs.get("offset") or 1)
 
         try:
-            resolved = _resolve_and_validate(path_str, project_root, allowed_absolute_prefixes=_get_safe_write_paths())
+            allowed_prefixes = (
+                _get_safe_write_paths()
+                + _get_task_readable_prefixes()
+            )
+            resolved = _resolve_and_validate(path_str, project_root, allowed_absolute_prefixes=allowed_prefixes)
         except ValueError as e:
             return {"error": True, "message": str(e)}
 
@@ -298,14 +377,19 @@ class FileWriteTool(BaseMCPTool):
         try:
             resolved = _resolve_and_validate(path_str, project_root, allowed_absolute_prefixes=_get_safe_write_paths())
         except ValueError as e:
-            return {"error": True, "message": str(e)}
+            # Append the diff-fallback hint so the agent's next
+            # turn has an actionable next step rather than treating
+            # the path as unreachable.
+            from app.utils.write_rejection_hint import augment_rejection
+            return {"error": True, "message": augment_rejection(str(e))}
 
         exists_before = resolved.exists()
 
         # Gate writes through the policy
         rejection = _check_write_allowed(path_str, project_root, file_exists=exists_before)
         if rejection:
-            return {"error": True, "message": rejection}
+            from app.utils.write_rejection_hint import augment_rejection
+            return {"error": True, "message": augment_rejection(rejection)}
 
         # -- Patch mode --------------------------------------------------
         if patch is not None:

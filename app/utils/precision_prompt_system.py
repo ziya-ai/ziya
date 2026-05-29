@@ -128,36 +128,31 @@ class PrecisionPromptSystem:
                     from app.context import get_project_root_or_none
                     project_root = get_project_root_or_none()
                     cwd = project_root or os.getcwd()
-                    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z").strip()
 
-                    conv_start = None
+                    conv_start_iso = None
                     if conv_start_ts is not None:
                         try:
-                            conv_start = datetime.datetime.fromtimestamp(conv_start_ts / 1000).strftime("%Y-%m-%d %H:%M:%S")
+                            conv_start_iso = datetime.datetime.fromtimestamp(
+                                conv_start_ts / 1000
+                            ).strftime("%Y-%m-%d %H:%M:%S")
                         except (ValueError, OSError, TypeError):
                             pass
 
-                    parts = ["\n\n## Session Context\n"]
-                    if project_root:
-                        parts.append(f"<CurrentProjectRoot value=\"{project_root}\" />")
-                    parts.append(f"<CurrentWorkingDirectory value=\"{cwd}\" />")
-                    parts.append(f"<CurrentDateTime value=\"{now}\" />")
-                    if conv_start:
-                        parts.append(f"<ConversationStartTime value=\"{conv_start}\" />")
-                    parts.append("")
-
-                    messages[0]["content"] = "\n".join(parts) + messages[0]["content"]
+                    # Unified session+permissions block.  Replaces the
+                    # previous inline header so chat and task paths
+                    # produce identical structure.  Includes the base
+                    # write-policy listing that was previously a
+                    # separate fileio_prompt section below.
+                    from app.utils.session_context_prompt import build_session_context_section
+                    block = build_session_context_section(
+                        project_root=project_root,
+                        cwd=cwd,
+                        task_scope=None,
+                        conv_start_iso=conv_start_iso,
+                    )
+                    messages[0]["content"] = block + messages[0]["content"]
                 except Exception:
                     pass  # Non-fatal
-
-            if messages and messages[0]["role"] == "system":
-                try:
-                    from app.utils.fileio_prompt import get_fileio_prompt_section
-                    fileio_section = get_fileio_prompt_section()
-                    if fileio_section:
-                        messages[0]["content"] += fileio_section
-                except Exception as e:
-                    pass  # Non-fatal — fileio instructions are advisory
 
             # Inject model-discoverable skill catalog so the model knows
             # which specialized skills it can activate on-demand.
