@@ -7,10 +7,37 @@
 
 // ── Scope ─────────────────────────────────────────────────
 
+/**
+ * One path-permission entry on a Task scope.
+ *
+ * - read:    advisory today; the model is told it may read this path.
+ * - write:   gates file_write via task-scoped allowlist.
+ * - context: file contents are preloaded into the system prompt.
+ *            Only meaningful for files (is_dir=false); ignored for
+ *            directory entries.
+ */
+export interface ScopeEntry {
+  path: string;
+  is_dir?: boolean;
+  read?: boolean;
+  write?: boolean;
+  context?: boolean;
+}
+
 export interface TaskScope {
-  files: string[];
+  paths: ScopeEntry[];
+  cwd?: string | null;
   tools: string[];
   skills: string[];
+  /**
+   * Per-task shell command grants.  Each entry is either a literal
+   * first-token match (e.g. "pytest" grants any pytest invocation)
+   * or, with a "re:" prefix, a regex against the full command line.
+   * Grant is additive: bypasses base shell allowlist and destructive
+   * checks but never overrides ``always_blocked`` (sudo/vi/etc.) or
+   * redirection blocking.  Empty/undefined = no extra grants.
+   */
+  shell_commands?: string[];
 }
 
 // ── Artifacts (for runtime display, not editing) ──────────

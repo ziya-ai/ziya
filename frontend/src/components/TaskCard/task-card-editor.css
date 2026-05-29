@@ -1,3 +1,112 @@
+/* ── File permissions summary row (clickable) ────────────── */
+
+.tc-perms-row {
+  display: flex;
+  width: auto;
+  align-self: flex-start;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(127, 127, 127, 0.2);
+  background: var(--tc-chip-bg, rgba(0, 0, 0, 0.03));
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.tc-perms-row:hover {
+  border-color: var(--tc-accent, #1890ff);
+  background: rgba(24, 144, 255, 0.06);
+}
+
+.tc-perms-row:focus-visible {
+  outline: 2px solid var(--tc-accent, #1890ff);
+  outline-offset: 1px;
+}
+
+.tc-perms-icon {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.tc-perms-label {
+  font-weight: 600;
+  color: var(--tc-fg, #333);
+  flex-shrink: 0;
+}
+
+.tc-perms-summary {
+  color: var(--tc-muted, #888);
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tc-perms-chevron {
+  color: var(--tc-muted, #888);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.tc-perms-row:hover .tc-perms-chevron {
+  color: var(--tc-accent, #1890ff);
+}
+
+/* ── Advanced (cwd) ──────────────────────────────────────── */
+
+.tc-advanced {
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.tc-advanced > summary {
+  cursor: pointer;
+  user-select: none;
+  color: var(--tc-muted, #888);
+  padding: 2px 0;
+}
+
+.tc-advanced > summary:hover {
+  color: var(--tc-fg, #333);
+}
+
+.tc-advanced-summary {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+}
+
+.tc-cwd-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
+.tc-cwd-label {
+  color: var(--tc-muted, #888);
+  font-weight: 500;
+}
+
+.tc-cwd-value {
+  font-family: ui-monospace, monospace;
+  background: var(--tc-chip-bg, rgba(0, 0, 0, 0.05));
+  padding: 2px 6px;
+  border-radius: 4px;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Task Card editor — visual language per design/task-cards.md.
    Blue = Task (atom).  Yellow = Repeat (decorator). */
 
@@ -89,6 +198,17 @@
   background: transparent; border: none; color: var(--tc-muted, #7d8590);
   font-size: 13px; cursor: pointer; padding: 0 4px;
 }
+.tc-icon-btn-delete {
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 6px;
+  border-radius: 3px;
+  transition: background-color 0.15s, color 0.15s;
+}
+.tc-icon-btn-delete:hover {
+  background: rgba(255, 73, 73, 0.15);
+  color: #ff4949;
+}
 
 /* Task block — blue */
 .tc-block-task {
@@ -106,8 +226,9 @@
   background: var(--tc-card-header-bg, #161b22);
   border: 1px solid var(--tc-card-border, #30363d);
   color: inherit; font-size: 11px; padding: 6px 8px;
-  border-radius: 4px; resize: vertical; font-family: inherit;
+  border-radius: 4px; font-family: inherit;
   outline: none;
+  min-height: 2.6em;
 }
 
 /* Repeat block — yellow */
@@ -182,6 +303,16 @@
   color: inherit; padding: 2px 6px; border-radius: 3px;
   font-size: 11px; outline: none;
   min-width: 180px; flex: 1;
+}
+
+/* Multiline variant — used for the Until condition.  Sits in the
+   block header alongside the mode select and max input; align-self:
+   stretch lets it grow vertically with its content while the rest of
+   the row stays centered. */
+textarea.tc-text-input {
+  font-family: inherit;
+  line-height: 1.4;
+  align-self: stretch;
 }
 .tc-select-right { margin-left: auto; }
 .tc-label-dim { font-size: 11px; color: var(--tc-muted, #7d8590); }

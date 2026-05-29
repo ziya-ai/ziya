@@ -55,7 +55,7 @@ export const ParallelBlockEditor: React.FC<Props> = ({ block, onChange, onDelete
         />
         <span className="tc-block-label tc-block-label-parallel">Parallel</span>
         {onDelete && (
-          <button className="tc-icon-btn" onClick={onDelete} title="Delete">⋯</button>
+          <button className="tc-icon-btn tc-icon-btn-delete" onClick={onDelete} title="Delete">×</button>
         )}
       </div>
       <div className="tc-block-body tc-block-body-parallel">
