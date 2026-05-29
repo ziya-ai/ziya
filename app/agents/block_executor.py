@@ -29,6 +29,10 @@ from typing import Any, Dict, List, Optional
 
 from ..models.task_card import Artifact, ArtifactPart, Block
 from ..models.task_run import IterationStatus, IterationSummary, TaskRunBlockState
+from ..context import (
+    set_task_iteration_context,
+    reset_task_iteration_context,
+)
 from ..storage.task_runs import TaskRunStorage
 from . import task_templating
 from .task_executor import TaskExecutorError, execute_task_block
@@ -91,6 +95,7 @@ async def execute_block(block: Block, ctx: ExecutionContext) -> Artifact:
             effective,
             project_root=ctx.project_root,
             project_id=ctx.project_id,
+            run_id=ctx.run_id,
         )
     if block.block_type == "repeat":
         return await _execute_repeat(block, ctx)
@@ -277,10 +282,19 @@ async def _execute_repeat(
             all_summaries=list(all_prior or []),
         )
         ctx.binding_stack.append(bindings)
+        # Stamp the iteration context so nested task_executor emissions
+        # tag streaming deltas with the *iteration owner*'s block_id
+        # (this repeat block) rather than the inner task block.  The
+        # frontend reducer routes deltas by block_id; without this they
+        # would land in a never-sealed phantom bucket keyed to the task
+        # block id and every iteration's output would collapse into a
+        # single "Iteration 0" in the Live and Tools tabs.
+        iter_ctx_token = set_task_iteration_context(block.id, index)
         try:
             artifact = await _execute_sequence(block.body, ctx)
         finally:
             ctx.binding_stack.pop()
+            reset_task_iteration_context(iter_ctx_token)
         # Seal timing if the body didn't.
         if not artifact.duration_ms:
             artifact.duration_ms = int((time.time() - iter_start) * 1000)
@@ -489,10 +503,15 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
             index=i, item=None, previous=last_artifact, all_summaries=[],
         )
         ctx.binding_stack.append(bindings)
+        # See _execute_repeat._run_one — stamp iteration context so
+        # nested task_executor emissions are tagged with this until
+        # block's id, not the inner task block's id.
+        iter_ctx_token = set_task_iteration_context(block.id, i)
         try:
             artifact = await _execute_sequence(block.body, ctx)
         finally:
             ctx.binding_stack.pop()
+            reset_task_iteration_context(iter_ctx_token)
         await _record_iteration(block, ctx, i, artifact)
         await _emit(ctx, {
             "type": "iteration_completed",

@@ -7,6 +7,16 @@
  * SUMMARY_COLLAPSE_THRESHOLD constant has a reasonable value.
  */
 
+// MarkdownRenderer pulls in ``marked`` (ESM-only) which jest's
+// default transform can't load.  Mock it to a passthrough so this
+// test exercises TaskCardInlineTile structure without dragging the
+// markdown renderer (and its transitive deps) into the test bundle.
+jest.mock('../../MarkdownRenderer', () => ({
+  __esModule: true,
+  MarkdownRenderer: ({ markdown }: { markdown: string }) =>
+    require('react').createElement('pre', null, markdown),
+}));
+
 jest.mock('../../../services/taskRunApi', () => ({
   cancelTaskRun: jest.fn(),
   listIterations: jest.fn(),
@@ -20,8 +30,14 @@ jest.mock('../../../context/ProjectContext', () => ({
   useProject: () => ({ currentProject: { id: 'proj-1' } }),
 }));
 jest.mock('../../../hooks/useTaskRunStream', () => ({
-  useTaskRunStream: () => ({ run: null, error: null, loading: false,
-    refresh: jest.fn() }),
+  useTaskRunStream: () => ({
+    run: null,
+    error: null,
+    loading: false,
+    live: { text: {}, toolCalls: [], events: [] },
+    clearLive: jest.fn(),
+    refresh: jest.fn(),
+  }),
 }));
 
 describe('TaskCardInlineTile — artifact rendering wiring', () => {

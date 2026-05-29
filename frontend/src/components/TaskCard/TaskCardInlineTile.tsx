@@ -14,15 +14,19 @@ import { Spin, Tag, Tooltip } from 'antd';
 import {
   CaretRightOutlined, CaretDownOutlined, StopOutlined,
   CheckCircleOutlined, CloseCircleOutlined, ExclamationCircleOutlined,
-  ClockCircleOutlined, ThunderboltOutlined,
+  ClockCircleOutlined, ThunderboltOutlined, ReloadOutlined,
 } from '@ant-design/icons';
 import { useProject } from '../../context/ProjectContext';
 import type { TaskBinding } from '../../types/task_binding';
 import type { TaskRun, RunStatus, IterationsResponse } from '../../types/task_run';
 import type { TaskCard, Block, ArtifactPart } from '../../types/task_card';
 import { cancelTaskRun, listIterations } from '../../services/taskRunApi';
+import { createBinding } from '../../services/taskBindingApi';
+import { TASK_BINDING_EVENT } from '../../hooks/useTaskBindings';
 import { useTaskRunStream } from '../../hooks/useTaskRunStream';
 import { taskCardApi } from '../../services/taskCardApi';
+import { TaskRunInspector } from './TaskRunInspector';
+import { MarkdownRenderer } from '../MarkdownRenderer';
 import './task-card-inline-tile.css';
 
 interface Props {
@@ -65,16 +69,30 @@ const SUMMARY_COLLAPSE_THRESHOLD = 280;
 /**
  * Render the summary.  Short summaries are shown inline; long ones are
  * collapsed behind a <details> element so the tile stays compact.
+ *
+ * Summary text is interpreted as markdown — task outputs routinely
+ * include code fences, lists, and inline formatting.  The bottom
+ * (live) inspector already does this; this brings the persisted
+ * artifact summary view to parity.
  */
 const ArtifactSummary: React.FC<{ summary: string }> = ({ summary }) => {
+  const body = (
+    <MarkdownRenderer
+      markdown={summary}
+      enableCodeApply={false}
+      isStreaming={false}
+      isSubRender={true}
+    />
+  );
   if (summary.length <= SUMMARY_COLLAPSE_THRESHOLD) {
-    return <div className="tc-tile__summary">{summary}</div>;
+    return <div className="tc-tile__summary">{body}</div>;
   }
+  // Preview stays plain text — it's a truncated teaser, not full content.
   const preview = summary.slice(0, SUMMARY_COLLAPSE_THRESHOLD).trimEnd() + '…';
   return (
     <details className="tc-tile__summary-expandable">
       <summary className="tc-tile__summary-preview">{preview}</summary>
-      <div className="tc-tile__summary-full">{summary}</div>
+      <div className="tc-tile__summary-full">{body}</div>
     </details>
   );
 };
@@ -114,7 +132,7 @@ const OutputPart: React.FC<{ part: ArtifactPart; idx: number }> = ({ part, idx }
 
 /**
  * Render a single wrapper block as a one-line plain-language summary.
- * Returns \`null\` for Task blocks (those carry the actual instructions
+ * Returns `null` for Task blocks (those carry the actual instructions
  * shown below the wrapper chain).
  */
 function describeWrapper(block: Block): string | null {
@@ -125,20 +143,20 @@ function describeWrapper(block: Block): string | null {
     const parallel = block.repeat_parallel ? ' in parallel' : '';
     if (mode === 'count') {
       const n = block.repeat_count ?? 1;
-      return \`Repeat ${n} time${n === 1 ? '' : 's'}${parallel}\`;
+      return `Repeat ${n} time${n === 1 ? '' : 's'}${parallel}`;
     }
     if (mode === 'until') {
       const max = block.repeat_max ?? 1;
       const cond = (block.repeat_until || '').trim();
       return cond
-        ? \`Repeat until summary contains "${cond}" (max ${max})${parallel}\`
-        : \`Repeat until first success (max ${max})${parallel}\`;
+        ? `Repeat until summary contains "${cond}" (max ${max})${parallel}`
+        : `Repeat until first success (max ${max})${parallel}`;
     }
     if (mode === 'for_each') {
       const src = (block.repeat_for_each_source || '').trim();
       return src
-        ? \`For each item in: ${src.length > 60 ? src.slice(0, 60) + '…' : src}${parallel}\`
-        : \`For each item${parallel}\`;
+        ? `For each item in: ${src.length > 60 ? src.slice(0, 60) + '…' : src}${parallel}`
+        : `For each item${parallel}`;
     }
   }
 
@@ -146,12 +164,12 @@ function describeWrapper(block: Block): string | null {
     const max = block.until_max ?? 5;
     const cond = (block.until_condition || '').trim();
     return cond
-      ? \`Loop until: ${cond} (max ${max})\`
-      : \`Loop until first success (max ${max})\`;
+      ? `Loop until: ${cond} (max ${max})`
+      : `Loop until first success (max ${max})`;
   }
 
   if (block.block_type === 'parallel') {
-    return \`Run all branches in parallel\`;
+    return `Run all branches in parallel`;
   }
 
   if (block.block_type === 'schedule') {
@@ -159,11 +177,11 @@ function describeWrapper(block: Block): string | null {
     if (mode === 'interval') {
       const n = block.schedule_interval_value ?? 1;
       const u = block.schedule_interval_unit || 'hours';
-      return \`Schedule: every ${n} ${u}\`;
+      return `Schedule: every ${n} ${u}`;
     }
-    if (mode === 'at') return \`Schedule: once at ${block.schedule_at_iso || '?'}\`;
-    if (mode === 'daily_at') return \`Schedule: daily at ${block.schedule_daily_at || '?'}\`;
-    if (mode === 'cron') return \`Schedule: cron ${block.schedule_cron || '?'}\`;
+    if (mode === 'at') return `Schedule: once at ${block.schedule_at_iso || '?'}`;
+    if (mode === 'daily_at') return `Schedule: daily at ${block.schedule_daily_at || '?'}`;
+    if (mode === 'cron') return `Schedule: cron ${block.schedule_cron || '?'}`;
   }
 
   return null;
@@ -201,13 +219,14 @@ export const TaskCardInlineTile: React.FC<Props> = ({ binding, hideWhenTerminal 
 
   // Live-streamed run state.  Hook handles initial REST fetch, WS
   // subscription, and terminal refetch for the final artifact.
-  const { run, error: streamError, refresh } = useTaskRunStream(
+  const { run, error: streamError, refresh, live, clearLive } = useTaskRunStream(
     projectId, binding.run_id,
   );
   const [card, setCard] = useState<TaskCard | null>(null);
   const [iterations, setIterations] = useState<IterationsResponse['items']>([]);
   const [expanded, setExpanded] = useState(true);
   const [cancelError, setCancelError] = useState<string | null>(null);
+  const [rerunning, setRerunning] = useState(false);
 
   // Fetch the card once — it's immutable from the tile's POV.
   useEffect(() => {
@@ -259,6 +278,33 @@ export const TaskCardInlineTile: React.FC<Props> = ({ binding, hideWhenTerminal 
       setCancelError(String(e));
     }
   }, [projectId, run, refresh]);
+
+  /**
+   * Re-launch the same card against the same anchor message.  The
+   * server creates a new binding + run; the existing one is
+   * preserved so the user can still see what happened.  The
+   * task-binding-created event causes ``useTaskBindings`` to
+   * re-fetch and the new tile renders alongside this one.
+   */
+  const handleRerun = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!projectId || !binding.card_id || rerunning) return;
+    setRerunning(true);
+    try {
+      const resp = await createBinding(projectId, binding.chat_id, {
+        card_id: binding.card_id,
+        anchor_message_id: binding.anchor_message_id ?? null,
+      });
+      window.dispatchEvent(new CustomEvent(TASK_BINDING_EVENT, {
+        detail: { bindingId: resp.binding.id, runId: resp.run.id },
+      }));
+    } catch (err) {
+      // Surface as a soft error — keep the existing tile intact.
+      console.error('Task rerun failed', err);
+    } finally {
+      setRerunning(false);
+    }
+  }, [projectId, binding.card_id, binding.chat_id, binding.anchor_message_id, rerunning]);
 
   const toggleExpand = useCallback(() => setExpanded(v => !v), []);
 
@@ -344,6 +390,29 @@ export const TaskCardInlineTile: React.FC<Props> = ({ binding, hideWhenTerminal 
           <Tooltip title="Cancel run">
             <button className="tc-tile__cancel" onClick={handleCancel}>
               <StopOutlined />
+            </button>
+          </Tooltip>
+        )}
+        {isTerminal && (
+          <Tooltip
+            title={
+              run.status === 'done'
+                ? 'Rerun this task'
+                : run.status === 'cancelled'
+                  ? 'Restart cancelled task'
+                  : 'Restart failed task'
+            }
+          >
+            <button
+              className={
+                'tc-tile__rerun' +
+                (run.status === 'done' ? '' : ' tc-tile__rerun--restart')
+              }
+              onClick={handleRerun}
+              disabled={rerunning}
+            >
+              <ReloadOutlined />
+              <span>{run.status === 'done' ? 'Rerun' : 'Restart'}</span>
             </button>
           </Tooltip>
         )}
@@ -435,7 +504,10 @@ export const TaskCardInlineTile: React.FC<Props> = ({ binding, hideWhenTerminal 
 
         {iterations.length > 0 && (
           <details className="tc-tile__iter-list" open={isTerminal && iterations.length <= 5}>
-            <summary>Iterations ({iterations.length})</summary>
+            <summary>
+              Results ({iterations.length})
+              <span className="tc-tile__iter-list-hint"> · persisted summaries</span>
+            </summary>
             <ol className="tc-tile__iter-items">
               {iterations.map((it, idx) => (
                 <li key={`${it.block_id}-${it.summary.index}-${idx}`}
@@ -451,6 +523,14 @@ export const TaskCardInlineTile: React.FC<Props> = ({ binding, hideWhenTerminal 
             </ol>
           </details>
         )}
+
+        <TaskRunInspector
+          live={live}
+          onClear={clearLive}
+          defaultOpen={isRunning}
+          persistedIterations={iterations}
+          runStatus={run.status}
+        />
       </div>
     </div>
   );
