@@ -31,6 +31,12 @@ class FileChangeHandler(FileSystemEventHandler):
         self.last_cache_invalidation = 0
         # Periodic cleanup tracking
         self._last_cleanup = time.time()
+        # Pending-deletion debouncer. Editor saves can manifest as a delete
+        # followed shortly by a create/modify; we hold deletes for a short
+        # grace period and cancel them if a create/modify lands first. The
+        # timer runs on its own thread, so dispatch is non-blocking.
+        self._pending_deletes: Dict[str, threading.Timer] = {}
+        self._pending_deletes_lock = threading.Lock()
         
         # Initialize gitignore patterns lazily — scanning for .gitignore files
         # across a large home directory is expensive and blocks startup.
@@ -242,6 +248,10 @@ class FileChangeHandler(FileSystemEventHandler):
             return
             
         rel_path = os.path.relpath(abs_path, self.base_dir)
+
+        # If a delete for this path was pending (atomic save in flight),
+        # cancel it — the modify proves the file is alive.
+        self._cancel_pending_delete(rel_path)
         
         # Skip editor temp files
         if self._is_editor_temp_file(abs_path):
@@ -309,6 +319,11 @@ class FileChangeHandler(FileSystemEventHandler):
             return
 
         rel_path = os.path.relpath(abs_path, self.base_dir)
+
+        # If a delete for this path was pending (atomic save in flight),
+        # cancel it — the create proves this is a save, not a removal.
+        if not event.is_directory:
+            self._cancel_pending_delete(rel_path)
 
         if event.is_directory:
             # A new directory was created. We can't incrementally add it to
@@ -414,16 +429,68 @@ class FileChangeHandler(FileSystemEventHandler):
             
         if not self._should_process_event(rel_path, "deleted"):
             return
-            
+
+        # Debounce: defer the actual deletion handling so an atomic save
+        # (delete → create/modify within ~200 ms) can cancel it before
+        # we log/evict. The Timer runs on its own thread so dispatch
+        # returns immediately — no synchronous blocking of the watchdog
+        # event loop.
+        self._schedule_pending_delete(rel_path, abs_path)
+
+    def _schedule_pending_delete(self, rel_path: str, abs_path: str) -> None:
+        """Schedule a debounced commit of a delete event.
+
+        If on_created or on_modified for the same path fires before the
+        timer expires, the timer is cancelled and the deletion is treated
+        as a transient artifact of an atomic save.
+        """
+        delay = 0.2  # 200 ms grace window — covers vim/git/make rewrite gaps
+        with self._pending_deletes_lock:
+            existing = self._pending_deletes.pop(rel_path, None)
+            if existing is not None:
+                existing.cancel()
+            timer = threading.Timer(
+                delay,
+                self._commit_pending_delete,
+                args=(rel_path, abs_path),
+            )
+            timer.daemon = True
+            self._pending_deletes[rel_path] = timer
+            timer.start()
+
+    def _cancel_pending_delete(self, rel_path: str) -> None:
+        """Cancel a deferred delete commit if one is pending."""
+        with self._pending_deletes_lock:
+            timer = self._pending_deletes.pop(rel_path, None)
+        if timer is not None:
+            timer.cancel()
+            logger.debug(f"Cancelled pending delete for {rel_path} (atomic save)")
+
+    def _commit_pending_delete(self, rel_path: str, abs_path: str) -> None:
+        """Timer callback: commit the deletion if the file is still gone."""
+        with self._pending_deletes_lock:
+            # Drop our entry; if a fresh delete fires after us, it'll
+            # schedule a new timer.
+            self._pending_deletes.pop(rel_path, None)
+
+        # Final existence check before committing. The 200 ms grace window
+        # handles delete-then-create editor patterns; this check still
+        # matters because the create event might have fired but been
+        # dropped (e.g. ignored extension) — in that case the file *is*
+        # back on disk and we should not log a deletion.
+        if os.path.exists(abs_path):
+            logger.debug(f"Suppressing spurious delete (file reappeared): {rel_path}")
+            return
+
         # Check if this file was in any conversation context
         was_in_context = any(
-            rel_path in files 
+            rel_path in files
             for conv_id, files in self.file_state_manager.conversation_states.items()
             if not conv_id.startswith('precision_')
         )
-        
+
         logger.info(f"File deleted: {rel_path}" + (" (was in context)" if was_in_context else ""))
-        
+
         # Remove from cache incrementally instead of invalidating
         from app.services.folder_service import remove_file_from_folder_cache as _remove_cache
         if _remove_cache(rel_path, base_dir=self.base_dir):
