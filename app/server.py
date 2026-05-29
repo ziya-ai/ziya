@@ -469,6 +469,42 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Task scheduler failed to start (non-fatal): {e}")
 
+    # Task-run zombie reconciliation.  A TaskRun is launched as a
+    # fire-and-forget asyncio task; if the server is restarted (or
+    # crashes) mid-flight, the on-disk status stays "running" forever
+    # and the cancel button is a no-op because no live executor exists
+    # to honor the cancel flag.  At startup, sweep every project's
+    # task_runs/ directory and mark stranded "running"/"queued" rows
+    # as "failed" with a clear error so the UI can surface the truth.
+    try:
+        from pathlib import Path as _Path
+        from app.storage.task_runs import TaskRunStorage
+        from app.utils.paths import get_ziya_home as _get_ziya_home
+
+        projects_root = _Path(_get_ziya_home()) / "projects"
+        if projects_root.exists():
+            total_reconciled = 0
+            for project_dir in projects_root.iterdir():
+                if not project_dir.is_dir():
+                    continue
+                runs_dir = project_dir / "task_runs"
+                if not runs_dir.exists():
+                    continue
+                try:
+                    storage = TaskRunStorage(project_dir)
+                    n = storage.reconcile_stale_runs()
+                    if n:
+                        logger.info(
+                            f"Reconciled {n} stranded task run(s) in {project_dir.name}"
+                        )
+                        total_reconciled += n
+                except Exception as e:
+                    logger.warning(f"Reconciliation failed for {project_dir.name}: {e}")
+            if total_reconciled:
+                logger.info(f"Task-run reconciliation: {total_reconciled} total marked failed")
+    except Exception as e:
+        logger.warning(f"Task-run reconciliation skipped: {e}")
+
     # Register deferred plugin routes (plugins may have loaded before server)
     if os.environ.get('ZIYA_LOAD_INTERNAL_PLUGINS') == '1':
         try:
@@ -763,7 +799,7 @@ class _PollingAccessFilter(_logging.Filter):
     """Filter routine polling GETs from uvicorn access log."""
     _quiet = {'/chats?', '/chat-groups', '/skills', '/contexts', '/api/config', '/ws/',
               '/folder-progress', '/model-capabilities', '/current-model', '/static/',
-              '/delegate-status', '/bulk-sync', '/api/ast/status', '/ws/file-tree',}
+              '/delegate-status', '/bulk-sync', '/bulk-get', '/api/ast/status', '/ws/file-tree',}
     # UUID pattern for individual chat GETs: /chats/<uuid>  (re already imported at module top)
     _chat_get_re = re.compile(r'/chats/[0-9a-f]{8}-[0-9a-f]{4}-.*" [23]')
     def filter(self, record: _logging.LogRecord) -> bool:

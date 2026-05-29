@@ -126,6 +126,42 @@ async def update_chat_group(project_id: str, group_id: str, data: ChatGroupUpdat
     
     return group
 
+@router.post("/api/v1/projects/{project_id}/chat-groups/{group_id}/global")
+async def set_chat_group_global(project_id: str, group_id: str, body: dict):
+    """Atomically set a folder's isGlobal flag.
+
+    Single source of truth for the global flag.  Frontend calls this
+    instead of toggling locally and relying on the bulk-sync debounced
+    round-trip; this gives the toggle immediate, durable, race-free
+    semantics (next sync cycle mirrors the on-disk state into IDB).
+    """
+    is_global = bool(body.get("isGlobal", False))
+    storage = get_group_storage(project_id)
+    groups_file = storage._read_groups_file()
+    target = None
+    for g in groups_file.groups:
+        if g.id == group_id:
+            target = g
+            break
+    if not target:
+        raise HTTPException(status_code=404, detail="Group not found")
+    # ChatGroup uses model_config = {"extra": "allow"}, so we can stamp
+    # arbitrary fields including isGlobal directly on the model.
+    extra = target.model_dump()
+    extra["isGlobal"] = is_global
+    extra["updatedAt"] = int(time.time() * 1000)
+    # Re-validate as ChatGroup to catch corruption, then persist via the
+    # storage layer's atomic file-rename pattern.
+    updated = ChatGroup(**extra)
+    for i, g in enumerate(groups_file.groups):
+        if g.id == group_id:
+            groups_file.groups[i] = updated
+            break
+    storage._write_groups_file(groups_file)
+    logger.info(f"set_chat_group_global[{project_id[:8]}] {group_id[:8]} -> {is_global}")
+    return updated
+
+
 @router.delete("/api/v1/projects/{project_id}/chat-groups/{group_id}")
 async def delete_chat_group(project_id: str, group_id: str):
     """Delete a chat group (chats become ungrouped)."""
@@ -388,6 +424,72 @@ async def get_chat(project_id: str, chat_id: str):
 
     raise HTTPException(status_code=404, detail="Chat not found")
 
+@router.post("/api/v1/projects/{project_id}/chats/bulk-get")
+async def bulk_get_chats(project_id: str, body: dict):
+    """Fetch many chats in a single request.
+
+    Per-request /chats/{id} fetches show ~14ms when isolated but ~900ms
+    each under 56-way parallel load — the server's per-request work
+    (decryption key derivation, file-lock contention) doesn't amortize
+    across parallel HTTP requests.  Bundling N reads into one call lets
+    that overhead be paid once, dropping wall time by an order of
+    magnitude.
+
+    Body: {"ids": ["chat-id-1", "chat-id-2", ...]}
+    Response: {"chats": [Chat, ...], "missing": ["chat-id-3", ...]}
+
+    Missing IDs are returned separately rather than as nulls so the
+    client can mark them as confirmed-empty (vs network error).
+    """
+    ids = body.get("ids") or []
+    if not isinstance(ids, list):
+        raise HTTPException(status_code=400, detail="ids must be a list")
+    if len(ids) > 200:
+        raise HTTPException(status_code=400, detail="bulk-get limit is 200 ids per request")
+
+    storage = get_chat_storage(project_id)
+    chats: list = []
+    missing: list = []
+    # First pass: local project storage.
+    cross_project_ids: list = []
+    for cid in ids:
+        chat = storage.get(cid)
+        if chat:
+            chats.append(chat)
+        else:
+            cross_project_ids.append(cid)
+
+    # Second pass: resolve cross-project IDs via the chat index.  This
+    # replaces the previous `collect_global_chats` walk which scanned
+    # every project's chats directory and was the dominant cost in
+    # bulk-get (2-3s per request even with concurrency=1).
+    if cross_project_ids:
+        from app.storage import chat_index
+        from app.storage.chats import ChatStorage
+        ziya_home = get_ziya_home()
+        resolved, idx_missing = chat_index.lookup_many(ziya_home, cross_project_ids)
+        # Group resolved IDs by owning project so we hit each project's
+        # ChatStorage.get (which uses its own caches and decryption keys
+        # correctly) rather than reading raw JSON ourselves.
+        by_project: dict[str, list[str]] = {}
+        for cid, path in resolved.items():
+            owning_pid = path.parent.parent.name  # .../projects/<pid>/chats/<id>.json
+            by_project.setdefault(owning_pid, []).append(cid)
+        for owning_pid, owning_ids in by_project.items():
+            owning_storage = get_chat_storage(owning_pid)
+            for cid in owning_ids:
+                chat = owning_storage.get(cid)
+                if chat:
+                    chats.append(chat)
+                else:
+                    # Index said the file existed but storage couldn't load
+                    # it — treat as missing so the client can retry next sync.
+                    idx_missing.append(cid)
+        missing = idx_missing
+
+    return {"chats": chats, "missing": missing}
+
+
 @router.put("/api/v1/projects/{project_id}/chats/{chat_id}", response_model=Chat)
 async def update_chat(project_id: str, chat_id: str, data: ChatUpdate):
     """Update chat metadata."""
@@ -398,6 +500,43 @@ async def update_chat(project_id: str, chat_id: str, data: ChatUpdate):
         raise HTTPException(status_code=404, detail="Chat not found")
     
     return chat
+
+
+@router.post("/api/v1/projects/{project_id}/chats/{chat_id}/global")
+async def set_chat_global(project_id: str, chat_id: str, body: dict):
+    """Atomically set a chat's isGlobal flag.
+
+    Single source of truth for the global flag.  Frontend calls this
+    instead of toggling locally and relying on bulk-sync; this gives
+    the toggle immediate, durable, race-free semantics.
+    """
+    is_global = bool(body.get("isGlobal", False))
+    storage = get_chat_storage(project_id)
+    raw = storage._read_json(storage._chat_file(chat_id))
+    if not raw:
+        raise HTTPException(status_code=404, detail="Chat not found")
+    raw["isGlobal"] = is_global
+    # Bump _version and lastActiveAt so the next sync wins over any
+    # in-flight bulk-sync that doesn't carry the new flag.
+    now_ms = int(time.time() * 1000)
+    raw["_version"] = now_ms
+    raw["lastActiveAt"] = now_ms
+    storage._write_json(storage._chat_file(chat_id), raw)
+    logger.info(f"set_chat_global[{project_id[:8]}] {chat_id[:8]} -> {is_global}")
+    # Invalidate both summary caches keyed by this file's path.  The
+    # ChatStorage.list_summaries cache lives in app/storage/chats.py;
+    # the cross-project global-summary cache lives in
+    # app/storage/global_items.py.  Both are mtime-self-healing, but
+    # popping is cheap and gives immediate consistency for the next read.
+    try:
+        path_str = str(storage._chat_file(chat_id))
+        from app.storage.chats import _summary_cache as _chats_cache
+        from app.storage.global_items import _summary_cache as _global_cache
+        _chats_cache.pop(path_str, None)
+        _global_cache.pop(path_str, None)
+    except Exception:
+        pass
+    return Chat(**raw)
 
 
 # ── Retention policy endpoint ────────────────────────────────────────
