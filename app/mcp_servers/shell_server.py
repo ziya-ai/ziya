@@ -597,6 +597,25 @@ class ShellServer:
             if not segment_allowed:
                 print(f"Segment '{cmd_segment}' did not match any allowed patterns", file=sys.stderr)
                 first_word = cmd_segment.strip().split()[0] if cmd_segment.strip() else cmd_segment
+                # Defense-in-depth: never surface a meta-pattern key as if
+                # it were a command name.  If the model somehow sent the
+                # literal string ``piped_commands`` (or any other internal
+                # pattern label) as a token, redact it in the user-facing
+                # message — it's confusing and self-referential.  Meta-
+                # pattern names are the keys we exclude from
+                # ``get_allowed_commands_description()``.
+                _META_PATTERN_KEYS = {'piped_commands'}
+                if first_word in _META_PATTERN_KEYS:
+                    first_word = '<internal pattern label>'
+                # When the failing segment is part of a multi-segment
+                # pipeline, citing the offending segment is more
+                # actionable than just the first token.  Keep the message
+                # short for single-segment failures.
+                if len(segments) > 1:
+                    snippet = cmd_segment.strip()[:80]
+                    if len(cmd_segment.strip()) > 80:
+                        snippet += '…'
+                    return False, f"'{first_word}' is not allowed (in pipeline segment: {snippet!r})"
                 return False, f"'{first_word}' is not allowed"
         
         # All segments are valid
@@ -652,8 +671,15 @@ class ShellServer:
 
     def get_allowed_commands_description(self) -> str:
         """Get a human-readable description of allowed commands."""
+        # Internal meta-pattern keys that aren't user-invokable command
+        # names — they label structural patterns (e.g. "any allowed
+        # command optionally piped to other allowed commands") and
+        # would mislead the model if surfaced as if they were commands.
+        _META_PATTERN_KEYS = {'piped_commands'}
         base_commands = set()
         for pattern_name in self.safe_command_patterns.keys():
+            if pattern_name in _META_PATTERN_KEYS:
+                continue
             if pattern_name.startswith('git_'):
                 base_commands.add('git (safe operations)')
             elif pattern_name.startswith('env_'):
@@ -721,6 +747,12 @@ class ShellServer:
             arguments = params.get("arguments", {})
             
             if tool_name == "run_shell_command":
+                # _task_scope is a private side-channel field set by the
+                # parent when a Task Card with explicit paths permissions
+                # is running. Additive: paths it grants are permitted in
+                # addition to the base WritePolicyManager. Pop it so it
+                # never reaches the underlying shell command.
+                task_scope = arguments.pop("_task_scope", None) if isinstance(arguments, dict) else None
                 command = arguments.get("command")
                 # Handle timeout parameter - convert string to number if needed
                 timeout_param = arguments.get("timeout", self.command_timeout)
@@ -755,10 +787,16 @@ class ShellServer:
                         }
                     }
                 
-                # Write policy check (after allowlist, before execution)
-                write_ok, write_reason = (True, "") if self.yolo_mode else self.write_checker.check(
-                    command, self._split_by_shell_operators
-                )
+                # Write policy check (after allowlist, before execution).
+                # Apply per-call task scope (additive grant) for the
+                # duration of the check, then clear it.
+                self.write_checker.set_task_scope(task_scope)
+                try:
+                    write_ok, write_reason = (True, "") if self.yolo_mode else self.write_checker.check(
+                        command, self._split_by_shell_operators
+                    )
+                finally:
+                    self.write_checker.clear_task_scope()
                 if not write_ok:
                     return {
                         "jsonrpc": "2.0",

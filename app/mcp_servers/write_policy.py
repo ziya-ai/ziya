@@ -9,7 +9,7 @@ import os
 import re
 import shlex
 import sys
-from typing import Callable, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.config.write_policy import WritePolicyManager
@@ -18,6 +18,30 @@ from app.config.write_policy import WritePolicyManager
 class ShellWriteChecker:
     def __init__(self, pm: WritePolicyManager):
         self.pm = pm
+        # Per-call task scope (set by the shell server before each
+        # ``run_shell_command`` invocation, cleared after).  When non-
+        # empty, ``_is_write_allowed`` consults this list *in addition*
+        # to the base ``WritePolicyManager`` — a path that the task has
+        # been granted is permitted even if the base policy would deny
+        # it.  Each entry is ``{"path": str, "is_dir": bool}``; ``path``
+        # is interpreted relative to the task's effective project root.
+        #
+        # The shape is intentionally an envelope so future per-task
+        # scope categories (Slice B's command allowlist, etc.) can be
+        # added without changing the wire payload.
+        self._task_scope: Dict[str, Any] = {}
+
+    def set_task_scope(self, scope: Optional[Dict[str, Any]]) -> None:
+        """Set the per-call task scope (or clear with ``None``).
+
+        Expected shape: ``{"writable": [{"path": str, "is_dir": bool}, ...],
+        "project_root": str}``.  Unknown keys are ignored so the same
+        envelope can later carry e.g. ``{"commands": [...]}`` for Slice B.
+        """
+        self._task_scope = scope or {}
+
+    def clear_task_scope(self) -> None:
+        self._task_scope = {}
 
     @property
     def policy(self):
@@ -42,6 +66,12 @@ class ShellWriteChecker:
         tok = _tokenize(cmd)
         if not tok or tok[0] not in self.policy.get('destructive_commands', []):
             return True, ""
+        # Slice B: per-task ``shell_commands`` grant overrides the
+        # destructive-command block.  ``_always_blocked`` (caller)
+        # and redirection rules remain hard ceilings — those are
+        # checked separately and not bypassable per-task.
+        if self._task_scope_grants_command(cmd):
+            return True, ""
         args = [t for t in tok[1:] if not t.startswith('-')]
         # For cp/mv, only the last argument is the write target;
         # earlier arguments are read-only sources.
@@ -52,7 +82,7 @@ class ShellWriteChecker:
         if not targets:
             return False, f"Command '{tok[0]}' requires a target path."
         for t in targets:
-            if not self.pm.is_write_allowed(t):
+            if not self._is_write_allowed(t):
                 return False, f"'{tok[0]} {t}' blocked — use git diffs for project file changes."
         return True, ""
 
@@ -94,6 +124,11 @@ class ShellWriteChecker:
         # Not a safe pattern → check all write indicators
         for pat in self.policy.get('script_write_indicators', []):
             if re.search(pat, cmd):
+                # Slice B: per-task shell command grant overrides the
+                # script-write-indicator block.  Useful for tasks that
+                # legitimately need an interpreter one-liner ``python -c``.
+                if self._task_scope_grants_command(cmd):
+                    return self._redirection(cmd)
                 return False, f"Script appears to write files (matched: {pat}). Use git diffs."
         return True, ""
 
@@ -126,12 +161,103 @@ class ShellWriteChecker:
                         i += 1
                     if i < ln:
                         target, end = _extract_target(command, i)
-                        if target and not self.pm.is_write_allowed(target):
+                        if target and not self._is_write_allowed(target):
                             return False, f"Redirection to '{target}' blocked."
                         i = end
                 continue
             i += 1
         return True, ""
+
+    # -- Task scope (additive write grant) -----------------------------
+
+    def _is_write_allowed(self, target_path: str) -> bool:
+        """Return True iff the base policy or the active task scope
+        permits a write to *target_path*.
+
+        The check is additive: if the base ``WritePolicyManager``
+        already allows the write, we return True without consulting
+        the task scope.  Only when the base check fails do we fall
+        back to the task grant.
+        """
+        if self.pm.is_write_allowed(target_path):
+            return True
+        return self._task_scope_grants_write(target_path)
+
+    def _task_scope_grants_write(self, target_path: str) -> bool:
+        if not self._task_scope:
+            return False
+        entries = self._task_scope.get("writable") or []
+        if not entries:
+            return False
+        project_root = self._task_scope.get("project_root") or os.environ.get(
+            "ZIYA_USER_CODEBASE_DIR", ""
+        )
+        raw = (target_path or "").strip().strip("'\"")
+        expanded = os.path.expanduser(raw)
+        target_abs = expanded if os.path.isabs(expanded) else (
+            os.path.join(project_root, expanded) if project_root else expanded
+        )
+        target_norm = os.path.normpath(target_abs)
+        for entry in entries:
+            try:
+                ep = (entry.get("path") or "").strip()
+                if not ep:
+                    continue
+                ep_abs = ep if os.path.isabs(ep) else (
+                    os.path.join(project_root, ep) if project_root else ep
+                )
+                ep_norm = os.path.normpath(ep_abs)
+                if entry.get("is_dir"):
+                    if target_norm == ep_norm or target_norm.startswith(ep_norm + os.sep):
+                        return True
+                else:
+                    if target_norm == ep_norm:
+                        return True
+            except Exception:
+                continue
+        return False
+
+    def _task_scope_grants_command(self, cmd: str) -> bool:
+        """Slice B: return True if a per-task ``shell_commands`` grant matches.
+
+        Each grant is one of:
+          • ``"<token>"`` — literal first-token allowlist (e.g.
+            ``"pytest"`` grants any ``pytest …`` invocation).
+          • ``"re:<regex>"`` — regex against the full command line.
+
+        Grants are additive over base policy and consulted only after
+        the base policy has decided to deny.  They cannot bypass
+        ``always_blocked`` (sudo/vi/etc.) or redirection blocking.
+        """
+        scope = self._task_scope or {}
+        grants = scope.get("shell_commands") or []
+        if not grants:
+            return False
+
+        try:
+            tokens = shlex.split(cmd)
+        except ValueError:
+            tokens = cmd.split()
+        first_token = tokens[0] if tokens else ""
+        first_basename = os.path.basename(first_token) if first_token else ""
+
+        for raw in grants:
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            entry = raw.strip()
+            if entry.startswith("re:"):
+                pattern = entry[3:]
+                if not pattern:
+                    continue
+                try:
+                    if re.search(pattern, cmd):
+                        return True
+                except re.error:
+                    continue
+            else:
+                if entry == first_token or entry == first_basename:
+                    return True
+        return False
 
 
 def _strip_heredoc_bodies(command: str) -> str:
