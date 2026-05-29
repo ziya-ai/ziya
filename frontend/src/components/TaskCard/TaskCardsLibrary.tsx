@@ -15,6 +15,7 @@ import {
   PlayCircleOutlined, StopOutlined, ReloadOutlined,
 } from '@ant-design/icons';
 import { useProject } from '../../context/ProjectContext';
+import { useChatContext } from '../../context/ChatContext';
 import type { TaskCard, Block } from '../../types/task_card';
 import { useTaskRunStream } from '../../hooks/useTaskRunStream';
 import { taskCardApi } from '../../services/taskCardApi';
@@ -45,6 +46,7 @@ export const TaskCardsLibrary: React.FC<Props> = ({
   visible, onClose, chatId, anchorMessageId,
 }) => {
   const { currentProject } = useProject();
+  const { addRunningTaskConversation } = useChatContext();
   const projectId = currentProject?.id ?? '';
 
   const [cards, setCards] = useState<TaskCard[]>([]);
@@ -159,6 +161,12 @@ export const TaskCardsLibrary: React.FC<Props> = ({
         window.dispatchEvent(new CustomEvent('task-binding-created', {
           detail: { bindingId: resp.binding.id, runId: resp.run.id },
         }));
+        // Bug 1 fix: mark the conversation as having a running task
+        // immediately so the conversation list shows the gear
+        // affordance without waiting for the run to complete.
+        // The reconciler in Conversation.tsx will clear this when
+        // the run reaches a terminal state (or on next navigation).
+        addRunningTaskConversation(chatId);
         // Chat-bound: close the modal so the user sees the inline
         // tile appear in their conversation.  The tile polls status.
         onClose();
@@ -177,7 +185,7 @@ export const TaskCardsLibrary: React.FC<Props> = ({
     } catch (e) {
       message.error(`Launch failed: ${String(e)}`);
     }
-  }, [projectId, draft, chatId, anchorMessageId, onClose]);
+  }, [projectId, draft, chatId, anchorMessageId, onClose, addRunningTaskConversation]);
 
   const handleCancel = useCallback(async () => {
     if (!projectId || !activeRun) return;

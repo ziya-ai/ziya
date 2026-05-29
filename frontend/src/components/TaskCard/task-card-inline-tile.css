@@ -1,3 +1,273 @@
+/* ── Inspector drawer ─────────────────────────────────────── */
+
+.tc-tile__inspector {
+  margin-top: 8px;
+  border-top: 1px solid rgba(127, 127, 127, 0.2);
+  padding-top: 6px;
+  font-size: 12px;
+}
+
+.tc-tile__inspector > summary {
+  cursor: pointer;
+  user-select: none;
+  color: var(--tc-muted, #888);
+  padding: 2px 0;
+}
+
+.tc-tile__inspector > summary:hover {
+  color: var(--tc-fg, #333);
+}
+
+.tc-tile__inspector-counts {
+  font-size: 11px;
+  color: var(--tc-muted, #888);
+}
+
+.tc-tile__inspector-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 6px 0;
+  border-bottom: 1px solid rgba(127, 127, 127, 0.2);
+}
+
+.tc-tile__inspector-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--tc-muted, #888);
+}
+
+.tc-tile__inspector-tab:hover {
+  color: var(--tc-fg, #333);
+}
+
+.tc-tile__inspector-tab--active {
+  color: var(--tc-accent, #1890ff);
+  border-bottom-color: var(--tc-accent, #1890ff);
+}
+
+.tc-tile__inspector-clear {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 10px;
+  cursor: pointer;
+  color: var(--tc-muted, #888);
+}
+
+.tc-tile__inspector-clear:hover {
+  color: var(--tc-fg, #333);
+}
+
+.tc-tile__inspector-body {
+  max-height: 320px;
+  overflow: auto;
+}
+
+.tc-tile__inspector-empty {
+  color: var(--tc-muted, #888);
+  font-style: italic;
+  padding: 8px 4px;
+}
+
+/* Live text */
+.tc-tile__inspector-block-id {
+  font-size: 10px;
+  color: var(--tc-muted, #888);
+  font-family: ui-monospace, monospace;
+  margin-top: 6px;
+}
+
+.tc-tile__inspector-text {
+  white-space: pre-wrap;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  background: rgba(127, 127, 127, 0.06);
+  padding: 6px 8px;
+  border-radius: 4px;
+  margin: 2px 0 8px 0;
+}
+
+/* Per-iteration sections in the Live tab.  Subtle visual delimiter
+ * (no nested markdown heading) so the iteration boundary reads as
+ * structural metadata rather than competing with the model's own
+ * markdown headings inside each section's body. */
+.tc-tile__inspector-iter {
+  border: 1px solid rgba(127, 127, 127, 0.15);
+  border-radius: 4px;
+  margin: 0 0 8px 0;
+  background: rgba(127, 127, 127, 0.03);
+}
+.tc-tile__inspector-iter[open] {
+  background: transparent;
+}
+.tc-tile__inspector-iter-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  color: var(--tc-muted, #888);
+  user-select: none;
+}
+.tc-tile__inspector-iter-summary:hover {
+  background: rgba(127, 127, 127, 0.06);
+}
+.tc-tile__inspector-iter-label {
+  font-weight: 500;
+  color: var(--tc-fg, inherit);
+}
+.tc-tile__inspector-iter-status {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+}
+.tc-tile__inspector-iter-status--running {
+  background: rgba(59, 130, 246, 0.12);
+  color: #2563eb;
+}
+.tc-tile__inspector-iter-status--passed {
+  background: rgba(34, 197, 94, 0.12);
+  color: #16a34a;
+}
+.tc-tile__inspector-iter-status--failed {
+  background: rgba(239, 68, 68, 0.12);
+  color: #dc2626;
+}
+.tc-tile__inspector-iter-duration,
+.tc-tile__inspector-iter-tokens {
+  font-size: 10px;
+  color: var(--tc-muted, #888);
+  margin-left: auto;
+}
+.tc-tile__inspector-iter-duration + .tc-tile__inspector-iter-tokens {
+  margin-left: 8px;
+}
+.tc-tile__inspector-iter-body {
+  padding: 0 10px 8px 10px;
+}
+
+/* Tool calls */
+.tc-tile__inspector-tools {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.tc-tile__inspector-tool {
+  border-bottom: 1px solid rgba(127, 127, 127, 0.1);
+  padding: 4px 0;
+}
+
+.tc-tile__inspector-tool-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+}
+
+.tc-tile__inspector-tool-name {
+  font-family: ui-monospace, monospace;
+  font-weight: 500;
+}
+
+.tc-tile__inspector-tool-ts,
+.tc-tile__inspector-event-ts {
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  color: var(--tc-muted, #888);
+}
+
+.tc-tile__inspector-tool-preview {
+  white-space: pre-wrap;
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  background: rgba(127, 127, 127, 0.06);
+  padding: 4px 6px;
+  border-radius: 3px;
+  margin: 2px 0 0 0;
+}
+
+/* Expand affordance for truncated previews.  Removing the
+ * inner ``max-height: …; overflow: auto`` on tool-preview and
+ * inspector-text eliminates the scroll-within-scroll nesting
+ * (320px outer body × N×120px inner previews × M×220px live-text
+ * panels) that caused deeply nested scroll surfaces.
+ * Outer .tc-tile__inspector-body remains the only scroll surface. */
+.tc-tile__inspector-tool-expand,
+.tc-tile__inspector-event-expand {
+  margin-left: 6px;
+  font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 0 6px;
+  height: 18px;
+  line-height: 16px;
+  border: 1px solid rgba(127, 127, 127, 0.25);
+  border-radius: 3px;
+  background: rgba(127, 127, 127, 0.08);
+  color: inherit;
+  cursor: pointer;
+}
+.tc-tile__inspector-tool-expand:hover,
+.tc-tile__inspector-event-expand:hover {
+  background: rgba(127, 127, 127, 0.16);
+}
+.tc-tile__inspector-tool-preview-ellipsis {
+  color: var(--tc-muted, #888);
+  font-style: italic;
+}
+.tc-tile__inspector-event-expanded {
+  white-space: pre-wrap;
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  background: rgba(127, 127, 127, 0.06);
+  padding: 4px 6px;
+  border-radius: 3px;
+  margin: 4px 0 0 0;
+}
+
+/* Events */
+.tc-tile__inspector-events {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+}
+
+.tc-tile__inspector-event {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 0;
+  border-bottom: 1px solid rgba(127, 127, 127, 0.06);
+}
+
+.tc-tile__inspector-event-type {
+  font-weight: 500;
+  min-width: 130px;
+  color: var(--tc-accent, #1890ff);
+}
+
+.tc-tile__inspector-event-payload {
+  flex: 1;
+  font-size: 10px;
+  color: var(--tc-muted, #888);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* TaskCardInlineTile — inline chat tile for task card bindings */
 
 .tc-tile {
@@ -54,6 +324,43 @@
   cursor: pointer; font-size: 11px; line-height: 1;
 }
 .tc-tile__cancel:hover { background: rgba(248,81,73,0.1); }
+
+/* Rerun / restart button — sibling of .tc-tile__cancel.  Shown when a
+ * run is in a terminal state.  Restart (failed/cancelled) is more
+ * urgent than rerun (done) so they share the same shape but different
+ * colours: warning amber for restart, neutral blue for rerun. */
+.tc-tile__rerun {
+  background: transparent; border: 1px solid #1f6feb;
+  color: #1f6feb; border-radius: 4px; padding: 2px 6px;
+  cursor: pointer; font-size: 11px; line-height: 1;
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.tc-tile__rerun:hover { background: rgba(31,111,235,0.1); }
+.tc-tile__rerun:disabled { opacity: 0.5; cursor: progress; }
+.tc-tile__rerun--restart {
+  border-color: #d29922; color: #d29922;
+}
+.tc-tile__rerun--restart:hover { background: rgba(210,153,34,0.1); }
+
+/* Inspector subtitle — small muted hint after the "🔍 Inspect" label
+ * indicating the live trace is session-scoped. */
+.tc-tile__inspector-subtitle {
+  font-size: 10px; opacity: 0.6; font-weight: 400;
+}
+
+/* Banner shown at the top of the Live output tab when we're falling
+ * back to persisted iteration summaries because the WS trace is gone. */
+.tc-tile__inspector-fallback-banner {
+  font-size: 11px; padding: 6px 8px; margin-bottom: 8px;
+  background: rgba(210,153,34,0.08);
+  border: 1px solid rgba(210,153,34,0.3);
+  border-radius: 4px; color: #d29922;
+}
+
+/* Hint after the "Results (N)" summary header explaining what's listed. */
+.tc-tile__iter-list-hint {
+  font-size: 10px; opacity: 0.6; font-weight: 400;
+}
 
 .tc-tile__body { padding: 10px 12px; }
 

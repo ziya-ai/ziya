@@ -104,7 +104,7 @@ export const RepeatBlockEditor: React.FC<Props> = ({ block, onChange, onDelete }
           <option value="all">all prior results</option>
         </select>
         {onDelete && (
-          <button className="tc-icon-btn" onClick={onDelete} title="Delete">⋯</button>
+          <button className="tc-icon-btn tc-icon-btn-delete" onClick={onDelete} title="Delete">×</button>
         )}
       </div>
       <div className="tc-block-body tc-block-body-repeat">
