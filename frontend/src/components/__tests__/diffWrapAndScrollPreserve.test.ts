@@ -13,6 +13,26 @@
  * without a real browser.
  */
 
+// ``marked`` is ESM-only and the CRA jest transform won't process it.
+// Stub at module scope so importing the MarkdownRenderer module
+// (which we only need for ``shouldWrapForLanguage``, a pure helper)
+// doesn't fail when its top-level ``marked`` import resolves.
+jest.mock('marked', () => {
+  const marked = (s: string) => s;
+  Object.assign(marked, {
+    parse: (s: string) => s,
+    setOptions: () => {},
+    use: () => {},
+    walkTokens: () => {},
+    parseInline: (s: string) => s,
+  });
+  return { marked, Tokens: {} };
+});
+// ``uuid`` is also ESM-only and pulled in transitively via the
+// FolderContext → ProjectContext → db.ts chain that
+// MarkdownRenderer imports for its diff-pinning state.
+jest.mock('uuid', () => ({ v4: () => 'test-uuid' }));
+
 import { shouldWrapForLanguage } from '../MarkdownRenderer';
 
 describe('shouldWrapForLanguage', () => {

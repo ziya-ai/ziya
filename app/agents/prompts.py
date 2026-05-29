@@ -128,6 +128,17 @@ Follow these strict guidelines for diff formatting:
    - Do not include content under the diff.
    
 5. End each diff block with ``` on a new line
+
+**HUNK HEADER LINE COUNTS**
+ The ``@@ -OLD_START,OLD_COUNT +NEW_START,NEW_COUNT @@`` header counts must
+ match the hunk body exactly:
+   • OLD_COUNT = number of " " (context) + "-" (removal) lines in the body
+   • NEW_COUNT = number of " " (context) + "+" (addition) lines in the body
+ Count carefully — a header that disagrees with the body will be silently
+ rescued by the parser at apply time, but the rescue is best-effort and
+ obscures real bugs.  Lines starting with "\" (e.g. "\ No newline at end
+ of file") do NOT count toward either total.
+
 CRITICAL: When generating hunks and context:
 1. Always count actual file lines, including:
    - Empty lines

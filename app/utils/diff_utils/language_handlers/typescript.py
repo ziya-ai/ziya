@@ -51,9 +51,33 @@ class TypeScriptHandler(LanguageHandler):
             import os
             import shutil
 
-            # Prefer the project-local tsc over a global one.  Walk up from
-            # the file path to find node_modules/.bin/tsc.
+            # Prefer the project-local tsc over a global one.
+            #
+            # During dry-run validation (pipeline_validator) the file
+            # being validated is a copy in tempfile.TemporaryDirectory(),
+            # so walking up from it never reaches the project's
+            # node_modules — we'd silently fall back to basic bracket
+            # matching, which can't catch e.g. an object-literal key at
+            # statement position.  Apply-time runs against the real
+            # project file and finds tsc, so apply rejects diffs that
+            # validation accepted, producing the looping behaviour.
+            #
+            # Resolve from ZIYA_USER_CODEBASE_DIR first so validation
+            # and apply use the same compiler.  Fall back to walking
+            # up from the file (preserves prior behaviour for callers
+            # that don't set the env var).
             def find_tsc(start_path: str) -> Optional[str]:
+                codebase_dir = os.environ.get('ZIYA_USER_CODEBASE_DIR')
+                if codebase_dir:
+                    candidate = os.path.abspath(codebase_dir)
+                    for _ in range(6):
+                        tsc_bin = os.path.join(candidate, 'node_modules', '.bin', 'tsc')
+                        if os.path.isfile(tsc_bin):
+                            return tsc_bin
+                        parent = os.path.dirname(candidate)
+                        if parent == candidate:
+                            break
+                        candidate = parent
                 candidate = os.path.abspath(start_path)
                 for _ in range(6):  # max 6 levels up
                     candidate = os.path.dirname(candidate)
@@ -92,6 +116,15 @@ class TypeScriptHandler(LanguageHandler):
                 if result.returncode != 0:
                     # tsc writes diagnostics to stdout, not stderr
                     error_msg = (result.stdout.strip() or result.stderr.strip())
+                    # tsc references the temp file in its diagnostics
+                    # (e.g. "tmpXXX.tsx(3354,19): error TS1005").  Rewrite
+                    # those references back to the real file path so the
+                    # message that bubbles up to the LLM (via
+                    # _apply_diff -> failure_feedback) can be correlated
+                    # against the file content the model already has in
+                    # context.  Without this, the model only sees an
+                    # opaque temp filename and cannot locate the error.
+                    error_msg = error_msg.replace(temp_path, file_path)
 
                     # Distinguish real syntax errors (TS1xxx) from
                     # import/type resolution errors (TS2xxx+) which are

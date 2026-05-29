@@ -446,5 +446,10 @@ class DiffPipeline:
             The pipeline result
         """
         self.update_stage(PipelineStage.COMPLETE)
-        self.result.error = error
+        # Only overwrite an existing error when the caller explicitly
+        # passes a new one — otherwise late-stage validators (e.g.
+        # ``_run_language_validation``) that set ``result.error`` before
+        # ``complete()`` is invoked would have their message wiped here.
+        if error is not None or self.result.error is None:
+            self.result.error = error
         return self.result
