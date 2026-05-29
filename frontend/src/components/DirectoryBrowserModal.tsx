@@ -1,8 +1,10 @@
 /**
- * DirectoryBrowserModal - Select a directory to create a new project
- * 
- * Reuses the browse-directory API from MUIFileExplorer pattern
- * but simplified for single directory selection only.
+* DirectoryBrowserModal — generic directory picker.
+ *
+* Defaults to "select a directory to open as a project" copy, but
+* all user-visible strings can be overridden via props so it can be
+* reused for other directory-selection flows (e.g. picking a task's
+* working directory).
  */
 import React, { useState, useEffect } from 'react';
 import {
@@ -37,12 +39,24 @@ interface DirectoryBrowserModalProps {
   open: boolean;
   onClose: () => void;
   onSelect: (path: string) => Promise<void>;
+  /** Dialog title.  Defaults to "Select Project Directory". */
+  title?: string;
+  /** Subtitle under the title.  Defaults to a project-creation hint. */
+  subtitle?: string;
+  /** Label on the confirm button.  Defaults to "Open as Project". */
+  confirmLabel?: string;
+  /** Label shown on the confirm button while ``onSelect`` is in flight. */
+  busyLabel?: string;
 }
 
 export const DirectoryBrowserModal: React.FC<DirectoryBrowserModalProps> = ({
   open,
   onClose,
-  onSelect
+  onSelect,
+  title = 'Select Project Directory',
+  subtitle = 'Choose a folder to open as a new project',
+  confirmLabel = 'Open as Project',
+  busyLabel = 'Creating…',
 }) => {
   const [browsePath, setBrowsePath] = useState<string>('~');
   const [pathInput, setPathInput] = useState<string>('~');
@@ -155,10 +169,10 @@ export const DirectoryBrowserModal: React.FC<DirectoryBrowserModalProps> = ({
     >
       <DialogTitle sx={{ pb: 1, borderBottom: 1, borderColor: 'divider' }}>
         <Typography variant="h6" sx={{ fontSize: '16px', fontWeight: 500 }}>
-          Select Project Directory
+          {title}
         </Typography>
         <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '12px' }}>
-          Choose a folder to open as a new project
+          {subtitle}
         </Typography>
       </DialogTitle>
       
@@ -354,7 +368,7 @@ export const DirectoryBrowserModal: React.FC<DirectoryBrowserModalProps> = ({
             '&:hover': { bgcolor: '#1d4ed8' }
           }}
         >
-          {isCreating ? 'Creating...' : 'Open as Project'}
+          {isCreating ? busyLabel : confirmLabel}
         </Button>
       </DialogActions>
     </Dialog>
