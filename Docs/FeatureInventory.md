@@ -42,6 +42,24 @@
 
 ---
 
+## 2a. Task Cards
+
+Durable, cross-session work units anchored to a chat. Distinct from chat streaming (one-shot) and swarm (parallel decomposition).
+
+| Feature | Detail |
+|---|---|
+| **Task / Repeat / Parallel block types** | Composable building blocks: a single Task, a Repeat that iterates a body N times or until a condition, a Parallel that fans out body blocks concurrently |
+| **Inline task tile** | Anchored to a chat message; renders live status, current block, and a built-in inspector (Iterations / Tool Calls / Events tabs) |
+| **History replay on reconnect** | Server-side bounded ring buffer (1000 events per run) with on-the-fly delta collapse; switching away from a conversation and back replays everything that happened during the absence rather than starting blank |
+| **Distinct gear affordance in conversation list** | Conversations with non-terminal task runs show a spinning gear ("Task running…") instead of the dots-spinner used for chat streaming, so the user can tell which kind of work the conversation is waiting on |
+| **Per-block scoped permissions** | Each block carries its own writable paths, allowed tools, allowed skills, and shell-command grants; the executor surfaces the effective set in the agent's system prompt so it knows what it can do before it tries |
+| **Permissions snapshot at launch** | Effective permissions captured once at run start and stored on the run record; later edits to the card don't rewrite history, so post-mortem can reconstruct exactly what scope a failed run had |
+| **Hierarchical permissions UI** | Permissions dialog shows folder rows in primary-color when any descendant has a configured grant (mirrors `MUIFileExplorer`'s "change at a lower level" convention); Files/Tools/Skills/Shell tabs with inheritance overlays for project-policy grants |
+| **Structured self-assessment as completion criterion** | Task agent must emit `<self_assessment objective_met="true|false|partial|unknown" rationale="..."/>` at the end of its response; `objective_met="false"` flips the run's `ok` flag regardless of whether the stream ended cleanly, catching tasks that abandoned their stated goal mid-run |
+| **Diff fallback hint on write rejection** | When `file_write` rejects a path outside the writable scope, the rejection text reminds the agent to emit a git diff in its response instead — closes the failure pattern where agents would give up on writing changes after a single denial |
+
+---
+
 ## 3. Code Intelligence
 
 | Feature | Detail |
