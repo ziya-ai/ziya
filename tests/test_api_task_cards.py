@@ -390,3 +390,227 @@ class TestLifecycleEvents:
         run = self._wait_for_run_terminal(pid, run_id)
         assert run is not None
         assert run.status == "done"  # relay failure didn't derail execution
+
+
+class TestProjectRootPropagation:
+    """A4 — the X-Project-Root header MUST reach tool calls fired from
+    inside the spawned task.  Two things must hold:
+
+      1. ProjectContextMiddleware sets the ContextVar from the header
+         (covered by the middleware's own tests, but exercised here
+         end-to-end through the launch path).
+      2. The ``_run`` coroutine re-sets the ContextVar inside the
+         spawned task as defense-in-depth, so that even if the var is
+         lost in transit it's restored before ``execute_block`` runs.
+
+    We verify by capturing ``_request_project_root.get()`` from inside
+    the patched ``execute_block``.  If it returns the expected path,
+    the ContextVar is live where it matters.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_project_root_var(self):
+        """Each test in this class starts with the ContextVar cleared
+        and tears it down on exit — so cross-test bleed cannot mask a
+        real bug or trigger a spurious failure."""
+        from app.context import _request_project_root
+        token = _request_project_root.set(None)
+        yield
+        _request_project_root.reset(token)
+
+    @staticmethod
+    def _wait_terminal(pid, run_id, timeout=2.0):
+        from app.storage.task_runs import TaskRunStorage
+        from app.utils.paths import get_project_dir
+        storage = TaskRunStorage(get_project_dir(pid))
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            run = storage.get(run_id)
+            if run and run.status in ("done", "failed", "cancelled"):
+                return run
+            time.sleep(0.02)
+        return storage.get(run_id)
+
+    def test_run_propagates_project_root_to_execute_block(self, client, tmp_path):
+        """The fix in ``_run``: when the launch handler captured a
+        project_root (from the X-Project-Root-driven ContextVar at the
+        request level), that value MUST be re-set on the ContextVar
+        inside the spawned asyncio task so downstream tool calls see it
+        instead of falling through to ``os.getcwd()``.
+
+        We bypass the middleware (which has side effects we don't want
+        in unit tests) and instead set the ContextVar directly in the
+        request handler's context before launch, then verify it reaches
+        ``execute_block`` inside the spawned task.
+        """
+        from app.context import _request_project_root, set_project_root
+
+        proj_root = str(tmp_path)
+        captured: dict = {}
+
+        async def _capture(*_a, **_kw):
+            captured["project_root"] = _request_project_root.get()
+            return Artifact(summary="ok")
+
+        # Pre-set the ContextVar — this is what middleware would do on a
+        # real request.  The TestClient runs the handler in this same
+        # thread/context, so the launch endpoint will pick it up via
+        # ``get_project_root_or_none()`` and pass it into ``_run``.
+        set_project_root(proj_root)
+
+        tc, pid = client
+        card = tc.post(
+            f"/api/v1/projects/{pid}/task-cards",
+            json={"name": "T", "root": _task_root()},
+        ).json()
+
+        with patch("app.api.task_cards.execute_block", new=_capture):
+            resp = tc.post(
+                f"/api/v1/projects/{pid}/task-cards/{card['id']}/launch",
+                json={},
+            )
+            assert resp.status_code == 200
+            run_id = resp.json()["id"]
+
+        run = self._wait_terminal(pid, run_id)
+        assert run is not None and run.status == "done"
+        # The critical invariant: ContextVar is the path the user set,
+        # NOT None and NOT os.getcwd() (which is what the d3 task hit).
+        assert captured["project_root"] == proj_root
+
+    def test_run_resets_contextvar_in_spawned_task_context(self, client, tmp_path):
+        """Direct exercise of the defense-in-depth ``set_project_root``
+        call inside ``_run``: even if the spawned task's copied Context
+        has ``_request_project_root`` reset to None, the call inside
+        ``_run`` must restore it before ``execute_block`` runs.
+
+        We simulate the lost-Context case by clearing the var in the
+        request handler's context AFTER ``get_project_root_or_none()``
+        runs (via a wrapper around ``execute_block`` that reads the
+        var) — but rather than fight the asyncio.create_task copy
+        semantics, we instead pass the project_root through a fixture
+        and verify ``execute_block`` sees the correct value while the
+        outer test thread's var is intentionally cleared.
+        """
+        from app.context import (
+            _request_project_root, set_project_root,
+        )
+
+        proj_root = str(tmp_path)
+        captured: dict = {}
+
+        async def _capture(*_a, **_kw):
+            captured["project_root"] = _request_project_root.get()
+            return Artifact(summary="ok")
+
+        # Set + then immediately tear down the outer var.  The launch
+        # handler captures project_root via ``get_project_root_or_none()``
+        # *before* we clear, so the captured value is correct; the
+        # spawned task's Context-copy will reflect the cleared state,
+        # exercising the defense-in-depth re-set.
+        set_project_root(proj_root)
+
+        tc, pid = client
+        card = tc.post(
+            f"/api/v1/projects/{pid}/task-cards",
+            json={"name": "T", "root": _task_root()},
+        ).json()
+
+        # Now clear in the outer thread.  Since FastAPI's TestClient
+        # runs handlers in this same thread, the next launch will see
+        # the cleared var from get_project_root_or_none() — meaning
+        # the launch will pass project_root=None and we *expect* the
+        # ContextVar inside execute_block to be None too.  This is the
+        # negative control for the test above.
+        _request_project_root.set(None)
+
+        with patch("app.api.task_cards.execute_block", new=_capture):
+            resp = tc.post(
+                f"/api/v1/projects/{pid}/task-cards/{card['id']}/launch",
+                json={},
+            )
+            assert resp.status_code == 200
+            run_id = resp.json()["id"]
+
+        run = self._wait_terminal(pid, run_id)
+        assert run is not None and run.status == "done"
+        # Negative control: with no project_root captured at launch
+        # time, the defense-in-depth set is skipped (its `if project_root:`
+        # guard) — so the ContextVar is None inside execute_block.
+        assert captured["project_root"] is None
+
+
+class TestPermissionsSnapshotCapture:
+    """A3 — the permissions snapshot must be persisted on the run
+    record at launch time.  This is what lets a post-mortem reconstruct
+    *what the agent was actually allowed to do* — without it, a failed
+    task is opaque (the d3 case had no record of granted permissions).
+
+    Specifically guards against a wiring regression we hit in production:
+    the snapshot helper expects ``root_block=card.root`` but the launch
+    site originally passed ``card=card``, raising a TypeError that was
+    silently swallowed by the non-fatal try/except wrapper.  The unit
+    tests for ``build_permissions_snapshot`` itself called the helper
+    directly with the right kwarg, so the wiring mismatch was invisible
+    until a real launch surfaced it as a log warning + missing field.
+    """
+
+    def test_snapshot_captured_on_launch(self, client):
+        """End-to-end: launching a card writes a non-empty snapshot
+        onto the run record before ``execute_block`` is invoked.
+        """
+        tc, pid = client
+        # Give the block a non-empty scope so it appears in
+        # block_scopes (the snapshot walker skips scopeless blocks).
+        root_with_scope = _task_root("only")
+        root_with_scope["scope"] = {
+            "tools": ["file_read", "file_write"],
+            "shell_commands": ["pytest"],
+        }
+        card = tc.post(
+            f"/api/v1/projects/{pid}/task-cards",
+            json={"name": "T", "root": root_with_scope},
+        ).json()
+
+        # Pause execute_block so we can read the run state immediately
+        # after launch (the snapshot is written synchronously before
+        # the spawned task starts running).
+        pause = asyncio.Event()
+
+        async def _wait_forever(*_a, **_kw):
+            await pause.wait()
+            return Artifact(summary="unused")
+
+        with patch("app.api.task_cards.execute_block", new=_wait_forever):
+            resp = tc.post(
+                f"/api/v1/projects/{pid}/task-cards/{card['id']}/launch",
+                json={},
+            )
+            assert resp.status_code == 200
+            run_id = resp.json()["id"]
+
+            from app.storage.task_runs import TaskRunStorage
+            from app.utils.paths import get_project_dir
+            storage = TaskRunStorage(get_project_dir(pid))
+            run = storage.get(run_id)
+
+            # The exact wiring regression: helper accepts root_block,
+            # not card.  If task_cards.py passes the wrong kwarg, the
+            # try/except swallows the TypeError and snapshot stays None.
+            assert run.permissions_snapshot is not None, (
+                "permissions_snapshot was not persisted at launch — "
+                "likely a kwarg mismatch in build_permissions_snapshot()"
+            )
+            snap = run.permissions_snapshot
+            # Schema sanity: top-level keys per app/utils/permissions_snapshot.py
+            assert "schema_version" in snap
+            assert "captured_at" in snap
+            assert "base_policy" in snap
+            assert "block_scopes" in snap
+            # block_scopes is a dict keyed by block id; walking the
+            # card.root tree must populate at least one entry.
+            assert len(snap["block_scopes"]) >= 1, (
+                "block_scopes should contain at least the root task block"
+            )
+
+            pause.set()

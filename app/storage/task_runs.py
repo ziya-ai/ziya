@@ -26,6 +26,13 @@ class TaskRunStorage(BaseStorage[TaskRun]):
     def __init__(self, project_dir: Path):
         self.runs_dir = project_dir / "task_runs"
         super().__init__(self.runs_dir)
+        # Process-local registry of run_ids whose ``_run`` coroutine is
+        # currently executing in this server.  Server restarts wipe the
+        # set; the on-disk ``status`` is the durable record.  Used by
+        # the cancel endpoint to distinguish between "live executor —
+        # set the flag, the loop will honor it" and "zombie run from a
+        # prior server lifetime — force-cancel directly".
+        self._active_runs: set[str] = set()
 
     def _run_file(self, run_id: str) -> Path:
         return self.runs_dir / f"{run_id}.json"
@@ -112,6 +119,23 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         self._write_json(self._run_file(run_id), run.model_dump())
         return run
 
+    def set_permissions_snapshot(
+        self, run_id: str, snapshot: dict,
+    ) -> Optional[TaskRun]:
+        """Record the effective permissions captured at launch time.
+
+        The snapshot is opaque to storage — its schema is defined in
+        ``app/utils/permissions_snapshot.py``.  Only set once per run,
+        immediately after creation; later updates would defeat the
+        audit-trail purpose."""
+        run = self.get(run_id)
+        if not run:
+            return None
+        run.permissions_snapshot = snapshot
+        run.updated_at = int(time.time() * 1000)
+        self._write_json(self._run_file(run_id), run.model_dump())
+        return run
+
     def update(self, run_id: str, data) -> Optional[TaskRun]:
         """BaseStorage contract.  Task runs don't have a generic update
         path — use update_status / set_artifact / set_block_state for
@@ -131,6 +155,53 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         run.updated_at = int(time.time() * 1000)
         self._write_json(self._run_file(run_id), run.model_dump())
         return run
+
+    # ---- live-run registry (process-local, not persisted) ----------
+
+    def mark_active(self, run_id: str) -> None:
+        """Record that ``run_id``'s executor coroutine is alive in this
+        process.  Called from the start of ``_run`` in the launch path."""
+        self._active_runs.add(run_id)
+
+    def mark_inactive(self, run_id: str) -> None:
+        """Drop ``run_id`` from the live-run set.  Called from the
+        ``finally`` block of ``_run`` so the entry is removed even if
+        the executor errors out."""
+        self._active_runs.discard(run_id)
+
+    def is_active(self, run_id: str) -> bool:
+        """Return True iff ``run_id``'s executor is currently running
+        in this process."""
+        return run_id in self._active_runs
+
+    # ---- startup reconciliation -----------------------------------
+
+    def reconcile_stale_runs(self) -> int:
+        """Sweep on-disk runs and mark any ``running`` / ``queued``
+        rows as ``failed`` — they were owned by a prior server lifetime
+        and have no live executor.  Idempotent.  Safe to call at
+        startup before any new runs are launched.
+
+        Returns the count of runs reconciled.
+        """
+        reconciled = 0
+        now_ms = int(time.time() * 1000)
+        for run in self.list():
+            if run.status not in ("running", "queued"):
+                continue
+            run.status = "failed"  # type: ignore[assignment]
+            run.cancel_requested = False
+            run.error = (
+                "Run did not survive a server restart.  The executor "
+                "was terminated mid-flight; this record was reconciled "
+                "at the next server start."
+            )
+            if run.completed_at is None:
+                run.completed_at = time.time()
+            run.updated_at = now_ms
+            self._write_json(self._run_file(run.id), run.model_dump())
+            reconciled += 1
+        return reconciled
 
     def append_iteration_summary(
         self, run_id: str, block_id: str, summary: IterationSummary,
