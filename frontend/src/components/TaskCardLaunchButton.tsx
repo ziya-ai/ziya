@@ -37,6 +37,7 @@ import { Button, message, Modal, Tag } from 'antd';
 import { PlayCircleOutlined, LoadingOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import { useProject } from '../context/ProjectContext';
 import { useActiveChat } from '../context/ActiveChatContext';
+import { useChatContext } from '../context/ChatContext';
 import { useMessageId } from '../context/MessageIdContext';
 import { taskCardApi } from '../services/taskCardApi';
 import { createBinding } from '../services/taskBindingApi';
@@ -84,6 +85,7 @@ function summarizeRoot(root: TaskCardCreate['root']): string {
 export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageId }) => {
   const { currentProject } = useProject();
   const { currentConversationId } = useActiveChat();
+  const { addRunningTaskConversation } = useChatContext();
   // MarkdownRenderer doesn't pass messageId as a prop — pick it up from
   // context instead.  Prop still wins for callers that supply it
   // explicitly (e.g. future composer UI).
@@ -107,6 +109,12 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
         anchor_message_id: effectiveMessageId,
       });
       setLaunched(true);
+      // Bug 1 fix: mark the conversation as having a running task
+      // immediately so the conversation list shows the gear
+      // affordance without waiting for the run to complete.
+      // The reconciler in Conversation.tsx will clear this when
+      // the run reaches a terminal state (or on next navigation).
+      addRunningTaskConversation(currentConversationId);
       window.dispatchEvent(new CustomEvent('task-binding-created', {
         detail: { bindingId: resp.binding.id, runId: resp.run.id },
       }));
@@ -116,7 +124,7 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
     } finally {
       setLaunching(false);
     }
-  }, [spec, currentProject?.id, currentConversationId, messageId]);
+  }, [spec, currentProject?.id, currentConversationId, messageId, addRunningTaskConversation]);
 
   if (!spec) return null;
 

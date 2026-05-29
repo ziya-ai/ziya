@@ -29,6 +29,7 @@ import { Divider as AntDivider } from 'antd';
 // MUI icons
 import CreateNewFolderIcon from '@mui/icons-material/CreateNewFolder';
 import FolderIcon from '@mui/icons-material/Folder';
+import FolderOpenIcon from '@mui/icons-material/FolderOpen';
 import Box from '@mui/material/Box';
 import MenuItem from '@mui/material/MenuItem';
 import ChatIcon from '@mui/icons-material/Chat';
@@ -41,6 +42,7 @@ import UploadIcon from '@mui/icons-material/Upload';
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import ArrowRightIcon from '@mui/icons-material/ArrowRight';
 import SyncIcon from '@mui/icons-material/Sync';
+import SettingsIcon from '@mui/icons-material/Settings';
 import SearchIcon from '@mui/icons-material/Search';
 import CloseIcon from '@mui/icons-material/Close';
 import AddCommentIcon from '@mui/icons-material/AddComment';
@@ -73,6 +75,19 @@ const SpinningSync = styled(SyncIcon)(({ theme }) => ({
   },
 }));
 
+// Spinning gear for "task running" — visually distinct from the
+// dots-spinner used for chat streaming so the user can tell at a
+// glance which kind of work the conversation is waiting on.  Slower
+// rotation than SpinningSync to read as "machinery" rather than
+// "thinking".
+const SpinningGear = styled(SettingsIcon)(({ theme }) => ({
+  animation: 'gear-spin 4s linear infinite',
+  '@keyframes gear-spin': {
+    '0%': { transform: 'rotate(0deg)' },
+    '100%': { transform: 'rotate(360deg)' },
+  },
+}));
+
 // Custom TreeItem component for chat items
 interface ChatTreeItemProps {
   nodeId: string;
@@ -88,6 +103,9 @@ interface ChatTreeItemProps {
   isCurrentItem?: boolean;
   isGlobalItem?: boolean;
   isStreaming?: boolean;
+  // Conversation has a task card with a non-terminal run.  Renders a
+  // distinct gear affordance instead of the chat-streaming spinner.
+  isRunningTask?: boolean;
   hasUnreadResponse?: boolean;
   conversationCount?: number;
   onEdit: (id: string) => void;
@@ -137,6 +155,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     onDelegateSkip,
     isGlobalItem = false,
     isStreaming = false,
+    isRunningTask = false,
     hasUnreadResponse = false,
     conversationCount = 0,
     onEdit,
@@ -217,7 +236,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
         boxSizing: 'border-box',
         cursor: 'default',
         borderRadius: 4,
-        padding: `4px 8px 4px ${12 + (depth || 0) * 20 + (!isFolder && (depth || 0) > 0 ? 10 : 0)}px`,
+        padding: `4px 8px 4px ${12 + (depth || 0) * 20}px`,
         transition: 'background-color 0.15s',
         backgroundColor: props.isCurrentItem
           ? (isDarkMode ? '#177ddc' : '#e6f7ff')
@@ -231,14 +250,6 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
         }
       }}
     >
-      {/* Expand/collapse chevron for folders */}
-      <span
-        style={{ width: 20, flexShrink: 0, display: isFolder ? 'flex' : 'none', alignItems: 'center', justifyContent: 'center', opacity: 0.7, cursor: isFolder && hasChildren ? 'pointer' : 'default' }}
-      >
-        {isFolder && hasChildren ? (
-          isExpanded ? <ArrowDropDownIcon sx={{ fontSize: 18 }} /> : <ArrowRightIcon sx={{ fontSize: 18 }} />
-        ) : <span style={{ width: 18 }} />}
-      </span>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div
           style={{ width: '100%' }}
@@ -258,7 +269,9 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
               isTaskPlanFolder ? (
                 <span style={{ marginRight: 8, fontSize: 16 }}>⚡</span>
               ) : (
-                <FolderIcon color="primary" sx={{ mr: 1, fontSize: 20 }} />
+                (isExpanded && hasChildren
+                  ? <FolderOpenIcon color="primary" sx={{ mr: 1, fontSize: 20 }} />
+                  : <FolderIcon color="primary" sx={{ mr: 1, fontSize: 20 }} />)
               )
             ) : (
               delegateStatus ? (
@@ -327,9 +340,11 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                 {isGlobalItem && (
                   isHovered ? <Tooltip title="Visible in all projects"><PublicIcon fontSize="small" color="info" sx={{ ml: 0.5, fontSize: 14 }} /></Tooltip> : <PublicIcon fontSize="small" color="info" sx={{ ml: 0.5, fontSize: 14 }} />
                 )}
-                {isFolder && conversationCount > 0 && (
+                {isFolder && conversationCount > 0 ? (
                   <Typography variant="caption" sx={{ ml: 0.5, color: 'text.secondary' }}>({conversationCount})</Typography>
-                )}
+                ) : isFolder && !isTaskPlanFolder && !hasChildren ? (
+                  <Typography variant="caption" sx={{ ml: 0.5, color: 'text.secondary', fontStyle: 'italic', opacity: 0.7 }}>(empty)</Typography>
+                ) : null}
                 {isTaskPlanFolder && taskPlanProgress && (
                   <Typography variant="caption" sx={{ ml: 0.5, px: 0.5, borderRadius: '8px', backgroundColor: '#52c41a', color: '#fff', fontWeight: 600, fontSize: 10 }}>{taskPlanProgress}</Typography>
                 )}
@@ -379,6 +394,19 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                         <MoreVertIcon fontSize="small" sx={{ fontSize: '16px' }} />
                       </IconButton>
                     )}
+            {isRunningTask && !isStreaming && (
+              <Box sx={{
+                display: 'flex',
+                alignItems: 'center',
+                mt: 0.5,
+                color: isDarkMode ? '#a78bfa' : '#7c3aed',
+              }}>
+                <SpinningGear sx={{ fontSize: '12px', mr: 0.5 }} />
+                <Typography variant="caption" sx={{ fontSize: '11px' }}>
+                  Task running…
+                </Typography>
+              </Box>
+            )}
                 </Box>
               </Box>
             )}
@@ -802,6 +830,7 @@ const MUIChatHistory = () => {
     loadConversation,
     loadConversationAndScrollToMessage,
     streamingConversations,
+    runningTaskConversations,
   } = useActiveChat();
 
   const { isDarkMode } = useTheme();
@@ -2323,6 +2352,11 @@ const MUIChatHistory = () => {
   const lastTreeDataInputsRef = useRef<number>(0);
   const lastSortHashRef = useRef<number>(0);
   const lastTreeDataRef = useRef<any[]>([]);
+  // Project-id sentinel: every cached tree belongs to exactly one project.
+  // When currentProject.id changes, all tree-build caches must be invalidated
+  // before any reuse check runs — otherwise the previous project's tree can
+  // be rendered for the new project (root cause of the "ghost folders" class).
+  const lastCacheProjectIdRef = useRef<string | undefined>(undefined);
   // Refs for sort-only fast path: reuse structure, only re-sort
   const lastAnchoredIdsRef = useRef<Set<string>>(new Set());
   const lastFolderMapRef = useRef<Map<string, any>>(new Map());
@@ -2352,6 +2386,21 @@ const MUIChatHistory = () => {
         phase: 'start',
       }));
     } catch {}
+
+    // Project-scoped cache invalidation.  Run BEFORE every cache-reuse check
+    // (including the isProjectSwitching early-return) so a stale tree from
+    // a previous project can never be returned for the current one.
+    const activeProjectId = currentProject?.id;
+    if (lastCacheProjectIdRef.current !== activeProjectId) {
+      console.debug('[TREE-CACHE-PROJECT-CHANGE]', {
+        from: lastCacheProjectIdRef.current?.substring(0, 8) ?? 'none',
+        to: activeProjectId?.substring(0, 8) ?? 'none',
+      });
+      lastTreeDataInputsRef.current = 0;
+      lastSortHashRef.current = 0;
+      lastTreeDataRef.current = [];
+      lastCacheProjectIdRef.current = activeProjectId;
+    }
 
     // During project switch, conversation/folder arrays are transitional
     // (mix of old + new project data). Return cached tree to avoid
@@ -2391,20 +2440,35 @@ const MUIChatHistory = () => {
       // Reuse only when cached IDs and current IDs are equal as sets.
       const currentConvIds = new Set(safeConversations.map(c => c.id));
       const cachedConvIds = new Set<string>();
+      let cachedFolderCount = 0;
       const collect = (nodes: any[], _d = 0): void => {
         if (_d > 20) return;
         for (const n of nodes) {
           if (n.conversation?.id) cachedConvIds.add(n.conversation.id);
+          if (n.folder) cachedFolderCount++;
           if (n.children) collect(n.children, _d + 1);
         }
       };
       collect(lastTreeDataRef.current);
       const sameSize = cachedConvIds.size === currentConvIds.size;
       const isSubset = sameSize && [...currentConvIds].every(id => cachedConvIds.has(id));
-      if (lastTreeDataRef.current.length > 0 && sameSize && isSubset) {
+      // Folder-count guard: if the current input has zero folders but the
+      // cached tree contains folder nodes, the cache belongs to a previous
+      // project (whose folders haven't been cleared from state yet on this
+      // render path, but ARE absent from the inputs we were just handed).
+      // Reusing it would render the previous project's folder hierarchy
+      // permanently — the "open new project shows hundreds of stale folders
+      // and swarm containers" symptom.  Only reuse when the cached tree's
+      // folder population also matches the current input (zero == zero).
+      if (
+        lastTreeDataRef.current.length > 0
+        && sameSize
+        && isSubset
+        && cachedFolderCount === 0
+      ) {
         return lastTreeDataRef.current;
       }
-      console.debug('[TREE-CACHE-INVALIDATE]', { cached: cachedConvIds.size, current: currentConvIds.size, sameSize, isSubset });
+      console.debug('[TREE-CACHE-INVALIDATE]', { cached: cachedConvIds.size, current: currentConvIds.size, sameSize, isSubset, cachedFolderCount });
       // Cache is empty or belongs to a different project → invalidate and rebuild
       lastTreeDataInputsRef.current = 0;
       lastSortHashRef.current = 0;
@@ -2897,7 +2961,7 @@ const MUIChatHistory = () => {
     } catch {}
 
     return result;
-  }, [conversations, folders, pinnedFolders, isProjectSwitching]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [conversations, folders, pinnedFolders, isProjectSwitching, currentProject?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Debounce treeData updates: during startup, conversations change 4+ times
   // in rapid succession. Only rebuild the flattened tree once things settle.
@@ -3552,6 +3616,7 @@ const MUIChatHistory = () => {
                   node.conversation?.hasUnreadResponse && nodeId.substring(5) !== currentConversationId;
                 const convId = !isFolder && nodeId.startsWith('conv-') ? nodeId.substring(5) : null;
                 const isStreamingConv = !!(convId && streamingConversations.has(convId));
+                const isRunningTaskConv = !!(convId && runningTaskConversations.has(convId));
                 const conversationCount = isFolder ? node.conversationCount : 0;
                 const isEditingNode = editingId === (isFolder ? nodeId : nodeId.substring(5));
 
@@ -3603,6 +3668,7 @@ const MUIChatHistory = () => {
                       delegateStatus={delegateStatus} isPinned={isPinned}
                       isCurrentItem={isCurrentItem} isGlobalItem={isGlobalItem}
                       isStreaming={isStreamingConv} hasUnreadResponse={hasUnreadResponse}
+                      isRunningTask={isRunningTaskConv}
                       conversationCount={conversationCount}
                       onEdit={handleEdit} onDelete={handleDelete} onAddChat={handleAddChat}
                       onExport={handleExportConversation} onPin={togglePinFolder}
