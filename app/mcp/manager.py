@@ -1346,13 +1346,19 @@ class MCPManager:
         
         # Extract workspace path if provided
         workspace_path = arguments.get('_workspace_path')
+        # ``_task_scope`` is only meaningful to the shell server today
+        # (it is the additive write-grant envelope for Task Cards).
+        # Preserve it on the way to the shell server, strip it for
+        # every other server so they never see keys they don't
+        # understand.  Slice B will extend the same envelope.
+        task_scope = arguments.get('_task_scope') if isinstance(arguments, dict) else None
         
         # Strip routing metadata so MCP servers only see real tool parameters.
         # This is what makes the approach universal: external servers never
         # receive keys they don't understand.
         if isinstance(arguments, dict):
             arguments = {k: v for k, v in arguments.items()
-                         if k not in ('_workspace_path', 'conversation_id')}
+                         if k not in ('_workspace_path', 'conversation_id', '_task_scope')}
 
         # Determine which server has this tool
         target_server_name = server_name
@@ -1363,6 +1369,12 @@ class MCPManager:
                 if client.is_connected and any(tool.name == internal_tool_name for tool in client.tools):
                     target_server_name = srv_name
                     break
+
+        # Re-attach ``_task_scope`` only when the target is the shell
+        # server.  Other servers (filesystem, git, custom user MCPs)
+        # would reject unknown keys via JSON-Schema validation.
+        if target_server_name == "shell" and task_scope is not None and isinstance(arguments, dict):
+            arguments = {**arguments, "_task_scope": task_scope}
         
         # If this is a workspace-scoped server and we have a workspace path, route to workspace-specific instance
         if target_server_name and self._is_workspace_scoped(target_server_name) and workspace_path:

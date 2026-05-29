@@ -10,7 +10,7 @@ ToolExecutionToken argument.
 
 import pytest
 import time
-from app.mcp.security import (
+from app.mcp.enhanced_tools import (
     ToolExecutionToken,
     TriggerType,
     ToolExecutionRegistry,
