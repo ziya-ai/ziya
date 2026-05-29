@@ -2,7 +2,7 @@
 
 import pytest
 from app.models.task_card import (
-    Block, TaskScope, Artifact, ArtifactPart,
+    Block, TaskScope, ScopeEntry, Artifact, ArtifactPart,
     TaskCard, TaskCardCreate, TaskCardUpdate, TaskCardRun,
 )
 
@@ -10,17 +10,25 @@ from app.models.task_card import (
 class TestTaskScope:
     def test_empty(self):
         scope = TaskScope()
-        assert scope.files == []
+        assert scope.paths == []
+        assert scope.cwd is None
         assert scope.tools == []
         assert scope.skills == []
 
     def test_populated(self):
         scope = TaskScope(
-            files=["app/services/diagram_renderer.py"],
+            paths=[
+                ScopeEntry(
+                    path="app/services/diagram_renderer.py",
+                    is_dir=False, read=True, context=True,
+                ),
+            ],
             tools=["render_diagram", "file_write"],
             skills=["code-review"],
         )
-        assert len(scope.files) == 1
+        assert len(scope.paths) == 1
+        assert scope.paths[0].context is True
+        assert scope.paths[0].write is False
         assert "render_diagram" in scope.tools
 
 

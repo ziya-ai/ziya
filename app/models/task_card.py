@@ -18,6 +18,30 @@ from typing import Optional, List, Literal, Dict, Any
 
 # ── Scope (what a task is allowed to touch) ────────────────
 
+class ScopeEntry(BaseModel):
+    """A single path-permission entry on a Task scope.
+
+    Each entry names a file or directory (relative to the task's
+    effective working directory) and three independent permission
+    flags:
+      - read:    the model may read this path via tools (advisory
+                 today; enforced in a later slice).
+      - write:   the model may write this path via tools (enforced
+                 in a later slice — currently advisory).
+      - context: file contents are preloaded into the system prompt.
+                 Only meaningful when ``is_dir`` is False.  Directory
+                 entries with ``context=True`` are ignored by the
+                 preloader (use read for tool-mediated traversal).
+    """
+    model_config = {"extra": "allow"}
+
+    path: str
+    is_dir: bool = False
+    read: bool = True
+    write: bool = False
+    context: bool = False
+
+
 class TaskScope(BaseModel):
     """A single task's allowed files, tools, and skills.
 
@@ -26,9 +50,25 @@ class TaskScope(BaseModel):
     """
     model_config = {"extra": "allow"}
 
-    files: List[str] = []
+    paths: List[ScopeEntry] = []
+    cwd: Optional[str] = None
     tools: List[str] = []
     skills: List[str] = []
+    # Per-task shell command grants.  Each entry is either a literal
+    # first-token match (e.g. "pytest" grants any pytest invocation)
+    # or, with a "re:" prefix, a regex against the full command line
+    # (e.g. "re:^make\\s+test(:\\w+)?$").  The grant is additive over
+    # the base shell policy: it bypasses the global allowlist and the
+    # destructive-command list, but never overrides ``always_blocked``
+    # (sudo, vi, etc.) or redirection blocking.  Empty list preserves
+    # pre-Slice-B behavior — no extra commands granted.
+    #
+    # Slice B: extends the same ``_task_scope`` wire envelope already
+    # used for writable/readable path grants.  Plumbing parallels
+    # ``paths``: scope set on the ContextVar by ``task_executor``,
+    # injected into tool args by ``tool_execution``, consumed by
+    # ``shell_server`` / ``ShellWriteChecker``.
+    shell_commands: List[str] = []
 
 
 # ── Artifact (what flows back from a finished task) ────────
@@ -62,6 +102,15 @@ class Artifact(BaseModel):
     # Whether this artifact represents a failed execution.  The
     # executor sets this when the block exited via an error path.
     failed: bool = False
+    # Structured self-assessment emitted by the agent at the end of
+    # its response.  Shape: {"objective_met": "true"|"false"|
+    # "partial"|"unknown", "rationale": "..."}.  Populated by the
+    # executor after parsing the final ``<self_assessment .../>``
+    # tag the agent is instructed to emit.  None when the agent
+    # omitted the tag entirely — distinct from "unknown" which means
+    # a tag was present but the verdict value wasn't recognised.
+    # See ``app/utils/completion_check.py``.
+    self_assessment: Optional[Dict[str, str]] = None
 
 
 # ── The recursive Block type ──────────────────────────────

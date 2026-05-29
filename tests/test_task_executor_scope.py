@@ -19,10 +19,15 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from app.agents import task_executor
-from app.models.task_card import Block, TaskScope, Artifact
+from app.models.task_card import Block, TaskScope, ScopeEntry, Artifact
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
+
+def _ctx_files(*paths: str):
+    """Build a list of context-preload ScopeEntries for the given files."""
+    return [ScopeEntry(path=p, is_dir=False, read=True, context=True) for p in paths]
+
 
 def _task(instructions: str = "do it", **scope_kwargs) -> Block:
     scope = TaskScope(**scope_kwargs) if scope_kwargs else None
@@ -144,14 +149,14 @@ class TestSkills:
 class TestFilePreload:
     @pytest.mark.asyncio
     async def test_no_project_root_warns(self, fake_executor):
-        block = _task(files=["a.py"])
+        block = _task(paths=_ctx_files("a.py"))
         artifact = await task_executor.execute_task_block(block, project_root=None)
         assert any("no project_root" in d for d in artifact.decisions)
 
     @pytest.mark.asyncio
     async def test_existing_file_injected(self, fake_executor, tmp_path):
         (tmp_path / "hello.py").write_text("print('hi')\n")
-        block = _task(files=["hello.py"])
+        block = _task(paths=_ctx_files("hello.py"))
         await task_executor.execute_task_block(
             block, project_root=str(tmp_path),
         )
@@ -162,7 +167,7 @@ class TestFilePreload:
     @pytest.mark.asyncio
     async def test_missing_file_warns_but_continues(self, fake_executor, tmp_path):
         (tmp_path / "exists.py").write_text("yes\n")
-        block = _task(files=["missing.py", "exists.py"])
+        block = _task(paths=_ctx_files("missing.py", "exists.py"))
         artifact = await task_executor.execute_task_block(
             block, project_root=str(tmp_path),
         )
@@ -174,7 +179,7 @@ class TestFilePreload:
     async def test_path_escape_rejected(self, fake_executor, tmp_path):
         outside = tmp_path.parent / "secret.txt"
         outside.write_text("SECRET")
-        block = _task(files=["../secret.txt"])
+        block = _task(paths=_ctx_files("../secret.txt"))
         artifact = await task_executor.execute_task_block(
             block, project_root=str(tmp_path),
         )
@@ -189,7 +194,7 @@ class TestFilePreload:
         monkeypatch.setattr(task_executor, "_MAX_TOTAL_FILE_BYTES", 1_000_000)
         big = "x" * 500
         (tmp_path / "big.txt").write_text(big)
-        block = _task(files=["big.txt"])
+        block = _task(paths=_ctx_files("big.txt"))
         artifact = await task_executor.execute_task_block(
             block, project_root=str(tmp_path),
         )
@@ -207,7 +212,7 @@ class TestFilePreload:
         monkeypatch.setattr(task_executor, "_MAX_TOTAL_FILE_BYTES", 200)
         (tmp_path / "a.txt").write_text("a" * 150)
         (tmp_path / "b.txt").write_text("b" * 150)
-        block = _task(files=["a.txt", "b.txt"])
+        block = _task(paths=_ctx_files("a.txt", "b.txt"))
         artifact = await task_executor.execute_task_block(
             block, project_root=str(tmp_path),
         )
