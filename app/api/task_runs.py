@@ -58,10 +58,24 @@ async def delete_task_run(project_id: str, run_id: str):
 
 @router.post("/{run_id}/cancel", response_model=TaskRun)
 async def cancel_task_run(project_id: str, run_id: str):
-    """Soft-cancel a running task run.  Sets the cancel flag; the block
-    executor picks it up at the next iteration or sibling boundary.
-    In-flight Task invocations complete normally.  See
-    design/task-cards.md §Cancellation.
+    """Cancel a running task run.
+
+    Two paths:
+
+    * **Soft-cancel (live executor).** When the run's executor is alive
+      in *this* process, set ``cancel_requested`` and return.  The
+      block executor honors the flag at the next iteration / sibling
+      boundary and any in-flight Task invocation completes normally.
+      This is the design/task-cards.md §Cancellation path.
+
+    * **Force-cancel (zombie run).** When on-disk status is ``running``
+      but no live executor exists for this run in this process, the
+      run is a zombie left over from a prior server lifetime: the
+      executor coroutine was killed by the restart and no flag-watcher
+      will ever see ``cancel_requested``.  Mark the run ``cancelled``
+      directly so the UI reflects reality.  The startup reconciler
+      catches most of these; this branch handles a zombie that arrived
+      *during* this server's lifetime (e.g. crash without restart).
     """
     storage = _get_storage(project_id)
     run = storage.get(run_id)
@@ -70,7 +84,19 @@ async def cancel_task_run(project_id: str, run_id: str):
     if run.status in ("done", "failed", "cancelled"):
         # Idempotent: already terminal, return unchanged.
         return run
-    return storage.request_cancel(run_id)
+    # Live executor: standard soft-cancel path.
+    if storage.is_active(run_id):
+        return storage.request_cancel(run_id)
+    # No live executor: force the terminal state directly so the UI
+    # cancel button is not silently a no-op.
+    import time as _time
+    run.status = "cancelled"  # type: ignore[assignment]
+    run.cancel_requested = True
+    if run.completed_at is None:
+        run.completed_at = _time.time()
+    run.updated_at = int(_time.time() * 1000)
+    storage._write_json(storage._run_file(run_id), run.model_dump())
+    return run
 
 
 @router.get("/{run_id}/iterations")

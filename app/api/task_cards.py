@@ -123,11 +123,32 @@ async def _launch_run_for_card(
     storage.record_run(card_id)
     _seed_block_states(run_storage, run.id, card.root)
 
-    from ..context import get_project_root_or_none
+    from ..context import get_project_root_or_none, set_project_root
     project_root = get_project_root_or_none()
+
+    # Capture an audit-trail snapshot of effective permissions before
+    # the run starts.  Done once at launch so later edits to the card
+    # don't rewrite history; this is what lets us reconstruct *what
+    # the agent was actually allowed to do* after the fact.
+    try:
+        from ..utils.permissions_snapshot import build_permissions_snapshot
+        snapshot = build_permissions_snapshot(root_block=card.root, project_root=project_root)
+        run_storage.set_permissions_snapshot(run.id, snapshot)
+    except Exception as e:
+        # Non-fatal — missing audit trail shouldn't block task execution.
+        logger.warning(f"📋 TASK_LAUNCH: permissions_snapshot capture failed: {e}")
 
     async def _run(run_id: str, block, project_root):
         logger.info(f"🚀 TASK_RUN: _run coroutine entered for {run_id[:8]}")
+        # Defense in depth: re-set the request-scoped ContextVar inside
+        # the spawned task.  asyncio.create_task copies the current
+        # Context, so this is normally redundant — but if project_root
+        # was passed via a path other than the X-Project-Root header
+        # (or if the var was cleared), tool calls fired from inside
+        # the task would otherwise fall through to ``os.getcwd()``,
+        # which is wherever the server happened to be launched from.
+        if project_root:
+            set_project_root(project_root)
         # Lifecycle event emitter — kept local so the run_id/project_id
         # are captured in closure and callers don't have to thread them.
         async def _emit_run(status: str, **extra):
@@ -138,6 +159,12 @@ async def _launch_run_for_card(
                 "at": time.time(),
                 **extra,
             })
+        # Mark this run as actively executing in this process so the
+        # cancel endpoint can distinguish "live executor — soft-cancel"
+        # from "zombie from a prior server lifetime — force-cancel".
+        # The startup reconciler handles zombies left behind by a hard
+        # crash that bypassed the finally block below.
+        run_storage.mark_active(run_id)
         try:
             logger.info(f"🚀 TASK_RUN: {run_id[:8]} → marking running")
             run_storage.update_status(run_id, "running")
@@ -171,6 +198,9 @@ async def _launch_run_for_card(
             run_storage.update_status(run_id, "failed", error=str(e))
             await _emit_run("failed", error=str(e))
             logger.error(f"❌ Task run crashed: {run_id[:8]}: {e}", exc_info=True)
+        finally:
+            # Always drop from the active-runs set, even on error.
+            run_storage.mark_inactive(run_id)
 
     asyncio.create_task(_run(run.id, card.root, project_root))
     logger.info(f"🚀 Task card launched: {card.name} → run {run.id[:8]} (task scheduled)")
