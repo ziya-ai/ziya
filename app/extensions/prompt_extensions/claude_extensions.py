@@ -173,4 +173,42 @@ CLAUDE OPUS 4.7 SPECIFIC INSTRUCTIONS:
     else:
         return opus4_7_instructions + "\n\n" + prompt
 
+@prompt_extension(
+    name="opus4_8_extension",
+    extension_type="model",
+    target="opus4.8",
+    config={
+        "enabled": True,
+        "priority": 10
+    }
+)
+def opus4_8_extension(prompt: str, context: dict) -> str:
+    """
+    Add instructions specific to Claude Opus 4.8.
+
+    Args:
+        prompt: The original prompt
+        context: Extension context
+
+    Returns:
+        str: Modified prompt
+    """
+    if not context.get("config", {}).get("enabled", True):
+        return prompt
+
+    opus4_8_instructions = """
+CLAUDE OPUS 4.8 SPECIFIC INSTRUCTIONS:
+1. If you have access to tools capable of retrieving the information needed to answer a
+   question or complete a task, invoke those tools yourself rather than asking the user
+   to run commands, paste output, or gather data on your behalf. Treat "ask the user to
+   check X" as a last resort reserved for cases where no available tool can obtain X.
+"""
+
+    if "CRITICAL: INSTRUCTION PRESERVATION:" in prompt:
+        parts = prompt.split("CRITICAL: INSTRUCTION PRESERVATION:", 1)
+        preservation_section = parts[1].split("\n\n", 1)
+        return parts[0] + "CRITICAL: INSTRUCTION PRESERVATION:" + preservation_section[0] + "\n\n" + opus4_8_instructions + "\n\n" + preservation_section[1]
+    else:
+        return opus4_8_instructions + "\n\n" + prompt
+
 

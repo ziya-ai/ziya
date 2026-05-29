@@ -48,10 +48,10 @@ SERVICE_MODEL_OVERRIDES: dict[str, dict[str, str]] = {
     # Anthropic, top-tier on others.  Override per-user via
     # ZIYA_MEMORY_EVAL_MODEL.
     "memory_eval": {
-        "bedrock": "us.anthropic.claude-opus-4-7",
-        "google": "gemini-3-pro",
+        "bedrock": "us.anthropic.claude-opus-4-8",
+        "google": "gemini-3.1-pro",
         "openai": "gpt-5.5",
-        "anthropic": "claude-opus-4-7",
+        "anthropic": "claude-opus-4-8",
     },
 }
 
@@ -465,6 +465,36 @@ MODEL_CONFIGS = {
             # from outgoing requests and hidden in the frontend modal.
             "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
+        "opus4.8": {
+            "model_id": {
+                "us": "us.anthropic.claude-opus-4-8",
+                "eu": "global.anthropic.claude-opus-4-8"
+            },
+            "available_regions": ["us-east-1", "us-east-2", "us-west-2"],
+            "preferred_region": "us-east-1",
+            "token_limit": 200000,
+            "max_output_tokens": 64000,
+            "default_max_output_tokens": 32000,
+            "max_iterations": 8,
+            "timeout_multiplier": 6,
+            "is_advanced_model": True,
+            "supports_max_input_tokens": True,
+            "supports_thinking": True,
+            "family": "claude",
+            "supports_context_caching": True,
+            "supports_adaptive_thinking": True,
+            "thinking_effort_default": "medium",
+            "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+            "supports_vision": True,
+            "supports_assistant_prefill": False,
+            "supports_extended_context": True,
+            "extended_context_limit": 1000000,
+            "effort_beta_required": False,
+            # Opus 4.8 inherits 4.7's sampling-parameter restrictions
+            # (temperature/top_p/top_k rejected with 400). Steer via
+            # prompting + the `effort` parameter instead.
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
         "sonnet": {
             "model_id": {
                 "us": "us.anthropic.claude-3-sonnet-20240229-v1:0",
@@ -588,6 +618,17 @@ MODEL_CONFIGS = {
         "kimi-k2.5": {
             "model_id": {
                 "us": "moonshotai.kimi-k2.5"
+            },
+            "family": "kimi",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 128000,
+            "context_window": 128000,
+            "default_max_output_tokens": 4096,
+            "region": "us-west-2"
+        },
+        "kimi-k2-thinking": {
+            "model_id": {
+                "us": "moonshot.kimi-k2-thinking"
             },
             "family": "kimi",
             "wrapper_class": "OpenAIBedrock",
@@ -768,19 +809,6 @@ MODEL_CONFIGS = {
             "supports_function_calling": True,
             "native_function_calling": True,
         },
-        "gemini-3-pro": {
-            "model_id": "gemini-3-pro-preview",
-            "token_limit": 1048576,
-            "deprecated": "Discontinued March 9, 2026. Use gemini-3.1-pro instead.",
-            "family": "gemini-3",
-            "max_output_tokens": 65536,
-            "default_max_output_tokens": 32768,
-            "convert_system_message_to_human": False,
-            "supports_vision": True,
-            "supports_function_calling": True,
-            "native_function_calling": True,
-            "thinking_level": "medium"
-        },
         "gemini-3.1-pro": {
             "model_id": "gemini-3.1-pro-preview",
             "token_limit": 1048576,
@@ -821,6 +849,18 @@ MODEL_CONFIGS = {
             "model_id": "gemini-3-flash-preview",
             "token_limit": 1048576,
             "family": "gemini-3",
+            "max_output_tokens": 65536,
+            "default_max_output_tokens": 32768,
+            "convert_system_message_to_human": False,
+            "supports_vision": True,
+            "supports_function_calling": True,
+            "native_function_calling": True,
+            "thinking_level": "medium"
+        },
+        "gemini-3.5-flash": {
+            "model_id": "gemini-3.5-flash",
+            "token_limit": 1048576,
+            "family": "gemini-flash",
             "max_output_tokens": 65536,
             "default_max_output_tokens": 32768,
             "convert_system_message_to_human": False,
@@ -1014,6 +1054,17 @@ MODEL_CONFIGS = {
         },
         "claude-opus-4-7": {
             "model_id": "claude-opus-4-7",
+            "family": "claude",
+            "token_limit": 200000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 16384,
+            "supports_vision": True,
+            "supports_thinking": True,
+            "supports_adaptive_thinking": True,
+            "native_function_calling": True,
+        },
+        "claude-opus-4-8": {
+            "model_id": "claude-opus-4-8",
             "family": "claude",
             "token_limit": 200000,
             "max_output_tokens": 128000,
