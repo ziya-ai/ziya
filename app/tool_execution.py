@@ -159,10 +159,38 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
                     logger.info(f"🔧 BUILTIN_FOUND: Found builtin tool {ctx.actual_tool_name}")
                     break
 
+        # If a task scope is currently active (Task Card with explicit
+        # ``paths`` permissions), build the side-channel envelope once
+        # and inject it into the tool args.  The shell-server path
+        # consumes ``_task_scope`` to apply an additive write grant;
+        # builtin tools (e.g. ``file_write``) ignore it and read the
+        # ContextVar directly.  Slice B will extend the same envelope
+        # with a per-task command allowlist.
+        try:
+            from app.context import (
+                get_task_writable_paths, get_task_readable_paths,
+                get_task_shell_commands,
+            )
+            _twp = get_task_writable_paths()
+            _trp = get_task_readable_paths()
+            _tsc = get_task_shell_commands()
+        except Exception:
+            _twp, _trp, _tsc = None, None, None
+        task_scope_payload: Optional[Dict[str, Any]] = None
+        if _twp or _trp or _tsc:
+            task_scope_payload = {
+                "writable": _twp or [],
+                "readable": _trp or [],
+                "shell_commands": list(_tsc) if _tsc else [],
+                "project_root": ctx.project_root or "",
+            }
+
         if builtin_tool:
             logger.info(f"🔧 Calling builtin tool directly: {ctx.actual_tool_name}")
             if ctx.project_root:
                 ctx.args['_workspace_path'] = ctx.project_root
+            if task_scope_payload is not None:
+                ctx.args['_task_scope'] = task_scope_payload
             result = await asyncio.wait_for(
                 builtin_tool.tool_instance.execute(**ctx.args),
                 timeout=TOOL_EXEC_TIMEOUT,
@@ -191,6 +219,8 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
 
             if ctx.project_root:
                 ctx.args['_workspace_path'] = ctx.project_root
+            if task_scope_payload is not None:
+                ctx.args['_task_scope'] = task_scope_payload
             result = await asyncio.wait_for(
                 ctx.mcp_manager.call_tool(ctx.actual_tool_name, ctx.args, server_name=target_server_name),
                 timeout=TOOL_EXEC_TIMEOUT,
