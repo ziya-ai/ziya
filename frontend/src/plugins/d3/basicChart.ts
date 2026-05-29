@@ -33,6 +33,7 @@ export const basicChartPlugin: D3RenderPlugin = {
     },
     canHandle: (spec: any) => {
         return (
+            spec !== null &&
             typeof spec === 'object' &&
             (spec.type === 'bar' || spec.type === 'line' || spec.type === 'scatter' || spec.type === 'bubble')
         );
