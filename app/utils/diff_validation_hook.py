@@ -257,8 +257,16 @@ class DiffValidationHook:
                         validation_result=validation_result,
                         context_was_enhanced=context_was_enhanced
                     )
-            
-            # No failures - don't interrupt model
+            # No failures — don't interrupt the model.
+            #
+            # Earlier draft surfaced parser-rescued malformed hunk
+            # headers as informational feedback here, but any non-None
+            # return triggers the regeneration loop in
+            # ``app/server.stream_chunks``, which would force a wasted
+            # "correcting failed diffs" turn for a diff that already
+            # applied cleanly.  Persistent guidance about counting hunk
+            # headers now lives in the system prompt instead — see
+            # precision_prompt_system.py.
             return None
 
         except Exception as e:
