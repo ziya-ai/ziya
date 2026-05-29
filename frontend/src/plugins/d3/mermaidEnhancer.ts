@@ -3173,7 +3173,7 @@ export function initMermaidEnhancer(): void {
     // Extract classDef statements and modify them for better dark mode visibility
     // Pattern: classDef className fill:#lightcolor,stroke:#darkcolor,stroke-width:2px
     processedDef = processedDef.replace(
-      /classDef\s+(\w+)\s+fill:(#[a-fA-F0-9]{3,6}),stroke:(#[a-fA-F0-9]{3,6}),stroke-width:(\d+px)(?!,color:)/g,
+      /classDef\s+(\w+)\s+fill:(#[a-fA-F0-9]{3,6})(?![a-fA-F0-9]),stroke:(#[a-fA-F0-9]{3,6})(?![a-fA-F0-9]),stroke-width:(\d+px)(?!,color:)/g,
       (match, className, fillColor, strokeColor, strokeWidth) => {
         // Add color property for text visibility — contrast against the FILL, not stroke
         const textColor = getOptimalTextColor(fillColor);
@@ -3185,7 +3185,7 @@ export function initMermaidEnhancer(): void {
     // Handle style statements for individual nodes
     // Handle classDef WITHOUT stroke-width (common shorthand: fill:#hex,stroke:#hex)
     processedDef = processedDef.replace(
-      /classDef\s+(\w+)\s+fill:(#[a-fA-F0-9]{3,6}),stroke:(#[a-fA-F0-9]{3,6})(?!\s*,\s*(?:stroke-width|color):)/gm,
+      /classDef\s+(\w+)\s+fill:(#[a-fA-F0-9]{3,6})(?![a-fA-F0-9]),stroke:(#[a-fA-F0-9]{3,6})(?![a-fA-F0-9])(?!\s*,\s*(?:stroke-width|color):)/gm,
       (match, className, fillColor, strokeColor) => {
         const textColor = getOptimalTextColor(fillColor);
         return `classDef ${className} fill:${fillColor},stroke:${strokeColor},color:${textColor}`;
@@ -3194,7 +3194,7 @@ export function initMermaidEnhancer(): void {
 
     // Handle style WITHOUT stroke-width (common shorthand: fill:#hex,stroke:#hex)
     processedDef = processedDef.replace(
-      /style\s+(\w+)\s+fill:(#[a-fA-F0-9]{3,6}),stroke:(#[a-fA-F0-9]{3,6})(?!\s*,\s*(?:stroke-width|color):)/gm,
+      /style\s+(\w+)\s+fill:(#[a-fA-F0-9]{3,6})(?![a-fA-F0-9]),stroke:(#[a-fA-F0-9]{3,6})(?![a-fA-F0-9])(?!\s*,\s*(?:stroke-width|color):)/gm,
       (match, nodeName, fillColor, strokeColor) => {
         const textColor = getOptimalTextColor(fillColor);
         return `style ${nodeName} fill:${fillColor},stroke:${strokeColor},color:${textColor}`;
@@ -3202,7 +3202,7 @@ export function initMermaidEnhancer(): void {
     );
     // Pattern: style NodeName fill:#color,stroke:#color,stroke-width:3px
     processedDef = processedDef.replace(
-      /style\s+(\w+)\s+fill:(#[a-fA-F0-9]{3,6}),stroke:(#[a-fA-F0-9]{3,6}),stroke-width:(\d+px)(?!,color:)/g,
+      /style\s+(\w+)\s+fill:(#[a-fA-F0-9]{3,6})(?![a-fA-F0-9]),stroke:(#[a-fA-F0-9]{3,6})(?![a-fA-F0-9]),stroke-width:(\d+px)(?!,color:)/g,
       (match, nodeName, fillColor, strokeColor, strokeWidth) => {
         // Add color property for text visibility — contrast against the FILL background
         const textColor = getOptimalTextColor(fillColor);
