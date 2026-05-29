@@ -392,6 +392,28 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 }
             }
 
+            // Unwrap {type: 'd3', definition: <spec>} envelopes used by
+            // DiagramRenderPage / external callers.  The inner definition
+            // contains the actual plugin-targeted spec (e.g. type:
+            // 'force-directed', 'network', etc.); plugin canHandle() checks
+            // run against that inner spec.  The inner definition may be
+            // either a JSON/JS string OR an already-parsed object.
+            if (
+                typeof spec === 'object' &&
+                spec !== null &&
+                spec.type === 'd3' &&
+                spec.definition != null
+            ) {
+                if (typeof spec.definition === 'string') {
+                    const innerParsed = parseD3Spec(spec.definition);
+                    if (innerParsed && typeof innerParsed === 'object' && innerParsed.type) {
+                        spec = innerParsed;
+                    }
+                } else if (typeof spec.definition === 'object' && spec.definition.type) {
+                    spec = spec.definition;
+                }
+            }
+
             isLoadingPluginRef.current = true;
             console.log('🔧 D3RENDERER: Loading plugin for spec:', spec.type);
             loadedPlugin = await findPluginForSpec(spec);

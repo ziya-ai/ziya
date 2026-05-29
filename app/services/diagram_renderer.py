@@ -94,6 +94,56 @@ class DiagramRenderer:
             self._playwright = None
         logger.info("Headless Chromium closed")
 
+    # -- Diagnostics --------------------------------------------------
+
+    async def _collect_diagnostics(
+        self,
+        page: Any,
+        spec: dict[str, Any],
+        console_log: list[str],
+        pageerror_log: list[str],
+    ) -> dict[str, Any]:
+        """Best-effort dump of everything the harness page can tell us
+        about why a render didn't reach a terminal state."""
+        diag: dict[str, Any] = {
+            "spec_type": spec.get("type"),
+            "console_tail": console_log[-20:],
+            "pageerrors": pageerror_log[-10:],
+        }
+        try:
+            diag["render_status"] = await page.get_attribute(
+                "#diagram-render-root", "data-render-status"
+            )
+            diag["page_error"] = await page.get_attribute(
+                "#diagram-render-root", "data-error"
+            )
+            diag["elapsed_ms"] = await page.get_attribute(
+                "#diagram-render-root", "data-elapsed-ms"
+            )
+            diag["last_event"] = await page.get_attribute(
+                "#diagram-render-root", "data-last-event"
+            )
+        except Exception as e:
+            diag["attr_read_error"] = repr(e)
+        try:
+            diag["dom_counts"] = await page.evaluate(
+                """() => {
+                    const c = document.getElementById('diagram-render-container');
+                    if (!c) return {missing_container: true};
+                    return {
+                        children: c.children.length,
+                        svg: c.querySelectorAll('svg').length,
+                        canvas: c.querySelectorAll('canvas').length,
+                        img: c.querySelectorAll('img').length,
+                        html_len: c.innerHTML.length,
+                        html_head: c.innerHTML.slice(0, 500),
+                    };
+                }"""
+            )
+        except Exception as e:
+            diag["dom_eval_error"] = repr(e)
+        return diag
+
     # -- Rendering ----------------------------------------------------
 
     async def render_diagram(
@@ -126,6 +176,27 @@ class DiagramRenderer:
         page = await self._browser.new_page(
             viewport={"width": viewport_width, "height": viewport_height},
         )
+
+        # Capture console messages and page errors so we can include them
+        # in any diagnostic dump on failure.
+        console_log: list[str] = []
+        pageerror_log: list[str] = []
+
+        def _on_console(msg: Any) -> None:
+            try:
+                console_log.append(f"[{msg.type}] {msg.text}")
+            except Exception:  # pragma: no cover - defensive
+                pass
+
+        def _on_pageerror(err: Any) -> None:
+            try:
+                pageerror_log.append(str(err))
+            except Exception:  # pragma: no cover - defensive
+                pass
+
+        page.on("console", _on_console)
+        page.on("pageerror", _on_pageerror)
+
         try:
             # Navigate to the render harness page
             await page.goto(
@@ -134,8 +205,11 @@ class DiagramRenderer:
                 timeout=timeout_ms,
             )
 
-            # Inject the spec via the imperative API
-            spec_json = json.dumps(spec)
+            # Inject the spec via the imperative API. Tell the in-page
+            # harness exactly how long it has to render so its safety
+            # timeout fires before Playwright's wait_for_function does.
+            spec_with_timeout = {**spec, "renderTimeoutMs": timeout_ms}
+            spec_json = json.dumps(spec_with_timeout)
             success = await page.evaluate(
                 f"window.__renderDiagram({json.dumps(spec_json)})"
             )
@@ -143,15 +217,43 @@ class DiagramRenderer:
                 error = await page.get_attribute("#diagram-render-root", "data-error")
                 raise RuntimeError(f"Spec injection failed: {error}")
 
-            # Wait for the render to complete
-            await page.wait_for_function(
-                """() => {
-                    const root = document.getElementById('diagram-render-root');
-                    const status = root?.getAttribute('data-render-status');
-                    return status === 'complete' || status === 'error';
-                }""",
-                timeout=timeout_ms,
-            )
+            # Wait for the render to complete.
+            # The in-page safety timeout (DiagramRenderPage) is 30s and starts
+            # after React mounts the container — give Playwright extra headroom
+            # so the in-page timer always fires first and sets a terminal status.
+            try:
+                await page.wait_for_function(
+                    """() => {
+                        const root = document.getElementById('diagram-render-root');
+                        const status = root?.getAttribute('data-render-status');
+                        return status === 'complete' || status === 'error';
+                    }""",
+                    timeout=timeout_ms + 5_000,
+                )
+            except Exception as wait_err:
+                # Playwright's wait timed out before the page reached a
+                # terminal status. Pull every diagnostic the page exposes
+                # so the caller can see *why*.
+                diag = await self._collect_diagnostics(
+                    page, spec, console_log, pageerror_log
+                )
+                logger.error(
+                    "Diagram render wait_for_function timed out (type=%s). "
+                    "Diagnostics: %s",
+                    spec.get("type"),
+                    diag,
+                )
+                raise RuntimeError(
+                    f"Diagram render timed out after {timeout_ms + 5000}ms "
+                    f"(type={spec.get('type')}). "
+                    f"page_status={diag.get('render_status')!r} "
+                    f"last_event={diag.get('last_event')!r} "
+                    f"elapsed_ms={diag.get('elapsed_ms')!r} "
+                    f"page_error={diag.get('page_error')!r} "
+                    f"dom_counts={diag.get('dom_counts')!r} "
+                    f"console_tail={diag.get('console_tail')!r} "
+                    f"pageerrors={diag.get('pageerrors')!r}"
+                ) from wait_err
 
             # Check for errors
             render_status = await page.get_attribute(
@@ -160,6 +262,15 @@ class DiagramRenderer:
             if render_status == "error":
                 error_msg = await page.get_attribute(
                     "#diagram-render-root", "data-error"
+                )
+                diag = await self._collect_diagnostics(
+                    page, spec, console_log, pageerror_log
+                )
+                logger.error(
+                    "Diagram render reported error (type=%s): %s. Diagnostics: %s",
+                    spec.get("type"),
+                    error_msg,
+                    diag,
                 )
                 raise RuntimeError(f"Diagram render failed: {error_msg}")
 

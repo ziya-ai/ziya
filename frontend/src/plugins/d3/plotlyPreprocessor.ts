@@ -42,7 +42,7 @@ export function fixMultilineTitle(layout: any): any {
 
   const newLayout = { ...layout, title: newTitle };
   const currentTop = layout.margin?.t;
-  if (currentTop === undefined || currentTop < 80) {
+  if (currentTop === undefined || currentTop < 100) {
     newLayout.margin = { ...(layout.margin || {}), t: 100 };
   }
   return newLayout;

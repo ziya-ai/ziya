@@ -25,6 +25,11 @@ const pluginMetadata: PluginMetadata[] = [
     loader: async () => (await import('./forceDirectedPlugin')).forceDirectedPlugin
   },
   {
+    name: 'chord-renderer',
+    priority: 5,
+    loader: async () => (await import('./chordPlugin')).chordPlugin
+  },
+  {
     name: 'network-diagram',
     priority: 1,
     loader: async () => (await import('./networkDiagram')).networkDiagramPlugin

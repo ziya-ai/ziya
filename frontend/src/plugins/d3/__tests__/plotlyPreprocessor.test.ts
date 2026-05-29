@@ -245,3 +245,5 @@ describe('preprocessPlotlySpec', () => {
     };
     const out = preprocessPlotlySpec(spec);
     expect(out).toEqual(spec);
+  });
+});

@@ -4465,6 +4465,13 @@ export const vegaLitePlugin: D3RenderPlugin = {
       if (vegaSpec.resolve && vegaSpec.resolve.scale) {
         delete vegaSpec.resolve;
       }
+      // Same for nested spec.resolve in faceted/repeated specs — a
+      // `resolve.scale.y = "independent"` inside `spec` for a faceted
+      // layered chart causes vega-embed to hang during layout.
+      if (vegaSpec.spec && vegaSpec.spec.resolve && vegaSpec.spec.resolve.scale) {
+        console.log('🔧 VEGA-POST-PROCESS: Stripping nested spec.resolve.scale to avoid render hang');
+        delete vegaSpec.spec.resolve;
+      }
 
       // Apply theme
       const embedOptions: EmbedOptions = {

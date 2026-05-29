@@ -29,6 +29,7 @@ interface DiagramSpec {
     width?: number;
     height?: number;
     title?: string;
+    renderTimeoutMs?: number;  // in-page safety timeout; defaults to 30s
 }
 
 type RenderStatus = 'idle' | 'loading' | 'rendering' | 'complete' | 'error';
@@ -48,6 +49,7 @@ export const DiagramRenderPage: React.FC = () => {
     const containerRef = useRef<HTMLDivElement>(null);
     const [spec, setSpec] = useState<DiagramSpec | null>(null);
     const [status, setStatus] = useState<RenderStatus>('idle');
+    const [diag, setDiag] = useState<{ elapsedMs: number; lastEvent: string }>({ elapsedMs: 0, lastEvent: 'init' });
     const [errorMessage, setErrorMessage] = useState<string>('');
     const { isDarkMode, setTheme } = useTheme();
     const renderTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
@@ -110,7 +112,11 @@ export const DiagramRenderPage: React.FC = () => {
         if (!node || status !== 'loading') return;
 
         setStatus('rendering');
+        const startedAt = Date.now();
+        setDiag({ elapsedMs: 0, lastEvent: 'observer-attached' });
         if (renderTimeoutRef.current) clearTimeout(renderTimeoutRef.current);
+
+        const safetyTimeoutMs = Math.max(1000, spec?.renderTimeoutMs ?? 30000);
 
         const observer = new MutationObserver(() => {
             const hasSvg = node.querySelector('svg');
@@ -121,28 +127,54 @@ export const DiagramRenderPage: React.FC = () => {
             );
 
             if (hasSvg || hasCanvas || hasImage || hasContent) {
+                setDiag({
+                    elapsedMs: Date.now() - startedAt,
+                    lastEvent: hasSvg ? 'svg-detected'
+                        : hasCanvas ? 'canvas-detected'
+                        : hasImage ? 'img-detected'
+                        : 'content-detected',
+                });
                 // Allow post-render enhancers time to apply fixups
                 setTimeout(() => {
                     setStatus('complete');
                     observer.disconnect();
                 }, 500);
+            } else {
+                setDiag(prev => ({
+                    elapsedMs: Date.now() - startedAt,
+                    lastEvent: prev.lastEvent === 'observer-attached' ? 'mutation-no-output' : prev.lastEvent,
+                }));
             }
         });
 
         observer.observe(node, { childList: true, subtree: true, attributes: true });
 
-        // Safety timeout — 30s
+        // Safety timeout — configurable via spec.renderTimeoutMs (default 30s).
+        // On timeout, capture diagnostic info so the caller can see what
+        // was actually in the DOM when we gave up.
         renderTimeoutRef.current = setTimeout(() => {
             const hasSvg = node.querySelector('svg');
             if (hasSvg) {
                 setStatus('complete');
+                setDiag({ elapsedMs: Date.now() - startedAt, lastEvent: 'timeout-with-svg' });
             } else {
-                setErrorMessage('Render timeout — no output within 30 seconds');
+                const counts = {
+                    svg: node.querySelectorAll('svg').length,
+                    canvas: node.querySelectorAll('canvas').length,
+                    img: node.querySelectorAll('img').length,
+                    children: node.children.length,
+                    htmlLen: node.innerHTML.length,
+                };
+                setErrorMessage(
+                    `Render timeout after ${safetyTimeoutMs}ms (type=${spec?.type}). ` +
+                    `DOM snapshot: ${JSON.stringify(counts)}`
+                );
+                setDiag({ elapsedMs: Date.now() - startedAt, lastEvent: 'timeout-no-output' });
                 setStatus('error');
             }
             observer.disconnect();
-        }, 30000);
-    }, [status]);
+        }, safetyTimeoutMs);
+    }, [status, spec?.renderTimeoutMs, spec?.type]);
 
     // Cleanup timeout on unmount
     useEffect(() => {
@@ -166,6 +198,8 @@ export const DiagramRenderPage: React.FC = () => {
             id="diagram-render-root"
             data-render-status={status}
             data-error={errorMessage || undefined}
+            data-elapsed-ms={diag.elapsedMs}
+            data-last-event={diag.lastEvent}
             style={{
                 width: '100vw',
                 height: '100vh',

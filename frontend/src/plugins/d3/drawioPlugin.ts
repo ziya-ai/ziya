@@ -2609,6 +2609,12 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
 
                 } // --- END router section (auto-layout only; explicit uses Manhattan above) ---
 
+                // Declared here (outside the hasExplicitLayout branches) so the
+                // ELK-edge-routing block at L2826+ can read it.  The original
+                // declaration was nested inside the ``else`` branch, which TypeScript
+                // strict-mode flagged as out-of-scope at the use sites.
+                let layoutResult: any = null;
+
                 if (hasExplicitLayout) {
                     console.log('📐 ELK: Diagram has explicit positioning - SKIPPING automatic layout');
                     graph.__elkLayoutSkipped = true;
@@ -2618,9 +2624,6 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
 
                     console.log('📐 ELK: Preparing graph for automatic layout');
                     console.log('📐 ELK: Current cellMap size:', cellMap.size);
-
-                    // Declare layoutResult outside try-catch so it's accessible later
-                    let layoutResult: any = null;
 
                     try {
                         // Convert our graph structure to ELK format
