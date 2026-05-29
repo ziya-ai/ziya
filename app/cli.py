@@ -1024,16 +1024,18 @@ class CLI:
             else:
                 # Final attempt failed
                 print(f"\n\033[31m✗ Diff validation failed after {max_attempts} attempts\033[0m")
-            print(f"\033[33mThe diff could not be validated against the current file content after {max_attempts} attempts.\033[0m")
-            print(f"\033[33mIt was NOT presented for application automatically.\033[0m")
-            print(f"\033[33mYou can still attempt to apply it below, but it may not apply cleanly.\033[0m\n")
-            try:
-                self.diff_applicator.process_response(response)
-            except (OSError, ValueError, RuntimeError, KeyError, IndexError) as e:
-                import traceback
-                print(f"\n\033[33mNote: Could not process diffs: {e}\033[0m", file=sys.stderr)
-                if os.environ.get('ZIYA_LOG_LEVEL') == 'DEBUG':
-                    traceback.print_exc(file=sys.stderr)
+                # Hard-suppress: validator already concluded these diffs won't
+                # apply.  Don't surface the apply prompt.  Log a one-line
+                # acknowledgement and return without calling process_response.
+                _diffs = self.diff_applicator.extract_diffs(response)
+                if _diffs:
+                    _paths = list(dict.fromkeys(d.file_path or "(no path)" for d in _diffs))
+                    _shown = ", ".join(_paths[:3])
+                    if len(_paths) > 3:
+                        _shown += " (+" + str(len(_paths) - 3) + " more)"
+                    print("\033[2;33m⚠ Suppressed " + str(len(_diffs)) + " diff(s) that failed validation: " + _shown + "\033[0m", file=sys.stderr)
+                    print("\033[2mDiffs didn't validate against current file content. Nothing to apply.\033[0m", file=sys.stderr)
+                return response
         
         # Clean up validation hook after all attempts
         # Sync any auto-added files even on failure path
@@ -1055,6 +1057,8 @@ class CLI:
             for file_path, status, message in applicator.diff_results:
                 if status == "applied":
                     lines.append(f"  ✓ {file_path}: {message}")
+                elif status == "partial":
+                    lines.append(f"  ⚠ {file_path}: {message}")
                 elif status == "failed":
                     lines.append(f"  ✗ {file_path}: FAILED - {message}")
                 elif status == "skipped":
@@ -1071,11 +1075,13 @@ class CLI:
             
             return "\n".join(lines)
         elif hasattr(applicator, 'applied_count'):
-            total = getattr(applicator, 'applied_count', 0) + getattr(applicator, 'skipped_count', 0) + getattr(applicator, 'failed_count', 0)
+            total = getattr(applicator, 'applied_count', 0) + getattr(applicator, 'partial_count', 0) + getattr(applicator, 'skipped_count', 0) + getattr(applicator, 'failed_count', 0)
             if total > 0:
                 parts = []
                 if applicator.applied_count > 0:
                     parts.append(f"{applicator.applied_count} applied")
+                if getattr(applicator, 'partial_count', 0) > 0:
+                    parts.append(f"{applicator.partial_count} partial")
                 if applicator.skipped_count > 0:
                     parts.append(f"{applicator.skipped_count} skipped")
                 if applicator.failed_count > 0:
@@ -1949,7 +1955,8 @@ class CLI:
             self._session_shell_commands = merged_config["allowedCommands"].copy()
             self._session_yolo = False
             os.environ["ZIYA_YOLO_MODE"] = "false"
-            print(f"\033[32m✓ Shell config reset to defaults ({n} commands, YOLO off)\033[0m")
+            n_cmds = len(self._session_shell_commands)
+            print(f"\033[32m✓ Shell config reset to defaults ({n_cmds} commands, YOLO off)\033[0m")
             if persist:
                 print("\033[90m  (saved permanently)\033[0m")
             else:
