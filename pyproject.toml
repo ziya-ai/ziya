@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ziya"
-version = "0.7.0.1"
+version = "0.7.0.2"
 description = "Self-hosted AI workbench. Runs alongside your editor, not instead of it. The surface next to your editor where conversations, architecture work, diff review, and visual debugging happen."
 authors = ["Dan Cohn <chroma@gmail.com>",
            "Vishnu Krishnaprasad <vishnukool@gmail.com>"]
