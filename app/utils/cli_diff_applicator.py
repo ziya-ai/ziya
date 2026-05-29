@@ -31,6 +31,73 @@ def _render_failure_diagnostics(failures: list) -> str:
     return "\n".join([header] + parts)
 
 
+def _hunk_ranges_from_diff(diff_content: str) -> List[Tuple[int, int]]:
+    """Extract (start, end) line ranges in the *new* file from a unified diff.
+
+    Reads ``@@ -a,b +c,d @@`` headers and returns ``(c, c+d-1)`` for each
+    hunk.  Returns an empty list if no headers are found.
+    """
+    ranges: List[Tuple[int, int]] = []
+    for m in re.finditer(r"^@@\s+-\d+(?:,\d+)?\s+\+(\d+)(?:,(\d+))?\s+@@", diff_content, re.MULTILINE):
+        start = int(m.group(1))
+        length = int(m.group(2)) if m.group(2) else 1
+        ranges.append((start, start + max(length - 1, 0)))
+    return ranges
+
+
+def _error_line_numbers(error_msg: str) -> List[int]:
+    """Extract line numbers from compiler diagnostics like ``foo.tsx(123,4):``.
+
+    Also matches the ``: line N`` form used by the basic JS bracket
+    validator.  Returns an empty list when nothing is found.
+    """
+    lines: Set[int] = set()
+    for m in re.finditer(r"\((\d+),\d+\)", error_msg):
+        lines.add(int(m.group(1)))
+    for m in re.finditer(r"\bline\s+(\d+)\b", error_msg, re.IGNORECASE):
+        lines.add(int(m.group(1)))
+    return sorted(lines)
+
+
+def _cascading_error_hint(diff_content: str, error_msg: str, threshold: int = 100) -> str:
+    """Return a hint when error lines are far from every diff hunk.
+
+    Downstream parse errors after a structural break (e.g. an
+    object-literal key emitted at statement position) often surface
+    hundreds of lines below the actual edit, which makes the model
+    chase phantom problems near the reported line numbers instead of
+    re-examining its diff.  When the minimum distance from any error
+    line to any hunk range exceeds ``threshold``, prepend a hint
+    pointing the model back at the diff itself.
+
+    Returns an empty string when there's nothing to flag.
+    """
+    hunks = _hunk_ranges_from_diff(diff_content)
+    err_lines = _error_line_numbers(error_msg)
+    if not hunks or not err_lines:
+        return ""
+
+    def _dist(line: int) -> int:
+        return min(
+            0 if start <= line <= end else min(abs(line - start), abs(line - end))
+            for start, end in hunks
+        )
+
+    min_dist = min(_dist(L) for L in err_lines)
+    if min_dist < threshold:
+        return ""
+
+    hunk_desc = ", ".join(f"{s}-{e}" for s, e in hunks)
+    err_desc = ", ".join(str(L) for L in err_lines[:5]) + ("..." if len(err_lines) > 5 else "")
+    return (
+        f"NOTE: The reported error lines ({err_desc}) are {min_dist}+ lines away "
+        f"from your diff's hunks ({hunk_desc}).  This is almost always a "
+        f"cascading parse error caused by a structural break introduced by "
+        f"the diff itself (e.g. a misplaced token at statement position).  "
+        f"Re-examine the diff content rather than the reported line numbers.\n\n"
+    )
+
+
 class DiffBlock:
     """Represents a single diff block from markdown."""
     
@@ -90,13 +157,21 @@ class CLIDiffApplicator:
     def __init__(self):
         self.applied_count = 0
         self.skipped_count = 0
+        self.partial_count = 0
         self.failed_count = 0
         self.diff_results = []  # List of (file_path, status, message) tuples
     
     def extract_diffs(self, markdown: str) -> List[DiffBlock]:
         """
         Extract all diff blocks from markdown response.
-        
+
+        Walks the response in two passes: (1) properly fenced
+        triple-backtick ``diff`` fenced blocks (the canonical form), then
+        (2) bare unified-diff blocks the model emitted without a
+        fence.  The bare-diff fallback only fires when no fenced
+        block was found AND the bare block has the full structural
+        signature of a real unified diff.
+
         Args:
             markdown: The markdown content to parse
         
@@ -129,9 +204,115 @@ class CLIDiffApplicator:
                 if diff_content:
                     diffs.append(DiffBlock(content=diff_content, start_pos=start_pos, end_pos=end_pos))
             i += 1
-        
+
+        # Fallback: model omitted the fence.  Only attempt recovery
+        # when no fenced block was found, to avoid double-extracting
+        # the same content.  Strict structural validation
+        # (``_extract_bare_unified_diff``) keeps prose that merely
+        # quotes a diff from being treated as one.
+        if not diffs:
+            bare = self._extract_bare_unified_diff(markdown, lines)
+            if bare is not None:
+                content, start_pos, end_pos = bare
+                diffs.append(DiffBlock(content=content, start_pos=start_pos, end_pos=end_pos))
+                logger.info(
+                    "Recovered unfenced unified diff (%d chars) — "
+                    "model omitted the ```diff fence", len(content),
+                )
+
         logger.debug(f"Extracted {len(diffs)} diff blocks from response")
         return diffs
+
+    @staticmethod
+    def _extract_bare_unified_diff(
+        markdown: str, lines: List[str],
+    ) -> Optional[Tuple[str, int, int]]:
+        """Recover an un-fenced unified diff from a model response.
+
+        Strict — accepts only blocks with the full structural shape
+        of a real ``git diff`` so prose that quotes diffs is not
+        mistaken for an applicable one:
+
+          1. ``diff --git a/PATH b/PATH`` line at column 0
+          2. ``--- ...`` line shortly after, at column 0
+          3. ``+++ ...`` line shortly after, at column 0
+          4. At least one ``@@ -N,M +N,M @@`` hunk header
+          5. Every body line after the first hunk header begins with
+             ``+``, ``-``, space, backslash, or another ``@@``.
+             First non-conforming line ends the block.
+
+        Returns ``(content, start_pos, end_pos)`` on success, or
+        ``None`` when no clean bare diff is found.
+        """
+        # 1. Find ``diff --git a/X b/Y`` at column 0.
+        start = None
+        for idx, line in enumerate(lines):
+            if line.startswith('diff --git a/') and ' b/' in line:
+                start = idx
+                break
+        if start is None:
+            return None
+
+        # 2 & 3. Within the next few lines, locate ``---`` and ``+++``
+        #        headers at column 0 (allow ``index``/mode lines between).
+        minus_idx = plus_idx = None
+        for idx in range(start + 1, min(start + 6, len(lines))):
+            ln = lines[idx]
+            if minus_idx is None and ln.startswith('--- '):
+                minus_idx = idx
+                continue
+            if minus_idx is not None and ln.startswith('+++ '):
+                plus_idx = idx
+                break
+        if minus_idx is None or plus_idx is None:
+            return None
+
+        # 4. The first hunk header must follow within a few lines.
+        hunk_idx = None
+        for idx in range(plus_idx + 1, min(plus_idx + 4, len(lines))):
+            if re.match(r'^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@', lines[idx]):
+                hunk_idx = idx
+                break
+        if hunk_idx is None:
+            return None
+
+        # 5. Body — collect contiguous diff-shaped lines after the first
+        #    hunk header.  First line that isn't ``+``, ``-``, ` ``,
+        end = hunk_idx + 1
+        while end < len(lines):
+            ln = lines[end]
+            if ln == '':
+                # Blank line is ambiguous: tolerate a single blank line
+                # between hunks but not a paragraph break out of the diff.
+                # If the next non-blank line is diff-shaped, keep going.
+                next_nonblank = next(
+                    (lines[k] for k in range(end + 1, len(lines))
+                     if lines[k] != ''),
+                    None,
+                )
+                if next_nonblank is None:
+                    end += 1
+                    break
+                if next_nonblank.startswith(
+                    ('+', '-', ' ', '\\', '@@', 'diff --git ')
+                ):
+                    end += 1
+                    continue
+                break
+            if ln.startswith(('+', '-', ' ', '\\')) or \
+               re.match(r'^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@', ln) or \
+               ln.startswith('diff --git '):
+                end += 1
+                continue
+            break
+
+        # Compute byte offsets in the original markdown.
+        start_pos = sum(len(l) + 1 for l in lines[:start])
+        end_pos = sum(len(l) + 1 for l in lines[:end])
+        content = '\n'.join(lines[start:end]).rstrip('\n')
+        if not content:
+            return None
+        return content, start_pos, end_pos
     
     @staticmethod
     def _parse_hunk_ranges(diff_content: str) -> List[Tuple[int, int]]:
@@ -414,10 +595,13 @@ class CLIDiffApplicator:
 
                 # Generic error message
                 error = error_details.get("message") or error_details.get("error") or "Unknown error"
+                # Prepend a cascading-error hint when the failure is a
+                # language validation error pointing far from the diff.
+                hint = _cascading_error_hint(diff.content, str(error))
                 if "hunks failed" in str(error).lower():
-                    return False, "Some changes couldn't be applied (file content mismatch)"
+                    return False, hint + "Some changes couldn't be applied (file content mismatch)"
                 
-                return False, f"Failed: {error}"
+                return False, f"{hint}Failed: {error}"
                 
         except Exception as e:
             return False, f"Error: {str(e).split(':')[0]}"
@@ -439,6 +623,7 @@ class CLIDiffApplicator:
         # Reset counters for this response
         self.applied_count = 0
         self.skipped_count = 0
+        self.partial_count = 0
         self.failed_count = 0
         self.diff_results = []
 
@@ -508,9 +693,22 @@ class CLIDiffApplicator:
                     success, message = self._apply_diff(diff)
                     
                     if success:
-                        print(f"\033[32m✓ {message}\033[0m")
-                        self.applied_count += 1
-                        self.diff_results.append((diff.file_path, "applied", message))
+                        # Distinguish partial application (some hunks failed)
+                        # from full success. _apply_diff returns success=True
+                        # for both, but partial results begin with the
+                        # "Partially applied" prefix and warrant a yellow
+                        # indicator so the user notices remaining failures.
+                        is_partial = message.startswith("Partially applied")
+                        if is_partial:
+                            print(f"\033[33m⚠ {message}\033[0m")
+                        else:
+                            print(f"\033[32m✓ {message}\033[0m")
+                        if is_partial:
+                            self.partial_count += 1
+                        else:
+                            self.applied_count += 1
+                        status_tag = "partial" if is_partial else "applied"
+                        self.diff_results.append((diff.file_path, status_tag, message))
                     else:
                         print(f"\033[31m✗ {message}\033[0m")
                         self.failed_count += 1
@@ -523,13 +721,15 @@ class CLIDiffApplicator:
     
     def _print_summary(self):
         """Print summary of diff processing."""
-        total = self.applied_count + self.skipped_count + self.failed_count
+        total = self.applied_count + self.partial_count + self.skipped_count + self.failed_count
         if total == 0:
             return
         
         print(f"\n\033[1mDiff Summary:\033[0m")
         if self.applied_count > 0:
             print(f"  \033[32m✓ {self.applied_count} applied\033[0m")
+        if self.partial_count > 0:
+            print(f"  \033[33m⚠ {self.partial_count} partial\033[0m")
         if self.skipped_count > 0:
             print(f"  \033[33m⊘ {self.skipped_count} skipped\033[0m")
         if self.failed_count > 0:
