@@ -42,7 +42,7 @@ def test_model_initialization(endpoint, model, mock_aws_credentials, setup_test_
 
 
 @pytest.mark.parametrize("model_id", [
-    config.MODEL_CONFIGS["bedrock"]["sonnet3.5"]["model_id"],
+    config.MODEL_CONFIGS["bedrock"]["sonnet"]["model_id"]["us"],
     "anthropic.claude-3-sonnet-20240229-v1:0",  # Test override
     "amazon.titan-text-express-v1",
 ])

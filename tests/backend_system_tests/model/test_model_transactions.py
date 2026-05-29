@@ -56,7 +56,7 @@ def test_model_transaction(endpoint, model):
 
 @pytest.mark.transaction
 @pytest.mark.parametrize("model_id", [
-    config.MODEL_CONFIGS["bedrock"]["sonnet3.5"]["model_id"],
+    config.MODEL_CONFIGS["bedrock"]["sonnet"]["model_id"]["us"],
     "anthropic.claude-3-sonnet-20240229-v1:0",
 ])
 def test_model_id_override_transaction(model_id):
@@ -70,7 +70,7 @@ def test_model_id_override_transaction(model_id):
     
     # Set environment variables for the test
     os.environ["ZIYA_ENDPOINT"] = "bedrock"
-    os.environ["ZIYA_MODEL"] = "sonnet3.5"
+    os.environ["ZIYA_MODEL"] = "sonnet"
     os.environ["ZIYA_MODEL_ID_OVERRIDE"] = model_id
     
     try:
@@ -78,7 +78,7 @@ def test_model_id_override_transaction(model_id):
         model_manager = ModelManager()
         
         # Get the model configuration
-        model_config = model_manager.get_model_config("bedrock", "sonnet3.5")
+        model_config = model_manager.get_model_config("bedrock", "sonnet")
         
         # Check that the model ID was set to something (not checking exact value)
         assert "model_id" in model_config
