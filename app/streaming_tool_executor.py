@@ -429,6 +429,71 @@ class StreamingToolExecutor:
         else:
             return actual_tool_name.replace('_', ' ').title()
 
+    def _build_early_rejection_events(
+        self,
+        tool_id: str,
+        tool_name: str,
+        args: Dict[str, Any],
+        error_payload: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Build the (tool_start, tool_display, tool_result_for_model) trio
+        for a tool call we're rejecting *before* dispatch — schema failure,
+        empty args, malformed JSON, missing required parameter, etc.
+
+        The inspect log historically only saw ``tool_result_for_model`` for
+        these paths, which made the model's attempt invisible: the user saw
+        a free-floating error or rejection text with no command line above
+        it.  Emitting ``tool_start`` and ``tool_display`` from here makes
+        early rejections render the same way as a normal tool call —
+        attempt visible, reason for rejection attached to it — at the cost
+        of a small amount of duplicated event-shape boilerplate.
+
+        ``error_payload`` is the same dict that would be the bare
+        ``tool_result_for_model``: must carry ``content`` (or ``error``)
+        and any tool-specific keys the frontend already understands.
+
+        Returned events:
+          1. ``tool_start``  — populates ``toolInputsMap`` so the chat
+             marker can render ``$ command\\n…`` for shell tools, and so
+             the inspect log shows the attempted args.
+          2. ``tool_display`` — replaces the running placeholder with the
+             rejection text the user sees in the chat.
+          3. ``tool_result_for_model`` — the model-facing payload (this
+             is the only event the model itself sees).  Identical shape
+             to what the early-rejection sites used to yield directly,
+             so the model's downstream behavior is unchanged.
+        """
+        header_args = args if isinstance(args, dict) else {}
+        if tool_name == "run_shell_command" and "command" in header_args:
+            display_header = f"$ {header_args['command']}"
+        else:
+            display_header = self._get_tool_header(tool_name, header_args)
+
+        rejection_text = (
+            error_payload.get("content")
+            or error_payload.get("error")
+            or "Tool call rejected."
+        )
+
+        return [
+            {
+                "type": "tool_start",
+                "tool_id": tool_id,
+                "tool_name": tool_name,
+                "display_header": display_header,
+                "args": header_args,
+            },
+            {
+                "type": "tool_display",
+                "tool_id": tool_id,
+                "tool_name": tool_name,
+                "args": header_args,
+                "content": rejection_text,
+                "is_error": True,
+            },
+            error_payload,
+        ]
+
     def _get_text_after_last_structured_content(self, text: str) -> str:
         """Get text that appears after the last tool result, diff block, or code block."""
         # Find the last occurrence of structured content markers
@@ -2387,7 +2452,17 @@ This usually means:
 Please retry the tool call with complete, valid JSON parameters."""
                                 
                                 tool_results.append({'tool_id': tool_id, 'tool_name': tool_name, 'result': error_result})
-                                yield {'type': 'tool_result_for_model', 'tool_use_id': tool_id, 'content': error_result}
+                                # Emit tool_start + tool_display + tool_result_for_model
+                                # so the inspect log surfaces the model's attempt
+                                # (with whatever partial JSON was received) rather
+                                # than only the rejection text.
+                                for _evt in self._build_early_rejection_events(
+                                    tool_id=tool_id,
+                                    tool_name=tool_name,
+                                    args={'_raw_partial_json': args_json},
+                                    error_payload={'type': 'tool_result_for_model', 'tool_use_id': tool_id, 'content': error_result},
+                                ):
+                                    yield _evt
                                 completed_tools.add(tool_id)
                                 tools_executed_this_iteration = True
                                 continue
@@ -2470,7 +2545,16 @@ Please retry the tool call with complete, valid JSON parameters."""
                                             'tool_name': tool_name,
                                             'result': validation_error
                                         })
-                                        yield {'type': 'tool_result_for_model', 'tool_use_id': tool_id, 'content': validation_error}
+                                        # Emit tool_start + tool_display + tool_result_for_model
+                                        # so the user sees the attempted call rather than
+                                        # only the schema-failure text floating in chat.
+                                        for _evt in self._build_early_rejection_events(
+                                            tool_id=tool_id,
+                                            tool_name=tool_name,
+                                            args=args,
+                                            error_payload={'type': 'tool_result_for_model', 'tool_use_id': tool_id, 'content': validation_error},
+                                        ):
+                                            yield _evt
                                         completed_tools.add(tool_id)
                                         tools_executed_this_iteration = True
                                         continue
@@ -2510,8 +2594,16 @@ This tool requires arguments but received none.
 Check the tool schema for required parameters and retry."""
 
                                     tool_results.append({'tool_id': tool_id, 'tool_name': tool_name, 'result': error_result})
-                                    # Don't show validation errors to user - just feed back to model for self-correction
-                                    yield {'type': 'tool_result_for_model', 'tool_use_id': tool_id, 'content': error_result}
+                                    # Emit tool_start + tool_display + tool_result_for_model
+                                    # so the user sees an "empty-args" attempt explicitly
+                                    # in the inspect log rather than a free-floating error.
+                                    for _evt in self._build_early_rejection_events(
+                                        tool_id=tool_id,
+                                        tool_name=tool_name,
+                                        args={},
+                                        error_payload={'type': 'tool_result_for_model', 'tool_use_id': tool_id, 'content': error_result},
+                                    ):
+                                        yield _evt
                                     completed_tools.add(tool_id)
                                     tools_executed_this_iteration = True  # Continue iteration so model sees error and can retry
                                     continue
@@ -2541,8 +2633,18 @@ EXAMPLE:
 Retry with the 'command' parameter included."""
 
                                     tool_results.append({'tool_id': tool_id, 'tool_name': tool_name, 'result': error_result})
-                                    # Don't show validation errors to user - just feed back to model for self-correction
-                                    yield {'type': 'tool_result_for_model', 'tool_use_id': tool_id, 'content': error_result}
+                                    # Emit tool_start + tool_display + tool_result_for_model
+                                    # so the inspect log surfaces the malformed shell call
+                                    # (with whatever extra args the model sent, e.g. a
+                                    # ``cmd``/``shell``/``bash`` typo) instead of just the
+                                    # rejection text appearing alone.
+                                    for _evt in self._build_early_rejection_events(
+                                        tool_id=tool_id,
+                                        tool_name=tool_name,
+                                        args=args,
+                                        error_payload={'type': 'tool_result_for_model', 'tool_use_id': tool_id, 'content': error_result},
+                                    ):
+                                        yield _evt
                                     completed_tools.add(tool_id)
                                     tools_executed_this_iteration = True  # Continue iteration so model sees error and can retry
                                     continue
@@ -2631,7 +2733,17 @@ Please retry the tool call with valid JSON. Ensure:
 - Braces and brackets are balanced"""
                                 
                                 tool_results.append({'tool_id': tool_id, 'tool_name': tool_name, 'result': error_result})
-                                yield {'type': 'tool_result_for_model', 'tool_use_id': tool_id, 'content': error_result}
+                                # Emit tool_start + tool_display + tool_result_for_model
+                                # so the inspect log shows the malformed JSON the model
+                                # sent — without this the user sees only the parse-error
+                                # text and has no way to know what was attempted.
+                                for _evt in self._build_early_rejection_events(
+                                    tool_id=tool_id,
+                                    tool_name=tool_name,
+                                    args={'_raw_partial_json': args_json},
+                                    error_payload={'type': 'tool_result_for_model', 'tool_use_id': tool_id, 'content': error_result},
+                                ):
+                                    yield _evt
                                 completed_tools.add(tool_id)
                                 tools_executed_this_iteration = True
 
