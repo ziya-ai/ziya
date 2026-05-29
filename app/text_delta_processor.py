@@ -495,18 +495,17 @@ def process_text_delta(
         if _total >= 256 and (_total // 256) != ((_total - _delta) // 256):
             try:
                 if state.code_block_tracker.get('in_block'):
-                    _block_type = (
-                        state.code_block_tracker.get('block_type') or ''
-                    ).lower()
-                    if _block_type in ('diff', 'patch'):
-                        # Diff/patch context lines reproduce file content
-                        # by design — shingle matching against file_read
-                        # results would always fire here.
-                        _probe = None
-                    else:
-                        # Other fenced blocks: probe raw tail to catch
-                        # fabricated tool output wrapped in a code fence.
-                        _probe = state.assistant_text[state.last_shingle_probe_pos:] or None
+                    # Inside any fenced block: skip shingle probing.
+                    # Conversational code fences (plans, snippets,
+                    # discussion of code the model has read) routinely
+                    # share line-hashes with prior file_read output —
+                    # that is legitimate authoring, not parroting.
+                    # Fabricated tool output wrapped in a fence is
+                    # caught by Layer B (fake shell sessions) and
+                    # Layer C (dict/JSON tool-result echoes) when the
+                    # fence closes, so disabling the in-fence probe
+                    # here does not weaken fake-result detection.
+                    _probe = None
                 else:
                     _scan_full = scannable_text(state.assistant_text)
                     _probe_slice = _scan_full[state.last_shingle_probe_pos:]

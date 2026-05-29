@@ -385,12 +385,17 @@ class TestShingleIndex_Registration:
 # Section D: shingle_index — detection / matching
 # ---------------------------------------------------------------------------
 
+# Five distinct long lines (each ≥ DEFAULT_MIN_LINE_LENGTH = 20 chars after
+# whitespace normalization) so verbatim reproduction crosses
+# LINE_MATCH_HIGH_CONFIDENCE (=5). Mirrors realistic multi-line tool output
+# (shell, grep, log dumps) where parroting reproduces several full lines.
 _RICH_RESULT = (
     "The deployment failed at stage gamma because the health check "
-    "timed out after 30 seconds. Host i-0abc123def456 failed to "
-    "respond to the /health endpoint. See CloudWatch logs for details. "
-    "The rollback completed successfully at 17:42 UTC. "
-    "Affected service: PaymentProcessor version 2.4.1."
+    "timed out after 30 seconds.\n"
+    "Host i-0abc123def456 failed to respond to the /health endpoint.\n"
+    "See CloudWatch logs at /aws/ecs/payment-processor for full details.\n"
+    "The rollback completed successfully at 17:42 UTC on 2026-05-22.\n"
+    "Affected service: PaymentProcessor version 2.4.1 in region us-west-2."
 )
 
 
@@ -468,6 +473,41 @@ class TestShingleIndex_Detection:
         assert isinstance(match.line_matches, int)
         assert match.confidence in ("high", "low")
         assert isinstance(match.registered_at, float)
+
+    def test_four_line_excerpt_below_high_confidence_threshold(self):
+        """Regression: LINE_MATCH_HIGH_CONFIDENCE was tightened from 3 to 5
+        to cut false positives when the model legitimately discusses code
+        it has read (plans, snippets in conversational fences). A probe
+        reproducing 4 distinct registered lines must NOT reach high
+        confidence — it stays at low (advisory) so the streaming abort
+        path does not fire on benign authoring.
+        """
+        # Four of the five lines from _RICH_RESULT, verbatim. Fifth line
+        # ("Affected service: ...") deliberately omitted.
+        four_line_probe = (
+            "The deployment failed at stage gamma because the health check "
+            "timed out after 30 seconds.\n"
+            "Host i-0abc123def456 failed to respond to the /health endpoint.\n"
+            "See CloudWatch logs at /aws/ecs/payment-processor for full details.\n"
+            "The rollback completed successfully at 17:42 UTC on 2026-05-22."
+        )
+        match = self.index.check("conv1", four_line_probe)
+        # A match is expected (line_matches >= LINE_MATCH_LOW_CONFIDENCE = 1),
+        # but it must be 'low' confidence — the streaming probe in
+        # text_delta_processor only aborts on 'high'.
+        assert match is not None
+        assert match.line_matches == 4
+        assert match.confidence == "low", (
+            f"4 line matches should be low-confidence under "
+            f"LINE_MATCH_HIGH_CONFIDENCE=5; got {match.confidence}"
+        )
+
+    def test_five_line_excerpt_reaches_high_confidence(self):
+        """Boundary check: exactly 5 line matches reaches high confidence."""
+        match = self.index.check("conv1", _RICH_RESULT)
+        assert match is not None
+        assert match.line_matches >= 5
+        assert match.confidence == "high"
 
 
 # ---------------------------------------------------------------------------
