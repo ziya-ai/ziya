@@ -117,6 +117,39 @@ def parse_skill_md(path: Path) -> Optional[Tuple[Dict[str, str], str]]:
     return frontmatter, body
 
 
+def _lead_paragraph(markdown_body: str, *, max_chars: int = 1024) -> str:
+    """Extract the first non-empty paragraph from a markdown body,
+    skipping headers, blockquotes, and code fences.  Used as a
+    fallback description for skills whose frontmatter doesn't
+    supply one — the H1 + first paragraph in well-written skill
+    pages already convey what the skill does, so falling back to
+    a generic ``(prompt loaded on activation)`` placeholder there
+    just hides useful information from the browser.
+
+    Returns the joined paragraph text trimmed to ``max_chars``.
+    Returns an empty string if no suitable paragraph is found.
+    """
+    if not markdown_body:
+        return ""
+    in_fence = False
+    paragraph: list[str] = []
+    for line in markdown_body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if not stripped:
+            if paragraph:
+                break  # first paragraph found, stop
+            continue
+        if stripped.startswith("#") or stripped.startswith(">"):
+            continue  # skip headers/blockquotes
+        paragraph.append(stripped)
+    return " ".join(paragraph).strip()[:max_chars]
+
+
 def _stable_id(project_path: str, skill_name: str) -> str:
     """Generate a deterministic ID for a project skill."""
     digest = hashlib.sha256(f"{project_path}:{skill_name}".encode()).hexdigest()[:12]
@@ -185,9 +218,20 @@ def discover_project_skills(
                 continue  # First discovery path wins
             seen_names.add(name)
 
-            description = fm.get("description", "")[:1024]
+            # Frontmatter ``description:`` is the preferred source.
+            # When absent, fall back to the first markdown paragraph so
+            # under-specified SKILL.md files still surface useful
+            # browse-time text instead of the generic placeholder.
+            description = (fm.get("description", "") or _lead_paragraph(body))[:1024]
             prompt = body if load_body else ""
             now = int(time.time() * 1000)
+
+            # visibility: 'model_discoverable' (auto-loadable via the model's
+            # skill catalog) or 'user_selectable' (toggled by the user in the
+            # UI).  Defaults to user_selectable per agentskills.io conservatism.
+            visibility = fm.get("visibility", "user_selectable").strip().lower()
+            if visibility not in ("model_discoverable", "user_selectable"):
+                visibility = "user_selectable"
 
             skills.append(Skill(
                 id=_stable_id(workspace_path, name),
@@ -198,6 +242,7 @@ def discover_project_skills(
                 tokenCount=token_service.count_tokens(prompt) if prompt else 0,
                 isBuiltIn=False,
                 source="project",
+                visibility=visibility,
                 createdAt=int(skill_md.stat().st_mtime * 1000),
                 lastUsedAt=now,
                 # agentskills metadata
