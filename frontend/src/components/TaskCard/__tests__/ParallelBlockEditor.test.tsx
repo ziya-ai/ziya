@@ -3,6 +3,12 @@
  * produces a valid Parallel block, and the BlockEditor dispatcher
  * routes 'parallel' to it (not to the unknown-type fallback).
  */
+
+// ``uuid`` is ESM-only and the CRA jest transform won't process it.
+// Stub at module scope so any transitive importer (db.ts pulled in by
+// the BlockEditor dispatcher's context chain) gets a sync replacement.
+jest.mock('uuid', () => ({ v4: () => 'test-uuid' }));
+
 import React from 'react';
 
 describe('ParallelBlockEditor', () => {

@@ -16,6 +16,7 @@ import {
   makeTaskBlock, makeRepeatBlock, makeParallelBlock,
   makeUntilBlock, makeScheduleBlock,
 } from '../../utils/taskCardBlocks';
+import { AutoGrowTextarea } from './AutoGrowTextarea';
 import './task-card-editor.css';
 
 interface Props {
@@ -64,9 +65,8 @@ export const UntilBlockEditor: React.FC<Props> = ({ block, onChange, onDelete })
             expression (coming soon)
           </option>
         </select>
-        <input
-          type="text"
-          className="tc-text-input tc-flex-grow"
+        <AutoGrowTextarea
+          className="tc-text-input tc-text-input--multiline tc-flex-grow"
           placeholder="condition (e.g. 'all tests pass')"
           value={block.until_condition ?? ''}
           onChange={e => update({ until_condition: e.target.value })}
@@ -75,6 +75,7 @@ export const UntilBlockEditor: React.FC<Props> = ({ block, onChange, onDelete })
               ? "Plain English condition; an evaluator model decides yes/no after each iteration"
               : "Expression mode is not yet implemented"
           }
+          minRows={1}
         />
         <span className="tc-label-dim">max</span>
         <input
@@ -85,7 +86,7 @@ export const UntilBlockEditor: React.FC<Props> = ({ block, onChange, onDelete })
           title="Hard upper bound on iteration count"
         />
         {onDelete && (
-          <button className="tc-icon-btn" onClick={onDelete} title="Delete">⋯</button>
+          <button className="tc-icon-btn tc-icon-btn-delete" onClick={onDelete} title="Delete">×</button>
         )}
       </div>
       <div className="tc-block-body tc-block-body-until">
