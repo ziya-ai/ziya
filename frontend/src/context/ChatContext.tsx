@@ -75,6 +75,11 @@ interface ChatContext {
     currentMessages: Message[];
     loadConversation: (id: string) => void;
     startNewChat: (specificFolderId?: string | null) => Promise<void>;
+    // Create a new conversation that lives only in React state for the
+    // current UX session. Never written to IndexedDB or pushed to the
+    // server. See promoteEphemeralToRetained for converting later.
+    startNewEphemeralChat: (specificFolderId?: string | null) => Promise<void>;
+    promoteEphemeralToRetained: (conversationId: string) => Promise<void>;
     loadConversationAndScrollToMessage: (conversationId: string, messageIndex: number) => Promise<void>;
     isTopToBottom: boolean;
     dbError: string | null;
@@ -539,6 +544,25 @@ export function ChatProvider({ children }: ChatProviderProps) {
         if (hasShellData && (!options.changedIds || options.changedIds.length === 0)) {
             console.warn('📝 SHELL_GUARD: Blocking save — React state contains shell conversations (messages stripped). Waiting for full data to load.');
             return Promise.resolve();
+        }
+
+        // EPHEMERAL GUARD: Strip ephemeral conversations from the input
+        // and the changedIds set. Ephemerals exist only in React state for
+        // the current UX session — they must never reach IndexedDB or the
+        // server's bulkSync endpoint. Done here (single chokepoint) rather
+        // than at every call site so future code paths can't accidentally
+        // leak them.
+        const ephemeralIds = new Set(
+            conversations.filter(c => (c as any).isEphemeral).map(c => c.id)
+        );
+        if (ephemeralIds.size > 0) {
+            conversations = conversations.filter(c => !ephemeralIds.has(c.id));
+            if (options.changedIds) {
+                options.changedIds = options.changedIds.filter(id => !ephemeralIds.has(id));
+                if (options.changedIds.length === 0) {
+                    return Promise.resolve();
+                }
+            }
         }
 
         // Skip saves during the first 5 seconds after init to let all data settle.
@@ -1289,6 +1313,79 @@ export function ChatProvider({ children }: ChatProviderProps) {
             console.error('Failed to create new conversation:', error);
         }
     }, [isInitialized, currentConversationId, currentFolderId, conversations, folders, queueSave, currentProject?.id]);
+
+    // Create a session-only conversation. Lives in React state, never
+    // persisted to IndexedDB and never pushed to the server. Lost on
+    // page reload or project switch (project switches reload conversations
+    // from IDB). Use promoteEphemeralToRetained to convert later.
+    const startNewEphemeralChat = useCallback(async (specificFolderId?: string | null) => {
+        try {
+            const newId = uuidv4();
+            let targetFolderId = specificFolderId !== undefined ? specificFolderId : currentFolderId;
+            if (targetFolderId) {
+                const folder = folders.find(f => f.id === targetFolderId);
+                if (folder?.taskPlan) targetFolderId = null;
+            }
+
+            const newConversation: Conversation = {
+                id: newId,
+                title: 'New Ephemeral Chat',
+                projectId: currentProject?.id,
+                messages: [],
+                folderId: targetFolderId,
+                lastAccessedAt: Date.now(),
+                isActive: true,
+                isEphemeral: true,
+                _version: Date.now(),
+                hasUnreadResponse: false,
+            };
+
+            // Clear unread flag on the previously active conversation,
+            // mirroring startNewChat — but route through state only,
+            // never queueSave (the ephemeral guard would strip it anyway,
+            // but skipping the call avoids the debounce timer churn).
+            setConversations(prev => [
+                ...prev.map(conv =>
+                    conv.id === currentConversationId
+                        ? { ...conv, hasUnreadResponse: false }
+                        : conv,
+                ),
+                newConversation,
+            ]);
+            setCurrentConversationId(newId);
+            try { setTabState('ZIYA_CURRENT_CONVERSATION_ID', newId); } catch { /* ignore */ }
+        } catch (error) {
+            console.error('Failed to create ephemeral conversation:', error);
+        }
+    }, [currentConversationId, currentFolderId, folders, currentProject?.id]);
+
+    // Convert an ephemeral conversation into a normally-persisted one.
+    // Clears isEphemeral, bumps _version, and routes through queueSave
+    // so it lands in IndexedDB and on the next dual-write cycle.
+    const promoteEphemeralToRetained = useCallback(async (conversationId: string) => {
+        // Strip MUIChatHistory's "conv-" tree-node prefix if a caller
+        // forgot to (matches forkConversation's tolerance).
+        if (conversationId.startsWith('conv-')) {
+            conversationId = conversationId.substring(5);
+        }
+        let promoted = false;
+        setConversations(prev => prev.map(conv => {
+            if (conv.id !== conversationId || !conv.isEphemeral) return conv;
+            promoted = true;
+            const { isEphemeral, ...rest } = conv;
+            return { ...rest, _version: Date.now(), lastAccessedAt: Date.now() };
+        }));
+        if (!promoted) return;
+        // Read live state at fire time so we capture any messages added
+        // between the setConversations call and this save.
+        try {
+            await queueSave(conversationsRef.current, { changedIds: [conversationId] });
+            message.success('Conversation retained — it will now persist and sync.');
+        } catch (e) {
+            console.warn('promoteEphemeralToRetained: queueSave failed:', e);
+        }
+    }, [queueSave]);
+
     // Recovery function to fix database sync issues
     const attemptDatabaseRecovery = useCallback(async () => {
         // Circuit breaker: Stop recovery if too many consecutive attempts
@@ -1417,21 +1514,21 @@ export function ChatProvider({ children }: ChatProviderProps) {
         const isActualSwitch = conversationId !== currentConversationId;
 
         try {
-
-            console.log('🔄 Loading conversation:', conversationId, 'isActualSwitch:', isActualSwitch);
-
             console.log('🔄 Loading conversation:', conversationId);
-
             // Lazy-load messages for conversations that only have summary
             // metadata (e.g. after SERVER_SYNC with empty/corrupt IDB) or
             // shell data (first+last messages only from startup fast-path),
             // or zombie records where a shell was persisted as a complete
             // conversation (2 messages, _isShell: false, no _fullMessageCount).
+            // Ephemeral conversations live only in React state — they're
+            // never in IDB or on the server, so any lazy-load attempt is a
+            // wasted round-trip that 404s.
+            const isEphemeralConv = (convEntry as any)?.isEphemeral === true;
             const isZombieRecord = convEntry?.messages?.length <= 2
                 && !convEntry._isShell
                 && convEntry.title !== 'New Conversation'
                 && convEntry.title !== '';
-            const needsLazyLoad = convEntry && (
+            const needsLazyLoad = !isEphemeralConv && convEntry && (
                 (!convEntry.messages || convEntry.messages.length === 0) ||
                 convEntry._isShell ||
                 isZombieRecord
@@ -1901,10 +1998,30 @@ export function ChatProvider({ children }: ChatProviderProps) {
         const firstSame = (messages[0].id && prev[0].id) ? messages[0].id === prev[0].id
             : messages[0].content === prev[0].content && messages[0].role === prev[0].role;
         if (lastSame && firstSame) {
-            // Mute toggles change neither id nor content/role, so the sampling
-            // heuristic above misses them.  Do a targeted scan before returning stale data.
-            const mutedChanged = messages.some((m, i) => (m.muted ?? false) !== (prev[i]?.muted ?? false));
-            if (!mutedChanged) return prev;
+            // Length, first id, and last id all match.  The id-equality
+            // sampling above is too weak for in-place edits: when the user
+            // edits a message, EditSection.handleSubmit rebuilds the
+            // message object via spread (preserving id but replacing
+            // content).  Editing the LAST message also keeps length
+            // unchanged (slice(0, last+1) is a no-op on length), so all
+            // three sampled values match while the content is genuinely
+            // different.  Returning prev here leaves the UI showing the
+            // unedited text until something else forces an update —
+            // typically when the assistant response arrives and appends a
+            // new message, increasing length.
+            //
+            // EditSection, mute toggles, and any other in-place message
+            // update all create new message objects (spread), so reference
+            // inequality at any index reliably indicates a real change.
+            // This scan only runs when length+endpoints match, so it's
+            // bypassed entirely on the streaming hot path where conv.messages
+            // reference is unchanged and the \`messages === prev\` fast path
+            // returns above.
+            let changed = false;
+            for (let i = 0; i < messages.length; i++) {
+                if (messages[i] !== prev[i]) { changed = true; break; }
+            }
+            if (!changed) return prev;
         }
         currentMessagesRef.current = messages;
         return messages;
@@ -4441,6 +4558,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         loadConversation={loadConversation}
                         loadConversationAndScrollToMessage={loadConversationAndScrollToMessage}
                         startNewChat={startNewChat}
+                        startNewEphemeralChat={startNewEphemeralChat}
+                        promoteEphemeralToRetained={promoteEphemeralToRetained}
                         editingMessageIndex={editingMessageIndex}
                         setEditingMessageIndex={setEditingMessageIndex}
                         isStreaming={isStreaming}
