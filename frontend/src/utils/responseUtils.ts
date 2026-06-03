@@ -7,6 +7,45 @@ export const detectIncompleteResponse = (content: string): boolean => {
         return false;
     }
 
+    // Detect truncated thinking blocks (<thinking-data> for DeepSeek-R1,
+    // <thinking> for Nova-Pro). Three failure modes:
+    //   (a) No closing tag — stream ended before it was written.
+    //   (b) "False close" — closing tag present but text immediately
+    //       before it ends mid-sentence (no sentence-ending punctuation).
+    //   (c) Closing tag present and properly punctuated, but nothing
+    //       meaningful follows it — model was cut off before answering.
+    const thinkingVariants = [
+        { open: '<thinking-data>', close: '</thinking-data>' },
+        { open: '<thinking>',      close: '</thinking>'      },
+    ];
+
+    for (const variant of thinkingVariants) {
+        if (!content.includes(variant.open)) {
+            continue;
+        }
+
+        // (a) Missing close tag entirely
+        if (!content.includes(variant.close)) {
+            return true;
+        }
+
+        const lastCloseIdx = content.lastIndexOf(variant.close);
+
+        // (b) Text before the closing tag ends mid-sentence
+        const beforeClose = content
+            .slice(Math.max(0, lastCloseIdx - 200), lastCloseIdx)
+            .trimEnd();
+        if (beforeClose && !/[.!?:\)\]"']$/.test(beforeClose)) {
+            return true;
+        }
+
+        // (c) No meaningful visible response after the closing tag
+        const afterClose = content.slice(lastCloseIdx + variant.close.length).trim();
+        if (afterClose.length < 30) {
+            return true;
+        }
+    }
+
     const contentLower = content.toLowerCase();
     const contentEnd = content.trim().slice(-200); // Last 200 characters
     const lines = content.split('\n');

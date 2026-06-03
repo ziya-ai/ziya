@@ -457,7 +457,11 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
         new_delta = abs(actual_new - declared_new)
         if old_delta > 1 or new_delta > 1:
             # Dedupe: the same diff gets re-parsed by multiple apply strategies
-            # (strict → shifted → fuzzy), so warn only once per unique hunk.
+            # (strict → shifted → fuzzy), so log only once per unique hunk.
+            # Emitted at debug level: at parse time we don't yet know whether
+            # the rescue path below will reconcile counts and the apply will
+            # succeed. The pipeline's apply-time checks (pipeline_manager.py)
+            # are authoritative for actual failures.
             warn_key = (hunk.get('header', '').strip(), declared_old, declared_new, actual_old, actual_new)
             _seen = getattr(logger, '_malformed_hunk_warned', None)
             if _seen is None:
@@ -465,7 +469,7 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
                 setattr(logger, '_malformed_hunk_warned', _seen)
             if warn_key not in _seen:
                 _seen.add(warn_key)
-                logger.warning(
+                logger.debug(
                     f"Malformed hunk #{hunk.get('number')}: header declares "
                     f"-{declared_old},+{declared_new} but body has "
                     f"-{actual_old},+{actual_new} lines. Header: {hunk.get('header', '').strip()}"

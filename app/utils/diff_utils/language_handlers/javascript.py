@@ -196,18 +196,22 @@ class JavaScriptHandler(LanguageHandler):
         issues = []
         
         # Style checks below only flag when the diff makes a file *more*
-        # inconsistent than it already was. Files with pre-existing mixed
-        # styles should not fail validation for characteristics the diff
-        # did not introduce.
-        def _quote_minority_ratio(content: str) -> float:
+        # inconsistent than it already was. We measure *majority dominance*
+        # (max/total), not minority ratio (min/total): adding more of the
+        # majority style raises dominance (more consistent), while adding
+        # minority-side tokens lowers it (more mixed). Using min/total
+        # inverts the signal because the denominator grows with majority
+        # additions while the numerator stays fixed, so a more-consistent
+        # file would falsely register as less consistent.
+        def _quote_majority_dominance(content: str) -> float:
             single = len(re.findall(r"'[^']*'", content))
             double = len(re.findall(r'"[^"]*"', content))
             total = single + double
-            if total == 0 or single == 0 or double == 0:
-                return 1.0  # single-style or empty → "perfectly consistent"
-            return min(single, double) / total
+            if total == 0:
+                return 1.0  # empty → "perfectly consistent"
+            return max(single, double) / total
 
-        def _semi_minority_ratio(content: str) -> float:
+        def _semi_majority_dominance(content: str) -> float:
             with_semi = 0
             without_semi = 0
             for line in content.splitlines():
@@ -219,22 +223,24 @@ class JavaScriptHandler(LanguageHandler):
                 elif not stripped.endswith('{') and not stripped.endswith('}') and not stripped.endswith(':'):
                     without_semi += 1
             total = with_semi + without_semi
-            if total == 0 or with_semi == 0 or without_semi == 0:
+            if total == 0:
                 return 1.0
-            return min(with_semi, without_semi) / total
+            return max(with_semi, without_semi) / total
 
-        # Small tolerance: only complain when the modified file is measurably
-        # more inconsistent than the original (>2% drop in minority ratio).
+        # Tolerance: only complain when the modified file's majority
+        # dominance drops measurably (>2%) from the original. A drop in
+        # dominance means minority-side tokens were added, which is the
+        # only case where the diff genuinely worsened consistency.
         TOLERANCE = 0.02
 
-        orig_quote = _quote_minority_ratio(original_content)
-        mod_quote = _quote_minority_ratio(modified_content)
-        if mod_quote < 0.2 and (orig_quote - mod_quote) > TOLERANCE:
+        orig_quote = _quote_majority_dominance(original_content)
+        mod_quote = _quote_majority_dominance(modified_content)
+        if (orig_quote - mod_quote) > TOLERANCE:
             issues.append("Inconsistent quote style (mixing ' and \")")
 
-        orig_semi = _semi_minority_ratio(original_content)
-        mod_semi = _semi_minority_ratio(modified_content)
-        if mod_semi < 0.2 and (orig_semi - mod_semi) > TOLERANCE:
+        orig_semi = _semi_majority_dominance(original_content)
+        mod_semi = _semi_majority_dominance(modified_content)
+        if (orig_semi - mod_semi) > TOLERANCE:
             issues.append("Inconsistent semicolon usage")
 
         # Check for potential infinite loops

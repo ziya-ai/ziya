@@ -22,62 +22,174 @@ class CppHandler(LanguageHandler):
             file_path: Path to the file
             
         Returns:
-            True if this is a C++ file, False otherwise
+            True if this is a C or C++ file, False otherwise
         """
-        return file_path.endswith(('.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx'))
+        return file_path.endswith(('.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx'))
     
     @classmethod
     def verify_changes(cls, original_content: str, modified_content: str, file_path: str) -> Tuple[bool, Optional[str]]:
         """
         Verify that changes are valid for C++.
-        
-        Args:
-            original_content: Original file content
-            modified_content: Modified file content
-            file_path: Path to the file
-            
-        Returns:
-            Tuple of (is_valid, error_message)
+
+        Differential + build-aware validation: a bare compiler invocation
+        cannot resolve generated headers (capnp/protobuf/thrift), sibling-
+        package headers, vendor SDK include trees or build-flag #ifdefs, so
+        we must not discard a clean patch just because clang fails on them.
+
+          1. compile_commands.json flags (-I/-isystem/-D/-std) are used if
+             discoverable.
+          2. If the modified content passes, accept.
+          3. If it fails, re-check the original content with the same flags.
+             If the original also fails, the error is pre-existing / build-
+             context dependent (not caused by this patch) -> advisory accept.
+          4. Only a clean-original + broken-modified pair is a hard failure.
         """
-        # Try to use clang++ to validate C++ syntax if available
+        flags = cls._discover_compile_flags(file_path)
+        mod_ok, mod_err = cls._syntax_check(modified_content, file_path, flags)
+        if mod_ok:
+            return True, None
+        orig_ok, _ = cls._syntax_check(original_content, file_path, flags)
+        if not orig_ok:
+            logger.warning(
+                f"C++ validation for {file_path} reports errors, but the "
+                f"pre-patch file fails the same check -- treating as missing "
+                f"build context, not a patch defect. Accepting. {mod_err}"
+            )
+            return True, None
+        logger.error(f"C++ syntax validation failed for {file_path}: {mod_err}")
+        return False, mod_err
+
+    @classmethod
+    def _syntax_check(cls, content: str, file_path: str, flags: List[str]) -> Tuple[bool, Optional[str]]:
+        """
+        Syntax-check one translation unit via clang++ -fsyntax-only with any
+        project flags. Falls back to brace balancing if no compiler. -Werror
+        is deliberately omitted: this catches broken syntax, not style.
+
+        C (.c) is compiled as C, not C++, so valid C constructs (implicit
+        void* casts, restrict, etc.) don't trigger spurious C++ errors that
+        would corrupt the differential comparison. Ambiguous .h files are
+        treated as C++ headers (the safer superset).
+        """
         try:
-            # Create a temporary file with the modified content
             import tempfile
             import os
-            
-            with tempfile.NamedTemporaryFile(suffix='.cpp', delete=False) as temp:
-                temp.write(modified_content.encode('utf-8'))
+            if file_path.endswith('.c'):
+                lang, suffix = 'c', '.c'
+            elif file_path.endswith(('.h', '.hpp', '.hxx')):
+                lang, suffix = 'c++-header', '.hpp'
+            else:
+                lang, suffix = 'c++', '.cpp'
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temp:
+                temp.write(content.encode('utf-8'))
                 temp_path = temp.name
-            
             try:
-                # Use clang++ to check syntax
                 result = subprocess.run(
-                    ['clang++', '-fsyntax-only', '-Wall', '-Werror', temp_path],
-                    capture_output=True,
-                    text=True,
-                    timeout=5  # 5 second timeout
+                    ['clang++', '-fsyntax-only', '-x', lang, *flags, temp_path],
+                    capture_output=True, text=True, timeout=10,
                 )
-                
                 if result.returncode != 0:
-                    error_msg = result.stderr.strip()
-                    logger.error(f"C++ syntax validation failed for {file_path}: {error_msg}")
-                    return False, error_msg
-                
+                    # clang references the tempfile path in every diagnostic.
+                    # Rewrite it to the real file path so the message fed back
+                    # to the model (and shown to the user) points at the file
+                    # being patched, not an opaque /tmp/tmpXXXX.cpp. Line/column
+                    # numbers are unaffected since the tempfile is a verbatim
+                    # copy of the patched content.
+                    err = result.stderr.strip()
+                    err = err.replace(temp_path, file_path)
+                    err = err.replace(os.path.basename(temp_path), os.path.basename(file_path))
+                    return False, err
                 return True, None
             finally:
-                # Clean up the temporary file
                 os.unlink(temp_path)
         except (subprocess.SubprocessError, FileNotFoundError, Exception) as e:
-            # If clang++ is not available or fails, fall back to basic validation
             logger.warning(f"Falling back to basic C++ validation: {str(e)}")
-            
-            # Basic validation: check for matching braces, parentheses, etc.
-            is_valid, error = cls._basic_cpp_validation(modified_content)
-            if not is_valid:
-                logger.error(f"Basic C++ validation failed for {file_path}: {error}")
-                return False, error
-            
-            return True, None
+            return cls._basic_cpp_validation(content)
+
+    @classmethod
+    def _discover_compile_flags(cls, file_path: str) -> List[str]:
+        """
+        Best-effort -I/-isystem/-iquote/-D/-std/-include flags for file_path
+        from a compile_commands.json found by walking up from the file or
+        from $ZIYA_USER_CODEBASE_DIR. Returns [] on any failure -- flags are
+        additive context only, never required.
+        """
+        try:
+            import os
+            import json
+            import shlex
+            target = os.path.realpath(file_path)
+            roots = []
+            d = os.path.dirname(target)
+            for _ in range(40):
+                roots.append(d)
+                parent = os.path.dirname(d)
+                if parent == d:
+                    break
+                d = parent
+            codebase = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+            if codebase:
+                roots.append(os.path.realpath(codebase))
+            db_path = None
+            for root in roots:
+                for cand in (os.path.join(root, "compile_commands.json"),
+                             os.path.join(root, "build", "compile_commands.json")):
+                    if os.path.isfile(cand):
+                        db_path = cand
+                        break
+                if db_path:
+                    break
+            if not db_path:
+                return []
+            with open(db_path, 'r', encoding='utf-8') as f:
+                entries = json.load(f)
+            if not isinstance(entries, list):
+                return []
+            best, best_score = None, -1
+            for entry in entries:
+                ef = entry.get("file")
+                if not ef:
+                    continue
+                ef_real = ef if os.path.isabs(ef) else os.path.join(entry.get("directory", ""), ef)
+                ef_real = os.path.realpath(ef_real)
+                if ef_real == target:
+                    best = entry
+                    break
+                try:
+                    score = len(os.path.commonpath([ef_real, target]))
+                except ValueError:
+                    score = 0
+                if score > best_score:
+                    best_score, best = score, entry
+            if best is None:
+                return []
+            if isinstance(best.get("arguments"), list):
+                args = list(best["arguments"])
+            elif isinstance(best.get("command"), str):
+                try:
+                    args = shlex.split(best["command"])
+                except ValueError:
+                    args = best["command"].split()
+            else:
+                args = []
+            flags: List[str] = []
+            takes_arg = ('-I', '-D', '-isystem', '-iquote', '-isysroot', '-include')
+            keep_attached = ('-I', '-D', '-isystem', '-iquote', '-isysroot', '-std=', '-include')
+            i = 0
+            while i < len(args):
+                a = args[i]
+                if a in takes_arg:
+                    flags.append(a)
+                    if i + 1 < len(args):
+                        flags.append(args[i + 1])
+                        i += 1
+                elif a.startswith(keep_attached):
+                    flags.append(a)
+                i += 1
+            return flags
+        except Exception as e:
+            logger.debug(f"Could not discover compile flags for {file_path}: {e}")
+            return []
         
     @classmethod
     def detect_duplicates(cls, original_content: str, modified_content: str) -> Tuple[bool, List[str]]:
