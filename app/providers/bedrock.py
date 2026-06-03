@@ -162,7 +162,18 @@ class BedrockProvider(LLMProvider):
                 logger.debug(f"BedrockProvider: stream started in {time.time() - call_start:.1f}s")
                 break
             except Exception as e:
-                error_str = str(e)
+                # asyncio.TimeoutError / builtin TimeoutError stringify to "",
+                # which would mis-classify as UNKNOWN (non-retryable) and
+                # surface an empty error message to the frontend. Build a
+                # descriptive message so classification and UX both work.
+                if isinstance(e, (asyncio.TimeoutError, TimeoutError)):
+                    error_str = (
+                        f"Read timed out after {time.time() - call_start:.1f}s "
+                        f"waiting for Bedrock to begin streaming "
+                        f"(connect_timeout={connect_timeout}s)"
+                    )
+                else:
+                    error_str = str(e) or f"{type(e).__name__}"
                 classified = self._classify_error(error_str)
                 logger.warning(
                     f"BedrockProvider: call failed after {time.time() - call_start:.1f}s — "
@@ -241,9 +252,36 @@ class BedrockProvider(LLMProvider):
             yield ErrorEvent(message="No response after retries", error_type=ErrorType.UNKNOWN)
             return
 
-        # Parse the boto3 stream into normalized events
+        # Parse the boto3 stream into normalized events.
+        # Track how many we actually produce: an empty 200 stream (zero
+        # events, no exception) is the signature of a Bedrock-side empty
+        # completion — observed intermittently on opus4.8 — which otherwise
+        # surfaces as a silent "no output" bubble. Surface it with the
+        # RequestId so it is visible and attributable to the service.
+        _parsed_events = 0
         async for event in self._parse_stream(response, config):
+            _parsed_events += 1
             yield event
+
+        if _parsed_events == 0:
+            _req_id = ""
+            try:
+                _req_id = (response.get("ResponseMetadata", {}) or {}).get("RequestId", "")
+            except Exception:
+                pass
+            logger.warning(
+                "BedrockProvider: empty event stream (0 events, HTTP 200) for "
+                "model=%s region=%s RequestId=%s — Bedrock returned no content.",
+                self.model_id, self._region, _req_id or "?",
+            )
+            yield ErrorEvent(
+                message=f"Bedrock returned an empty response (RequestId={_req_id or 'unknown'}).",
+                error_type=ErrorType.OVERLOADED,
+                retryable=True,
+            )
+            # An empty stream is a failure, not a success — do not reward the
+            # serving region (that would bias the router toward it).
+            return
 
         # Successful completion — reward the region that served the request
         if self._region_router.enabled:
@@ -293,6 +331,14 @@ class BedrockProvider(LLMProvider):
         System prompt uses 1 block.  We place 1 block at a conversation
         boundary, leaving 2 blocks as headroom.
         """
+        # Diagnostic / mitigation toggle: when set, send no cache_control
+        # blocks at all. Used to isolate whether prompt caching is what an
+        # opus4.8 endpoint chokes on (empty-200) for large multi-turn
+        # histories that opus4.7 handles fine on the identical payload.
+        if os.environ.get("ZIYA_DISABLE_PROMPT_CACHE") == "1":
+            logger.info("🧪 PROMPT_CACHE: disabled via ZIYA_DISABLE_PROMPT_CACHE=1")
+            return messages
+
         if iteration == 0 or len(messages) < 6:
             return messages
 
@@ -365,6 +411,47 @@ class BedrockProvider(LLMProvider):
             "max_tokens": config.max_output_tokens,
             "messages": self.prepare_cache_control(messages, config.iteration),
         }
+        # ---- STRUCTURAL DIAGNOSTIC (temporary) ----------------------------
+        # We have repeatedly inferred the outgoing message array and been
+        # wrong. Log its actual shape so an empty-200 can be tied to a
+        # concrete structural cause (dangling tool_use, role non-alternation).
+        try:
+            _msgs = body["messages"]
+            _seq = []
+            _tool_use_ids, _tool_result_ids = set(), set()
+            for _m in _msgs:
+                _role = _m.get("role")
+                _c = _m.get("content")
+                if isinstance(_c, str):
+                    _btypes = ["str:%d" % len(_c)]
+                elif isinstance(_c, list):
+                    _btypes = []
+                    for _b in _c:
+                        if isinstance(_b, dict):
+                            _bt = _b.get("type", "?")
+                            _btypes.append(_bt)
+                            if _bt == "tool_use":
+                                _tool_use_ids.add(_b.get("id"))
+                            elif _bt == "tool_result":
+                                _tool_result_ids.add(_b.get("tool_use_id"))
+                        else:
+                            _btypes.append("nondict:%s" % type(_b).__name__)
+                else:
+                    _btypes = ["none" if _c is None else type(_c).__name__]
+                _seq.append("%s[%s]" % (_role, ",".join(_btypes)))
+            _dangling = _tool_use_ids - _tool_result_ids
+            _orphan = _tool_result_ids - _tool_use_ids
+            _alt = []
+            for _i in range(1, len(_msgs)):
+                if _msgs[_i].get("role") == _msgs[_i-1].get("role"):
+                    _alt.append(_i)
+            logger.info(
+                "🧪 MSG_STRUCT n=%d seq=%s dangling_tool_use=%s orphan_tool_result=%s same_role_adjacent_idx=%s",
+                len(_msgs), " | ".join(_seq), _dangling or "-", _orphan or "-", _alt or "-",
+            )
+        except Exception as _diag_e:
+            logger.warning("🧪 MSG_STRUCT diagnostic failed: %s", _diag_e)
+        # ---- END DIAGNOSTIC ----------------------------------------------
 
         # System prompt with cache control
         if system_content:
@@ -520,6 +607,37 @@ class BedrockProvider(LLMProvider):
             silence_elapsed = 0.0
 
             if "chunk" not in event:
+                # boto3 delivers in-stream errors as separate event types
+                # (NOT 'chunk'), keyed by the exception name. The HTTP
+                # envelope still returns 200, so these are invisible unless
+                # we inspect the event. Silently skipping them produced an
+                # empty stream (events_seen=0, stop_reason=None) that
+                # surfaced as a phantom "no output" completion — seen
+                # intermittently on opus4.8.
+                _exc_keys = {
+                    "internalServerException": ErrorType.OVERLOADED,
+                    "modelStreamErrorException": ErrorType.UNKNOWN,
+                    "throttlingException": ErrorType.THROTTLE,
+                    "modelTimeoutException": ErrorType.READ_TIMEOUT,
+                    "serviceUnavailableException": ErrorType.OVERLOADED,
+                    "validationException": ErrorType.UNKNOWN,
+                }
+                _hit = next((k for k in _exc_keys if k in event), None)
+                if _hit is not None:
+                    _payload = event.get(_hit) or {}
+                    _msg = _payload.get("message", _hit) if isinstance(_payload, dict) else str(_payload)
+                    _etype = _exc_keys[_hit]
+                    logger.warning(
+                        "Bedrock in-stream exception event '%s': %s", _hit, _msg
+                    )
+                    yield ErrorEvent(
+                        message=f"{_hit}: {_msg}",
+                        error_type=_etype,
+                        retryable=_etype in (ErrorType.THROTTLE, ErrorType.READ_TIMEOUT, ErrorType.OVERLOADED),
+                    )
+                    return
+                # Genuinely unrecognised non-chunk event — log and skip.
+                logger.debug("Skipping non-chunk stream event: keys=%s", list(event.keys()))
                 continue
 
             chunk_bytes = event["chunk"]["bytes"]
