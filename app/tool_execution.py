@@ -189,6 +189,8 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
             logger.info(f"🔧 Calling builtin tool directly: {ctx.actual_tool_name}")
             if ctx.project_root:
                 ctx.args['_workspace_path'] = ctx.project_root
+            if ctx.conversation_id:
+                ctx.args['conversation_id'] = ctx.conversation_id
             if task_scope_payload is not None:
                 ctx.args['_task_scope'] = task_scope_payload
             result = await asyncio.wait_for(
