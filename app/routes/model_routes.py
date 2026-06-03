@@ -203,6 +203,7 @@ def get_current_model():
             'model_alias': model_alias,  # Explicit alias field
             'actual_model_id': model_id,  # Full model ID object or string
             'display_model_id': display_model_id,  # Region-specific model ID for display
+            'inference_endpoint': ModelManager._state.get('inference_endpoint'),  # Actual string sent to Bedrock
             'endpoint': endpoint,
             'region': region,
             'settings': model_settings,

@@ -29,6 +29,7 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
   const [endpoint, setEndpoint] = useState<string>('bedrock');
   const [region, setRegion] = useState<string>('us-west-2');
   const [displayModelId, setDisplayModelId] = useState<string>('');
+  const [inferenceEndpoint, setInferenceEndpoint] = useState<string>('');
   const [capabilities, setCapabilities] = useState<ModelCapabilities | null>(null);
   const [availableModels, setAvailableModels] = useState<ExtendedModelInfo[]>([]);
     const capabilitiesLoadedRef = useRef<boolean>(false);
@@ -66,6 +67,7 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
       const actualEndpoint = data.endpoint;
       const actualRegion = data.region;
       const actualDisplayModelId = data.display_model_id;
+      const actualInferenceEndpoint = data.inference_endpoint || '';
 
       // Update capabilities if they exist in the response
       if (data.capabilities) {
@@ -87,6 +89,7 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
         await fetchAvailableModels(actualEndpoint);
         setRegion(actualRegion);
         setDisplayModelId(actualDisplayModelId);
+        setInferenceEndpoint(actualInferenceEndpoint);
 
         // Update settings with values from the API response
         setSettings(prevSettings => {
@@ -106,6 +109,7 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
         setEndpoint(actualEndpoint); // Update endpoint even if model ID hasn't changed
         setRegion(actualRegion); // Update region even if model ID hasn't changed
         setDisplayModelId(actualDisplayModelId); // Update display model ID even if model ID hasn't changed
+        setInferenceEndpoint(actualInferenceEndpoint); // Update inference endpoint even if model ID hasn't changed
         // Always refresh model list to match the running endpoint
         await fetchAvailableModels(actualEndpoint);
       }
@@ -448,6 +452,7 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
         onClose={() => setModalVisible(false)}
         modelId={typeof currentModelId === 'object' ? JSON.stringify(currentModelId) : currentModelId}
         displayModelId={displayModelId}
+        inferenceEndpoint={inferenceEndpoint}
         capabilities={capabilities}
         endpoint={endpoint}
         region={region}

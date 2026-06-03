@@ -51,6 +51,7 @@ class ModelManager:
         'current_model_id': None,
         'aws_profile': None,
         'aws_region': None,
+        'inference_endpoint': None,
         'process_id': None,
         'llm_with_stop': None,
         'agent': None,
@@ -676,6 +677,8 @@ class ModelManager:
     def _get_region_specific_model_id_with_region_update(cls, model_id, region, model_config=None, model_name=None):
         """
         Get the appropriate model ID and updated region based on model availability.
+        Prefers global inference profiles over region-specific ones for better
+        performance and lower cost per AWS guidance.
         
         Args:
             model_id: The model ID configuration (string or dict)
@@ -691,8 +694,21 @@ class ModelManager:
             
         # If model_id is a dict with region-specific IDs
         if isinstance(model_id, dict):
-            # Determine region prefix (eu or us)
             logger.debug(f"Processing region-specific model_id: {model_id}")
+
+            # Prefer global inference profile when available.  Global profiles
+            # route to the nearest capacity pool, yielding better latency and
+            # lower cost.  Opt out via ZIYA_PREFER_REGIONAL_INFERENCE=1 for
+            # data-residency requirements.
+            prefer_regional = os.environ.get("ZIYA_PREFER_REGIONAL_INFERENCE", "").strip() == "1"
+            if not prefer_regional and "global" in model_id and model_id["global"]:
+                logger.debug(
+                    f"Using global inference profile: {model_id['global']} "
+                    f"(region unchanged: {region})"
+                )
+                return model_id["global"], region
+
+            # Determine region prefix (eu or us)
             logger.debug(f"Current region: {region}")
             logger.debug(f"Available regions in model_id: {list(model_id.keys())}")
             
@@ -838,6 +854,8 @@ class ModelManager:
         if model_id_override:
             logger.info(f"Using model ID override: {model_id_override} instead of {model_id}")
             model_id = model_id_override
+
+        cls._state['inference_endpoint'] = model_id
             
         # Reset any previous error flags
         KnownCredentialException._error_displayed = False

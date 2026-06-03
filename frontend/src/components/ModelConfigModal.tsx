@@ -17,6 +17,7 @@ interface ModelConfigModalProps {
   endpoint: string;
   region: string;
   displayModelId?: string; // New prop for the actual model ID to display
+  inferenceEndpoint?: string; // The actual string sent to the Bedrock API
   availableModels: ModelInfo[];
   onModelChange: (modelId: string) => Promise<boolean>;
   capabilities: ModelCapabilities | null; // Use the imported type
@@ -68,6 +69,7 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
   endpoint,
   region,
   displayModelId,
+  inferenceEndpoint,
   availableModels,
   onModelChange,
   capabilities,
@@ -628,11 +630,18 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
             <Text type="secondary">{endpoint}</Text>
           </div>
           {endpoint === 'bedrock' && (
-            <div style={{ marginBottom: 0 }}>
+            <div style={{ marginBottom: 4 }}>
               <Text type="secondary" strong>Region:</Text>{' '}
               <Text type="secondary">{region}</Text>
             </div>
-          )}        </div>
+          )}
+          {endpoint === 'bedrock' && inferenceEndpoint && (
+            <div style={{ marginBottom: 0 }}>
+              <Text type="secondary" strong>Inference Endpoint:</Text>{' '}
+              <Text type="secondary" style={{ wordBreak: 'break-all' }}>{inferenceEndpoint}</Text>
+            </div>
+          )}
+        </div>
       </Form>
     </Modal>
   );
