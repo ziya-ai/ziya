@@ -383,6 +383,7 @@ Inside `ziya chat`, the following slash commands are available:
 | `/rm <file\|pattern>` | Remove files from context |
 | `/files` | List files currently in context |
 | `/shell <subcommand>` | Manage shell command allowlist (`add`, `rm`, `reset`, `yolo`, `git`, `timeout`) |
+| `/goal <text>` | Set an autonomous goal (synthesizes + launches a task card) |
 | `/tune <key> <val>` | Adjust session settings (e.g. `/tune iterations 50`) |
 | `/model [name]` | Switch model or open interactive model picker |
 | `/clear` | Clear conversation history |
@@ -390,6 +391,27 @@ Inside `ziya chat`, the following slash commands are available:
 | `/suspend` | Save session and exit |
 | `/resume` | Restore a previous session |
 | `/help` | Show command reference |
+
+### /goal — Autonomous Goals
+
+The `/goal` command lets you define a verifiable objective and have Ziya work on it autonomously until it's done. Under the hood it auto-synthesizes a Task Card with an Until block and launches it immediately.
+
+```
+/goal fix all TypeScript errors in frontend/src
+/goal migrate from Pydantic v1 to v2 with all tests passing
+/goal refactor the auth module to use dependency injection
+```
+
+The agent iterates (up to 15 times by default), re-evaluating whether the goal is met after each pass. Progress is visible via the inline task tile.
+
+**Subcommands:**
+
+| Command | Description |
+|---|---|
+| `/goal status` | Show the active goal's progress |
+| `/goal pause` | Pause the running goal |
+| `/goal resume` | Resume a paused goal |
+| `/goal clear` | Cancel and remove the goal |
 
 ### Piping
 
