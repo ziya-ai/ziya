@@ -209,9 +209,14 @@ class MemoryStorage:
         Combines embedding-based semantic similarity with keyword IDF
         scoring via Reciprocal Rank Fusion (RRF).  Falls back to
         keyword-only when embeddings are unavailable.
+
+        Includes both "active" and "contested" memories.  Contested
+        entries are excluded from system-prompt injection (which uses
+        list_memories(status="active") directly), but the model can
+        still find them via memory_search and reason about them.
         """
         raw = self._load_memories()
-        active = [m for m in raw if m.get("status") in (None, "active")]
+        active = [m for m in raw if m.get("status") in (None, "active", "contested")]
         if not active:
             return []
 
@@ -224,15 +229,15 @@ class MemoryStorage:
             active_ids = [m.get("id") for m in active if m.get("id")]
             missing = cache.missing_ids(active_ids)
             if missing and len(missing) > len(active_ids) * 0.5:
-                logger.info(f"Embedding cache has {len(missing)}/{len(active_ids)} missing — triggering backfill")
-                from app.services.embedding_service import get_embedding_provider, NoopProvider
-                provider = get_embedding_provider()
-                if not isinstance(provider, NoopProvider):
-                    for mid in missing:
-                        mem_data = next((m for m in active if m.get("id") == mid), None)
-                        if mem_data:
-                            from app.services.embedding_service import embed_and_cache
-                            embed_and_cache(mid, mem_data.get("content", ""))
+                # Don't block the search path with synchronous embedding.
+                # The backfill endpoint and post-save hook handle population;
+                # here we just skip semantic search gracefully when the cache
+                # is cold rather than blocking for potentially minutes.
+                logger.info(
+                    f"Embedding cache cold ({len(missing)}/{len(active_ids)} missing) "
+                    f"— skipping semantic search, using keyword fallback"
+                )
+                semantic_ranked = []  # fall through to keyword path
             semantic_ranked = semantic_search(query, top_k=limit * 2)
         except Exception as e:
             logger.debug(f"Semantic search unavailable: {e}")

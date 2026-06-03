@@ -78,7 +78,9 @@ async def list_all_memories():
     """Return every active memory (for the memory browser UI)."""
     from app.storage.memory import get_memory_storage
     store = get_memory_storage()
-    return [m.model_dump() for m in store.list_memories()]
+    active = store.list_memories(status="active")
+    contested = store.list_memories(status="contested")
+    return [m.model_dump() for m in active + contested]
 
 
 @router.post("/api/v1/memory")
@@ -236,6 +238,16 @@ async def organize_memories():
 async def organize_status():
     """Poll for organize task completion."""
     return _organize_task_status
+
+
+@router.get("/api/v1/memory/organize/history")
+async def organize_history():
+    """Bounded log of past organize runs (newest-first).
+
+    Drives the Memory Browser's Recent Activity tab.
+    """
+    from app.utils.memory_organize_history import load_organize_history
+    return load_organize_history()
 
 
 @router.post("/api/v1/memory/embeddings/backfill")
