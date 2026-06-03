@@ -107,7 +107,7 @@ const PANEL_WIDTH_KEY = 'ZIYA_PANEL_WIDTH';
 
 export const App: React.FC = () => {
     const {
-        streamedContentMap, currentMessages, startNewChat, currentConversationId,
+        streamedContentMap, currentMessages, startNewChat, startNewEphemeralChat, currentConversationId,
     } = useActiveChat();
     const {
         isTopToBottom, setIsTopToBottom, userHasScrolled, setUserHasScrolled, recordManualScroll,
@@ -477,6 +477,18 @@ export const App: React.FC = () => {
                                         <Button icon={<NodeIndexOutlined />} onClick={() => setShowMemoryBrowser(true)} />
                                     </Tooltip>
                                 )}
+                                <Tooltip title="New Ephemeral Chat (not saved, lost on reload)">
+                                    <Button
+                                        icon={<PlusOutlined />}
+                                        onClick={() => startNewEphemeralChat()}
+                                        type="dashed"
+                                        style={{
+                                            opacity: 0.55,
+                                            fontStyle: 'italic',
+                                        }}
+                                        aria-label="New ephemeral chat"
+                                    />
+                                </Tooltip>
                                 <Tooltip title="New Chat">
                                     <Button icon={<PlusOutlined />} onClick={() => startNewChat()} />
                                 </Tooltip>

@@ -24,6 +24,11 @@ export interface ActiveChatContextValue {
   loadConversation: (id: string) => void;
   loadConversationAndScrollToMessage: (conversationId: string, messageIndex: number) => Promise<void>;
   startNewChat: (specificFolderId?: string | null) => Promise<void>;
+  // Create a new conversation that lives only in React state for the
+  // current UX session. Never written to IndexedDB or pushed to the
+  // server. See promoteEphemeralToRetained for converting later.
+  startNewEphemeralChat: (specificFolderId?: string | null) => Promise<void>;
+  promoteEphemeralToRetained: (conversationId: string) => Promise<void>;
   editingMessageIndex: number | null;
   setEditingMessageIndex: (index: number | null) => void;
   // Streaming mutations (write access for components that start/stop streams)
@@ -67,6 +72,8 @@ export const ActiveChatProvider: React.FC<
       loadConversation: value.loadConversation,
       loadConversationAndScrollToMessage: value.loadConversationAndScrollToMessage,
       startNewChat: value.startNewChat,
+      startNewEphemeralChat: value.startNewEphemeralChat,
+      promoteEphemeralToRetained: value.promoteEphemeralToRetained,
       editingMessageIndex: value.editingMessageIndex,
       setEditingMessageIndex: value.setEditingMessageIndex,
       isStreaming: value.isStreaming,
@@ -107,7 +114,7 @@ export const ActiveChatProvider: React.FC<
       // Stable callbacks — included for correctness, won't trigger re-renders
       value.setCurrentConversationId, value.addMessageToConversation,
       value.loadConversation, value.loadConversationAndScrollToMessage,
-      value.startNewChat, value.setEditingMessageIndex,
+      value.startNewChat, value.startNewEphemeralChat, value.promoteEphemeralToRetained, value.setEditingMessageIndex,
       value.setIsStreaming, value.addStreamingConversation,
       value.removeStreamingConversation,
       value.setStreamedContentMap, value.setReasoningContentMap,

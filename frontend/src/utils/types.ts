@@ -66,6 +66,11 @@ export interface Conversation {
     projectId?: string;  // Scope conversations to projects
     title: string;
     isGlobal?: boolean;  // When true, visible in all projects
+    // When true, this conversation is held in React state only and is
+    // never persisted to IndexedDB or synced to the server. Lost on
+    // project switch or page reload. Use promoteEphemeralToRetained()
+    // to convert to a normal persisted conversation.
+    isEphemeral?: boolean;
     messages: Message[];
     lastAccessedAt: number | null;
     hasUnreadResponse?: boolean;
