@@ -1698,6 +1698,13 @@ export const sendPayload = async (
                     const lines = currentContent.split('\n');
                     if (jsonData.rewind_line && lines.length > jsonData.rewind_line) {
                         const beforeRewind = lines.slice(0, jsonData.rewind_line).join('\n');
+                        console.log('SPLICE_PROBE_continuation_rewind', JSON.stringify({
+                            rewindLine: jsonData.rewind_line,
+                            totalLines: lines.length,
+                            preLen: currentContent.length,
+                            postLen: beforeRewind.length,
+                            keptTail: beforeRewind.slice(-60),
+                        }));
                         currentContent = beforeRewind;
                         console.log(`🔄 REWIND: Trimmed content to line ${jsonData.rewind_line}, length: ${currentContent.length}`);
                         flushStreamedContent();
@@ -2833,7 +2840,7 @@ export const sendPayload = async (
         // Also drop the window-level reference set when the listener was
         // registered; without this, each sendPayload call leaks a closure
         // that pins streamedContentMap and message arrays for the session.
-        try { delete (window as any)[`abortListener_${conversationId}`]; } catch (_) {}
+        try { delete (window as any)[`abortListener_${conversationId}`]; } catch (_) { }
         // Release Screen Wake Lock and stop listening for visibility changes
         document.removeEventListener('visibilitychange', _onVisibilityChangeForWakeLock);
         if (_wakeLock) {

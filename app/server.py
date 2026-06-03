@@ -63,6 +63,8 @@ from app.utils.conversation_exporter import export_conversation_for_paste
 from app.api import projects, contexts, skills, chats, tokens, task_cards, task_runs, task_bindings
 from app.api import delegates as delegates_api
 from app.api import memory as memory_api
+from app.api import beads as beads_api
+from app.api import commands as commands_api
 from app.utils.paths import get_ziya_home
 from app.utils.logging_utils import logger as app_logger
 
@@ -1217,9 +1219,11 @@ app.include_router(chats.router)
 app.include_router(tokens.router)
 app.include_router(delegates_api.router)
 app.include_router(memory_api.router)
+app.include_router(beads_api.router)
 app.include_router(task_cards.router)
 app.include_router(task_runs.router)
 app.include_router(task_bindings.router)
+app.include_router(commands_api.router)
 app_logger.info("Session management API routes loaded")
 
 # Import and include model routes
@@ -1570,7 +1574,7 @@ async def stream_chunks(body):
                         yield f"data: {json.dumps({'error': chunk.get('content', 'Unknown error'), 'error_type': chunk.get('error', 'unknown'), 'can_retry': chunk.get('can_retry', False), 'retry_message': chunk.get('retry_message', '')})}\n\n"
                     elif chunk.get('type') == 'heartbeat':
                         # Pass through heartbeat messages
-                        yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\\n\\n"
+                        yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\n\n"
                     elif chunk.get('type') == 'tool_result_for_model':
                         # Don't stream to frontend - this is for model conversation only
                         logger.debug(f"Tool result for model conversation: {chunk.get('tool_use_id')}")
@@ -1759,8 +1763,8 @@ async def stream_chunks(body):
                     return
                 # No content streamed yet — return error to client
                 logger.warning(f"🚀 DIRECT_STREAMING: {ve} (pre-stream)")
-                yield f"data: {json.dumps({'error': f'Model initialization error: {str(ve)[:200]}', 'error_type': 'ValueError'})}\\n\\n"
-                yield f"data: {json.dumps({'done': True})}\\n\\n"
+                yield f"data: {json.dumps({'error': f'Model initialization error: {str(ve)[:200]}', 'error_type': 'ValueError'})}\n\n"
+                yield f"data: {json.dumps({'done': True})}\n\n"
                 return
             except Exception as e:  # Intentionally broad: STE can raise API/auth/config errors
                 # Falls back to LangChain path — must catch everything to avoid aborting
@@ -1794,8 +1798,8 @@ async def stream_chunks(body):
         
         # No question provided — nothing to stream
         logger.warning("stream_chunks: No question in request body")
-        yield f"data: {json.dumps({'error': 'No question provided', 'error_type': 'missing_input'})}\\n\\n"
-        yield f"data: {json.dumps({'done': True})}\\n\\n"
+        yield f"data: {json.dumps({'error': 'No question provided', 'error_type': 'missing_input'})}\n\n"
+        yield f"data: {json.dumps({'done': True})}\n\n"
 
 # Folder/cache management — delegated to app.services.folder_service
 from app.services.folder_service import (
