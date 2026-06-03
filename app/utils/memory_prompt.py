@@ -136,6 +136,16 @@ def get_memory_prompt_section() -> str:
         core, extended_count = _select_core_memories(memories)
 
         if core:
+            # Record that these memories were loaded into context so the
+            # feedback loop can detect whether they were actually used,
+            # and so the decay check doesn't archive them for "inactivity"
+            # while they're literally in the prompt every turn.
+            try:
+                from app.utils.memory_feedback import record_load
+                from app.context import get_conversation_id
+                record_load(get_conversation_id(), [m.id for m in core])
+            except Exception:
+                pass  # Non-fatal
             by_layer: dict[str, list] = {}
             for m in core:
                 by_layer.setdefault(m.layer, []).append(m)

@@ -47,6 +47,22 @@ from app.utils.logging_utils import logger
 _loaded_per_conversation: Dict[str, Set[str]] = defaultdict(set)
 
 
+# Reconsolidation labile windows -- per-memory expiry timestamps (Unix ms).
+# When a memory is retrieved, it briefly enters a "labile" state during
+# which the comparator is biased toward UPDATE over NOOP for partial
+# overlaps.  Mirrors the biological reconsolidation window: retrieval
+# transiently destabilizes the trace, allowing finer corrections, then
+# it re-stabilizes.  Process-local: restart-conservative is the right
+# fallback (closes all open windows; nothing wrongly biased).
+_labile_until: Dict[str, int] = {}
+
+# Window durations.  RETRIEVAL covers "user injected this into context";
+# USED covers "user demonstrably referenced this in their response"
+# (stronger signal, longer window).
+_LABILE_RETRIEVAL_MS = 3_600_000      # 1 hour
+_LABILE_USED_MS      = 14_400_000     # 4 hours
+
+
 # Window tokenization config.  Approximate character-based windowing
 # rather than real tokenization -- we don't need precise alignment,
 # just enough chunks for max-pooling to find the relevant section.
@@ -63,6 +79,41 @@ _USE_THRESHOLD = 0.55
 _USE_IMPORTANCE_DELTA = 0.05
 
 
+def mark_labile(memory_ids, duration_ms: int) -> None:
+    """Open or extend a reconsolidation window on each memory.
+
+    Extension is max-based: a longer-duration call cannot shrink an
+    existing window.  Accepts any iterable of ids; empty input is a no-op.
+    """
+    if not memory_ids or duration_ms <= 0:
+        return
+    expiry = int(time.time() * 1000) + duration_ms
+    for mid in memory_ids:
+        if not mid:
+            continue
+        prev = _labile_until.get(mid, 0)
+        if expiry > prev:
+            _labile_until[mid] = expiry
+
+
+def is_labile(memory_id: str) -> bool:
+    """Whether the memory is currently within its reconsolidation window.
+
+    Auto-cleans expired entries on read so the dict can't grow unbounded
+    even if mark_labile is called for memories that are never re-checked.
+    """
+    if not memory_id:
+        return False
+    now = int(time.time() * 1000)
+    expiry = _labile_until.get(memory_id, 0)
+    if expiry == 0:
+        return False
+    if expiry <= now:
+        _labile_until.pop(memory_id, None)
+        return False
+    return True
+
+
 def record_load(conversation_id: Optional[str], memory_ids: List[str]) -> None:
     """Record that these memories were loaded into a conversation's context.
 
@@ -70,7 +121,12 @@ def record_load(conversation_id: Optional[str], memory_ids: List[str]) -> None:
     one conversation only counts once for the purposes of feedback,
     since the model only sees the same content once per turn.
     """
-    if not conversation_id or not memory_ids:
+    if not memory_ids:
+        return
+    # Open the reconsolidation window regardless of whether we have a
+    # conversation_id -- the labile property is per-memory, not per-conv.
+    mark_labile(memory_ids, _LABILE_RETRIEVAL_MS)
+    if not conversation_id:
         return
     _loaded_per_conversation[conversation_id].update(memory_ids)
     logger.debug(
@@ -246,6 +302,11 @@ def _bump_loaded_only(memory_ids: Set[str]) -> None:
 
 def _apply_updates(loaded: Set[str], used_ids: Set[str]) -> None:
     """Persist counter and importance updates to the active memory store."""
+    # Memories the response actually referenced get the longer labile
+    # window: a "used" signal is stronger evidence the user is engaged
+    # with this fact than mere injection into context.
+    if used_ids:
+        mark_labile(used_ids, _LABILE_USED_MS)
     try:
         from app.storage.memory import get_memory_storage
         store = get_memory_storage()

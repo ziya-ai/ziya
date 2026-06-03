@@ -33,9 +33,39 @@ Rules:
 - If the new memory adds detail to a different aspect of the same topic, choose ADD (both are valuable).
 - If the new memory says essentially the same thing in different words, choose NOOP.
 - When choosing UPDATE, pick the single most relevant existing memory to replace.
+- An existing memory marked [recently retrieved] was just consulted by the user. \
+If the new memory partially overlaps with a [recently retrieved] one and adds a \
+correction, refinement, or contradiction, prefer UPDATE over both ADD and NOOP -- \
+recent retrieval indicates the user is actively engaged with that fact. Pure \
+rephrasings of [recently retrieved] memories should still be NOOP.
+- An existing memory marked [contested] is suspected to be stale.  If the new \
+memory addresses the same topic, prefer UPDATE -- this is the candidate's \
+chance to supersede outdated information.  Genuinely new orthogonal information \
+remains ADD.
 
 Respond with ONLY a JSON object: {"action": "ADD"} or {"action": "UPDATE", "target_id": "<id>"} \
 or {"action": "NOOP"}. No explanation."""
+
+
+def _build_existing_listing(similar: List[Dict[str, Any]]) -> str:
+    """Format the EXISTING MEMORIES block for the comparator prompt.
+
+    Annotates entries currently within their reconsolidation window
+    with a [recently retrieved] marker so the LLM can apply the
+    labile-window rule above.  Pure helper for testability.
+    """
+    from app.utils.memory_feedback import is_labile
+    lines = []
+    for m in similar:
+        mid = m.get("id", "?")
+        markers = []
+        if is_labile(mid):
+            markers.append("[recently retrieved]")
+        if m.get("status") == "contested":
+            markers.append("[contested]")
+        marker_str = (" " + " ".join(markers)) if markers else ""
+        lines.append(f"- [{mid}]{marker_str} ({m.get('layer', '?')}) {m.get('content', '')}")
+    return "\n".join(lines)
 
 
 def find_similar_memories(
@@ -166,10 +196,7 @@ async def compare_memory(
     Returns {"action": "ADD"}, {"action": "UPDATE", "target_id": "..."}, or {"action": "NOOP"}.
     Falls back to ADD on any error (fail-open: better to have a near-dupe than lose knowledge).
     """
-    existing_text = "\n".join(
-        f"- [{m.get('id', '?')}] ({m.get('layer', '?')}) {m.get('content', '')}"
-        for m in similar
-    )
+    existing_text = _build_existing_listing(similar)
     user_msg = (
         f"NEW MEMORY:\n({candidate.get('layer', '?')}) {candidate.get('content', '')}\n"
         f"Tags: {', '.join(candidate.get('tags', []))}\n\n"

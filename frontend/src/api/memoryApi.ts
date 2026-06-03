@@ -14,6 +14,8 @@ export interface MemoryItem {
   importance: number;
   scope?: { domain_node?: string | null; project_paths?: string[] };
   relations?: Record<string, string[]>;
+  retrieval_loaded_count?: number;
+  retrieval_used_count?: number;
 }
 
 export interface MemoryProposal {
@@ -177,6 +179,35 @@ export interface OrganizeResult {
   relations: { status: string; relations_found?: number };
   cross_links: string[];
   divisions: string[];
+  rem?: {
+    nodes_mature?: number;
+    syntheses_created?: number;
+    memories_contested?: number;
+    syntheses?: Array<{ node_id: string; proposal_id: string }>;
+    contested?: Array<{ node_id: string; memory_id: string }>;
+  };
+}
+
+export interface OrganizeHistoryRecord {
+  timestamp: number;
+  cleanup: { removed: number; merged: number; reviewed: number };
+  bootstrap: { domains_created: number; domains_updated: number; memories_placed: number };
+  relations_found: number;
+  cross_links_added: number;
+  divisions: number;
+  rem: {
+    nodes_mature: number;
+    syntheses_created: number;
+    memories_contested: number;
+    syntheses: Array<{ node_id: string; proposal_id: string }>;
+    contested: Array<{ node_id: string; memory_id: string }>;
+  };
+}
+
+export async function getOrganizeHistory(): Promise<OrganizeHistoryRecord[]> {
+  const res = await fetch('/api/v1/memory/organize/history', { headers: headers() });
+  if (!res.ok) throw new Error(`History fetch failed: ${res.status}`);
+  return res.json();
 }
 
 export async function runOrganize(): Promise<OrganizeResult> {
