@@ -153,6 +153,15 @@ async def handle_message_stop(
         assistant_lines = state.assistant_text.split('\n')
         if assistant_lines and assistant_lines[-1].strip():
             assistant_lines = assistant_lines[:-1]
+            # Persist the trim back into state. Without this reassignment the
+            # orphaned partial line (e.g. a diff body truncated mid-token like
+            # `content = content .. "L`) survives in assistant_text, and the
+            # continuation below is concatenated directly onto it via
+            # `state.assistant_text += ...`, fusing the dangling text onto the
+            # continuation's opening fence. _continue_incomplete_code_block
+            # already trims its prefill copy to this same boundary, so the
+            # model continues from the clean line — we must match it here.
+            state.assistant_text = '\n'.join(assistant_lines)
             logger.info(
                 f"🔄 REWIND: Removed incomplete last line, "
                 f"rewinding to line {len(assistant_lines)}"

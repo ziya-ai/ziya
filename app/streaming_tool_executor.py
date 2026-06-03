@@ -1050,9 +1050,64 @@ class StreamingToolExecutor:
                 system_content = content
             elif role in ('user', 'assistant', 'ai'):
                 bedrock_role = 'assistant' if role == 'ai' else role
+                # Drop turns with empty/whitespace-only content. Persisted
+                # empty assistant turns (e.g. from a prior Bedrock empty-200
+                # completion) otherwise produce a malformed message array that
+                # opus4.8 answers with another empty stream — a self-
+                # perpetuating loop. opus4.7 tolerated these; 4.8 does not.
+                if self._is_empty_content(content):
+                    logger.info(
+                        f"🧹 SANITIZE: Dropping empty-content '{bedrock_role}' "
+                        f"turn at index {i} before sending to model."
+                    )
+                    continue
                 conversation.append({"role": bedrock_role, "content": content})
+        # Merge any consecutive same-role turns left behind (e.g. after an
+        # empty assistant turn was dropped, leaving user→user). The Anthropic
+        # Messages API requires strictly alternating roles.
+        merged = []
+        for msg in conversation:
+            if merged and merged[-1]["role"] == msg["role"]:
+                prev, cur = merged[-1]["content"], msg["content"]
+                if isinstance(prev, str) and isinstance(cur, str):
+                    merged[-1]["content"] = prev + "\n\n" + cur
+                elif isinstance(prev, list) and isinstance(cur, list):
+                    merged[-1]["content"] = prev + cur
+                else:
+                    # Mixed str/list — normalise both to list blocks.
+                    pblocks = prev if isinstance(prev, list) else [{"type": "text", "text": prev}]
+                    cblocks = cur if isinstance(cur, list) else [{"type": "text", "text": cur}]
+                    merged[-1]["content"] = pblocks + cblocks
+                logger.info(f"🧹 SANITIZE: Merged consecutive '{msg['role']}' turns.")
+            else:
+                merged.append(msg)
+        return merged, system_content
+    @staticmethod
+    def _is_empty_content(content) -> bool:
+        """True if a message has no usable content (blank string, or a list
+        whose text blocks are all empty and which carries no non-text blocks
+        such as images/tool_use/tool_result)."""
+        if content is None:
+            return True
+        if isinstance(content, str):
+            return not content.strip()
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    if str(block).strip():
+                        return False
+                    continue
+                btype = block.get("type", "text")
+                if btype == "text":
+                    if (block.get("text") or "").strip():
+                        return False
+                else:
+                    # image, tool_use, tool_result, etc. — meaningful content
+                    return False
+            return True
+        # Unknown type — treat as non-empty to avoid dropping real data.
+        return False
 
-        return conversation, system_content
 
     def _should_continue_or_end_stream(self, assistant_text, tools_executed, iteration,
                                         code_block_tracker, continuation_happened,
@@ -1715,6 +1770,11 @@ class StreamingToolExecutor:
         # to actually run. Bounded to avoid infinite text-only loops when the
         # model legitimately has nothing more to do.
         textonly_grace_used = 0
+        # Separate, tightly-bounded budget for the case where the model returns
+        # a completely empty completion (no text, no tools, zero usage tokens)
+        # on the first turn after a normal user message — a transient provider
+        # hiccup that otherwise surfaces as an "errored" empty bubble in the UI.
+        empty_completion_retry_used = 0
         for iteration in range(max_iterations):
             logger.debug(f"🔍 ITERATION_START: Beginning iteration {iteration}")
             # Check for user-requested cancellation before making a new LLM call.
@@ -2841,7 +2901,17 @@ Please retry the tool call with valid JSON. Ensure:
                             f"all_tool_calls={len(all_tool_calls)}"
                         )
                     else:
-                        logger.info(f"No usage metrics for iteration {iteration} (no output)")
+                        # Empty completion: capture enough to distinguish a
+                        # transient provider hiccup from a deterministic
+                        # parse/request mismatch (e.g. opus4.8 adaptive thinking).
+                        _thk = getattr(provider_config, 'thinking', None)
+                        logger.info(
+                            f"No usage metrics for iteration {iteration} (no output) "
+                            f"[diag] model={getattr(self, 'model_id', '?')} "
+                            f"events_seen={event_count} "
+                            f"stop_reason={last_stop_reason!r} "
+                            f"thinking={'adaptive' if (_thk and getattr(_thk,'mode',None)=='adaptive') else (_thk and getattr(_thk,'enabled',False))}"
+                        )
 
                 # CRITICAL: Validate tool_results match tool_use blocks before building conversation
                 # Remove any tool_use blocks that don't have corresponding results
@@ -3276,6 +3346,21 @@ Please retry the tool call with valid JSON. Ensure:
                                 "role": "user",
                                 "content": "[System: Please continue — analyze the tool results above and proceed with your task.]"
                             })
+                            continue
+                        if not _prev_is_tool_result and empty_completion_retry_used < 2:
+                            # Transient empty completion (no text, no tools) after a
+                            # normal user message — typically a provider hiccup that
+                            # otherwise surfaces as an "errored" empty bubble in the UI.
+                            # The last conversation message is still the user's question
+                            # (no empty assistant turn was appended), so a bare retry
+                            # re-issues the identical request without creating two
+                            # consecutive user messages.
+                            empty_completion_retry_used += 1
+                            logger.info(
+                                f"🔄 EMPTY_COMPLETION_RETRY: Model returned nothing after a normal "
+                                f"user message (iteration={iteration}, "
+                                f"retry={empty_completion_retry_used}/2). Re-issuing request."
+                            )
                             continue
                         logger.debug(f"🔍 NO_ACTIVITY: No tools or text in iteration {iteration}, ending stream")
                         yield {'type': 'stream_end'}
