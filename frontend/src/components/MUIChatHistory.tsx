@@ -102,6 +102,7 @@ interface ChatTreeItemProps {
   isPinned?: boolean;
   isCurrentItem?: boolean;
   isGlobalItem?: boolean;
+  isEphemeralItem?: boolean;
   isStreaming?: boolean;
   // Conversation has a task card with a non-terminal run.  Renders a
   // distinct gear affordance instead of the chat-streaming spinner.
@@ -120,6 +121,7 @@ interface ChatTreeItemProps {
   onToggleGlobal?: (id: string) => void;
   onMoveToProject?: (id: string, anchorEl: HTMLElement) => void;
   onOpenMoveMenu?: (id: string, anchorEl: HTMLElement) => void;
+  onPromoteEphemeral?: (id: string) => void;
   onCreateSubfolder?: (id: string) => void;
   onMoveFolder?: (id: string, parentId: string | null) => void;
   onCustomDragEnd?: (draggedId: string, targetId: string, dragType: 'folder' | 'conversation') => void;
@@ -154,6 +156,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     onDelegateRetry,
     onDelegateSkip,
     isGlobalItem = false,
+    isEphemeralItem = false,
     isStreaming = false,
     isRunningTask = false,
     hasUnreadResponse = false,
@@ -318,11 +321,15 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                     fontWeight: isFolder ? 'bold' : 'normal',
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap'
+                    whiteSpace: 'nowrap',
+                    ...(isEphemeralItem ? { opacity: 0.55, fontStyle: 'italic' } : {}),
                   }}
                   onDoubleClick={handleLabelDoubleClick}
                 >
                   {labelText}
+                  {isEphemeralItem && (
+                    <Typography component="span" variant="caption" sx={{ ml: 0.5, opacity: 0.7, fontStyle: 'italic' }}>· ephemeral</Typography>
+                  )}
                 </Typography>
                 {/* Delegate status badge (after label text) */}
                 {delegateStatus === 'crystal' && (
@@ -380,6 +387,8 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                           onEdit={onEdit} onDelete={onDelete} onFork={onFork} onCompress={onCompress} onExport={onExport}
                           onOpenMoveMenu={onOpenMoveMenu}
                           onToggleGlobal={onToggleGlobal} onMoveToProject={onMoveToProject} isGlobalItem={isGlobalItem}
+                          isEphemeralItem={isEphemeralItem}
+                          onPromoteEphemeral={(props as any).onPromoteEphemeral}
                           onConfigure={onConfigure} onPin={onPin} isPinned={isPinned} onCreateSubfolder={onCreateSubfolder}
                         />}
                         trigger={['click']}
@@ -428,7 +437,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     </div>
   );
 });
-const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress, onExport, onOpenMoveMenu, onToggleGlobal, onMoveToProject, onCopyToProject, isGlobalItem, onConfigure, onPin, isPinned, onCreateSubfolder, isTaskPlanFolder, onSwarmRecovery, delegateStatus, onDelegateRetry, onDelegateSkip }) => {
+const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress, onExport, onOpenMoveMenu, onToggleGlobal, onMoveToProject, onCopyToProject, isGlobalItem, isEphemeralItem, onPromoteEphemeral, onConfigure, onPin, isPinned, onCreateSubfolder, isTaskPlanFolder, onSwarmRecovery, delegateStatus, onDelegateRetry, onDelegateSkip }) => {
   const handleAntAction = (actionCallback: (id: string) => void, originalEvent?: React.MouseEvent | Event) => {
     originalEvent?.stopPropagation();
     actionCallback(nodeId);
@@ -443,6 +452,17 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
       items.push(
         { key: 'delegate-retry', label: '🔄 Retry delegate', onClick: (e) => { e.domEvent.stopPropagation(); onDelegateRetry(nodeId); } },
         { key: 'delegate-skip', label: '⏭️ Skip & unblock downstream', onClick: (e) => { e.domEvent.stopPropagation(); onDelegateSkip?.(nodeId); } },
+        { type: 'divider' as const },
+      );
+    }
+
+    if (isEphemeralItem && onPromoteEphemeral) {
+      items.push(
+        {
+          key: 'promote-ephemeral',
+          label: '💾 Promote to retained',
+          onClick: (e) => { e.domEvent.stopPropagation(); onPromoteEphemeral(nodeId); },
+        },
         { type: 'divider' as const },
       );
     }
@@ -827,6 +847,7 @@ const MUIChatHistory = () => {
     currentConversationId,
     setDynamicTitleLength,
     startNewChat,
+    promoteEphemeralToRetained,
     loadConversation,
     loadConversationAndScrollToMessage,
     streamingConversations,
@@ -1972,6 +1993,9 @@ const MUIChatHistory = () => {
               const updatedConversations = conversations.filter(
                 (conv: any) => conv.id !== conversationId
               );
+              // Apply the filter to React state — without this the sidebar
+              // keeps showing the deleted entry until the next sync cycle.
+              setConversations(updatedConversations);
               // If the deleted conversation was active, switch to another existing
               // one rather than creating a new one. Do NOT call startNewChat here —
               // its stale conversations closure would write the deleted conversation
@@ -3612,6 +3636,7 @@ const MUIChatHistory = () => {
                 const isCurrentItem = isFolder
                   ? false : nodeId.startsWith('conv-') && nodeId.substring(5) === currentConversationId;
                 const isGlobalItem = isFolder ? node.folder?.isGlobal === true : node.conversation?.isGlobal === true;
+                const isEphemeralItem = !isFolder && node.conversation?.isEphemeral === true;
                 const hasUnreadResponse = !isFolder && nodeId.startsWith('conv-') &&
                   node.conversation?.hasUnreadResponse && nodeId.substring(5) !== currentConversationId;
                 const convId = !isFolder && nodeId.startsWith('conv-') ? nodeId.substring(5) : null;
@@ -3667,6 +3692,7 @@ const MUIChatHistory = () => {
                       isTaskPlanFolder={isTaskPlanFolder} taskPlanProgress={taskPlanProgress}
                       delegateStatus={delegateStatus} isPinned={isPinned}
                       isCurrentItem={isCurrentItem} isGlobalItem={isGlobalItem}
+                      isEphemeralItem={isEphemeralItem}
                       isStreaming={isStreamingConv} hasUnreadResponse={hasUnreadResponse}
                       isRunningTask={isRunningTaskConv}
                       conversationCount={conversationCount}
@@ -3681,6 +3707,7 @@ const MUIChatHistory = () => {
                       onMoveToProject={handleOpenMoveToProjectMenu}
                       onCopyToProject={handleOpenCopyToProjectMenu}
                       onCreateSubfolder={handleCreateSubfolder}
+                      onPromoteEphemeral={(id) => promoteEphemeralToRetained(id.startsWith('conv-') ? id.substring(5) : id)}
                       isEditing={isEditingNode} editValue={editValue}
                       onEditChange={handleEditChange} onEditSubmit={handleEditSubmit}
                       onMouseDown={handleCustomMouseDown}
