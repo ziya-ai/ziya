@@ -84,6 +84,13 @@ BUILTIN_TOOL_CATEGORIES: Dict[str, Dict[str, any]] = {
         "requires_dependencies": [],
         "tools": [],
     },
+    "beads": {
+        "name": "Conversation Beads",
+        "description": "Silent task-tree tracking — subtask forking, parking, and completion",
+        "enabled_by_default": True,
+        "requires_dependencies": [],
+        "tools": [],
+    },
 }
 
 
@@ -201,6 +208,18 @@ def get_memory_tools() -> List[Type[BaseMCPTool]]:
         return []
 
 
+def get_bead_tools() -> List[Type[BaseMCPTool]]:
+    """Get bead task-tree tracking tools."""
+    try:
+        from app.mcp.tools.bead_tools import (
+            BeadCreateTool, BeadCompleteTool, BeadStatusTool
+        )
+        return [BeadCreateTool, BeadCompleteTool, BeadStatusTool]
+    except ImportError as e:
+        logger.warning(f"Could not import bead tools: {e}")
+        return []
+
+
 def get_context_management_tools() -> List[Type[BaseMCPTool]]:
     """Get model-driven context-management tools."""
     try:
@@ -226,6 +245,7 @@ def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
         "skills": get_skill_tools,
         "memory": get_memory_tools,
         "context_management": get_context_management_tools,
+        "beads": get_bead_tools,
     }
 
     getter = tool_getters.get(category)

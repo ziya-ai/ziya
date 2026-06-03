@@ -176,6 +176,20 @@ class PrecisionPromptSystem:
                 except Exception as e:
                     pass  # Non-fatal — memory is advisory
 
+            # Inject bead (task-tree) directive and status summary so the
+            # model knows to track subtasks and is aware of parked threads.
+            if messages and messages[0]["role"] == "system":
+                try:
+                    from app.utils.bead_prompt import get_bead_directive, get_bead_status_summary
+                    bead_directive = get_bead_directive()
+                    if bead_directive:
+                        messages[0]["content"] += bead_directive
+                    bead_status = get_bead_status_summary()
+                    if bead_status:
+                        messages[0]["content"] += bead_status
+                except Exception:
+                    pass  # Non-fatal — beads are advisory
+
             # Inject skill prompts and other per-request additions (e.g. from
             # activeSkillPrompts on the frontend) into the system message.
             if system_prompt_addition and messages and messages[0]["role"] == "system":
