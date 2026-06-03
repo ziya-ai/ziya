@@ -497,7 +497,14 @@ async def reorganize(store=None) -> Dict[str, Any]:
         from app.storage.memory import get_memory_storage
         store = get_memory_storage()
 
-    results = {"cleanup": {}, "bootstrap": {}, "relations": {}, "cross_links": [], "divisions": []}
+    results = {
+        "cleanup": {},
+        "bootstrap": {},
+        "relations": {},
+        "cross_links": [],
+        "divisions": [],
+        "rem": {},
+    }
 
     # Phase 0: Clean up junk before organizing
     try:
@@ -520,6 +527,14 @@ async def reorganize(store=None) -> Dict[str, Any]:
         logger.error(f"Relation extraction failed: {e}")
         results["relations"] = {"status": "error", "error": str(e)}
 
+    # Phase 3: REM — synthesis + staleness on mature nodes
+    try:
+        from app.utils.memory_rem import rem_phase
+        results["rem"] = await rem_phase(store)
+    except Exception as e:
+        logger.error(f"REM phase failed: {e}")
+        results["rem"] = {"status": "error", "error": str(e)}
+
     from app.utils.memory_maintenance import discover_cross_links, maybe_divide_node
     try:
         for node in store.list_mindmap_nodes():
@@ -532,6 +547,13 @@ async def reorganize(store=None) -> Dict[str, Any]:
             results["divisions"].extend(maybe_divide_node(store, node.id))
     except Exception as e:
         logger.error(f"Cell division failed: {e}")
+
+    # Append summary to bounded history log for the Memory Browser UI.
+    try:
+        from app.utils.memory_organize_history import append_organize_result
+        append_organize_result(results)
+    except Exception as e:
+        logger.warning(f"organize_history append failed (non-fatal): {e}")
 
     return results
 

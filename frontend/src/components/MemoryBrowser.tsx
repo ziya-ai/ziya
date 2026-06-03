@@ -412,14 +412,25 @@ const MemoryCard: React.FC<{
   const color = LAYER_COLORS[mem.layer] || '#888';
   const daysSinceAccess = Math.floor((Date.now() - new Date(mem.last_accessed).getTime()) / 86400000);
   const freshnessLabel = daysSinceAccess <= 1 ? 'Today' : daysSinceAccess <= 7 ? `${daysSinceAccess}d ago` : `${Math.floor(daysSinceAccess / 7)}w ago`;
+  const isSynthesis = mem.learned_from === 'rem_synthesis';
+  const isContested = mem.status === 'contested';
+  const usageRatio = (mem as any).retrieval_loaded_count > 0
+    ? (mem as any).retrieval_used_count / (mem as any).retrieval_loaded_count
+    : null;
 
   return (
     <div style={{
       background: isDarkMode ? '#1e293b' : '#fff',
-      border: `1px solid ${highlight ? '#fbbf24' : (isDarkMode ? '#334155' : '#e2e8f0')}`,
+      border: `1px solid ${
+        highlight ? '#fbbf24'
+        : isContested ? '#ef4444'
+        : isSynthesis ? '#a78bfa'
+        : (isDarkMode ? '#334155' : '#e2e8f0')
+      }`,
       borderLeft: `4px solid ${color}`,
       borderRadius: 8, padding: '12px 16px', marginBottom: 8,
       boxShadow: highlight ? `0 0 12px ${LAYER_COLORS[mem.layer]}44` : undefined,
+      opacity: isContested ? 0.75 : 1,
       transition: 'box-shadow 0.3s, border-color 0.3s',
     }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
@@ -427,6 +438,16 @@ const MemoryCard: React.FC<{
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
             <span style={{ fontSize: 14 }}>{LAYER_ICONS[mem.layer] || '📝'}</span>
             <Tag color={color} style={{ margin: 0, fontSize: 11 }}>{LAYER_LABELS[mem.layer] || mem.layer}</Tag>
+            {isSynthesis && (
+              <Tooltip title="REM-phase synthesis: a higher-order pattern abstracted from multiple memories">
+                <Tag color="purple" style={{ margin: 0, fontSize: 10 }}>🌙 synthesis</Tag>
+              </Tooltip>
+            )}
+            {isContested && (
+              <Tooltip title="Marked stale by REM staleness detection. Excluded from system prompt; resurrected on next use.">
+                <Tag color="red" style={{ margin: 0, fontSize: 10 }}>⚠️ contested</Tag>
+              </Tooltip>
+            )}
             <span style={{ fontSize: 10, color: isDarkMode ? '#64748b' : '#94a3b8' }}>
               {freshnessLabel}
             </span>
@@ -436,6 +457,17 @@ const MemoryCard: React.FC<{
                 {'☆'.repeat(5 - Math.ceil(mem.importance * 5))}
               </span>
             </Tooltip>
+            {usageRatio !== null && (
+              <Tooltip title={`Retrieved ${(mem as any).retrieval_loaded_count}× / used ${(mem as any).retrieval_used_count}× — ${(usageRatio * 100).toFixed(0)}% match rate`}>
+                <span style={{
+                  fontSize: 10,
+                  color: usageRatio < 0.2 ? '#ef4444'
+                       : usageRatio < 0.5 ? '#f59e0b' : '#10b981',
+                }}>
+                  {(usageRatio * 100).toFixed(0)}%
+                </span>
+              </Tooltip>
+            )}
           </div>
           <div style={{ fontSize: 13, lineHeight: 1.5, color: isDarkMode ? '#e2e8f0' : '#334155', wordBreak: 'break-word' }}>
             {mem.content}
@@ -574,6 +606,8 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ visible, onClose }) => {
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [filterProject, setFilterProject] = useState<string | null>(null);
+  const [filterSpecial, setFilterSpecial] = useState<'all' | 'synthesis' | 'contested'>('all');
+  const [history, setHistory] = useState<api.OrganizeHistoryRecord[]>([]);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
 
   // Load all data
@@ -592,6 +626,8 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ visible, onClose }) => {
       setMindmap(mm);
       // Load review lazily (can be slow with many memories)
       api.getReview().then(setReview).catch(() => {});
+      // Load organize history (cheap, drives Activity tab)
+      api.getOrganizeHistory().then(setHistory).catch(() => {});
     } catch (err) {
       console.error('Memory browser load failed:', err);
     } finally {
@@ -707,8 +743,13 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ visible, onClose }) => {
         list = list.filter(m => m.scope?.project_paths?.includes(filterProject));
       }
     }
+    if (filterSpecial === 'synthesis') {
+      list = list.filter(m => m.learned_from === 'rem_synthesis');
+    } else if (filterSpecial === 'contested') {
+      list = list.filter(m => m.status === 'contested');
+    }
     return list;
-  }, [memories, searchResults, filterLayer]);
+  }, [memories, searchResults, filterLayer, filterProject, filterSpecial]);
 
   // Sort memories: highlighted first, then by importance desc
   const sortedMemories = useMemo(() => {
@@ -834,6 +875,22 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ visible, onClose }) => {
               ]}
             />
           </div>
+            {/* Special-status filter chips */}
+            <div style={{ display: 'flex', gap: 6, marginBottom: 12, alignItems: 'center' }}>
+              <span style={{ fontSize: 11, color: isDarkMode ? '#64748b' : '#94a3b8' }}>Show:</span>
+              {([
+                ['all', 'All', undefined],
+                ['synthesis', '🌙 Synthesis only', '#a78bfa'],
+                ['contested', '⚠️ Contested only', '#ef4444'],
+              ] as const).map(([key, label, color]) => (
+                <Tag.CheckableTag
+                  key={key}
+                  checked={filterSpecial === key}
+                  onChange={() => setFilterSpecial(key as any)}
+                  style={{ borderColor: color, color: filterSpecial === key && color ? color : undefined }}
+                >{label}</Tag.CheckableTag>
+              ))}
+            </div>
 
           {/* Memory list */}
           <div style={{ maxHeight: 'calc(70vh - 160px)', overflowY: 'auto', paddingRight: 4 }}>
@@ -955,6 +1012,113 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ visible, onClose }) => {
             </>
           ) : (
             <div style={{ textAlign: 'center', padding: 32, opacity: 0.5 }}>Loading health data...</div>
+          )}
+        </div>
+      ),
+    },
+    {
+      key: 'activity',
+      label: `🌙 Recent Activity (${history.length})`,
+      children: (
+        <div style={{ padding: '16px 0', maxHeight: 'calc(70vh - 100px)', overflowY: 'auto' }}>
+          <div style={{ marginBottom: 16, fontSize: 12, color: isDarkMode ? '#94a3b8' : '#64748b' }}>
+            Last {history.length} organize runs (cleanup, structural maintenance, REM phase).
+            Newest first. The system runs organize automatically when orphan memories
+            accumulate, and on demand via the Dashboard tab's "Organize" button.
+          </div>
+          {history.length === 0 ? (
+            <Empty description="No organize runs yet. Trigger one from the Dashboard tab." />
+          ) : (
+            history.map((h, idx) => {
+              const dt = new Date(h.timestamp);
+              const ageMin = Math.floor((Date.now() - h.timestamp) / 60000);
+              const ageLabel = ageMin < 60
+                ? `${ageMin}m ago`
+                : ageMin < 1440 ? `${Math.floor(ageMin / 60)}h ago`
+                : `${Math.floor(ageMin / 1440)}d ago`;
+              const totalChanges = (h.cleanup?.removed || 0)
+                + (h.cleanup?.merged || 0)
+                + (h.bootstrap?.domains_created || 0)
+                + (h.bootstrap?.domains_updated || 0)
+                + (h.bootstrap?.memories_placed || 0)
+                + (h.relations_found || 0)
+                + (h.cross_links_added || 0)
+                + (h.divisions || 0)
+                + (h.rem?.syntheses_created || 0)
+                + (h.rem?.memories_contested || 0);
+              return (
+                <div key={`${h.timestamp}-${idx}`} style={{
+                  background: isDarkMode ? '#1e293b' : '#fff',
+                  border: `1px solid ${isDarkMode ? '#334155' : '#e2e8f0'}`,
+                  borderRadius: 8, padding: '12px 16px', marginBottom: 8,
+                  borderLeft: totalChanges === 0
+                    ? `4px solid ${isDarkMode ? '#475569' : '#cbd5e1'}`
+                    : `4px solid #6366f1`,
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                    <span style={{ fontWeight: 600, color: isDarkMode ? '#e2e8f0' : '#1e293b', fontSize: 13 }}>
+                      {dt.toLocaleString()}
+                    </span>
+                    <span style={{ fontSize: 11, color: isDarkMode ? '#64748b' : '#94a3b8' }}>{ageLabel}</span>
+                  </div>
+                  {totalChanges === 0 ? (
+                    <div style={{ fontSize: 12, color: isDarkMode ? '#64748b' : '#94a3b8', fontStyle: 'italic' }}>
+                      No changes (corpus stable).
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 12 }}>
+                      {h.cleanup?.removed > 0 && (
+                        <span style={{ color: '#ef4444' }}>🗑️ removed {h.cleanup.removed}</span>
+                      )}
+                      {h.cleanup?.merged > 0 && (
+                        <span style={{ color: '#f59e0b' }}>🔗 merged {h.cleanup.merged}</span>
+                      )}
+                      {h.bootstrap?.domains_created > 0 && (
+                        <span style={{ color: '#3b82f6' }}>🏗️ {h.bootstrap.domains_created} new domain{h.bootstrap.domains_created > 1 ? 's' : ''}</span>
+                      )}
+                      {h.bootstrap?.memories_placed > 0 && (
+                        <span style={{ color: '#8b5cf6' }}>📍 placed {h.bootstrap.memories_placed}</span>
+                      )}
+                      {h.relations_found > 0 && (
+                        <span style={{ color: '#06b6d4' }}>🔀 {h.relations_found} relation{h.relations_found > 1 ? 's' : ''}</span>
+                      )}
+                      {h.cross_links_added > 0 && (
+                        <span style={{ color: '#06b6d4' }}>🔗 {h.cross_links_added} cross-link{h.cross_links_added > 1 ? 's' : ''}</span>
+                      )}
+                      {h.divisions > 0 && (
+                        <span style={{ color: '#10b981' }}>✂️ {h.divisions} division{h.divisions > 1 ? 's' : ''}</span>
+                      )}
+                      {h.rem?.syntheses_created > 0 && (
+                        <span style={{ color: '#a78bfa', fontWeight: 600 }}>🌙 {h.rem.syntheses_created} synthesis</span>
+                      )}
+                      {h.rem?.memories_contested > 0 && (
+                        <span style={{ color: '#ef4444', fontWeight: 600 }}>⚠️ {h.rem.memories_contested} contested</span>
+                      )}
+                    </div>
+                  )}
+                  {(h.rem?.syntheses?.length > 0 || h.rem?.contested?.length > 0) && (
+                    <details style={{ marginTop: 8 }}>
+                      <summary style={{ cursor: 'pointer', fontSize: 11, color: isDarkMode ? '#64748b' : '#94a3b8' }}>
+                        REM details
+                      </summary>
+                      <div style={{ marginTop: 8, paddingLeft: 12, fontSize: 11, color: isDarkMode ? '#94a3b8' : '#64748b' }}>
+                        {h.rem.syntheses?.map((s, i) => (
+                          <div key={`s${i}`}>🌙 Synthesis in node <code>{s.node_id}</code> → proposal <code>{s.proposal_id}</code></div>
+                        ))}
+                        {h.rem.contested?.map((c, i) => (
+                          <div key={`c${i}`}>⚠️ Contested <code>{c.memory_id}</code> in node <code>{c.node_id}</code></div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+                  {h.rem?.nodes_mature !== undefined && h.rem.nodes_mature > 0 && (
+                    <div style={{ marginTop: 4, fontSize: 10, color: isDarkMode ? '#475569' : '#cbd5e1' }}>
+                      REM evaluated {h.rem.nodes_mature} mature node{h.rem.nodes_mature > 1 ? 's' : ''}
+                    </div>
+                  )}
+                </div>
+              );
+            })
           )}
         </div>
       ),

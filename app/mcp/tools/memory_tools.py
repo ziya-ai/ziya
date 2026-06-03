@@ -117,7 +117,9 @@ class MemorySearchTool(BaseMCPTool):
                     formatted = []
                     for mem in promoted:
                         entry = f"[{mem.id}] ({mem.layer}) {mem.content}"
-                        if mem.tags:
+                        if mem.status == "contested":
+                            entry = f"[{mem.id}] ({mem.layer}) [contested] {mem.content}"
+                        elif mem.tags:
                             entry += f"  tags: {', '.join(mem.tags)}"
                         formatted.append(entry)
                     try:
@@ -165,7 +167,12 @@ class MemorySearchTool(BaseMCPTool):
 
         formatted = []
         for mem in results:
-            entry = f"[{mem.id}] ({mem.layer}) {mem.content}"
+            # Contested memories: surface the tag so the model can reason
+            # about them rather than treating them as ground truth.
+            if getattr(mem, "status", "active") == "contested":
+                entry = f"[{mem.id}] ({mem.layer}) [contested] {mem.content}"
+            else:
+                entry = f"[{mem.id}] ({mem.layer}) {mem.content}"
             if mem.tags:
                 entry += f"  tags: {', '.join(mem.tags)}"
             formatted.append(entry)
