@@ -337,6 +337,15 @@ async def bulk_sync_chats(project_id: str, data: ChatBulkSync):
 
                 if incoming_ver >= existing_ver:
                     merged = chat_data.model_dump()
+                    # Strip persisted empty assistant turns (Bedrock empty-200
+                    # poison) from BOTH sides before the regression guards run.
+                    # Sanitizing only the incoming side would trip the
+                    # count-regression guard below, which would restore the
+                    # poisoned on-disk history and silently undo the fix.
+                    existing_msgs = storage.strip_empty_assistant_messages(
+                        [m.model_dump() for m in existing.messages] if existing.messages else []
+                    )
+                    merged['messages'] = storage.strip_empty_assistant_messages(merged.get('messages', []))
                     # Message-count guard: refuse any update that reduces
                     # message count below what the server already has.
                     # The previous `> 2` threshold was a hole that allowed
@@ -344,23 +353,23 @@ async def bulk_sync_chats(project_id: str, data: ChatBulkSync):
                     # compounding history loss.  Legitimate shrinkage (user
                     # deleting a message) must go through an explicit delete
                     # endpoint, not bulk-sync.
-                    existing_msg_count = len(existing.messages) if existing.messages else 0
+                    existing_msg_count = len(existing_msgs)
                     incoming_msg_count = len(merged.get('messages', []))
                     if existing_msg_count >= 1 and incoming_msg_count < existing_msg_count:
                         logger.warning(
                             f"bulk-sync: blocking message regression for {chat_data.id} "
                             f"({existing_msg_count} -> {incoming_msg_count} messages)")
-                        merged['messages'] = [m.model_dump() for m in existing.messages]
+                        merged['messages'] = existing_msgs
                     # Content-length guard: catch same-count shell overwrites
                     # (e.g. 2 real msgs replaced by 2 blanked-content shells).
                     elif incoming_msg_count == existing_msg_count and existing_msg_count > 0:
-                        existing_len = sum(len(m.content or '') for m in existing.messages)
+                        existing_len = sum(len((m.get('content') or '')) for m in existing_msgs)
                         incoming_len = sum(len((m.get('content') or '')) for m in merged.get('messages', []))
                         if existing_len > 0 and incoming_len < existing_len // 4:
                             logger.warning(
                                 f"bulk-sync: blocking content regression for {chat_data.id} "
                                 f"({existing_len} -> {incoming_len} chars, same msg count)")
-                            merged['messages'] = [m.model_dump() for m in existing.messages]
+                            merged['messages'] = existing_msgs
                     if merged.get('delegateMeta') is None and existing.delegateMeta is not None:
                         merged['delegateMeta'] = existing.delegateMeta.model_dump() \
                             if hasattr(existing.delegateMeta, 'model_dump') \

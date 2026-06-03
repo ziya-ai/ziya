@@ -44,6 +44,27 @@ class ChatStorage(BaseStorage[Chat]):
     def _chat_file(self, chat_id: str) -> Path:
         return self.chats_dir / f"{chat_id}.json"
     
+    @staticmethod
+    def strip_empty_assistant_messages(messages):
+        """Drop assistant turns that carry no usable content.
+
+        A Bedrock empty-200 completion (seen on opus4.8) gets persisted as a
+        blank assistant turn.  Replaying such a turn produces another empty
+        completion — a self-perpetuating loop.  We only ever drop *assistant*
+        turns with empty/whitespace-only string content and no images; user,
+        human, and system turns are never touched, and any assistant turn with
+        real text or images is preserved.
+        """
+        cleaned = []
+        for m in messages:
+            role = (m.get("role") if isinstance(m, dict) else getattr(m, "role", "")) or ""
+            content = (m.get("content") if isinstance(m, dict) else getattr(m, "content", "")) or ""
+            images = (m.get("images") if isinstance(m, dict) else getattr(m, "images", None))
+            if role == "assistant" and not (isinstance(content, str) and content.strip()) and not images:
+                continue
+            cleaned.append(m)
+        return cleaned
+
     def get(self, chat_id: str) -> Optional[Chat]:
         data = self._read_json(self._chat_file(chat_id))
         if not data:
