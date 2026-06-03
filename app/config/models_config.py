@@ -274,7 +274,8 @@ MODEL_CONFIGS = {
         "sonnet4.0": {
             "model_id": {
                 "us": "us.anthropic.claude-sonnet-4-20250514-v1:0",
-                "eu": "eu.anthropic.claude-sonnet-4-20250514-v1:0"  # Available in EU regions too
+                "eu": "eu.anthropic.claude-sonnet-4-20250514-v1:0",
+                "global": "global.anthropic.claude-sonnet-4-20250514-v1:0"
             },
             "available_regions": [
                 "ap-northeast-1", "ap-northeast-2", "ap-northeast-3", "ap-south-1", 
@@ -298,7 +299,8 @@ MODEL_CONFIGS = {
         "sonnet4.5": {
             "model_id": {
                 "us": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-                "eu": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
+                "eu": "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+                "global": "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
             },
             "available_regions": [
                 "us-east-1", "us-west-2", "eu-west-1", "eu-central-1", "ap-southeast-1"
@@ -319,7 +321,8 @@ MODEL_CONFIGS = {
         "sonnet4.6": {
             "model_id": {
                 "us": "us.anthropic.claude-sonnet-4-6",
-                "eu": "global.anthropic.claude-sonnet-4-6"
+                "eu": "eu.anthropic.claude-sonnet-4-6",
+                "global": "global.anthropic.claude-sonnet-4-6"
             },
             "available_regions": [
                 "us-east-1", "us-east-2", "us-west-2",
@@ -366,7 +369,8 @@ MODEL_CONFIGS = {
             "token_limit": 200000,  # Add context window
             "supports_max_input_tokens": True,
             "model_id": {
-                "us": "us.anthropic.claude-opus-4-20250514-v1:0"
+                "us": "us.anthropic.claude-opus-4-20250514-v1:0",
+                "global": "global.anthropic.claude-opus-4-20250514-v1:0"
             },
             "available_regions": ["us-east-1", "us-east-2", "us-west-2"],
             "region_restricted": True,  # Only available in US regions
@@ -378,7 +382,8 @@ MODEL_CONFIGS = {
         },
         "opus4.1": {
             "model_id": {
-                "us": "us.anthropic.claude-opus-4-1-20250805-v1:0"
+                "us": "us.anthropic.claude-opus-4-1-20250805-v1:0",
+                "global": "global.anthropic.claude-opus-4-1-20250805-v1:0"
             },
             "available_regions": ["us-east-1", "us-east-2", "us-west-2"],
             "region_restricted": True,  # Only available in US regions
@@ -413,7 +418,8 @@ MODEL_CONFIGS = {
         "opus4.6": {
             "model_id": {
                 "us": "us.anthropic.claude-opus-4-6-v1",
-                "eu": "global.anthropic.claude-opus-4-6-v1"  # Use global profile for EU
+                "eu": "eu.anthropic.claude-opus-4-6-v1",
+                "global": "global.anthropic.claude-opus-4-6-v1"
             },
             "token_limit": 200000,
             "max_output_tokens": 64000,
@@ -437,7 +443,8 @@ MODEL_CONFIGS = {
         "opus4.7": {
             "model_id": {
                 "us": "us.anthropic.claude-opus-4-7",
-                "eu": "global.anthropic.claude-opus-4-7"
+                "eu": "eu.anthropic.claude-opus-4-7",
+                "global": "global.anthropic.claude-opus-4-7"
             },
             "available_regions": ["us-east-1", "us-east-2", "us-west-2"],
             "preferred_region": "us-east-1",
@@ -468,7 +475,8 @@ MODEL_CONFIGS = {
         "opus4.8": {
             "model_id": {
                 "us": "us.anthropic.claude-opus-4-8",
-                "eu": "global.anthropic.claude-opus-4-8"
+                "eu": "eu.anthropic.claude-opus-4-8",
+                "global": "global.anthropic.claude-opus-4-8"
             },
             "available_regions": ["us-east-1", "us-east-2", "us-west-2"],
             "preferred_region": "us-east-1",
@@ -515,7 +523,8 @@ MODEL_CONFIGS = {
         },
         "haiku-4.5": {
             "model_id": {
-                "us": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+                "us": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "global": "global.anthropic.claude-haiku-4-5-20251001-v1:0"
             },
             "token_limit": 200000,
             "max_output_tokens": 64000,
