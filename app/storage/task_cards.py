@@ -60,7 +60,7 @@ class TaskCardStorage(BaseStorage[TaskCard]):
                     cards.append(card)
         return sorted(cards, key=lambda c: c.updated_at, reverse=True)
 
-    def create(self, data: TaskCardCreate) -> TaskCard:
+    def create(self, data: TaskCardCreate, source: str = "custom") -> TaskCard:
         card_id = str(uuid.uuid4())
         now = int(time.time() * 1000)
         root_dict = data.root.model_dump()
@@ -72,7 +72,7 @@ class TaskCardStorage(BaseStorage[TaskCard]):
             root=root_dict,
             tags=data.tags,
             is_template=data.is_template,
-            source="custom",
+            source=source,
             created_at=now,
             updated_at=now,
         )

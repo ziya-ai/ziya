@@ -1588,6 +1588,7 @@ class CLI:
   /add <path>    Add file or directory to context
   /rm <path>     Remove from context  
   /files         List context files
+  /goal <text>   Set an autonomous goal (runs as task card)
   /suspend [name]  Save session and exit (resume later with /resume or --resume)
   /save [name]     Checkpoint the current session without exiting
   /resume          Restore a previous session's files and history
@@ -1693,6 +1694,9 @@ class CLI:
         elif command in ['/model', '/m']:
             await self._handle_model_selection_async(arg)
         
+        elif command == '/goal':
+            await self._handle_goal_command(arg)
+
         elif command == '/tune':
             self._handle_tune(arg)
 
@@ -1721,6 +1725,91 @@ class CLI:
             print(f"\033[90mUnknown command: {command}\033[0m")
         
         return True
+
+    async def _handle_goal_command(self, arg: str):
+        """Handle /goal command — synthesize and launch an autonomous goal.
+
+        Subcommands:
+          /goal <text>     Set a goal and start working on it
+          /goal status     Show current goal state
+          /goal pause      Pause the active goal
+          /goal resume     Resume a paused goal
+          /goal clear      Cancel and remove the goal
+        """
+        if not arg.strip():
+            print("\033[1mUsage:\033[0m")
+            print("  /goal <objective>   Set an autonomous goal")
+            print("  /goal status        Show current goal state")
+            print("  /goal pause         Pause the active goal")
+            print("  /goal resume        Resume a paused goal")
+            print("  /goal clear         Cancel and remove the goal")
+            return
+
+        import aiohttp
+
+        # Determine the server URL
+        port = os.environ.get("ZIYA_PORT", "8093")
+        base_url = f"http://localhost:{port}"
+
+        # Build the command request
+        first_word = arg.split(maxsplit=1)[0].lower()
+        payload = {
+            "command": "goal",
+            "args": arg,
+            "conversation_id": getattr(self, '_session_id', None),
+        }
+
+        # Add context summary for new goals (not subcommands)
+        if first_word not in ("status", "pause", "resume", "clear"):
+            # Summarize recent history for context
+            if self.history:
+                recent = self.history[-4:]  # last 2 exchanges
+                context_parts = []
+                for msg in recent:
+                    role = msg.get("role", "unknown")
+                    content = msg.get("content", "")
+                    if isinstance(content, str):
+                        context_parts.append(f"{role}: {content[:200]}")
+                payload["context_summary"] = "\n".join(context_parts)
+
+        try:
+            headers = {"Content-Type": "application/json"}
+            project_root = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+            headers["X-Project-Root"] = project_root
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{base_url}/api/v1/commands",
+                    json=payload,
+                    headers=headers,
+                ) as resp:
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        print(f"\033[31mGoal command failed: {error_text}\033[0m")
+                        return
+
+                    result = await resp.json()
+
+            # Display result
+            msg = result.get("message", "")
+            resp_type = result.get("type", "")
+
+            if resp_type == "goal_launched":
+                print(f"\033[32m{msg}\033[0m")
+                data = result.get("data", {})
+                print(f"\033[90m  Strategy: Until(condition met, max 15 iterations)\033[0m")
+                print(f"\033[90m  Run: {data.get('run_id', 'unknown')[:8]}...\033[0m")
+                print(f"\033[90m  Use /goal status to check progress\033[0m")
+            elif resp_type == "error":
+                print(f"\033[33m{msg}\033[0m")
+            else:
+                print(msg)
+
+        except aiohttp.ClientError as e:
+            print(f"\033[31mFailed to connect to server: {e}\033[0m")
+            print("\033[90mIs the Ziya server running?\033[0m")
+        except Exception as e:
+            print(f"\033[31mGoal command error: {e}\033[0m")
 
     _TUNABLES = {
         'iterations': ('ZIYA_MAX_TOOL_ITERATIONS', '200', 'Max tool iterations per response'),

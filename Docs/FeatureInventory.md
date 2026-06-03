@@ -267,7 +267,7 @@ Format per row: the gap, who has it, and notes for context.
 | **IDE plugin / inline suggestions** | GitHub Copilot, Cursor, Cline, Tabnine, Codeium | No VS Code / JetBrains extension; Ziya is a standalone UI, not embedded in the editor |
 | **Inline autocomplete (tab completion)** | GitHub Copilot, Cursor, Codeium, Supermaven | No keystroke-level code completion; Ziya operates at conversation/diff granularity |
 | **Artifacts / side-panel document editing** | Aki ("Write with Aki"), Claude.ai Artifacts, Cursor Composer | No separate editable document pane alongside the chat |
-| **Incognito / no-persist mode (web UI)** | Aki (incognito in UI) | CLI has `--ephemeral`; web UI supports ephemeral mode via `ZIYA_EPHEMERAL_MODE` env var but has no in-UI toggle |
+| **Incognito / no-persist mode (web UI)** | Aki (incognito in UI) | CLI has `--ephemeral`; web UI supports session-wide ephemeral mode via `ZIYA_EPHEMERAL_MODE` env var, plus per-conversation ephemeral chats via the ghosted "+" button (see Capabilities.md). No in-UI toggle for whole-session incognito mode |
 | **LSP integration** | Claude Code (`.lsp.json` for go-to-def, type errors), Kiro (Code OSS native), Q Developer | No language server protocol integration; code intelligence is AST-based only |
 | **Filesystem / network sandbox** | Claude Code (Seatbelt/bubblewrap), Codex (Landlock+seccomp), Kiro (Agent Sandbox) | Shell commands run unsandboxed in the user's environment; allowlist is the only guardrail |
 | **Structured JSON CLI output** | Claude Code (`--output-format json/stream-json, --json-schema`), Codex (`--json`) | No machine-readable output mode for CI/scripting pipelines; CLI always outputs human-readable markdown |

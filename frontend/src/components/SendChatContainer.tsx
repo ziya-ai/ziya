@@ -15,6 +15,7 @@ import { useTheme } from '../context/ThemeContext';
 import StopStreamButton from './StopStreamButton';
 import { ThrottlingErrorDisplay } from './ThrottlingErrorDisplay';
 import { detectIncompleteResponse } from '../utils/responseUtils';
+import { parseSlashCommand, dispatchCommand } from '../services/commandApi';
 import { useServerStatus } from '../context/ServerStatusContext';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -726,6 +727,32 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
 
     if (!text.trim() && attachedDocuments.length === 0) return;
     if (isSubmitting) return;
+
+    // Check for slash commands before sending as chat
+    const slashCmd = parseSlashCommand(text);
+    if (slashCmd) {
+      // Clear editor immediately for responsiveness
+      if (editorRef.current) editorRef.current.innerHTML = '';
+      setInputValue('');
+
+      try {
+        const result = await dispatchCommand({
+          ...slashCmd,
+          conversation_id: currentConversationId,
+        });
+        // Show result as a system message in the conversation
+        const sysMessage = {
+          role: 'assistant' as const,
+          content: result.message,
+          _timestamp: Date.now(),
+          _isCommandResult: true,
+        };
+        addMessageToConversation(sysMessage, currentConversationId);
+      } catch (err: any) {
+        message.error(err.message || 'Command failed');
+      }
+      return;
+    }
 
     // Assemble document content into the message text
     let fullContent = text;

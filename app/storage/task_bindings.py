@@ -115,6 +115,26 @@ class TaskBindingStorage(BaseStorage[TaskBinding]):
             )
         return True
 
+    def update_run_id(self, chat_id: str, binding_id: str, new_run_id: str) -> bool:
+        """Point an existing binding at a new run (used by goal resume).
+
+        Returns True if the binding was found and updated, False otherwise.
+        """
+        existing = self.list_for_chat(chat_id)
+        found = False
+        for b in existing:
+            if b.id == binding_id:
+                b.run_id = new_run_id
+                found = True
+                break
+        if not found:
+            return False
+        self._write_json(
+            self._bindings_file(chat_id),
+            [b.model_dump() for b in existing],
+        )
+        return True
+
     # BaseStorage abstract methods we don't use — task bindings are
     # always accessed via their chat.  Keep stubs to satisfy the ABC.
     def list(self) -> List[TaskBinding]:  # pragma: no cover
