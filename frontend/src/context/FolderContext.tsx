@@ -1,7 +1,7 @@
 import React, { createContext, ReactNode, useContext, useCallback, useEffect, useState, useLayoutEffect, useRef, useMemo } from 'react';
 import { Folders } from "../utils/types";
 import { message } from 'antd';
-import { convertToTreeData, insertIntoFolders, updateTokenInFolders, removeFromFolders } from "../utils/folderUtil";
+import { convertToTreeData, insertIntoFolders, updateTokenInFolders, removeFromFolders, sanitizeCheckedKeys, collectAllTreePaths } from "../utils/folderUtil";
 import { TreeDataNode } from "antd";
 import { debounce } from "../utils/debounce";
 import { useConfig } from "./ConfigContext";
@@ -45,7 +45,8 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const [checkedKeys, setCheckedKeys] = useState<React.Key[]>(() => {
     try {
       const saved = getTabState('ZIYA_CHECKED_FOLDERS');
-      return saved ? JSON.parse(saved) : [];
+      // Sanitize on hydration: corruption persisted across restarts otherwise.
+      return saved ? sanitizeCheckedKeys(JSON.parse(saved)) : [];
     } catch {
       return [];
     }
@@ -163,11 +164,26 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         const { existingFiles } = await response.json();
         const existingSet = new Set(existingFiles);
 
-        // Keep external keys as-is, only filter project files against validation results
-        const cleanedProjectKeys = keysToValidate.filter(key => existingSet.has(String(key)));
-        const cleanedKeys = [...cleanedProjectKeys, ...externalKeys];
+        // Three-stage cleanup: server-validated files exist on disk, plus
+        // client-side accept-list of folder paths that exist in the tree
+        // (the validate endpoint only handles files, not directories), plus
+        // external keys verbatim.
+        const treePaths = collectAllTreePaths(folders);
+        const cleanedProjectKeys = keysToValidate.filter(key => {
+            const s = String(key);
+            // File the server confirmed exists on disk
+            if (existingSet.has(s)) return true;
+            // Folder path that exists in the tree (validate endpoint
+            // doesn't validate folders, so trust the tree here)
+            if (treePaths.has(s)) return true;
+            return false;
+        });
+        // Pass everything through the sanitizer one more time to drop
+        // any structurally-invalid entries (corrupted strings, etc.)
+        // that may have slipped through earlier filters.
+        const cleanedKeys = sanitizeCheckedKeys([...cleanedProjectKeys, ...externalKeys]);
 
-        if (cleanedProjectKeys.length !== keysToValidate.length) {
+        if (cleanedKeys.length !== checkedKeys.length) {
           console.log(`🧹 CLEANUP: Removed ${checkedKeys.length - cleanedKeys.length} non-existent files from selection`);
           setCheckedKeys(cleanedKeys);
         }
@@ -319,7 +335,9 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   // Save checked folders whenever they change
   useEffect(() => {
     try {
-      setTabState('ZIYA_CHECKED_FOLDERS', JSON.stringify(Array.from(checkedKeys)));
+      // Sanitize before persisting so corruption never enters storage
+      // even if it briefly appeared in state (e.g. via a buggy event handler).
+      setTabState('ZIYA_CHECKED_FOLDERS', JSON.stringify(sanitizeCheckedKeys(Array.from(checkedKeys))));
     } catch (error) {
       console.warn('Failed to save checked folders to localStorage (QuotaExceeded?):', error);
     }
