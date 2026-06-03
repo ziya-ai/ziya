@@ -449,8 +449,13 @@ export const MUIFileExplorer = () => {
 
               if (!folderTokens) {
                 const totalTokens = calculateChildrenTotal(nodeForCheckCalculations);
-                // If this folder is directly selected, include all tokens
-                const includedTokens = isChecked ? totalTokens : calculateChildrenIncluded(nodeForCheckCalculations);
+                // \`included\` is always the recursive sum of explicitly-checked
+                // descendants.  Previously this short-circuited to \`totalTokens\`
+                // whenever the parent folder itself appeared in checkedKeys —
+                // but that lies about what's actually in the LLM context when
+                // the user has unchecked descendants individually (which leaves
+                // the parent in checkedKeys without a cascade undo).
+                const includedTokens = calculateChildrenIncluded(nodeForCheckCalculations);
 
                 folderTokens = { total: totalTokens, included: includedTokens };
                 tokenCalculationCache.current.set(cacheKey, folderTokens);
@@ -1165,13 +1170,21 @@ export const MUIFileExplorer = () => {
       if (isChildDirectlySelected) {
         // For files, prioritize accurate counts
         const isFile = !nodeHasChildren(child);
+        const childAccurate = accurateTokenCounts[childKey];
         let childTotal = 0;
 
         if (isFile) {
-          // For files, use accurate count first, then fall back to estimated
-          const childAccurate = accurateTokenCounts[childKey];
-          // Only use accurate data if it exists AND has a positive count
-          childTotal = (childAccurate && childAccurate.count > 0) ? childAccurate.count : getFolderTokenCount(childKey, folders || {});
+          // Use accurate count when it exists (including 0, which means
+          // "already in conversation context — don't double-count").
+          // Falling back to the tree estimate when accurate=0 makes
+          // `included` exceed `total` (which uses Math.max(0, count)
+          // and never falls back), producing the long-standing
+          // "1,058,611 vs 945,211" mismatch on parent folders.
+          if (childAccurate && childAccurate.count !== undefined) {
+            childTotal = Math.max(0, childAccurate.count);
+          } else {
+            childTotal = getFolderTokenCount(childKey, folders || {});
+          }
         } else {
           // For directories, recursively calculate
           childTotal = calculateChildrenTotal(child);
