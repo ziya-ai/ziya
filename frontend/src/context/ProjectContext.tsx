@@ -10,7 +10,7 @@
   useMemo,
   ReactNode 
 } from 'react';
-import { Project, ProjectListItem, ProjectUpdate } from '../types/project';
+import { Project, ProjectListItem, ProjectUpdate, StartupInfo } from '../types/project';
 import { Context, ContextCreate, ContextUpdate } from '../types/context';
 import { Skill, SkillCreate, SkillUpdate } from '../types/skill';
 import { TokenCalculationResponse } from '../types/token';
@@ -21,6 +21,7 @@ import * as tokenApi from '../api/tokenApi';
 import { db } from '../utils/db';
 import * as syncApi from '../api/conversationSyncApi';
 import * as folderSyncApi from '../api/folderSyncApi';
+import FirstRunProjectDialog from '../components/FirstRunProjectDialog';
 
 const LAST_PROJECT_KEY = 'ZIYA_LAST_PROJECT_ID';
 
@@ -153,6 +154,9 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   const [tokenInfo, setTokenInfo] = useState<TokenCalculationResponse | null>(null);
   const [isCalculatingTokens, setIsCalculatingTokens] = useState(false);
   const [astRevision, setAstRevision] = useState(0);
+
+  // When set, no usable project was found at boot — show the first-run picker.
+  const [firstRunRoot, setFirstRunRoot] = useState<string | null>(null);
   
   // Initialize - load current project
   useEffect(() => {
@@ -173,28 +177,65 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
         
         console.log('ProjectContext: Initializing (fast path)...');
         
-        // ── Fast path: try last-used project from localStorage ───────
+        // ── Startup context from server (root + explicit-flag) ───────
+        let startup: StartupInfo | null = null;
+        try {
+          startup = await projectApi.getStartupInfo();
+        } catch (e) {
+          console.warn('ProjectContext: startup info unavailable, using legacy fallback', e);
+        }
+
         let project: Project | null = null;
-        const savedId = localStorage.getItem(LAST_PROJECT_KEY);
-        if (savedId) {
+
+        if (startup?.explicit) {
+          // (a) Explicit --root/--directory always wins for new sessions:
+          // open (or create) the project rooted at the startup directory.
           try {
-            project = await projectApi.getProject(savedId);
-            console.log('ProjectContext: Restored last project from localStorage:', project.name);
-          } catch {
-            console.warn('ProjectContext: Saved project ID invalid, falling back');
-            localStorage.removeItem(LAST_PROJECT_KEY);
+            project = startup.rootProject
+              ?? await projectApi.createProject({ path: startup.root });
+            console.log('ProjectContext: Explicit startup root wins:', project.name);
+          } catch (e) {
+            console.error('ProjectContext: Failed to open explicit root project', e);
+          }
+        } else {
+          // Defaulted cwd: prefer this browser's last project, then the
+          // server-wide last-accessed, then a project already rooted at cwd.
+          const savedId = localStorage.getItem(LAST_PROJECT_KEY);
+          if (savedId) {
+            try {
+              project = await projectApi.getProject(savedId);
+              console.log('ProjectContext: Restored last project from localStorage:', project.name);
+            } catch {
+              console.warn('ProjectContext: Saved project ID invalid, falling back');
+              localStorage.removeItem(LAST_PROJECT_KEY);
+            }
+          }
+          if (!project && (startup?.hasAnyProjects ?? true)) {
+            try {
+              project = await projectApi.getLastAccessedProject();
+              console.log('ProjectContext: Using last-accessed project:', project.name);
+            } catch { /* fall through */ }
+          }
+          if (!project && startup?.rootProject) {
+            project = startup.rootProject;
+            console.log('ProjectContext: Using project rooted at startup dir:', project.name);
           }
         }
-        
-        // ── Fallback: server-side last-accessed, then CWD ────────────
+
+        // ── First-run / nothing usable: ask the user what to do ──────
         if (!project) {
-          try {
-            project = await projectApi.getLastAccessedProject();
-            console.log('ProjectContext: Using last-accessed project:', project.name);
-          } catch {
-            project = await projectApi.getCurrentProject();
-            console.log('ProjectContext: Fell back to CWD project:', project.name);
+          if (startup && !startup.hasAnyProjects && !startup.rootProject) {
+            console.log('ProjectContext: No usable project — prompting user');
+            setFirstRunRoot(startup.root);
+            setIsLoadingProject(false);
+            projectApi.listProjects()
+              .then(setProjects)
+              .catch(err => console.error('Failed to load project list:', err));
+            return;
           }
+          // Safety net (e.g. old backend without /startup): open cwd project.
+          project = await projectApi.getCurrentProject();
+          console.log('ProjectContext: Fell back to CWD project:', project.name);
         }
         
         setCurrentProject(project);
@@ -768,6 +809,13 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   
   return (
     <ProjectContext.Provider value={value}>
+      {firstRunRoot && (
+        <FirstRunProjectDialog
+          root={firstRunRoot}
+          createProject={createProjectFn}
+          onResolved={() => setFirstRunRoot(null)}
+        />
+      )}
       {children}
     </ProjectContext.Provider>
   );

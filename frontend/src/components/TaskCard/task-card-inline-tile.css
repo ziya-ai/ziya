@@ -1,5 +1,13 @@
 /* ── Inspector drawer ─────────────────────────────────────── */
-
+.task-card-inline-tile.staged {
+  border-style: dashed;
+  opacity: 0.95;
+}
+.task-card-inline-tile.staged .header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
 .tc-tile__inspector {
   margin-top: 8px;
   border-top: 1px solid rgba(127, 127, 127, 0.2);

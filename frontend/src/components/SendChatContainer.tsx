@@ -13,6 +13,7 @@ import { ImageAttachment, DocumentAttachment, Message } from '../utils/types';
 import { DocumentChip } from './FileChip';
 import { useTheme } from '../context/ThemeContext';
 import StopStreamButton from './StopStreamButton';
+import BeadTree from './BeadTree';
 import { ThrottlingErrorDisplay } from './ThrottlingErrorDisplay';
 import { detectIncompleteResponse } from '../utils/responseUtils';
 import { parseSlashCommand, dispatchCommand } from '../services/commandApi';
@@ -731,7 +732,20 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     // Check for slash commands before sending as chat
     const slashCmd = parseSlashCommand(text);
     if (slashCmd) {
-      // Clear editor immediately for responsiveness
+      // Mint an id for the user's command message so we can anchor any
+      // resulting task binding to it (the inline TaskCardInlineTile
+      // renders directly under the anchor message).
+      const userMessageId = uuidv4();
+      const userMessage = {
+        id: userMessageId,
+        role: 'human' as const,
+        content: text,
+        _timestamp: Date.now(),
+        _isCommandInvocation: true,
+      };
+      addMessageToConversation(userMessage, currentConversationId);
+
+      // Clear editor after capturing the message
       if (editorRef.current) editorRef.current.innerHTML = '';
       setInputValue('');
 
@@ -739,15 +753,16 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
         const result = await dispatchCommand({
           ...slashCmd,
           conversation_id: currentConversationId,
+          anchor_message_id: userMessageId,
         });
-        // Show result as a system message in the conversation
-        const sysMessage = {
-          role: 'assistant' as const,
-          content: result.message,
-          _timestamp: Date.now(),
-          _isCommandResult: true,
-        };
-        addMessageToConversation(sysMessage, currentConversationId);
+        // No assistant ack — the inline TaskCardInlineTile is the UI.
+        // It renders under the anchor message with its own Run button.
+
+        // If the command created a task binding, notify useTaskBindings
+        // so the inline tile picks it up without a reload.
+        if (result?.data?.binding_id) {
+          window.dispatchEvent(new CustomEvent('task-binding-created'));
+        }
       } catch (err: any) {
         message.error(err.message || 'Command failed');
       }
@@ -1051,6 +1066,12 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
 
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '8px' }}>
           <div style={{ display: 'flex', gap: '8px' }}>
+            {/* Per-conversation bead (task-tree) indicator */}
+            {currentConversationId && (
+              <div style={{ display: 'flex', alignItems: 'center' }}>
+                <BeadTree conversationId={currentConversationId} />
+              </div>
+            )}
             {/* Attach file button (images need vision; documents always work) */}
             {!isCurrentlyStreaming && (
               <Button
