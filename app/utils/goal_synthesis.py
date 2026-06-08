@@ -73,7 +73,13 @@ def synthesize_goal_card(
         block_type="until",
         name="Goal condition",
         until_mode="model",
-        until_condition=goal_text,
+        # The model-evaluated until-condition is unreliable for
+        # action-phrased goals ("add X", "fix Y") because it answers
+        # "have these actions been performed?" — which is wrong in
+        # the vacuously-satisfied case (no instances found, nothing
+        # to do).  We rely on Artifact.self_assessment instead;
+        # see design/goal-exit-conditions.md.
+        until_condition="",
         until_max=iteration_cap,
         body=[task_block],
     )

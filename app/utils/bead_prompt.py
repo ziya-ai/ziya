@@ -37,11 +37,24 @@ that's a signal to park a bead.
 - You identify prerequisite subtasks → active bead for prereq, parked for main
 - User pivots topic mid-stream → park the old topic, active the new
 - "While we're at it..." / "also..." / "btw..." → parked bead for the aside
+- **You notice an unrelated bug or issue while working on the requested \
+task** ("While solving this, I also noticed:" / "noticed in passing:" / \
+"this also looks suspicious:") → park a bead immediately. The user did \
+not ask for this work, so don't fix it now, but the observation is real \
+and would otherwise be lost when the conversation moves on.
+- **You present a numbered list of next-steps / options the user must \
+choose between** → park a bead for each item the user does NOT pick. \
+The user picking #1 means #2-#N are unfollowed branches; without beads \
+they're lost the moment the conversation moves on.
 
 **When NOT to create beads:**
 - Simple single-shot questions
 - The conversation has only one clear thread
 - A topic is fully resolved in a single exchange
+- Numbered steps of a SINGLE task ("first do A, then B, then C" is one \
+bead, not three) — beads track distinct threads, not sequential steps
+- Enumerated considerations or trade-offs ("here are things to think \
+about") that aren't committed work
 """
 
 

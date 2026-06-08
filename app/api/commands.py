@@ -35,6 +35,11 @@ class CommandRequest(BaseModel):
     context_summary: Optional[str] = Field(
         None, description="Optional recent conversation summary for goal context"
     )
+    anchor_message_id: Optional[str] = Field(
+        None,
+        description="Message id to anchor any binding created by this command "
+                    "(e.g. the user's /goal message itself).",
+    )
 
 
 class CommandResponse(BaseModel):
@@ -95,9 +100,8 @@ async def _handle_goal_command(body: CommandRequest, request: Request) -> Comman
 
 
 async def _goal_create(body: CommandRequest, request: Request) -> CommandResponse:
-    """Synthesize a task card from goal text and launch it."""
+    """Synthesize a task card from goal text and stage it (no run yet)."""
     from ..utils.goal_synthesis import synthesize_goal_card
-    from .task_cards import _launch_run_for_card
 
     goal_text = body.args.strip()
 
@@ -124,35 +128,30 @@ async def _goal_create(body: CommandRequest, request: Request) -> CommandRespons
     saved_card = card_storage.create(card_create, source="goal")
     logger.info(f"🎯 GOAL: Synthesized card {saved_card.id[:8]} for: {goal_text[:60]}")
 
-    # Launch the run
-    run = await _launch_run_for_card(
-        project_id=project.id,
-        card_id=saved_card.id,
-        source_conversation_id=body.conversation_id,
-    )
-
-    # Bind to conversation if we have one
+    # Stage the card by creating a binding with no run.  The user
+    # clicks Run on the inline tile to actually launch.  This gives
+    # them a chance to review the synthesized instructions and
+    # adjust scoped permissions before the agent starts working.
     binding_id = None
     if body.conversation_id:
         binding_storage = TaskBindingStorage(project_dir)
         binding = binding_storage.create(
             chat_id=body.conversation_id,
             card_id=saved_card.id,
-            run_id=run.id,
-            anchor_message_id=None,
+            run_id=None,
+            anchor_message_id=body.anchor_message_id,
         )
         binding_id = binding.id
         logger.info(
-            f"🎯 GOAL: Bound to conversation {body.conversation_id[:8]} "
-            f"→ binding {binding.id[:8]}"
+            f"🎯 GOAL: Staged in conversation {body.conversation_id[:8]} "
+            f"→ binding {binding.id[:8]} (run not launched)"
         )
 
     return CommandResponse(
-        type="goal_launched",
-        message=f"🎯 Goal set: {goal_text}",
+        type="goal_staged",
+        message="",
         data={
             "card_id": saved_card.id,
-            "run_id": run.id,
             "binding_id": binding_id,
             "goal_text": goal_text,
         },
