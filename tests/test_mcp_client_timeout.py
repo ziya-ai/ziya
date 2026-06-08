@@ -1,253 +1,210 @@
 """
-Tests for MCP client timeout alignment with tool-requested timeouts.
+Timeout-alignment tests for the single-reader MCP transport.
 
-Verifies that when a tool call includes a `timeout` parameter (e.g. shell
-commands requesting 120s), the MCP client's readline timeout is extended
-to accommodate it, preventing premature disconnects.
+HISTORY: the original version mocked ``process.stdout.readline`` to return a
+canned response on every call (and one variant that raised TimeoutError).
+Under the single-reader rewrite of ``app/mcp/client.py``:
+  * an always-returning ``readline`` mock spins the background ``_reader_loop``
+    forever (the loop only stops on EOF ``b""``), hanging the test; and
+  * a ``readline`` that raises is now handled by the reader (which fails all
+    pending futures with EOF), so the old per-request "timed out after N
+    seconds" message no longer comes from that path.
+
+What is PRESERVED and still worth pinning:
+  * the ``timeout_duration`` COMPUTATION (default 30s; external-server floor
+    60s; ``tools/call`` extends to ``arg + 10``; string/invalid handling).
+    ``_send_request`` still passes that value to ``asyncio.wait_for`` — now
+    wrapping the response *future* rather than ``readline()`` — so spying
+    ``asyncio.wait_for`` still captures it.
+  * the per-request timeout MESSAGE ("Request timed out after N seconds"),
+    which now fires when the future await times out.
+
+These tests therefore keep the original assertions but drive the new
+transport: responses are fed through a queue the reader drains (so it parks,
+never spins), and the future-await timeout is exercised directly.
 """
 
-import pytest
 import asyncio
 import json
+
+import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+from app.mcp.client import MCPClient
+
+
+# ---------------------------------------------------------------------------
+# Queue-backed fake subprocess (reader drains it and can reach EOF).
+# ---------------------------------------------------------------------------
+
+class _FakeStdout:
+    def __init__(self):
+        self._q: asyncio.Queue = asyncio.Queue()
+
+    async def readline(self) -> bytes:
+        return await self._q.get()
+
+    def feed_line(self, data: bytes):
+        self._q.put_nowait(data)
+
+
+def _make_client(on_write, server_name="test-shell"):
+    """Real MCPClient whose stdin.write invokes on_write(req, stdout)."""
+    client = MCPClient({"name": server_name, "command": ["echo"]})
+    client.is_connected = True
+
+    stdout = _FakeStdout()
+    proc = MagicMock()
+    proc.returncode = None
+    proc.stdin = MagicMock()
+
+    def _write(data: bytes):
+        req = json.loads(data.decode("utf-8"))
+        on_write(req, stdout)
+
+    proc.stdin.write = _write
+    proc.stdin.drain = AsyncMock()
+    proc.stdout = stdout
+    client.process = proc
+    return client, stdout
+
+
+async def _shutdown(client):
+    t = getattr(client, "_reader_task", None)
+    if t and not t.done():
+        t.cancel()
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
+
+
+def _ok(rid, text="ok"):
+    return (json.dumps({"jsonrpc": "2.0", "id": rid,
+                        "result": {"content": [{"type": "text", "text": text}]}}) + "\n").encode()
+
+
+async def _capture_timeout(client, method, params):
+    """Run _send_request while spying asyncio.wait_for; return the list of
+    timeout values it was called with.  The only wait_for in the request path
+    is the one wrapping the response future, so this captures timeout_duration.
+    An auto-responder feeds the matching response so the call completes fast.
+    """
+    captured = []
+    original_wait_for = asyncio.wait_for
+
+    async def spy_wait_for(coro, timeout=None):
+        captured.append(timeout)
+        return await original_wait_for(coro, timeout=timeout)
+
+    try:
+        with patch("asyncio.wait_for", side_effect=spy_wait_for):
+            await client._send_request(method, params)
+    finally:
+        await _shutdown(client)
+    return captured
 
 
 class TestReadlineTimeoutAlignment:
-    """Verify _send_request uses tool-requested timeout for readline."""
-
-    def _make_client(self, server_name="test-shell"):
-        """Create an MCPClient with a mock process."""
-        from app.mcp.client import MCPClient
-
-        client = MCPClient({"name": server_name, "command": ["echo"]})
-        client.is_connected = True
-
-        mock_process = MagicMock()
-        mock_process.returncode = None
-        mock_process.stdin = MagicMock()
-        mock_process.stdin.write = MagicMock()
-        mock_process.stdin.drain = AsyncMock()
-        mock_process.stdout = MagicMock()
-        client.process = mock_process
-
-        return client, mock_process
+    """The timeout_duration computation is unchanged by the reader rewrite;
+    it is still handed to asyncio.wait_for (now wrapping the future)."""
 
     @pytest.mark.asyncio
     async def test_default_timeout_is_30s(self):
-        """Non-tool requests use the default 30s readline timeout."""
-        client, mock_process = self._make_client()
-
-        # Respond immediately with a matching request ID
-        async def readline():
-            return json.dumps({
-                "jsonrpc": "2.0",
-                "id": client.request_id + 1,
-                "result": {"content": [{"type": "text", "text": "ok"}]}
-            }).encode() + b"\n"
-
-        mock_process.stdout.readline = readline
-
-        captured_timeouts = []
-        original_wait_for = asyncio.wait_for
-
-        async def spy_wait_for(coro, timeout=None):
-            captured_timeouts.append(timeout)
-            return await original_wait_for(coro, timeout=timeout)
-
-        with patch("asyncio.wait_for", side_effect=spy_wait_for):
-            await client._send_request("initialize", {})
-
-        # Should have used 30s (the default for non-external servers)
-        assert any(t == 30.0 for t in captured_timeouts), \
-            f"Expected 30.0s timeout, got: {captured_timeouts}"
+        """Non-tool requests use the default 30s timeout."""
+        client, _ = _make_client(lambda req, out: out.feed_line(_ok(req["id"])))
+        captured = await _capture_timeout(client, "initialize", {})
+        assert any(t == 30.0 for t in captured), f"Expected 30.0s, got: {captured}"
 
     @pytest.mark.asyncio
     async def test_tool_timeout_extends_readline(self):
-        """tools/call with timeout=120 extends readline timeout to 130."""
-        client, mock_process = self._make_client()
-
-        async def readline():
-            return json.dumps({
-                "jsonrpc": "2.0",
-                "id": client.request_id + 1,
-                "result": {"content": [{"type": "text", "text": "ok"}]}
-            }).encode() + b"\n"
-
-        mock_process.stdout.readline = readline
-
-        captured_timeouts = []
-        original_wait_for = asyncio.wait_for
-
-        async def spy_wait_for(coro, timeout=None):
-            captured_timeouts.append(timeout)
-            return await original_wait_for(coro, timeout=timeout)
-
-        with patch("asyncio.wait_for", side_effect=spy_wait_for):
-            await client._send_request("tools/call", {
-                "name": "run_shell_command",
-                "arguments": {"command": "sleep 100", "timeout": 120}
-            })
-
-        # Should have used 130s (120 + 10s buffer)
-        assert any(t == 130.0 for t in captured_timeouts), \
-            f"Expected 130.0s timeout, got: {captured_timeouts}"
+        """tools/call with timeout=120 extends the wait to 130 (120 + 10)."""
+        client, _ = _make_client(lambda req, out: out.feed_line(_ok(req["id"])))
+        captured = await _capture_timeout(client, "tools/call", {
+            "name": "run_shell_command",
+            "arguments": {"command": "sleep 100", "timeout": 120},
+        })
+        assert any(t == 130.0 for t in captured), f"Expected 130.0s, got: {captured}"
 
     @pytest.mark.asyncio
     async def test_tool_timeout_string_converted(self):
-        """timeout passed as a string is converted to float."""
-        client, mock_process = self._make_client()
-
-        async def readline():
-            return json.dumps({
-                "jsonrpc": "2.0",
-                "id": client.request_id + 1,
-                "result": {"content": [{"type": "text", "text": "ok"}]}
-            }).encode() + b"\n"
-
-        mock_process.stdout.readline = readline
-
-        captured_timeouts = []
-        original_wait_for = asyncio.wait_for
-
-        async def spy_wait_for(coro, timeout=None):
-            captured_timeouts.append(timeout)
-            return await original_wait_for(coro, timeout=timeout)
-
-        with patch("asyncio.wait_for", side_effect=spy_wait_for):
-            await client._send_request("tools/call", {
-                "name": "run_shell_command",
-                "arguments": {"command": "echo hi", "timeout": "60"}
-            })
-
-        assert any(t == 70.0 for t in captured_timeouts), \
-            f"Expected 70.0s timeout for string '60', got: {captured_timeouts}"
+        """timeout passed as a string is converted to float (60 -> 70)."""
+        client, _ = _make_client(lambda req, out: out.feed_line(_ok(req["id"])))
+        captured = await _capture_timeout(client, "tools/call", {
+            "name": "run_shell_command",
+            "arguments": {"command": "echo hi", "timeout": "60"},
+        })
+        assert any(t == 70.0 for t in captured), f"Expected 70.0s for '60', got: {captured}"
 
     @pytest.mark.asyncio
     async def test_tool_timeout_does_not_shrink_external_default(self):
-        """A small tool timeout doesn't shrink below the external server default."""
-        client, mock_process = self._make_client(server_name="fetch-external")
-
-        async def readline():
-            return json.dumps({
-                "jsonrpc": "2.0",
-                "id": client.request_id + 1,
-                "result": {"content": [{"type": "text", "text": "ok"}]}
-            }).encode() + b"\n"
-
-        mock_process.stdout.readline = readline
-
-        captured_timeouts = []
-        original_wait_for = asyncio.wait_for
-
-        async def spy_wait_for(coro, timeout=None):
-            captured_timeouts.append(timeout)
-            return await original_wait_for(coro, timeout=timeout)
-
-        with patch("asyncio.wait_for", side_effect=spy_wait_for):
-            await client._send_request("tools/call", {
-                "name": "fetch",
-                "arguments": {"url": "https://example.com", "timeout": 5}
-            })
-
-        # External server default is 60s, tool timeout+10=15s.
-        # max(60, 15) = 60. Should NOT shrink below 60.
-        assert any(t == 60.0 for t in captured_timeouts), \
-            f"Expected 60.0s (external default preserved), got: {captured_timeouts}"
+        """A small tool timeout doesn't shrink below the external 60s floor."""
+        client, _ = _make_client(lambda req, out: out.feed_line(_ok(req["id"])),
+                                  server_name="fetch-external")
+        captured = await _capture_timeout(client, "tools/call", {
+            "name": "fetch",
+            "arguments": {"url": "https://example.com", "timeout": 5},
+        })
+        assert any(t == 60.0 for t in captured), \
+            f"Expected 60.0s (external floor preserved), got: {captured}"
 
     @pytest.mark.asyncio
     async def test_invalid_tool_timeout_uses_default(self):
-        """Invalid timeout value falls back to default."""
-        client, mock_process = self._make_client()
-
-        async def readline():
-            return json.dumps({
-                "jsonrpc": "2.0",
-                "id": client.request_id + 1,
-                "result": {"content": [{"type": "text", "text": "ok"}]}
-            }).encode() + b"\n"
-
-        mock_process.stdout.readline = readline
-
-        captured_timeouts = []
-        original_wait_for = asyncio.wait_for
-
-        async def spy_wait_for(coro, timeout=None):
-            captured_timeouts.append(timeout)
-            return await original_wait_for(coro, timeout=timeout)
-
-        with patch("asyncio.wait_for", side_effect=spy_wait_for):
-            await client._send_request("tools/call", {
-                "name": "run_shell_command",
-                "arguments": {"command": "echo hi", "timeout": "not-a-number"}
-            })
-
-        # Should fall back to default 30s
-        assert any(t == 30.0 for t in captured_timeouts), \
-            f"Expected 30.0s (fallback), got: {captured_timeouts}"
+        """Invalid timeout value falls back to default 30s."""
+        client, _ = _make_client(lambda req, out: out.feed_line(_ok(req["id"])))
+        captured = await _capture_timeout(client, "tools/call", {
+            "name": "run_shell_command",
+            "arguments": {"command": "echo hi", "timeout": "not-a-number"},
+        })
+        assert any(t == 30.0 for t in captured), f"Expected 30.0s fallback, got: {captured}"
 
     @pytest.mark.asyncio
     async def test_no_tool_timeout_uses_default(self):
-        """Tool call without timeout param uses default."""
-        client, mock_process = self._make_client()
-
-        async def readline():
-            return json.dumps({
-                "jsonrpc": "2.0",
-                "id": client.request_id + 1,
-                "result": {"content": [{"type": "text", "text": "ok"}]}
-            }).encode() + b"\n"
-
-        mock_process.stdout.readline = readline
-
-        captured_timeouts = []
-        original_wait_for = asyncio.wait_for
-
-        async def spy_wait_for(coro, timeout=None):
-            captured_timeouts.append(timeout)
-            return await original_wait_for(coro, timeout=timeout)
-
-        with patch("asyncio.wait_for", side_effect=spy_wait_for):
-            await client._send_request("tools/call", {
-                "name": "run_shell_command",
-                "arguments": {"command": "echo hi"}
-            })
-
-        # No timeout param → default 30s
-        assert any(t == 30.0 for t in captured_timeouts), \
-            f"Expected 30.0s (no timeout param), got: {captured_timeouts}"
+        """tools/call without a timeout param uses default 30s."""
+        client, _ = _make_client(lambda req, out: out.feed_line(_ok(req["id"])))
+        captured = await _capture_timeout(client, "tools/call", {
+            "name": "run_shell_command",
+            "arguments": {"command": "echo hi"},
+        })
+        assert any(t == 30.0 for t in captured), f"Expected 30.0s (no param), got: {captured}"
 
     @pytest.mark.asyncio
     async def test_timeout_error_message_reflects_actual_duration(self):
-        """Error message reports the actual timeout duration, not hardcoded 30s."""
-        client, mock_process = self._make_client()
+        """When the response future times out, the error message reports the
+        computed duration (130 = 120 + 10), not a hardcoded 30s.  We drive the
+        future-await timeout directly by patching asyncio.wait_for to raise."""
+        client, _ = _make_client(lambda req, out: None)  # never responds
 
-        # Force a TimeoutError on readline
-        async def timeout_readline():
+        async def raise_timeout(coro, timeout=None):
+            # Close the un-awaited coroutine to avoid a 'never awaited' warning.
+            if asyncio.iscoroutine(coro):
+                coro.close()
             raise asyncio.TimeoutError()
 
-        mock_process.stdout.readline = timeout_readline
-
-        result = await client._send_request("tools/call", {
-            "name": "run_shell_command",
-            "arguments": {"command": "sleep 200", "timeout": 120}
-        })
+        try:
+            with patch("asyncio.wait_for", side_effect=raise_timeout):
+                result = await client._send_request("tools/call", {
+                    "name": "run_shell_command",
+                    "arguments": {"command": "sleep 200", "timeout": 120},
+                })
+        finally:
+            await _shutdown(client)
 
         assert result["error"] is True
-        # The message should say 130 (120+10), not 30
         assert "130 seconds" in result["message"], \
-            f"Expected '130 seconds' in error message, got: {result['message']}"
+            f"Expected '130 seconds' in message, got: {result['message']}"
 
 
 class TestTimeoutChainDocumentation:
-    """Verify the three timeout layers are properly aligned."""
+    """Verify the timeout layers are aligned.  These do not touch the
+    transport and are preserved verbatim from the original suite."""
 
     def test_shell_server_accepts_timeout_param(self):
-        """Shell server schema advertises timeout parameter."""
+        """Shell server schema advertises the timeout parameter."""
         import importlib
         shell_mod = importlib.import_module("app.mcp_servers.shell_server")
         server = shell_mod.ShellServer()
 
-        # Get tool list via handle_request (dict-based MCP protocol)
         loop = asyncio.new_event_loop()
         try:
             response = loop.run_until_complete(
@@ -255,7 +212,7 @@ class TestTimeoutChainDocumentation:
                     "jsonrpc": "2.0",
                     "id": 1,
                     "method": "tools/list",
-                    "params": {}
+                    "params": {},
                 })
             )
         finally:

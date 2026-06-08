@@ -17,7 +17,10 @@ class TestSynthesizeGoalCard:
         assert GOAL_TAG in result.tags
         assert "auto-synthesized" in result.tags
         assert result.root.block_type == "until"
-        assert result.root.until_condition == "fix all lint errors"
+        # Goal cards no longer use the model-evaluated until_condition;
+        # the loop relies on Artifact.self_assessment instead.  See
+        # design/goal-exit-conditions.md.
+        assert result.root.until_condition == ""
         assert result.root.until_mode == "model"
         assert result.root.until_max == 15  # default cap
 
@@ -76,8 +79,9 @@ class TestSynthesizeGoalCard:
 
         assert len(result.name) < 100
         assert result.name.endswith("…")
-        # But the condition retains full text
-        assert result.root.until_condition == long_goal
+        # until_condition is intentionally empty for goal cards
+        # (see design/goal-exit-conditions.md).
+        assert result.root.until_condition == ""
 
     def test_empty_goal_raises(self):
         """Empty/whitespace goal raises ValueError."""

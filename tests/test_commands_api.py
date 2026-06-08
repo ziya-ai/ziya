@@ -48,7 +48,7 @@ class TestCommandDispatch:
 
     def test_unknown_command_returns_400(self, client):
         """Unknown commands are rejected."""
-        resp = client.post("/commands", json={
+        resp = client.post("/api/v1/commands", json={
             "command": "foobar",
             "args": "something",
         })
@@ -57,7 +57,7 @@ class TestCommandDispatch:
 
     def test_empty_goal_args_returns_usage(self, client, mock_project_context):
         """Goal with no args returns usage info."""
-        resp = client.post("/commands", json={
+        resp = client.post("/api/v1/commands", json={
             "command": "goal",
             "args": "",
         })
@@ -88,11 +88,13 @@ class TestGoalCreate:
         mock_binding_storage = MagicMock()
         mock_binding_storage.create.return_value = mock_binding
 
+        # `_launch_run_for_card` is imported inside `_goal_create`, so we
+        # patch it at the source module rather than at app.api.commands.
         with patch("app.api.commands.TaskCardStorage", return_value=mock_card_storage), \
              patch("app.api.commands.TaskBindingStorage", return_value=mock_binding_storage), \
-             patch("app.api.commands._launch_run_for_card", new_callable=AsyncMock, return_value=mock_run):
+             patch("app.api.task_cards._launch_run_for_card", new_callable=AsyncMock, return_value=mock_run):
 
-            resp = client.post("/commands", json={
+            resp = client.post("/api/v1/commands", json={
                 "command": "goal",
                 "args": "fix all lint errors",
                 "conversation_id": "conv_abc",
@@ -124,9 +126,9 @@ class TestGoalCreate:
         mock_run.id = "run_456"
 
         with patch("app.api.commands.TaskCardStorage", return_value=mock_card_storage), \
-             patch("app.api.commands._launch_run_for_card", new_callable=AsyncMock, return_value=mock_run):
+             patch("app.api.task_cards._launch_run_for_card", new_callable=AsyncMock, return_value=mock_run):
 
-            resp = client.post("/commands", json={
+            resp = client.post("/api/v1/commands", json={
                 "command": "goal",
                 "args": "deploy the service",
             })
@@ -143,7 +145,7 @@ class TestGoalSubcommands:
     def test_status_no_active_goal(self, client, mock_project_storage):
         """Status when no goal returns inactive."""
         with patch("app.api.commands._find_active_goal_binding", new_callable=AsyncMock, return_value=None):
-            resp = client.post("/commands", json={
+            resp = client.post("/api/v1/commands", json={
                 "command": "goal",
                 "args": "status",
                 "conversation_id": "conv_123",
@@ -157,7 +159,7 @@ class TestGoalSubcommands:
     def test_pause_no_active_goal(self, client, mock_project_storage):
         """Pause when no goal returns appropriate message."""
         with patch("app.api.commands._find_active_goal_binding", new_callable=AsyncMock, return_value=None):
-            resp = client.post("/commands", json={
+            resp = client.post("/api/v1/commands", json={
                 "command": "goal",
                 "args": "pause",
                 "conversation_id": "conv_123",
@@ -189,7 +191,7 @@ class TestGoalSubcommands:
              patch("app.api.commands.TaskRunStorage", return_value=mock_run_storage), \
              patch("app.api.commands.TaskBindingStorage", return_value=mock_binding_storage):
 
-            resp = client.post("/commands", json={
+            resp = client.post("/api/v1/commands", json={
                 "command": "goal",
                 "args": "clear",
                 "conversation_id": "conv_123",

@@ -1,0 +1,8 @@
+{
+    "target_file": "frontend/src/components/MarkdownRenderer.tsx",
+    "expect_error": true,
+    "description": "A single-hunk modification (add a '(?=\\s|$)' lookahead to a regex) whose diff body arrived corrupted from the frontend: a context line's triple-backtick was rendered as the HTML entity '&#96;' and a blank line + newline were injected, stripping the leading space (context prefix) from the continuation line. parse_unified_diff_exact_plus truncates the hunk at that prefix-less line BEFORE reaching the actual '-'/'+' change lines, so the hunk parses to removed=0/added=0. is_hunk_already_applied then hits the 'no-op hunk' short-circuit and returns True, so the pipeline reports status=already_applied / is_success=True and writes nothing -- silent data loss. The removal content is still present in the file, so the hunk is plainly NOT applied. With the fix the pipeline must fail loudly (not success/already_applied) and must NOT modify the file. The harness 'expect_error' mode asserts that outcome.",
+    "date_added": "2026-06-04",
+    "issue_reference": "false_already_applied_on_truncated_hunk",
+    "expected_behavior": "The pipeline must NOT report already_applied/success when the parsed hunk has no +/- lines while the removal content is still present in the file, and must leave the file unchanged (no destructive write)."
+}
