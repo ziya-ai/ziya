@@ -108,8 +108,11 @@ class PipelineResult:
         # If all hunks failed and no changes were written, it's an error
         elif failed_count > 0 and succeeded_count == 0 and already_applied_count == 0:
             return "error"
-        # If all hunks succeeded or were already applied, it's success
-        elif failed_count == 0 and (succeeded_count > 0 or already_applied_count > 0):
+        # If all hunks are already applied (none actually succeeded), it's already_applied
+        elif failed_count == 0 and succeeded_count == 0 and already_applied_count > 0:
+            return "already_applied"
+        # If at least one hunk succeeded (with or without already-applied ones), it's success
+        elif failed_count == 0 and succeeded_count > 0:
             return "success"
         # Default case (e.g., empty diff or new file creation where changes_written is true)
         else:
@@ -268,6 +271,7 @@ class PipelineResult:
             "status": final_status,
             "request_id": self.request_id,
             "message": final_message,
+            "file_restored": getattr(self, 'file_restored', False),
             "succeeded": self.succeeded_hunks,
             "failed": self.failed_hunks,
             "already_applied": already_applied_hunks, # Use the locally corrected list

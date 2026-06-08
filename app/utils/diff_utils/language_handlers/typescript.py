@@ -93,6 +93,38 @@ class TypeScriptHandler(LanguageHandler):
             # Use the correct extension so tsc enables JSX parsing for .tsx
             suffix = '.tsx' if file_path.endswith('.tsx') else '.ts'
 
+            # Differential-validation helper: run the same isolated tsc syntax
+            # check on an arbitrary piece of content and report whether it has a
+            # real *syntax* error (TS1xxx, excluding config-only codes).  Used to
+            # compare the modified content against the original so we never fail a
+            # diff for breakage that was ALREADY present.  tsc is unreliable on
+            # file *fragments* -- a slice of a larger module that legitimately
+            # starts/ends mid-construct, contains nested ``` inside template
+            # literals, JSX whose closing tag lives outside the slice, etc.  Such
+            # fragments fail tsc in isolation even when completely unmodified, so
+            # the original-vs-modified comparison cancels those false positives.
+            def _tsc_has_syntax_error(content: str) -> bool:
+                with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as t2:
+                    t2.write(content.encode('utf-8'))
+                    p2 = t2.name
+                try:
+                    a2 = [tsc_path, '--noEmit', '--skipLibCheck',
+                          '--isolatedModules', '--noResolve',
+                          '--target', 'ES2022', '--module', 'esnext',
+                          '--moduleResolution', 'node']
+                    if suffix == '.tsx':
+                        a2 += ['--jsx', 'react-jsx']
+                    a2.append(p2)
+                    r2 = subprocess.run(a2, capture_output=True, text=True, timeout=5)
+                    if r2.returncode == 0:
+                        return False
+                    msg2 = (r2.stdout.strip() or r2.stderr.strip())
+                    codes2 = _re.findall(r'TS(\d+)', msg2)
+                    return any(c.startswith('1') and c not in {'1323', '1378', '1375', '1432', '1208'}
+                               for c in codes2)
+                finally:
+                    os.unlink(p2)
+
             with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temp:
                 temp.write(modified_content.encode('utf-8'))
                 temp_path = temp.name
@@ -139,6 +171,18 @@ class TypeScriptHandler(LanguageHandler):
                                            for c in diag_codes)
 
                     if has_syntax_error:
+                        # Only fail if the diff *introduced* the syntax error.
+                        # If the original content fails tsc the same way, this is
+                        # a file fragment tsc can't parse standalone (not a real
+                        # defect in the change), so trust the diff -- apply still
+                        # runs the bracket/heuristic checks below as a backstop.
+                        if _tsc_has_syntax_error(original_content):
+                            logger.debug(
+                                f"tsc reports syntax errors for {file_path}, but the "
+                                f"original content fails tsc the same way (file "
+                                f"fragment / not a standalone module); not failing "
+                                f"the diff on pre-existing breakage.")
+                            return True, None
                         logger.error(f"TypeScript syntax validation failed for {file_path}: {error_msg}")
                         return False, error_msg
 
@@ -161,9 +205,23 @@ class TypeScriptHandler(LanguageHandler):
             # If tsc is not available or fails, fall back to basic validation
             logger.warning(f"Falling back to basic TypeScript validation: {str(e)}")
             
-            # Use JavaScript handler's basic validation as a fallback
+            # Use JavaScript handler's basic validation as a fallback, but apply
+            # it DIFFERENTIALLY: only fail the diff if it *introduced* the
+            # structural breakage. The bracket-matcher cannot parse file
+            # *fragments* (a slice of a larger module that starts/ends mid-block,
+            # JSX whose closing tag is outside the slice, nested ``` inside
+            # template literals, etc.) and rejects them even when unmodified. If
+            # the ORIGINAL content fails the same check, this file is a fragment
+            # the heuristic can't judge, so trust the diff rather than emit a
+            # false positive.
             is_valid, error = JavaScriptHandler._basic_js_validation(modified_content)
             if not is_valid:
+                orig_valid, _ = JavaScriptHandler._basic_js_validation(original_content)
+                if not orig_valid:
+                    logger.debug(f"Basic TS validation rejects {file_path}, but the "
+                                 f"original content fails it too (file fragment); "
+                                 f"not failing the diff on pre-existing breakage.")
+                    return True, None
                 logger.error(f"Basic TypeScript validation failed for {file_path}: {error}")
                 return False, error
             

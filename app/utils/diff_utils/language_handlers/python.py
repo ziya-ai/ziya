@@ -288,16 +288,30 @@ class PythonHandler(LanguageHandler):
         
         try:
             tree = ast.parse(content)
-            
-            # Find all function and class definitions
-            for node in ast.walk(tree):
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                    name = node.name
-                    lineno = node.lineno
-                    
-                    if name not in functions:
-                        functions[name] = []
-                    functions[name].append(lineno)
+
+            # Collect top-level (and nested-function) defs plus class NAMES,
+            # but do NOT descend into class bodies.  ast.walk recurses into
+            # everything, which collected methods as if they were top-level
+            # functions — so e.g. a setUp method in five separate TestCase
+            # classes registered as one duplicated "setUp", a false positive.
+            # Methods are validated separately, class-scoped, by
+            # _extract_method_definitions.
+            def _collect(parent):
+                for child in ast.iter_child_nodes(parent):
+                    if isinstance(child, ast.ClassDef):
+                        # Record the class name (duplicate-class detection)
+                        # but skip its body — those are methods, not functions.
+                        functions.setdefault(child.name, []).append(child.lineno)
+                    elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        functions.setdefault(child.name, []).append(child.lineno)
+                        # Still descend so nested functions are caught.
+                        _collect(child)
+                    else:
+                        # Descend through if/try/with/etc. to reach
+                        # conditionally-defined top-level functions.
+                        _collect(child)
+
+            _collect(tree)
         except Exception as e:
             # Fall back to regex-based extraction if AST parsing fails
             logger.warning(f"Falling back to regex-based function extraction: {str(e)}")
