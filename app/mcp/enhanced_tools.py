@@ -43,9 +43,12 @@ _tool_enhancements: Optional[Dict[str, Any]] = None
 def _load_tool_enhancements() -> Dict[str, Any]:
     """Load tool enhancements from config files.
     
-    Sources (in order, later sources merge over earlier):
+    Sources:
     1. Internal plugin get_tool_enhancements() (enterprise/internal MCP fixes)
-    2. ~/.ziya/tool_enhancements.json (user-local overrides)
+    2. ~/.ziya/tool_enhancements.json (user-local additions)
+    Enterprise plugin enhancements take precedence: a user-local file may
+    add enhancements for tools the plugin doesn't define, but may not
+    override an enterprise-defined one (those can carry security warnings).
     """
     global _tool_enhancements
     if _tool_enhancements is not None:
@@ -70,8 +73,21 @@ def _load_tool_enhancements() -> Dict[str, Any]:
             with open(user_path) as f:
                 data = json.load(f)
             user_enhancements = data.get("enhancements", {})
-            merged.update(user_enhancements)
-            logger.debug(f"Loaded {len(user_enhancements)} tool enhancements from {user_path}")
+            # Do NOT let a user-local file silently replace an
+            # enterprise-defined enhancement — only apply entries for
+            # tools the plugin layer hasn't already enhanced.
+            protected = set(merged)
+            applied = 0
+            for tool_name, enh in user_enhancements.items():
+                if tool_name in protected:
+                    logger.warning(
+                        f"Ignoring user tool enhancement for '{tool_name}': "
+                        f"enterprise enhancement takes precedence"
+                    )
+                    continue
+                merged[tool_name] = enh
+                applied += 1
+            logger.debug(f"Loaded {applied} user tool enhancements from {user_path}")
         except (json.JSONDecodeError, OSError, KeyError, ValueError) as e:
             logger.warning(f"Failed to load tool enhancements from {user_path}: {e}")
     
