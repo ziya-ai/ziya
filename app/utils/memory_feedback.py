@@ -32,6 +32,7 @@ Design:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
@@ -55,6 +56,12 @@ _loaded_per_conversation: Dict[str, Set[str]] = defaultdict(set)
 # it re-stabilizes.  Process-local: restart-conservative is the right
 # fallback (closes all open windows; nothing wrongly biased).
 _labile_until: Dict[str, int] = {}
+
+# Caps to bound process-local growth.  A conversation that never reaches
+# end-of-turn feedback (tab closed, crash) leaks its loaded-set otherwise;
+# a memory marked labile but never re-checked leaks its expiry entry.
+_MAX_TRACKED_CONVERSATIONS = 500
+_MAX_LABILE_ENTRIES = 2000
 
 # Window durations.  RETRIEVAL covers "user injected this into context";
 # USED covers "user demonstrably referenced this in their response"
@@ -126,6 +133,7 @@ def record_load(conversation_id: Optional[str], memory_ids: List[str]) -> None:
     # Open the reconsolidation window regardless of whether we have a
     # conversation_id -- the labile property is per-memory, not per-conv.
     mark_labile(memory_ids, _LABILE_RETRIEVAL_MS)
+    _prune_stale_state()
     if not conversation_id:
         return
     _loaded_per_conversation[conversation_id].update(memory_ids)
@@ -133,6 +141,34 @@ def record_load(conversation_id: Optional[str], memory_ids: List[str]) -> None:
         f"📥 Recorded {len(memory_ids)} memory load(s) for conv {conversation_id[:8]}: "
         f"{memory_ids[:3]}{'...' if len(memory_ids) > 3 else ''}"
     )
+
+
+def _prune_stale_state() -> None:
+    """Bound process-local growth of the two tracking dicts.
+
+    - Expired labile windows are dropped (is_labile() only cleans entries
+      that happen to be re-checked; never-rechecked ones leak otherwise).
+    - If still over cap after expiry-prune, evict oldest-expiry entries.
+    - Abandoned conversation loaded-sets (no end-of-turn feedback) are
+      evicted oldest-first when over cap.  We can't know recency without
+      a timestamp, so eviction is arbitrary-but-bounded — acceptable
+      because a dropped set only forfeits one turn's use-credit.
+    """
+    now = int(time.time() * 1000)
+    if _labile_until:
+        expired = [mid for mid, exp in _labile_until.items() if exp <= now]
+        for mid in expired:
+            _labile_until.pop(mid, None)
+        if len(_labile_until) > _MAX_LABILE_ENTRIES:
+            # Keep the most-recently-expiring (longest-lived) windows.
+            keep = sorted(_labile_until.items(), key=lambda kv: kv[1],
+                          reverse=True)[:_MAX_LABILE_ENTRIES]
+            _labile_until.clear()
+            _labile_until.update(keep)
+    if len(_loaded_per_conversation) > _MAX_TRACKED_CONVERSATIONS:
+        overflow = len(_loaded_per_conversation) - _MAX_TRACKED_CONVERSATIONS
+        for cid in list(_loaded_per_conversation.keys())[:overflow]:
+            _loaded_per_conversation.pop(cid, None)
 
 
 def get_loaded_memory_ids(conversation_id: str) -> Set[str]:
@@ -214,14 +250,23 @@ async def apply_feedback(
     # Embed response in sliding windows.  Bedrock Titan handles ~8k tokens
     # per call; a 30-window response is unusual but still cheap.
     windows = _windowize(response_text)
-    window_vecs: List[np.ndarray] = []
-    for w in windows:
-        try:
-            v = provider.embed_text(w)
-            if v is not None:
-                window_vecs.append(v)
-        except Exception as e:
-            logger.debug(f"Feedback: window embed failed: {e}")
+
+    def _embed_windows() -> List[np.ndarray]:
+        # Runs in a worker thread: provider.embed_text is a blocking
+        # Bedrock HTTP call, and apply_feedback is dispatched as a
+        # fire-and-forget task on the main event loop.  Embedding inline
+        # would stall every other coroutine for the duration.
+        vecs: List[np.ndarray] = []
+        for w in windows:
+            try:
+                v = provider.embed_text(w)
+                if v is not None:
+                    vecs.append(v)
+            except Exception as e:
+                logger.debug(f"Feedback: window embed failed: {e}")
+        return vecs
+
+    window_vecs: List[np.ndarray] = await asyncio.to_thread(_embed_windows)
     if not window_vecs:
         _bump_loaded_only(loaded)
         clear_conversation(conversation_id)
@@ -310,6 +355,7 @@ def _apply_updates(loaded: Set[str], used_ids: Set[str]) -> None:
     try:
         from app.storage.memory import get_memory_storage
         store = get_memory_storage()
+        mutated = []
         for mid in loaded:
             mem = store.get(mid)
             if not mem:
@@ -319,6 +365,8 @@ def _apply_updates(loaded: Set[str], used_ids: Set[str]) -> None:
             if mid in used_ids:
                 mem.retrieval_used_count = (mem.retrieval_used_count or 0) + 1
                 mem.importance = min(1.0, (mem.importance or 0.5) + _USE_IMPORTANCE_DELTA)
-            store.save(mem)
+            mutated.append(mem)
+        # One batched write instead of N full-file rewrites.
+        store.save_many(mutated)
     except Exception as e:
         logger.warning(f"Feedback: failed to persist counter updates: {e}")

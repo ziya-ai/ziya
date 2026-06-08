@@ -142,8 +142,8 @@ def get_memory_prompt_section() -> str:
             # while they're literally in the prompt every turn.
             try:
                 from app.utils.memory_feedback import record_load
-                from app.context import get_conversation_id
-                record_load(get_conversation_id(), [m.id for m in core])
+                from app.context import get_conversation_id_or_none
+                record_load(get_conversation_id_or_none(), [m.id for m in core])
             except Exception:
                 pass  # Non-fatal
             by_layer: dict[str, list] = {}
