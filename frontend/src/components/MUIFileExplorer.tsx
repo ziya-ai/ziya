@@ -146,11 +146,17 @@ export const MUIFileExplorer = () => {
   // Ensure component initializes immediately when folder data is available
   // This prevents the issue where users starting on chat history have no file context
   useEffect(() => {
-    if (folders && Object.keys(folders).length > 0 && !hasLoadedData) {
+    // Clear the initial-load flags once folder data is available, OR once a
+    // scan has finished and legitimately produced an empty result.  Without
+    // the `!isScanning` clause, an empty project directory (backend returns
+    // `{}`) never satisfies `length > 0`, so `isInitialLoad` stays true
+    // forever and the loading spinner hangs even though scanning is done and
+    // the "No files found" empty state is ready to render.
+    if (folders && !hasLoadedData && (Object.keys(folders).length > 0 || !isScanning)) {
       setHasLoadedData(true);
       setIsInitialLoad(false);
     }
-  }, [folders, hasLoadedData]);
+  }, [folders, hasLoadedData, isScanning]);
 
   // Force recalculation when accurate token counts change
   // Helper function to determine if a node has children

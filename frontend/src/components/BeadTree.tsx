@@ -6,8 +6,9 @@
  * Users can click "Resume" on a parked bead to switch context.
  */
 import React, { useState, useEffect, useCallback } from 'react';
-import { Popover, Button, Empty, message, Tooltip } from 'antd';
+import { Popover, Button, Empty, message, Tooltip, Spin } from 'antd';
 import { useTheme } from '../context/ThemeContext';
+import { useStreamingContext } from '../context/StreamingContext';
 import * as beadApi from '../api/beadApi';
 import type { BeadItem, BeadTreeResponse } from '../api/beadApi';
 
@@ -119,9 +120,11 @@ const BeadNode: React.FC<{
 
 const BeadTree: React.FC<BeadTreeProps> = ({ conversationId, onResume }) => {
   const { isDarkMode } = useTheme();
+  const { streamingConversations } = useStreamingContext();
   const [tree, setTree] = useState<BeadTreeResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
+  const isStreaming = streamingConversations.has(conversationId);
 
   const loadBeads = useCallback(async () => {
     if (!conversationId) return;
@@ -143,6 +146,14 @@ const BeadTree: React.FC<BeadTreeProps> = ({ conversationId, onResume }) => {
   // Refresh on conversation change
   useEffect(() => { loadBeads(); }, [conversationId]);
 
+  // Refresh when streaming ends — new beads likely created during the turn
+  useEffect(() => {
+    if (!isStreaming) {
+      const t = setTimeout(loadBeads, 500); // small delay to let server flush
+      return () => clearTimeout(t);
+    }
+  }, [isStreaming, loadBeads]);
+
   const handleResume = useCallback(async (beadId: string) => {
     try {
       const result = await beadApi.resumeBead(conversationId, beadId);
@@ -154,30 +165,94 @@ const BeadTree: React.FC<BeadTreeProps> = ({ conversationId, onResume }) => {
     }
   }, [conversationId, onResume, loadBeads]);
 
-  // Don't render anything if no beads exist
-  if (!tree || tree.beads.length === 0) return null;
+  // Compute display state — always render so the user can see system status
+  const beadCount = tree?.beads.length ?? 0;
+  const parkedCount = tree?.parked_count ?? 0;
+  const completedCount = tree?.completed_count ?? 0;
+  const activeCount = beadCount - parkedCount - completedCount;
+  const rootBeads = tree?.beads.filter(b => !b.parent_id) ?? [];
 
-  const parkedCount = tree.parked_count;
-  const rootBeads = tree.beads.filter(b => !b.parent_id);
+  // Visual state: empty | active-only | has-parked
+  const visualState = parkedCount > 0 ? 'parked' : (beadCount > 0 ? 'active' : 'empty');
+  const indicatorColor = {
+    parked: '#f59e0b',     // amber when threads are pending
+    active: '#10b981',     // green when actively tracking
+    empty:  isDarkMode ? '#475569' : '#94a3b8',  // dim when no beads yet
+  }[visualState];
+  const indicatorBg = {
+    parked: isDarkMode ? 'rgba(245, 158, 11, 0.15)' : 'rgba(245, 158, 11, 0.1)',
+    active: isDarkMode ? 'rgba(16, 185, 129, 0.12)' : 'rgba(16, 185, 129, 0.08)',
+    empty:  'transparent',
+  }[visualState];
+  const indicatorBorder = {
+    parked: `1px solid ${isDarkMode ? '#f59e0b44' : '#f59e0b33'}`,
+    active: `1px solid ${isDarkMode ? '#10b98144' : '#10b98133'}`,
+    empty:  `1px solid ${isDarkMode ? '#33415544' : '#cbd5e144'}`,
+  }[visualState];
+
+  const tooltipText = (() => {
+    if (loading) return 'Loading bead tree…';
+    if (beadCount === 0) return 'Bead tracking online — no threads yet';
+    if (parkedCount > 0) return `${parkedCount} parked thread${parkedCount !== 1 ? 's' : ''} (${beadCount} total)`;
+    return `${activeCount} active, ${completedCount} completed`;
+  })();
 
   const content = (
     <div style={{
       maxWidth: 360,
+      minWidth: 280,
       maxHeight: 400,
       overflowY: 'auto',
       padding: 8,
     }}>
       <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
         fontSize: 11,
         color: isDarkMode ? '#64748b' : '#94a3b8',
         marginBottom: 8,
         borderBottom: `1px solid ${isDarkMode ? '#1e293b' : '#e2e8f0'}`,
         paddingBottom: 6,
       }}>
-        Task threads — click ⏸ resume to switch context
+        <span>Task threads — click ⏸ resume to switch</span>
+        <button
+          onClick={loadBeads}
+          disabled={loading}
+          style={{
+            background: 'none',
+            border: 'none',
+            color: isDarkMode ? '#64748b' : '#94a3b8',
+            cursor: loading ? 'wait' : 'pointer',
+            fontSize: 11,
+            padding: '0 4px',
+          }}
+          title="Refresh bead tree"
+        >
+          {loading ? <Spin size="small" /> : '↻'}
+        </button>
+      </div>
+      <div style={{
+        fontSize: 10,
+        color: isDarkMode ? '#475569' : '#94a3b8',
+        marginBottom: 8,
+        fontFamily: 'monospace',
+      }}>
+        {beadCount} total · {activeCount} active · {parkedCount} parked · {completedCount} done
       </div>
       {rootBeads.length === 0 ? (
-        <Empty description="No threads tracked" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        <div style={{
+          padding: '20px 12px',
+          textAlign: 'center',
+          fontSize: 12,
+          color: isDarkMode ? '#64748b' : '#94a3b8',
+        }}>
+          <div style={{ fontSize: 24, marginBottom: 8, opacity: 0.4 }}>📿</div>
+          <div>No threads tracked yet</div>
+          <div style={{ fontSize: 10, marginTop: 4, opacity: 0.7 }}>
+            Beads appear when the model identifies subtasks or unfollowed forks during a conversation.
+          </div>
+        </div>
       ) : (
         rootBeads.map(b => (
           <BeadNode
@@ -199,25 +274,26 @@ const BeadTree: React.FC<BeadTreeProps> = ({ conversationId, onResume }) => {
       trigger="click"
       open={open}
       onOpenChange={setOpen}
-      placement="bottomRight"
+      placement="topLeft"
       title={null}
     >
-      <Tooltip title={`${parkedCount} parked thread${parkedCount !== 1 ? 's' : ''}`}>
+      <Tooltip title={tooltipText}>
         <span style={{
           cursor: 'pointer',
           fontSize: 13,
           padding: '2px 8px',
           borderRadius: 12,
-          background: parkedCount > 0
-            ? (isDarkMode ? 'rgba(245, 158, 11, 0.15)' : 'rgba(245, 158, 11, 0.1)')
-            : 'transparent',
-          color: parkedCount > 0 ? '#f59e0b' : (isDarkMode ? '#64748b' : '#94a3b8'),
-          border: parkedCount > 0
-            ? `1px solid ${isDarkMode ? '#f59e0b44' : '#f59e0b33'}`
-            : '1px solid transparent',
+          background: indicatorBg,
+          color: indicatorColor,
+          border: indicatorBorder,
+          opacity: visualState === 'empty' ? 0.6 : 1,
           transition: 'all 0.2s',
+          userSelect: 'none',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 4,
         }}>
-          📿 {parkedCount > 0 ? parkedCount : ''}
+          📿{beadCount > 0 ? ` ${parkedCount > 0 ? parkedCount : beadCount}` : ''}
         </span>
       </Tooltip>
     </Popover>

@@ -605,8 +605,6 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
             return;
           }
 
-          if (!filePath || !type) return;
-
           // Scan complete — fetch the finished tree and clear progress state.
           if (type === 'scan_complete') {
             setIsScanning(false);
@@ -618,6 +616,11 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
             if (fetchFoldersRef.current) fetchFoldersRef.current();
             return;
           }
+
+          // Remaining handlers below operate on a concrete file path, so
+          // drop pathless events here (scan_complete, handled above, is the
+          // one event type that legitimately carries an empty path).
+          if (!filePath || !type) return;
 
           // External paths have a nested structure on the server that
           // doesn't match the flat broadcast format, so incremental

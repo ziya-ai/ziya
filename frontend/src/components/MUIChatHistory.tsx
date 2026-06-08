@@ -11,7 +11,7 @@ import { useProject } from '../context/ProjectContext';
 import { Conversation, ConversationFolder, SearchResult } from '../utils/types';
 import SwarmRecoveryPanel from './SwarmRecoveryPanel';
 import { db } from '../utils/db';
-import { v4 as uuidv4 } from 'uuid';
+import { folderIsEffectivelyGlobal, conversationIsEffectivelyGlobal, globalMenuItemState } from '../utils/folderUtil';import { v4 as uuidv4 } from 'uuid';
 import type { DelegateMeta, TaskPlan, DelegateStatus } from '../types/delegate';
 // MUI imports
 import { styled } from '@mui/material/styles';
@@ -102,6 +102,7 @@ interface ChatTreeItemProps {
   isPinned?: boolean;
   isCurrentItem?: boolean;
   isGlobalItem?: boolean;
+  isGlobalByInheritanceOnly?: boolean;
   isEphemeralItem?: boolean;
   isStreaming?: boolean;
   // Conversation has a task card with a non-terminal run.  Renders a
@@ -156,6 +157,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     onDelegateRetry,
     onDelegateSkip,
     isGlobalItem = false,
+    isGlobalByInheritanceOnly = false,
     isEphemeralItem = false,
     isStreaming = false,
     isRunningTask = false,
@@ -388,6 +390,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                           onOpenMoveMenu={onOpenMoveMenu}
                           onToggleGlobal={onToggleGlobal} onMoveToProject={onMoveToProject} isGlobalItem={isGlobalItem}
                           isEphemeralItem={isEphemeralItem}
+                          isGlobalByInheritanceOnly={isGlobalByInheritanceOnly}
                           onPromoteEphemeral={(props as any).onPromoteEphemeral}
                           onConfigure={onConfigure} onPin={onPin} isPinned={isPinned} onCreateSubfolder={onCreateSubfolder}
                         />}
@@ -437,7 +440,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     </div>
   );
 });
-const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress, onExport, onOpenMoveMenu, onToggleGlobal, onMoveToProject, onCopyToProject, isGlobalItem, isEphemeralItem, onPromoteEphemeral, onConfigure, onPin, isPinned, onCreateSubfolder, isTaskPlanFolder, onSwarmRecovery, delegateStatus, onDelegateRetry, onDelegateSkip }) => {
+const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress, onExport, onOpenMoveMenu, onToggleGlobal, onMoveToProject, onCopyToProject, isGlobalItem, isGlobalByInheritanceOnly, isEphemeralItem, onPromoteEphemeral, onConfigure, onPin, isPinned, onCreateSubfolder, isTaskPlanFolder, onSwarmRecovery, delegateStatus, onDelegateRetry, onDelegateSkip }) => {
   const handleAntAction = (actionCallback: (id: string) => void, originalEvent?: React.MouseEvent | Event) => {
     originalEvent?.stopPropagation();
     actionCallback(nodeId);
@@ -478,8 +481,12 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
         }
       },
       {
-        key: 'global-toggle', label: isGlobalItem ? '📌 This project only' : '🌐 Share across projects', icon: <AntGlobalOutlined />, onClick: (e) => {
+        key: 'global-toggle',
+        ...(({ label, disabled, tooltip }) => ({ label, disabled, title: tooltip }))(globalMenuItemState(isGlobalItem, !isGlobalByInheritanceOnly && isGlobalItem)),
+        icon: <AntGlobalOutlined />,
+        onClick: (e) => {
           e.domEvent.stopPropagation();
+          if (isGlobalByInheritanceOnly) return;
           onToggleGlobal && onToggleGlobal(nodeId);
         }
       },
@@ -521,8 +528,14 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
         }
       },
       {
-        key: 'global-toggle', label: isGlobalItem ? '📌 This project only' : '🌐 Share across projects', icon: <AntGlobalOutlined />, onClick: (e) => {
+        key: 'global-toggle',
+        label: isGlobalByInheritanceOnly ? 'Shared via parent folder' : (isGlobalItem ? '📌 This project only' : '🌐 Share across projects'),
+        icon: <AntGlobalOutlined />,
+        disabled: isGlobalByInheritanceOnly,
+        title: isGlobalByInheritanceOnly ? 'Shared via a parent folder — unshare the parent to change this' : undefined,
+        onClick: (e) => {
           e.domEvent.stopPropagation();
+          if (isGlobalByInheritanceOnly) return;
           onToggleGlobal && onToggleGlobal(nodeId);
         }
       },
@@ -1147,18 +1160,17 @@ const MUIChatHistory = () => {
 
     if (isConversation) {
       const cleanId = nodeId.substring(5);
+      // Capture effective-global BEFORE the toggle (closure arrays are the
+      // render-time snapshot, unaffected by the await) so the toast direction
+      // matches the menu label, which is also effective-global driven.
+      const wasGlobal = conversationIsEffectivelyGlobal(
+        conversations.find(c => c.id === cleanId), folders);
       await toggleConversationGlobal(cleanId);
-      // Re-read from state after toggle (state is updated by the callback)
-      const conv = conversations.find(c => c.id === cleanId);
-      // The toggle flips the value, so the NEW state is the opposite of what we just read
-      const wasGlobal = conv?.isGlobal;
       message.success(!wasGlobal ? 'Shared across all projects' : 'Restricted to current project');
     } else {
       // It's a folder ID directly
-      const folder = folders.find(f => f.id === nodeId);
+      const wasGlobal = folderIsEffectivelyGlobal(folders.find(f => f.id === nodeId), folders);
       await toggleFolderGlobal(nodeId);
-      // Same logic: state was toggled, so the message should reflect the NEW state
-      const wasGlobal = folder?.isGlobal;
       message.success(!wasGlobal ? 'Folder shared across all projects' : 'Folder restricted to current project');
     }
   };
@@ -3635,7 +3647,24 @@ const MUIChatHistory = () => {
                 const isPinned = isFolder && pinnedFolders.has(nodeId);
                 const isCurrentItem = isFolder
                   ? false : nodeId.startsWith('conv-') && nodeId.substring(5) === currentConversationId;
-                const isGlobalItem = isFolder ? node.folder?.isGlobal === true : node.conversation?.isGlobal === true;
+                // Effective-global: the globe affordance and "This project only"
+                // menu label reflect inherited globalness (own flag OR any
+                // ancestor folder global), matching the visibility model — a
+                // child of a global folder is already shared cross-project even
+                // with its own isGlobal false, so it should read as global here.
+                const isGlobalItem = isFolder
+                  ? folderIsEffectivelyGlobal(node.folder, folders)
+                  : conversationIsEffectivelyGlobal(node.conversation, folders);
+                // Global *only* by inheritance: effectively global, but the
+                // node's own isGlobal flag is false (it inherits from an
+                // ancestor folder).  Toggling such a node's own flag is a
+                // no-op for visibility — it stays shared via the ancestor —
+                // so the menu disables the toggle with an explanatory tooltip
+                // and directs the user to unshare the parent instead.
+                const ownGlobalFlag = isFolder
+                  ? node.folder?.isGlobal === true
+                  : node.conversation?.isGlobal === true;
+                const isGlobalByInheritanceOnly = isGlobalItem && !ownGlobalFlag;
                 const isEphemeralItem = !isFolder && node.conversation?.isEphemeral === true;
                 const hasUnreadResponse = !isFolder && nodeId.startsWith('conv-') &&
                   node.conversation?.hasUnreadResponse && nodeId.substring(5) !== currentConversationId;
@@ -3695,6 +3724,7 @@ const MUIChatHistory = () => {
                       isEphemeralItem={isEphemeralItem}
                       isStreaming={isStreamingConv} hasUnreadResponse={hasUnreadResponse}
                       isRunningTask={isRunningTaskConv}
+                      isGlobalByInheritanceOnly={isGlobalByInheritanceOnly}
                       conversationCount={conversationCount}
                       onEdit={handleEdit} onDelete={handleDelete} onAddChat={handleAddChat}
                       onExport={handleExportConversation} onPin={togglePinFolder}
