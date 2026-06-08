@@ -472,9 +472,18 @@ def process_text_delta(
         state.code_block_tracker['block_type'] = None
         state.hallucination_detected = True
 
+        # Yield a structured recovery event rather than an inline text
+        # chunk.  The previous text-channel write made the warning part
+        # of ``assistant_text``, which then entered conversation history
+        # and was fed back to the model on the next turn — the warning
+        # itself becoming a contamination vector.  As a structured event
+        # it is surfaced by the frontend as a transient banner, never
+        # persisted, and never visible to the model on subsequent turns.
         events.append({
-            'type': 'text',
-            'content': '\n\n⚠️ Model attempted to fabricate tool output — retrying…\n\n'
+            'type': 'hallucination_recovery',
+            'reason': 'fabricated_tool_output',
+            'pattern': str(_pat)[:120],
+            'message': 'Model attempted to fabricate tool output — retrying.',
         })
         return events  # caller will break
 
@@ -600,19 +609,88 @@ def process_text_delta(
                 _shell_match = None
 
             if _shell_match is not None:
-                logger.warning(
-                    f"🚨 HALLUCINATION_FAKE_SHELL: signal={_shell_match.signal} "
-                    f"reason={_shell_match.reason}"
-                )
-                state.hallucination_detected = True
-                events.append({
-                    'type': 'text',
-                    'content': (
-                        '\n\n⚠️ Model wrote a fabricated shell session rather than '
-                        'calling the tool — retrying…\n\n'
-                    ),
-                })
-                return events
+                # Two-stage gate to drop the false-positive rate.
+                #
+                # 1. Parroting check (deterministic): probe the fence
+                #    body against the shingle index.  Layer A's normal
+                #    probe skips inside-fence content because legitimate
+                #    code authoring shares vocabulary with prior reads —
+                #    but the body of a Layer-B-flagged fence is the one
+                #    place where in-fence parroting is exactly the
+                #    thing we want to catch.  A match here means the
+                #    model is reproducing real prior output instead of
+                #    re-running the tool.  Abort regardless of structure.
+                #
+                # 2. Structure check (heuristic): if no parroting match,
+                #    look for `\n\n` paragraph breaks anywhere in the
+                #    streamed text.  Real tool output never enters
+                #    `state.assistant_text` (it goes through the
+                #    `tool_display` channel as an atomic event), so the
+                #    only way `\n\n` appears here is if the model wrote
+                #    structured prose.  Tutorial / documentation content
+                #    has paragraph breaks; dense fabricated tool output
+                #    does not.  When breaks are present, suppress the
+                #    abort (DEBUG log only).  When breaks are absent —
+                #    the entire response is dense, structureless output
+                #    — abort: that is the unambiguous fabrication shape.
+                _body = _shell_match.fence_body_full or _shell_match.fence_body
+                _parroting = None
+                try:
+                    _parroting = check_for_parroting(
+                        state.conversation_id, _body,
+                        skip_after_timestamp=state.iteration_start_time or None,
+                    )
+                except Exception as _e:  # noqa: BLE001
+                    logger.debug(f"🔐 FAKE_SHELL_PARROT_PROBE_SKIPPED: {_e}")
+
+                if _parroting is not None:
+                    logger.warning(
+                        f"🚨 HALLUCINATION_FAKE_SHELL: signal={_shell_match.signal} "
+                        f"reason={_shell_match.reason} "
+                        f"parroted_tool={_parroting.matched_tool_name} "
+                        f"shingle_overlap={_parroting.shingle_overlap} "
+                        f"line_matches={_parroting.line_matches}"
+                    )
+                    state.hallucination_detected = True
+                    state.parrot_match = {
+                        'tool_name': _parroting.matched_tool_name,
+                        'tool_use_id': _parroting.matched_tool_use_id,
+                        'shingle_overlap': _parroting.shingle_overlap,
+                        'line_matches': _parroting.line_matches,
+                    }
+                    events.append({
+                        'type': 'text',
+                        'content': (
+                            f'\n\n⚠️ Model reproducing prior '
+                            f'`{_parroting.matched_tool_name}` output rather '
+                            'than calling the tool — retrying…\n\n'
+                        ),
+                    })
+                    return events
+                elif '\n\n' in state.assistant_text:
+                    # Structured prose — suppress.  The model is in
+                    # "writing markdown" mode, not "pretending to be a
+                    # tool" mode.  Log only.
+                    logger.debug(
+                        f"🔐 FAKE_SHELL_SUPPRESSED_BY_STRUCTURE: "
+                        f"signal={_shell_match.signal} "
+                        f"reason={_shell_match.reason}"
+                    )
+                else:
+                    # Dense, unstructured response — fire abort.
+                    logger.warning(
+                        f"🚨 HALLUCINATION_FAKE_SHELL: signal={_shell_match.signal} "
+                        f"reason={_shell_match.reason}"
+                    )
+                    state.hallucination_detected = True
+                    events.append({
+                        'type': 'text',
+                        'content': (
+                            '\n\n⚠️ Model wrote a fabricated shell session '
+                            'rather than calling the tool — retrying…\n\n'
+                        ),
+                    })
+                    return events
 
     # --- Layer C: fabricated tool-result echo detection ---
     # Fires when accumulated text contains a closed fenced block whose body

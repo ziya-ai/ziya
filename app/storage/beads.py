@@ -11,6 +11,7 @@ Storage operations resolve the chat via the request-scoped ContextVars
 (conversation_id + project_root), same pattern as context_management.py.
 """
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 from app.models.bead import Bead, BeadTree
@@ -29,7 +30,7 @@ def _resolve_chat_storage():
     from app.context import get_conversation_id_or_none, get_project_root_or_none
     from app.storage.projects import ProjectStorage
     from app.storage.chats import ChatStorage
-    from app.utils.paths import get_project_dir
+    from app.utils.paths import get_ziya_home, get_project_dir
 
     conversation_id = get_conversation_id_or_none()
     if not conversation_id:
@@ -39,7 +40,7 @@ def _resolve_chat_storage():
     if not project_root:
         raise ValueError("No project_root in request context")
 
-    ps = ProjectStorage()
+    ps = ProjectStorage(get_ziya_home())
     project = ps.get_by_path(project_root)
     if not project:
         raise ValueError(f"No project found for path: {project_root}")
@@ -101,11 +102,19 @@ def save_bead_tree(tree: BeadTree, chat_storage=None, conversation_id: str = Non
     else:
         setattr(chat, _BEADS_FIELD, bead_dicts)
 
-    # Bump version so sync picks up the change
-    if hasattr(chat, "_version"):
-        chat._version = (chat._version or 0) + 1
-
-    chat_storage.update(conversation_id, chat)
+    # Write the mutated chat directly rather than routing through
+    # ChatStorage.update().  update() re-reads a fresh Chat from disk and
+    # copies fields via setattr(); an underscore-prefixed key like
+    # "_beads" is treated by pydantic v2 as a *private attribute* (not an
+    # extra field), so it never reaches __pydantic_extra__ and model_dump()
+    # silently drops it — discarding every bead write.  Dumping this object
+    # (whose __pydantic_extra__ already holds _beads) and setting the key
+    # explicitly on the dict guarantees it persists regardless of pydantic's
+    # underscore handling.
+    d = chat.model_dump()
+    d[_BEADS_FIELD] = bead_dicts
+    d["_version"] = int(time.time() * 1000)
+    chat_storage._write_json(chat_storage._chat_file(conversation_id), d)
     logger.debug(f"📿 Saved {len(tree.beads)} beads for conv {conversation_id[:8]}")
 
 

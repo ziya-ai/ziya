@@ -26,7 +26,9 @@ class TaskBinding(BaseModel):
     id: str = ""
     chat_id: str
     card_id: str
-    run_id: str
+    # Optional: a binding may exist for a staged goal whose run hasn't
+    # been launched yet.  Populated by the deferred-launch endpoint.
+    run_id: Optional[str] = None
     # The message this binding is anchored after.  Null when the
     # anchor was removed (message deleted); renderers should show
     # such bindings at the top of the chat with an 'orphaned' flag.

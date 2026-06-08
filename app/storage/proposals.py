@@ -301,6 +301,26 @@ class ProposalsStore:
         })
         return True
 
+    def corroborate_by_id(self, proposal_id: str,
+                          conversation_id: Optional[str] = None) -> bool:
+        """Record a corroboration event against an existing open proposal.
+
+        Used when extraction detects a paraphrase match via embeddings but
+        cannot use the content-hash path in add() because the wording differs.
+        Returns True if the event was written, False if the proposal is
+        missing or already in a terminal state.
+        """
+        existing = self._projection().get(proposal_id)
+        if not existing or existing.get("status") != STATUS_OPEN:
+            return False
+        self._append({
+            "kind": EVENT_CORROBORATE,
+            "id": proposal_id,
+            "ts": int(time.time() * 1000),
+            "conversation_id": conversation_id,
+        })
+        return True
+
     def record_signal(self, proposal_id: str,
                       name: str,
                       value: Optional[Any] = None) -> bool:
