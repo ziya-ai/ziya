@@ -10,7 +10,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Spin, Tag, Tooltip } from 'antd';
+import { Button, Spin, Tag, Tooltip } from 'antd';
 import {
   CaretRightOutlined, CaretDownOutlined, StopOutlined,
   CheckCircleOutlined, CloseCircleOutlined, ExclamationCircleOutlined,
@@ -21,7 +21,7 @@ import type { TaskBinding } from '../../types/task_binding';
 import type { TaskRun, RunStatus, IterationsResponse } from '../../types/task_run';
 import type { TaskCard, Block, ArtifactPart } from '../../types/task_card';
 import { cancelTaskRun, listIterations } from '../../services/taskRunApi';
-import { createBinding } from '../../services/taskBindingApi';
+import { createBinding, deleteBinding, launchStagedBinding } from '../../services/taskBindingApi';
 import { TASK_BINDING_EVENT } from '../../hooks/useTaskBindings';
 import { useTaskRunStream } from '../../hooks/useTaskRunStream';
 import { taskCardApi } from '../../services/taskCardApi';
@@ -214,13 +214,24 @@ function findInstructionsAndWrappers(
 }
 
 export const TaskCardInlineTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }) => {
+  // Dispatch on staged vs launched.  React's rules-of-hooks forbid an
+  // early return between hook calls, so we split into two sibling
+  // components and render whichever the binding shape demands.  The
+  // chosen component then owns its own hook order without conditions.
+  if (!binding.run_id) {
+    return <StagedCardTile binding={binding} />;
+  }
+  return <LaunchedCardTile binding={binding} hideWhenTerminal={hideWhenTerminal} />;
+};
+
+const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }) => {
   const { currentProject } = useProject();
   const projectId = currentProject?.id ?? '';
 
   // Live-streamed run state.  Hook handles initial REST fetch, WS
   // subscription, and terminal refetch for the final artifact.
   const { run, error: streamError, refresh, live, clearLive } = useTaskRunStream(
-    projectId, binding.run_id,
+    projectId, binding.run_id ?? '',
   );
   const [card, setCard] = useState<TaskCard | null>(null);
   const [iterations, setIterations] = useState<IterationsResponse['items']>([]);
@@ -532,6 +543,77 @@ export const TaskCardInlineTile: React.FC<Props> = ({ binding, hideWhenTerminal 
           runStatus={run.status}
         />
       </div>
+    </div>
+  );
+};
+
+const StagedCardTile: React.FC<{ binding: TaskBinding }> = ({ binding }) => {
+  const { currentProject } = useProject();
+  const projectId = currentProject?.id ?? '';
+  const [card, setCard] = useState<TaskCard | null>(null);
+  const [launching, setLaunching] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!projectId) return;
+    let cancelled = false;
+    taskCardApi.get(projectId, binding.card_id)
+      .then(c => { if (!cancelled) setCard(c); })
+      .catch(() => { /* non-fatal */ });
+    return () => { cancelled = true; };
+  }, [projectId, binding.card_id]);
+
+  const handleRun = async () => {
+    if (!projectId) return;
+    setLaunching(true);
+    setError(null);
+    try {
+      await launchStagedBinding(projectId, binding.chat_id, binding.id);
+      window.dispatchEvent(new CustomEvent(TASK_BINDING_EVENT));
+    } catch (e: any) {
+      setError(String(e));
+      setLaunching(false);
+    }
+  };
+
+  const handleDiscard = async () => {
+    if (!projectId) return;
+    try {
+      await deleteBinding(projectId, binding.chat_id, binding.id);
+      window.dispatchEvent(new CustomEvent(TASK_BINDING_EVENT));
+    } catch (e: any) {
+      setError(String(e));
+    }
+  };
+
+  const instructions = useMemo(() => {
+    if (!card) return '';
+    const root: any = card.root;
+    return (root.instructions || root.body?.[0]?.instructions || '').trim();
+  }, [card]);
+
+  return (
+    <div className="task-card-inline-tile staged">
+      <div className="header">
+        <span>🎯</span>
+        <strong>{card?.name ?? 'Goal'}</strong>
+        <Tag color="default">staged</Tag>
+      </div>
+      {instructions && (
+        <details>
+          <summary><strong>Instructions</strong></summary>
+          <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12 }}>{instructions}</pre>
+        </details>
+      )}
+      <div className="actions" style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <Button type="primary" loading={launching} onClick={handleRun}>
+          Run
+        </Button>
+        <Button onClick={handleDiscard} disabled={launching}>
+          Discard
+        </Button>
+      </div>
+      {error && <div className="error" style={{ color: '#f85149', marginTop: 4 }}>{error}</div>}
     </div>
   );
 };

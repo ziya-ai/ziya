@@ -1,6 +1,109 @@
 import {Folders} from "./types";
 import {TreeDataNode} from "antd";
 
+// Minimal shape needed for effective-global resolution.  Accepts the real
+// ConversationFolder without importing it (keeps this util dependency-light
+// and unit-testable in isolation).
+interface GlobalChainFolder {
+    id: string;
+    parentId?: string | null;
+    isGlobal?: boolean;
+}
+
+/**
+ * Effective-global for a folder: true if the folder OR any of its ancestor
+ * folders (walked via parentId) is global.
+ *
+ * Globalness is inherited down the folder subtree — making a folder global
+ * shares its entire contents, so a descendant whose own isGlobal is false is
+ * still cross-project-visible while any ancestor is global.  The toggle stays
+ * a single-flag write; visibility is computed here at read time, and the tree
+ * builder re-roots any node whose display parent isn't visible in the current
+ * project (so a shared child of an unshared parent floats to root rather than
+ * dangling).
+ *
+ * Cycle-safe (visited set) and depth-bounded.  An unknown parentId (parent
+ * filtered out / not yet synced) terminates the walk — the node is judged on
+ * the ancestors that ARE known.
+ */
+export const folderIsEffectivelyGlobal = (
+    folder: GlobalChainFolder | undefined | null,
+    allFolders: GlobalChainFolder[]
+): boolean => {
+    if (!folder) return false;
+    if (folder.isGlobal === true) return true;
+    const byId = new Map(allFolders.map(f => [f.id, f]));
+    const visited = new Set<string>([folder.id]);
+    let cur = folder.parentId;
+    let depth = 0;
+    while (cur && depth < 100) {
+        if (visited.has(cur)) break; // cycle guard
+        visited.add(cur);
+        const ancestor = byId.get(cur);
+        if (!ancestor) break;          // parent not in set — stop walking
+        if (ancestor.isGlobal === true) return true;
+        cur = ancestor.parentId;
+        depth++;
+    }
+    return false;
+};
+
+/**
+ * Effective-global for a conversation: true if the conversation's own
+ * isGlobal is set, OR its containing folder is effectively global (full
+ * ancestor-chain walk).  A loose conversation (no folderId) is global only
+ * via its own flag.
+ */
+export const conversationIsEffectivelyGlobal = (
+    conv: { isGlobal?: boolean; folderId?: string | null } | undefined | null,
+    allFolders: GlobalChainFolder[]
+): boolean => {
+    if (!conv) return false;
+    if (conv.isGlobal === true) return true;
+    if (!conv.folderId) return false;
+    const folder = allFolders.find(f => f.id === conv.folderId);
+    return folderIsEffectivelyGlobal(folder, allFolders);
+};
+
+export interface GlobalMenuItemState {
+    label: string;
+    disabled: boolean;
+    tooltip?: string;
+}
+
+/**
+ * Decide the "global" context-menu item's label / disabled / tooltip from the
+ * two derived booleans:
+ *   effectiveGlobal — node is cross-project-visible (own flag OR inherited)
+ *   ownGlobal       — the node's OWN isGlobal flag is set
+ *
+ * Three states:
+ *   - inheritance-only (effective && !own): disabled, "Shared via parent
+ *     folder", with a tooltip directing the user to unshare the parent —
+ *     toggling the own flag here is a no-op for visibility.
+ *   - own-global (own): enabled, "📌 This project only" (un-share).
+ *   - not global: enabled, "🌐 Share across projects".
+ *
+ * Pure — both menu sites and the unit tests consume this single source.
+ */
+export const globalMenuItemState = (
+    effectiveGlobal: boolean,
+    ownGlobal: boolean
+): GlobalMenuItemState => {
+    const inheritanceOnly = effectiveGlobal && !ownGlobal;
+    if (inheritanceOnly) {
+        return {
+            label: 'Shared via parent folder',
+            disabled: true,
+            tooltip: 'Shared via a parent folder — unshare the parent to change this',
+        };
+    }
+    return {
+        label: ownGlobal ? '📌 This project only' : '🌐 Share across projects',
+        disabled: false,
+    };
+};
+
 /**
  * Validate that a string looks like a real file/directory path.
  *

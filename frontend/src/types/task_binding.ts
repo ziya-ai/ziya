@@ -11,7 +11,11 @@ export interface TaskBinding {
   id: string;
   chat_id: string;
   card_id: string;
-  run_id: string;
+  /**
+   * Optional: null for a staged binding from /goal that hasn't been
+   * launched yet.  The inline tile renders a "Run" button in this case.
+   */
+  run_id?: string | null;
   anchor_message_id?: string | null;
   created_at: number;
 }

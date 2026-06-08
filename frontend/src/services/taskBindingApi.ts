@@ -56,3 +56,17 @@ export async function deleteBinding(
     throw new Error(`deleteBinding failed: ${res.status}`);
   }
 }
+
+export async function launchStagedBinding(
+  projectId: string, chatId: string, bindingId: string,
+) {
+  const res = await fetch(
+    `${base(projectId, chatId)}/${encodeURIComponent(bindingId)}/launch`,
+    { method: 'POST', headers: projectHeaders() },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`launchStagedBinding failed: ${res.status} ${text}`);
+  }
+  return res.json();
+}

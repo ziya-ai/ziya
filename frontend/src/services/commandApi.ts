@@ -9,6 +9,7 @@ export interface CommandRequest {
   command: string;
   args: string;
   conversation_id?: string;
+  anchor_message_id?: string;
   context_summary?: string;
 }
 

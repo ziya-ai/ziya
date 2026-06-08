@@ -2,7 +2,7 @@
  * Project API client
  */
 import { api } from './index';
-import { Project, ProjectCreate, ProjectUpdate, ProjectListItem } from '../types/project';
+import { Project, ProjectCreate, ProjectUpdate, ProjectListItem, StartupInfo } from '../types/project';
 
 export async function listProjects(): Promise<ProjectListItem[]> {
   return api.get<ProjectListItem[]>('/projects');
@@ -14,6 +14,10 @@ export async function getCurrentProject(): Promise<Project> {
 
 export async function getLastAccessedProject(): Promise<Project> {
   return api.get<Project>('/projects/last-accessed');
+}
+
+export async function getStartupInfo(): Promise<StartupInfo> {
+  return api.get<StartupInfo>('/projects/startup');
 }
 
 export async function getProject(id: string): Promise<Project> {

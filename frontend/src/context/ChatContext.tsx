@@ -19,6 +19,7 @@ import * as folderSyncApi from '../api/folderSyncApi';
 import { useDelegatePolling } from '../hooks/useDelegatePolling';
 import { gcEmptyConversations, purgeExpiredConversations } from '../utils/retentionPurge';
 import { useDelegateStreaming } from '../hooks/useDelegateStreaming';
+import { folderIsEffectivelyGlobal, conversationIsEffectivelyGlobal } from '../utils/folderUtil';
 
 const TERMINAL_PLAN_STATUSES = new Set(['completed', 'completed_partial', 'cancelled']);
 
@@ -681,7 +682,17 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         // captured when the timer was set — important because
                         // additional messages may have appended during the 2s.
                         const dirtyConvs = conversationsRef.current.filter(
-                            (c: any) => batchIds.has(c.id) && c.isActive !== false && !c._isShell
+                        (c: any) => batchIds.has(c.id) && c.isActive !== false && !c._isShell
+                            // Don't push empty "New Conversation" shells to the
+                            // server.  They have no meaningful content and their
+                            // presence on the server triggers the isEmptyShell
+                            // skip logic on subsequent sync cycles, which can
+                            // race with shell-cache timing and drop the
+                            // conversation from mergedMap.  The conversation
+                            // will be pushed on the next dual-write after the
+                            // user sends their first message (which bumps
+                            // messages.length > 0).
+                            && !(c.title === 'New Conversation' && (!c.messages || c.messages.length === 0))
                         ) as Conversation[];
                         if (dirtyConvs.length === 0) {
                             console.debug('📡 DUAL_WRITE(fast): no dirty convs to push (all filtered out)');
@@ -868,7 +879,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         // debounce expires — causing the server to receive a
                         // conversation with only the first message.
                         const dirtyConvs = conversationsRef.current.filter(
-                            (c: any) => batchIds.has(c.id) && c.isActive !== false && !c._isShell
+                        (c: any) => batchIds.has(c.id) && c.isActive !== false && !c._isShell
+                            // Mirror of the FAST_PATH guard: don't push empty
+                            // "New Conversation" shells — they trigger the
+                            // isEmptyShell skip race on subsequent syncs.
+                            && !(c.title === 'New Conversation' && (!c.messages || c.messages.length === 0))
                         ) as Conversation[];
                         if (dirtyConvs.length === 0) return;
                         try {
@@ -2373,7 +2388,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 // background-merge server data after.
                 const renderFolders = (src: ConversationFolder[], label: string) => {
                     const projectFolders = projectId
-                        ? src.filter(f => f.projectId === projectId || f.isGlobal)
+                        ? src.filter(f => f.projectId === projectId || folderIsEffectivelyGlobal(f, src))
                         : src;
                     // Repair circular parentId references — clear the parentId of
                     // any folder whose ancestor chain forms a cycle.  Without this,
@@ -2499,7 +2514,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         shells = [];
                     }
                     const projectShells = shells.filter(
-                        (c: any) => (c.projectId === projectId || c.isGlobal) && c.isActive !== false
+                        (c: any) => (c.projectId === projectId || conversationIsEffectivelyGlobal(c, folders)) && c.isActive !== false
                     );
 
                     // If the user has switched to yet another project while
@@ -2648,7 +2663,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     }
                     serverSyncedForProject.current = projectId;
 
-                    const localProjectConvs = allConversations.filter((c: any) => c.projectId === projectId || c.isGlobal);
+                    const localProjectConvs = allConversations.filter((c: any) => c.projectId === projectId || conversationIsEffectivelyGlobal(c, folders));
 
                     // 2b. Detect conversations that need full fetch:
                     //     - Server-only (new from another instance)
@@ -2927,6 +2942,27 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     for (let i = mergedProjectConvs.length - 1; i >= 0; i--) {
                         const conv = mergedProjectConvs[i];
                         if (conv.isActive !== false && !serverIdSet.has(conv.id)) {
+                            // Never splice the conversation the user is actively
+                            // viewing — even if it aged out of the grace period
+                            // (e.g. composing a long message for >60s).  Removing
+                            // it strands currentConversationId on a ghost id and
+                            // forces the RECOVERY effect to switch chats underneath
+                            // the user mid-compose.  A genuine cross-instance delete
+                            // of the active chat is rare and self-heals on the next
+                            // sync once the user navigates away.
+                            if (conv.id === currentConversationRef.current) {
+                                continue;
+                            }
+                            // Honor the grace period documented above: a conversation
+                            // touched within the last 60s may simply not have
+                            // round-tripped to the server yet (dual-write is debounced
+                            // 2s and async; empty "New Conversation" shells are never
+                            // pushed at all).  Splicing it here drops it from
+                            // mergedResult and trips the RECOVERY effect.
+                            const lastTouch = conv.lastAccessedAt || conv._version || 0;
+                            if (lastTouch && now - lastTouch < SYNC_GRACE_PERIOD_MS) {
+                                continue;
+                            }
                             // Only remove if previously seen on server — never remove freshly imported conversations.
                             if (knownServerConversationIds.current.has(conv.id)) {
                                 console.log(`📡 SERVER_SYNC: "${conv.title}" (${conv.id.substring(0, 8)}) removed from server — removing locally`);
@@ -3459,7 +3495,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         const serverFolders = await folderSyncApi.listServerFolders(projectId);
                         const localFolders = await db.getFolders();
                         const localProjectFolders = localFolders.filter(
-                            f => f.projectId === projectId || f.isGlobal
+                            f => f.projectId === projectId || folderIsEffectivelyGlobal(f, localFolders)
                         );
 
                         const folderMap = new Map<string, ConversationFolder>();
@@ -3479,7 +3515,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                 folderMap.set(sf.id, { ...sf, projectId: effectiveProjectId });
                             }
                         });
-                        const mergedFolders = Array.from(folderMap.values()).filter(f => f.projectId === projectId || f.isGlobal);
+                        const allMergedFolders = Array.from(folderMap.values());
+                        const mergedFolders = allMergedFolders.filter(f => f.projectId === projectId || folderIsEffectivelyGlobal(f, allMergedFolders));
 
                         const localOnly = mergedFolders.filter(
                             f => !serverFolders.some(sf => sf.id === f.id)
@@ -3612,6 +3649,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
     useEffect(() => {
         currentConversationRef.current = currentConversationId;
         folderRef.current = currentFolderId;
+        // Timestamp when the active conversation was last set — used by the
+        // RECOVERY effect's grace period to avoid switching away from a
+        // just-created conversation during sync-merge races.
+        if (currentConversationId) {
+            (window as any).__ziyaLastConvSetAt = Date.now();
+        }
     }, [currentConversationId, conversations, currentFolderId]);
 
     const mergeConversations = useCallback((local: Conversation[], remote: Conversation[]) => {
@@ -3671,8 +3714,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
         const handleConversationsChanged = async (msg: any) => {
             if (!isInitialized) return;
             try {
+                // Cold path (cross-tab broadcast): fetch fresh folders so
+                // folder-inherited globalness resolves correctly — the closure
+                // `folders` here is mount-stale (not in this effect's deps).
+                const allDbFolders = await db.getFolders();
                 const projectConvs = (await db.getConversations())
-                    .filter(c => c.projectId === currentProject?.id || c.isGlobal);
+                    .filter(c => c.projectId === currentProject?.id || conversationIsEffectivelyGlobal(c, allDbFolders));
                 setConversations(prev => {
                     try { return mergeConversations(prev, projectConvs); }
                     catch (e) { console.error('📡 Cross-tab merge failed:', e); return prev; }
@@ -3708,8 +3755,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 } catch (e) {
                     // Server unavailable — use IndexedDB only
                 }
-                const projectFolders = Array.from(folderMap.values()).filter(
-                    f => f.projectId === currentProject?.id || f.isGlobal
+                const allMergedFolders = Array.from(folderMap.values());
+                const projectFolders = allMergedFolders.filter(
+                    f => f.projectId === currentProject?.id || folderIsEffectivelyGlobal(f, allMergedFolders)
                 );
                 setFolders(projectFolders);
             } catch (err) {
@@ -3853,12 +3901,26 @@ export function ChatProvider({ children }: ChatProviderProps) {
         if (streamingConversationsRef.current.has(currentConversationId)) return;
         if (conversations.some(c => c.id === currentConversationId)) return;
 
+        // Grace period: don't switch away from a conversation that was set as
+        // active very recently (within 60s).  This covers the race where a
+        // sync cycle's setConversations briefly drops a just-created
+        // conversation before the ACTIVE_CONV_RESCUE (inside the updater)
+        // re-adds it — React.startTransition can defer the commit, and the
+        // RECOVERY effect fires on the intermediate state where the
+        // conversation is absent.  The 60s window is generous enough to
+        // cover any IDB write + server round-trip + sync-cycle timing.
+        const convSetAt = (window as any).__ziyaLastConvSetAt;
+        if (convSetAt && Date.now() - convSetAt < 60_000) {
+            console.debug(`🛡️ RECOVERY_GRACE: Suppressing switch — conversation ${currentConversationId.substring(0, 8)} set ${((Date.now() - convSetAt) / 1000).toFixed(0)}s ago`);
+            return;
+        }
+
         // Active conversation has gone missing.  Pick a replacement from
         // the current project (or globals), preferring most-recently-accessed.
         const pid = currentProject?.id;
         const candidates = conversations.filter(c =>
             c.isActive !== false &&
-            (!pid || c.projectId === pid || c.isGlobal)
+            (!pid || c.projectId === pid || conversationIsEffectivelyGlobal(c, folders))
         );
         if (candidates.length === 0) {
             // Nothing to fall back to; the empty-list effect above will
@@ -3874,7 +3936,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         );
         setCurrentConversationId(mostRecent.id);
         try { setTabState('ZIYA_CURRENT_CONVERSATION_ID', mostRecent.id); } catch { /* ignore */ }
-    }, [conversations, currentConversationId, isInitialized, isProjectSwitching, isLoadingConversation, currentProject?.id]);
+    }, [conversations, currentConversationId, isInitialized, isProjectSwitching, isLoadingConversation, currentProject?.id, folders]);
 
     const setDisplayMode = useCallback((conversationId: string, mode: 'raw' | 'pretty') => {
         setConversations(prev => {

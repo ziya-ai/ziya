@@ -40,6 +40,7 @@ const MemoryBrowser = lazyWithRetry(() => import("./MemoryBrowser"));
 const AstStatusIndicator = lazyWithRetry(() => import("./AstStatusIndicator"));
 const TaskCardsLibrary = lazyWithRetry(() => import("./TaskCard/TaskCardsLibrary"));
 const GraphPanel = lazyWithRetry(() => import("./ConversationGraph/GraphPanel"));
+const BeadTree = lazyWithRetry(() => import("./BeadTree"));
 
 // Error boundary component to catch extension context errors
 class ExtensionErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {

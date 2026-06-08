@@ -51,3 +51,13 @@ export interface ProjectListItem {
   isCurrentWorkingDirectory: boolean;
   conversationCount: number;
 }
+
+export interface StartupInfo {
+  /** Absolute path the server was started in (or --root/--directory). */
+  root: string;
+  /** True when --root/--directory was passed explicitly on the command line. */
+  explicit: boolean;
+  hasAnyProjects: boolean;
+  /** Project already rooted at `root`, if one exists (null otherwise). */
+  rootProject: Project | null;
+}
