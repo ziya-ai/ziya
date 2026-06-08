@@ -97,6 +97,7 @@ def _run_language_validation(pipeline: "DiffPipeline", file_path: str, original_
             with open(file_path, 'w', encoding='utf-8') as _f:
                 _f.write(original_content)
             logger.info(f"Rolled back {file_path} after language validation failure")
+            pipeline.result.file_restored = True
         except OSError as _roll_exc:
             logger.error(f"Failed to roll back {file_path}: {_roll_exc}")
         # Demote every succeeded hunk to a language_validation failure so
@@ -170,23 +171,46 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
         # Find the diff that matches our target file
         # Compare using basename to handle full paths vs relative paths
         target_basename = os.path.basename(file_path)
-        matching_diff = None
+        matching_diffs = []
         
         for diff in individual_diffs:
             diff_target = extract_target_file_from_diff(diff)
             if diff_target:
                 # Try exact match first
                 if diff_target == file_path or diff_target == target_basename:
-                    matching_diff = diff
-                    break
+                    matching_diffs.append(diff)
                 # Try basename match
                 elif os.path.basename(diff_target) == target_basename:
-                    matching_diff = diff
-                    break
+                    matching_diffs.append(diff)
         
-        if matching_diff:
+        if matching_diffs:
+            if len(matching_diffs) > 1:
+                logger.debug(
+                    f"Found {len(matching_diffs)} separate diff blocks for "
+                    f"{file_path}; merging into one before applying."
+                )
+                # Keep the full first block (header + hunks) and extract only
+                # the hunk sections (lines starting with @@) from subsequent
+                # blocks. Naively joining all blocks re-introduces the extra
+                # diff --git / --- / +++ header lines as content, which the
+                # parser treats as addition lines and writes into the file.
+                def _extract_hunks(diff_block: str) -> str:
+                    lines = diff_block.splitlines(keepends=True)
+                    hunk_lines = []
+                    in_hunk = False
+                    for line in lines:
+                        if line.startswith('@@'):
+                            in_hunk = True
+                        if in_hunk:
+                            hunk_lines.append(line)
+                    return ''.join(hunk_lines)
+                merged = matching_diffs[0].rstrip()
+                for extra in matching_diffs[1:]:
+                    merged += '\n' + _extract_hunks(extra)
+                git_diff = merged
+            else:
+                git_diff = matching_diffs[0]
             logger.debug(f"Found matching diff for target file: {file_path}")
-            git_diff = matching_diff
             pipeline.current_diff = git_diff
         else:
             logger.warning(f"No matching diff found for target file: {file_path}")
@@ -985,8 +1009,8 @@ def run_system_patch_stage(pipeline: DiffPipeline, user_codebase_dir: str, git_d
     
     if skip_dry_run:
         logger.info(f"Skipping dry-run for small diff ({total_changes} changes, {len(pipeline.result.hunks)} hunks)")
-        apply_patch_directly(pipeline, user_codebase_dir, git_diff, has_indentation_changes)
-        return pipeline.result.to_dict()
+        changes_written = apply_patch_directly(pipeline, user_codebase_dir, git_diff, has_indentation_changes)
+        return changes_written
 
      # Log the exact input being passed to patch
     patch_cmd_dry = ['patch', '-p1', '--forward', '--no-backup-if-mismatch', '--reject-file=-', '--batch']
@@ -1506,6 +1530,36 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
         # Check if new_count is significantly larger than what the header says
         if len(hunks) == 1:
             hunk = hunks[0]
+            # A truncated/mangled hunk must never reach the full-file-replacement
+            # heuristic below. The parser flagged 'malformed_header' (could not
+            # reconcile the @@ counts with the body), could not auto-correct it
+            # (header_corrected=False), and parsing yielded zero actual +/- lines
+            # because a body line lost its ' '/'+'/'-' prefix upstream (e.g. a
+            # context line split by an injected blank line, or a triple-backtick
+            # rendered as '&#96;'). Its @@ header still spans most of the file, so
+            # is_truncated_full_file below would rebuild the file from the few
+            # surviving body lines and delete real code. Fail it loudly instead.
+            # (Legitimate full-file replacements carry many '+' lines and never
+            # match this zero-change signature, so they are unaffected.)
+            from ..validation.validators import extract_diff_changes as _extract_dc
+            _trunc_removed, _trunc_added = _extract_dc(hunk)
+            if (hunk.get('malformed_header')
+                    and not hunk.get('header_corrected', False)
+                    and not _trunc_removed and not _trunc_added):
+                _trunc_id = hunk.get('number', 1)
+                logger.warning(
+                    f"Hunk #{_trunc_id}: truncated/malformed (header declares a "
+                    f"change but body parsed to zero +/- lines) - failing instead "
+                    f"of treating it as a full-file replacement to avoid data loss."
+                )
+                pipeline.update_hunk_status(
+                    hunk_id=_trunc_id,
+                    stage=PipelineStage.DIFFLIB,
+                    status=HunkStatus.FAILED,
+                    error_details={"error": "truncated_malformed_hunk",
+                                   "message": "Hunk body parsed to zero changes; unrecoverable"}
+                )
+                return False
             old_count = hunk.get('old_count', 0)
             new_count = hunk.get('new_count', 0)
             file_line_count = len(original_lines)
