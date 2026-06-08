@@ -105,6 +105,7 @@ def set_conversation_id(conversation_id: str) -> None:
     (memory retrieval, prompt builder) can attribute work to the
     correct conversation without threading it through every call.
     """
+    _request_conversation_id.set(conversation_id)
 
 
 # ── Task scope ───────────────────────────────────────────────
@@ -202,7 +203,6 @@ def reset_task_iteration_context(token: contextvars.Token) -> None:
 def get_task_iteration_context() -> Optional[dict]:
     """Return ``{'block_id', 'index'}`` if inside an iteration, else None."""
     return _task_iteration_context.get()
-    _request_conversation_id.set(conversation_id)
 
 
 def get_conversation_id_or_none() -> Optional[str]:

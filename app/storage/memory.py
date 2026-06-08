@@ -185,6 +185,37 @@ class MemoryStorage:
 
         return memory
 
+    def save_many(self, memories: List[Memory]) -> None:
+        """Persist multiple memories in a single file rewrite.
+
+        ``save()`` rewrites the entire JSON store per call; calling it in
+        a loop over N memories costs N full serialize+encrypt+write cycles.
+        This batches all updates into one write.  Embedding refresh is
+        still per-memory (best-effort, non-blocking).
+        """
+        if not memories:
+            return
+        store = self._load_memories()
+        by_id = {m.get("id"): i for i, m in enumerate(store)}
+        for memory in memories:
+            dump = memory.model_dump()
+            idx = by_id.get(memory.id)
+            if idx is not None:
+                store[idx] = dump
+            else:
+                by_id[memory.id] = len(store)
+                store.append(dump)
+        self._save_memories(store)
+        logger.debug(f"💾 Batch-saved {len(memories)} memories in one write")
+
+        # Refresh embeddings best-effort (non-fatal, per-memory).
+        try:
+            from app.services.embedding_service import embed_and_cache
+            for memory in memories:
+                embed_and_cache(memory.id, memory.content)
+        except Exception as e:
+            logger.debug(f"Batch embedding refresh failed (non-fatal): {e}")
+
     def delete(self, memory_id: str) -> bool:
         memories = self._load_memories()
         before = len(memories)
@@ -238,7 +269,8 @@ class MemoryStorage:
                     f"— skipping semantic search, using keyword fallback"
                 )
                 semantic_ranked = []  # fall through to keyword path
-            semantic_ranked = semantic_search(query, top_k=limit * 2)
+            else:
+                semantic_ranked = semantic_search(query, top_k=limit * 2)
         except Exception as e:
             logger.debug(f"Semantic search unavailable: {e}")
 

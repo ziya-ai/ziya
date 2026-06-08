@@ -19,6 +19,16 @@ from app.mcp.tools.base import BaseMCPTool
 from app.utils.logging_utils import logger
 
 
+# Throttle for the opportunistic-decay sweep.  The sweep is O(N) over all
+# active memories and runs inside memory_search, which is on the hot path;
+# without a throttle, a burst of searches re-pays the full scan each time.
+_LAST_DECAY_SWEEP: float = 0.0
+
+
+class _SkipDecay(Exception):
+    """Internal control-flow signal to skip the throttled decay sweep."""
+
+
 # ---------------------------------------------------------------------------
 # Tool: memory_search
 # ---------------------------------------------------------------------------
@@ -75,7 +85,16 @@ class MemorySearchTool(BaseMCPTool):
         try:
             _DECAY_THRESHOLD_DAYS = 90
             _DECAY_IMPORTANCE_CEILING = 0.5  # initial default importance
+            # Throttle: the decay scan is O(N) over all active memories and
+            # runs on the search hot path.  Cap it to once per 10 minutes
+            # per process so high-frequency searches don't repeatedly pay it.
+            global _LAST_DECAY_SWEEP
+            _now = time.time()
+            if _now - _LAST_DECAY_SWEEP < 600:
+                raise _SkipDecay()
+            _LAST_DECAY_SWEEP = _now
             today = time.strftime("%Y-%m-%d")
+            _to_archive = []
             for mem in store.list_memories(status="active"):
                 try:
                     days_since = (time.mktime(time.strptime(today, "%Y-%m-%d"))
@@ -84,9 +103,13 @@ class MemorySearchTool(BaseMCPTool):
                     days_since = 0
                 if days_since >= _DECAY_THRESHOLD_DAYS and mem.importance <= _DECAY_IMPORTANCE_CEILING:
                     mem.status = "archived"
-                    store.save(mem)
+                    _to_archive.append(mem)
                     logger.info(f"🗑️ Archived stale memory {mem.id} (importance={mem.importance:.2f}, "
                                 f"last_accessed={mem.last_accessed}): {mem.content[:60]}")
+            if _to_archive:
+                store.save_many(_to_archive)
+        except _SkipDecay:
+            pass
         except Exception as e:
             logger.debug(f"Memory decay check failed (non-fatal): {e}")
 
@@ -155,7 +178,8 @@ class MemorySearchTool(BaseMCPTool):
             mem.last_accessed = today
             # Maturity boost: repeated retrieval increases importance (caps at 1.0)
             mem.importance = min(1.0, mem.importance + 0.05)
-            store.save(mem)
+        # Single batched write instead of one full-file rewrite per result.
+        store.save_many(results)
 
         # Record retrieval-load for the feedback loop.  Use signal happens
         # later when the assistant's response gets scored against these.

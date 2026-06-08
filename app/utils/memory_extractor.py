@@ -1016,10 +1016,15 @@ def deduplicate(
     candidates: List[Dict[str, Any]],
     existing_memories: List[Dict[str, Any]],
     corroboration_sink: Optional[List[str]] = None,
+    proposal_corroboration_sink: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Filter out candidates that substantially overlap with existing memories.
 
     When ``corroboration_sink`` is provided (a list), each active-memory ID
+    whose embedding matched a discarded paraphrase is appended.  When
+    ``proposal_corroboration_sink`` is provided, each open-proposal ID whose
+    embedding matched a discarded paraphrase is appended so callers can bump
+    the proposal's corroboration counter without re-extracting the same content.
     whose embedding matched a discarded paraphrase is appended.  Callers
     use this to record the "extraction agrees with stored knowledge"
     signal — paraphrase-detection by itself loses that signal because the
@@ -1094,10 +1099,12 @@ def deduplicate(
                     elif proposal_match:
                         # Proposal paraphrase only: drop.  ProposalsStore.add
                         # handles corroboration on probationary entries
-                        # via content-hash IDs, so no sink write needed.
+                        # evidence across conversations.
+                        if proposal_corroboration_sink is not None:
+                            proposal_corroboration_sink.append(proposal_match[0])
                         logger.info(
-                            f"🧠 Embedding dedup REJECT (cosine={proposal_match[1]:.3f}): "
-                            f"{content[:60]}"
+                            f"🧠 Embedding dedup REJECT+corroborate proposal "
+                            f"(cosine={proposal_match[1]:.3f}): {content[:60]}"
                         )
                         continue
                 pre_embed_unique.append(candidate)
@@ -1330,7 +1337,10 @@ async def run_post_conversation_extraction(
         return {"extracted": 0, "saved": 0, "proposed": 0, "all_rejected_by_gate": True, "references": references_proposed}
 
     dedup_corroborated_ids: List[str] = []
-    unique = deduplicate(candidates, existing, corroboration_sink=dedup_corroborated_ids)
+    dedup_proposal_corroborated_ids: List[str] = []
+    unique = deduplicate(candidates, existing,
+                         corroboration_sink=dedup_corroborated_ids,
+                         proposal_corroboration_sink=dedup_proposal_corroborated_ids)
     if not unique:
         return {"extracted": len(candidates), "saved": 0, "proposed": 0,
                 "all_duplicates": True, "references": references_proposed}
@@ -1367,6 +1377,17 @@ async def run_post_conversation_extraction(
                 active.corroborations = (active.corroborations or 0) + 1
                 store.save(active)
                 corroborated += 1
+
+        # Apply corroborations against proposals the embedding dedup detected.
+        already_prop_corroborated: set[str] = set()
+        for pid in dedup_proposal_corroborated_ids:
+            if pid in already_prop_corroborated:
+                continue
+            already_prop_corroborated.add(pid)
+            try:
+                proposals_store.corroborate_by_id(pid, conversation_id=conversation_id)
+            except Exception as prop_corr_err:
+                logger.debug(f"Proposal corroboration write failed (non-fatal): {prop_corr_err}")
 
         for candidate in unique:
             layer = candidate.get("layer", "domain_context")
@@ -1473,6 +1494,14 @@ async def run_post_conversation_extraction(
         f"{saved} updated, {corroborated} corroborated, "
         f"{proposed} probationary, {references_proposed} references"
     )
+
+    # Run the lifecycle engine to promote or archive probationary proposals
+    # that have accumulated enough signals from this and prior passes.
+    try:
+        from app.utils.memory_lifecycle import run_lifecycle_pass
+        await run_lifecycle_pass()
+    except Exception as lc_err:
+        logger.debug(f"Memory lifecycle pass failed (non-fatal): {lc_err}")
 
     return {
         "extracted": len(candidates),
