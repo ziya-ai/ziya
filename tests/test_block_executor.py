@@ -61,7 +61,7 @@ def _stub_executor(responses):
     """Returns an async function that returns responses in sequence."""
     it = iter(responses)
 
-    async def _stub(block, project_root=None, project_id=None):
+    async def _stub(block, project_root=None, project_id=None, run_id=None):
         try:
             return next(it)
         except StopIteration:
@@ -139,6 +139,7 @@ class TestRepeatUntil:
         )
         ctx = ExecutionContext(run_id=run.id, storage=storage)
         stub = _stub_executor([
+            _mk_artifact("fail", failed=True),
             _mk_artifact("fail", failed=True),
             _mk_artifact("pass"),
             _mk_artifact("never-reached"),
@@ -239,7 +240,7 @@ class TestSoftCancel:
 
         call_count = {"n": 0}
 
-        async def stub(b, project_root=None, project_id=None):
+        async def stub(b, project_root=None, project_id=None, run_id=None):
             call_count["n"] += 1
             if call_count["n"] == 2:
                 # Trip cancel after second iteration
@@ -268,7 +269,7 @@ class TestPassRetentionCap:
         )
         ctx = ExecutionContext(run_id=run.id, storage=storage)
 
-        async def stub(b, project_root=None, project_id=None):
+        async def stub(b, project_root=None, project_id=None, run_id=None):
             return _mk_artifact("pass")
 
         with patch("app.agents.block_executor.execute_task_block", stub):
@@ -293,7 +294,7 @@ class TestPassRetentionCap:
         )
         ctx = ExecutionContext(run_id=run.id, storage=storage)
 
-        async def stub(b, project_root=None, project_id=None):
+        async def stub(b, project_root=None, project_id=None, run_id=None):
             return _mk_artifact("oops", failed=True)
 
         with patch("app.agents.block_executor.execute_task_block", stub):
@@ -317,7 +318,7 @@ class TestSignatureHashing:
         )
         ctx = ExecutionContext(run_id=run.id, storage=storage)
 
-        async def stub(b, project_root=None, project_id=None):
+        async def stub(b, project_root=None, project_id=None, run_id=None):
             return _mk_artifact(
                 "TypeError: section.rows is undefined\npacketPlugin.ts:82",
                 failed=True,
@@ -441,3 +442,186 @@ class TestIterationContext:
         )
         assert [s["index"] for s in seen_iter_ctx] == list(range(len(seen_iter_ctx)))
         assert get_task_iteration_context() is None
+
+
+# --------------------------------------------------------------------
+# Until-block exit conditions
+# --------------------------------------------------------------------
+#
+# These tests target the dedicated `_execute_until` path
+# (block_type="until") which is what synthesize_goal_card produces.
+# Distinct from the older `repeat_mode="until"` path tested above.
+# See design/goal-exit-conditions.md for the layered exit-condition
+# design (self_assessment → convergence → until_condition).
+
+@pytest.fixture
+def until_run(storage):
+    """A TaskRun with block_state seeded for an Until block id 'until-1'."""
+    r = storage.create(TaskRunCreate(card_id="card-1"))
+    storage.set_block_state(r.id, TaskRunBlockState(
+        block_id="until-1", block_type="until",
+    ))
+    return r
+
+
+def _mk_artifact_with_assessment(
+    summary: str, objective_met: str, rationale: str = "",
+    failed: bool = False,
+) -> Artifact:
+    """Helper: artifact carrying a parsed self_assessment dict, as
+    task_executor would attach after parsing the model's tag."""
+    return Artifact(
+        summary=summary, failed=failed, tokens=5, duration_ms=1,
+        self_assessment={"objective_met": objective_met, "rationale": rationale},
+    )
+
+
+class TestUntilExitConditions:
+    @pytest.mark.asyncio
+    async def test_self_assessment_true_terminates_immediately(
+        self, storage, until_run,
+    ):
+        """Layer A: agent declared objective_met='true' → stop after iter 0."""
+        block = Block(
+            block_type="until", id="until-1", name="u",
+            until_mode="model", until_condition="",
+            until_max=10,
+            body=[_task("inner")],
+        )
+        ctx = ExecutionContext(run_id=until_run.id, storage=storage)
+        call_count = [0]
+
+        async def stub(b, project_root=None, project_id=None, run_id=None):
+            call_count[0] += 1
+            return _mk_artifact_with_assessment(
+                "found nothing to fix", "true", "vacuously satisfied",
+            )
+
+        with patch("app.agents.block_executor.execute_task_block", stub):
+            result = await execute_block(block, ctx)
+
+        assert call_count[0] == 1, "loop should stop after iter 0"
+        assert any("self_assessment" in d for d in result.decisions)
+
+    @pytest.mark.asyncio
+    async def test_self_assessment_false_continues_iterating(
+        self, storage, until_run,
+    ):
+        """Layer A: objective_met='false' means keep going.
+
+        Verifies the loop runs the full body until convergence/until_max,
+        not stopping just because the verdict is non-true.  We use
+        unique summaries per iteration so the convergence backstop
+        doesn't fire prematurely.
+        """
+        block = Block(
+            block_type="until", id="until-1", name="u",
+            until_mode="model", until_condition="",
+            until_max=4,
+            body=[_task("inner")],
+        )
+        ctx = ExecutionContext(run_id=until_run.id, storage=storage)
+        call_count = [0]
+
+        async def stub(b, project_root=None, project_id=None, run_id=None):
+            call_count[0] += 1
+            return _mk_artifact_with_assessment(
+                f"attempt {call_count[0]}", "false", "still trying",
+                failed=True,
+            )
+
+        with patch("app.agents.block_executor.execute_task_block", stub):
+            await execute_block(block, ctx)
+
+        assert call_count[0] == 4, "should run to until_max=4"
+
+    @pytest.mark.asyncio
+    async def test_convergence_backstop_two_identical_summaries(
+        self, storage, until_run,
+    ):
+        """Layer B: two consecutive identical summaries → stop.
+
+        Even with no self_assessment signal (verdict='unknown'), the
+        agent repeating itself is a stop condition.
+        """
+        block = Block(
+            block_type="until", id="until-1", name="u",
+            until_mode="model", until_condition="",
+            until_max=10,
+            body=[_task("inner")],
+        )
+        ctx = ExecutionContext(run_id=until_run.id, storage=storage)
+        call_count = [0]
+
+        async def stub(b, project_root=None, project_id=None, run_id=None):
+            call_count[0] += 1
+            return _mk_artifact_with_assessment(
+                "same finding every time", "unknown", "",
+            )
+
+        with patch("app.agents.block_executor.execute_task_block", stub):
+            result = await execute_block(block, ctx)
+
+        # Iter 0 records signature; iter 1 matches → stop.  Total = 2.
+        assert call_count[0] == 2, f"expected 2 iters, got {call_count[0]}"
+        assert any("converged" in d for d in result.decisions)
+
+    @pytest.mark.asyncio
+    async def test_convergence_does_not_fire_on_first_iter(
+        self, storage, until_run,
+    ):
+        """Convergence requires ≥2 identical signatures; iter 0 alone
+        with no self_assessment must not stop the loop."""
+        block = Block(
+            block_type="until", id="until-1", name="u",
+            until_mode="model", until_condition="",
+            until_max=3,
+            body=[_task("inner")],
+        )
+        ctx = ExecutionContext(run_id=until_run.id, storage=storage)
+        call_count = [0]
+        # Different summary each iter; convergence should never fire,
+        # loop runs to until_max.
+        async def stub(b, project_root=None, project_id=None, run_id=None):
+            call_count[0] += 1
+            return _mk_artifact_with_assessment(
+                f"unique attempt {call_count[0]}", "unknown", "",
+            )
+
+        with patch("app.agents.block_executor.execute_task_block", stub):
+            await execute_block(block, ctx)
+
+        assert call_count[0] == 3
+
+    @pytest.mark.asyncio
+    async def test_self_assessment_takes_priority_over_until_condition(
+        self, storage, until_run,
+    ):
+        """Layer A fires before Layer C: even when an until_condition
+        is set, a true self_assessment short-circuits the model call."""
+        block = Block(
+            block_type="until", id="until-1", name="u",
+            until_mode="model", until_condition="some condition",
+            until_max=5,
+            body=[_task("inner")],
+        )
+        ctx = ExecutionContext(run_id=until_run.id, storage=storage)
+        evaluator_calls = [0]
+
+        async def evaluator_should_not_run(*args, **kwargs):
+            evaluator_calls[0] += 1
+            return False
+
+        async def stub(b, project_root=None, project_id=None, run_id=None):
+            return _mk_artifact_with_assessment("done", "true", "")
+
+        with patch("app.agents.block_executor.execute_task_block", stub):
+            with patch(
+                "app.agents.block_executor._evaluate_until_condition_with_model",
+                new=evaluator_should_not_run,
+            ):
+                await execute_block(block, ctx)
+
+        assert evaluator_calls[0] == 0, (
+            "self_assessment=true should short-circuit the until-evaluator"
+        )

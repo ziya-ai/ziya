@@ -218,6 +218,58 @@ class TestDeduplicate:
         result = deduplicate(candidates, [])
         assert len(result) == 2
 
+    def test_proposal_sink_populated_on_embedding_match(self):
+        """When the embedding cache returns a prop_* ID above the cosine
+        threshold, the candidate is dropped AND the proposal ID is appended
+        to proposal_corroboration_sink."""
+        import numpy as np
+
+        candidate = {"content": "OBP RAM budget is 512 megabytes", "tags": ["obp"]}
+        existing = [{"content": "Unrelated existing memory", "tags": []}]
+
+        mock_provider = MagicMock()
+        mock_provider.embed_text.return_value = np.array([1.0, 0.0])
+        mock_cache = MagicMock()
+        mock_cache.search.return_value = [("prop_abc123", 0.95)]
+
+        sink: list = []
+        with patch("app.services.embedding_service.get_embedding_provider",
+                   return_value=mock_provider), \
+             patch("app.services.embedding_service.get_embedding_cache",
+                   return_value=mock_cache):
+            result = deduplicate([candidate], existing,
+                                  proposal_corroboration_sink=sink)
+
+        assert result == []
+        assert sink == ["prop_abc123"]
+
+    def test_proposal_sink_not_populated_for_active_memory_match(self):
+        """When the embedding match is against an active memory (m_*),
+        the proposal_corroboration_sink must NOT be touched — only the
+        corroboration_sink for active memories should fire."""
+        import numpy as np
+
+        candidate = {"content": "OBP RAM budget is 512 megabytes", "tags": ["obp"]}
+        existing = [{"content": "OBP has 512MB RAM budget", "tags": ["obp"]}]
+
+        mock_provider = MagicMock()
+        mock_provider.embed_text.return_value = np.array([1.0, 0.0])
+        mock_cache = MagicMock()
+        mock_cache.search.return_value = [("m_active001", 0.95)]
+
+        active_sink: list = []
+        proposal_sink: list = []
+        with patch("app.services.embedding_service.get_embedding_provider",
+                   return_value=mock_provider), \
+             patch("app.services.embedding_service.get_embedding_cache",
+                   return_value=mock_cache):
+            deduplicate([candidate], existing,
+                        corroboration_sink=active_sink,
+                        proposal_corroboration_sink=proposal_sink)
+
+        assert "m_active001" in active_sink
+        assert proposal_sink == []
+
 
 class TestPromoteHintLayers:
     """The layer hints no longer gate auto-save (everything goes to the
@@ -792,3 +844,96 @@ class TestRunExtraction:
         # Cap kicked in: at most PER_WINDOW_CANDIDATE_CAP per window
         assert result["extracted"] <= PER_WINDOW_CANDIDATE_CAP
         assert len(proposals.list_open()) <= PER_WINDOW_CANDIDATE_CAP
+
+    @pytest.mark.asyncio
+    async def test_lifecycle_pass_called_after_extraction(self, tmp_path):
+        """run_lifecycle_pass must be called after every successful extraction
+        run — without it probationary proposals never graduate to active."""
+        from app.storage.memory import MemoryStorage
+        from app.storage.proposals import ProposalsStore
+        store = MemoryStorage(memory_dir=tmp_path / "memory")
+        proposals = ProposalsStore(memory_dir=tmp_path / "memory")
+
+        messages = [
+            {"role": "user",
+             "content": "FCTS stands for Forward Channel Transport System — decided."},
+            {"role": "assistant", "content": "Understood."},
+            {"role": "user",
+             "content": "OBP has a 512MB RAM budget — hard constraint."},
+            {"role": "assistant", "content": "Noted."},
+            {"role": "user",
+             "content": "We decided on credit-based flow control for the return link."},
+            {"role": "assistant", "content": "Got it."},
+        ]
+
+        async def mock_llm_extract(category, system_prompt, user_message,
+                                   max_tokens=2048, temperature=0.2):
+            if category == "memory_comparison":
+                return '{"action": "ADD"}'
+            return json.dumps([{"content": "OBP processor enforces a strict 512MB RAM budget",
+                                 "layer": "architecture", "tags": ["obp"],
+                                 "confidence": "high"}])
+
+        lifecycle_called = False
+
+        async def mock_lifecycle():
+            nonlocal lifecycle_called
+            lifecycle_called = True
+            return {"scanned": 0, "promoted": 0, "archived": 0, "noop": 0}
+
+        with patch("app.mcp.builtin_tools.is_builtin_category_enabled", return_value=True), \
+             patch("app.storage.memory.get_memory_storage", return_value=store), \
+             patch("app.storage.proposals.get_proposals_store", return_value=proposals), \
+             patch("app.services.model_resolver.call_service_model",
+                   side_effect=mock_llm_extract), \
+             patch("app.utils.memory_lifecycle.run_lifecycle_pass",
+                   side_effect=mock_lifecycle):
+            await run_post_conversation_extraction(messages, "conv-lifecycle")
+
+        assert lifecycle_called, (
+            "run_lifecycle_pass was not invoked — probationary proposals "
+            "will never graduate to active memories"
+        )
+
+    @pytest.mark.asyncio
+    async def test_lifecycle_failure_does_not_abort_extraction(self, tmp_path):
+        """If run_lifecycle_pass raises, extraction still returns normally."""
+        from app.storage.memory import MemoryStorage
+        from app.storage.proposals import ProposalsStore
+        store = MemoryStorage(memory_dir=tmp_path / "memory")
+        proposals = ProposalsStore(memory_dir=tmp_path / "memory")
+
+        messages = [
+            {"role": "user",
+             "content": "FCTS stands for Forward Channel Transport System — decided."},
+            {"role": "assistant", "content": "Understood."},
+            {"role": "user",
+             "content": "OBP has a 512MB RAM budget — hard constraint."},
+            {"role": "assistant", "content": "Noted."},
+            {"role": "user",
+             "content": "We decided on credit-based flow control for the return link."},
+            {"role": "assistant", "content": "Got it."},
+        ]
+
+        async def mock_llm_extract_2(category, system_prompt, user_message,
+                                     max_tokens=2048, temperature=0.2):
+            if category == "memory_comparison":
+                return '{"action": "ADD"}'
+            return json.dumps([{"content": "OBP processor enforces a strict 512MB RAM budget",
+                                 "layer": "architecture", "tags": ["obp"],
+                                 "confidence": "high"}])
+
+        async def mock_lifecycle_raises():
+            raise RuntimeError("lifecycle store unavailable")
+
+        with patch("app.mcp.builtin_tools.is_builtin_category_enabled", return_value=True), \
+             patch("app.storage.memory.get_memory_storage", return_value=store), \
+             patch("app.storage.proposals.get_proposals_store", return_value=proposals), \
+             patch("app.services.model_resolver.call_service_model",
+                   side_effect=mock_llm_extract_2), \
+             patch("app.utils.memory_lifecycle.run_lifecycle_pass",
+                   side_effect=mock_lifecycle_raises):
+            result = await run_post_conversation_extraction(messages, "conv-lc-fail")
+
+        assert "extracted" in result
+        assert result.get("extracted", 0) >= 1

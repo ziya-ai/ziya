@@ -197,6 +197,107 @@ class TestExecutePipeline(unittest.TestCase):
             self.assertEqual(kwargs["timeout"], 42)
 
 
+class TestExpandSpecialParams(unittest.TestCase):
+    """Unit tests for _expand_special_params.
+
+    os.path.expandvars (used in _expand_and_tokenize) only substitutes valid
+    environment-variable names, so shell special parameters $?, $$, $! pass
+    through literal. _expand_special_params fills that gap.
+    """
+
+    def setUp(self):
+        self.srv = ShellServer()
+
+    def test_exit_status_zero(self):
+        self.assertEqual(self.srv._expand_special_params("echo $?", 0), "echo 0")
+
+    def test_exit_status_nonzero(self):
+        self.assertEqual(self.srv._expand_special_params("echo $?", 1), "echo 1")
+
+    def test_exit_status_braced(self):
+        self.assertEqual(self.srv._expand_special_params("echo exit=${?}", 7), "echo exit=7")
+
+    def test_signal_death_maps_to_128_plus_n(self):
+        # Python reports a process killed by signal N as returncode -N;
+        # bash exposes $? as 128 + N.
+        self.assertEqual(self.srv._expand_special_params("echo $?", -9), "echo 137")
+
+    def test_pid_expands_to_orchestrator_pid(self):
+        self.assertEqual(
+            self.srv._expand_special_params("echo $$", 0),
+            f"echo {os.getpid()}",
+        )
+
+    def test_last_bg_pid_is_empty(self):
+        # Background jobs are unsupported, so $! expands to empty.
+        self.assertEqual(self.srv._expand_special_params("echo $!", 0), "echo ")
+
+    def test_ordinary_env_var_untouched(self):
+        # $FOO is a normal env var — left for expandvars downstream, not us.
+        self.assertEqual(
+            self.srv._expand_special_params("echo $FOO done", 3),
+            "echo $FOO done",
+        )
+
+    def test_no_special_params(self):
+        self.assertEqual(
+            self.srv._expand_special_params("grep -n foo bar.txt", 1),
+            "grep -n foo bar.txt",
+        )
+
+
+class TestExitStatusInPipeline(unittest.TestCase):
+    """End-to-end: $? reflects the previous segment's real exit status.
+
+    Regression for the bug where 'echo $?' returned the literal string '$?'
+    because os.path.expandvars never expands shell special parameters.
+    """
+
+    def setUp(self):
+        self.srv = ShellServer()
+
+    def test_echo_exit_status_is_not_literal(self):
+        result = self.srv._execute_pipeline("echo $?", 10, "/tmp")
+        self.assertEqual(result.returncode, 0)
+        self.assertNotIn("$?", result.stdout)
+        # First segment: no prior command, bash treats $? as 0.
+        self.assertEqual(result.stdout.strip(), "0")
+
+    def test_exit_status_after_success(self):
+        result = self.srv._execute_pipeline("true ; echo $?", 10, "/tmp")
+        self.assertEqual(result.stdout.strip(), "0")
+
+    def test_exit_status_after_failure(self):
+        result = self.srv._execute_pipeline("false ; echo $?", 10, "/tmp")
+        self.assertIn("1", result.stdout)
+        self.assertNotIn("$?", result.stdout)
+
+    def test_exit_status_in_or_branch(self):
+        # false fails (rc 1), || branch runs, $? reflects the failed false.
+        result = self.srv._execute_pipeline("false || echo $?", 10, "/tmp")
+        self.assertIn("1", result.stdout)
+        self.assertNotIn("$?", result.stdout)
+
+    def test_pid_in_pipeline_is_numeric(self):
+        result = self.srv._execute_pipeline("echo $$", 10, "/tmp")
+        self.assertEqual(result.returncode, 0)
+        self.assertNotIn("$$", result.stdout)
+        self.assertTrue(
+            result.stdout.strip().isdigit(),
+            f"Expected numeric PID, got {result.stdout.strip()!r}",
+        )
+
+    def test_compound_command_path_unaffected(self):
+        # Compound constructs run via 'sh -c', where the real shell expands
+        # $? itself — _expand_special_params must not interfere.
+        result = self.srv._execute_pipeline(
+            "for i in 1 2; do echo $i; done", 10, "/tmp"
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("1", result.stdout)
+        self.assertIn("2", result.stdout)
+
+
 class TestHandleRequestSecure(unittest.TestCase):
     """End-to-end test that handle_request uses secure execution."""
 

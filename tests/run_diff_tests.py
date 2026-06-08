@@ -180,6 +180,41 @@ class DiffRegressionTest(unittest.TestCase):
                              f"File should have been deleted but still exists: {test_file_path}")
             return
 
+        # Handle "expect_error" test cases: the diff is structurally unrecoverable
+        # (e.g. a hunk truncated/mangled upstream so its body parsed to zero +/-
+        # lines while its @@ header still declares a change). The pipeline MUST
+        # fail loudly rather than silently report "already applied"/"success", and
+        # it MUST NOT destroy the file. A plain content comparison cannot express
+        # this (both the buggy silent no-op and the correct loud failure leave the
+        # file == original), so we assert the outcome directly here.
+        if metadata.get('expect_error', False):
+            test_file_path = os.path.join(self.temp_dir, metadata['target_file'])
+            os.makedirs(os.path.dirname(test_file_path), exist_ok=True)
+            with open(test_file_path, 'w', encoding='utf-8') as f:
+                f.write(original)
+
+            from app.utils.diff_utils.pipeline.pipeline_manager import apply_diff_pipeline
+            result = apply_diff_pipeline(diff, test_file_path)
+
+            # Must NOT claim success or already-applied (that would be silent data loss).
+            self.assertNotIn(
+                result.get('status'), ('success', 'already_applied'),
+                f"Unrecoverable diff was reported as '{result.get('status')}' "
+                f"(expected a loud failure). Full result: {result}")
+            # Must not have written changes.
+            self.assertFalse(
+                result.get('changes_written', False),
+                f"Unrecoverable diff reported changes_written=True: {result}")
+            # Must leave the file byte-for-byte unchanged (no destructive write).
+            with open(test_file_path, 'r', encoding='utf-8') as f:
+                after = f.read()
+            self.assertEqual(
+                after, original,
+                f"Unrecoverable diff modified the file instead of failing cleanly.\n"
+                f"Original {len(original.splitlines())} lines -> "
+                f"got {len(after.splitlines())} lines.")
+            return
+
         # Set up the test file in the temp directory
         test_file_path = os.path.join(self.temp_dir, metadata['target_file'])
         os.makedirs(os.path.dirname(test_file_path), exist_ok=True)
@@ -337,6 +372,15 @@ class DiffRegressionTest(unittest.TestCase):
     def test_markdown_renderer_language_cache(self):
         """Test optimization of language loading in MarkdownRenderer"""
         self.run_diff_test('markdown_renderer_language_cache')
+
+    def test_markdown_renderer_fence_lookahead_false_applied(self):
+        """Three fence-fix lookahead edits supplied as three separate 'diff --git'
+        blocks for the SAME file. split_combined_diff treats them as distinct files
+        and apply_diff_pipeline selects only the first matching diff, silently
+        dropping hunks 2 and 3 (i.e. treating them as already applied/handled).
+        Only Fix 1 lands; this test fails until same-file multi-header blocks are
+        merged instead of de-duplicated to the first match."""
+        self.run_diff_test('markdown_renderer_fence_lookahead_false_applied')
         
     def test_escape_sequence_content(self):
         """Test handling of escape sequences and content after them"""

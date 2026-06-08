@@ -236,19 +236,17 @@ class TestExecuteSingleTool:
         mock_executor._get_tool_header.return_value = "X"
         mock_executor._infer_syntax_hint.return_value = ""
 
-        # Simulate feedback queue with stop message
-        mock_queue = MagicMock()
-        mock_queue.get_nowait.return_value = {
-            'type': 'tool_feedback',
-            'message': 'stop please',
-        }
-
-        ctx = _make_ctx(executor=mock_executor, conversation_id="conv_1")
-
-        with patch(_PATCH_FEEDBACK, {
-            "conv_1": [{"feedback_queue": mock_queue}]
-        }):
-            events = await _collect_events(ctx)
+        # execute_single_tool drains feedback via ctx.drain_feedback_fn(),
+        # not by reading active_feedback_connections directly.  Inject a
+        # one-shot drain that yields a stop message on the first call and
+        # nothing afterward (the generator returns before draining again).
+        _pending = [[{'type': 'tool_feedback', 'message': 'stop please'}]]
+        ctx = _make_ctx(
+            executor=mock_executor,
+            conversation_id="conv_1",
+            drain_feedback_fn=lambda: _pending.pop(0) if _pending else [],
+        )
+        events = await _collect_events(ctx)
 
         assert ctx.should_stop_stream is True
         types = [e['type'] for e in events]
@@ -261,18 +259,15 @@ class TestExecuteSingleTool:
         mock_executor._get_tool_header.return_value = "X"
         mock_executor._infer_syntax_hint.return_value = ""
 
-        mock_queue = MagicMock()
-        mock_queue.get_nowait.return_value = {
-            'type': 'tool_feedback',
-            'message': 'try a different approach',
-        }
-
-        ctx = _make_ctx(executor=mock_executor, conversation_id="conv_1")
-
-        with patch(_PATCH_FEEDBACK, {
-            "conv_1": [{"feedback_queue": mock_queue}]
-        }):
-            events = await _collect_events(ctx)
+        # Inject a one-shot drain returning a non-stop directive message;
+        # the executor should record it and skip execution this turn.
+        _pending = [[{'type': 'tool_feedback', 'message': 'try a different approach'}]]
+        ctx = _make_ctx(
+            executor=mock_executor,
+            conversation_id="conv_1",
+            drain_feedback_fn=lambda: _pending.pop(0) if _pending else [],
+        )
+        events = await _collect_events(ctx)
 
         assert ctx.feedback_received is True
         assert ctx.should_stop_stream is False

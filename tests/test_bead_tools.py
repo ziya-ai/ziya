@@ -73,7 +73,8 @@ def test_bead_tree_path_to_root_single_node():
 @pytest.mark.asyncio
 async def test_bead_create_first_bead():
     """First bead in an empty tree has no parent."""
-    with patch("app.storage.beads.load_bead_tree", return_value=BeadTree()), \
+    with patch("app.mcp.tools.bead_tools._is_ephemeral_context", return_value=False), \
+         patch("app.storage.beads.load_bead_tree", return_value=BeadTree()), \
          patch("app.storage.beads.save_bead_tree") as mock_save:
         from app.mcp.tools.bead_tools import BeadCreateTool
         tool = BeadCreateTool()
@@ -94,7 +95,8 @@ async def test_bead_create_parks_active_when_new_active():
     existing = Bead(id="b_old", content="old task", status="active")
     tree = BeadTree(beads=[existing])
 
-    with patch("app.storage.beads.load_bead_tree", return_value=tree), \
+    with patch("app.mcp.tools.bead_tools._is_ephemeral_context", return_value=False), \
+         patch("app.storage.beads.load_bead_tree", return_value=tree), \
          patch("app.storage.beads.save_bead_tree") as mock_save:
         from app.mcp.tools.bead_tools import BeadCreateTool
         tool = BeadCreateTool()
@@ -115,7 +117,8 @@ async def test_bead_create_parked_does_not_change_active():
     existing = Bead(id="b_active", content="main task", status="active")
     tree = BeadTree(beads=[existing])
 
-    with patch("app.storage.beads.load_bead_tree", return_value=tree), \
+    with patch("app.mcp.tools.bead_tools._is_ephemeral_context", return_value=False), \
+         patch("app.storage.beads.load_bead_tree", return_value=tree), \
          patch("app.storage.beads.save_bead_tree") as mock_save:
         from app.mcp.tools.bead_tools import BeadCreateTool
         tool = BeadCreateTool()
@@ -132,10 +135,11 @@ async def test_bead_create_parked_does_not_change_active():
 
 @pytest.mark.asyncio
 async def test_bead_create_empty_content_rejected():
-    from app.mcp.tools.bead_tools import BeadCreateTool
-    tool = BeadCreateTool()
-    result = await tool.execute(content="", status="active")
-    assert result["ok"] is False
+    with patch("app.mcp.tools.bead_tools._is_ephemeral_context", return_value=False):
+        from app.mcp.tools.bead_tools import BeadCreateTool
+        tool = BeadCreateTool()
+        result = await tool.execute(content="", status="active")
+        assert result["ok"] is False
 
 
 # -- bead_complete tool tests -----------------------------------------------
@@ -147,7 +151,8 @@ async def test_bead_complete_resumes_parent():
     child = Bead(id="b_child", content="subtask", status="active", parent_id="b_parent")
     tree = BeadTree(beads=[parent, child])
 
-    with patch("app.storage.beads.load_bead_tree", return_value=tree), \
+    with patch("app.mcp.tools.bead_tools._is_ephemeral_context", return_value=False), \
+         patch("app.storage.beads.load_bead_tree", return_value=tree), \
          patch("app.storage.beads.save_bead_tree") as mock_save:
         from app.mcp.tools.bead_tools import BeadCompleteTool
         tool = BeadCompleteTool()
@@ -165,7 +170,8 @@ async def test_bead_complete_resumes_parent():
 async def test_bead_complete_no_active_returns_error():
     tree = BeadTree(beads=[Bead(id="b_done", content="old", status="completed")])
 
-    with patch("app.storage.beads.load_bead_tree", return_value=tree):
+    with patch("app.mcp.tools.bead_tools._is_ephemeral_context", return_value=False), \
+         patch("app.storage.beads.load_bead_tree", return_value=tree):
         from app.mcp.tools.bead_tools import BeadCompleteTool
         tool = BeadCompleteTool()
         result = await tool.execute()
@@ -178,7 +184,8 @@ async def test_bead_complete_no_active_returns_error():
 
 @pytest.mark.asyncio
 async def test_bead_status_empty():
-    with patch("app.storage.beads.load_bead_tree", return_value=BeadTree()):
+    with patch("app.mcp.tools.bead_tools._is_ephemeral_context", return_value=False), \
+         patch("app.storage.beads.load_bead_tree", return_value=BeadTree()):
         from app.mcp.tools.bead_tools import BeadStatusTool
         tool = BeadStatusTool()
         result = await tool.execute()
@@ -194,7 +201,8 @@ async def test_bead_status_shows_parked():
         Bead(id="b_p", content="parked aside", status="parked",
              parent_id="b_a", context_hint="was discussing X"),
     ])
-    with patch("app.storage.beads.load_bead_tree", return_value=tree):
+    with patch("app.mcp.tools.bead_tools._is_ephemeral_context", return_value=False), \
+         patch("app.storage.beads.load_bead_tree", return_value=tree):
         from app.mcp.tools.bead_tools import BeadStatusTool
         tool = BeadStatusTool()
         result = await tool.execute()

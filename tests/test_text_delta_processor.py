@@ -29,6 +29,11 @@ def _make_executor():
     optimizer.add_content.side_effect = lambda t: [t] if t else []
     optimizer.flush_remaining.return_value = ""
     executor._content_optimizer = optimizer
+    # Fake tool fence accumulator state — must be real ints/strs, not
+    # MagicMock auto-attrs, because process_text_delta does numeric
+    # comparisons on _fake_tool_ticks.
+    executor._fake_tool_ticks = 0
+    executor._fake_tool_buffer = ""
     return executor
 
 
@@ -109,14 +114,19 @@ class TestFakeToolSuppression:
         # Should be suppressed — not accumulated
         assert state.assistant_text == ""
 
-    def test_backtick_tool_syntax_suppressed(self):
-        """Text containing `tool: should be suppressed."""
+    def test_inline_backtick_tool_reference_not_suppressed(self):
+        """Single-backtick inline-code references like ``\u0060tool:fetch\u0060``
+        are legitimate markdown and must NOT be suppressed.  The contamination
+        filter only fires on triple-or-more backtick fences (``\u0060\u0060\u0060tool:NAME|...``)
+        which the model uses to mimic real tool-display output."""
         executor = _make_executor()
         state = _make_state()
 
-        events = process_text_delta(executor, "use `tool:fetch` to get data", state)
+        text = "use `tool:fetch` to get data"
+        events = process_text_delta(executor, text, state)
 
-        assert state.assistant_text == ""
+        # Single-backtick inline code passes through unchanged.
+        assert state.assistant_text == text
 
 
 # ---------------------------------------------------------------------------
@@ -527,13 +537,17 @@ class TestCrossIterationFalsePositive:
         from app.hallucination.shingle_index import register_tool_result, clear_session
 
         conv_id = f"test-regression-{uuid.uuid4().hex[:8]}"
-        # Use a result long enough to generate multiple shingles.
+        # Result must produce at least LINE_MATCH_HIGH_CONFIDENCE (5) lines
+        # of length >= MIN_LINE_LENGTH (20) to escalate the parroting match
+        # to high confidence and trigger the abort path.
         tool_result = (
             "$ find . -name 'executor.py'\n"
             "./app/streaming_tool_executor.py\n"
             "./app/agents/task_executor.py\n"
             "./tests/test_streaming_tool_executor.py\n"
             "./tests/test_task_executor.py\n"
+            "./app/agents/wrappers/google_direct.py\n"
+            "./tests/test_streaming_tool_executor_paths.py\n"
             "$ \n"
         )
         register_tool_result(conv_id, "tool-002", "run_shell_command", tool_result)
@@ -583,10 +597,12 @@ class TestCrossIterationFalsePositive:
 class TestHallucinationPatternPlacement:
     """Verify the MCP envelope pattern and LINE_MATCH_HIGH_CONFIDENCE threshold."""
 
-    def test_line_match_high_confidence_is_3(self):
-        """LINE_MATCH_HIGH_CONFIDENCE must be 3 to reduce file-path false positives."""
+    def test_line_match_high_confidence_threshold(self):
+        """LINE_MATCH_HIGH_CONFIDENCE pinned at 5 — tightened from 3 in
+        CHANGELOG.md to harden the outside-fence Layer A path against
+        legitimate code-quoting false positives."""
         from app.hallucination.shingle_index import LINE_MATCH_HIGH_CONFIDENCE
-        assert LINE_MATCH_HIGH_CONFIDENCE == 3
+        assert LINE_MATCH_HIGH_CONFIDENCE == 5
 
     def test_mcp_envelope_not_in_raw_patterns(self):
         """MCP content-array pattern must NOT be in _RAW_HALLUCINATION_PATTERNS."""

@@ -1,0 +1,7 @@
+{
+    "target_file": "frontend/src/components/MarkdownRenderer.tsx",
+    "description": "Three fence-fix lookahead changes supplied as three separate 'diff --git' blocks for the SAME file. The pipeline's split_combined_diff treats them as distinct files and apply_diff_pipeline selects only the first matching diff, silently dropping hunks 2 and 3 - effectively treating them as already applied/handled. Only Fix 1 lands; Fix 2 and Fix 3 are never written.",
+    "date_added": "2026-06-04",
+    "issue_reference": "same_file_multi_header_hunks_dropped",
+    "expected_behavior": "All three lookahead '(?=\\s|$)' edits should be applied, not just the first."
+}

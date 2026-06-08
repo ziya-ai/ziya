@@ -1,0 +1,12 @@
+diff --git a/frontend/src/components/MarkdownRenderer.tsx b/frontend/src/components/MarkdownRenderer.tsx
+--- a/frontend/src/components/MarkdownRenderer.tsx
++++ b/frontend/src/components/MarkdownRenderer.tsx
+@@ -1,5 +1,5 @@
+             // Fix 1: Code fence on same line as heading (e.g., "### Title 
+
+&#96;&#96;&#96;language")
+             processedMarkdown = processedMarkdown.replace(
+-                /(^#{1,6}\s+[^\n\`]+?)\s+(\`\`\`[a-zA-Z0-9_-]*)/gm,
++                /(^#{1,6}\s+[^\n\`]+?)\s+(\`\`\`[a-zA-Z0-9_-]*)(?=\s|$)/gm,
+                 '$1\n\n$2'
+             );
