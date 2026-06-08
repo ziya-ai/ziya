@@ -31,7 +31,8 @@ import { useProject } from '../context/ProjectContext';
 import { useSendPayload } from '../hooks/useSendPayload';
 import { useStreamingContext } from '../context/StreamingContext';
 import { parseD3Spec } from '../utils/d3SpecParser';
-
+import { escapeNestedBacktickFences, stripBareProseFences, matchFenceOpen, applyOutsideFences } from './fenceScanner';
+import { processInlineMath } from '../utils/inlineMathClassifier';
 /**
  * Determine whether a diff for the given language should soft-wrap long lines
  * instead of horizontal-scroll.  Wrapping is appropriate for prose
@@ -2732,6 +2733,21 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                     } else {
                         message.success(`Changes applied successfully to ${filePath}`);
                     }
+                } else if (data.status === 'already_applied') {
+                    console.log('Processing already_applied status');
+                    setIsApplied(true);
+                    window.appliedDiffsRegistry?.add(diffElementId);
+                    // Update hunk statuses to reflect already-applied
+                    if (data.details?.hunk_statuses) {
+                        const parsedStatuses = parseHunkStatuses(data.details.hunk_statuses, fileIndex);
+                        parsedStatuses.forEach((status, hunkKey) => {
+                            if (typeof setHunkStatuses === 'function') {
+                                setHunkStatuses((prev: Map<string, HunkStatus>) => new Map(prev).set(hunkKey, status));
+                            }
+                        });
+                    }
+                    triggerDiffUpdate(data.details?.hunk_statuses || {}, data.request_id, diffElementId);
+                    message.info(`No changes needed — already applied to ${filePath}`);
                 } else if (result.status === 'partial') {
                     console.log('Processing partial status');
                     // Only mark as applied if at least one hunk succeeded
@@ -4225,47 +4241,47 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
     const absorbedDiffIndices = new Set<number>();
 
     if (!isSubRender) {
-    // Pre-pass: synthesize headers for headerless continuation diff blocks.
-    // LLMs (especially Opus) sometimes emit multiple 
-    // for the same file where only the first has the "diff --git" header
-    // and subsequent blocks start directly with "@@".  Rather than merging
-    // (which would collapse them onto the first block's location and lose
-    // their inline position next to the surrounding prose), we SYNTHESIZE
-    // the missing "diff --git" / "--- a/" / "+++ b/" headers using the
-    // last seen headed diff's file path.  Each block then parses standalone
-    // and renders inline with its own Apply button.
-    if (!isSubRender) {
-        // Path (without a/ or b/ prefix) of the most recent headed diff.
-        // We assume any subsequent headerless "@@"-only block targets the
-        // same file — true in every observed case.  Intervening prose,
-        // lists, or tool blocks no longer break the chain because the
-        // model frequently narrates between fixes to the same file.
-        let lastHeadedDiffPath: string | null = null;
-        for (let i = 0; i < tokens.length; i++) {
-            const tok = tokens[i] as TokenWithText;
-            if (determineTokenType(tok) !== 'diff' || !tok.text) continue;
-            const text = tok.text.trimStart();
-            const hasDiffGitHeader = text.startsWith('diff --git ') ||
-                text.split('\n').slice(0, 3).some(l => l.startsWith('diff --git '));
-            if (hasDiffGitHeader) {
-                // Extract path from "diff --git a/PATH b/PATH" so subsequent
-                // headerless continuations can synthesize matching headers.
-                // Prefer the b/ path (post-image) when both are present.
-                const pathMatch = text.match(/^diff --git a\/(\S+) b\/(\S+)/m);
-                if (pathMatch) lastHeadedDiffPath = pathMatch[2] || pathMatch[1];
-            } else if (lastHeadedDiffPath !== null && text.startsWith('@@')) {
-                // Headerless continuation — synthesize git + unified headers
-                // using the last headed diff's path so this block parses
-                // standalone (and stays at its original inline position).
-                const p = lastHeadedDiffPath;
-                tok.text =
-                    `diff --git a/${p} b/${p}\n` +
-                    `--- a/${p}\n` +
-                    `+++ b/${p}\n` +
-                    tok.text;
+        // Pre-pass: synthesize headers for headerless continuation diff blocks.
+        // LLMs (especially Opus) sometimes emit multiple 
+        // for the same file where only the first has the "diff --git" header
+        // and subsequent blocks start directly with "@@".  Rather than merging
+        // (which would collapse them onto the first block's location and lose
+        // their inline position next to the surrounding prose), we SYNTHESIZE
+        // the missing "diff --git" / "--- a/" / "+++ b/" headers using the
+        // last seen headed diff's file path.  Each block then parses standalone
+        // and renders inline with its own Apply button.
+        if (!isSubRender) {
+            // Path (without a/ or b/ prefix) of the most recent headed diff.
+            // We assume any subsequent headerless "@@"-only block targets the
+            // same file — true in every observed case.  Intervening prose,
+            // lists, or tool blocks no longer break the chain because the
+            // model frequently narrates between fixes to the same file.
+            let lastHeadedDiffPath: string | null = null;
+            for (let i = 0; i < tokens.length; i++) {
+                const tok = tokens[i] as TokenWithText;
+                if (determineTokenType(tok) !== 'diff' || !tok.text) continue;
+                const text = tok.text.trimStart();
+                const hasDiffGitHeader = text.startsWith('diff --git ') ||
+                    text.split('\n').slice(0, 3).some(l => l.startsWith('diff --git '));
+                if (hasDiffGitHeader) {
+                    // Extract path from "diff --git a/PATH b/PATH" so subsequent
+                    // headerless continuations can synthesize matching headers.
+                    // Prefer the b/ path (post-image) when both are present.
+                    const pathMatch = text.match(/^diff --git a\/(\S+) b\/(\S+)/m);
+                    if (pathMatch) lastHeadedDiffPath = pathMatch[2] || pathMatch[1];
+                } else if (lastHeadedDiffPath !== null && text.startsWith('@@')) {
+                    // Headerless continuation — synthesize git + unified headers
+                    // using the last headed diff's path so this block parses
+                    // standalone (and stays at its original inline position).
+                    const p = lastHeadedDiffPath;
+                    tok.text =
+                        `diff --git a/${p} b/${p}\n` +
+                        `--- a/${p}\n` +
+                        `+++ b/${p}\n` +
+                        tok.text;
+                }
             }
         }
-    }
 
         const diffTexts: { index: number; text: string }[] = [];
         tokens.forEach((token, index) => {
@@ -5674,13 +5690,25 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 const fenceUpgradeOutput: string[] = [];
                 let fui = 0;
                 while (fui < fenceUpgradeLines.length) {
-                    const openMatch = fenceUpgradeLines[fui].match(/^(`{3,})(\S.*)?$/);
-                    if (openMatch) {
-                        const outerLen = openMatch[1].length;
+                    // Gate the opener through the shared CommonMark rule so the
+                    // tail of a wrapped inline-code span is not taken as a fence
+                    // opener. Only column-0 backtick fences are upgraded.
+                    const _open = matchFenceOpen(fenceUpgradeLines[fui]);
+                    if (_open && _open.char === '`' && _open.indent === 0) {
+                        const outerLen = _open.len;
+                        const _info = _open.info;
                         // Find the closing fence
                         let closeIdx = -1;
                         let maxInnerFence = 0;
                         for (let fj = fui + 1; fj < fenceUpgradeLines.length; fj++) {
+                            // If we hit a language-tagged fence opener, we've overshot
+                            // into the NEXT code block.  Stop scanning — the real close
+                            // for our block is either indented (valid per CommonMark but
+                            // not column-0) or missing.  Continuing would mis-pair with
+                            // a later bare ``` that belongs to a different block.
+                            const nextOpener = matchFenceOpen(fenceUpgradeLines[fj]);
+                            if (nextOpener && nextOpener.info !== '') break;
+
                             const cl = fenceUpgradeLines[fj].match(/^(`{3,})\s*$/);
                             if (cl && cl[1].length >= outerLen) { closeIdx = fj; break; }
                             // Check if this content line looks like a closing fence
@@ -5693,7 +5721,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                         if (closeIdx !== -1 && maxInnerFence >= outerLen) {
                             const newLen = maxInnerFence + 1;
                             const newFence = '`'.repeat(newLen);
-                            const langPart = openMatch[2] || '';
+                            const langPart = _info;
                             fenceUpgradeLines[fui] = newFence + langPart;
                             fenceUpgradeLines[closeIdx] = newFence;
                         }
@@ -5703,206 +5731,47 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 }
                 processedMarkdown = fenceUpgradeOutput.join('\n');
             }
-
-            // Ensure blank line before code fences in all problematic cases
-            // Marked.js requires blank lines before code blocks for proper parsing
-
             // Fix 0: Code fence immediately after bold/emphasis markers (e.g., "**text**\n```language")
-            processedMarkdown = processedMarkdown.replace(
-                /(\*\*[^*]+\*\*|\*[^*]+\*|__[^_]+__|_[^_]+_)\n(```[a-zA-Z0-9_-]*)/gm,
-                '$1\n\n$2'
+            processedMarkdown = applyOutsideFences(processedMarkdown, (s) =>
+                s.replace(/(\*\*[^*]+\*\*|\*[^*]+\*|__[^_]+__|_[^_]+_)\n(```[a-zA-Z0-9_-]*)/gm, '$1\n\n$2')
             );
 
             // Fix 0b: Code fence after any markdown formatting without blank line
             // Fix 3: Code fence glued directly to preceding text with NO newline at all
             // e.g., "curve:
-            processedMarkdown = processedMarkdown.replace(/(\*\*)\n(```)/g, '$1\n\n$2');
+            processedMarkdown = applyOutsideFences(processedMarkdown, (s) =>
+                s.replace(/(\*\*)\n(```)/g, '$1\n\n$2')
+            );
 
             // Fix 1: Code fence on same line as heading (e.g., "### Title ```language")
-            processedMarkdown = processedMarkdown.replace(
-                /(^#{1,6}\s+[^\n\`]+?)\s+(\`\`\`[a-zA-Z0-9_-]*)/gm,
-                '$1\n\n$2'
+            processedMarkdown = applyOutsideFences(processedMarkdown, (s) =>
+                s.replace(/(^#{1,6}\s+[^\n`]+?)\s+(`{3,}[a-zA-Z0-9_-]*)(?=\s|$)/gm, '$1\n\n$2')
             );
 
             // Fix 2: Code fence immediately after numbered list (e.g., "1. Item ```language")
-            processedMarkdown = processedMarkdown.replace(
-                /(\d+\.\s+[^\n\`]+?)\s+(\`\`\`[a-zA-Z0-9_-]*)/gm,
-                '$1\n\n$2'
+            processedMarkdown = applyOutsideFences(processedMarkdown, (s) =>
+                s.replace(/(\d+\.\s+[^\n`]+?)\s+(`{3,}[a-zA-Z0-9_-]*)(?=\s|$)/gm, '$1\n\n$2')
             );
 
             // Also fix after paragraphs or text that directly precedes code fences
-            processedMarkdown = processedMarkdown.replace(/([^\n])\n(\`\`\`[a-zA-Z0-9_-]*)/g, '$1\n\n$2');
+            processedMarkdown = applyOutsideFences(processedMarkdown, (s) =>
+                s.replace(/([^\n])\n(`{3,}[a-zA-Z0-9_-]*)(?=\s|$)/g, '$1\n\n$2')
+            );
 
             // Fix: Code fence directly concatenated to text with no newline at all
             // e.g. "some text:```vega-lite" → "some text:\n\n```vega-lite"
             // LLMs sometimes omit the newline before a code fence entirely
-            processedMarkdown = processedMarkdown.replace(/([^\n\`])(\`{3,}[a-zA-Z][a-zA-Z0-9_-]*)/g, '$1\n\n$2');
+            processedMarkdown = applyOutsideFences(processedMarkdown, (s) =>
+                s.replace(/([^\n`])(`{3,}[a-zA-Z][a-zA-Z0-9_-]*)(?=\s|$)/g, '$1\n\n$2')
+            );
 
-            // Fix 4: Strip bare code fences that wrap markdown prose instead of code.
-            // Models sometimes output bare fences (no language tag) as visual separators
-            // between sections. The marked tokenizer pairs consecutive bare fences as
-            // open/close, causing alternating sections to be parsed as code blocks
-            // instead of rendered markdown. This walks the lines, detects fence pairs
-            // whose content looks like prose (bold, lists, headings) rather than code,
-            // and strips the fences so the content renders normally.
-            {
-                const fenceLines = processedMarkdown.split('\n');
-                const fenceOutput: string[] = [];
-                let fi = 0;
-                // Track language-tagged fence blocks so their closing bare
-                // ``` isn't mistakenly stripped as a prose-wrapping fence.
-                let insideLangFence = false;
-                let langFenceLen = 0;
-
-                while (fi < fenceLines.length) {
-                    const fLine = fenceLines[fi];
-                    const bareFenceMatch = fLine.match(/^(`{3,})\s*$/);
-
-                    // Detect opening of a language-tagged fence (e.g. ```diff, ```python)
-                    if (!insideLangFence) {
-                        const langFenceMatch = fLine.match(/^(`{3,})[^`\s]/);
-                        if (langFenceMatch) {
-                            insideLangFence = true;
-                            langFenceLen = langFenceMatch[1].length;
-                            fenceOutput.push(fLine);
-                            fi++;
-                            continue;
-                        }
-                    }
-
-                    if (bareFenceMatch && insideLangFence && bareFenceMatch[1].length >= langFenceLen) {
-                        // This bare fence closes a language-tagged block — pass through
-                        insideLangFence = false;
-                        langFenceLen = 0;
-                        fenceOutput.push(fLine);
-                        fi++;
-                        continue;
-                    }
-
-                    if (bareFenceMatch && !insideLangFence) {
-                        const fLen = bareFenceMatch[1].length;
-                        let closeIdx = -1;
-                        for (let fj = fi + 1; fj < fenceLines.length; fj++) {
-                            const closeMatch = fenceLines[fj].match(/^(`{3,})\s*$/);
-                            if (closeMatch && closeMatch[1].length >= fLen) {
-                                closeIdx = fj;
-                                break;
-                            }
-                        }
-
-                        if (closeIdx !== -1) {
-                            const innerLines = fenceLines.slice(fi + 1, closeIdx);
-                            const innerContent = innerLines.join('\n').trim();
-
-                            if (!innerContent) {
-                                fi = closeIdx + 1;
-                                continue;
-                            }
-
-                            // Orphan fence detection: if the inner content starts with
-                            // a code fence opening (e.g. ```bash), the outer bare fence
-                            // is an orphan separator — strip it so the real block renders.
-                            const firstNonBlank = innerLines.findIndex(function(l) {
-                                return l.trim().length > 0;
-                            });
-                            if (firstNonBlank >= 0 && /^`{3,}\S/.test(innerLines[firstNonBlank])) {
-                                fenceOutput.push(...innerLines);
-                                fi = closeIdx + 1;
-                                continue;
-                            }
-
-                            // Detect prose signals — any of: bold/italic markers,
-                            // headings, lists, blockquotes, markdown links,
-                            // inline HTML tags (e.g. <strong>), or labelled
-                            // Spurious outer-fence unwrap: when a bare outer fence of
-                            // length >= 4 wraps content that itself contains a
-                            // language-tagged inner fence of strictly shorter length
-                            // (e.g. ````...```diff...```...````), the outer fence is
-                            // almost always a hallucinated wrapper — models sometimes
-                            // emit these late in long contexts. The tagged inner fence
-                            // is an unambiguous signal of intent; strip the outer pair
-                            // so inner fences render as real code blocks instead of
-                            // literal text. Generalizes to N=4,5,6,7+ backticks.
-                            if (fLen >= 4) {
-                                const innerTaggedFence = innerLines.some(l => {
-                                    const m = l.match(/^(`{3,})[A-Za-z]/);
-                                    return m !== null && m[1].length < fLen;
-                                });
-                                if (innerTaggedFence) {
-                                    fenceOutput.push(...innerLines);
-                                    fi = closeIdx + 1;
-                                    continue;
-                                }
-                            }
-
-                            // search-result structure like "Title:"/"URL:"/"Description:".
-                            // Search-tool output often uses <strong>...</strong> and
-                            // [text](url) rather than **bold**, so the original
-                            // heuristic missed it and wrapped prose as a code block.
-                            const looksLikeMarkdown = (
-                                /\*\*|^#{1,6}\s|^\d+\.|^[-*]\s|^>\s/m.test(innerContent) ||
-                                /\[[^\]]+\]\([^)]+\)/.test(innerContent) ||
-                                /<\/?(?:strong|em|b|i|a|p|br|code|span)\b[^>]*>/i.test(innerContent) ||
-                                /^(?:Title|URL|Description|Source|Link):\s/m.test(innerContent)
-                            );
-                            const looksLikeCode = innerContent.split('\n').some(l => {
-                                const t = l.trimStart();
-                                return (
-                                    t.startsWith('import ') || t.startsWith('from ') ||
-                                    t.startsWith('def ') || t.startsWith('class ') ||
-                                    t.startsWith('function ') || t.startsWith('const ') ||
-                                    t.startsWith('let ') || t.startsWith('var ') ||
-                                    t.startsWith('return ') || t.startsWith('if (') ||
-                                    t.startsWith('for ') || t.startsWith('while ') ||
-                                    /^[a-z_]+\s*[=(]/.test(t) || /^\s*[{}]\s*$/.test(t) ||
-                                    t.startsWith('diff --git') || t.startsWith('--- a/') ||
-                                    t.startsWith('+++ b/')
-                                );
-                            });
-
-                            if (looksLikeMarkdown && !looksLikeCode) {
-                                fenceOutput.push(...innerLines);
-                                fi = closeIdx + 1;
-                                continue;
-                            }
-
-                            // Content doesn't look like markdown — keep the entire
-                            // fenced block intact and skip past the closing fence.
-                            // Without this, the closing bare ``` is re-examined as
-                            // a new orphan opener whose trailing content "looks like
-                            // markdown", causing it to be stripped.
-                            fenceOutput.push(fLine);
-                            fenceOutput.push(...innerLines);
-                            fenceOutput.push(fenceLines[closeIdx]);
-                            fi = closeIdx + 1;
-                            continue;
-                        } else {
-                            const remainingContent = fenceLines.slice(fi + 1).join('\n').trim();
-                            const remainingIsMarkdown = /\*\*|^#{1,6}\s|^\d+\.|^[-*]\s/m.test(remainingContent);
-                            const remainingIsCode = fenceLines.slice(fi + 1).some(l => {
-                                const t = l.trimStart();
-                                return t.startsWith('import ') || t.startsWith('def ') ||
-                                    t.startsWith('function ') || t.startsWith('const ');
-                            });
-
-                            if (remainingIsMarkdown && !remainingIsCode) {
-                                fi++;
-                                continue;
-                            }
-                        }
-                    }
-
-                    fenceOutput.push(fLine);
-                    fi++;
-                }
-
-                processedMarkdown = fenceOutput.join('\n');
-            }
-
-            // Don't process empty or whitespace-only markdown during streaming
-            if (externalStreaming && (!processedMarkdown || processedMarkdown.trim() === '')) {
-                return previousTokensRef.current.length > 0 ? previousTokensRef.current : [];
-            }
+            // Strip bare code fences that wrap markdown prose instead of code,
+            // via the shared CommonMark-aware scanner (fenceScanner.ts).  The
+            // former inline implementation detected lang-tagged openers with
+            // a single-char negative class, which accepted the tail of a
+            // wrapped inline-code span as a real opener; stripBareProseFences
+            // uses matchFenceOpen, which rejects backtick-in-info-string openers.
+            processedMarkdown = stripBareProseFences(processedMarkdown);
 
             // Pre-process tool calls to handle both <n> and <name> formats
             const toolCallMatch = parseToolCall(processedMarkdown);
@@ -6040,63 +5909,14 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             }
 
             // Now run fence escaping (won't affect math since it's been extracted)
-            const escapeNestedFencesInCodeBlocks = (markdown: string): string => {
-                const lines = markdown.split('\n');
-                const result: string[] = [];
-                let inCodeBlock = false;
-                let openingFenceLength = 0;
-                let openingLine = '';
-                let blockLines: string[] = [];
 
-                for (let i = 0; i < lines.length; i++) {
-                    const line = lines[i];
-                    // Match fence: 3+ backticks at line start, then any info string (language, tool:name, etc.)
-                    // Per CommonMark spec, info string can contain any text after the backticks
-                    // Examplesrun_shell_command, ````shell, ```python, etc.
-                    const fenceMatch = line.match(/^(`{3,})(.*)$/);
-
-                    if (!inCodeBlock && fenceMatch) {
-                        // Start of code block
-                        inCodeBlock = true;
-                        openingFenceLength = fenceMatch[1].length;
-                        // Store the full opening line including info string
-                        openingLine = line;
-                        blockLines = [];
-                    } else if (inCodeBlock) {
-                        // Check if this is a valid closing fence
-                        // Must have >= backticks as opening and nothing else on line
-                        const closingMatch = line.match(/^(`{3,})\s*$/);
-                        if (closingMatch && closingMatch[1].length >= openingFenceLength) {
-                            // Valid closing fence - process the block
-                            // Escape any fence-like patterns at line start within the content
-                            const escapedLines = blockLines.map(contentLine => {
-                                // Escape backtick sequences at line start that could be mistaken for fences
-                                return contentLine.replace(/^(`{3,})/g, (m) => '&#96;'.repeat(m.length));
-                            });
-                            result.push(openingLine);
-                            result.push(...escapedLines);
-                            result.push(line);
-                            inCodeBlock = false;
-                        } else {
-                            // Not a closing fence, add to block content
-                            blockLines.push(line);
-                        }
-                    } else {
-                        // Outside code block, pass through
-                        result.push(line);
-                    }
-                }
-
-                // Handle unclosed code block (streaming case) - output without escaping
-                if (inCodeBlock) {
-                    result.push(openingLine);
-                    result.push(...blockLines);
-                }
-
-                return result.join('\n');
-            };
-
-            processedMarkdown = escapeNestedFencesInCodeBlocks(processedMarkdown);
+            // Escape nested backtick fences inside backtick code blocks via the
+            // shared CommonMark-aware scanner (fenceScanner.ts). The previous
+            // private line-walker had no concept of tilde fences or the
+            // backtick-in-info-string rule, so a `~~~`-wrapped diff whose body
+            // contained a ``` run — or an inline-code-span tail beginning with
+            // ``` — corrupted fence state and broke mid-diff rendering.
+            processedMarkdown = escapeNestedBacktickFences(processedMarkdown);
 
             // Restore math blocks after fence escaping
             for (const { placeholder, content } of mathBlocks) {
@@ -6140,42 +5960,9 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                                 '\n<div class="math-display-block">MATH_DISPLAY:$1</div>\n'
                             );
 
-                            // Handle inline math $...$
-                            processed = processed.replace(
-                                /\$([^$\n]+?)\$/g,
-                                (match, p1) => {
-                                    // Skip processing if this looks like a regex replacement ($1, $2, etc.)
-                                    if (/^\d+$/.test(p1.trim())) {
-                                        return match; // Keep $1, $2, etc. as is
-                                    }
-
-                                    // Skip processing if this is inside code-like contexts
-                                    const surroundingText = match.substring(0, 50) + match.substring(match.length - 50);
-                                    if (surroundingText.includes('replace(') ||
-                                        surroundingText.includes('processedDef') ||
-                                        surroundingText.includes('regex') ||
-                                        surroundingText.includes('command') ||
-                                        surroundingText.includes('shell')) {
-                                        return match; // Keep as is in code contexts
-                                    }
-
-                                    // Only treat as math if it contains LaTeX commands or mathematical symbols
-                                    const hasLatex = /\\[a-zA-Z]+/.test(p1); // \frac, \sqrt, \alpha, etc.
-                                    const hasMathSymbols = /[∫∑∏√∞≠≤≥±∓∈∉⊂⊃∪∩αβγδεζηθικλμνξοπρστυφχψω]/.test(p1);
-                                    const hasComplexMath = /[{}^_]/.test(p1) && p1.length > 2; // Subscripts, superscripts, braces
-                                    // Single-letter variable names: $A$, $c$, $x$ — universally math notation
-                                    const isSingleVariable = /^[A-Za-z]$/.test(p1.trim());
-                                    // Algebraic expressions: content with letters AND math operators
-                                    // e.g. $Sc/r$, $a + b$, $x = 0$, $|\mu| < 1$
-                                    const hasAlgebraicNotation = /[A-Za-z]/.test(p1) &&
-                                        /[/=<>+*|]/.test(p1) &&
-                                        // Exclude URL-like or path-like strings
-                                        !/^https?:/.test(p1.trim()) && !p1.includes('://');
-
-                                    return (hasLatex || hasMathSymbols || hasComplexMath || isSingleVariable || hasAlgebraicNotation)
-                                        ? `⟨MATH_INLINE:${p1.trim()}⟩` : match;
-                                }
-                            );
+                            // Handle inline math $...$ — classifier + KaTeX-adjacency
+                            // match regex live in inlineMathClassifier.ts (unit-tested).
+                            processed = processInlineMath(processed);
                         } catch (mathError) {
                             console.debug('Math processing error (handled):', mathError);
                             // Return original segment if math processing fails

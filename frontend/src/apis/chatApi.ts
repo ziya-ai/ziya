@@ -1424,6 +1424,30 @@ export const sendPayload = async (
                     return;
                 }
 
+                // Handle structured hallucination-recovery notice from backend.
+                // Server-side detector emits this when it strips a fabricated
+                // tool block from the stream and triggers a retry.  We render
+                // it as a transient console warning + window event (so a future
+                // banner component can subscribe) but DO NOT append it to
+                // currentContent — the whole point of the structured event is
+                // to keep the warning out of the persisted message and out of
+                // conversation history fed back to the model.
+                if (unwrappedData.type === 'hallucination_recovery') {
+                    console.warn('🔄 HALLUCINATION_RECOVERY:', {
+                        reason: unwrappedData.reason,
+                        pattern: unwrappedData.pattern,
+                        message: unwrappedData.message,
+                    });
+                    window.dispatchEvent(new CustomEvent('hallucinationRecovery', {
+                        detail: {
+                            conversationId,
+                            reason: unwrappedData.reason,
+                            message: unwrappedData.message,
+                        }
+                    }));
+                    return;
+                }
+
                 // Handle done marker
                 if (unwrappedData.done) {
 
@@ -1796,7 +1820,28 @@ export const sendPayload = async (
                             /SECURITY BLOCK:[\s\S]{0,200}not allowed/,  // Hallucinated shell security output
                         ];
 
-                        const matchedPattern = HALLUCINATION_PATTERNS.find(p => p.test(candidateContent));
+                        // Marker pattern sources whose presence (even orphaned)
+                        // corrupts markdown rendering — these MUST be excised
+                        // regardless of trailing content.  Identified by a
+                        // substring of the pattern source; avoids constructing
+                        // a regex over matchedPattern.source which trips the
+                        // JS/TS validator on angle-bracketed content.
+                        const MARKER_SOURCES = [
+                            'TOOL_BLOCK_START', 'TOOL_BLOCK_END', 'TOOL_MARKER',
+                            'TOOL_SENTINEL', 'tool:mcp_', 'mcp_[a-zA-Z]',
+                            'arguments',
+                        ];
+                        // Overlap window: carry the last 60 chars of the
+                        // accumulated stream into the candidate so a marker
+                        // split across two chunks (e.g. "<!-- TOOL_BL" then
+                        // "OCK_START:") is still detected.  Fences in the
+                        // overlap are stripped the same way as the chunk.
+                        const overlapRaw = currentContent.slice(-60);
+                        const overlap = overlapRaw
+                            .replace(/```[\s\S]*?```/g, '')
+                            .replace(/`[^`]+`/g, '');
+                        const scanText = candidateContent + '\n' + overlap;
+                        const matchedPattern = HALLUCINATION_PATTERNS.find(p => p.test(scanText));
 
                         if (matchedPattern) {
                             if (!hallucinationDetected) {
@@ -1806,12 +1851,40 @@ export const sendPayload = async (
                                     chunkPreview: contentToAdd.substring(0, 200),
                                 });
 
-                                // Strip contaminated content but DON'T abort — backend handles retry
-                                const lastBreak = currentContent.lastIndexOf('\n\n');
-                                if (lastBreak > 0) {
-                                    const tail = currentContent.substring(lastBreak);
-                                    if (/(\$ |ERROR:|SECURITY BLOCK|Allowed commands:|📋)/.test(tail)) {
-                                        currentContent = currentContent.substring(0, lastBreak).trimEnd();
+                                // Strip contaminated content but DON'T abort —
+                                // backend handles retry.  Two trim strategies:
+                                //
+                                //   1. Marker patterns (TOOL_BLOCK_START/END,
+                                //      TOOL_MARKER, TOOL_SENTINEL, tool:mcp_,
+                                //      <name>mcp_, <n>mcp_, <arguments>) —
+                                //      trim from the marker itself.  An orphan
+                                //      <!-- TOOL_BLOCK_START: with no matching
+                                //      --> turns marked.js into "everything
+                                //      after this is HTML comment", which
+                                //      renders all subsequent real tool blocks
+                                //      and prose as literal text.  The marker
+                                //      MUST go regardless of what trails it.
+                                //
+                                //   2. Shell-output fabrications ($ ..., ERROR:,
+                                //      SECURITY BLOCK, Allowed commands:, 📋)
+                                //      — trim back to the last paragraph break
+                                //      iff the tail matches those cues.
+                                const patSrc = matchedPattern.source;
+                                const isMarkerPattern = MARKER_SOURCES.some(
+                                    m => patSrc.indexOf(m) >= 0
+                                );
+                                if (isMarkerPattern) {
+                                    const markerIdx = currentContent.search(matchedPattern);
+                                    if (markerIdx >= 0) {
+                                        currentContent = currentContent.substring(0, markerIdx).trimEnd();
+                                    }
+                                } else {
+                                    const lastBreak = currentContent.lastIndexOf('\n\n');
+                                    if (lastBreak > 0) {
+                                        const tail = currentContent.substring(lastBreak);
+                                        if (/(\$ |ERROR:|SECURITY BLOCK|Allowed commands:|📋)/.test(tail)) {
+                                            currentContent = currentContent.substring(0, lastBreak).trimEnd();
+                                        }
                                     }
                                 }
                             }
@@ -1884,13 +1957,19 @@ export const sendPayload = async (
                     const isVerified = unwrappedData.verified === true;
                     const verificationError = unwrappedData.verification_error;
 
-                    // Check for MCP tool errors in the result
+                    // Check for MCP tool errors in the result.
+                    // 'Content truncated' is NOT an error — it's the fetch/read
+                    // pagination sentinel ("call again with start_index"). Only a
+                    // genuine non-zero exit status is a recoverable error worth
+                    // surfacing as a warning; truncation is normal paging and logs
+                    // at debug level so it doesn't appear as an error in the console.
                     if (unwrappedData.result && typeof unwrappedData.result === 'string') {
-                        if (unwrappedData.result.includes('returned non-zero exit status') ||
-                            unwrappedData.result.includes('Content truncated')) {
+                        if (unwrappedData.result.includes('returned non-zero exit status')) {
                             // Handle as recoverable tool error
                             console.warn('🔧 MCP tool error detected:', unwrappedData.result);
                             // Could show a warning or suggest retry
+                        } else if (unwrappedData.result.includes('Content truncated')) {
+                            console.debug('📄 Tool result truncated (normal pagination)');
                         }
                     }
 
@@ -2874,6 +2953,15 @@ function extractAndCleanDiff(diff: string, filePath: string): string {
         totalLines: diff.split('\n').length
     });
 
+    // Decode only the backtick entity that marked.js emits when it
+    // mis-tokenizes a fence inside a code block. Other HTML entities
+    // (&lt; &gt; &amp; &#43; etc.) can appear legitimately in source
+    // code (JSX, template literals, comments) and must not be decoded.
+    diff = diff
+        .replace(/&#96;/g, '`')
+        .replace(/&#x60;/g, '`');
+
+
     // If it's already a raw diff, extract only the relevant file's diff if multipart
     if (diff.startsWith('diff --git')) {
         const singleFileDiff = extractSingleFileDiff(diff, filePath);
@@ -3198,15 +3286,37 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
 
     // Messages are already filtered in SendChatContainer, no need to filter again
     for (const message of messages) {
+        // Re-inflate drag/dropped document text into the content submitted to
+        // the model.  Document text is stored on message.documents[].text (so
+        // the conversation bubble can render file chips) and is NOT part of
+        // message.content.  On the turn a document is attached SendChatContainer
+        // already prepended the text to the live content, so guard against
+        // double-embedding by checking for the block marker before inflating.
+        // Without this, a conversation reloaded from storage — most visibly when
+        // made global and opened from another project — submits its history with
+        // the attached document content missing entirely.
+        let content = message.content;
+        if (message.documents && message.documents.length > 0) {
+            const docBlocks = message.documents
+                .filter((d: any) =>
+                    d && d.text &&
+                    !(typeof content === 'string' && content.includes(`**📄 ${d.filename}:**`)))
+                .map((d: any) => `**📄 ${d.filename}:**\n\`\`\`\n${d.text}\n\`\`\``)
+                .join('\n\n');
+            if (docBlocks) {
+                content = docBlocks +
+                    (typeof content === 'string' && content.trim() ? '\n\n' + content : '');
+            }
+        }
         // Include images if present
         if (message.images && message.images.length > 0) {
             messageTuples.push([
                 message.role,
-                message.content,
+                content,
                 JSON.stringify(message.images)
             ]);
         } else {
-            messageTuples.push([message.role, message.content]);
+            messageTuples.push([message.role, content]);
         }
     }
 
