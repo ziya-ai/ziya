@@ -12,6 +12,7 @@ Reference: "Mitigating Tool Squatting and Rug Pull Attacks in MCP"
 import hashlib
 import json
 import re
+import unicodedata
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.utils.logging_utils import logger
@@ -38,6 +39,42 @@ _INJECTION_PATTERNS: List[re.Pattern] = [
 ]
 
 
+# Common Cyrillic / Greek homoglyphs → Latin lookalikes. NFKC does not fold
+# cross-script confusables, so the high-frequency ones are mapped explicitly.
+_CONFUSABLE_MAP = str.maketrans({
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "х": "x", "у": "y",
+    "А": "A", "Е": "E", "О": "O", "Р": "P", "С": "C", "Х": "X", "У": "Y",
+    "к": "k", "К": "K", "М": "M", "т": "T", "Т": "T", "Н": "H", "В": "B",
+    "і": "i", "ѕ": "s", "ј": "j",
+    "ο": "o", "Ο": "O", "α": "a", "ε": "e", "ρ": "p", "υ": "y", "ι": "i",
+    "κ": "k", "ν": "v", "τ": "t",
+})
+
+
+def _fold_confusables(text: str) -> str:
+    """NFKC-normalize and fold common non-Latin homoglyphs to Latin.
+
+    NFKC does not merge cross-script lookalikes (e.g. Cyrillic 'о' vs Latin
+    'o'), so the high-frequency confusables are mapped explicitly. Lets the
+    injection patterns below see through homoglyph-substitution evasion.
+    """
+    return unicodedata.normalize("NFKC", text).translate(_CONFUSABLE_MAP)
+
+
+def _has_mixed_script_token(text: str) -> bool:
+    """True if any whitespace-delimited token mixes ASCII letters with
+    non-ASCII letters — the signature of homoglyph substitution (e.g.
+    'ignоre' with a Cyrillic 'о'). Pure non-Latin tokens (legitimately
+    localized text) do not trip this, keeping false positives low.
+    """
+    for token in text.split():
+        has_ascii = any("a" <= c.lower() <= "z" for c in token)
+        has_non_ascii_alpha = any(ord(c) > 0x7F and c.isalpha() for c in token)
+        if has_ascii and has_non_ascii_alpha:
+            return True
+    return False
+
+
 def scan_tool_description(tool_name: str, description: str) -> List[str]:
     """Scan a tool description for prompt-injection indicators.
 
@@ -46,13 +83,34 @@ def scan_tool_description(tool_name: str, description: str) -> List[str]:
     warnings: List[str] = []
     if not description:
         return warnings
-    for pattern in _INJECTION_PATTERNS:
-        match = pattern.search(description)
-        if match:
-            warnings.append(
-                f"Tool '{tool_name}': description matches injection pattern "
-                f"'{pattern.pattern}' near: ...{match.group()[:60]}..."
-            )
+
+    # Scan the raw description AND a homoglyph-folded copy. Folding can only
+    # ADD detections (it never hides a match visible in the original), so
+    # Unicode-lookalike evasion is caught without weakening raw matching.
+    scan_targets = [description]
+    folded = _fold_confusables(description)
+    if folded != description:
+        scan_targets.append(folded)
+
+    seen: Set[str] = set()
+    for target in scan_targets:
+        for pattern in _INJECTION_PATTERNS:
+            if pattern.pattern in seen:
+                continue
+            match = pattern.search(target)
+            if match:
+                seen.add(pattern.pattern)
+                warnings.append(
+                    f"Tool '{tool_name}': description matches injection pattern "
+                    f"'{pattern.pattern}' near: ...{match.group()[:60]}..."
+                )
+    # Mixed-script tokens are a strong homoglyph-obfuscation signal even when
+    # no pattern matched (e.g. partial substitution that didn't fold cleanly).
+    if _has_mixed_script_token(description):
+        warnings.append(
+            f"Tool '{tool_name}': description contains mixed-script tokens "
+            f"(possible homoglyph obfuscation) — review carefully"
+        )
     # Flag excessively long descriptions (may hide instructions in noise)
     if len(description) > 4000:
         warnings.append(

@@ -18,6 +18,10 @@ import time
 
 from app.utils.logging_utils import logger
 
+# Upper bound on the unmatched-response buffer so a misbehaving server
+# (late responses, unknown ids) cannot grow it without limit.
+_MAX_RESPONSE_BUFFER = 256
+
 @dataclass
 class MCPResource:
     """Represents an MCP resource."""
@@ -78,12 +82,15 @@ class MCPClient:
         self._tool_rate_limits: Dict[str, float] = {}
         self._default_rate_limit: float = 2.0  # Default 2 seconds between consecutive calls
         
-        # Serialize stdout reads.  asyncio.StreamReader rejects concurrent
-        # readers with "readuntil() called while another coroutine is
-        # already waiting for incoming data"; without this lock, two
-        # parallel _send_request calls race and the failure cascades into
-        # the consecutive-failure / cooldown machinery.
-        self._io_lock = asyncio.Lock()
+        # Single-reader transport: one background task (_reader_loop) owns
+        # process.stdout and demultiplexes responses to per-request futures
+        # in _pending (keyed by JSON-RPC id).  Each caller awaits only its
+        # own future, so N concurrent requests never read or block each
+        # other and each is bounded solely by its own timeout.  _write_lock
+        # serialises only the fast, non-waiting stdin writes.
+        self._write_lock = asyncio.Lock()
+        self._pending: Dict[int, "asyncio.Future"] = {}
+        self._reader_task: Optional["asyncio.Task"] = None
 
         # External server health monitoring
         self._consecutive_failures = 0
@@ -125,8 +132,30 @@ class MCPClient:
                     self.logs.append(f"INFO: Found Python files: {python_files}")
                     
                     if python_files:
-                        # Use the first Python file found
-                        command = ["python", python_files[0]]
+                        # Don't blindly execute the first file found — an
+                        # attacker who can drop a .py into the install dir
+                        # could get it auto-run on next start. Require a
+                        # canonical entrypoint name; only fall back to a lone
+                        # file when the choice is unambiguous.
+                        _CANONICAL = ("server.py", "main.py", "__main__.py")
+                        by_name = {os.path.basename(p): p for p in python_files}
+                        entrypoint = next(
+                            (by_name[c] for c in _CANONICAL if c in by_name), None
+                        )
+                        if entrypoint is None and len(python_files) == 1:
+                            entrypoint = python_files[0]
+                        if entrypoint is None:
+                            logger.error(
+                                f"MCP server '{self.server_config.get('name', 'unknown')}': "
+                                f"multiple Python files and no canonical entrypoint "
+                                f"({', '.join(_CANONICAL)}); refusing to guess. "
+                                f"Set an explicit 'command' in the server config."
+                            )
+                            self.logs.append(
+                                "ERROR: ambiguous entrypoint — set explicit 'command'"
+                            )
+                            return False
+                        command = ["python", entrypoint]
                         logger.debug(f"Generated command for registry service: {command}")
                         self.logs.append(f"INFO: Generated command: {command}")
                     else:
@@ -237,6 +266,14 @@ class MCPClient:
             
             # Start background task to capture logs
             self._log_capture_task = asyncio.create_task(self._capture_logs())
+
+            # Reset transport demux state for this (re)connection.  Any reader
+            # bound to a previous process is cancelled; pending futures from a
+            # dead connection are failed so their awaiters don't hang.
+            if self._reader_task and not self._reader_task.done():
+                self._reader_task.cancel()
+            self._reader_task = None
+            self._fail_all_pending(ConnectionError("MCP reconnecting"))
             
             # CRITICAL: Give servers time to start up before initializing
             # External servers (npx, uvx, node) need more time than builtins
@@ -452,6 +489,14 @@ class MCPClient:
                     except asyncio.CancelledError:
                         pass
                     self._log_capture_task = None
+                # Cancel the background stdout reader alongside log capture.
+                if self._reader_task and not self._reader_task.done():
+                    self._reader_task.cancel()
+                    try:
+                        await self._reader_task
+                    except asyncio.CancelledError:
+                        pass
+                self._reader_task = None
                 self.process.terminate()
                 await asyncio.wait_for(self.process.wait(), timeout=5)
             except asyncio.TimeoutError:
@@ -465,6 +510,7 @@ class MCPClient:
             except (RuntimeError, BrokenPipeError):
                 logger.debug(f"MCP server process cleanup (server: {self.server_config.get('name', 'unknown')})")
             finally:
+                self._fail_all_pending(ConnectionError("MCP disconnected"))
                 self.process = None
                 self.is_connected = False
     
@@ -620,6 +666,68 @@ class MCPClient:
         # A server shouldn't be marked unhealthy just because it hasn't been used recently
         return True
         
+    def _ensure_reader(self) -> None:
+        """Start the background stdout reader if not already running."""
+        if self._is_remote:
+            return
+        if self._reader_task is None or self._reader_task.done():
+            if self.process and self.process.stdout:
+                self._reader_task = asyncio.create_task(self._reader_loop())
+
+    def _buffer_response(self, resp_id: int, msg: Dict[str, Any]) -> None:
+        """Stash an unmatched response, bounding total buffer size."""
+        self._response_buffer[resp_id] = msg
+        if len(self._response_buffer) > _MAX_RESPONSE_BUFFER:
+            oldest = next(iter(self._response_buffer))
+            self._response_buffer.pop(oldest, None)
+
+    def _fail_all_pending(self, exc: BaseException) -> None:
+        """Resolve every in-flight future with an exception (reader exit)."""
+        for _rid, fut in list(self._pending.items()):
+            if not fut.done():
+                fut.set_exception(exc)
+        self._pending.clear()
+
+    async def _reader_loop(self) -> None:
+        """Single owner of process.stdout.  Demultiplexes responses by id to
+        the per-request futures in _pending.  Stray/log/fragment lines are
+        skipped; responses with no matching pending future are buffered
+        (bounded).  On EOF or read error, all pending futures are failed so
+        no caller hangs."""
+        try:
+            while self.process and self.process.stdout:
+                line = await self.process.stdout.readline()
+                if not line:
+                    break  # EOF — process exited / stream closed
+                text = line.decode("utf-8", errors="replace").strip()
+                if not text:
+                    continue
+                try:
+                    msg = json.loads(text)
+                except json.JSONDecodeError:
+                    # stray stderr/log line or a chunked fragment — never a
+                    # reason to desync; skip it.
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                resp_id = msg.get("id")
+                if resp_id is None:
+                    continue  # notification / log — nothing to route on
+                fut = self._pending.pop(resp_id, None)
+                if fut is not None and not fut.done():
+                    fut.set_result(msg)
+                else:
+                    self._buffer_response(resp_id, msg)
+        except asyncio.CancelledError:
+            raise
+        except (OSError, RuntimeError, ConnectionError) as e:
+            logger.debug(
+                f"MCP reader loop ended for "
+                f"{self.server_config.get('name', 'unknown')}: {e}"
+            )
+        finally:
+            self._fail_all_pending(ConnectionError("MCP stdout closed"))
+
     async def _send_request(self, method: str, params: Optional[Dict[str, Any]] = None, _retry_count: int = 0) -> Optional[Dict[str, Any]]:
         """Send a JSON-RPC request to the MCP server with enhanced retry logic."""
         
@@ -684,20 +792,34 @@ class MCPClient:
                 return create_error_response("Reconnection failed")
             
         self.request_id += 1
+        req_id = self.request_id
         request = {
             "jsonrpc": "2.0",
-            "id": self.request_id,
+            "id": req_id,
             "method": method
         }
         
         if params:
             request["params"] = params
-            
+
+        # Ensure the background reader owns stdout before we depend on it to
+        # resolve our response future.
+        self._ensure_reader()
+
+        # Register our response future BEFORE writing, so the reader can never
+        # deliver a response before we are registered to receive it.  Awaiting
+        # only this future (no shared read lock) is what makes concurrent
+        # requests non-blocking with respect to one another.
+        loop = asyncio.get_event_loop()
+        fut = loop.create_future()
+        self._pending[req_id] = fut
+
         try:
             request_json = json.dumps(request) + "\n"
             write_start = time.time()
-            self.process.stdin.write(request_json.encode('utf-8'))
-            await self.process.stdin.drain()
+            async with self._write_lock:
+                self.process.stdin.write(request_json.encode('utf-8'))
+                await self.process.stdin.drain()
             write_time = time.time() - write_start
             logger.debug(f"🔍 MCP_TIMING: Write took {write_time*1000:.1f}ms")
             
@@ -705,25 +827,12 @@ class MCPClient:
             try:
                 read_start = time.time()
                 
-                # First, check if we already have this response in the buffer
-                if self.request_id in self._response_buffer:
-                    logger.debug(f"Found response for request {self.request_id} in buffer")
-                    buffered_response = self._response_buffer.pop(self.request_id)
-                    
-                    # Update timing
-                    read_time = time.time() - read_start
-                    logger.debug(f"🔍 MCP_TIMING: Read from buffer took {read_time*1000:.1f}ms")
-                    
-                    # Skip to response parsing (jump to line ~497)
-                    response = buffered_response
-                    
-                    # Validate response ID matches request ID (should always match since we used it as key)
-                    response_id = response.get("id")
-                    if response_id != self.request_id:
-                        logger.error(f"Buffer consistency error: expected {self.request_id}, got {response_id}")
-                        return create_error_response(f"Buffer consistency error: expected {self.request_id}, got {response_id}")
-                    
-                    # Skip to error handling and result return
+                # Defensive: a fresh monotonic id can never already be
+                # buffered, but honour it without a round-trip if somehow present.
+                if req_id in self._response_buffer:
+                    self._pending.pop(req_id, None)
+                    response = self._response_buffer.pop(req_id)
+                    logger.debug(f"🔍 MCP_TIMING: Read from buffer took {(time.time()-read_start)*1000:.1f}ms")
                     if "error" in response:
                         error_info = response['error']
                         error_code = error_info.get("code", -1)
@@ -734,8 +843,6 @@ class MCPClient:
                             "message": error_message,
                             "code": error_code
                         }
-                    
-                    # Success - return result
                     self._last_successful_call = time.time()
                     return response.get("result")
                 
@@ -762,123 +869,22 @@ class MCPClient:
                             pass  # Invalid value, keep default
                 
                 logger.debug(f"Using {timeout_duration}s timeout for server: {server_name}")
-                
-                # Read responses until we find the one matching our request ID
-                max_read_attempts = 10  # Prevent infinite loops
-                read_attempts = 0
-                response = None  # Initialize to avoid unbound variable
-                
-                while read_attempts < max_read_attempts:
-                    read_attempts += 1
-                    
-                    try:
-                        async with self._io_lock:
-                            response_line_bytes = await asyncio.wait_for(
-                                self.process.stdout.readline(),
-                                timeout=timeout_duration
-                            )
-                    except asyncio.TimeoutError:
-                        # For external servers, try one immediate retry before giving up
-                        if is_external_server and _retry_count == 0:
-                            logger.warning(f"External server {server_name} timed out, trying immediate retry")
-                            await asyncio.sleep(1.0)
-                            return await self._send_request(method, params, _retry_count + 1)
-                        raise  # Re-raise timeout for normal handling
-                    
-                    if not response_line_bytes:
-                        # EOF, process likely terminated
-                        if self.process.returncode is not None:
-                            # Process died - try to read stderr for auth errors before logging generic EOF
-                            try:
-                                stderr_bytes = await self.process.stderr.read() if self.process.stderr else b""
-                                stderr_output = stderr_bytes.decode('utf-8', errors='ignore')
-                                
-                                # Check for npm authentication failures
-                                auth_indicators = ['FETCH_ERROR', 'authentication', 'login', 'unauthorized', '401', '403']
-                                
-                                if stderr_output and any(indicator in stderr_output.lower() for indicator in auth_indicators):
-                                    
-                                    # Detect current npm registry
-                                    current_registry = "unknown"
-                                    try:
-                                        result = subprocess.run(
-                                            ['npm', 'config', 'get', 'registry'],
-                                            capture_output=True,
-                                            text=True,
-                                            timeout=2
-                                        )
-                                        if result.returncode == 0:
-                                            current_registry = result.stdout.strip()
-                                    except (OSError, subprocess.SubprocessError):
-                                        pass
-                                    
-                                    print("\n" + "=" * 80, file=sys.stderr)
-                                    print("⚠️  NPM AUTHENTICATION ERROR", file=sys.stderr)
-                                    print("=" * 80, file=sys.stderr)
-                                    print(f"\nMCP server '{self.server_config.get('name', 'unknown')}' failed to start.", file=sys.stderr)
-                                    print(f"Your npm registry authentication has expired.\n", file=sys.stderr)
-                                    print(f"Current registry: {current_registry}\n", file=sys.stderr)
-                                    
-                                    if current_registry != "unknown" and current_registry != "https://registry.npmjs.org/":
-                                        print("To fix, re-authenticate to your npm registry:", file=sys.stderr)
-                                        print(f"  npm login --registry={current_registry}\n", file=sys.stderr)
-                                    else:
-                                        print("To fix:", file=sys.stderr)
-                                        print("  npm login\n", file=sys.stderr)
-                                    
-                                    print("Or switch to public npm registry:", file=sys.stderr)
-                                    print("  npm config set registry https://registry.npmjs.org/", file=sys.stderr)
-                                    print("=" * 80 + "\n", file=sys.stderr)
-                                    raise ValueError(f"npm authentication required for MCP server")
-                            except (OSError, ValueError, RuntimeError):
-                                pass  # If we can't read stderr, fall through to generic EOF error
-                        
-                        logger.error("No response from MCP server (EOF)")
-                        if self.process.returncode is not None:
-                            logger.error(f"MCP server process has terminated with code: {self.process.returncode}")
-                        return create_error_response("No response from MCP server (EOF)")
-                    
-                    response_text = response_line_bytes.decode('utf-8').strip()
-                    
-                    if not response_text:
-                        logger.warning("Empty response line, continuing to read...")
-                        continue
-                    
-                    # Parse response to check ID
-                    try:
-                        response = json.loads(response_text)
-                    except json.JSONDecodeError as je:
-                        logger.error(f"JSON decode error: {je}, response: {response_text[:200]}")
-                        continue  # Try next line
-                    
-                    response_id = response.get("id")
-                    
-                    if response_id == self.request_id:
-                        # Found our response!
-                        logger.debug(f"Found matching response for request {self.request_id} on attempt {read_attempts}")
-                        break
-                    else:
-                        # This is a response for a different request - buffer it
-                        logger.warning(f"Got response for request {response_id}, expecting {self.request_id}. Buffering it.")
-                        self._response_buffer[response_id] = response
-                        
-                        # Continue reading to find our response
-                        continue
-                
-                if read_attempts >= max_read_attempts:
-                    logger.error(f"Failed to find response for request {self.request_id} after {max_read_attempts} attempts")
-                    logger.error(f"Buffered responses: {list(self._response_buffer.keys())}")
-                    return create_error_response(f"Response not found after {max_read_attempts} read attempts")
-                
-                # Safety check - should never happen if loop logic is correct
-                if response is None:
-                    logger.error("Response is None after successful loop exit - this should not happen")
-                    return create_error_response("Internal error: response not set")
-                
+
+                # Await ONLY our own response future.  The background reader
+                # (_reader_loop) resolves it when the matching id arrives, so
+                # other in-flight requests proceed concurrently and this wait
+                # is bounded solely by our own timeout — no shared read lock.
+                response = await asyncio.wait_for(fut, timeout=timeout_duration)
                 read_time = time.time() - read_start
                 logger.debug(f"🔍 MCP_TIMING: Read took {read_time*1000:.1f}ms")
 
             except asyncio.TimeoutError:
+                self._pending.pop(req_id, None)
+                # For external servers, one immediate retry before giving up.
+                if is_external_server and _retry_count == 0:
+                    logger.warning(f"External server {server_name} timed out, trying immediate retry")
+                    await asyncio.sleep(1.0)
+                    return await self._send_request(method, params, _retry_count + 1)
                 logger.error(f"Timeout waiting for response from MCP server for method '{method}'")
                 return {
                     "error": True,
@@ -886,8 +892,15 @@ class MCPClient:
                     "code": -32000 # Custom timeout error code
                 }
             except asyncio.CancelledError:
+                self._pending.pop(req_id, None)
                 raise
-            except (OSError, json.JSONDecodeError, RuntimeError, ConnectionError) as e:
+            except ConnectionError as e:
+                # Reader ended (EOF / stream closed) and failed our future.
+                self._pending.pop(req_id, None)
+                logger.error(f"No response from MCP server: {e}")
+                return create_error_response("No response from MCP server (EOF)")
+            except (OSError, json.JSONDecodeError, RuntimeError) as e:
+                self._pending.pop(req_id, None)
                 logger.error(f"Error reading from MCP server: {e}")
                 return create_error_response(f"Error reading from MCP server: {str(e)}")
 
