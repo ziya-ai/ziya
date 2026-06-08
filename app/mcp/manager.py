@@ -22,6 +22,27 @@ DEFAULT_TOOL_TIMEOUT = 120
 # Buffer added on top of a tool's own timeout so inner layers fire first.
 TOOL_TIMEOUT_BUFFER = 15
 
+
+def _resolve_bearer_token(server_name: str, auth_config: Dict[str, Any]) -> str:
+    """Resolve an MCP server's bearer token, preferring env-var indirection.
+
+    ``token_env`` keeps the secret out of mcp_config.json; an inline
+    ``token`` literal sits in plaintext in that file, which is NOT covered
+    by at-rest encryption (SEC-008). Inline use is honored for
+    compatibility but warned about so operators can migrate to token_env.
+    """
+    inline = auth_config.get("token")
+    if inline:
+        logger.warning(
+            f"🔒 MCP server '{server_name}': bearer token is set inline in the "
+            f"config file (plaintext, not encrypted at rest). Prefer "
+            f'"token_env" to reference an environment variable instead.'
+        )
+        return inline
+    env_name = auth_config.get("token_env", "")
+    return os.environ.get(env_name, "") if env_name else ""
+
+
 class MCPManager:
     """
     Manager for MCP servers and their integration with Ziya.
@@ -345,7 +366,7 @@ class MCPManager:
                     # Apply auth token if configured
                     auth_config = server_config.get("auth")
                     if auth_config and auth_config.get("type") == "bearer":
-                        token = auth_config.get("token") or os.environ.get(auth_config.get("token_env", ""), "")
+                        token = _resolve_bearer_token(server_name, auth_config)
                         if token:
                             enhanced_config["auth_token"] = token
                     client = MCPClient(enhanced_config)
@@ -420,8 +441,7 @@ class MCPManager:
                 # Or env:  "auth": {"type": "bearer", "token_env": "MY_TOKEN_VAR"}
                 auth_config = server_config.get("auth")
                 if auth_config and auth_config.get("type") == "bearer":
-                    token = auth_config.get("token") or os.environ.get(
-                        auth_config.get("token_env", ""), "")
+                    token = _resolve_bearer_token(server_name, auth_config)
                     if token:
                         enhanced_config["auth_token"] = token
                         logger.debug(f"Configured OAuth bearer token for {server_name}")
@@ -1148,18 +1168,21 @@ class MCPManager:
             logger.warning(f"Error normalizing parameters for {tool_name}: {e}")
             return arguments
 
-    async def _get_or_create_workspace_client(self, server_name: str, workspace_path: str) -> Optional[MCPClient]:
+    async def _get_or_create_workspace_client(self, server_name: str, workspace_path: str, session_id: Optional[str] = None) -> Optional[MCPClient]:
         """Get or create an MCP client instance for a specific workspace."""
         workspace_path = os.path.abspath(workspace_path)
-        
+        # Per-session key: two conversations on the same workspace get separate subprocesses
+        # so a long command in one session does not block another session.
+        instance_key = f"{workspace_path}::{session_id}" if session_id else workspace_path
+
         if server_name not in self.workspace_scoped_clients:
             self.workspace_scoped_clients[server_name] = {}
             self._workspace_instance_last_used[server_name] = {}
         
         # Check if we already have an instance for this workspace
-        if workspace_path in self.workspace_scoped_clients[server_name]:
-            client = self.workspace_scoped_clients[server_name][workspace_path]
-            self._workspace_instance_last_used[server_name][workspace_path] = time.time()
+        if instance_key in self.workspace_scoped_clients[server_name]:
+            client = self.workspace_scoped_clients[server_name][instance_key]
+            self._workspace_instance_last_used[server_name][instance_key] = time.time()
             
             if client.is_connected and (not hasattr(client, '_is_process_healthy') or client._is_process_healthy()):
                 logger.debug(f"♻️ Reusing workspace-scoped client: {server_name} @ {workspace_path}")
@@ -1167,8 +1190,8 @@ class MCPManager:
             else:
                 logger.warning(f"Workspace-scoped client unhealthy, recreating: {server_name} @ {workspace_path}")
                 await client.disconnect()
-                del self.workspace_scoped_clients[server_name][workspace_path]
-                del self._workspace_instance_last_used[server_name][workspace_path]
+                del self.workspace_scoped_clients[server_name][instance_key]
+                del self._workspace_instance_last_used[server_name][instance_key]
         
         # Create new instance
         server_config = self.server_configs.get(server_name)
@@ -1191,8 +1214,8 @@ class MCPManager:
             success = await client.connect()
             
             if success:
-                self.workspace_scoped_clients[server_name][workspace_path] = client
-                self._workspace_instance_last_used[server_name][workspace_path] = time.time()
+                self.workspace_scoped_clients[server_name][instance_key] = client
+                self._workspace_instance_last_used[server_name][instance_key] = time.time()
                 logger.info(f"Created workspace-scoped client: {server_name} @ {workspace_path}")
                 self.invalidate_tools_cache()
                 return client
@@ -1259,14 +1282,14 @@ class MCPManager:
         """Clean up workspace-scoped instances that haven't been used recently."""
         now = time.time()
         for server_name in list(self.workspace_scoped_clients.keys()):
-            for workspace_path in list(self.workspace_scoped_clients[server_name].keys()):
-                last_used = self._workspace_instance_last_used.get(server_name, {}).get(workspace_path, 0)
+            for instance_key in list(self.workspace_scoped_clients[server_name].keys()):
+                last_used = self._workspace_instance_last_used.get(server_name, {}).get(instance_key, 0)
                 if now - last_used > self._workspace_instance_timeout:
-                    logger.info(f"Cleaning up stale workspace instance: {server_name} @ {workspace_path}")
-                    client = self.workspace_scoped_clients[server_name][workspace_path]
+                    logger.info(f"Cleaning up stale workspace instance: {server_name} @ {instance_key}")
+                    client = self.workspace_scoped_clients[server_name][instance_key]
                     await client.disconnect()
-                    del self.workspace_scoped_clients[server_name][workspace_path]
-                    del self._workspace_instance_last_used[server_name][workspace_path]
+                    del self.workspace_scoped_clients[server_name][instance_key]
+                    del self._workspace_instance_last_used[server_name][instance_key]
 
     async def call_tool(self, tool_name: str, arguments: Dict[str, Any], server_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
@@ -1379,7 +1402,7 @@ class MCPManager:
         # If this is a workspace-scoped server and we have a workspace path, route to workspace-specific instance
         if target_server_name and self._is_workspace_scoped(target_server_name) and workspace_path:
             logger.info(f"🎯 Routing to workspace-scoped instance: {target_server_name} @ {workspace_path}")
-            workspace_client = await self._get_or_create_workspace_client(target_server_name, workspace_path)
+            workspace_client = await self._get_or_create_workspace_client(target_server_name, workspace_path, session_id=conversation_id)
             
             if workspace_client:
                 result = await self._call_tool_with_timeout(workspace_client, internal_tool_name, arguments)
