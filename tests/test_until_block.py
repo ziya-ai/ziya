@@ -78,24 +78,83 @@ async def test_until_respects_max_when_condition_never_met(ctx):
 
 
 @pytest.mark.asyncio
-async def test_until_no_condition_falls_back_to_repeat_until_success(ctx):
-    """Empty condition → behave like Repeat-until-success."""
+async def test_until_no_condition_runs_to_max_without_self_assessment(ctx):
+    """Empty condition + no self_assessment + unique summaries → no
+    layer fires, loop runs to until_max.
+
+    Replaces the prior "Repeat-until-success" semantic.  Empty condition
+    now means "rely on agent self_assessment or convergence"; absent
+    those signals, the cap is the only stop.  See
+    design/goal-exit-conditions.md.
+    """
     iter_count = 0
 
     async def fake_task(block, **kw):
         nonlocal iter_count
         iter_count += 1
-        # Fail twice then succeed
-        return Artifact(summary="x", failed=(iter_count < 3))
+        # Distinct summary each iter so convergence doesn't fire.
+        return Artifact(summary=f"attempt {iter_count}", failed=False)
 
     block = Block(
         block_type="until", id="u", name="u",
-        until_mode="model", until_condition=None, until_max=10,
+        until_mode="model", until_condition=None, until_max=4,
         body=[_task("x")],
     )
     with patch("app.agents.block_executor.execute_task_block", side_effect=fake_task):
         await execute_block(block, ctx)
-    assert iter_count == 3
+    assert iter_count == 4
+
+
+@pytest.mark.asyncio
+async def test_until_no_condition_terminates_on_self_assessment_true(ctx):
+    """Empty condition + agent declares objective_met='true' → stops.
+
+    This is the goal-card path: synthesize_goal_card emits
+    until_condition="" so the loop relies on the agent's self_assessment
+    tag (parsed by task_executor into Artifact.self_assessment).
+    """
+    iter_count = 0
+
+    async def fake_task(block, **kw):
+        nonlocal iter_count
+        iter_count += 1
+        return Artifact(
+            summary=f"attempt {iter_count}",
+            failed=False,
+            self_assessment={"objective_met": "true", "rationale": "done"},
+        )
+
+    block = Block(
+        block_type="until", id="u", name="u",
+        until_mode="model", until_condition="", until_max=10,
+        body=[_task("x")],
+    )
+    with patch("app.agents.block_executor.execute_task_block", side_effect=fake_task):
+        await execute_block(block, ctx)
+    assert iter_count == 1
+
+
+@pytest.mark.asyncio
+async def test_until_no_condition_terminates_on_convergence(ctx):
+    """Empty condition + identical summaries across iters → convergence
+    fires at iter 1 (when 2 signatures match)."""
+    iter_count = 0
+
+    async def fake_task(block, **kw):
+        nonlocal iter_count
+        iter_count += 1
+        # Identical summary every iter so convergence triggers.
+        return Artifact(summary="same finding", failed=False)
+
+    block = Block(
+        block_type="until", id="u", name="u",
+        until_mode="model", until_condition="", until_max=10,
+        body=[_task("x")],
+    )
+    with patch("app.agents.block_executor.execute_task_block", side_effect=fake_task):
+        await execute_block(block, ctx)
+    # iter 0 records sig; iter 1 matches → stop.  Total = 2.
+    assert iter_count == 2
 
 
 @pytest.mark.asyncio

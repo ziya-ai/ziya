@@ -95,3 +95,68 @@ class TestProposalEmbeddingOnAdd:
                 store.add(proposal)
 
         mock_embed.assert_not_called()
+
+
+class TestCorroborateById:
+    """Tests for ProposalsStore.corroborate_by_id — the paraphrase-path
+    corroboration method added to support embedding-dedup sink writes."""
+
+    def test_returns_true_and_increments_for_open_proposal(self, tmp_path):
+        """Calling corroborate_by_id on an open proposal returns True and
+        the projection shows corroborations incremented by one."""
+        store = ProposalsStore(memory_dir=tmp_path / "memory")
+        with patch("app.services.embedding_service.embed_and_cache"):
+            pid = store.add(MemoryProposal(content="OBP uses 512MB RAM",
+                                           layer="architecture"))
+
+        result = store.corroborate_by_id(pid, conversation_id="conv-2")
+
+        assert result is True
+        opens = store.list_open()
+        assert len(opens) == 1
+        assert opens[0]["corroborations"] == 1
+
+    def test_returns_false_for_nonexistent_id(self, tmp_path):
+        """A completely unknown proposal ID returns False without raising."""
+        store = ProposalsStore(memory_dir=tmp_path / "memory")
+        result = store.corroborate_by_id("prop_doesnotexist")
+        assert result is False
+
+    def test_returns_false_for_promoted_proposal(self, tmp_path):
+        """A proposal that has already been promoted (non-OPEN status)
+        should not receive further corroboration events."""
+        store = ProposalsStore(memory_dir=tmp_path / "memory")
+        with patch("app.services.embedding_service.embed_and_cache"):
+            pid = store.add(MemoryProposal(content="Promoted fact",
+                                           layer="architecture"))
+        store.mark_promoted(pid, target_memory_id="m_sentinel")
+
+        result = store.corroborate_by_id(pid)
+        assert result is False
+
+    def test_multiple_calls_accumulate(self, tmp_path):
+        """Each call to corroborate_by_id increments the counter independently."""
+        store = ProposalsStore(memory_dir=tmp_path / "memory")
+        with patch("app.services.embedding_service.embed_and_cache"):
+            pid = store.add(MemoryProposal(content="Fact seen many times",
+                                           layer="domain_context"))
+
+        store.corroborate_by_id(pid, conversation_id="conv-2")
+        store.corroborate_by_id(pid, conversation_id="conv-3")
+
+        opens = store.list_open()
+        assert opens[0]["corroborations"] == 2
+
+    def test_conversation_id_stored_in_event(self, tmp_path):
+        """The conversation_id passed to corroborate_by_id should appear
+        in the raw event log so the audit trail is complete."""
+        store = ProposalsStore(memory_dir=tmp_path / "memory")
+        with patch("app.services.embedding_service.embed_and_cache"):
+            pid = store.add(MemoryProposal(content="Traceable fact",
+                                           layer="domain_context"))
+
+        store.corroborate_by_id(pid, conversation_id="conv-audit")
+
+        # The projection accumulates conversation_ids in corroborated_by
+        opens = store.list_open()
+        assert "conv-audit" in opens[0].get("corroborated_by", [])
