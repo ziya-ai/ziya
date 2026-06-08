@@ -41,7 +41,7 @@ _FENCE_OPEN_RE = re.compile(r'^(`{3,})', re.MULTILINE)
 # whitespace optional here was the actual detection gap — the earlier
 # strict pattern silently matched zero lines against real fabricated
 # grep output and Signal 1 never fired.
-_GREP_LINE_RE = re.compile(r'^\d+:[ \t]?\S.*', re.MULTILINE)
+_GREP_LINE_RE = re.compile(r'^\d+:[ \t]*\S.*', re.MULTILINE)
 
 # Shell prompt line: optional leading whitespace then $ or # followed by
 # a space and at least one non-whitespace character (an actual command).
@@ -52,6 +52,68 @@ _PROMPT_LINE_RE = re.compile(r'^[ \t]*[$#] \S', re.MULTILINE)
 # its first line.  '#' is excluded here because comments in config files
 # (ini, yaml, python) would otherwise false-positive as root prompts.
 _STRICT_DOLLAR_PROMPT_RE = re.compile(r'^[ \t]*\$ \S', re.MULTILINE)
+
+
+def _coalesce_continuations(body: str) -> str:
+    """
+    Merge POSIX backslash-line-continuations into a single logical line.
+
+    A `\\` at the end of a line means "this command continues on the next
+    line" — a multi-line invocation like:
+        curl -H "X-Project-Root: /p" \\
+             http://localhost:6969/api/foo | jq
+    is one command, not a command plus a fabricated output line.  Without
+    this coalescing, Signal 2 counts each continuation line as an "output
+    line" and trips on legitimate tutorial-shape commands.
+
+    The replacement preserves total byte-count semantics for the rest of
+    the detector (we only fold continuation segments into their command
+    line); blank lines and unrelated output remain untouched.
+    """
+    lines = body.split('\n')
+    out: list[str] = []
+    for line in lines:
+        if out and out[-1].endswith('\\'):
+            # Strip the trailing backslash and join with a space.
+            out[-1] = out[-1][:-1].rstrip() + ' ' + line.lstrip()
+        else:
+            out.append(line)
+    return '\n'.join(out)
+
+
+def _has_matched_inner_fence(body: str, outer_ticks: int) -> bool:
+    """True iff *body* contains a matched fence pair (open + close) of
+    strictly fewer backticks than the outer fence.
+
+    The earlier nested-fence guard treated *any* run of 3+ backticks
+    inside the body as evidence of nested fencing, which incorrectly
+    suppressed detection on:
+      - 4-backtick fences containing a stray (unmatched) 3-backtick
+        line in the middle of the body
+      - 5-backtick fences containing an unmatched 4-backtick line
+    These shapes are the exact pattern of a model fabricating output
+    inside a wider-than-3-backtick wrapper to evade fence-close
+    matching, and Layer B should still fire on them.
+
+    Genuine documentation / quoting cases — where the body contains a
+    *complete* inner fence pair — still suppress detection.
+    """
+    open_re = re.compile(r'(?m)^(`{3,})(?=\S|$)')
+    pos = 0
+    while pos < len(body):
+        m = open_re.search(body, pos)
+        if m is None:
+            return False
+        n = len(m.group(1))
+        if n >= outer_ticks:
+            pos = m.end()
+            continue
+        close_re = re.compile(rf'(?m)^`{{{n},}}\s*$')
+        if close_re.search(body, m.end()) is not None:
+            return True
+        pos = m.end()
+    return False
+
 
 # Shell-grammar markers that have no valid interpretation in non-shell
 # languages: file-descriptor redirects and /dev/null redirects.  These
@@ -67,9 +129,15 @@ _SHELL_GRAMMAR_RE = re.compile(
 @dataclass(frozen=True)
 class FakeShellMatch:
     """Describes a detected fabricated shell session."""
-    reason: str     # human-readable explanation for log / corrective msg
-    signal: str     # 'grep_output' | 'prompt_with_output'
-    fence_body: str # the body of the offending fence (for diagnostics)
+    reason: str          # human-readable explanation for log / corrective msg
+    signal: str          # 'grep_output' | 'prompt_with_output' | 'shell_grammar'
+    fence_body: str      # truncated body (<=300 chars) for diagnostics / logging
+    # Full, untruncated body of the offending fence.  Callers that need
+    # to probe the body against another detector (e.g. the shingle-index
+    # parroting check, which normally skips inside-fence content) use
+    # this instead of the truncated diagnostic field.  Defaults to the
+    # empty string so older callers that don't populate it still work.
+    fence_body_full: str = ""
 
 
 def _extract_fence_bodies(text: str) -> list[str]:
@@ -148,16 +216,17 @@ def detect_fake_shell_session(text: str) -> FakeShellMatch | None:
             body = text[body_start:close_m.start()]
             pos = close_m.end()
 
-        # Structural skip: if the fence body contains another fence
-        # opener, this fence is documenting / quoting / nesting other
-        # fenced content, not claiming to execute commands.  Examples
-        # the detector previously fired on (false positives):
+        # Structural skip: if the fence body contains a *matched* inner
+        # fence pair (open + close of strictly fewer backticks than the
+        # outer fence), this fence is documenting / quoting / nesting
+        # other fenced content, not claiming to execute commands.
+        # Examples that legitimately suppress:
         #   - A 4-backtick wrapper containing example bash usage
-        #   - Markdown documentation showing what shell output looks like
-        #   - Analysis text quoting a code fence from a prior log
-        # In all of these cases the inner backticks are content, so the
-        # outer fence is not a shell-session claim.
-        if '```' in body or '\`\`\`' in body:
+        # Unmatched stray backtick runs (a 3-backtick line in the middle
+        # of a 4-backtick body with no matching closer, etc.) are NOT a
+        # nested fence — they are stray characters from a fabrication
+        # attempt and Layer B should still fire on them.
+        if _has_matched_inner_fence(body, len(open_ticks)):
             continue
 
         # Signal 1: grep-n output — 3+ consecutive numbered lines.
@@ -170,6 +239,7 @@ def detect_fake_shell_session(text: str) -> FakeShellMatch | None:
                 ),
                 signal='grep_output',
                 fence_body=body[:300],
+                fence_body_full=body,
             )
 
         # Signal 2: shell session = prompt + non-command output lines.
@@ -186,9 +256,12 @@ def detect_fake_shell_session(text: str) -> FakeShellMatch | None:
             and bool(_STRICT_DOLLAR_PROMPT_RE.match(non_blank_lines[0]))
         )
         if is_shell_tagged or untagged_dollar_first:
-            prompt_lines = _PROMPT_LINE_RE.findall(body)
+            # Coalesce `\`-continued lines so a multi-line curl/find/etc.
+            # counts as ONE command, not (command + N output lines).
+            coalesced = _coalesce_continuations(body)
+            prompt_lines = _PROMPT_LINE_RE.findall(coalesced)
             output_lines = [
-                l for l in body.splitlines()
+                l for l in coalesced.splitlines()
                 if l.strip() and not _PROMPT_LINE_RE.match(l)
             ]
             # At least one prompt line and two output lines together
@@ -202,6 +275,7 @@ def detect_fake_shell_session(text: str) -> FakeShellMatch | None:
                     ),
                     signal='prompt_with_output',
                     fence_body=body[:300],
+                    fence_body_full=body,
                 )
 
         # Signal 3: shell-grammar markers in fence body.  Catches bare
@@ -228,6 +302,7 @@ def detect_fake_shell_session(text: str) -> FakeShellMatch | None:
                     ),
                     signal='shell_grammar',
                     fence_body=body[:300],
+                    fence_body_full=body,
                 )
 
     return None

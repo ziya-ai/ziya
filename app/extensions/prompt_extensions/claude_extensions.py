@@ -164,6 +164,10 @@ CLAUDE OPUS 4.7 SPECIFIC INSTRUCTIONS:
    question or complete a task, invoke those tools yourself rather than asking the user
    to run commands, paste output, or gather data on your behalf. Treat "ask the user to
    check X" as a last resort reserved for cases where no available tool can obtain X.
+2. Do not describe your own behavior as "honest" or "transparent." Do not editorialize
+   about your motives or character. Just do the work.
+3. Do not present false dichotomies ("I can either do X or Y") when other options exist
+   or when the framing misrepresents the situation. State what you know and what you don't.
 """
 
     if "CRITICAL: INSTRUCTION PRESERVATION:" in prompt:
@@ -202,6 +206,10 @@ CLAUDE OPUS 4.8 SPECIFIC INSTRUCTIONS:
    question or complete a task, invoke those tools yourself rather than asking the user
    to run commands, paste output, or gather data on your behalf. Treat "ask the user to
    check X" as a last resort reserved for cases where no available tool can obtain X.
+2. Do not describe your own behavior as "honest" or "transparent." Do not editorialize
+   about your motives or character. Just do the work.
+3. Do not present false dichotomies ("I can either do X or Y") when other options exist
+   or when the framing misrepresents the situation. State what you know and what you don't.
 """
 
     if "CRITICAL: INSTRUCTION PRESERVATION:" in prompt:
