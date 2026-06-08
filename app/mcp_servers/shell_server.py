@@ -24,6 +24,69 @@ _SHELL_KEYWORDS = frozenset({
     'function', 'return', 'break', 'continue',
 })
 
+# Environment-variable assignments that may legitimately appear as a
+# command prefix (e.g. ``FOO=bar make``).  These names are blocked
+# because they can hijack dynamic loading or auditing to inject
+# arbitrary code into otherwise-allowed binaries.
+_BLOCKED_ENV_PREFIXES = frozenset({
+    'LD_PRELOAD', 'LD_AUDIT', 'LD_LIBRARY_PATH',
+    'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH',
+    'DYLD_FALLBACK_LIBRARY_PATH',
+})
+
+# Matches a single ``NAME=value`` token at the start of a command, where
+# value is unquoted/quoted/empty.  Used to peel env prefixes off both
+# the validation string and the tokenized argv.
+_ENV_ASSIGN_RE = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)=')
+
+
+def _consume_assignment_with_subst(segment: str) -> str | None:
+    """Consume a full VAR=$(...) or VAR="$(...)" token from *segment*.
+
+    shlex.split doesn't understand $() as a grouping construct, so it
+    incorrectly splits `VAR=$(cmd arg1 arg2)` into multiple tokens.
+    This helper manually tracks parenthesis depth (respecting quotes)
+    to find the true boundary of the assignment.
+
+    Returns the full raw token (e.g. 'f=$(find . | head -1)') or None
+    if the structure can't be parsed.
+    """
+    eq_pos = segment.index('=')
+    i = eq_pos + 1
+    # Skip optional leading double-quote: VAR="$(...)"
+    has_outer_dquote = i < len(segment) and segment[i] == '"'
+    if has_outer_dquote:
+        i += 1
+    if i + 1 >= len(segment) or segment[i:i+2] != '$(':
+        return None
+    paren_depth = 0
+    in_sq = False
+    in_dq = False
+    while i < len(segment):
+        ch = segment[i]
+        if ch == '\\' and i + 1 < len(segment) and not in_sq:
+            i += 2
+            continue
+        if ch == "'" and not in_dq:
+            in_sq = not in_sq
+        elif ch == '"' and not in_sq:
+            in_dq = not in_dq
+        elif not in_sq and not in_dq:
+            if ch == '(' and i > 0 and segment[i-1] == '$':
+                paren_depth += 1
+            elif ch == '(' and paren_depth > 0:
+                paren_depth += 1
+            elif ch == ')' and paren_depth > 0:
+                paren_depth -= 1
+                if paren_depth == 0:
+                    end = i + 1
+                    if has_outer_dquote and end < len(segment) and segment[end] == '"':
+                        end += 1
+                    return segment[:end]
+        i += 1
+    return None  # unbalanced parens
+
+
 # Import centralized shell configuration
 # Go up two levels: shell_server.py -> mcp_servers/ -> app/ -> site-packages (or project root)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -169,6 +232,54 @@ class ShellServer:
         return result
 
     @staticmethod
+    def _peel_env_prefix(cmd_segment: str) -> tuple:
+        """Strip leading ``NAME=value`` env assignments from a command segment.
+
+        Returns ``(cleaned_segment, env_dict, denial_reason)``.  If any
+        peeled name is in ``_BLOCKED_ENV_PREFIXES`` the denial_reason is
+        populated and the caller should reject the command.  ``env_dict``
+        contains the accepted assignments so the executor can pass them
+        to subprocess.
+        """
+        env: dict = {}
+        remaining = cmd_segment.lstrip()
+        while True:
+            m = _ENV_ASSIGN_RE.match(remaining)
+            if not m:
+                break
+            name = m.group(1)
+            if name in _BLOCKED_ENV_PREFIXES:
+                return remaining, {}, (
+                    f"environment variable '{name}' cannot be set as a "
+                    f"command prefix (blocked dynamic-loader hijack vector)"
+                )
+            # Tokenize just enough to consume one VAR=value pair (handles
+            # quoted values).  shlex doesn't understand $(...) grouping,
+            # so if the value starts with $( we manually find the matching
+            # closing paren before falling back to shlex.
+            eq_pos = remaining.index('=')
+            after_eq = remaining[eq_pos + 1:]
+            if after_eq.startswith('$(') or after_eq.startswith('"$('):
+                tok = _consume_assignment_with_subst(remaining)
+                if tok is not None:
+                    env[name] = tok.split('=', 1)[1]
+                    remaining = remaining[len(tok):].lstrip()
+                    continue
+            # Tokenize just enough to consume one VAR=value pair (handles
+            # quoted values).  shlex with posix=True respects quotes.
+            try:
+                tok = shlex.split(remaining, posix=True)[0]
+            except ValueError:
+                # Unbalanced quotes — let downstream handling deal with it
+                break
+            value = tok.split('=', 1)[1]
+            env[name] = value
+            # Drop the raw token (incl. its trailing whitespace) from
+            # the remaining string.
+            remaining = remaining[len(tok):].lstrip()
+        return remaining, env, ""
+
+    @staticmethod
     def _is_compound_command(command: str) -> bool:
         """Check if command is a compound shell construct (for/while/if/etc)."""
         first_word = command.strip().split()[0] if command.strip() else ''
@@ -305,6 +416,37 @@ class ShellServer:
         )
         return result
 
+    @staticmethod
+    def _expand_special_params(cmd_segment: str, exit_status: int) -> str:
+        """Substitute shell special parameters that ``os.path.expandvars`` leaves
+        literal because they are not valid environment-variable names.
+
+        ``expandvars`` only expands ``$NAME``/``${NAME}`` where NAME is a normal
+        identifier, so ``$?`` (last exit status), ``$$`` (shell PID), and ``$!``
+        (last background PID) pass straight through unexpanded — ``echo $?`` would
+        return the literal text ``$?``.  This expands those three, matching both
+        the ``$x`` and ``${x}`` forms.
+
+        ``exit_status`` is the return code of the previous pipeline segment.
+        Negative codes (Python reports a process killed by signal N as ``-N``)
+        are mapped to bash's ``128 + N`` convention so ``$?`` reads as it would
+        in a real shell.  Quote-naive on purpose, matching the existing
+        ``expandvars`` behavior elsewhere in this module.
+        """
+        import re
+
+        status = exit_status if exit_status >= 0 else 128 + abs(exit_status)
+        replacements = {
+            '?': str(status),
+            '$': str(os.getpid()),  # the orchestrator emulates the shell process
+            '!': '',                # background jobs are unsupported
+        }
+        return re.sub(
+            r'\$\{?([?$!])\}?',
+            lambda m: replacements[m.group(1)],
+            cmd_segment,
+        )
+
     def _execute_pipeline(self, command: str, timeout: float, cwd: str) -> subprocess.CompletedProcess:
         """Execute a command pipeline with shell=False for all subprocess calls.
 
@@ -333,6 +475,17 @@ class ShellServer:
         for idx, (operator, cmd_segment) in enumerate(segments):
             # Resolve command substitutions first
             resolved = self._resolve_substitutions(cmd_segment, timeout, cwd)
+            # Expand shell special parameters ($?, $$, $!) using the previous
+            # segment's exit status. Bash treats $? as 0 before any command has
+            # run, so default to 0 for the first segment. Must happen before
+            # tokenization (expandvars in _expand_and_tokenize leaves these literal).
+            _prev_rc = last_result.returncode if last_result is not None else 0
+            resolved = self._expand_special_params(resolved, _prev_rc)
+            # Peel ``VAR=value`` prefixes so they go to subprocess(env=)
+            # rather than being tokenized as argv[0].  Validation already
+            # rejected blocked names, so any reason returned here is a
+            # belt-and-suspenders no-op.
+            resolved, segment_env, _ = self._peel_env_prefix(resolved)
             args = self._expand_and_tokenize(resolved)
             if not args:
                 continue
@@ -373,6 +526,13 @@ class ShellServer:
                 timeout=timeout, cwd=effective_cwd, input=stdin_data,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
+            # Merge any peeled env assignments onto the parent env for
+            # this segment only.  Each segment in the pipeline gets its
+            # own merged copy — assignments do not leak across segments.
+            if segment_env:
+                merged_env = os.environ.copy()
+                merged_env.update(segment_env)
+                run_kwargs['env'] = merged_env
             run_kwargs.update(redir_kwargs)
 
             last_result = subprocess.run(
@@ -553,6 +713,33 @@ class ShellServer:
                 print(f"Validating segment {i} after operator '{operator}': '{cmd_segment}'", file=sys.stderr)
             else:
                 print(f"Validating segment {i}: '{cmd_segment}'", file=sys.stderr)
+
+            # Peel leading ``VAR=value`` assignments so the underlying
+            # command is what gets matched against the allowlist.  Reject
+            # outright if any blocked loader-hijack variable is present.
+            peeled_segment, _peeled_env, peel_reason = self._peel_env_prefix(cmd_segment)
+            if peel_reason:
+                return False, peel_reason
+            if peeled_segment != cmd_segment:
+                print(f"Peeled env prefix; validating: '{peeled_segment}'", file=sys.stderr)
+                cmd_segment = peeled_segment
+
+            # Bare variable assignment with no trailing command (e.g.
+            # 'f=$(find .)').  Validate any command substitution inside
+            # the original segment, then allow it.
+            if not cmd_segment.strip():
+                original = segments[i][1]
+                scan_target = re.sub(r"'[^']*'", "", original)
+                scan_target = scan_target.replace(r'`', '')
+                substitutions = re.findall(r'\$\(([^)]+)\)', scan_target)
+                substitutions.extend(re.findall(r'`([^`]+)`', scan_target))
+                for sub_cmd in substitutions:
+                    if not sub_cmd.strip():
+                        continue
+                    sub_ok, sub_reason = self.is_command_allowed(sub_cmd)
+                    if not sub_ok:
+                        return False, f"'{sub_cmd.strip().split()[0]}' (in command substitution) is not allowed"
+                continue
             
             # Check for command substitution in the segment
             if '$(' in cmd_segment or '`' in cmd_segment:
