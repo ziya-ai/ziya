@@ -10,8 +10,8 @@ def add_common_arguments(parser):
     import app.config.models_config as config
     
     # File/path related arguments
-    parser.add_argument('--root', type=str, default=None,
-                        help='Root directory (default: cwd)')
+    parser.add_argument('--root', '--directory', type=str, default=None, dest='root',
+                        help='Root directory (default: cwd). --directory is an alias of --root.')
     parser.add_argument('--include', default=[], type=lambda x: x.split(','),
                         help='Include paths outside root (comma-separated)')
     parser.add_argument('--exclude', default=[], type=lambda x: x.split(','),

@@ -194,6 +194,9 @@ _VARS: List[EnvVar] = [
            "Disable the MCP tool audit log."),
     EnvVar("ZIYA_ALLOW_ALL_ENDPOINTS", bool, False, EnvCategory.SECURITY,
            "Bypass enterprise endpoint restrictions (dev/testing only)."),
+    EnvVar("ZIYA_STRICT_ORIGIN", bool, False, EnvCategory.SECURITY,
+           "Reject state-changing HTTP requests carrying no Origin/Referer "
+           "header (recommended when binding to 0.0.0.0)."),
 
     # ── Logging / Debug ───────────────────────────────────────────────────
     EnvVar("ZIYA_LOG_LEVEL", str, "INFO", EnvCategory.LOGGING,

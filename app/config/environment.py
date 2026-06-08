@@ -85,8 +85,16 @@ def setup_environment(args: Any) -> None:
     """
 
     # -- Root directory (always direct-assign; never setdefault) ------------
-    root_dir = getattr(args, 'root', None) or os.getcwd()
+    root_arg = getattr(args, 'root', None)
+    root_dir = root_arg or os.getcwd()
     os.environ["ZIYA_USER_CODEBASE_DIR"] = root_dir
+    # Record whether the root was explicitly supplied (--root/--directory) so
+    # the frontend can give an explicit startup directory precedence over a
+    # browser's remembered last project when opening new web sessions.
+    if root_arg:
+        os.environ["ZIYA_EXPLICIT_ROOT"] = "true"
+    else:
+        os.environ.pop("ZIYA_EXPLICIT_ROOT", None)
 
     # -- File inclusion / exclusion -----------------------------------------
     exclude = getattr(args, 'exclude', None)
