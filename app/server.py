@@ -1134,10 +1134,15 @@ async def chat_endpoint(request: Request):
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    # Loopback-only: the bundled UI is same-origin, and a dev server on
+    # another localhost port is still permitted by the regex. Credentials
+    # are disabled — the API is gated by the local process's AWS creds,
+    # not by browser-sent cookies, so credentialed cross-origin access
+    # serves no legitimate purpose.
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
 )
 
 # Add streaming middleware
@@ -1167,6 +1172,11 @@ app.add_middleware(ProjectContextMiddleware)
 
 # Security headers — XSS protection, CSP, clickjacking prevention.
 app.add_middleware(SecurityHeadersMiddleware)
+
+# Origin guard — reject cross-origin state-changing requests (CSRF /
+# browser drive-by protection). Pairs with the loopback CORS policy above.
+from app.middleware.origin_guard import OriginGuardMiddleware
+app.add_middleware(OriginGuardMiddleware)
 
 # Import and include AST routes
 from app.routes.ast_routes import router as ast_router

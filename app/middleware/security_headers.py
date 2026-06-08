@@ -32,7 +32,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "style-src 'self' 'unsafe-inline'; "
                 "img-src 'self' data: https:; "
                 "font-src 'self' data:; "
-                "connect-src 'self' http://localhost:* ws://localhost:* wss://localhost:*"
+                "connect-src 'self' http://localhost:* ws://localhost:* wss://localhost:*; "
+                "object-src 'none'; "
+                "base-uri 'self'; "
+                "frame-ancestors 'none'; "
+                "form-action 'self'"
             )
         
         return response
