@@ -188,9 +188,26 @@ def detect_malformed_state(file_lines: List[str], hunk: Dict[str, Any]) -> bool:
     """
     removed_lines, added_lines = extract_diff_changes(hunk)
     
-    # Debug logging
     logger = logging.getLogger(__name__)
-    logger.debug(f"Malformed check - Removed: {len(removed_lines)} lines, Added: {len(added_lines)} lines")
+    # Truncated/mangled hunk: the parser flagged 'malformed_header' (could not
+    # reconcile the @@ counts with the body) AND could not auto-correct it
+    # (header_corrected=False) AND parsing yielded zero actual +/- lines. This
+    # happens when a body line lost its ' '/'+'/'-' prefix upstream (e.g. a
+    # context line split by an injected blank line, or a triple-backtick
+    # rendered as '&#96;'), so the parser stopped before the real change lines.
+    # The hunk is structurally unrecoverable: applying it would delete the lines
+    # its @@ header spans while inserting only the truncated remnant (active data
+    # corruption), and the no-op branch in is_hunk_already_applied would
+    # otherwise report it as "already applied" (silent data loss). Treat it as
+    # malformed so every apply stage skips it and fails loudly instead.
+    if (hunk.get('malformed_header')
+            and not hunk.get('header_corrected', False)
+            and not removed_lines and not added_lines):
+        logger.warning(
+            f"Hunk parsed to zero +/- lines but its header declares a change "
+            f"({hunk.get('malformed_header')}); treating as malformed/unrecoverable."
+        )
+        return True
     if removed_lines:
         logger.debug(f"First removed line repr: {repr(removed_lines[0][:50] if removed_lines[0] else 'empty')}")
     if added_lines:

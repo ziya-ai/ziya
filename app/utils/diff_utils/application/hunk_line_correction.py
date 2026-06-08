@@ -206,6 +206,33 @@ def correct_hunk_line_numbers(hunks: List[Dict[str, Any]], file_lines: List[str]
     skipped_hunk_numbers = []
     
     for i, hunk in enumerate(hunks, 1):
+        # Reject truncated hunks before they reach any apply/already-applied path.
+        #
+        # A hunk flagged 'malformed_header' with header_corrected=False reached
+        # this state because the parser hit a body line with no valid ' '/'+'/'-'
+        # prefix and stopped early -- typically a context line that was split or
+        # entity-mangled upstream (e.g. a triple-backtick rendered as '&#96;' plus
+        # an injected blank line). The hunk's @@ header still declares a real
+        # change, but parsing yielded zero actual +/- lines. If allowed through,
+        # is_hunk_already_applied() short-circuits on the truncated content and
+        # reports "already applied" (silent data loss), or a recovery path writes
+        # the truncated body and deletes real code (active corruption). Neither is
+        # recoverable here, so skip the hunk and let it fail loudly downstream,
+        # mirroring the existing low-confidence "skip to prevent corruption" path.
+        _removed = hunk.get('removed_lines') or []
+        _added = hunk.get('added_lines') or []
+        if (hunk.get('malformed_header')
+                and not hunk.get('header_corrected', False)
+                and not _removed and not _added):
+            logger.warning(
+                f"Hunk {i}: parsed to zero +/- lines but its header declares a "
+                f"change ({hunk.get('malformed_header')}) - skipping to prevent "
+                f"silent data loss/corruption from a truncated/mangled hunk body."
+            )
+            skipped += 1
+            skipped_hunk_numbers.append(i)
+            continue
+
         old_start = hunk.get('old_start', 1)
         context = extract_context_from_hunk(hunk)
         
