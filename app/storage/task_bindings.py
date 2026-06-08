@@ -79,7 +79,7 @@ class TaskBindingStorage(BaseStorage[TaskBinding]):
         return None
 
     def create(
-        self, chat_id: str, card_id: str, run_id: str,
+        self, chat_id: str, card_id: str, run_id: Optional[str] = None,
         anchor_message_id: Optional[str] = None,
     ) -> TaskBinding:
         binding = TaskBinding(

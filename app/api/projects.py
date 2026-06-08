@@ -6,7 +6,7 @@ from typing import List
 import os
 
 from ..storage.chats import ChatStorage
-from ..models.project import Project, ProjectCreate, ProjectUpdate, ProjectListItem
+from ..models.project import Project, ProjectCreate, ProjectUpdate, ProjectListItem, StartupInfo
 from ..storage.projects import ProjectStorage
 from ..utils.paths import get_ziya_home
 
@@ -78,6 +78,29 @@ async def get_last_accessed_project():
     best = projects[0]
     storage.touch(best.id)
     return best
+
+@router.get("/startup", response_model=StartupInfo)
+async def get_startup_info():
+    """Return startup-directory context for new web sessions.
+
+    Pure read: unlike /current and /last-accessed this never creates a
+    project. The frontend uses ``explicit`` to decide whether the startup
+    directory should win over a browser's remembered last project, and
+    ``hasAnyProjects``/``rootProject`` to decide whether to show the
+    first-run project picker.
+    """
+    storage = get_project_storage()
+    # Read the startup root directly from the env (not get_project_root(),
+    # which would honor an X-Project-Root header — absent at first boot).
+    root = os.environ.get("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
+    root = os.path.abspath(os.path.expanduser(root))
+    explicit = os.environ.get("ZIYA_EXPLICIT_ROOT") == "true"
+    return StartupInfo(
+        root=root,
+        explicit=explicit,
+        hasAnyProjects=len(storage.list_deduped()) > 0,
+        rootProject=storage.get_by_path(root),
+    )
 
 @router.post("", response_model=Project)
 async def create_project(data: ProjectCreate):

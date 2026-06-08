@@ -3672,10 +3672,17 @@ Please retry the tool call with valid JSON. Ensure:
 
     # Pre-compiled pattern for fence normalization.
     # Matches 3+ backticks followed by a language identifier (letter then word chars/hyphens)
-    # that are preceded by a non-newline character.
-    _FENCE_GLUED_RE = re.compile(r'([^\n])(`{3,}[a-zA-Z][\w-]*)')
-    # Matches a fence opening preceded by exactly one newline (needs a second).
-    _FENCE_SINGLE_NL_RE = re.compile(r'(?<!\n)\n(`{3,}[a-zA-Z][\w-]*)')
+    # that are preceded by a non-newline character — but only when the backticks
+    # appear AT THE START OF A LINE (preceded by only optional whitespace, then a
+    # newline). This rejects mid-line triple-backticks that are part of an
+    # inline-code span quoting a fence (e.g. prose like
+    # "the (e.g. ```diff, ```python) marker"), which CommonMark does NOT treat
+    # as fence openers but the prior pattern incorrectly normalized.
+    # The capture splits the match: \1 = preceding non-newline char on the
+    # earlier line, \2 = newline+optional-whitespace+fence — so substitution
+    # \1\n\n\2 still inserts the desired blank line.
+    _FENCE_GLUED_RE = re.compile(r'([^\n])(`{3,}[a-zA-Z][\w-]*)(?=\s|$)')
+    _FENCE_SINGLE_NL_RE = re.compile(r'(?<!\n)\n(`{3,}[a-zA-Z][\w-]*)(?=\s|$)')
 
     def _normalize_fence_spacing(self, text: str, code_block_tracker: dict) -> str:
         """Ensure fenced code block openings are preceded by a blank line.

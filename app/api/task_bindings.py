@@ -118,3 +118,33 @@ async def delete_task_binding(
     storage = _bindings_storage(project_id)
     if not storage.delete(chat_id, binding_id):
         raise HTTPException(status_code=404, detail="Task binding not found")
+
+
+@router.post("/{binding_id}/launch", response_model=TaskRun)
+async def launch_staged_binding(
+    project_id: str, chat_id: str, binding_id: str,
+) -> TaskRun:
+    """Launch the run for a staged binding (one whose ``run_id`` is
+    None because it was created by the ``/goal`` slash command and
+    is awaiting explicit user confirmation).
+
+    409 if the binding has already been launched.  404 if the binding
+    does not exist for this chat.
+    """
+    _ensure_project(project_id)
+    project_dir = get_project_dir(project_id)
+    binding_storage = TaskBindingStorage(project_dir)
+    binding = binding_storage.get(chat_id, binding_id)
+    if not binding:
+        raise HTTPException(status_code=404, detail="Binding not found")
+    if binding.run_id:
+        raise HTTPException(status_code=409, detail="Binding already launched")
+
+    run = await _launch_run_for_card(
+        project_id=project_id,
+        card_id=binding.card_id,
+        source_conversation_id=chat_id,
+    )
+    binding_storage.update_run_id(chat_id, binding.id, run.id)
+    logger.info(f"🚀 Staged binding {binding_id[:8]} launched → run {run.id[:8]}")
+    return run

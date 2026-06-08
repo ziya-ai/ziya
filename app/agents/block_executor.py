@@ -1,6 +1,7 @@
 """
 Block executor — the loop controller for Task Card block trees.
 
+import hashlib
 Implements the runtime semantics defined in design/task-cards.md
 §Runtime semantics:
 
@@ -466,6 +467,16 @@ def _derive_signature(artifact: Artifact) -> str:
     return hashlib.sha256(probe.encode("utf-8", errors="replace")).hexdigest()[:12]
 
 
+def _iteration_signature(a: Artifact) -> str:
+    """Cheap signature for convergence detection: SHA-16 of normalized
+    summary text.  Two iterations producing the same normalized
+    summary are treated as a stop signal — the agent has converged
+    on a stable conclusion and further iterations would be redundant.
+    """
+    body = " ".join((a.summary or "").lower().split())
+    return hashlib.sha256(body.encode()).hexdigest()[:16]
+
+
 async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
     """Repeat the body until a model-evaluated condition is true.
 
@@ -485,6 +496,7 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
     last_artifact: Optional[Artifact] = None
     outputs: List[ArtifactPart] = []
     decisions: List[str] = []
+    signatures: List[str] = []  # for convergence backstop
 
     await _emit(ctx, {
         "type": "block_started",
@@ -523,10 +535,46 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
         last_artifact = artifact
         outputs.extend(artifact.outputs)
 
+        # ---------- Exit-condition layer 1: agent self-assessment ----------
+        # The task executor parses <self_assessment objective_met="..."
+        # rationale="..." /> at end of response into artifact.self_assessment.
+        # For goal cards (no until_condition), this is the primary signal.
+        sa = getattr(artifact, "self_assessment", None) or {}
+        objective_met = (sa.get("objective_met") or "").strip().lower()
+        rationale = (sa.get("rationale") or "").strip()
+        if objective_met == "true":
+            decisions.append(
+                f"self_assessment: objective_met=true"
+                + (f" ({rationale})" if rationale else "")
+            )
+            break
+        if objective_met == "partial":
+            # Partial = stopped making progress on a real obstacle.
+            # Don't keep iterating; surface to user.
+            decisions.append(
+                f"self_assessment: objective_met=partial — stopping"
+                + (f" ({rationale})" if rationale else "")
+            )
+            break
+
+        # ---------- Exit-condition layer 2: convergence backstop ----------
+        # Only fires when there's no explicit condition.  When a real
+        # until_condition is set, the model evaluator is the source of
+        # truth and we don't second-guess it via summary similarity.
         if not condition:
-            # No condition → behave like Repeat-until-success.
-            if not artifact.failed:
+            sig = _iteration_signature(artifact)
+            signatures.append(sig)
+            if len(signatures) >= 2 and signatures[-1] == signatures[-2]:
+                decisions.append(
+                    "converged: 2 consecutive identical iteration summaries"
+                )
                 break
+
+        # ---------- Exit-condition layer 3: model-evaluated condition ----
+        if not condition:
+            # No condition → rely on layer 1 (self_assessment) and layer 2
+            # (convergence) to terminate.  If neither fires, run to
+            # until_max — the cap is the safety net, not the primary stop.
             continue
         if mode == "expression":
             # Reserved for a future expression evaluator.  Until then,

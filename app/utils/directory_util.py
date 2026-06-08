@@ -55,36 +55,6 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
     # Use the directory argument as-is — it was already resolved by the caller.
     user_codebase_dir = directory
     
-    # CRITICAL: Warn users EARLY if scanning will be slow
-    import sys
-    home_dir = os.path.expanduser("~")
-    is_home_or_near_home = (
-        os.path.abspath(directory) == home_dir or
-        os.path.abspath(directory).startswith(home_dir + os.sep) and
-        len(os.path.abspath(directory).replace(home_dir, '').split(os.sep)) <= 2
-    )
-    
-    # Quick sampling: check how many entries are in the root
-    try:
-        root_entries = len(os.listdir(directory))
-    except (PermissionError, OSError):
-        root_entries = 0
-    
-    # Warn if this looks like it will be slow
-    if is_home_or_near_home or root_entries > 50:
-        print("\n" + "="*70, file=sys.stderr)
-        print("⚠️  SCANNING LARGE DIRECTORY - THIS MAY TAKE SEVERAL MINUTES", file=sys.stderr)
-        print("="*70, file=sys.stderr)
-        print(f"📁 Directory: {directory}", file=sys.stderr)
-        print(f"📊 Root contains {root_entries} entries", file=sys.stderr)
-        print("\n💡 TIP: For faster startup, start Ziya in a project root directory", file=sys.stderr)
-        print("   Or use: ziya --directory <project-path>", file=sys.stderr)
-        print("   Or use: --include-only <path> to scan specific directories", file=sys.stderr)
-        print("="*70 + "\n", file=sys.stderr)
-        
-        # Show progress as we process gitignore patterns
-        print("🔍 Scanning for .gitignore files...", file=sys.stderr, flush=True)
-    
     scan_start_time = time.time()
     
     # Get include directories that should override default exclusions
@@ -525,11 +495,10 @@ def detect_large_directory_and_warn(directory: str) -> None:
     
     # Check if this is a home directory
     home_dir = os.path.expanduser("~")
-    is_home_or_near_home = (
-        os.path.abspath(directory) == home_dir or
-        os.path.abspath(directory).startswith(home_dir + os.sep) and
-        len(os.path.abspath(directory).replace(home_dir, '').split(os.sep)) <= 2
-    )
+    # Only the literal home directory warns purely by location. Near-home
+    # subdirectories must clear the size threshold below, so small/empty
+    # project dirs under $HOME no longer warn spuriously.
+    is_home = os.path.abspath(directory) == home_dir
     
     # Quick sampling: check how many entries are in the root
     try:
@@ -538,7 +507,7 @@ def detect_large_directory_and_warn(directory: str) -> None:
         root_entries = 0
     
     # Warn if this looks like it will be slow
-    if is_home_or_near_home or root_entries > 50:
+    if is_home or root_entries > 50:
         print("\n" + "="*70, file=sys.stderr)
         print("⚠️  SCANNING LARGE DIRECTORY - THIS MAY TAKE SEVERAL MINUTES", file=sys.stderr)
         print("="*70, file=sys.stderr)

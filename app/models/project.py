@@ -47,3 +47,12 @@ class ProjectListItem(BaseModel):
     lastAccessedAt: int
     isCurrentWorkingDirectory: bool = False
     conversationCount: int = 0
+class StartupInfo(BaseModel):
+    """Startup-directory context used to seed new web sessions."""
+    # Absolute path the server was started in (or --root/--directory).
+    root: str
+    # True when --root/--directory was passed explicitly on the command line.
+    explicit: bool
+    hasAnyProjects: bool
+    # Project already rooted at ``root``, if one exists (never auto-created).
+    rootProject: Optional[Project] = None

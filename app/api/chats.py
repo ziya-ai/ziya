@@ -374,6 +374,18 @@ async def bulk_sync_chats(project_id: str, data: ChatBulkSync):
                         merged['delegateMeta'] = existing.delegateMeta.model_dump() \
                             if hasattr(existing.delegateMeta, 'model_dump') \
                             else existing.delegateMeta
+                    # Preserve backend-owned _beads across the frontend round-trip.
+                    # The conversation task-tree (beads) is written ONLY by the
+                    # backend bead tools onto the chat record's _beads extra field.
+                    # The frontend never carries _beads (conversationToServerChat
+                    # spreads the IDB conversation, which has no such field), so a
+                    # bulk-sync that didn't preserve it would overwrite the chat
+                    # file ~2s after every bead write and silently wipe the tree —
+                    # the "no threads yet" symptom.  Mirror the delegateMeta guard:
+                    # carry the on-disk value forward when the incoming payload
+                    # omits it.
+                    if not merged.get('_beads') and existing_extra.get('_beads'):
+                        merged['_beads'] = existing_extra['_beads']
                     # Map frontend's folderId to server's groupId FIRST.  The
                     # frontend's authoritative field is folderId; groupId is
                     # absent from its payload.  This must run before the

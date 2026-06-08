@@ -277,6 +277,13 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
         # --- Process result ---
         result_text = _process_result(result, ctx.tool_name, ctx.actual_tool_name)
 
+        # Fetched PDFs arrive from the external fetch server as a lossy
+        # "cannot be simplified to markdown" raw-bytes dump. Re-fetch the
+        # URL and run the bytes through the local PDF extractor so the model
+        # receives real text instead of mojibake.
+        if isinstance(result_text, str):
+            result_text = await _maybe_extract_fetched_pdf(result_text, ctx.args)
+
         # Sanitize text results for context efficiency
         if isinstance(result_text, str):
             from app.utils.tool_result_sanitizer import sanitize_for_context
@@ -426,6 +433,75 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
             'tool_use_id': ctx.tool_id,
             'content': f"ERROR: {error_msg}. Please try a different approach or fix the command.",
         }
+
+
+# Args keys (across fetch-style tools) that may carry the source URL we
+# re-fetch from. Checked in order; first non-empty string wins.
+_URL_ARG_KEYS = ('url', 'uri', 'link', 'href', 'source_url')
+
+
+def _extract_url_from_args(args: dict) -> Optional[str]:
+    """Return the first URL-like string in args, or None."""
+    if not isinstance(args, dict):
+        return None
+    for key in _URL_ARG_KEYS:
+        val = args.get(key)
+        if isinstance(val, str) and val.strip().lower().startswith(('http://', 'https://')):
+            return val.strip()
+    return None
+
+
+async def _maybe_extract_fetched_pdf(result_text: str, args: dict) -> str:
+    """Re-extract a fetched PDF that an upstream fetch tool could not parse.
+
+    Tool-agnostic: any tool whose result carries the unparsed-PDF signature
+    (the "cannot be simplified to markdown" + "application/pdf" dump emitted
+    by mcp-server-fetch, or a literal %PDF- magic header) and whose args
+    carry a re-fetchable URL is recovered. The local document extractor
+    (used for file uploads and file_read) otherwise never sees fetched
+    content. This detects the signature, re-fetches the URL, and runs the
+    bytes through extract_pdf_text_from_bytes.
+
+    Returns the extracted text on success, otherwise the original result_text
+    unchanged (non-destructive — any failure falls back to the raw dump).
+    """
+    head = result_text[:600].lower()
+    looks_like_pdf = (
+        ('cannot be simplified to markdown' in head and 'application/pdf' in head)
+        or '%pdf-' in result_text[:2000]
+    )
+    if not looks_like_pdf:
+        return result_text
+
+    url = _extract_url_from_args(args)
+    if not url:
+        return result_text
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+            resp = await client.get(
+                url, headers={'User-Agent': 'Mozilla/5.0 (compatible; Ziya)'}
+            )
+            resp.raise_for_status()
+            data = resp.content
+    except Exception as e:
+        logger.warning(f"📄 FETCH_PDF: re-fetch failed for {url}: {e}")
+        return result_text
+
+    try:
+        from app.utils.document_extractor import extract_pdf_text_from_bytes
+        text = await asyncio.to_thread(extract_pdf_text_from_bytes, data)
+    except Exception as e:
+        logger.warning(f"📄 FETCH_PDF: extraction failed for {url}: {e}")
+        return result_text
+
+    if text and text.strip():
+        logger.info(f"📄 FETCH_PDF: extracted {len(text)} chars from fetched PDF {url}")
+        return f"[PDF text extracted from {url}]\n\n{text}"
+
+    logger.warning(f"📄 FETCH_PDF: no extractable text in fetched PDF {url} (likely scanned)")
+    return result_text
 
 
 def _process_result(result: Any, tool_name: str, actual_tool_name: str) -> Any:

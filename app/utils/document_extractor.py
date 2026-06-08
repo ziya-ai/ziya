@@ -204,6 +204,56 @@ def extract_pdf_text(file_path: str) -> Optional[str]:
     return None
 
 
+def extract_pdf_text_from_bytes(data: bytes) -> Optional[str]:
+    """
+    Extract text from in-memory PDF bytes (e.g. content fetched over HTTP).
+
+    Mirrors extract_pdf_text but operates on a bytes buffer instead of a
+    file path, so PDF content arriving via non-file transports (the fetch
+    tool, API uploads held in memory) gets the same text extraction that
+    local PDF files do.
+
+    Args:
+        data: Raw PDF file bytes.
+
+    Returns:
+        Extracted text, or None if no text could be extracted.
+    """
+    _check_libraries()
+
+    # Try pdfplumber first (better text extraction)
+    if _AVAILABLE_LIBRARIES['pdfplumber']:
+        try:
+            import pdfplumber
+            text_content = []
+            with pdfplumber.open(io.BytesIO(data)) as pdf:
+                for page in pdf.pages:
+                    text = page.extract_text()
+                    if text:
+                        text_content.append(text)
+            if text_content:
+                return '\n\n'.join(text_content)
+        except Exception as e:
+            logger.warning(f"pdfplumber failed on PDF bytes: {e}")
+
+    # Fallback to pypdf
+    if _AVAILABLE_LIBRARIES['pypdf']:
+        try:
+            import pypdf
+            text_content = []
+            pdf_reader = pypdf.PdfReader(io.BytesIO(data))
+            for page in pdf_reader.pages:
+                text = page.extract_text()
+                if text:
+                    text_content.append(text)
+            return '\n\n'.join(text_content) if text_content else None
+        except Exception as e:
+            logger.warning(f"pypdf failed on PDF bytes: {e}")
+
+    logger.error("No PDF libraries available to extract text from PDF bytes")
+    return None
+
+
 def extract_pdf_page_images(file_path: str, max_pages: int = 20, max_edge: int = 1568) -> Optional[List[Dict[str, Any]]]:
     """
     Render PDF pages as images.  Useful for scanned PDFs that contain no
