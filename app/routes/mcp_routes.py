@@ -291,18 +291,24 @@ async def get_mcp_status():
                     server_perms = permissions.get('servers', {}).get(server_name, {})
                     default_tool_perm = permissions.get('defaults', {}).get('tool', 'enabled')
                     enabled_tools_dict = []
+                    tool_tokens: Dict[str, int] = {}
                     
                     for tool in client.tools:
                         tool_perms = server_perms.get('tools', {}).get(tool.name, {})
                         tool_permission = tool_perms.get('permission', default_tool_perm)
                         
-                        # Only count tools that are explicitly enabled
                         if tool_permission == 'enabled':
                             enabled_tools_dict.append({
                                 'name': tool.name,
                                 'description': tool.description or '',
                                 'inputSchema': tool.inputSchema
                             })
+
+                        tool_tokens[tool.name] = count_server_tool_tokens([{
+                            'name': tool.name,
+                            'description': tool.description or '',
+                            'inputSchema': tool.inputSchema
+                        }])
                     
                     # Count tokens only for enabled tools
                     enabled_token_count = count_server_tool_tokens(enabled_tools_dict)
@@ -312,6 +318,7 @@ async def get_mcp_status():
                         "total_tools": len(tools_dict),
                         "enabled_tools": len(enabled_tools_dict),
                         "enabled_tokens": enabled_token_count,
+                        "tool_tokens": tool_tokens,
                     }
                     
                     logger.debug(f"Server {server_name}: {len(enabled_tools_dict)}/{len(tools_dict)} tools enabled, {enabled_token_count}/{token_count} tokens")

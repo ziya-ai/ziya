@@ -86,6 +86,7 @@ interface MCPStatus {
             total_tools: number;
             enabled_tools: number;
             enabled_tokens: number;
+            tool_tokens?: Record<string, number>;
         }>;
         instructions: {
             total_instruction_tokens: number;
@@ -838,6 +839,14 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                             <Tag color="purple" style={{ marginLeft: 4 }}>
                                                 <ExperimentOutlined /> Builtin
                                             </Tag>
+                                            {(() => {
+                                                const tokenCount = status.token_costs?.servers[category] || 0;
+                                                return tokenCount > 0 ? (
+                                                    <Tag color="cyan" style={{ marginLeft: 4 }}>
+                                                        {formatTokenCount(tokenCount)} tokens
+                                                    </Tag>
+                                                ) : null;
+                                            })()}
                                         </div>
                                         <div style={{ fontSize: '12px', color: isDarkMode ? '#a0a0a0' : '#666', marginBottom: 8 }}>
                                             {config.description}
@@ -1036,6 +1045,13 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                             // Server is enabled only if config says enabled AND it's connected
                                                             const isServerEnabled = status?.server_configs?.[name]?.enabled !== false && server.connected;
                                                             const isEffectivelyActive = isToolEnabled && isServerEnabled;
+                                                            const toolTokens = status.token_costs?.server_details?.[name]?.tool_tokens?.[tool.name];
+                                                                                {toolTokens != null && (
+                                                                                    <Tag color={isEffectivelyActive ? 'cyan' : 'default'}
+                                                                                         style={{ marginLeft: 8, opacity: isEffectivelyActive ? 1 : 0.5 }}>
+                                                                                        {formatTokenCount(toolTokens)} tokens
+                                                                                    </Tag>
+                                                                                )}
                                                             
                                                             return (
                                                                 <List.Item style={{ 
