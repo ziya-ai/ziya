@@ -171,6 +171,7 @@ def _unsupported_params_for_model_id(model_id: str) -> set:
 
 async def _call_bedrock(config, system_prompt, user_message, max_tokens, temperature) -> str:
     """Call via Bedrock Converse API."""
+    import asyncio
     import boto3
     from botocore.config import Config as BotoConfig
 
@@ -185,7 +186,11 @@ async def _call_bedrock(config, system_prompt, user_message, max_tokens, tempera
     inference_config: dict = {"maxTokens": max_tokens}
     if "temperature" not in unsupported:
         inference_config["temperature"] = temperature
-    response = client.converse(
+
+    # Run synchronous boto3 call in a thread to avoid blocking the event loop.
+    # Without this, background memory extraction starves all other coroutines.
+    response = await asyncio.to_thread(
+        client.converse,
         modelId=config["model_id"],
         system=[{"text": system_prompt}],
         messages=[{"role": "user", "content": [{"text": user_message}]}],
@@ -198,16 +203,20 @@ async def _call_google(config, system_prompt, user_message, max_tokens, temperat
     """Call via Google Generative AI SDK."""
     try:
         import google.generativeai as genai
+        import asyncio
         model = genai.GenerativeModel(
             config["model_id"],
             system_instruction=system_prompt,
         )
-        response = model.generate_content(
+
+        gen_config = genai.GenerationConfig(
+            max_output_tokens=max_tokens,
+            temperature=temperature,
+        )
+        response = await asyncio.to_thread(
+            model.generate_content,
             user_message,
-            generation_config=genai.GenerationConfig(
-                max_output_tokens=max_tokens,
-                temperature=temperature,
-            ),
+            generation_config=gen_config,
         )
         return response.text or ""
     except ImportError:
@@ -218,9 +227,11 @@ async def _call_google(config, system_prompt, user_message, max_tokens, temperat
 async def _call_openai_compatible(config, system_prompt, user_message, max_tokens, temperature) -> str:
     """Call via OpenAI-compatible API (works for OpenAI and Anthropic direct)."""
     try:
+        import asyncio
         from openai import OpenAI
         client = OpenAI()  # Uses OPENAI_API_KEY / ANTHROPIC_API_KEY from env
-        response = client.chat.completions.create(
+        response = await asyncio.to_thread(
+            client.chat.completions.create,
             model=config["model_id"],
             messages=[
                 {"role": "system", "content": system_prompt},

@@ -1705,18 +1705,29 @@ async def stream_chunks(body):
                 # Always send done message at the end
                 # Log complete response at INFO level before sending done marker
                 if accumulated_content and accumulated_content.strip():
-                    # Apply retrieval feedback FIRST so importance bumps happen
-                    # before extraction's UPDATE/corroboration logic checks
-                    # importance.  Fire-and-forget; failures must not block
-                    # extraction or stream completion.
+                    logger.info("=" * 80)
+                    logger.info(f"🤖 COMPLETE MODEL RESPONSE ({len(accumulated_content)} characters):")
+                    logger.info(accumulated_content)
+                    logger.info("=" * 80)
+                
+                yield f"data: {json.dumps({'done': True})}\n\n"
+
+                # Schedule background memory work AFTER yielding done so the
+                # event loop delivers the SSE frame to the client before these
+                # tasks compete for the event loop.  A single sleep(0) lets the
+                # networking layer flush the done frame before the tasks are
+                # even created.
+                if accumulated_content and accumulated_content.strip():
+                    await asyncio.sleep(0)
+                    # Apply retrieval feedback so importance bumps happen before
+                    # extraction's UPDATE/corroboration logic checks importance.
                     try:
                         from app.utils.memory_feedback import apply_feedback
                         asyncio.create_task(
                             apply_feedback(conversation_id, accumulated_content))
                     except (ImportError, OSError, RuntimeError) as fb_err:
                         logger.debug(f"Memory feedback dispatch failed (non-fatal): {fb_err}")
-                    # Fire-and-forget: extract memories from the conversation
-                    # in the background. Never blocks the stream completion.
+                    # Fire-and-forget: extract memories from the conversation.
                     try:
                         from app.utils.memory_extractor import run_post_conversation_extraction
                         # Resolve project name/path for memory scoping.
@@ -1747,13 +1758,6 @@ async def stream_chunks(body):
                         )
                     except (ImportError, OSError, RuntimeError) as mem_err:
                         logger.debug(f"Memory extraction dispatch failed (non-fatal): {mem_err}")
-
-                    logger.info("=" * 80)
-                    logger.info(f"🤖 COMPLETE MODEL RESPONSE ({len(accumulated_content)} characters):")
-                    logger.info(accumulated_content)
-                    logger.info("=" * 80)
-                
-                yield f"data: {json.dumps({'done': True})}\n\n"
                 
                 logger.debug(f"🚀 DIRECT_STREAMING: Completed streaming with {chunk_count} chunks")
                 return

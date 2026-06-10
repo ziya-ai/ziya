@@ -1409,7 +1409,9 @@ async def run_post_conversation_extraction(
             # The keyword dedup above catches exact/near-exact duplicates;
             # this catches semantic duplicates, contradictions, and
             # consolidation opportunities that keyword matching misses.
-            similar = find_similar_memories(candidate, existing)
+            # find_similar_memories calls provider.embed_text() which is a
+            # synchronous Bedrock HTTP call — run in a thread.
+            similar = await asyncio.to_thread(find_similar_memories, candidate, existing)
             if similar:
                 try:
                     decision = await compare_memory(candidate, similar)
@@ -1441,7 +1443,7 @@ async def run_post_conversation_extraction(
                             # Re-embed with new content so semantic search stays accurate
                             try:
                                 from app.services.embedding_service import embed_and_cache
-                                embed_and_cache(target_id, content)
+                                await asyncio.to_thread(embed_and_cache, target_id, content)
                             except Exception:
                                 pass
                             saved += 1

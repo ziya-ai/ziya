@@ -144,6 +144,18 @@ _VIZ_BLOCK_TYPES = frozenset({
 # outer blocks are not themselves treated as viz targets.
 _FENCE_OPEN_RE = re.compile(r'^(`{3,})\s*([a-zA-Z][\w.-]*)(\s*)$')
 
+# Matches a bare (untagged) fence on its own line followed by optional blank
+# lines.  Used to detect stray empty fences the model emits before a viz
+# block opener (e.g. ```\n\n```html-mockup).  In CommonMark, the bare fence
+# opens an unnamed code block that swallows the subsequent viz fence as
+# literal text, preventing it from rendering.
+#
+# Group 1: the bare fence line (including leading newline)
+# Group 2: any trailing whitespace/blank lines between the bare fence and
+#           the next content line
+_STRAY_BARE_FENCE_BEFORE_VIZ_RE = re.compile(
+    r'(\n`{3,}\s*)\n(\s*\n)*(?=`{3,}[a-zA-Z])')
+
 
 def _resolve_nested_viz_fence(text: str, tracker: dict) -> str:
     """Flatten a nested viz fence into a sequential sibling block.
@@ -299,6 +311,9 @@ class TextDeltaState:
     # called" check must not fire on those.
     fake_tool_dispatch_count: int = 0
 
+    # Layer C-pre: set once we have logged and aborted on an <invoke> XML block.
+    invoke_xml_logged: bool = False
+
 
 def process_text_delta(
     executor: Any,
@@ -413,6 +428,27 @@ def process_text_delta(
 
     # --- Fence spacing normalization ---
     text = executor._normalize_fence_spacing(text, state.code_block_tracker)
+
+    # --- Strip stray bare fences before viz block openers ---
+    # The model sometimes emits an empty bare ``` fence immediately before
+    # a ```html-mockup (or other viz) opener.  When both appear in the same
+    # chunk, _resolve_nested_viz_fence can't help because the tracker hasn't
+    # been updated yet.  Detect and remove the stray fence so the downstream
+    # markdown parser sees a clean viz opener at block level.
+    if not state.code_block_tracker.get('in_block') and '```' in text:
+        def _strip_stray(m: re.Match) -> str:
+            # Check the line immediately after the match to see if it's a viz type
+            after = text[m.end():]
+            first_line = after.split('\n', 1)[0] if after else ''
+            fence_m = _FENCE_OPEN_RE.match(first_line)
+            if fence_m and fence_m.group(2).lower() in _VIZ_BLOCK_TYPES:
+                logger.debug(
+                    "🔧 STRAY_FENCE_STRIP: removed bare fence before '%s' opener",
+                    fence_m.group(2).lower(),
+                )
+                return '\n\n'  # preserve blank line for block-level separation
+            return m.group(0)  # not a viz type — leave unchanged
+        text = _STRAY_BARE_FENCE_BEFORE_VIZ_RE.sub(_strip_stray, text)
 
     # --- Resolve nested viz fences ---
     text = _resolve_nested_viz_fence(text, state.code_block_tracker)
@@ -700,6 +736,39 @@ def process_text_delta(
     # it.  Matches Layer B's cadence and dedup pattern; logs at WARNING
     # without aborting — Layer A handles abort decisions when a real result
     # has been registered.
+
+    # --- Layer C-pre: inline <invoke> XML detection ---
+    # The model occasionally writes raw <invoke name="..."> XML in its text
+    # stream instead of using the tool_use API.  This pattern is never
+    # executed by the Bedrock/ASGI pipeline and always represents a malformed
+    # tool call attempt.  Detect it and abort so the corrective message can
+    # redirect the model back to the proper API.
+    _invoke_re = re.compile(
+        r'<invoke\s+name=["\']([^"\']+)["\']\s*>.*?</invoke>',
+        re.DOTALL,
+    )
+    if not state.invoke_xml_logged:
+        _invoke_m = _invoke_re.search(state.assistant_text)
+        if _invoke_m:
+            state.invoke_xml_logged = True
+            _tool_name = _invoke_m.group(1)
+            logger.warning(
+                "🚨 HALLUCINATION_INVOKE_XML: Model wrote raw <invoke name=%r> "
+                "XML in text stream instead of using tool_use API — aborting.",
+                _tool_name,
+            )
+            state.hallucination_detected = True
+            events.append({
+                'type': 'hallucination_recovery',
+                'reason': 'invoke_xml_in_text',
+                'pattern': f'invoke_xml:{_tool_name}',
+                'message': (
+                    'Model wrote <invoke> XML in text instead of using the '
+                    'tool_use API — retrying.'
+                ),
+            })
+            return events
+
     if state.conversation_id:
         _total = len(state.assistant_text)
         _delta = len(text)
@@ -739,6 +808,18 @@ def process_text_delta(
                         _ftr.confidence, _ftr.fence_lang,
                         _ftr.matched_keys, _ftr.snippet, _ftr.reason,
                     )
+                    if _ftr.confidence == 'high':
+                        state.hallucination_detected = True
+                        events.append({
+                            'type': 'hallucination_recovery',
+                            'reason': 'fabricated_tool_result',
+                            'pattern': f"fake_tool_result:{_ftr.fence_lang or 'untagged'}",
+                            'message': (
+                                'Model fabricated a tool result dict rather than '
+                                'calling the tool — retrying.'
+                            ),
+                        })
+                        return events
 
     # --- Content optimizer init ---
     if not hasattr(executor, '_content_optimizer'):
@@ -746,7 +827,11 @@ def process_text_delta(
         executor._content_optimizer = StreamingContentOptimizer()
 
     # --- Visualization block buffering ---
-    viz_patterns = ['\x60\x60\x60vega-lite', '\x60\x60\x60mermaid', '\x60\x60\x60graphviz', '\x60\x60\x60d3']
+    viz_patterns = [
+        '\x60\x60\x60vega-lite', '\x60\x60\x60mermaid', '\x60\x60\x60graphviz',
+        '\x60\x60\x60d3', '\x60\x60\x60html-mockup', '\x60\x60\x60drawio',
+        '\x60\x60\x60packet', '\x60\x60\x60plotly',
+    ]
     has_viz = (
         any(p in text for p in viz_patterns) or
         (state.viz_buffer and any(p in state.viz_buffer + text for p in viz_patterns))
