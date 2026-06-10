@@ -424,9 +424,22 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     return knownFiles.has(file.name);
   }, []);
 
-  const DOCUMENT_EXTENSIONS = useMemo(() => new Set([
-    'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'
-  ]), []);
+  const [documentExtensions, setDocumentExtensions] = useState<Set<string>>(
+    () => new Set(['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'pcap', 'pcapng', 'cap'])
+  );
+
+  useEffect(() => {
+    fetch('/api/extract-document/supported-types')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.extensions?.length) {
+          setDocumentExtensions(new Set(data.extensions));
+        }
+      })
+      .catch(() => { /* keep the hardcoded default */ });
+  }, []);
+
+  const DOCUMENT_EXTENSIONS = documentExtensions;
 
   const isDocumentFile = useCallback((file: File): boolean => {
     const ext = file.name.split('.').pop()?.toLowerCase() || '';
