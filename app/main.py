@@ -438,6 +438,58 @@ def start_server(args):
                     logger.error(f"AWS credentials check failed: {message}")
                     sys.exit(1)
             
+            # Apply any model-required account-level Bedrock settings.
+            if args.endpoint == "bedrock":
+                from app.config.models_config import MODEL_CONFIGS
+                _model_name = os.environ.get("ZIYA_MODEL", "")
+                _model_cfg = MODEL_CONFIGS.get("bedrock", {}).get(_model_name, {})
+                if _model_cfg.get("requires_provider_data_share"):
+                    from app.utils.aws_utils import ensure_bedrock_data_retention_mode
+                    _region = os.environ.get(
+                        "AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+                    )
+                    _ok, _err = ensure_bedrock_data_retention_mode(
+                        required_mode="provider_data_share",
+                        region=_region,
+                        profile_name=getattr(args, "profile", None),
+                    )
+                    if not _ok:
+                        print("\n" + "=" * 80)
+                        print("⚠️  DATA RETENTION SETUP FAILED")
+                        print("=" * 80)
+                        print(f"\n{_err}\n")
+                        print(
+                            "Claude Fable 5 requires opting in to Anthropic data sharing.\n"
+                            "Bedrock retains prompts/completions for up to 30 days and shares\n"
+                            "them with Anthropic. Check that your IAM policy allows bedrock:*\n"
+                            "on the Bedrock service, then re-run Ziya."
+                        )
+                        print("=" * 80 + "\n")
+                        sys.exit(1)
+
+                # Apply mantle data retention for models that need it.
+                if _model_cfg.get("endpoint_override") == "bedrock-mantle":
+                    if _model_cfg.get("requires_provider_data_share"):
+                        from app.utils.aws_utils import ensure_mantle_data_retention_mode
+                        _ok, _err = ensure_mantle_data_retention_mode(
+                            required_mode="provider_data_share",
+                            region=_region,
+                            profile_name=getattr(args, "profile", None),
+                        )
+                        if not _ok:
+                            print("\n" + "=" * 80)
+                            print("⚠️  MANTLE DATA RETENTION SETUP FAILED")
+                            print("=" * 80)
+                            print(f"\n{_err}\n")
+                            print(
+                                f"Model '{_model_name}' requires data retention mode\n"
+                                "'provider_data_share' on the Bedrock Mantle endpoint.\n"
+                                "Ensure your IAM policy allows the required Bedrock\n"
+                                "permissions, then re-run Ziya."
+                            )
+                            print("=" * 80 + "\n")
+                            sys.exit(1)
+
             # Set an environment variable to indicate we've already checked auth
             # This will be used by ModelManager to avoid duplicate initialization
             os.environ["ZIYA_AUTH_CHECKED"] = "true"

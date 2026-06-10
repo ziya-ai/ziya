@@ -860,6 +860,25 @@ class ModelManager:
         # Reset any previous error flags
         KnownCredentialException._error_displayed = False
         
+        # Delegate to specialised providers for models that don't use the
+        # standard bedrock-runtime boto3 endpoint.
+        endpoint_override = model_config.get("endpoint_override", "")
+        if endpoint_override == "bedrock-mantle":
+            from app.providers.bedrock_mantle import BedrockMantleProvider
+            _mantle_region = os.environ.get(
+                "AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", region)
+            )
+            logger.info(
+                f"Routing {model_id} to BedrockMantleProvider "
+                f"(region={_mantle_region})"
+            )
+            return BedrockMantleProvider(
+                model_id=model_id,
+                model_config=model_config,
+                region=_mantle_region,
+                aws_profile=aws_profile,
+            )
+
         # Get persistent Bedrock client (handles credential checking internally)
         persistent_client = cls._get_persistent_bedrock_client(aws_profile, region, model_id, model_config)
         
@@ -1214,11 +1233,14 @@ class ModelManager:
         logger.info("Initializing Anthropic model with direct API")
 
         model_id = model_config.get("model_id")
-        temperature = model_config.get("temperature", 0.3)
         max_output_tokens = model_config.get("max_output_tokens", 16384)
+        unsupported = model_config.get("unsupported_parameters", [])
+
+        # Some models (fable-5, opus-4-7+) reject temperature/top_k/top_p entirely.
+        temperature = None if "temperature" in unsupported else model_config.get("temperature", 0.3)
 
         settings = cls.get_model_settings(model_config)
-        if "temperature" in settings:
+        if "temperature" in settings and "temperature" not in unsupported:
             temperature = settings["temperature"]
         if "max_output_tokens" in settings:
             max_output_tokens = settings["max_output_tokens"]
