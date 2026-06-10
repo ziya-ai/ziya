@@ -316,3 +316,142 @@ def debug_aws_credentials():
         logger.error(f"Error calling STS: {str(e)}")
     
     logger.info("=== END AWS CREDENTIAL DEBUG ===")
+
+
+def ensure_bedrock_data_retention_mode(
+    required_mode: str,
+    region: str = "us-east-1",
+    profile_name: str | None = None,
+) -> tuple[bool, str]:
+    """Check the account-level Bedrock data retention mode and set it if needed.
+
+    Some models (e.g. Claude Fable 5) require the account to opt in to
+    'provider_data_share' before any invocations succeed.  This is a
+    one-time account-level setting applied via a direct signed HTTP call
+    because the boto3 SDK does not yet expose this API.
+
+    Returns:
+        (True, "") on success.
+        (False, error_message) on failure.
+    """
+    import json as _json
+    import requests as _requests
+    from botocore.auth import SigV4Auth
+    from botocore.awsrequest import AWSRequest
+
+    try:
+        session = create_fresh_boto3_session(profile_name=profile_name)
+        creds = session.get_credentials()
+        if creds is None:
+            return False, "No AWS credentials available"
+        creds = creds.get_frozen_credentials()
+
+        base_url = f"https://bedrock.{region}.amazonaws.com/data-retention"
+
+        # Check current mode
+        get_req = AWSRequest(method="GET", url=base_url, headers={})
+        SigV4Auth(creds, "bedrock", region).add_auth(get_req)
+        get_resp = _requests.get(base_url, headers=dict(get_req.headers), timeout=10)
+        if get_resp.status_code != 200:
+            return False, f"Failed to read Bedrock data retention mode: HTTP {get_resp.status_code} — {get_resp.text[:200]}"
+
+        current_mode = get_resp.json().get("mode", "inherit")
+        if current_mode == required_mode:
+            logger.debug(f"Bedrock data retention mode already set to '{required_mode}'")
+            return True, ""
+
+        logger.info(
+            f"Bedrock data retention mode is '{current_mode}'; "
+            f"setting to '{required_mode}' for model compatibility"
+        )
+        body = _json.dumps({"mode": required_mode})
+        put_req = AWSRequest(
+            method="PUT",
+            url=base_url,
+            headers={"Content-Type": "application/json"},
+            data=body,
+        )
+        SigV4Auth(creds, "bedrock", region).add_auth(put_req)
+        put_resp = _requests.put(base_url, headers=dict(put_req.headers), data=body, timeout=10)
+        if put_resp.status_code != 200:
+            return False, (
+                f"Failed to set Bedrock data retention mode to '{required_mode}': "
+                f"HTTP {put_resp.status_code} — {put_resp.text[:200]}"
+            )
+
+        logger.info(f"Bedrock data retention mode set to '{required_mode}'")
+        return True, ""
+
+    except Exception as exc:
+        return False, f"Error setting Bedrock data retention mode: {exc}"
+
+
+def ensure_mantle_data_retention_mode(
+    required_mode: str,
+    region: str = "us-east-1",
+    profile_name: str | None = None,
+) -> tuple[bool, str]:
+    """Check and apply the Bedrock Mantle account-level data retention mode.
+
+    The mantle endpoint has its own data retention API at /v1/data_retention
+    (separate from the bedrock control plane).
+
+    Returns:
+        (True, "") on success.
+        (False, error_message) on failure.
+    """
+    import json as _json
+    try:
+        import requests as _requests
+    except ImportError:
+        return False, "'requests' package required. Run: pip install requests"
+    from botocore.auth import SigV4Auth
+    from botocore.awsrequest import AWSRequest
+
+    try:
+        session = create_fresh_boto3_session(profile_name=profile_name)
+        creds = session.get_credentials()
+        if creds is None:
+            return False, "No AWS credentials available"
+        creds = creds.get_frozen_credentials()
+
+        base_url = f"https://bedrock-mantle.{region}.api.aws/v1/data_retention"
+
+        get_req = AWSRequest(method="GET", url=base_url, headers={})
+        SigV4Auth(creds, "bedrock", region).add_auth(get_req)
+        get_resp = _requests.get(base_url, headers=dict(get_req.headers), timeout=10)
+        if get_resp.status_code != 200:
+            return False, (
+                f"Failed to read Mantle data retention mode: "
+                f"HTTP {get_resp.status_code} — {get_resp.text[:200]}"
+            )
+
+        current_mode = get_resp.json().get("mode", "inherit")
+        if current_mode == required_mode:
+            logger.debug(f"Mantle data retention mode already '{required_mode}'")
+            return True, ""
+
+        logger.info(
+            f"Mantle data retention mode is '{current_mode}'; "
+            f"setting to '{required_mode}'"
+        )
+        body = _json.dumps({"mode": required_mode})
+        put_req = AWSRequest(
+            method="PUT", url=base_url,
+            headers={"Content-Type": "application/json"}, data=body,
+        )
+        SigV4Auth(creds, "bedrock", region).add_auth(put_req)
+        put_resp = _requests.put(
+            base_url, headers=dict(put_req.headers), data=body, timeout=10
+        )
+        if put_resp.status_code != 200:
+            return False, (
+                f"Failed to set Mantle data retention to '{required_mode}': "
+                f"HTTP {put_resp.status_code} — {put_resp.text[:200]}"
+            )
+
+        logger.info(f"Mantle data retention mode set to '{required_mode}'")
+        return True, ""
+
+    except Exception as exc:
+        return False, f"Error configuring Mantle data retention mode: {exc}"
