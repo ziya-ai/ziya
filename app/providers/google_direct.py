@@ -448,6 +448,12 @@ class GoogleDirectProvider(LLMProvider):
 
         tool_index = 0
         last_usage = None
+        # Carry any thought_signature seen on a thought/text part forward to the
+        # next function_call part in the same stream.  Gemini thinking models may
+        # place the signature on the preceding thought Part rather than directly
+        # on the functionCall Part; we must echo it back on the functionCall Part
+        # or the API rejects the follow-up request with 400.
+        pending_thought_signature: Optional[bytes] = None
         async for chunk in response:
             # Gemini attaches usage_metadata to chunks (typically the last).
             # Keep the most recent one and emit a single UsageEvent at the end
@@ -459,20 +465,33 @@ class GoogleDirectProvider(LLMProvider):
             if not chunk.parts:
                 continue
             for part in chunk.parts:
-                if part.text:
+                # Eagerly capture any thought_signature present on this Part,
+                # regardless of whether it is a thought, text, or function_call
+                # Part.  This handles the case where the signature rides on the
+                # thinking Part that precedes the functionCall Part.
+                part_sig = getattr(part, "thought_signature", None)
+                if part_sig:
+                    pending_thought_signature = part_sig
+                is_thought_part = bool(getattr(part, "thought", None))
+                if part.text and not is_thought_part:
                     yield TextDelta(content=part.text)
-                if hasattr(part, "thought") and part.thought:
-                    yield ThinkingDelta(content=part.thought)
+                if is_thought_part and part.text:
+                    yield ThinkingDelta(content=part.text)
                 if hasattr(part, "function_call") and part.function_call:
                     fc = part.function_call
                     tool_id = f"google_tool_{tool_index}"
                     tool_index += 1
                     args = dict(fc.args) if hasattr(fc, "args") and fc.args else {}
                     self._tool_id_to_name[tool_id] = fc.name
-                    # Capture thought_signature if present (Gemini 3+).
-                    sig = getattr(part, "thought_signature", None)
-                    if sig:
-                        self._tool_id_to_signature[tool_id] = sig
+                    # Use the signature from this Part directly if available;
+                    # otherwise fall back to any signature accumulated from a
+                    # preceding Part in the same stream (thought-before-FC pattern).
+                    # For parallel function calls, only the first FC has a signature
+                    # per the Gemini API contract — reset after consuming it.
+                    effective_sig = part_sig or pending_thought_signature
+                    if effective_sig:
+                        self._tool_id_to_signature[tool_id] = effective_sig
+                        pending_thought_signature = None  # consumed
                     yield ToolUseStart(id=tool_id, name=fc.name, index=tool_index)
                     if args:
                         yield ToolUseInput(
