@@ -1,12 +1,13 @@
 /**
  * BeadTree — displays the conversation's task tree with resume actions.
  *
- * Shows as a small "📿 N" indicator near the conversation header when
+ * Shows as a small branch-icon + count indicator near the conversation header when
  * parked beads exist.  Clicking opens a popover with the full tree.
  * Users can click "Resume" on a parked bead to switch context.
  */
 import React, { useState, useEffect, useCallback } from 'react';
 import { Popover, Button, Empty, message, Tooltip, Spin } from 'antd';
+import { BranchesOutlined } from '@ant-design/icons';
 import { useTheme } from '../context/ThemeContext';
 import { useStreamingContext } from '../context/StreamingContext';
 import * as beadApi from '../api/beadApi';
@@ -165,12 +166,20 @@ const BeadTree: React.FC<BeadTreeProps> = ({ conversationId, onResume }) => {
     }
   }, [conversationId, onResume, loadBeads]);
 
-  // Compute display state — always render so the user can see system status
+  // Compute display state.
   const beadCount = tree?.beads.length ?? 0;
   const parkedCount = tree?.parked_count ?? 0;
   const completedCount = tree?.completed_count ?? 0;
   const activeCount = beadCount - parkedCount - completedCount;
   const rootBeads = tree?.beads.filter(b => !b.parent_id) ?? [];
+
+  // Don't surface the indicator at all until a bead thread is established.
+  // Until the model forks/parks a thread there is nothing actionable to
+  // show, and a dimmed always-present chip is just noise.  All hooks above
+  // run unconditionally, so this early return is Rules-of-Hooks-safe.
+  if (beadCount === 0) {
+    return null;
+  }
 
   // Visual state: empty | active-only | has-parked
   const visualState = parkedCount > 0 ? 'parked' : (beadCount > 0 ? 'active' : 'empty');
@@ -247,7 +256,7 @@ const BeadTree: React.FC<BeadTreeProps> = ({ conversationId, onResume }) => {
           fontSize: 12,
           color: isDarkMode ? '#64748b' : '#94a3b8',
         }}>
-          <div style={{ fontSize: 24, marginBottom: 8, opacity: 0.4 }}>📿</div>
+          <div style={{ fontSize: 24, marginBottom: 8, opacity: 0.4 }}><BranchesOutlined /></div>
           <div>No threads tracked yet</div>
           <div style={{ fontSize: 10, marginTop: 4, opacity: 0.7 }}>
             Beads appear when the model identifies subtasks or unfollowed forks during a conversation.
@@ -293,7 +302,8 @@ const BeadTree: React.FC<BeadTreeProps> = ({ conversationId, onResume }) => {
           alignItems: 'center',
           gap: 4,
         }}>
-          📿{beadCount > 0 ? ` ${parkedCount > 0 ? parkedCount : beadCount}` : ''}
+          <BranchesOutlined style={{ fontSize: 13 }} />
+          {beadCount > 0 ? (parkedCount > 0 ? parkedCount : beadCount) : ''}
         </span>
       </Tooltip>
     </Popover>
