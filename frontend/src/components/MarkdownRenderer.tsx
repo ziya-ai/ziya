@@ -3825,6 +3825,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
                 padding: '16px',
                 borderRadius: '6px',
                 overflow: 'auto',
+                whiteSpace: 'pre',
                 backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
                 border: `1px solid ${isDarkMode ? '#303030' : '#e1e4e8'}`
             }}>
@@ -3840,6 +3841,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
                 style={{
                     padding: '16px',
                     borderRadius: '6px',
+                whiteSpace: 'pre',
                     overflow: 'auto',
                     visibility: 'visible',
                     backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
@@ -5087,8 +5089,26 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         // If it has nested tokens, render them recursively
                         return renderTokens(tokenWithText.tokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig);
                     } else {
-                        // Otherwise, just render the decoded text content directly
-                        return decodedText; // Direct text rendering prevents JSX interpretation
+                        // If the text contains multiple lines, preserve whitespace.
+                        // This handles cases where fenced code block content (no lang tag)
+                        // ends up as a text token — e.g. during streaming before the
+                        // closing fence arrives, or when preprocessing strips bare fences.
+                        if (decodedText.includes('\n') && decodedText.trim().includes('\n')) {
+                            return (
+                                <pre key={sk} style={{
+                                    margin: '0.5em 0',
+                                    padding: '12px 16px',
+                                    borderRadius: '6px',
+                                    overflow: 'auto',
+                                    whiteSpace: 'pre',
+                                    fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+                                    fontSize: '0.85em',
+                                    backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
+                                    border: `1px solid ${isDarkMode ? '#303030' : '#e1e4e8'}`,
+                                }}>{decodedText}</pre>
+                            );
+                        }
+                        return decodedText;
                     }
 
                 // --- Handle Inline Markdown Elements (Recursively) ---
