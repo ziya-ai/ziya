@@ -9,7 +9,6 @@ open the bead inspector UI or use a /beads slash command.
 Tools:
   - bead_create: fork a new subtask from the current active bead
   - bead_complete: mark current active bead as done, resume parent
-  - bead_park: explicitly park the current bead and resume parent
   - bead_status: view the current bead tree (model-internal introspection)
 """
 import os
@@ -36,12 +35,20 @@ def _is_ephemeral_context() -> bool:
     ephemeral conversations).
     """
     if os.environ.get("ZIYA_EPHEMERAL", "").lower() in ("1", "true", "yes"):
+        logger.debug("📿 bead gate: ephemeral=True (ZIYA_EPHEMERAL set)")
         return True
     try:
         from app.storage.beads import _resolve_chat_storage
         storage, conv_id = _resolve_chat_storage()
-        return storage.get(conv_id) is None
-    except (ValueError, ImportError):
+        missing = storage.get(conv_id) is None
+        if missing:
+            logger.debug(
+                "📿 bead gate: ephemeral=True (chat %s not on disk)",
+                (conv_id or "?")[:8],
+            )
+        return missing
+    except (ValueError, ImportError) as e:
+        logger.debug("📿 bead gate: ephemeral=True (resolve failed: %s)", e)
         return True
 
 

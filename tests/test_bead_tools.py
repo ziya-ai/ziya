@@ -8,6 +8,7 @@ Covers:
   - bead_status tool (tree rendering)
   - Storage round-trip (save/load via mock chat storage)
 """
+import os
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
@@ -240,3 +241,62 @@ async def test_bead_create_skips_for_ephemeral_conversation():
 
     assert result["ok"] is True
     assert result.get("skipped") is True
+
+
+# -- Directive decoupling tests ---------------------------------------------
+# The bead *directive* (system-prompt instructions) must be decoupled from
+# per-conversation persistability.  Regression for: a transient
+# _resolve_chat_storage() failure used to suppress the directive, so the
+# model was never told beads exist and never created any ("not activated
+# even deep in conversations").  The directive is now gated ONLY on the
+# category being enabled and on global ephemeral mode.
+
+
+def test_directive_survives_resolution_failure():
+    """Per-conversation resolve failure must NOT suppress the directive."""
+    from app.utils import bead_prompt
+    with patch.dict(os.environ, {"ZIYA_EPHEMERAL": ""}), \
+         patch("app.mcp.builtin_tools.is_builtin_category_enabled", return_value=True), \
+         patch("app.storage.beads._resolve_chat_storage",
+               side_effect=ValueError("No project found for path: /x")):
+        directive = bead_prompt.get_bead_directive()
+    assert directive  # non-empty
+    assert "bead_create" in directive
+
+
+def test_directive_present_when_chat_missing_on_disk():
+    """Chat not yet persisted must NOT suppress the directive."""
+    from app.utils import bead_prompt
+    fake_storage = MagicMock()
+    fake_storage.get.return_value = None  # chat not on disk
+    with patch.dict(os.environ, {"ZIYA_EPHEMERAL": ""}), \
+         patch("app.mcp.builtin_tools.is_builtin_category_enabled", return_value=True), \
+         patch("app.storage.beads._resolve_chat_storage",
+               return_value=(fake_storage, "conv-1")):
+        directive = bead_prompt.get_bead_directive()
+    assert "bead_create" in directive
+
+
+def test_directive_suppressed_by_global_ephemeral(monkeypatch):
+    """Global ephemeral mode is the ONLY thing that suppresses the directive."""
+    from app.utils import bead_prompt
+    monkeypatch.setenv("ZIYA_EPHEMERAL", "1")
+    with patch("app.mcp.builtin_tools.is_builtin_category_enabled", return_value=True):
+        assert bead_prompt.get_bead_directive() == ""
+
+
+def test_directive_suppressed_when_category_disabled(monkeypatch):
+    from app.utils import bead_prompt
+    monkeypatch.setenv("ZIYA_EPHEMERAL", "")
+    with patch("app.mcp.builtin_tools.is_builtin_category_enabled", return_value=False):
+        assert bead_prompt.get_bead_directive() == ""
+
+
+def test_global_ephemeral_helper(monkeypatch):
+    from app.utils import bead_prompt
+    monkeypatch.setenv("ZIYA_EPHEMERAL", "1")
+    assert bead_prompt._is_global_ephemeral() is True
+    monkeypatch.setenv("ZIYA_EPHEMERAL", "true")
+    assert bead_prompt._is_global_ephemeral() is True
+    monkeypatch.setenv("ZIYA_EPHEMERAL", "")
+    assert bead_prompt._is_global_ephemeral() is False
