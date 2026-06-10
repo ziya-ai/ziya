@@ -4,7 +4,7 @@ import { useConversationList } from '../context/ConversationListContext';
 import { useScrollContext } from '../context/ScrollContext';
 import { EditSection } from "./EditSection";
 import { Spin, Button, Tooltip, Image as AntImage } from 'antd';
-import { RedoOutlined, SoundOutlined, MutedOutlined, PictureOutlined, CodeOutlined, EyeOutlined, CloseOutlined } from "@ant-design/icons";
+import { RedoOutlined, SoundOutlined, MutedOutlined, PictureOutlined, CodeOutlined, EyeOutlined, CloseOutlined, DeleteOutlined } from "@ant-design/icons";
 
 import { DocumentChip, ImageChip } from './FileChip';
 import ModelChangeNotification from './ModelChangeNotification';
@@ -17,6 +17,7 @@ import { useSendPayload } from '../hooks/useSendPayload';
 
 import { useTaskBindings } from '../hooks/useTaskBindings';
 import { MessageIdContext } from '../context/MessageIdContext';
+import { useCopyCleanup } from '../hooks/useCopyCleanup';
 
 // Lazy load the MarkdownRenderer
 import { MarkdownRenderer } from "./MarkdownRenderer";
@@ -252,6 +253,22 @@ const MessageActions = memo<MessageActionsProps>(({
                         onClick={() => toggleMessageMute(currentConversationId, actualIndex)} />
                 </Tooltip>
             )}
+            {/* Delete button — only visible when the message is muted */}
+            {!showRetry && message.role !== 'system' && message.muted && !isCurrentlyStreaming && (
+                <Tooltip title="Delete this message">
+                    <Button icon={<DeleteOutlined />} type="default" size="small" danger
+                        style={{ padding: '0 8px', minWidth: '32px', height: '32px' }}
+                        onClick={handleDiscard} />
+                </Tooltip>
+            )}
+            {/* Delete button — only shown when message is muted */}
+            {!showRetry && message.role !== 'system' && message.muted && !isCurrentlyStreaming && (
+                <Tooltip title="Delete this message">
+                    <Button icon={<DeleteOutlined />} type="default" size="small" danger
+                        style={{ padding: '0 8px', minWidth: '32px', height: '32px' }}
+                        onClick={handleDiscard} />
+                </Tooltip>
+            )}
             {/* Resubmit button */}
             {!showRetry && message.role === 'human' && !isCurrentlyStreaming && (
                 <Tooltip title="Resubmit this question">
@@ -414,6 +431,9 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     projectRef.current = projectCtx;
 
     const setQuestion = useSetQuestion();
+
+    const messagesContainerRef = useRef<HTMLDivElement>(null);
+    useCopyCleanup(messagesContainerRef);
 
     // Two-layer streaming derivation: the raw values (Map/Set) change on every
     // chunk, but the booleans only flip at stream start/end. Derive booleans
@@ -676,6 +696,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                     minHeight: '50px' // Ensure visibility detection
                 }}
                 className="conversation-messages-container"
+                ref={messagesContainerRef}
             >
                 {/* Raw mode indicator banner */}
                 {isRawMode && (
