@@ -59,11 +59,25 @@ about") that aren't committed work
 
 
 def get_bead_directive() -> str:
-    """Return the bead system-prompt directive if beads are enabled."""
+    """Return the bead system-prompt directive if beads are enabled.
+
+    The directive is *instructions* — teaching the model that beads exist
+    and when to use them.  It is gated ONLY on the category being enabled
+    and on true global ephemeral mode.  It deliberately does NOT depend on
+    whether the current conversation's chat record is resolvable/on-disk:
+    doing so silently stripped the model's only instruction to use beads
+    whenever ``_resolve_chat_storage()`` hiccuped (unregistered project
+    path, ContextVar timing, browser-mode resolution), which read to the
+    user as "beads never activate".  The actual persistence decision lives
+    in the tool's ``execute()`` (``_is_ephemeral_context``), which skips the
+    write cleanly when a chat genuinely can't persist.
+    """
     from app.mcp.builtin_tools import is_builtin_category_enabled
     if not is_builtin_category_enabled("beads"):
+        logger.debug("📿 bead directive: suppressed (category disabled)")
         return ""
-    if _is_ephemeral():
+    if _is_global_ephemeral():
+        logger.debug("📿 bead directive: suppressed (global ephemeral mode)")
         return ""
     return BEAD_DIRECTIVE
 
@@ -77,7 +91,7 @@ def get_bead_status_summary() -> str:
     from app.mcp.builtin_tools import is_builtin_category_enabled
     if not is_builtin_category_enabled("beads"):
         return ""
-    if _is_ephemeral():
+    if _is_global_ephemeral():
         return ""
 
     try:
@@ -102,32 +116,24 @@ def get_bead_status_summary() -> str:
         return ""
 
 
-def _is_ephemeral() -> bool:
-    """Whether the current context is ephemeral (no bead persistence).
+def _is_global_ephemeral() -> bool:
+    """Whether global ephemeral mode is active (CLI --ephemeral / ZIYA_EPHEMERAL=1).
 
-    Returns True when:
-      - Global ephemeral mode is active (CLI --ephemeral / ZIYA_EPHEMERAL=1)
-      - The current conversation has no backing chat record (frontend
-        ephemeral conversations are never pushed to the server, so the
-        chat record doesn't exist on disk)
+    This is the ONLY condition under which the bead *directive* is
+    suppressed.  In global ephemeral mode nothing persists for the whole
+    session, so teaching the model to track threads would only produce
+    tool calls that no-op.
 
-    In either case, beads would have nowhere to persist — so we suppress
-    the prompt directive entirely, preventing the model from wasting tool
-    calls on state that won't survive.
+    Per-conversation persistability is deliberately NOT checked here — that
+    decision belongs to the tool's ``execute()`` (``_is_ephemeral_context``),
+    so a transient project-resolution failure never strips the model's
+    instructions.  Coupling the directive to chat-resolvability was the
+    cause of the "beads never activate even deep in conversations" bug: any
+    ``_resolve_chat_storage()`` hiccup (unregistered project path, ContextVar
+    timing, browser-mode resolution) silently removed the only instruction
+    telling the model that beads exist.
     """
-    # Global ephemeral mode (CLI --ephemeral flag)
     if os.environ.get("ZIYA_EPHEMERAL", "").lower() in ("1", "true", "yes"):
+        logger.debug("📿 bead directive gate: global ephemeral mode active")
         return True
-
-    # Per-conversation check: does the chat record exist?
-    try:
-        from app.context import get_conversation_id_or_none
-        conv_id = get_conversation_id_or_none()
-        if not conv_id:
-            return True  # No conversation context → can't persist beads
-        from app.storage.beads import _resolve_chat_storage
-        storage, _ = _resolve_chat_storage()
-        chat = storage.get(conv_id)
-        return chat is None
-    except (ValueError, ImportError):
-        return True  # Can't resolve storage → treat as ephemeral
+    return False
