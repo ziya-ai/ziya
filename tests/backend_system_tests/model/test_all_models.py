@@ -84,6 +84,11 @@ def setup_extensions():
 @pytest.mark.parametrize("endpoint,model", get_all_available_models())
 def test_all_models(endpoint, model, setup_extensions):
     """Test that each model can be called with a simple query."""
+    # Skip preview models — they may not be deployed yet.
+    _cfg = config.MODEL_CONFIGS.get(endpoint, {}).get(model, {})
+    if _cfg.get("preview"):
+        pytest.skip(f"{endpoint}/{model} is preview — model may not be deployed")
+
     # For Bedrock models, always use the ziya profile
     if endpoint == "bedrock":
         os.environ["ZIYA_AWS_PROFILE"] = "ziya"
