@@ -174,6 +174,15 @@ class BedrockProvider(LLMProvider):
                     )
                 else:
                     error_str = str(e) or f"{type(e).__name__}"
+
+                # Augment the error with a remediation hint for the data-retention gate.
+                if "data retention mode" in error_str and "not available for this model" in error_str:
+                    error_str += (
+                        " — This model requires the Bedrock account-level data retention mode "
+                        "set to 'provider_data_share'. Restart Ziya with this model selected "
+                        "to apply the setting automatically."
+                    )
+
                 classified = self._classify_error(error_str)
                 logger.warning(
                     f"BedrockProvider: call failed after {time.time() - call_start:.1f}s — "

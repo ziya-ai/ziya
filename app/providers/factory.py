@@ -46,6 +46,19 @@ def create_provider(
     model_config = model_config or {}
 
     if endpoint == "bedrock":
+        # Some models override the default bedrock-runtime endpoint.
+        endpoint_override = model_config.get("endpoint_override", "")
+        if endpoint_override == "bedrock-mantle":
+            from app.providers.bedrock_mantle import BedrockMantleProvider
+            _region = region or os.environ.get(
+                "AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+            )
+            return BedrockMantleProvider(
+                model_id=model_id,
+                model_config=model_config,
+                region=_region,
+            )
+
         # Claude uses the Anthropic invoke_model API (prompt caching,
         # extended context headers, region failover).
         # OpenAI-format models use invoke_model with Chat Completions body.

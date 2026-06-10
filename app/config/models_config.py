@@ -775,6 +775,64 @@ MODEL_CONFIGS = {
             "default_max_output_tokens": 4096,
             "region": "us-west-2"
         },
+        "fable5": {
+            "model_id": {
+                "us": "us.anthropic.claude-fable-5",
+                "eu": "eu.anthropic.claude-fable-5",
+                "global": "global.anthropic.claude-fable-5"
+            },
+            "available_regions": ["us-east-1", "eu-north-1"],
+            "preferred_region": "us-east-1",
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32000,
+            "max_iterations": 10,
+            "timeout_multiplier": 8,
+            "is_advanced_model": True,
+            "supports_max_input_tokens": True,
+            "supports_thinking": True,
+            "family": "claude",
+            "supports_context_caching": True,
+            "supports_adaptive_thinking": True,
+            "thinking_effort_default": "medium",
+            "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+            "supports_vision": True,
+            "supports_assistant_prefill": False,
+            # Fable 5 (Mythos-class) requires temperature=1.0 (or unset) and
+            # top_p >= 0.99 (or unset); top_k is not supported. Steer via
+            # the effort parameter instead.
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+            # Bedrock requires the account-level data retention mode set to
+            # 'provider_data_share' before invocations succeed. Ziya applies
+            # this automatically at startup via the Data Retention API.
+            "requires_provider_data_share": True,
+        },
+        "mythos5": {
+            # Mythos 5 is in limited preview for cybersecurity/life sciences.
+            # It uses the bedrock-mantle endpoint exclusively (not bedrock-runtime)
+            # and has no geo/global inference profiles.
+            "model_id": "anthropic.claude-mythos-5",
+            "available_regions": ["us-east-1"],
+            "preferred_region": "us-east-1",
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32000,
+            "max_iterations": 10,
+            "timeout_multiplier": 8,
+            "is_advanced_model": True,
+            "supports_max_input_tokens": True,
+            "supports_thinking": True,
+            "family": "claude",
+            "supports_context_caching": True,
+            "supports_adaptive_thinking": True,
+            "thinking_effort_default": "high",
+            "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+            "supports_vision": True,
+            "supports_assistant_prefill": False,
+            "preview": True,
+            "endpoint_override": "bedrock-mantle",
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
     },
     "google": {
         "gemini-2.5-pro": {
@@ -1041,7 +1099,7 @@ MODEL_CONFIGS = {
             "native_function_calling": True,
         },
         "claude-sonnet-4-5": {
-            "model_id": "claude-sonnet-4-5-20250514",
+            "model_id": "claude-sonnet-4-5-20250929",
             "family": "claude",
             "token_limit": 200000,
             "max_output_tokens": 64000,
@@ -1071,6 +1129,7 @@ MODEL_CONFIGS = {
             "supports_thinking": True,
             "supports_adaptive_thinking": True,
             "native_function_calling": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
         "claude-opus-4-8": {
             "model_id": "claude-opus-4-8",
@@ -1082,14 +1141,46 @@ MODEL_CONFIGS = {
             "supports_thinking": True,
             "supports_adaptive_thinking": True,
             "native_function_calling": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
-        "claude-haiku-3-5": {
-            "model_id": "claude-3-5-haiku-20241022",
+        "claude-sonnet-4": {
+            "model_id": "claude-sonnet-4-20250514",
             "family": "claude",
             "token_limit": 200000,
-            "max_output_tokens": 8192,
-            "default_max_output_tokens": 8192,
+            "max_output_tokens": 64000,
+            "default_max_output_tokens": 16384,
             "supports_vision": True,
+            "supports_thinking": True,
+            "native_function_calling": True,
+        },
+        "claude-opus-4": {
+            "model_id": "claude-opus-4-20250514",
+            "family": "claude",
+            "token_limit": 200000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 16384,
+            "supports_vision": True,
+            "supports_thinking": True,
+            "native_function_calling": True,
+        },
+        "claude-opus-4-1": {
+            "model_id": "claude-opus-4-1-20250805",
+            "family": "claude",
+            "token_limit": 200000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 16384,
+            "supports_vision": True,
+            "supports_thinking": True,
+            "native_function_calling": True,
+        },
+        "claude-opus-4-5": {
+            "model_id": "claude-opus-4-5-20251101",
+            "family": "claude",
+            "token_limit": 200000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 16384,
+            "supports_vision": True,
+            "supports_thinking": True,
             "native_function_calling": True,
         },
         "claude-haiku-4-5": {
@@ -1101,6 +1192,31 @@ MODEL_CONFIGS = {
             "supports_vision": True,
             "supports_thinking": True,
             "native_function_calling": True,
+        },
+        "claude-fable-5": {
+            "model_id": "claude-fable-5",
+            "family": "claude",
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32000,
+            "supports_vision": True,
+            "supports_thinking": True,
+            "supports_adaptive_thinking": True,
+            "native_function_calling": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
+        "claude-mythos-5": {
+            "model_id": "claude-mythos-5",
+            "family": "claude",
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32000,
+            "supports_vision": True,
+            "supports_thinking": True,
+            "supports_adaptive_thinking": True,
+            "native_function_calling": True,
+            "preview": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
     }
 }
