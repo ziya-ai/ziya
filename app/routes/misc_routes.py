@@ -37,9 +37,6 @@ class PcapAnalyzeRequest(BaseModel):
     limit: Optional[int] = None
 
 
-DOCUMENT_EXTENSIONS = {'.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx'}
-
-
 @router.post("/api/extract-document")
 async def extract_document(file: UploadFile = File(...)):
     """
@@ -49,36 +46,35 @@ async def extract_document(file: UploadFile = File(...)):
     delegated to the existing document_extractor module which uses
     pdfplumber / pypdf / python-docx / openpyxl / python-pptx.
     """
-    from app.utils.document_extractor import extract_document_text, is_document_file
-    from app.context import get_project_root
+    from app.utils.document_extractor import UPLOAD_HANDLER_REGISTRY
 
     filename = file.filename or "upload"
     ext = os.path.splitext(filename)[1].lower()
 
-    if ext not in DOCUMENT_EXTENSIONS:
+    handler = UPLOAD_HANDLER_REGISTRY.get(ext)
+    if handler is None:
         return JSONResponse(
             status_code=400,
             content={"error": "unsupported_type", "message": f"Unsupported document type: {ext}"}
         )
 
+    contents = await file.read()
+    size_limit = 200 * 1024 * 1024
+    if len(contents) > size_limit:
+        return JSONResponse(
+            status_code=413,
+            content={"error": "file_too_large", "message": f"File exceeds {size_limit // (1024*1024)} MB limit"}
+        )
+
     tmp_path = None
-    kept_path: Optional[str] = None  # Persistent copy for large PDFs (RAG-indexed)
+    kept_path: Optional[str] = None
     try:
-        # Write to a temp file so the extractor can work with a real path
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
             tmp_path = tmp.name
-            contents = await file.read()
-            if len(contents) > 50 * 1024 * 1024:  # 50 MB safety cap
-                return JSONResponse(
-                    status_code=413,
-                    content={"error": "file_too_large", "message": "Document exceeds 50 MB limit"}
-                )
             tmp.write(contents)
 
-        # For PDFs, check whether RAG should kick in BEFORE extraction so we
-        # can promote the temp file to a persistent location — large PDFs
-        # get replaced with a stub that references the file by path, and
-        # that path has to survive the upload handler.
+        # PDF RAG promotion: move to a persistent path before handing off
+        # so the RAG index survives the request.
         rag_used = False
         if ext == '.pdf':
             try:
@@ -106,55 +102,23 @@ async def extract_document(file: UploadFile = File(...)):
                 logger.warning(f"PDF RAG pre-check failed for {filename}: {e}")
 
         extract_source = kept_path if rag_used else tmp_path
-        text = extract_document_text(extract_source)
-
-        if text is None:
-            from app.utils.document_extractor import _check_libraries, _AVAILABLE_LIBRARIES
-            _check_libraries()
-            has_libs = any(_AVAILABLE_LIBRARIES.values())
-            if has_libs:
-                # For PDFs, try rendering pages as images (scanned docs)
-                if ext == '.pdf':
-                    from app.utils.document_extractor import extract_pdf_page_images
-                    page_images = extract_pdf_page_images(extract_source)
-                    if page_images:
-                        logger.info(f"Extracted {len(page_images)} page images from {filename}")
-                        return {
-                            "filename": filename,
-                            "text": None,
-                            "chars": 0,
-                            "images": page_images,
-                            "message": f"No readable text found. Extracted {len(page_images)} page image(s) from the PDF."
-                        }
-
-                return JSONResponse(
-                    status_code=422,
-                    content={"error": "no_text_extracted",
-                             "message": f"Could not extract readable text from {filename}. "
-                                        "The document may be a scanned image without a text layer, "
-                                        "or may be empty."}
-                )
-            else:
-                return JSONResponse(
-                    status_code=422,
-                    content={"error": "extraction_failed",
-                             "message": f"Could not extract text from {filename}. "
-                                        "Ensure the required library is installed (e.g. pip install pypdf pdfplumber python-docx openpyxl python-pptx)."}
-                )
-
-        return {
-            "filename": filename,
-            "text": text,
-            "chars": len(text),
-            "rag": rag_used,
-            **({"indexed_path": kept_path} if rag_used else {}),
-        }
+        result = handler(extract_source, filename)
+        return JSONResponse({"filename": filename, "rag": rag_used,
+                             **({"indexed_path": kept_path} if rag_used else {}),
+                             **result})
     except Exception as e:
         logger.error(f"Document extraction failed for {filename}: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"error": "server_error", "message": str(e)})
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
+
+
+@router.get("/api/extract-document/supported-types")
+async def supported_document_types():
+    """Return the list of file extensions accepted by /api/extract-document."""
+    from app.utils.document_extractor import get_supported_upload_extensions
+    return JSONResponse({"extensions": get_supported_upload_extensions()})
 
 
 @router.post("/api/dynamic-tools/update")

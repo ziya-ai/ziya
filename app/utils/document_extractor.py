@@ -116,6 +116,67 @@ def is_document_file(file_path: str) -> bool:
     
     return ext in supported_extensions
 
+
+def _pcap_upload_handler(tmp_path: str, filename: str) -> dict:
+    from app.utils.pcap_analyzer import analyze_pcap_file, is_pcap_supported
+    import json as _json
+    if not is_pcap_supported():
+        raise RuntimeError("Scapy is not installed. Install with: pip install scapy")
+    result = analyze_pcap_file(tmp_path, operation="summary")
+    if isinstance(result, dict) and result.get("error"):
+        raise RuntimeError(result.get("message", result["error"]))
+    summary_text = _json.dumps(result, indent=2) if isinstance(result, dict) else str(result)
+    return {
+        "text": f"# PCAP summary: {filename}\n\n```json\n{summary_text}\n```\n",
+        "chars": len(summary_text),
+    }
+
+
+def _document_upload_handler(tmp_path: str, filename: str) -> dict:
+    text = extract_document_text(tmp_path)
+    if text is None:
+        ext = os.path.splitext(tmp_path)[1].lower()
+        _check_libraries()
+        if any(_AVAILABLE_LIBRARIES.values()):
+            if ext == '.pdf':
+                page_images = extract_pdf_page_images(tmp_path)
+                if page_images:
+                    return {
+                        "text": None,
+                        "chars": 0,
+                        "images": page_images,
+                        "message": f"No readable text found. Extracted {len(page_images)} page image(s) from the PDF.",
+                    }
+            raise RuntimeError(
+                f"Could not extract readable text from {filename}. "
+                "The document may be a scanned image without a text layer, or may be empty."
+            )
+        raise RuntimeError(
+            f"Could not extract text from {filename}. "
+            "Ensure required libraries are installed: pip install pypdf pdfplumber python-docx openpyxl python-pptx"
+        )
+    return {"text": text, "chars": len(text)}
+
+
+# Registry: maps lowercase extension (with dot) to a handler callable.
+# Each handler receives (tmp_path: str, filename: str) and returns a dict
+# with at least {"text": str, "chars": int}.  To add support for a new
+# file type, register it here — no other file needs to change.
+UPLOAD_HANDLER_REGISTRY: dict = {
+    ext: _document_upload_handler
+    for ext in ('.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx')
+}
+UPLOAD_HANDLER_REGISTRY.update({
+    ext: _pcap_upload_handler
+    for ext in ('.pcap', '.pcapng', '.cap')
+})
+
+
+def get_supported_upload_extensions() -> list:
+    """Return sorted list of extensions (without dot) handled by the registry."""
+    return sorted(ext.lstrip('.') for ext in UPLOAD_HANDLER_REGISTRY)
+
+
 def is_tool_backed_file(file_path: str) -> bool:
     """
     Check if a file has specialized tool support (like pcap files).
