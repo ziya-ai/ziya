@@ -424,19 +424,8 @@ class CLIDiffApplicator:
                         break
                     if self._is_sequential_pair(diffs[i].content, diffs[j].content):
                         continue  # complementary, not superseding
-                    # j's ranges overlap i's and they differ: j is a revision of i.
-                    # But only mark i as superseded if j is a strict superset
-                    # (covers all of i's ranges plus more, or the same ranges).
-                    # If i already covers more ranges than j, i is the superset and
-                    # j is the redundant one.
-                    ranges_i = set(map(tuple, parsed_ranges[i]))
-                    ranges_j = set(map(tuple, parsed_ranges[j]))
-                    if ranges_j >= ranges_i:
-                        # j covers everything i did (and possibly more) — i is stale
-                        superseded.add(i)
-                    else:
-                        # i covers more than j — j is the redundant partial duplicate
-                        superseded.add(j)
+                    # j came later in the conversation — it supersedes i.
+                    superseded.add(i)
                     break
         
         if not superseded:
