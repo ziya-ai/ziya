@@ -22,6 +22,11 @@ def get_all_models():
 
 
 def init_model(endpoint, model):
+    # Skip preview models that may not be deployed yet.
+    _cfg = config.MODEL_CONFIGS.get(endpoint, {}).get(model, {})
+    if _cfg.get("preview"):
+        pytest.skip(f"{endpoint}/{model} is preview — model may not be deployed")
+
     for var in ["ZIYA_MAX_OUTPUT_TOKENS", "ZIYA_MAX_TOKENS", "AWS_REGION"]:
         os.environ.pop(var, None)
     os.environ["ZIYA_ENDPOINT"] = endpoint
@@ -33,6 +38,26 @@ def init_model(endpoint, model):
     llm = ModelManager.initialize_model(force_reinit=True)
     model_config = ModelManager.get_model_config(endpoint, model)
     return llm, model_config
+
+
+def _extract_text(content):
+    """Normalize LangChain content to a plain string.
+
+    LangChain AIMessage.content can be either a string or a list of
+    content blocks (e.g. when thinking is included). This extracts
+    only the text blocks.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "".join(parts)
+    return str(content)
 
 
 def invoke_model(llm, messages):
@@ -48,9 +73,21 @@ def invoke_model(llm, messages):
                     parts.append(str(chunk.content))
             return "".join(parts)
         return asyncio.run(_call())
+    elif hasattr(llm, 'stream_response') and not hasattr(llm, 'invoke'):
+        # LLMProvider interface (e.g. BedrockMantleProvider)
+        from app.providers.base import ProviderConfig
+        async def _call_provider():
+            cfg = ProviderConfig(max_output_tokens=200, temperature=None)
+            msgs = [{"role": m.type, "content": m.content} for m in messages]
+            parts = []
+            async for event in llm.stream_response(msgs, None, [], cfg):
+                if hasattr(event, 'content'):
+                    parts.append(event.content)
+            return "".join(parts)
+        return asyncio.run(_call_provider())
     else:
         response = llm.invoke(messages)
-        return response.content if hasattr(response, 'content') else str(response)
+        return _extract_text(response.content) if hasattr(response, 'content') else str(response)
 
 
 def has_capability(model_config, cap):
@@ -158,7 +195,7 @@ def test_streaming(endpoint, model):
     if hasattr(llm, 'stream'):
         for chunk in llm.stream(prompt):
             if hasattr(chunk, 'content') and chunk.content:
-                chunks.append(chunk.content)
+                chunks.append(_extract_text(chunk.content))
 
     full_response = "".join(chunks)
     assert len(chunks) >= 1, f"Expected at least 1 chunk from {endpoint}/{model}, got 0"
