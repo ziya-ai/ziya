@@ -161,6 +161,17 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // Initialize - load current project
   useEffect(() => {
     const init = async () => {
+      // Fetch project list immediately before any awaits.  The folder-scan
+      // route calls get_ignored_patterns() synchronously inside the async
+      // handler, blocking the uvicorn event loop for the duration of the
+      // gitignore walk.  If listProjects arrives after that starts it has to
+      // queue for potentially seconds.  Dispatching it first ensures it lands
+      // at the server before fetchFolders() is triggered by the currentProject
+      // state change that follows.
+      projectApi.listProjects()
+        .then(setProjects)
+        .catch(err => console.error('Failed to load project list:', err));
+
       // Migrate from old sessionStorage key (one-time)
       try {
         const legacySkills = sessionStorage.getItem('ZIYA_ACTIVE_SKILL_IDS');
@@ -228,9 +239,6 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
             console.log('ProjectContext: No usable project — prompting user');
             setFirstRunRoot(startup.root);
             setIsLoadingProject(false);
-            projectApi.listProjects()
-              .then(setProjects)
-              .catch(err => console.error('Failed to load project list:', err));
             return;
           }
           // Safety net (e.g. old backend without /startup): open cwd project.
@@ -257,10 +265,6 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
           _setActiveSkillIds(savedLens.skillIds);
         }
         
-        // Load project list in background (non-blocking)
-        projectApi.listProjects().then(allProjects => {
-          setProjects(allProjects);
-        }).catch(err => console.error('Failed to load project list:', err));
       } catch (error) {
         console.error('Failed to initialize project:', error);
       } finally {
