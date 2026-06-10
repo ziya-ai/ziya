@@ -624,10 +624,11 @@ class StreamingToolExecutor:
                 "IMPORTANT: Your previous response contained text that described "
                 "running commands or viewing their output, but you did not actually "
                 "invoke any tools. You MUST use the tool calling API (tool_use blocks) "
-                "to execute commands \u2014 do not write prose describing what a command "
-                "would return. If you need to run a command, call the tool. If you "
-                "need to read a file, call the tool. Never fabricate or imagine "
-                "tool output."
+                "to execute commands — do not write prose describing what a command "
+                "would return, and do not write raw <invoke> XML tags in your response "
+                "text. If you need to run a command, call the tool. If you need to "
+                "read a file, call the tool. Never fabricate or imagine tool output, "
+                "and never use XML tag syntax as a substitute for the tool_use API."
             ),
         }
 
