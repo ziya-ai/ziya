@@ -40,6 +40,7 @@ import uvicorn
 from app.extensions import init_extensions
 init_extensions()
 from app.utils.logging_utils import logger
+from app.config.env_registry import ziya_env
 from app.utils.error_handlers import (
     create_json_response, create_sse_error_response, 
     is_streaming_request, ValidationError, handle_request_exception,
@@ -134,7 +135,7 @@ def _inject_task_results(processed_chat_history: List, conversation_id: str) -> 
     except ImportError:
         return
 
-    project_root = get_project_root_or_none() or os.environ.get("ZIYA_USER_CODEBASE_DIR")
+    project_root = get_project_root_or_none() or ziya_env("ZIYA_USER_CODEBASE_DIR")
     if not project_root:
         return
 
@@ -175,7 +176,8 @@ def _inject_task_results(processed_chat_history: List, conversation_id: str) -> 
     for binding in bindings:
         try:
             run = run_storage.get(binding.run_id)
-        except Exception:
+        except Exception as e:
+            logger.debug("run_storage.get(%s) failed: %s", binding.run_id, e)
             run = None
         if not run:
             continue
@@ -193,8 +195,8 @@ def _inject_task_results(processed_chat_history: List, conversation_id: str) -> 
             card = card_storage.get(binding.card_id)
             if card and card.name:
                 card_name = card.name
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Card name lookup failed for %s: %s", binding.card_id, e)
 
         body_lines = [f'[Task Card "{card_name}" completed — status: {run.status}]']
         if summary:
@@ -439,7 +441,7 @@ async def lifespan(app: FastAPI):
     # Startup - spawn background tasks for heavy initialization
     
     # MCP initialization - run in background to not block server startup
-    if os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+    if ziya_env("ZIYA_ENABLE_MCP"):
         # Start MCP initialization in background - don't await
         asyncio.create_task(_initialize_mcp_background())
     else:
@@ -456,7 +458,7 @@ async def lifespan(app: FastAPI):
     _folder_ready = True
     
     # Memory system background initialization — only when --memory is active
-    if os.environ.get("ZIYA_ENABLE_MEMORY", "").lower() in ("true", "1", "yes"):
+    if ziya_env("ZIYA_ENABLE_MEMORY"):
         asyncio.create_task(_initialize_memory_background())
 
     # Periodic cleanup of stale delegate plans and prompt cache
@@ -508,7 +510,7 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Task-run reconciliation skipped: {e}")
 
     # Register deferred plugin routes (plugins may have loaded before server)
-    if os.environ.get('ZIYA_LOAD_INTERNAL_PLUGINS') == '1':
+    if ziya_env('ZIYA_LOAD_INTERNAL_PLUGINS'):
         try:
             for module_name in ['plugins', 'internal.plugins']:
                 if module_name in sys.modules:
@@ -519,15 +521,12 @@ async def lifespan(app: FastAPI):
         except (ImportError, AttributeError, RuntimeError) as e:
             logger.warning(f"Could not register deferred plugin routes: {e}")
 
-    # Print clear banner that server is ready
-    logger.info("=" * 80)
-    logger.info("🚀 SERVER READY - Accepting connections now")
     logger.info("=" * 80)
     logger.info("📋 Background tasks running:")
-    if os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+    if ziya_env("ZIYA_ENABLE_MCP"):
         logger.info("   🔧 MCP server initialization")
     logger.info("   📂 Folder structure scanned on first client connection")
-    if os.environ.get("ZIYA_ENABLE_MEMORY", "").lower() in ("true", "1", "yes"):
+    if ziya_env("ZIYA_ENABLE_MEMORY"):
         logger.info("   🧠 Memory embedding backfill + knowledge organization")
     logger.info("=" * 80)
     
@@ -549,7 +548,7 @@ async def lifespan(app: FastAPI):
     # Persist delegate orchestration state so plans survive restart
     try:
         from app.agents.delegate_manager import get_delegate_manager
-        project_id = os.environ.get("ZIYA_PROJECT_ID")
+        project_id = ziya_env("ZIYA_PROJECT_ID")
         if project_id:
             mgr = get_delegate_manager(project_id)
             for plan_id in list(mgr._plans.keys()):
@@ -568,7 +567,7 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Error cancelling folder scan: {e}")
     
     # MCP shutdown
-    if os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+    if ziya_env("ZIYA_ENABLE_MCP"):
         try:
             # Shut down headless diagram renderer if running
             from app.services.diagram_renderer import shutdown_diagram_renderer
@@ -642,7 +641,7 @@ async def _initialize_memory_background():
                     f"🧠 Memory startup: {len(memories)} memories with no mind-map — "
                     f"triggering background organization"
                 )
-                from app.utils.memory_organizer import reorganize
+                from app.memory import reorganize
                 result = await reorganize(store)
                 bootstrap = result.get("bootstrap", {})
                 logger.info(
@@ -776,7 +775,7 @@ def _check_and_print_completion_banner():
     
     with _background_tasks_lock:
         # Check if we should print the banner
-        mcp_enabled = os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes")
+        mcp_enabled = ziya_env("ZIYA_ENABLE_MCP")
         mcp_done = _mcp_ready or not mcp_enabled
         
         if mcp_done and _folder_ready and not _completion_banner_shown:
@@ -976,7 +975,7 @@ async def task_run_stream_websocket(websocket: WebSocket, run_id: str):
             await websocket.receive_text()
     except WebSocketDisconnect:
         logger.debug(f"📡 TASK_RUN: WebSocket disconnected for {run_id[:8]}")
-    except Exception:
+    except Exception:  # noqa: BLE001 — intentional broad catch for WS protocol errors
         logger.debug(f"📡 TASK_RUN: Connection lost for {run_id[:8]}")
     finally:
         await disconnect(run_id, websocket)
@@ -1012,15 +1011,19 @@ async def chat_endpoint(request: Request):
         # Check current model to determine routing
         current_model = ModelManager.get_model_alias()
         logger.debug(f"🔍 CHAT_ENDPOINT: current_model={current_model}")
-        is_bedrock_claude = current_model and ('claude' in current_model.lower() or 'sonnet' in current_model.lower() or 'opus' in current_model.lower() or 'haiku' in current_model.lower())
+        # Route on the model family from config, not just alias substrings —
+        # aliases like "fable5"/"mythos5" are claude-family but contain none
+        # of the legacy name fragments.
+        model_cfg = ModelManager.get_model_config(ziya_env("ZIYA_ENDPOINT"), current_model) if current_model else {}
+        is_bedrock_claude = bool(current_model) and (model_cfg.get("family") == "claude" or 'claude' in current_model.lower() or 'sonnet' in current_model.lower() or 'opus' in current_model.lower() or 'haiku' in current_model.lower())
         is_bedrock_nova = current_model and 'nova' in current_model.lower()
         is_bedrock_deepseek = current_model and 'deepseek' in current_model.lower()
         # Check wrapper_class from model config — model names like "glm-4.7"
         # don't contain "openai" but use the OpenAIBedrock wrapper.
-        is_bedrock_openai = ModelManager.get_model_config(os.environ.get("ZIYA_ENDPOINT", "bedrock"), current_model).get("wrapper_class") == "OpenAIBedrock" if current_model else False
+        is_bedrock_openai = model_cfg.get("wrapper_class") == "OpenAIBedrock"
         is_google_model = current_model and ('gemini' in current_model.lower() or 'google' in current_model.lower())
-        is_openai_direct = os.environ.get("ZIYA_ENDPOINT") == "openai"
-        is_anthropic_direct = os.environ.get("ZIYA_ENDPOINT") == "anthropic"
+        is_openai_direct = ziya_env("ZIYA_ENDPOINT") == "openai"
+        is_anthropic_direct = ziya_env("ZIYA_ENDPOINT") == "anthropic"
         # Check if direct streaming is enabled globally - use direct streaming by default for Bedrock models like 0.3.1
         use_direct_streaming = is_bedrock_claude or is_bedrock_nova or is_bedrock_deepseek or is_bedrock_openai or is_google_model or is_openai_direct or is_anthropic_direct
         
@@ -1126,6 +1129,18 @@ async def chat_endpoint(request: Request):
                     "Access-Control-Allow-Headers": "Content-Type"
                 }
             )
+        else:
+            # No routing predicate matched this model. Without this branch the
+            # handler would fall through and return None, which FastAPI
+            # serializes as a silent 200 "null" — invisible to logs and broken
+            # for the frontend. Fail loudly instead.
+            logger.error(
+                f"chat_endpoint: no streaming route matched model "
+                f"'{current_model}' (endpoint={ziya_env('ZIYA_ENDPOINT')}, "
+                f"family={model_cfg.get('family')}); returning explicit error")
+            return JSONResponse(
+                {"error": f"No streaming handler for model '{current_model}'"},
+                status_code=500)
     except Exception as e:  # Intentionally broad: top-level HTTP error handler
         # Ensures clients always get a JSON error response, never a bare 500
         logger.error(f"Error in chat_endpoint: {str(e)}")
@@ -1441,14 +1456,12 @@ async def stream_chunks(body):
                 from app.streaming_tool_executor import StreamingToolExecutor
                 
                 chunk_count = 0
-                last_diff_start_line = -1
-                diff_counter = 0
                 
                 # Get current model state
                 state = ModelManager.get_state()
                 current_region = state.get('aws_region', 'us-east-1')
                 aws_profile = state.get('aws_profile', 'default')
-                endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+                endpoint = ziya_env("ZIYA_ENDPOINT")
                 
                 logger.debug(f"🔍 DIRECT_STREAMING_DEBUG: About to call build_messages_for_streaming with {len(files)} files")
                 # Build messages with full context using the same function as LangChain path - use langchain format like 0.3.0
@@ -1507,46 +1520,6 @@ async def stream_chunks(body):
                     if chunk.get('type') == 'text' and chunk.get('content') and not chunk.get('rewind'):
                         chunk['content'] = re.sub(r'<!-- REWIND_MARKER: [^>]+ -->\n*', '', chunk['content'])
 
-                    if chunk.get('type') == 'text':
-                        content = chunk.get('content', '')
-
-                        # Track if we handled this chunk specially (to skip normal processing)
-                        chunk_was_handled = False
-                        
-                        # If it does, we need to split the content and insert the marker
-                        if '```diff' in content or '````diff' in content:
-                            # Calculate current line count for rewind marker
-                            current_lines = accumulated_content.count('\n')
-                            
-                            # Only insert marker if this is a NEW diff position
-                            if last_diff_start_line != current_lines:
-                                last_diff_start_line = current_lines
-                                
-                                # Split the content at the diff fence
-                                # Find both fence variants; prefer 4-tick when it's at or before the
-                                # 3-tick match (the 3-tick find is off-by-one inside a 4-tick fence).
-                                pos3 = content.find('```diff')
-                                pos4 = content.find('````diff')
-                                if pos4 >= 0 and (pos3 < 0 or pos4 <= pos3):
-                                    fence_pos = pos4
-                                else:
-                                    fence_pos = pos3
-                                before_fence = content[:fence_pos]
-                                fence_and_after = content[fence_pos:]
-                                
-                                # Yield content before the fence first
-                                if before_fence:
-                                    yield f"data: {json.dumps({'content': before_fence})}\n\n"
-                                    accumulated_content += before_fence
-                                last_diff_start_line = current_lines
-                            
-                                # Yield the fence and remaining content
-                                yield f"data: {json.dumps({'content': fence_and_after})}\n\n"
-                                accumulated_content += fence_and_after
-                                
-                                # Skip the normal content yielding below since we handled it
-                                continue
-                        
                     # Accumulate text content for validation
                     if chunk.get('type') == 'text':
                         accumulated_content += chunk.get('content', '')
@@ -1722,14 +1695,14 @@ async def stream_chunks(body):
                     # Apply retrieval feedback so importance bumps happen before
                     # extraction's UPDATE/corroboration logic checks importance.
                     try:
-                        from app.utils.memory_feedback import apply_feedback
+                        from app.memory import apply_feedback
                         asyncio.create_task(
                             apply_feedback(conversation_id, accumulated_content))
                     except (ImportError, OSError, RuntimeError) as fb_err:
                         logger.debug(f"Memory feedback dispatch failed (non-fatal): {fb_err}")
                     # Fire-and-forget: extract memories from the conversation.
                     try:
-                        from app.utils.memory_extractor import run_post_conversation_extraction
+                        from app.memory import run_post_conversation_extraction
                         # Resolve project name/path for memory scoping.
                         # project_root is already in scope from the request body.
                         _mem_project_name = None
