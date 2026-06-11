@@ -7,6 +7,7 @@ import re
 import sys
 from typing import List, Tuple, Optional, Set
 from app.utils.logging_utils import logger
+from app.utils.interruptible_input import interruptible_sigint as _interruptible_sigint
 
 
 def _render_failure_diagnostics(failures: list) -> str:
@@ -186,8 +187,14 @@ class CLIDiffApplicator:
         while i < len(lines):
             line = lines[i]
             stripped = line.strip()
-            # Match opening fence: 3+ backticks followed by 'diff'
-            if re.match(r'^`{3,}diff\s*$', stripped):
+            # Match opening fence: 3+ backticks followed by 'diff', with
+            # optional trailing text (```diff python, ```diff # comment).
+            # Models frequently emit junk after the language tag; the
+            # content is still an intended diff block, so extract it here
+            # with proper fence-delimited boundaries rather than letting
+            # the bare-diff fallback recover it (which fires only when no
+            # fenced block was found, and recovers at most one block).
+            if re.match(r'^`{3,}diff(?:\s|$)', stripped):
                 fence_len = len(stripped.split('diff')[0])  # number of backticks
                 start_pos = sum(len(l) + 1 for l in lines[:i])
                 i += 1
@@ -473,16 +480,17 @@ class CLIDiffApplicator:
         """
         while True:
             try:
-                response = input(
-                    "\n\033[1mAction:\033[0m "
-                    "\033[32m[a]\033[0mpply"
-                    + (" / \033[32m[A]\033[0mpply all" if remaining > 1 else "")
-                    + " / "
-                    "\033[33m[s]\033[0mkip / "
-                    + ("\033[36m[v]\033[0miew full / " if show_view else "")
-                    +
-                    "\033[31m[q]\033[0muit? "
-                ).strip()
+                with _interruptible_sigint():
+                    response = input(
+                        "\n\033[1mAction:\033[0m "
+                        "\033[32m[a]\033[0mpply"
+                        + (" / \033[32m[A]\033[0mpply all" if remaining > 1 else "")
+                        + " / "
+                        "\033[33m[s]\033[0mkip / "
+                        + ("\033[36m[v]\033[0miew full / " if show_view else "")
+                        +
+                        "\033[31m[q]\033[0muit? "
+                    ).strip()
                 
                 if response == 'A' and remaining > 1:
                     return 'A'
@@ -543,6 +551,11 @@ class CLIDiffApplicator:
             
             # apply_diff_atomically returns None when it can't handle the diff
             if result is None:
+                # Fall back to per-hunk application — one bad hunk shouldn't
+                # reject the entire diff when others may apply cleanly.
+                partial_result = self._apply_hunks_individually(full_path, diff.content, diff.file_path)
+                if partial_result is not None:
+                    return partial_result
                 return False, "Diff could not be parsed or applied"
             
             status = result.get("status")
@@ -555,21 +568,27 @@ class CLIDiffApplicator:
                 else:
                     return True, f"Successfully applied to {diff.file_path}"
             elif status == "partial":
-                # Partial success - some hunks applied
+                # Some hunks may have applied, others failed
                 failures = result.get("failures", [])
                 applied_count = result.get("applied_hunks", 0)
                 failed_count = len(failures)
                 
-                # Build a helpful message
-                msg_parts = [f"Partially applied to {diff.file_path}"]
-                msg_parts.append(f"({applied_count} hunks succeeded, {failed_count} failed)")
-                
-                # Show first failure reason
-                if failures:
-                    first_failure = failures[0].get("message", "Unknown error")
-                    msg_parts.append(f"First failure: {first_failure}")
-                
-                return True, " - ".join(msg_parts)
+                if applied_count == 0:
+                    # Nothing applied — this is a complete failure, not partial
+                    msg_parts = [f"Failed to apply to {diff.file_path}"]
+                    msg_parts.append(f"(0/{failed_count} hunks succeeded)")
+                    if failures:
+                        first_failure = failures[0].get("message", "Unknown error")
+                        msg_parts.append(f"First failure: {first_failure}")
+                    return False, " - ".join(msg_parts)
+                else:
+                    # Genuine partial success
+                    msg_parts = [f"Partially applied to {diff.file_path}"]
+                    msg_parts.append(f"({applied_count} hunks succeeded, {failed_count} failed)")
+                    if failures:
+                        first_failure = failures[0].get("message", "Unknown error")
+                        msg_parts.append(f"First failure: {first_failure}")
+                    return True, " - ".join(msg_parts)
             else:
                 # Clean, user-friendly error message
                 error_details = result.get("details", {})
@@ -593,11 +612,100 @@ class CLIDiffApplicator:
                 return False, f"{hint}Failed: {error}"
                 
         except Exception as e:
+            # Before giving up completely, try per-hunk fallback
+            try:
+                partial_result = self._apply_hunks_individually(full_path, diff.content, diff.file_path)
+                if partial_result is not None:
+                    return partial_result
+            except Exception:
+                pass
             return False, f"Error: {str(e).split(':')[0]}"
         finally:
             # Restore original log level
             diff_logger.setLevel(original_level)
     
+    def _apply_hunks_individually(
+        self, full_path: str, diff_content: str, file_path: str
+    ) -> Optional[Tuple[bool, str]]:
+        """
+        Fallback: apply each hunk in a multi-hunk diff independently.
+        
+        When atomic (all-at-once) application fails, this tries each hunk
+        in sequence against the current file state. Hunks that match are
+        applied; hunks that fail are reported but don't block the others.
+        
+        Returns:
+            (success, message) tuple if any hunks were processed, or None
+            if the diff couldn't be parsed into individual hunks.
+        """
+        try:
+            from app.utils.diff_utils.application.git_diff import apply_diff_atomically
+        except ImportError:
+            return None
+        
+        # Split the diff into individual hunks by @@ headers
+        lines = diff_content.split('\n')
+        header_lines = []
+        hunk_starts = []
+        
+        for i, line in enumerate(lines):
+            if line.startswith('@@'):
+                hunk_starts.append(i)
+            elif not hunk_starts:
+                header_lines.append(line)
+        
+        if len(hunk_starts) <= 1:
+            # Single hunk — no point retrying individually
+            return None
+        
+        header = '\n'.join(header_lines)
+        
+        # Extract each hunk as a separate diff
+        hunks = []
+        for idx, start in enumerate(hunk_starts):
+            end = hunk_starts[idx + 1] if idx + 1 < len(hunk_starts) else len(lines)
+            hunk_lines = lines[start:end]
+            hunks.append('\n'.join(hunk_lines))
+        
+        succeeded = 0
+        failed = 0
+        first_failure = ""
+        
+        # Apply each hunk as a standalone diff
+        for i, hunk_body in enumerate(hunks, 1):
+            single_hunk_diff = header + '\n' + hunk_body
+            
+            try:
+                result = apply_diff_atomically(full_path, single_hunk_diff)
+                if result and result.get("status") in ("success", "partial"):
+                    applied = result.get("applied_hunks", 1) if result.get("status") == "partial" else 1
+                    if applied > 0:
+                        succeeded += 1
+                    else:
+                        failed += 1
+                        if not first_failure:
+                            failures = result.get("failures", [])
+                            first_failure = failures[0].get("message", f"Hunk #{i} failed") if failures else f"Hunk #{i} failed"
+                else:
+                    failed += 1
+                    if not first_failure:
+                        failures = (result or {}).get("failures", [])
+                        first_failure = failures[0].get("message", f"Hunk #{i} failed") if failures else f"Hunk #{i} failed"
+            except Exception as e:
+                failed += 1
+                if not first_failure:
+                    first_failure = f"Hunk #{i}: {str(e)[:80]}"
+        
+        if succeeded == 0:
+            return None  # Nothing worked — let caller report the original error
+        
+        if failed == 0:
+            return True, f"Successfully applied to {file_path}"
+        
+        # Partial success
+        msg = f"Partially applied to {file_path} - ({succeeded} hunks succeeded, {failed} failed) - First failure: {first_failure}"
+        return True, msg
+
     def process_response(self, response: str) -> bool:
         """
         Process a response containing diffs and prompt user for actions.
