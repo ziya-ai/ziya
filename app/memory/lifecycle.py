@@ -224,7 +224,7 @@ async def run_lifecycle_pass() -> Dict[str, int]:
     counts = {"scanned": 0, "promoted": 0, "archived": 0, "noop": 0}
     try:
         from app.storage.proposals import get_proposals_store
-        from app.utils.memory_extractor import _next_activity_count
+        from app.memory.extractor import _next_activity_count
         proposals = get_proposals_store()
     except Exception as e:
         logger.debug(f"Lifecycle: dependencies unavailable: {e}")

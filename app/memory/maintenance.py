@@ -80,9 +80,9 @@ def run_post_save_maintenance(memory_id: str) -> Dict[str, any]:
 
     # 6. Auto-trigger reorganization if orphan count exceeds threshold
     try:
-        from app.utils.memory_organizer import should_auto_organize
+        from app.memory.organizer import should_auto_organize
         if should_auto_organize(store):
-            from app.utils.memory_organizer import reorganize
+            from app.memory.organizer import reorganize
             logger.info("🗺️ Auto-organize triggered: orphan threshold exceeded")
             # Fire-and-forget with error logging — don't block the save
             async def _bg_organize():
@@ -175,7 +175,7 @@ def _maybe_periodic_cleanup(store) -> None:
 
     async def _bg_cleanup():
         try:
-            from app.utils.memory_organizer import cleanup_corpus
+            from app.memory.organizer import cleanup_corpus
             result = await cleanup_corpus(store)
             _write_cleanup_state(len(store.list_memories(status="active")))
             removed = result.get("removed", 0)

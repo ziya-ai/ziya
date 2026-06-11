@@ -54,7 +54,7 @@ def _build_existing_listing(similar: List[Dict[str, Any]]) -> str:
     with a [recently retrieved] marker so the LLM can apply the
     labile-window rule above.  Pure helper for testability.
     """
-    from app.utils.memory_feedback import is_labile
+    from app.memory.feedback import is_labile
     lines = []
     for m in similar:
         mid = m.get("id", "?")

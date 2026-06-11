@@ -15,6 +15,7 @@ import os
 from typing import Optional
 
 from app.utils.logging_utils import logger
+from app.config.env_registry import ziya_env
 
 
 # Token budget for core memories in the system prompt.
@@ -141,7 +142,7 @@ def get_memory_prompt_section() -> str:
             # and so the decay check doesn't archive them for "inactivity"
             # while they're literally in the prompt every turn.
             try:
-                from app.utils.memory_feedback import record_load
+                from app.memory.feedback import record_load
                 from app.context import get_conversation_id_or_none
                 record_load(get_conversation_id_or_none(), [m.id for m in core])
             except Exception:

@@ -186,7 +186,7 @@ async def dismiss_proposal(proposal_id: str):
 async def get_review():
     """Surface stale memories, oversized nodes, and orphan memories for cleanup."""
     from app.storage.memory import get_memory_storage
-    from app.utils.memory_maintenance import get_review_summary
+    from app.memory import get_review_summary
     store = get_memory_storage()
     return get_review_summary(store)
 
@@ -195,7 +195,7 @@ async def get_review():
 async def run_maintenance():
     """Trigger a full maintenance pass: cell division + cross-links for all nodes."""
     from app.storage.memory import get_memory_storage
-    from app.utils.memory_maintenance import maybe_divide_node, discover_cross_links
+    from app.memory import maybe_divide_node, discover_cross_links
     store = get_memory_storage()
     results = {"divided": [], "cross_linked": []}
     for node in store.list_mindmap_nodes():
@@ -213,7 +213,7 @@ async def organize_memories():
     Runs as a background task — returns immediately with status 'started'.
     Poll GET /api/v1/memory/organize/status for progress.
     """
-    from app.utils.memory_organizer import reorganize
+    from app.memory import reorganize
 
     async with _organize_lock:
         if _organize_task_status.get("running"):
@@ -246,7 +246,7 @@ async def organize_history():
 
     Drives the Memory Browser's Recent Activity tab.
     """
-    from app.utils.memory_organize_history import load_organize_history
+    from app.memory import load_organize_history
     return load_organize_history()
 
 

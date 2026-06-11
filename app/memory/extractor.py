@@ -1,5 +1,6 @@
 """
 Post-conversation memory extraction.
+# Import path migration marker — forces diff engine to rebase line numbers
 
 After a substantive conversation completes, this module:
 1. Strips tool results, code blocks, and diffs from the message history
@@ -11,6 +12,7 @@ After a substantive conversation completes, this module:
 Runs as a fire-and-forget background task — never blocks the user.
 """
 
+import asyncio
 import json
 import os
 import re
@@ -18,6 +20,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.utils.logging_utils import logger
+from app.config.env_registry import ziya_env
 
 
 # Categories that are auto-saved without user approval when confidence is "high".
@@ -1357,7 +1360,7 @@ async def run_post_conversation_extraction(
         from app.storage.memory import get_memory_storage
         from app.storage.proposals import get_proposals_store
         from app.models.memory import Memory, MemoryProposal
-        from app.utils.memory_comparator import find_similar_memories, compare_memory
+        from app.memory.comparator import find_similar_memories, compare_memory
         store = get_memory_storage()
         proposals_store = get_proposals_store()
         activity_counter = _next_activity_count()
@@ -1500,7 +1503,7 @@ async def run_post_conversation_extraction(
     # Run the lifecycle engine to promote or archive probationary proposals
     # that have accumulated enough signals from this and prior passes.
     try:
-        from app.utils.memory_lifecycle import run_lifecycle_pass
+        from app.memory.lifecycle import run_lifecycle_pass
         await run_lifecycle_pass()
     except Exception as lc_err:
         logger.debug(f"Memory lifecycle pass failed (non-fatal): {lc_err}")

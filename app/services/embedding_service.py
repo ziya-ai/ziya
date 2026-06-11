@@ -18,6 +18,7 @@ import time
 import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from app.config.env_registry import ziya_env
 
 import numpy as np
 
@@ -55,9 +56,9 @@ class BedrockTitanProvider(EmbeddingProvider):
 
     def __init__(self, region: str = None, model_id: str = None, dim: int = None,
                  aws_profile: str = None):
-        self._region = region or os.environ.get("ZIYA_EMBEDDING_REGION", DEFAULT_REGION)
-        self._model_id = model_id or os.environ.get("ZIYA_EMBEDDING_MODEL", DEFAULT_MODEL)
-        self._dim = dim or int(os.environ.get("ZIYA_EMBEDDING_DIM", str(DEFAULT_DIM)))
+        self._region = region or ziya_env("ZIYA_EMBEDDING_REGION", default=DEFAULT_REGION)
+        self._model_id = model_id or ziya_env("ZIYA_EMBEDDING_MODEL", default=DEFAULT_MODEL)
+        self._dim = dim or ziya_env("ZIYA_EMBEDDING_DIM", default=DEFAULT_DIM)
         self._profile = aws_profile or os.environ.get("AWS_PROFILE", "default")
         self._client = None
         self._warned = False
@@ -258,7 +259,7 @@ _init_lock = threading.Lock()
 
 def _resolve_provider() -> EmbeddingProvider:
     """Create the appropriate embedding provider based on configuration."""
-    choice = os.environ.get("ZIYA_EMBEDDING_PROVIDER", "auto").lower()
+    choice = ziya_env("ZIYA_EMBEDDING_PROVIDER", default="auto").lower()
     if choice == "none":
         return NoopProvider()
     if choice in ("bedrock", "titan", "auto"):
@@ -289,7 +290,7 @@ def get_embedding_cache() -> EmbeddingCache:
         if _cache is None:
             from app.utils.paths import get_ziya_home
             memory_dir = get_ziya_home() / "memory"
-            dim = int(os.environ.get("ZIYA_EMBEDDING_DIM", str(DEFAULT_DIM)))
+            dim = ziya_env("ZIYA_EMBEDDING_DIM", default=DEFAULT_DIM)
             _cache = EmbeddingCache(memory_dir, dim=dim)
     return _cache
 
