@@ -215,18 +215,34 @@ class TestExtractDiffsFenceFormats(unittest.TestCase):
         result = applicator.extract_diffs(self._wrap("````diff", "````"))
         self.assertEqual(len(result), 1)
 
-    def test_fence_with_language_specifier_rejected(self):
-        """```diff python should NOT be extracted — it breaks the regex."""
+    def test_fence_with_language_specifier_extracted(self):
+        """```diff python — trailing junk after the tag is tolerated;
+        the content is an intended diff and is extracted by the fenced
+        pass with proper fence-delimited boundaries."""
         applicator = self._make_applicator()
         result = applicator.extract_diffs(self._wrap("```diff python"))
-        self.assertEqual(len(result), 0,
-            "Fence with extra token after 'diff' must not be extracted")
+        self.assertEqual(len(result), 1)
 
-    def test_fence_with_trailing_text_rejected(self):
-        """```diff  (trailing non-whitespace) must not be extracted."""
+    def test_fence_with_trailing_text_extracted(self):
+        """```diff # comment — same tolerance as the language-specifier
+        case; junk after the tag does not invalidate the block."""
         applicator = self._make_applicator()
         result = applicator.extract_diffs(self._wrap("```diff # comment"))
-        self.assertEqual(len(result), 0)
+        self.assertEqual(len(result), 1)
+
+    def test_malformed_fence_coexists_with_clean_fence(self):
+        """One clean ```diff plus one ```diff python in the same response:
+        both must be extracted. The bare-diff fallback could never handle
+        this (it fires only when zero fenced diffs were found), which is
+        why tolerance belongs in the fenced pass."""
+        applicator = self._make_applicator()
+        response = (
+            self._wrap("```diff")
+            + "\nsome prose between blocks\n\n"
+            + self._wrap("```diff python")
+        )
+        result = applicator.extract_diffs(response)
+        self.assertEqual(len(result), 2)
 
     def test_fence_with_trailing_whitespace_extracted(self):
         """```diff   (trailing spaces only) is valid."""
@@ -259,11 +275,16 @@ class TestExtractDiffsFenceFormats(unittest.TestCase):
         self.assertEqual(len(result), 2)
 
     def test_mixed_valid_invalid_fences(self):
-        """One clean and one language-tagged fence: only the clean one extracted."""
+        """One clean and one language-tagged fence: BOTH extracted.
+
+        Trailing junk after the diff tag is tolerated by the fenced pass
+        (same contract as test_malformed_fence_coexists_with_clean_fence,
+        which pins the multi-block case the bare fallback cannot handle).
+        """
         applicator = self._make_applicator()
         mixed = self._wrap("```diff") + "\n" + self._wrap("```diff python")
         result = applicator.extract_diffs(mixed)
-        self.assertEqual(len(result), 1)
+        self.assertEqual(len(result), 2)
 
 
 # ---------------------------------------------------------------------------

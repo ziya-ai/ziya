@@ -1,5 +1,5 @@
 """
-Tests for app.utils.memory_feedback (Diff 6).
+Tests for app.memory.feedback (Diff 6).
 
 Covers:
   - Pure helpers: windowing, cosine, load tracking, clear
@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from app.utils.memory_feedback import (
+from app.memory.feedback import (
     record_load,
     get_loaded_memory_ids,
     clear_conversation,

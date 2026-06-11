@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.utils.memory_feedback import (
+from app.memory.feedback import (
     mark_labile,
     is_labile,
     record_load,
@@ -28,7 +28,7 @@ from app.utils.memory_feedback import (
     _LABILE_RETRIEVAL_MS,
     _LABILE_USED_MS,
 )
-from app.utils.memory_comparator import _build_existing_listing
+from app.memory.comparator import _build_existing_listing
 
 
 @pytest.fixture(autouse=True)

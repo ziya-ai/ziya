@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.models.memory import Memory, MindMapNode
-from app.utils.memory_rem import (
+from app.memory.rem import (
     _is_mature,
     _should_synthesize,
     synthesize_node,
@@ -180,7 +180,7 @@ async def test_synthesize_node_creates_proposal_on_pattern():
     with patch("app.services.model_resolver.call_service_model",
                new=AsyncMock(return_value=fake_response)) as mock_call, \
          patch("app.storage.proposals.get_proposals_store") as mock_ps, \
-         patch("app.utils.memory_extractor._next_activity_count", return_value=42):
+         patch("app.memory.extractor._next_activity_count", return_value=42):
         ps = MagicMock()
         added = []
         ps.add.side_effect = lambda p, activity_count=None: added.append(p)
@@ -258,13 +258,16 @@ async def test_staleness_flips_to_contested_with_contradiction():
     )
     # m_new must NOT land in the top-K candidate set — it's the
     # contradicting evidence that lives in context.  Low importance
-    # keeps it out of the candidates.
+    # alone does NOT keep it out: with K=3 and three 0.1-importance
+    # ties, Python's stable sort picks ties in insertion order, so
+    # m_new (inserted first) would win a candidate slot.  Give the
+    # fillers strictly higher importance so exclusion is deterministic.
     contradicting = _make_memory(
         "m_new", "system uses approach Z for problem Y handling logic now",
         created_days_ago=10, importance=0.1, retrieval_loaded_count=1,
     )
-    other1 = _make_memory("m_other1", "unrelated detail about subsystem", importance=0.1, retrieval_loaded_count=1)
-    other2 = _make_memory("m_other2", "another tangential note", importance=0.1, retrieval_loaded_count=1)
+    other1 = _make_memory("m_other1", "unrelated detail about subsystem", importance=0.2, retrieval_loaded_count=1)
+    other2 = _make_memory("m_other2", "another tangential note", importance=0.2, retrieval_loaded_count=1)
     mems = [target, contradicting, other1, other2]
     node = _make_node("n1", [m.id for m in mems])
     store = _make_store(mems)
@@ -354,7 +357,7 @@ async def test_staleness_skips_labile_memories():
     mems = [target, *others]
     node = _make_node("n1", [m.id for m in mems])
     store = _make_store(mems)
-    with patch("app.utils.memory_feedback.is_labile",
+    with patch("app.memory.feedback.is_labile",
                side_effect=lambda mid: mid == "m_target"), \
          patch("app.services.model_resolver.call_service_model",
                new=AsyncMock(return_value='{"verdicts":[]}')) as mock_call:
