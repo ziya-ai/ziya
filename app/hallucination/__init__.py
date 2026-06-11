@@ -7,7 +7,7 @@ instead of issuing a proper tool_use block.
 
 See .ziya/hallucination-detection-design.md for the full design.
 """
-from .region_extraction import extract_scannable_regions, scannable_text
+from .region_extraction import extract_scannable_regions, open_fence_at, scannable_line_indices, scannable_text
 from .fake_shell_detector import FakeShellMatch, detect_fake_shell_session
 from .fake_tool_result_detector import FakeToolResultMatch, detect_fake_tool_result
 from .shingle_index import (
@@ -26,6 +26,8 @@ __all__ = [
     "FakeToolResultMatch",
     "detect_fake_tool_result",
     "extract_scannable_regions",
+    "open_fence_at",
+    "scannable_line_indices",
     "scannable_text",
     "ShingleIndex",
     "ShingleMatch",

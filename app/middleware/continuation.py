@@ -15,6 +15,7 @@ from starlette.requests import Request
 from starlette.responses import Response, StreamingResponse
 
 from app.utils.logging_utils import logger
+from app.hallucination import open_fence_at
 
 
 class ContinuationMiddleware(BaseHTTPMiddleware):
@@ -183,39 +184,25 @@ class ContinuationMiddleware(BaseHTTPMiddleware):
         # Helper to check if we're inside a code block at a given position
         def is_inside_code_block(text: str, position: int) -> tuple[bool, Optional[str]]:
             """
-            Returns (is_inside, fence_language) where fence_language is the 
-            language tag if we're inside a code block, None otherwise.
-            
-            This properly handles code fences by only counting those that are:
-            1. At start of a line (possibly after whitespace)
-            2. Not inside other code blocks
+            Returns (is_inside, open_fence_marker) where open_fence_marker
+            is the fence string (e.g. three backticks) governing the
+            position, or None when outside any fenced block.
+
+            Delegates to the shared width-disciplined scanner in
+            app.hallucination: a fence closes only on the same character
+            with at least the opening width, and fences do not nest
+            (CommonMark).  The previous inline stack-based scanner used a
+            char-only close check, so a narrower fence quoted inside a
+            wider one popped the wrong block, and quoted openers created
+            phantom nesting levels — letting continuation points be
+            chosen inside open fences.
+
+            (No caller consumes the second tuple element as a language —
+            all call sites unpack it as `_` — so it now carries the fence
+            marker instead.)
             """
-            lines_before = text[:position].split('\n')
-            
-            code_block_stack = []  # Stack to track nested blocks (though rare)
-            
-            for line in lines_before:
-                stripped = line.lstrip()
-                
-                # Check for code fence (``` or ~~~)
-                fence_match = re.match(r'^(`{3,}|~{3,})(\w*)', stripped)
-                if fence_match:
-                    fence_chars = fence_match.group(1)
-                    language = fence_match.group(2) or None
-                    
-                    # Check if this closes an existing block
-                    if code_block_stack and code_block_stack[-1]['fence'] == fence_chars[0]:
-                        code_block_stack.pop()
-                    else:
-                        # Open a new block
-                        code_block_stack.append({
-                            'fence': fence_chars[0],  # '`' or '~'
-                            'language': language
-                        })
-            
-            if code_block_stack:
-                return (True, code_block_stack[-1]['language'])
-            return (False, None)
+            marker = open_fence_at(text, position)
+            return (marker is not None, marker)
         
         # Helper to find safe paragraph breaks (not inside code blocks)
         def find_safe_paragraph_breaks(text: str) -> list[int]:

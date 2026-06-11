@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from typing import Dict, Any, List, AsyncGenerator, Optional
 from app.utils.conversation_filter import filter_conversation_for_model
 from app.utils.logging_utils import get_mode_aware_logger
+from app.config.env_registry import ziya_env
+from app.hallucination import scannable_line_indices
 logger = get_mode_aware_logger(__name__)
 
 # Global usage tracker for telemetry
@@ -167,8 +169,8 @@ class StreamingToolExecutor:
         # During migration, both self.bedrock and self.provider coexist.
         self.provider = None
         from app.agents.models import ModelManager
-        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
-        model_name = os.environ.get("ZIYA_MODEL")
+        endpoint = ziya_env("ZIYA_ENDPOINT")
+        model_name = ziya_env("ZIYA_MODEL")
         self.model_config = ModelManager.get_model_config(endpoint, model_name)
         
         # Use provided model_id or get from ModelManager (which handles region-specific IDs)
@@ -224,8 +226,12 @@ class StreamingToolExecutor:
                 region=region,
             )
             logger.info(f"StreamingToolExecutor: created {self.provider.provider_name} provider")
+            from app.utils.execution_path_stats import record
+            record(f"pipeline_provider_created:{self.provider.provider_name}")
         except (ImportError, ValueError, TypeError, KeyError, RuntimeError) as e:
-            logger.warning(f"StreamingToolExecutor: provider creation failed ({e}), will use legacy path")
+            logger.warning(f"StreamingToolExecutor: provider creation failed ({e}); streaming will error out")
+            from app.utils.execution_path_stats import record
+            record("pipeline_provider_failed")
             self.provider = None
 
     @staticmethod
@@ -548,21 +554,22 @@ class StreamingToolExecutor:
         if not text or len(text) < 20:
             return text
 
-        # Split into fenced and unfenced regions
-        # We only check unfenced regions for fabrication
+        # Scan only scannable (non-code) lines for fabrication using the
+        # shared CommonMark-faithful scanner from app.hallucination:
+        # 3+ tick and ~~~ fences, width-disciplined closers (narrower
+        # fences quoted inside a wider fence are inert content), indented
+        # code blocks, blockquotes, and inline code spans.
+        #
+        # The previous inline scanner was a naive 3-4-tick toggle: it
+        # missed 5+/6-tick fences entirely and let quoted nested fences
+        # flip its state, so legitimately fenced content was scanned as
+        # prose and could trigger false truncation of assistant text.
+        # ``lines`` is still needed below for the truncation slice.
         lines = text.split('\n')
-        in_fence = False
-        fence_pattern = re.compile(r'^`{3,4}')
         first_contaminated_line = None
 
-        for i, line in enumerate(lines):
-            if fence_pattern.match(line.strip()):
-                in_fence = not in_fence
-                continue
-            if in_fence:
-                continue
-
-            # Check this unfenced line against fabrication patterns
+        for i, line in scannable_line_indices(text):
+            # Check this scannable line against fabrication patterns
             for pat in self._FABRICATION_PATTERNS:
                 if pat.search(line):
                     first_contaminated_line = i
@@ -934,15 +941,15 @@ class StreamingToolExecutor:
 
         thinking = None
         if self.model_config and self.model_config.get('supports_adaptive_thinking'):
-            effort = os.environ.get(
-                'ZIYA_THINKING_EFFORT',
-                self.model_config.get('thinking_effort_default', 'high'),
+            effort = ziya_env(
+                "ZIYA_THINKING_EFFORT",
+                default=self.model_config.get('thinking_effort_default', 'high'),
             )
             thinking = ThinkingConfig(enabled=True, mode="adaptive", effort=effort)
         elif self.model_config and self.model_config.get('supports_thinking'):
-            thinking_on = os.environ.get('ZIYA_THINKING_MODE', '0') == '1'
+            thinking_on = ziya_env("ZIYA_THINKING_MODE")
             if thinking_on:
-                budget = int(os.environ.get('ZIYA_THINKING_BUDGET', '16000'))
+                budget = ziya_env("ZIYA_THINKING_BUDGET")
 
         # Per-request overrides from active skill modelOverrides
         temp_override = getattr(self, 'temperature_override', None)
@@ -951,8 +958,8 @@ class StreamingToolExecutor:
         # Resolve max_output_tokens: skill override > env var > model config > default
         if max_tokens_override:
             effective_max_tokens = max_tokens_override
-        elif "ZIYA_MAX_OUTPUT_TOKENS" in os.environ:
-            effective_max_tokens = int(os.environ["ZIYA_MAX_OUTPUT_TOKENS"])
+        elif ziya_env("ZIYA_MAX_OUTPUT_TOKENS") is not None:
+            effective_max_tokens = ziya_env("ZIYA_MAX_OUTPUT_TOKENS")
         else:
             effective_max_tokens = (self.model_config.get('max_output_tokens', 16384) if self.model_config else 16384)
 
@@ -1413,8 +1420,8 @@ class StreamingToolExecutor:
                     model_id = ModelManager.get_model_id()
                     if isinstance(model_id, dict):
                         model_id = list(model_id.values())[0]
-                    endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
-                    model_name = os.environ.get("ZIYA_MODEL")
+                    endpoint = ziya_env("ZIYA_ENDPOINT")
+                    model_name = ziya_env("ZIYA_MODEL")
                     model_config = ModelManager.get_model_config(endpoint, model_name)
                     estimation_model_family = model_config.get('family', 'claude')
                 except (ImportError, KeyError, AttributeError) as e:
@@ -1537,8 +1544,8 @@ class StreamingToolExecutor:
             if isinstance(model_id, dict):
                 model_id = list(model_id.values())[0]
 
-            endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
-            model_name = os.environ.get("ZIYA_MODEL")
+            endpoint = ziya_env("ZIYA_ENDPOINT")
+            model_name = ziya_env("ZIYA_MODEL")
             model_config = ModelManager.get_model_config(endpoint, model_name)
             model_family = model_config.get('family', 'default')
 
@@ -1668,6 +1675,18 @@ class StreamingToolExecutor:
                            f"avg={stream_metrics['bytes_sent']/stream_metrics['events_sent']:.2f}")
             return event_data
         
+        # Set the request-scoped conversation_id ContextVar.  The web path
+        # sets this in server.stream_chunks, but other callers (CLI, delegate
+        # agents) reach stream_with_tools directly — without this, code that
+        # resolves the conversation via app.context (bead storage, memory
+        # attribution) silently fails for those callers.
+        if conversation_id:
+            try:
+                from app.context import set_conversation_id
+                set_conversation_id(conversation_id)
+            except ImportError:
+                pass
+
         # Extended context handling for sonnet4.5
         if conversation_id:
             logger.debug(f"🔍 EXTENDED_CONTEXT: Processing conversation_id = {conversation_id}")
@@ -1732,8 +1751,8 @@ class StreamingToolExecutor:
                 calibrator = get_token_calibrator()
                 
                 from app.agents.models import ModelManager
-                endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
-                model_name = os.environ.get("ZIYA_MODEL")
+                endpoint = ziya_env("ZIYA_ENDPOINT")
+                model_name = ziya_env("ZIYA_MODEL")
                 model_config = ModelManager.get_model_config(endpoint, model_name)
                 model_family = model_config.get('family', 'claude')
                 
@@ -1763,7 +1782,7 @@ class StreamingToolExecutor:
                 _feedback_monitor_task.cancel()
             return
 
-        max_iterations = int(os.environ.get('ZIYA_MAX_TOOL_ITERATIONS', '200'))
+        max_iterations = ziya_env("ZIYA_MAX_TOOL_ITERATIONS")
         # Counts iterations that ended with text-only output (no tools, no
         # structured blocks) where the heuristic would otherwise have called
         # the response "complete". Biased toward granting an extra cycle so
@@ -1787,7 +1806,7 @@ class StreamingToolExecutor:
             parrot_match_this_iteration: Optional[Dict[str, Any]] = None
             
             # Suppress verbose iteration logs in chat mode
-            chat_mode = os.environ.get('ZIYA_MODE', 'server') == 'chat'
+            chat_mode = ziya_env("ZIYA_MODE") == 'chat'
             if chat_mode and iteration > 0:
                 # Only log errors in chat mode after first iteration
                 pass
@@ -3618,8 +3637,21 @@ Please retry the tool call with valid JSON. Ensure:
                 lang_or_type = stripped[backtick_count:].strip()
                 
                 if lang_or_type:
-                    # Has a language specifier - this is ALWAYS an opening, even if we're in a block
-                    # This handles cases like: ```mermaid\n...\n```vega-lite (no closing ```)
+                    # Inside an open fence, a lang-tagged fence line with
+                    # FEWER backticks than the opener is content, not a new
+                    # opener (CommonMark). Without this check, a wide fence
+                    # quoting a narrower one (``````plotly wrapping ```plotly)
+                    # is misread: the inner opener "implicitly closes" the
+                    # outer block, the inner closer closes the wrong fence,
+                    # and the real outer closer re-opens as a bare fence —
+                    # leaving in_block=True at stream end and triggering the
+                    # tool-suppressed continuation loop.
+                    if tracker['in_block'] and backtick_count < tracker.get('backtick_count', 3):
+                        continue  # content of the enclosing wider fence
+                    # Same-or-wider lang-tagged fence while in a block: keep
+                    # the implicit close/reopen recovery heuristic — it
+                    # handles model errors like ```mermaid\n…\n```vega-lite
+                    # (missing closer between blocks).
                     if tracker['in_block']:
                         logger.debug(f"🔍 TRACKER: Implicitly closing {tracker['block_type']} block, opening {lang_or_type} block")
                     if not _LANG_TAG_RE.match(lang_or_type):
