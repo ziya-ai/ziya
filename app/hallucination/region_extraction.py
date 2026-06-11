@@ -93,6 +93,95 @@ def scannable_text(text: str) -> str:
     return '\n'.join(extract_scannable_regions(text))
 
 
+def scannable_line_indices(text: str) -> list[tuple[int, str]]:
+    """
+    Per-line variant of ``extract_scannable_regions``.
+
+    Returns ``(line_index, line)`` pairs for each line of ``text`` (split
+    on newlines) that is scannable -- outside fenced code blocks, indented
+    code blocks, and blockquotes -- with inline backtick spans stripped.
+    Fence delimiter lines are not scannable.
+
+    Intended for consumers that need to map detection hits back to line
+    positions in the original text (e.g. truncating assistant text at the
+    first fabricated line), which the region-string API cannot express.
+
+    Fence semantics match ``extract_scannable_regions``: a fence closes
+    only on the same character with at least the opening width, so
+    narrower fences quoted inside a wider fence are inert content.
+    """
+    out: list[tuple[int, str]] = []
+    in_fence = False
+    fence_marker: str | None = None
+
+    for i, line in enumerate(text.split('\n')):
+        if in_fence:
+            m = _FENCE_RE.match(line)
+            if (
+                m
+                and fence_marker is not None
+                and m.group(2).startswith(fence_marker[0])
+                and len(m.group(2)) >= len(fence_marker)
+            ):
+                in_fence = False
+                fence_marker = None
+            continue
+
+        m = _FENCE_RE.match(line)
+        if m:
+            in_fence = True
+            fence_marker = m.group(2)
+            continue
+
+        if _INDENT_BLOCK_RE.match(line) or _BLOCKQUOTE_RE.match(line):
+            continue
+
+        out.append((i, _strip_inline_code(line)))
+
+    return out
+
+
+def open_fence_at(text: str, position: int) -> str | None:
+    """
+    Return the open fence marker (e.g. ``'```'`` or ``'~~~~'``) governing
+    ``position`` in ``text``, or ``None`` if the position is not inside a
+    fenced code block.
+
+    Scans the lines preceding ``position`` with the same width-disciplined
+    semantics as the other scanners in this module: a fence closes only on
+    the same character with at least the opening width, so narrower fences
+    quoted inside a wider fence are inert content. Fences do NOT nest --
+    inside an open fence, every line that is not a valid closer is content
+    (CommonMark), so a quoted opener never creates a phantom nesting level.
+
+    Intended for consumers that need fence state at a character offset
+    (e.g. choosing a safe continuation split point), which the per-line
+    and region APIs do not express.
+    """
+    in_fence = False
+    fence_marker: str | None = None
+
+    for line in text[:position].split('\n'):
+        if in_fence:
+            m = _FENCE_RE.match(line)
+            if (
+                m
+                and fence_marker is not None
+                and m.group(2).startswith(fence_marker[0])
+                and len(m.group(2)) >= len(fence_marker)
+            ):
+                in_fence = False
+                fence_marker = None
+            continue
+
+        m = _FENCE_RE.match(line)
+        if m:
+            in_fence = True
+            fence_marker = m.group(2)
+
+    return fence_marker if in_fence else None
+
+
 def _strip_inline_code(line: str) -> str:
     """
     Remove inline code spans (text between backticks) from a line.

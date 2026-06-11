@@ -642,19 +642,40 @@ class StreamingMiddleware(BaseHTTPMiddleware):
         return config_match or hardcoded_match or prefix_match or name_tag_match or xml_match
     
     def _looks_like_tool_output(self, content: str) -> bool:
-        """Check if content looks like tool output."""
+        """Check if a string chunk is tool output (vs. model prose).
+
+        Used by the partial-response preservation path: on a mid-stream
+        error, chunks classified here are included in the preservedContent
+        event as "successful tool executions".
+
+        Classification is deliberately narrow.  The previous indicator
+        list included "```" and "$ " as substrings, so any model prose
+        containing a code block or a shell example was misclassified as
+        tool output and surfaced to the frontend as a successful tool
+        execution (with has_successful_tools=true) when no tool ever ran.
+        Real tool results in the current architecture arrive as dicts
+        (tool_display events) and never reach this string path at all —
+        only serialized event JSON or pipeline-emitted markers count.
+        """
+        # Serialized tool-event JSON (e.g. a tool_display dict that was
+        # stringified upstream).
+        stripped = content.strip()
+        if stripped.startswith('{'):
+            try:
+                event = json.loads(stripped)
+                if isinstance(event, dict) and event.get('type') in (
+                    'tool_start', 'tool_display', 'tool_execution',
+                    'tool_result', 'tool_result_for_model',
+                ):
+                    return True
+            except (json.JSONDecodeError, ValueError):
+                pass
+        # Markers actually emitted by the tool pipeline (shell results,
+        # security rejections) — not generic prose features.
         tool_indicators = [
-            "$ ",  # Shell command output
-            "MCP Tool",
-            "Tool:",
-            "```",  # Code blocks often contain tool results
             "Exit code:",
             "SECURITY BLOCK",
-            "Tool execution"
+            "Tool execution",
+            "MCP Tool",
         ]
         return any(indicator in content for indicator in tool_indicators)
-    
-    def _contains_error_indicators(self, content: str) -> bool:
-        """Check if content contains error indicators."""
-        error_indicators = ["error", "timeout", "failed", "exception", "❌", "🚫", "⏱️"]
-        return any(indicator.lower() in content.lower() for indicator in error_indicators)

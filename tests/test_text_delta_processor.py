@@ -148,7 +148,18 @@ class TestHallucinationDetection:
         )
 
         assert state.hallucination_detected is True
-        assert any("fabricate" in e.get('content', '') for e in events)
+        # The warning is a structured recovery event, NOT an inline text
+        # chunk: a text-channel warning would enter assistant_text, be
+        # persisted into conversation history, and be fed back to the
+        # model on later turns — the warning itself becoming a
+        # contamination vector. Pin both the event shape and the absence
+        # of the warning from the text channel.
+        assert any(
+            e.get('type') == 'hallucination_recovery'
+            and e.get('reason') == 'fabricated_tool_output'
+            for e in events
+        )
+        assert not any('fabricate' in e.get('content', '') for e in events)
 
     def test_allowed_commands_pattern_detected(self):
         """Full 'Allowed commands: [, [[, ..., awk' pattern triggers hallucination."""
