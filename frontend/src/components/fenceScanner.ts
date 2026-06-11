@@ -362,3 +362,119 @@ export function applyOutsideFences(
     flush();
     return result.join('\n');
 }
+
+/**
+ * Languages whose fenced content is exactly one JSON value (chart and
+ * diagram specs). Used by splitJsonSpecTrailingContent.
+ */
+const JSON_SPEC_LANGS = new Set([
+    'plotly', 'vega-lite', 'vega', 'joint', 'jointjs', 'packet',
+]);
+
+/**
+ * Scan `text` for the end of its first balanced JSON value ({...} or
+ * [...]), respecting string literals and escapes. Returns the index just
+ * past the closing brace/bracket, or -1 if the text does not begin with
+ * a JSON value or the value never balances.
+ */
+function scanJsonValueEnd(text: string): number {
+    let i = 0;
+    while (i < text.length && /\s/.test(text[i])) i += 1;
+    if (i >= text.length) return -1;
+    if (text[i] !== '{' && text[i] !== '[') return -1;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (; i < text.length; i += 1) {
+        const c = text[i];
+        if (inStr) {
+            if (esc) esc = false;
+            else if (c === '\\') esc = true;
+            else if (c === '"') inStr = false;
+            continue;
+        }
+        if (c === '"') inStr = true;
+        else if (c === '{' || c === '[') depth += 1;
+        else if (c === '}' || c === ']') {
+            depth -= 1;
+            if (depth === 0) return i + 1;
+        }
+    }
+    return -1;
+}
+
+/** One pass of the JSON-spec trailing-content splitter. */
+function splitJsonSpecOnce(markdown: string): string {
+    const lines = markdown.split('\n');
+    const classes = classifyFenceLines(markdown);
+    const out: string[] = [];
+    let i = 0;
+    while (i < lines.length) {
+        const c = classes[i];
+        if (c.kind !== 'open' || !JSON_SPEC_LANGS.has(c.info.toLowerCase())) {
+            out.push(lines[i]);
+            i += 1;
+            continue;
+        }
+        let j = i + 1;
+        while (j < lines.length && classes[j].kind !== 'close') j += 1;
+        if (j >= lines.length) {
+            // Unterminated fence (streaming) — leave untouched.
+            out.push(lines[i]);
+            i += 1;
+            continue;
+        }
+        const inner = lines.slice(i + 1, j).join('\n');
+        const jsonEnd = scanJsonValueEnd(inner);
+        const after = jsonEnd >= 0 ? inner.slice(jsonEnd) : '';
+        if (jsonEnd < 0 || after.trim() === '') {
+            // No balanced JSON, or nothing trails it — block is fine as-is.
+            for (let k = i; k <= j; k += 1) out.push(lines[k]);
+            i = j + 1;
+            continue;
+        }
+        // Close the fence at the JSON boundary; re-emit the remainder as
+        // ordinary markdown so nested fences inside it lex normally.
+        const fence = c.char.repeat(c.len);
+        out.push(lines[i]);
+        for (const l of inner.slice(0, jsonEnd).split('\n')) out.push(l);
+        out.push(fence);
+        out.push('');
+        const remainder = after.replace(/^[ \t]+/, '');
+        for (const l of remainder.split('\n')) out.push(l);
+        // Keep the original close line only if the remainder leaves a
+        // fence open (it then serves as that fence's closer).
+        const remClasses = classifyFenceLines(remainder);
+        const last = remClasses[remClasses.length - 1];
+        if (last && (last.kind === 'open' || last.kind === 'content')) {
+            out.push(lines[j]);
+        }
+        i = j + 1;
+    }
+    return out.join('\n');
+}
+
+/**
+ * Split JSON-spec fenced blocks (plotly, vega-lite, …) whose content has
+ * non-whitespace text glued after the end of the JSON value.
+ *
+ * Models sometimes omit the closing fence and run prose — or an entire
+ * second fenced block — directly onto the closing brace of the spec.
+ * CommonMark then treats everything up to the NEXT fence line as content
+ * of the first block, so the spec fails to parse and any nested block is
+ * swallowed. This pass closes the fence at the first balanced JSON
+ * boundary and re-emits the trailing content as ordinary markdown.
+ *
+ * Runs up to a few passes so a nested spec block surfaced by one split
+ * can itself be split. Well-formed blocks, unterminated (streaming)
+ * blocks, and non-JSON languages are left untouched.
+ */
+export function splitJsonSpecTrailingContent(markdown: string): string {
+    let prev = markdown;
+    for (let pass = 0; pass < 3; pass += 1) {
+        const next = splitJsonSpecOnce(prev);
+        if (next === prev) return next;
+        prev = next;
+    }
+    return prev;
+}

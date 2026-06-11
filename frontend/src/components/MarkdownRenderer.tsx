@@ -31,7 +31,7 @@ import { useProject } from '../context/ProjectContext';
 import { useSendPayload } from '../hooks/useSendPayload';
 import { useStreamingContext } from '../context/StreamingContext';
 import { parseD3Spec } from '../utils/d3SpecParser';
-import { escapeNestedBacktickFences, stripBareProseFences, matchFenceOpen, applyOutsideFences } from './fenceScanner';
+import { escapeNestedBacktickFences, stripBareProseFences, matchFenceOpen, applyOutsideFences, splitJsonSpecTrailingContent } from './fenceScanner';
 import { processInlineMath } from '../utils/inlineMathClassifier';
 /**
  * Determine whether a diff for the given language should soft-wrap long lines
@@ -5784,6 +5784,14 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             processedMarkdown = applyOutsideFences(processedMarkdown, (s) =>
                 s.replace(/([^\n`])(`{3,}[a-zA-Z][a-zA-Z0-9_-]*)(?=\s|$)/g, '$1\n\n$2')
             );
+
+            // Split JSON-spec blocks (plotly, vega-lite, …) whose fence was
+            // never closed after the JSON value, so trailing prose — or an
+            // entire second fenced block — got swallowed as block content.
+            // Closes the fence at the first balanced JSON boundary and
+            // re-emits the remainder as ordinary markdown. Streaming
+            // (unterminated) blocks are left untouched.
+            processedMarkdown = splitJsonSpecTrailingContent(processedMarkdown);
 
             // Strip bare code fences that wrap markdown prose instead of code,
             // via the shared CommonMark-aware scanner (fenceScanner.ts).  The
