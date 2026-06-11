@@ -18,6 +18,7 @@ from typing import Optional
 from app.utils.logging_utils import logger
 from app.utils.version_util import get_current_version, get_latest_version
 
+from app.config.env_registry import ziya_env
 # Import configuration instead of individual constants
 import app.config.models_config as config
 from app.config.app_config import DEFAULT_PORT
@@ -441,7 +442,7 @@ def start_server(args):
             # Apply any model-required account-level Bedrock settings.
             if args.endpoint == "bedrock":
                 from app.config.models_config import MODEL_CONFIGS
-                _model_name = os.environ.get("ZIYA_MODEL", "")
+                _model_name = ziya_env("ZIYA_MODEL") or ""
                 _model_cfg = MODEL_CONFIGS.get("bedrock", {}).get(_model_name, {})
                 if _model_cfg.get("requires_provider_data_share"):
                     from app.utils.aws_utils import ensure_bedrock_data_retention_mode
@@ -660,18 +661,22 @@ def main():
     # Set up environment variables BEFORE plugin initialization
     # This ensures ZIYA_MODEL is set before ModelManager is initialized
     setup_environment(args)
+
+    # Validate model configurations early — surfaces typos and broken refs
+    from app.config.models_config import validate_model_configs
+    issues = validate_model_configs()
+    if issues:
+        logger.warning(f"Model config validation: {len(issues)} issue(s) found (run with --debug for details)")
     
     # Initialize plugin system AFTER environment is set up
     # This allows plugins to read the correct model from environment
     from app.plugins import initialize as initialize_plugins
     initialize_plugins()
-    logger.info("Plugin system initialized")
-
     # Enforce enterprise endpoint policy (after plugins are loaded)
-    if os.environ.get("ZIYA_ALLOW_ALL_ENDPOINTS") != "1":
+    if not ziya_env("ZIYA_ALLOW_ALL_ENDPOINTS"):
         from app.plugins import get_allowed_endpoints
         allowed = get_allowed_endpoints()
-        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        endpoint = ziya_env("ZIYA_ENDPOINT")
         if allowed is not None and endpoint not in allowed:
             print(f"\n❌ Endpoint '{endpoint}' is restricted by your enterprise policy.")
             print(f"   Allowed endpoints: {', '.join(allowed)}\n")
