@@ -138,8 +138,20 @@ def handle_invisible_unicode(original_content: str, git_diff: str) -> str:
     from ..application.patch_apply import apply_diff_with_difflib
     
     try:
-        # First try to apply the diff normally
-        modified_content = apply_diff_with_difflib(original_content, git_diff)
+        # apply_diff_with_difflib takes a file PATH and reads from disk.
+        # This function receives content as a string, so materialize it
+        # in a temp file.  (A previous version passed the content string
+        # as the path argument, failing with ENAMETOOLONG on any file
+        # longer than the OS filename limit — swallowed by the except
+        # below, so this handler always silently fell back.)
+        import tempfile, os
+        fd, tmp_path = tempfile.mkstemp(suffix='.txt', text=True)
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                f.write(original_content)
+            modified_content = apply_diff_with_difflib(tmp_path, git_diff)
+        finally:
+            os.unlink(tmp_path)
         
         # Check if the result contains invisible characters
         if contains_invisible_chars(modified_content):
