@@ -261,7 +261,7 @@ def conversation_to_prompt_text(chat: ChatRecord, max_chars: int = 50_000) -> st
     at the head, preserving the end where conclusions and decisions
     typically live.
     """
-    from app.utils.memory_extractor import strip_conversation
+    from app.memory.extractor import strip_conversation
     text = strip_conversation(chat.messages)
     if len(text) > max_chars:
         text = "...[earlier conversation truncated]...\n\n" + text[-max_chars:]
@@ -361,7 +361,7 @@ async def evaluate_salience(chat: ChatRecord) -> SalienceVerdict:
     and compare to the heuristic.
     """
     from app.services.model_resolver import call_service_model
-    from app.utils.memory_extractor import _count_salience_hits
+    from app.memory.extractor import _count_salience_hits
 
     heuristic_hits = _count_salience_hits(chat.messages)
     convo_text = conversation_to_prompt_text(chat)
@@ -556,7 +556,7 @@ async def evaluate_conversation(
     Phases that depend on extraction (candidate_grading, missed)
     silently no-op if extraction is disabled.
     """
-    from app.utils.memory_extractor import (
+    from app.memory.extractor import (
         _count_salience_hits, _split_into_topic_windows,
         strip_conversation, extract_memories,
         quality_gate, deduplicate,

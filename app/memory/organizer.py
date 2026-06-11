@@ -529,13 +529,13 @@ async def reorganize(store=None) -> Dict[str, Any]:
 
     # Phase 3: REM — synthesis + staleness on mature nodes
     try:
-        from app.utils.memory_rem import rem_phase
+        from app.memory.rem import rem_phase
         results["rem"] = await rem_phase(store)
     except Exception as e:
         logger.error(f"REM phase failed: {e}")
         results["rem"] = {"status": "error", "error": str(e)}
 
-    from app.utils.memory_maintenance import discover_cross_links, maybe_divide_node
+    from app.memory.maintenance import discover_cross_links, maybe_divide_node
     try:
         for node in store.list_mindmap_nodes():
             results["cross_links"].extend(discover_cross_links(store, node.id))
@@ -550,7 +550,7 @@ async def reorganize(store=None) -> Dict[str, Any]:
 
     # Append summary to bounded history log for the Memory Browser UI.
     try:
-        from app.utils.memory_organize_history import append_organize_result
+        from app.memory.organize_history import append_organize_result
         append_organize_result(results)
     except Exception as e:
         logger.warning(f"organize_history append failed (non-fatal): {e}")

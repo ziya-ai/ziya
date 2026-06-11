@@ -223,7 +223,7 @@ async def synthesize_node(node, store) -> Optional[str]:
     try:
         from app.storage.proposals import get_proposals_store
         from app.models.memory import MemoryProposal, MemoryScope
-        from app.utils.memory_extractor import _next_activity_count
+        from app.memory.extractor import _next_activity_count
 
         ps = get_proposals_store()
         # Tag union from source memories, capped at 4
@@ -267,7 +267,7 @@ async def detect_staleness(node, store) -> List[str]:
     memory in the node contradicts it (text overlap on key tokens) — the
     contradiction gate prevents fabricated staleness.
     """
-    from app.utils.memory_feedback import is_labile
+    from app.memory.feedback import is_labile
 
     all_memories = []
     for mid in node.memory_refs:
