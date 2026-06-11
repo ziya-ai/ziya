@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 
 from app.utils.logging_utils import logger
+from app.config.env_registry import ziya_env
 from app.utils.code_util import extract_target_file_from_diff, split_combined_diff
 from app.utils.code_util import PatchApplicationError
 from app.utils.diff_utils import apply_diff_pipeline
@@ -88,7 +89,7 @@ async def apply_changes(request: Request):
             user_codebase_dir = os.path.abspath(validated.projectRoot)
             logger.info(f"Using client-provided project root: {user_codebase_dir}")
         else:
-            env_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+            env_codebase_dir = ziya_env("ZIYA_USER_CODEBASE_DIR")
             if not env_codebase_dir:
                 raise ValueError("ZIYA_USER_CODEBASE_DIR environment variable is not set and no projectRoot provided")
             user_codebase_dir = os.path.abspath(env_codebase_dir)
@@ -244,7 +245,7 @@ async def unapply_changes(request: Request):
             user_codebase_dir = os.path.abspath(project_root_from_request)
             logger.info(f"Using client-provided project root for unapply: {user_codebase_dir}")
         else:
-            user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+            user_codebase_dir = ziya_env("ZIYA_USER_CODEBASE_DIR")
             if not user_codebase_dir:
                 raise ValueError("ZIYA_USER_CODEBASE_DIR environment variable is not set and no projectRoot provided")
             user_codebase_dir = os.path.abspath(user_codebase_dir)
@@ -315,7 +316,7 @@ async def validate_files(request: Request):
             user_codebase_dir = os.path.abspath(project_root)
             logger.debug(f"🔍 VALIDATE: Using provided project root: {user_codebase_dir}")
         else:
-            user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+            user_codebase_dir = ziya_env("ZIYA_USER_CODEBASE_DIR")
         
         if not user_codebase_dir or not os.path.isdir(user_codebase_dir):
             return JSONResponse(status_code=500, content={"error": "ZIYA_USER_CODEBASE_DIR not set"})
@@ -343,7 +344,7 @@ async def check_files_in_context(request: Request):
         if not file_paths:
             return {"missingFiles": [], "availableFiles": []}
         
-        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+        user_codebase_dir = ziya_env("ZIYA_USER_CODEBASE_DIR")
         if not user_codebase_dir:
             return JSONResponse(status_code=500, content={"error": "ZIYA_USER_CODEBASE_DIR not set"})
         
@@ -417,7 +418,7 @@ async def export_conversation(request: Request):
         # Get current model info
         from app.agents.models import ModelManager
         model_alias = ModelManager.get_model_alias()
-        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        endpoint = ziya_env("ZIYA_ENDPOINT")
         
         # Get version
         from app.utils.version_util import get_current_version

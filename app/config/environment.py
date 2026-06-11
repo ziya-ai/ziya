@@ -12,6 +12,7 @@ import sys
 from typing import Any
 
 from app.utils.logging_utils import logger
+from app.config.env_registry import ziya_env
 import app.config.models_config as config
 
 

@@ -44,6 +44,7 @@ from app.models.group import ChatGroup, ChatGroupCreate, ChatGroupUpdate
 from app.utils.logging_utils import logger
 from app.agents.compaction_engine import CompactionEngine
 from app.agents import delegate_stream_relay
+from app.config.env_registry import ziya_env
 
 # Type alias for the optional progress callback.
 # Signature: async callback(plan_id, delegate_id, new_status, extra_data)
@@ -1084,7 +1085,7 @@ class DelegateManager:
         # resolve files against the correct user project, not Ziya's own root.
         set_project_root(project_root)
 
-        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        endpoint = ziya_env("ZIYA_ENDPOINT")
         if endpoint != "bedrock":
             yield {"type": "error", "content": f"Delegates not yet supported for endpoint: {endpoint}"}
             return
@@ -1148,7 +1149,7 @@ class DelegateManager:
         from app.storage.contexts import ContextStorage
         from app.services.token_service import TokenService
         storage = ContextStorage(self.project_dir, TokenService())
-        pp = project_root or os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
+        pp = project_root or ziya_env("ZIYA_USER_CODEBASE_DIR") or ""
         if pp:
             storage.set_project_path(pp)
         return storage
@@ -1375,6 +1376,8 @@ class DelegateManager:
         """Make a lightweight LLM call for orchestrator analysis."""
         from app.agents.agent import model as lazy_model
         from langchain_core.messages import HumanMessage
+        from app.utils.execution_path_stats import record
+        record("wrapper_orchestrator_call")
 
         wrapper = lazy_model.get_model()
         if wrapper is None:

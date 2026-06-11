@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 
 from app.utils.logging_utils import logger
+from app.config.env_registry import ziya_env
 from app.utils.directory_util import get_ignored_patterns
 from app.services.folder_service import (
     _folder_cache, _cache_lock, _explicit_external_paths,
@@ -55,7 +56,7 @@ class AddExplicitPathsRequest(BaseModel):
 async def get_folder(request: FolderRequest):
     """Get the folder structure of a directory with improved error handling."""
     # Add timeout configuration
-    timeout = int(os.environ.get("ZIYA_SCAN_TIMEOUT", "45"))
+    timeout = ziya_env("ZIYA_SCAN_TIMEOUT")
     logger.info(f"Starting folder scan with {timeout}s timeout for: {request.directory}")
     logger.info(f"Max depth: {request.max_depth}")
     
@@ -96,7 +97,7 @@ async def get_folder(request: FolderRequest):
         logger.info(f"Ignore patterns loaded: {len(ignored_patterns)} patterns")
         
         # Use the max_depth from the request, but ensure it's at least 15 if not specified
-        max_depth = request.max_depth if request.max_depth > 0 else int(os.environ.get("ZIYA_MAX_DEPTH", 15))
+        max_depth = request.max_depth if request.max_depth > 0 else ziya_env("ZIYA_MAX_DEPTH")
         logger.info(f"Using max depth for folder structure: {max_depth}")
         
         # Use our enhanced cached folder structure function
@@ -408,7 +409,7 @@ async def get_folders_cached():
             
         # Get max depth from environment or use default
         try:
-            max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
+            max_depth = ziya_env("ZIYA_MAX_DEPTH")
         except ValueError:
             max_depth = 15
             
@@ -458,7 +459,7 @@ async def get_folders_with_accurate_tokens():
             
         # Get max depth from environment or use default
         try:
-            max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
+            max_depth = ziya_env("ZIYA_MAX_DEPTH")
         except ValueError:
             logger.warning("Invalid ZIYA_MAX_DEPTH value, using default of 15")
             max_depth = 15
@@ -566,7 +567,7 @@ async def api_get_folders(refresh: bool = False, project_path: str = Query(None)
         
         # Get max depth from environment or use default
         try:
-            max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
+            max_depth = ziya_env("ZIYA_MAX_DEPTH")
         except ValueError:
             logger.warning("Invalid ZIYA_MAX_DEPTH value, using default of 15")
             max_depth = 15

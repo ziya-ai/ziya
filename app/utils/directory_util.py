@@ -1,5 +1,6 @@
 import glob
 import os
+import sys
 import time
 import re
 import threading
@@ -7,6 +8,7 @@ import signal
 from typing import List, Tuple, Dict, Any, Optional
 import mimetypes
 from pathlib import Path
+from app.config.env_registry import ziya_env
 
 from app.utils.file_utils import is_binary_file, is_document_file, is_processable_file, read_file_content
 from app.utils.document_extractor import is_tool_backed_file
@@ -38,7 +40,7 @@ IGNORED_PATTERNS_CACHE_TTL = 3600  # 1 hour - gitignore files rarely change
 # symlink webs typically need >1 hop to traverse, so default 1 allows
 # legitimate root-level shared-asset symlinks while preventing blowup.
 # Explicit --include overrides the budget.
-MAX_SYMLINK_HOPS = int(os.environ.get("ZIYA_SYMLINK_HOPS", "1"))
+MAX_SYMLINK_HOPS = ziya_env("ZIYA_SYMLINK_HOPS")
 
 def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
     global _ignored_patterns_cache, _ignored_patterns_cache_dir, _ignored_patterns_cache_time, _included_symlink_names
@@ -58,7 +60,7 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
     scan_start_time = time.time()
     
     # Get include directories that should override default exclusions
-    include_dirs = os.environ.get("ZIYA_INCLUDE_DIRS", "")
+    include_dirs = ziya_env("ZIYA_INCLUDE_DIRS")
     include_patterns_override = set()
     if include_dirs:
         logger.info(f"Include directories specified (will override defaults): {include_dirs}")
@@ -88,7 +90,7 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
             _included_symlink_names.add(pattern)
 
     # Check if we're using include-only mode
-    include_only_dirs = os.environ.get("ZIYA_INCLUDE_ONLY_DIRS", "")
+    include_only_dirs = ziya_env("ZIYA_INCLUDE_ONLY_DIRS")
     if include_only_dirs:
         logger.info(f"Using include-only mode with patterns: {include_only_dirs}")
         # In include-only mode, we ignore everything except the specified directories/patterns
@@ -192,7 +194,7 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
     ]
     
     # Add additional exclude directories from environment variable if it exists
-    additional_excludes = os.environ.get("ZIYA_ADDITIONAL_EXCLUDE_DIRS", "")
+    additional_excludes = ziya_env("ZIYA_ADDITIONAL_EXCLUDE_DIRS")
     if additional_excludes:
         logger.info(f"Processing additional excludes: {additional_excludes}")
         for pattern in additional_excludes.split(','):
@@ -207,7 +209,6 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
     if len(ignored_patterns) > 1000:
         logger.warning(f"⚠️ Found {len(ignored_patterns)} gitignore patterns - this will slow down scanning significantly")
         logger.warning(f"💡 Consider using --include-only to scan specific directories only")
-        import sys
         print(f"\n⚠️ Found {len(ignored_patterns)} gitignore patterns - scanning will be slower", file=sys.stderr)
         print(f"💡 Tip: Use 'ziya --include-only path/to/project' for faster startup\n", file=sys.stderr, flush=True)
     
@@ -261,7 +262,7 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
     # Deadline is generous by default (60s) because legitimate large source
     # trees can take tens of seconds; override via ZIYA_GITIGNORE_TIMEOUT.
     _gitignore_visited = set()
-    _gitignore_timeout = float(os.environ.get("ZIYA_GITIGNORE_TIMEOUT", "60"))
+    _gitignore_timeout = ziya_env("ZIYA_GITIGNORE_TIMEOUT")
     _gitignore_deadline = time.time() + _gitignore_timeout
     _GITIGNORE_MAX_ENTRIES_PER_DIR = 10000
     _deadline_warned = False
@@ -423,7 +424,7 @@ def get_complete_file_list(user_codebase_dir: str, ignored_patterns: List[str], 
     # os.walk defaults to followlinks=False — set explicitly to make the intent
     # obvious, since build/ trees often contain symlink webs. Deadline is set
     # generously (120s) for large source trees; override via ZIYA_FILE_LIST_TIMEOUT.
-    _filelist_timeout = float(os.environ.get("ZIYA_FILE_LIST_TIMEOUT", "120"))
+    _filelist_timeout = ziya_env("ZIYA_FILE_LIST_TIMEOUT")
     deadline = time.time() + _filelist_timeout
     MAX_FILES = 200_000
     hit_limit = False
@@ -491,7 +492,6 @@ def get_file_type_multiplier(file_path: str) -> float:
 
 def detect_large_directory_and_warn(directory: str) -> None:
     """Detect if we're scanning a potentially large directory and warn the user."""
-    import sys
     
     # Check if this is a home directory
     home_dir = os.path.expanduser("~")
@@ -524,7 +524,7 @@ def estimate_directory_count(directory: str, ignored_patterns: List[Tuple[str, s
     count = 0
     # Estimation is depth-limited (2 levels) + count-capped (1000 dirs); the
     # wall-clock bound is a safety net, not the primary limit.
-    _estimate_deadline = time.time() + float(os.environ.get("ZIYA_ESTIMATE_TIMEOUT", "15"))
+    _estimate_deadline = time.time() + ziya_env("ZIYA_ESTIMATE_TIMEOUT")
     
     # CRITICAL: Skip Library directory in estimation to avoid hanging
     if 'Library' in directory or directory.endswith('/Library'):
@@ -608,7 +608,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     
     # Ensure max_depth is at least 15 if not specified
     if max_depth <= 0:
-        max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
+        max_depth = ziya_env("ZIYA_MAX_DEPTH")
     
     logger.debug(f"Getting folder structure for {directory} with max depth {max_depth}")
     
@@ -658,7 +658,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     logger.debug(f"Estimated ~{estimated_total} directories to scan" if estimated_total > 0 else "Starting scan without estimate (will show raw counts)")
     # Set a maximum time limit for scanning. Default 120s accommodates large
     # source trees; extreme cases can extend via ZIYA_SCAN_TIMEOUT.
-    max_scan_time = int(os.environ.get("ZIYA_SCAN_TIMEOUT", "120"))
+    max_scan_time = ziya_env("ZIYA_SCAN_TIMEOUT", default=120)
     
     # Track progress for intelligent timeout
     last_progress_check = {'time': time.time(), 'directories': 0}
@@ -897,7 +897,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     # Check if we need to include external paths
     # Note: The ignore pattern override above handles paths within the codebase
     # This section handles absolute paths outside the codebase directory
-    include_dirs = os.environ.get("ZIYA_INCLUDE_DIRS", "")
+    include_dirs = ziya_env("ZIYA_INCLUDE_DIRS")
     if include_dirs:
         logger.info(f"Processing external paths: {include_dirs}")
         external_paths = include_dirs.split(',')

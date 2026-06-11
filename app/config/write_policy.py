@@ -14,6 +14,7 @@ import copy
 import fnmatch
 import json
 import os
+from app.config.env_registry import ziya_env
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -114,7 +115,13 @@ class WritePolicyManager:
                 plaintext = get_encryptor().decrypt(raw)
                 return json.loads(plaintext)
             return json.loads(raw)
-        except Exception:
+        except (ImportError, json.JSONDecodeError):
+            return None  # Module missing or file not valid JSON — treat as absent
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "Failed to read policy file %s: %s — treating as absent",
+                filepath.name, e,
+            )
             return None
 
     def _safe_merge_json(self, filepath: Path) -> None:
@@ -137,8 +144,13 @@ class WritePolicyManager:
             if encryptor.is_enabled("session_data"):
                 filepath.write_bytes(encryptor.encrypt(plaintext, "session_data"))
                 return
-        except Exception:
-            pass
+        except ImportError:
+            pass  # Encryption module not available — write plaintext
+        except Exception as e:
+            logging.getLogger(__name__).warning(
+                "Encryption enabled but encrypt() failed for %s: %s — writing plaintext",
+                filepath.name, e,
+            )
         filepath.write_bytes(plaintext)
 
     def merge_env_overrides(self, env_map: Dict[str, str]) -> None:
@@ -193,7 +205,7 @@ class WritePolicyManager:
                 return
 
     def is_write_allowed(self, target_path: str, project_root: str = "") -> bool:
-        root = project_root or self._project_root or os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
+        root = project_root or self._project_root or ziya_env("ZIYA_USER_CODEBASE_DIR") or ""
         self._ensure_loaded_for_root(root)
         return self._check_path(target_path, root)
 
@@ -215,7 +227,7 @@ class WritePolicyManager:
         root = (
             project_root
             or self._project_root
-            or os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
+            or ziya_env("ZIYA_USER_CODEBASE_DIR") or ""
         )
         self._ensure_loaded_for_root(root)
 
@@ -238,7 +250,7 @@ class WritePolicyManager:
         return self.check_write(target_path, root)
 
     def check_write(self, target_path: str, project_root: str = "") -> Tuple[bool, str]:
-        root = project_root or self._project_root or os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
+        root = project_root or self._project_root or ziya_env("ZIYA_USER_CODEBASE_DIR") or ""
         self._ensure_loaded_for_root(root)
         if self.is_write_allowed(target_path, project_root):
             return True, ""

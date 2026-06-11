@@ -38,6 +38,7 @@ from app.providers.base import (
 from app.utils.logging_utils import get_mode_aware_logger
 from app.providers.bedrock_region_router import BedrockRegionRouter
 
+from app.config.env_registry import ziya_env
 logger = get_mode_aware_logger(__name__)
 
 
@@ -210,8 +211,9 @@ class BedrockProvider(LLMProvider):
                                 timeout=connect_timeout,
                             )
                             break
-                        except Exception:
-                            pass  # fall through to ErrorEvent
+                        except Exception as e:
+                            logger.debug("Extended context retry also failed: %s", e)
+                            # fall through to ErrorEvent
 
                 # Region failover: on throttle/overloaded, try an alternate
                 # region before surfacing the error to the orchestrator.
@@ -276,8 +278,8 @@ class BedrockProvider(LLMProvider):
             _req_id = ""
             try:
                 _req_id = (response.get("ResponseMetadata", {}) or {}).get("RequestId", "")
-            except Exception:
-                pass
+            except (AttributeError, TypeError, KeyError):
+                pass  # Response metadata not available
             logger.warning(
                 "BedrockProvider: empty event stream (0 events, HTTP 200) for "
                 "model=%s region=%s RequestId=%s — Bedrock returned no content.",
@@ -344,7 +346,7 @@ class BedrockProvider(LLMProvider):
         # blocks at all. Used to isolate whether prompt caching is what an
         # opus4.8 endpoint chokes on (empty-200) for large multi-turn
         # histories that opus4.7 handles fine on the identical payload.
-        if os.environ.get("ZIYA_DISABLE_PROMPT_CACHE") == "1":
+        if ziya_env("ZIYA_DISABLE_PROMPT_CACHE"):
             logger.info("🧪 PROMPT_CACHE: disabled via ZIYA_DISABLE_PROMPT_CACHE=1")
             return messages
 
@@ -600,8 +602,8 @@ class BedrockProvider(LLMProvider):
                 # blocking network read forever.
                 try:
                     stream_body.close()
-                except Exception:
-                    pass
+                except Exception:  # noqa: BLE001 — best-effort during cancellation
+                    pass  # Stream body may already be closed
                 raise
 
             except asyncio.TimeoutError:

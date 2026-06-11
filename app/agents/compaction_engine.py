@@ -444,6 +444,8 @@ class CompactionEngine:
         """
         from app.agents.agent import model as lazy_model
         from langchain_core.messages import HumanMessage, SystemMessage
+        from app.utils.execution_path_stats import record
+        record("wrapper_compaction_call")
 
         # Scale the prompt window to the token budget — research summaries
         # need far more source material than 2-3 sentence code summaries

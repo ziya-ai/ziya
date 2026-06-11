@@ -10,6 +10,7 @@ from app.config.models_config import TOOL_SENTINEL_OPEN, TOOL_SENTINEL_CLOSE
 from app.utils.logging_utils import logger
 import os
 
+from app.config.env_registry import ziya_env
 logger.info("MCP_GUIDELINES: mcp_prompt_extensions.py module being imported")
 
 @prompt_extension(
@@ -33,8 +34,8 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
     
     # Get model capabilities from central source
     from app.config.models_config import get_model_capabilities
-    endpoint = context.get("endpoint", os.environ.get("ZIYA_ENDPOINT", "bedrock"))
-    model_name = context.get("model_name", os.environ.get("ZIYA_MODEL"))
+    endpoint = context.get("endpoint", ziya_env("ZIYA_ENDPOINT"))
+    model_name = context.get("model_name", ziya_env("ZIYA_MODEL"))
     capabilities = get_model_capabilities(endpoint, model_name)
     
     native_function_calling = capabilities["native_function_calling"]
@@ -64,7 +65,7 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
         return prompt
     
     # Check if MCP is enabled
-    if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+    if not ziya_env("ZIYA_ENABLE_MCP"):
         logger.info("MCP_GUIDELINES: MCP is disabled, returning original prompt")
         return prompt
     

@@ -4,8 +4,11 @@ Precision prompt system that achieves 100% equivalence with original Ziya prompt
 """
 
 import os
+import logging
 import sys
 from typing import Dict, List, Any
+
+logger = logging.getLogger(__name__)
 
 class PrecisionPromptSystem:
     """
@@ -112,12 +115,12 @@ class PrecisionPromptSystem:
             # this brief directive primes the model to actually use it.
             if messages and messages[0]["role"] == "system":
                 try:
-                    from app.utils.memory_prompt import get_memory_activation_directive
+                    from app.memory import get_memory_activation_directive
                     directive = get_memory_activation_directive()
                     if directive:
                         messages[0]["content"] = directive + messages[0]["content"]
-                except Exception:
-                    pass  # Non-fatal
+                except (ImportError, RuntimeError, OSError) as e:
+                    logger.debug("Memory activation directive unavailable: %s", e)
 
             # Inject project-specific fileio write policy instructions into
             # the system message.  This runs per-request (not cached in the
@@ -151,8 +154,8 @@ class PrecisionPromptSystem:
                         conv_start_iso=conv_start_iso,
                     )
                     messages[0]["content"] = block + messages[0]["content"]
-                except Exception:
-                    pass  # Non-fatal
+                except (ImportError, RuntimeError, OSError) as e:
+                    logger.debug("Session context injection failed: %s", e)
 
             # Inject model-discoverable skill catalog so the model knows
             # which specialized skills it can activate on-demand.
@@ -162,19 +165,19 @@ class PrecisionPromptSystem:
                     catalog_section = get_skill_catalog_section()
                     if catalog_section:
                         messages[0]["content"] += catalog_section
-                except Exception as e:
-                    pass  # Non-fatal — skill catalog is advisory
+                except (ImportError, RuntimeError, OSError) as e:
+                    logger.debug("Skill catalog unavailable: %s", e)
 
             # Inject persistent memory context so the model is informed
             # by knowledge from prior sessions.
             if messages and messages[0]["role"] == "system":
                 try:
-                    from app.utils.memory_prompt import get_memory_prompt_section
+                    from app.memory import get_memory_prompt_section
                     memory_section = get_memory_prompt_section()
                     if memory_section:
                         messages[0]["content"] += memory_section
-                except Exception as e:
-                    pass  # Non-fatal — memory is advisory
+                except (ImportError, RuntimeError, OSError) as e:
+                    logger.debug("Memory prompt section unavailable: %s", e)
 
             # Inject bead (task-tree) directive and status summary so the
             # model knows to track subtasks and is aware of parked threads.
@@ -187,8 +190,8 @@ class PrecisionPromptSystem:
                     bead_status = get_bead_status_summary()
                     if bead_status:
                         messages[0]["content"] += bead_status
-                except Exception:
-                    pass  # Non-fatal — beads are advisory
+                except (ImportError, RuntimeError, OSError) as e:
+                    logger.debug("Bead directive unavailable: %s", e)
 
             # Inject skill prompts and other per-request additions (e.g. from
             # activeSkillPrompts on the frontend) into the system message.

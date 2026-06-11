@@ -187,8 +187,8 @@ async def execute_task_block(
         try:
             from . import task_run_stream_relay as _relay
             await _relay.safe_push(run_id, evt)
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Stream relay push failed: %s", e)
 
     scope = block.scope or None
     scope_paths = (scope.paths if scope else []) or []

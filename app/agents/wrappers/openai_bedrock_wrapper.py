@@ -14,6 +14,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.outputs import ChatGenerationChunk
 
 from app.utils.logging_utils import logger
+from app.config.env_registry import ziya_env
 
 
 class OpenAIBedrock(BaseChatModel):
@@ -38,7 +39,7 @@ class OpenAIBedrock(BaseChatModel):
             logger.warning(f"OpenAI models are only available in us-west-2. Overriding region from {requested_region} to us-west-2")
         
         # Get AWS profile if set
-        profile = os.environ.get("ZIYA_AWS_PROFILE")
+        profile = ziya_env("ZIYA_AWS_PROFILE")
         if profile:
             session = boto3.Session(profile_name=profile)
             self.client = session.client("bedrock-runtime", region_name=region)
@@ -113,7 +114,7 @@ class OpenAIBedrock(BaseChatModel):
         
         # Build the request body
         # Get default max_tokens from environment
-        env_max_tokens = os.environ.get("ZIYA_MAX_OUTPUT_TOKENS")
+        env_max_tokens = ziya_env("ZIYA_MAX_OUTPUT_TOKENS")
         default_max_tokens = 4096
         if env_max_tokens:
             try:

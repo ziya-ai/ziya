@@ -2,13 +2,14 @@
 GitHub-based MCP Registry Provider for public/community servers.
 """
 
+import asyncio
 import json
 import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
-import requests
+import httpx
 
 from app.mcp.registry.interface import (
     RegistryProvider, RegistryServiceInfo, RegistryTool, ToolSearchResult,
@@ -54,7 +55,8 @@ class GitHubRegistryProvider(RegistryProvider):
             
             url = f"{self.github_api_base}/repos/{self.registry_repo}/contents/registry.json"
             
-            response = requests.get(url, headers=getattr(self, 'headers', {}))
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(url, headers=getattr(self, 'headers', {}))
 
             # Return empty results since no static registry file exists
             if response.status_code == 404:
@@ -212,23 +214,26 @@ class GitHubRegistryProvider(RegistryProvider):
             # npm package installation
             if 'npm_package' in service.provider_metadata:
                 npm_package = service.provider_metadata['npm_package']
-                result = subprocess.run(['npm', 'install', npm_package], 
-                                      cwd=str(install_dir), capture_output=True, text=True)
+                result = await asyncio.to_thread(
+                    subprocess.run, ['npm', 'install', npm_package],
+                    cwd=str(install_dir), capture_output=True, text=True)
                 if result.returncode != 0:
                     raise RuntimeError(f"npm install failed: {result.stderr}")
             
             # pip package installation  
             elif 'pip_package' in service.provider_metadata:
                 pip_package = service.provider_metadata['pip_package']
-                result = subprocess.run(['pip', 'install', pip_package], 
-                                      capture_output=True, text=True)
+                result = await asyncio.to_thread(
+                    subprocess.run, ['pip', 'install', pip_package],
+                    capture_output=True, text=True)
                 if result.returncode != 0:
                     raise RuntimeError(f"pip install failed: {result.stderr}")
             
             # git clone installation
             elif service.repository_url:
-                result = subprocess.run(['git', 'clone', service.repository_url, str(install_dir)], 
-                                      capture_output=True, text=True)
+                result = await asyncio.to_thread(
+                    subprocess.run, ['git', 'clone', service.repository_url, str(install_dir)],
+                    capture_output=True, text=True)
                 if result.returncode != 0:
                     raise RuntimeError(f"git clone failed: {result.stderr}")
             

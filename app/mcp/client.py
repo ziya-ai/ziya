@@ -326,7 +326,8 @@ class MCPClient:
                             # Detect current npm registry
                             current_registry = "unknown"
                             try:
-                                result = subprocess.run(
+                                result = await asyncio.to_thread(
+                                    subprocess.run,
                                     ['npm', 'config', 'get', 'registry'],
                                     capture_output=True,
                                     text=True,
@@ -411,7 +412,8 @@ class MCPClient:
                                 # Try to detect current npm registry configuration
                                 current_registry = "unknown"
                                 try:
-                                    result = subprocess.run(
+                                    result = await asyncio.to_thread(
+                                        subprocess.run,
                                         ['npm', 'config', 'get', 'registry'],
                                         capture_output=True,
                                         text=True,

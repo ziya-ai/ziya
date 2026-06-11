@@ -11,6 +11,7 @@ import importlib.util
 import threading
 from typing import Dict, List, Optional, Any, Tuple, Set
 from app.utils.logging_utils import logger
+from app.config.env_registry import ziya_env
 
 # Project-keyed enhancer instances: project_root -> enhancer
 _enhancers: Dict[str, Any] = {}
@@ -40,7 +41,7 @@ def _get_project_root() -> str:
         from app.context import get_project_root
         return os.path.abspath(get_project_root())
     except Exception:
-        return os.path.abspath(os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd()))
+        return os.path.abspath(ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd())
 
 
 def get_enhancer_for_project(project_root: Optional[str] = None):
@@ -130,7 +131,7 @@ def initialize_ast_capabilities(codebase_path: str, exclude_patterns: Optional[L
         from .ziya_ast_enhancer import ZiyaASTEnhancer
         
         # Create enhancer if not already created
-        ast_resolution = os.environ.get("ZIYA_AST_RESOLUTION", "medium")
+        ast_resolution = ziya_env("ZIYA_AST_RESOLUTION")
         enhancer = ZiyaASTEnhancer(ast_resolution=ast_resolution)
         
         # Store keyed by project root
@@ -272,8 +273,8 @@ def change_ast_resolution(new_resolution: str) -> None:
         enhancer.project_ast = enhancer.UnifiedAST() if hasattr(enhancer, 'UnifiedAST') else None
         
         # Re-process the codebase with new resolution
-        codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
-        max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
+        codebase_dir = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
+        max_depth = ziya_env("ZIYA_MAX_DEPTH")
         
         logger.info(f"Re-indexing codebase with resolution: {new_resolution}")
         

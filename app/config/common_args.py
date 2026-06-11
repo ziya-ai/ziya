@@ -29,8 +29,8 @@ def add_common_arguments(parser):
             allowed = get_allowed_endpoints()
             if allowed is not None:
                 endpoint_help_choices = ', '.join(allowed)
-        except Exception:
-            pass
+        except (ImportError, RuntimeError, OSError):
+            pass  # Plugin system unavailable — use default help text
     parser.add_argument('--endpoint', type=str,
                         default=config.DEFAULT_ENDPOINT,
                         help=f'Model endpoint (default: {config.DEFAULT_ENDPOINT}). Available: {endpoint_help_choices}')
