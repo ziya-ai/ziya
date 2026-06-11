@@ -22,13 +22,8 @@ def bump_version(new_version):
     pyproject.write_text(content)
     print(f"✓ Updated {pyproject}")
     
-    # Update setup.py
-    setup_py = root / "setup.py"
-    content = setup_py.read_text()
-    content = re.sub(r'version="[^"]+"', f'version="{new_version}"', content, count=1)
-    setup_py.write_text(content)
-    print(f"✓ Updated {setup_py}")
-    
+    # setup.py reads version from pyproject.toml dynamically — no update needed.
+
     # Update frontend/package.json
     content = re.sub(r'"version": "[^"]+"', f'"version": "{npm_version}"', old_content, count=1)
     package_json.write_text(content)
