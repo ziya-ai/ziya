@@ -17,6 +17,28 @@ def unescape_backticks_from_llm(text: str) -> str:
     In template literals, \\` is used to include a literal backtick.
     Multiple consecutive \\` (like \\`\\`\\`) represent literal backticks and should be preserved.
     """
+    # Guard: when the only difference between a diff's removed and added
+    # lines is the backslash-escaping itself, the backslash-backticks in
+    # the '-' lines are genuine file content the diff intends to change
+    # (e.g. fixing stray ` sequences in a markdown doc). Unescaping the
+    # whole diff would collapse the hunk into a no-op (removal becomes
+    # identical to addition), so preserve the text as-is.
+    _bt = chr(96)           # backtick character
+    _esc = chr(92) + _bt    # backslash + backtick
+    if _esc in text:
+        old_lines, new_lines = [], []
+        for line in text.splitlines():
+            if line.startswith(('--- ', '+++ ')):
+                continue
+            if line.startswith('-'):
+                old_lines.append(line[1:])
+            elif line.startswith('+'):
+                new_lines.append(line[1:])
+        if old_lines and old_lines != new_lines:
+            if ([l.replace(_esc, _bt) for l in old_lines]
+                    == [l.replace(_esc, _bt) for l in new_lines]):
+                return text
+
     # Special case: \\`\\`\\`${variable} pattern in template literals should be unescaped
     # This handles markdown code blocks within template literals
     if '\\`\\`\\`${' in text:
