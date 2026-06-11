@@ -189,8 +189,8 @@ class ChatStorage(BaseStorage[Chat]):
                         _summary_cache.pop(path_str, None)
                         t_retention_total += time.perf_counter() - t_e
                         continue
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Retention check failed for cached entry: %s", e)
                 t_retention_total += time.perf_counter() - t_e
                 built.append((cached_group_id, cached_summary))
                 continue
@@ -215,9 +215,9 @@ class ChatStorage(BaseStorage[Chat]):
                     # Don't cache — file is being deleted; next glob won't see it.
                     t_retention_total += time.perf_counter() - t_e
                     continue
-            except Exception:
+            except Exception as e:
                 # Retention failure is non-fatal; keep the chat rather than dropping it.
-                pass
+                logger.debug("Retention enforcement failed, keeping chat: %s", e)
             t_retention_total += time.perf_counter() - t_e
 
             chat_group_id = data.get('groupId')
@@ -292,8 +292,8 @@ class ChatStorage(BaseStorage[Chat]):
         try:
             from app.storage import chat_index
             chat_index.on_chat_written(chat_id, self.chats_dir.parent.name)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("chat_index.on_chat_written failed: %s", e)
         return chat
     
     def update(self, chat_id: str, data: ChatUpdate) -> Optional[Chat]:
@@ -311,6 +311,15 @@ class ChatStorage(BaseStorage[Chat]):
         return chat
 
     def delete(self, chat_id: str) -> bool:
+        # Retire any standalone fallback bead file for this conversation so
+        # it doesn't outlive the chat.  Runs before the existence check:
+        # a fallback file can exist for a chat that never synced to disk
+        # (pre-sync beads), and the delete request should clear it either way.
+        try:
+            from app.storage.beads import remove_fallback_beads
+            remove_fallback_beads(chat_id)
+        except Exception as e:
+            logger.debug("Bead fallback cleanup failed for %s: %s", chat_id, e)
         chat_file = self._chat_file(chat_id)
         if not chat_file.exists():
             return False
@@ -321,8 +330,8 @@ class ChatStorage(BaseStorage[Chat]):
         try:
             from app.storage import chat_index
             chat_index.on_chat_deleted(chat_id)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("chat_index.on_chat_deleted failed: %s", e)
         return True
     
     def add_message(self, chat_id: str, message: Message) -> Optional[Chat]:
