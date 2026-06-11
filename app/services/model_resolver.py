@@ -25,6 +25,7 @@ from typing import Any, Callable, Dict, Optional
 
 from app.utils.logging_utils import logger
 
+from app.config.env_registry import ziya_env
 
 # Default lightweight models per endpoint, per service category.
 # "default" key is the fallback for any category not explicitly listed.
@@ -75,7 +76,7 @@ def resolve_service_model(
 
     The caller uses this to create the appropriate client.
     """
-    endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+    endpoint = ziya_env("ZIYA_ENDPOINT")
 
     # 1. Check explicit env var override: ZIYA_{CATEGORY}_MODEL
     env_model = os.environ.get(f"ZIYA_{category.upper()}_MODEL")

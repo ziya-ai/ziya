@@ -11,6 +11,7 @@ from langchain_aws import ChatBedrock
 from langchain_core.language_models import BaseChatModel
 from langchain_classic.callbacks.base import BaseCallbackHandler
 from app.utils.logging_utils import logger
+from app.config.env_registry import ziya_env
 import app.config.models_config as config
 from app.config.models_config import get_supported_parameters, DEFAULT_MAX_OUTPUT_TOKENS
 import google.auth
@@ -184,13 +185,20 @@ class ModelManager:
         if model_name is None:
             model_name = cls.DEFAULT_MODELS.get(endpoint, cls.DEFAULT_MODELS[cls.DEFAULT_ENDPOINT])
             
-        # If the model isn't available on this endpoint, fall back to the
-        # endpoint default.  This handles env-var carryover when switching
-        # endpoints (e.g. ZIYA_MODEL=opus4.6 with --endpoint openai).
+        # Resolve aliases before lookup — allows "fable" → "fable5", etc.
+        from app.config.models_config import MODEL_ALIASES
+        endpoint_aliases = MODEL_ALIASES.get(endpoint, {})
+        if model_name not in cls.MODEL_CONFIGS[endpoint] and model_name in endpoint_aliases:
+            resolved = endpoint_aliases[model_name]
+            logger.info(f"Resolved model alias '{model_name}' → '{resolved}'")
+            model_name = resolved
+
+        # If still not found after alias resolution, fall back to the
+        # endpoint default with a warning.
         if model_name not in cls.MODEL_CONFIGS[endpoint]:
             default = cls.DEFAULT_MODELS.get(endpoint, cls.DEFAULT_MODELS[cls.DEFAULT_ENDPOINT])
             logger.warning(
-                f"Model '{model_name}' not available on endpoint '{endpoint}', using default '{default}'"
+                f"Model '{model_name}' not found on endpoint '{endpoint}' (no alias match either), using default '{default}'"
             )
             model_name = default
             
@@ -256,8 +264,8 @@ class ModelManager:
             return cls._state['current_model_id']
             
         # Otherwise, try to get it from environment variables
-        endpoint = os.environ.get("ZIYA_ENDPOINT", config.DEFAULT_ENDPOINT)
-        model_name = os.environ.get("ZIYA_MODEL", config.DEFAULT_MODELS.get(endpoint))
+        endpoint = ziya_env("ZIYA_ENDPOINT")
+        model_name = ziya_env("ZIYA_MODEL") or config.DEFAULT_MODELS.get(endpoint)
         
         # Get model configuration
         try:
@@ -276,9 +284,9 @@ class ModelManager:
             str: The model alias (like "sonnet3.7")
         """
         # Get the model alias from environment variable
-        return os.environ.get("ZIYA_MODEL", config.DEFAULT_MODELS.get(
-            os.environ.get("ZIYA_ENDPOINT", config.DEFAULT_ENDPOINT)
-        ))
+        return ziya_env("ZIYA_MODEL") or config.DEFAULT_MODELS.get(
+            ziya_env("ZIYA_ENDPOINT")
+        )
             
     @classmethod
     def filter_model_kwargs(cls, model_kwargs, model_config):
@@ -404,16 +412,16 @@ class ModelManager:
         # Determine config source and get model configuration
         if hasattr(config_or_model, 'model_id'):
             # Model instance provided
-            endpoint = os.environ.get("ZIYA_ENDPOINT", cls.DEFAULT_ENDPOINT)
-            model_name = os.environ.get("ZIYA_MODEL", cls.DEFAULT_MODELS.get(endpoint))
+            endpoint = ziya_env("ZIYA_ENDPOINT")
+            model_name = ziya_env("ZIYA_MODEL") or cls.DEFAULT_MODELS.get(endpoint)
             model_config = cls.get_model_config(endpoint, model_name)
         elif isinstance(config_or_model, dict):
             # Config dict provided
             model_config = config_or_model
         else:
             # No specific config provided, use environment variables
-            endpoint = os.environ.get("ZIYA_ENDPOINT", cls.DEFAULT_ENDPOINT)
-            model_name = os.environ.get("ZIYA_MODEL", cls.DEFAULT_MODELS.get(endpoint))
+            endpoint = ziya_env("ZIYA_ENDPOINT")
+            model_name = ziya_env("ZIYA_MODEL") or cls.DEFAULT_MODELS.get(endpoint)
             model_config = cls.get_model_config(endpoint, model_name)
         
         try:
@@ -513,10 +521,10 @@ class ModelManager:
             # If validation fails, return default settings
             logger.warning("Failed to get model config, returning default settings")
             return {
-                'temperature': float(os.environ.get("ZIYA_TEMPERATURE", 0.3)),
-                'max_tokens': int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 4096)),
-                'top_k': int(os.environ.get("ZIYA_TOP_K", 15)),
-                'thinking_mode': os.environ.get("ZIYA_THINKING_MODE") == "1"
+                'temperature': ziya_env("ZIYA_TEMPERATURE"),
+                'max_tokens': ziya_env("ZIYA_MAX_OUTPUT_TOKENS") or 4096,
+                'top_k': ziya_env("ZIYA_TOP_K"),
+                'thinking_mode': ziya_env("ZIYA_THINKING_MODE")
             }
 
     @classmethod
@@ -575,8 +583,8 @@ class ModelManager:
         current_pid = os.getpid()
         
         # Check if auth has already been performed in the parent process
-        auth_already_checked = os.environ.get("ZIYA_AUTH_CHECKED") == "true"
-        parent_auth_complete = os.environ.get("ZIYA_PARENT_AUTH_COMPLETE") == "true"
+        auth_already_checked = ziya_env("ZIYA_AUTH_CHECKED") == "true"
+        parent_auth_complete = ziya_env("ZIYA_PARENT_AUTH_COMPLETE") == "true"
         
         if (cls._state['model'] is not None and 
             cls._state['process_id'] == current_pid and 
@@ -600,8 +608,8 @@ class ModelManager:
             cls._state['model'] = None
             
         # Get endpoint and model from environment variables
-        endpoint = os.environ.get("ZIYA_ENDPOINT", cls.DEFAULT_ENDPOINT)
-        model_name = os.environ.get("ZIYA_MODEL", cls.DEFAULT_MODELS.get(endpoint))
+        endpoint = ziya_env("ZIYA_ENDPOINT")
+        model_name = ziya_env("ZIYA_MODEL") or cls.DEFAULT_MODELS.get(endpoint)
         logger.debug(f"Initializing for endpoint: {endpoint}, model: {model_name}")
         
         # Get model configuration
@@ -615,9 +623,9 @@ class ModelManager:
                 default_max_tokens = cls.ENDPOINT_DEFAULTS[endpoint].get("default_max_output_tokens")
         
         # Check for environment variable overrides and apply them directly
-        env_max_tokens = os.environ.get("ZIYA_MAX_OUTPUT_TOKENS")
+        env_max_tokens = ziya_env("ZIYA_MAX_OUTPUT_TOKENS")
         if env_max_tokens:
-            model_config["max_output_tokens"] = int(env_max_tokens)
+            model_config["max_output_tokens"] = env_max_tokens
 
         model_id = model_config.get("model_id", model_name)
         
@@ -700,7 +708,7 @@ class ModelManager:
             # route to the nearest capacity pool, yielding better latency and
             # lower cost.  Opt out via ZIYA_PREFER_REGIONAL_INFERENCE=1 for
             # data-residency requirements.
-            prefer_regional = os.environ.get("ZIYA_PREFER_REGIONAL_INFERENCE", "").strip() == "1"
+            prefer_regional = ziya_env("ZIYA_PREFER_REGIONAL_INFERENCE")
             if not prefer_regional and "global" in model_id and model_id["global"]:
                 logger.debug(
                     f"Using global inference profile: {model_id['global']} "
@@ -820,7 +828,7 @@ class ModelManager:
         logger.info("Initializing Bedrock model")
         
         # Get AWS profile from environment or config
-        aws_profile = os.environ.get("ZIYA_AWS_PROFILE") or model_config.get("profile")
+        aws_profile = ziya_env("ZIYA_AWS_PROFILE") or model_config.get("profile")
         if aws_profile:
             logger.info(f"Using AWS profile: {aws_profile}")
             os.environ["AWS_PROFILE"] = aws_profile
@@ -850,7 +858,7 @@ class ModelManager:
         logger.info(f"Selected model_id: {model_id} for region: {region}")
         
         # Check for model ID override from environment
-        model_id_override = os.environ.get("ZIYA_MODEL_ID_OVERRIDE")
+        model_id_override = ziya_env("ZIYA_MODEL_ID_OVERRIDE")
         if model_id_override:
             logger.info(f"Using model ID override: {model_id_override} instead of {model_id}")
             model_id = model_id_override
@@ -922,10 +930,10 @@ class ModelManager:
         else:
             logger.debug("Using environment variables (or defaults) for initialization parameters.")
             # Fall back to base config values if environment variable is not set
-            effective_temperature = float(os.environ.get("ZIYA_TEMPERATURE", base_temperature))
-            effective_top_k = int(os.environ.get("ZIYA_TOP_K", base_top_k))
-            effective_max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", base_max_tokens))
-            effective_top_p_str = os.environ.get("ZIYA_TOP_P")
+            effective_temperature = ziya_env("ZIYA_TEMPERATURE", default=base_temperature)
+            effective_top_k = ziya_env("ZIYA_TOP_K", default=base_top_k)
+            effective_max_tokens = ziya_env("ZIYA_MAX_OUTPUT_TOKENS", default=base_max_tokens)
+            effective_top_p_str = ziya_env("ZIYA_TOP_P")
             effective_top_p = base_top_p # Default to base
             if effective_top_p_str is not None:
                 try:
@@ -934,12 +942,10 @@ class ModelManager:
                     logger.warning(f"Invalid ZIYA_TOP_P value '{effective_top_p_str}', using default.")
                     effective_top_p = base_top_p
             
-            effective_thinking_mode_str = os.environ.get("ZIYA_THINKING_MODE")
+            effective_thinking_mode_val = ziya_env("ZIYA_THINKING_MODE")
             effective_thinking_mode = base_thinking_mode
-            if effective_thinking_mode_str is not None:
-                effective_thinking_mode = effective_thinking_mode_str.lower() in ("true", "1", "yes", "t", "y")
-            if effective_thinking_mode_str is not None:
-                effective_thinking_mode = effective_thinking_mode_str.lower() in ("true", "1", "yes")
+            if effective_thinking_mode_val is not None:
+                effective_thinking_mode = bool(effective_thinking_mode_val)
 
         # Create the appropriate model based on family
         if family in ["nova", "nova-pro", "nova-lite", "nova-premier"]:
@@ -953,7 +959,7 @@ class ModelManager:
             }
             
             # Add temperature only if supported by the model
-            model_alias = os.environ.get("ZIYA_MODEL", "")  # Get the model alias from environment
+            model_alias = ziya_env("ZIYA_MODEL") or ""
             supported_params = get_supported_parameters("bedrock", model_alias)
             if "temperature" in supported_params and effective_temperature is not None:
                 nova_model_kwargs["temperature"] = effective_temperature
@@ -1039,7 +1045,7 @@ class ModelManager:
             # Uses get_supported_parameters() which honours both
             # supported_parameters (additive) and unsupported_parameters
             # (subtractive, e.g. Opus 4.7 rejects temperature/top_p/top_k).
-            model_alias = os.environ.get("ZIYA_MODEL", "")
+            model_alias = ziya_env("ZIYA_MODEL") or ""
             resolved_supported = get_supported_parameters("bedrock", model_alias)
             for _param, _env_var in (
                 ("top_k", "ZIYA_TOP_K"),
@@ -1314,8 +1320,8 @@ class ModelManager:
             return model
             
         # Check if the model supports stop sequences
-        endpoint = os.environ.get("ZIYA_ENDPOINT", cls.DEFAULT_ENDPOINT)
-        model_name = os.environ.get("ZIYA_MODEL", cls.DEFAULT_MODELS.get(endpoint))
+        endpoint = ziya_env("ZIYA_ENDPOINT")
+        model_name = ziya_env("ZIYA_MODEL") or cls.DEFAULT_MODELS.get(endpoint)
         model_config = cls.get_model_config(endpoint, model_name)
         model_id = model_config.get("model_id", model_name)
         

@@ -29,9 +29,10 @@ def get_current_version() -> str:
     # Try importlib.metadata first (works for pip-installed packages)
     try:
         from importlib.metadata import version as meta_version
+        from importlib.metadata import PackageNotFoundError
         return str(meta_version('ziya'))
-    except Exception:
-        pass
+    except (ImportError, PackageNotFoundError):
+        pass  # Not installed via pip — try other methods
 
     # Try environment variable (set by wrappers like toolbox)
     env_version = os.environ.get('ZIYA_VERSION', '')
@@ -42,7 +43,7 @@ def get_current_version() -> str:
     try:
         import pkg_resources
         return str(pkg_resources.get_distribution('ziya').version)
-    except Exception:
+    except Exception:  # noqa: BLE001 — intentional broad catch at final fallback
         return 'unknown'
 
 
