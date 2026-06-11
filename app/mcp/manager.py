@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Any
 from pathlib import Path
 
 from app.mcp.client import MCPClient, MCPResource, MCPTool, MCPPrompt # Assuming MCPClient is in the same directory or sys.path is configured
+from app.config.env_registry import ziya_env
 from app.utils.logging_utils import logger
 from app.mcp.dynamic_tools import get_dynamic_loader
 from app.mcp.tool_guard import scan_tool_description, detect_shadowing, fingerprint_tools, check_fingerprint_change
@@ -211,7 +212,7 @@ class MCPManager:
             bool: True if initialization successful
         """
         # Check if MCP is enabled
-        if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+        if not ziya_env("ZIYA_ENABLE_MCP"):
             logger.info("MCP is disabled. Use --mcp flag to enable MCP integration.")
             self.is_initialized = False
             return False
@@ -810,7 +811,7 @@ class MCPManager:
             invalidate_secure_tools_cache()
             logger.debug("MCP_MANAGER: Secure tools cache also invalidated")
         except ImportError:
-            pass
+            pass  # enhanced_tools not loaded yet — no cache to invalidate
     def get_all_prompts(self) -> List[MCPPrompt]:
         """Get all prompts from all connected MCP servers."""
         prompts = []
@@ -1630,7 +1631,7 @@ def get_mcp_manager():
     """Get the global MCP manager instance."""
     
     # Check if MCP is enabled before creating manager
-    if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+    if not ziya_env("ZIYA_ENABLE_MCP"):
         # Return a dummy manager that's never initialized when MCP is disabled
         class DisabledMCPManager:
             def __init__(self):

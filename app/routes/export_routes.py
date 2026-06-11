@@ -8,6 +8,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from typing import List, Dict, Any, Optional
 from app.utils.logging_utils import logger
+from app.config.env_registry import ziya_env
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/export", tags=["export"])
@@ -80,9 +81,9 @@ async def export_rendered(request: RenderedExportRequest) -> Dict[str, Any]:
     from app.utils.version_util import get_current_version
 
     model_alias = ModelManager.get_model_alias()
-    endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+    endpoint = ziya_env("ZIYA_ENDPOINT")
     version = get_current_version()
-    port = int(os.environ.get("ZIYA_PORT", "6969"))
+    port = ziya_env("ZIYA_PORT")
 
     result = await export_conversation_rendered(
         messages=request.messages,
@@ -139,9 +140,9 @@ async def export_to_target(request: PluginExportRequest) -> Dict[str, Any]:
         )
 
     model_alias = ModelManager.get_model_alias()
-    endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+    endpoint = ziya_env("ZIYA_ENDPOINT")
     version = get_current_version()
-    port = int(os.environ.get("ZIYA_PORT", "6969"))
+    port = ziya_env("ZIYA_PORT")
 
     # Render the export with server-side diagrams
     export_result = await export_conversation_rendered(

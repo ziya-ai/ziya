@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 from typing import Dict, Any
 
 from app.utils.logging_utils import logger
+from app.config.env_registry import ziya_env
 from app.agents.models import ModelManager
 
 router = APIRouter(tags=["debug"])
@@ -64,6 +65,17 @@ async def debug_mcp_state():
         logger.error(f"Error getting MCP debug state: {e}")
         return {"error": str(e)}
 
+@router.get('/api/debug/execution-paths')
+async def debug_execution_paths():
+    """Report which model-execution path served requests (pipeline vs
+    legacy LangChain wrappers).  Measurement for wrapper retirement (arch #1)."""
+    try:
+        from app.utils.execution_path_stats import get_stats
+        return {"execution_paths": get_stats()}
+    except Exception as e:
+        logger.error(f"Error getting execution path stats: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
 @router.get('/api/info')
 async def get_system_info(request: Request):
     """Get comprehensive system information and configuration for debugging."""
@@ -101,9 +113,9 @@ async def get_system_info(request: Request):
         
         # Root directory information
         info['directories'] = {
-            'root': os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd()),
-            'templates': os.environ.get("ZIYA_TEMPLATES_DIR", "Not set"),
-            'current_working_directory': os.getcwd()
+            'root': ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd(),
+            'templates': os.environ.get("ZIYA_TEMPLATES_DIR", "Not set"),  # not a ZIYA_ registered var
+            'current_working_directory': os.getcwd(),
         }
         
         # User agent from request headers
@@ -172,9 +184,9 @@ async def get_system_info(request: Request):
         
         # Endpoint and model configuration
         info['model'] = {
-            'endpoint': os.environ.get("ZIYA_ENDPOINT", "bedrock"),
-            'model': os.environ.get("ZIYA_MODEL", "Not set"),
-            'model_id_override': os.environ.get("ZIYA_MODEL_ID_OVERRIDE")
+            'endpoint': ziya_env("ZIYA_ENDPOINT"),
+            'model': ziya_env("ZIYA_MODEL") or "Not set",
+            'model_id_override': ziya_env("ZIYA_MODEL_ID_OVERRIDE"),
         }
         
         # Get current model details
@@ -190,7 +202,7 @@ async def get_system_info(request: Request):
         if info['model']['endpoint'] == "bedrock":
             import boto3
             info['aws'] = {
-                'profile': os.environ.get('ZIYA_AWS_PROFILE') or os.environ.get('AWS_PROFILE', 'default'),
+                'profile': ziya_env('ZIYA_AWS_PROFILE') or os.environ.get('AWS_PROFILE', 'default'),
                 'region': os.environ.get('AWS_REGION', 'us-west-2')
             }
             
@@ -231,18 +243,17 @@ async def get_system_info(request: Request):
         
         # Feature flags
         info['features'] = {
-            'ast_enabled': os.environ.get("ZIYA_ENABLE_AST", "false").lower() in ("true", "1", "yes"),
-            'ast_resolution': os.environ.get("ZIYA_AST_RESOLUTION", "medium"),
-            'mcp_enabled': os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"),
-            'ephemeral_mode': os.environ.get("ZIYA_EPHEMERAL_MODE", "false").lower() in ("true", "1", "yes")
+            'ast_enabled': ziya_env("ZIYA_ENABLE_AST"),
+            'ast_resolution': ziya_env("ZIYA_AST_RESOLUTION"),
+            'mcp_enabled': ziya_env("ZIYA_ENABLE_MCP"),
+            'ephemeral_mode': ziya_env("ZIYA_EPHEMERAL_MODE"),
         }
         
         # MCP Registry status
         if info['features']['mcp_enabled']:
             try:
-                import subprocess
-                result = subprocess.run(['which', 'mcp-registry'], capture_output=True, text=True)
-                info['features']['mcp_registry_installed'] = result.returncode == 0
+                import shutil
+                info['features']['mcp_registry_installed'] = shutil.which('mcp-registry') is not None
             except Exception:
                 info['features']['mcp_registry_installed'] = False
         

@@ -20,6 +20,7 @@ from app.utils.custom_exceptions import KnownCredentialException, ThrottlingExce
 # Import logger early so it's available for exception handling
 from app.utils.logging_utils import logger
 
+from app.config.env_registry import ziya_env
 # Wrap imports in try/except to catch credential errors early
 try:
     from langchain_classic.agents import AgentExecutor
@@ -334,8 +335,8 @@ class RetryingChatBedrock(Runnable):
     def bind(self, **kwargs):
         # Filter kwargs to only include supported parameters for the current model
         # Get model configuration
-        endpoint = os.environ.get("ZIYA_ENDPOINT", ModelManager.DEFAULT_ENDPOINT)
-        model_name = os.environ.get("ZIYA_MODEL")
+        endpoint = ziya_env("ZIYA_ENDPOINT")
+        model_name = ziya_env("ZIYA_MODEL")
         model_config = ModelManager.get_model_config(endpoint, model_name)
         model_id = model_config.get("model_id", model_name)
         
@@ -379,7 +380,7 @@ class RetryingChatBedrock(Runnable):
     def _get_provider_format(self) -> str:
         """Get the message format requirements for current provider."""
         # Can be extended for other providers
-        return os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        return ziya_env("ZIYA_ENDPOINT")
 
     def _convert_to_messages(self, input_value: Any) -> Union[str, List[Dict[str, str]]]:
         """Convert input to messages format expected by provider."""
@@ -599,7 +600,7 @@ class RetryingChatBedrock(Runnable):
         throttling_base_delay = 5  # Start with 5 seconds for throttling
 
         # Get max_tokens from environment variables
-        max_tokens = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", 0)) or int(os.environ.get("ZIYA_MAX_TOKENS", 0)) or DEFAULT_MAX_OUTPUT_TOKENS
+        max_tokens = ziya_env("ZIYA_MAX_OUTPUT_TOKENS") or DEFAULT_MAX_OUTPUT_TOKENS
         
         # Create a copy of kwargs to avoid modifying the original
         filtered_kwargs = {}
@@ -615,8 +616,8 @@ class RetryingChatBedrock(Runnable):
             # Add max_tokens to kwargs if it's not already there
             filtered_kwargs["max_tokens"] = max_tokens
             logger.info(f"Added max_tokens={max_tokens} to astream kwargs from environment")
-        endpoint = os.environ.get("ZIYA_ENDPOINT", ModelManager.DEFAULT_ENDPOINT)
-        model_name = os.environ.get("ZIYA_MODEL", ModelManager.DEFAULT_MODELS.get(endpoint))
+        endpoint = ziya_env("ZIYA_ENDPOINT")
+        model_name = ziya_env("ZIYA_MODEL") or ModelManager.DEFAULT_MODELS.get(endpoint)
         model_config = ModelManager.get_model_config(endpoint, model_name)
 
         for key, value in kwargs.items():
@@ -1446,8 +1447,8 @@ def is_file_allowed_by_filters(file_path: str) -> bool:
     from pathlib import Path
     
     # Get filter settings from environment
-    include_only_str = os.environ.get("ZIYA_INCLUDE_ONLY_DIRS", "")
-    exclude_str = os.environ.get("ZIYA_ADDITIONAL_EXCLUDE_DIRS", "")
+    include_only_str = ziya_env("ZIYA_INCLUDE_ONLY_DIRS")
+    exclude_str = ziya_env("ZIYA_ADDITIONAL_EXCLUDE_DIRS")
     
     # If include-only is set, file must match one of those patterns
     if include_only_str:
@@ -1485,7 +1486,7 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
         files = [f for f in files if is_file_allowed_by_filters(f)]
         if original_count != len(files):
             logger.info(f"🔍 FILTER: Filtered files from {original_count} to {len(files)} (removed {original_count - len(files)} due to include-only/exclude)")
-            logger.info(f"🔍 FILTER: Include-only setting: {os.environ.get('ZIYA_INCLUDE_ONLY_DIRS', 'none')}")
+            logger.info(f"🔍 FILTER: Include-only setting: {ziya_env('ZIYA_INCLUDE_ONLY_DIRS') or 'none'}")
             logger.info(f"🔍 FILTER: Remaining files: {files[:10]}{'...' if len(files) > 10 else ''}")
 
     # Initialize AST capabilities if enabled
@@ -1496,7 +1497,7 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
         from app.context import get_project_root
         user_codebase_dir: str = get_project_root()
     except ImportError:
-        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        user_codebase_dir = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
     for file_path in files:
         from app.utils.file_utils import resolve_external_path, EXTERNAL_PREFIX
         full_path = resolve_external_path(file_path, user_codebase_dir)
@@ -1568,7 +1569,7 @@ def extract_file_paths_from_input(x) -> List[str]:
         from app.context import get_project_root
         user_codebase_dir = get_project_root()
     except ImportError:
-        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        user_codebase_dir = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
     
     from app.utils.file_utils import resolve_external_path
     file_paths = []
@@ -1682,7 +1683,7 @@ def extract_codebase(x):
                 from app.context import get_project_root
                 _root = get_project_root()
             except ImportError:
-                _root = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+                _root = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
             from app.utils.file_utils import resolve_external_path
             full_path = resolve_external_path(file_path, _root)
             if os.path.isdir(full_path):
@@ -1722,7 +1723,7 @@ def extract_codebase(x):
             from app.context import get_project_root
             base_dir = get_project_root()
         except (ImportError, LookupError):
-            base_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+            base_dir = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
         refresh_results = file_state_manager.refresh_all_files_from_disk(conversation_id, base_dir)
         changed_count = sum(1 for changed in refresh_results.values() if changed)
         logger.debug(f"Refreshed conversation {conversation_id}: {changed_count} files changed on disk")
@@ -1985,7 +1986,7 @@ def update_conversation_state(conversation_id: str, file_paths: List[str]) -> No
             from app.context import get_project_root
             _root = get_project_root()
         except ImportError:
-            _root = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+            _root = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
         full_path = os.path.join(_root, file_path)
         if os.path.isdir(full_path):
             # Skip directories silently
@@ -2029,7 +2030,7 @@ def create_agent_executor(agent_chain: Runnable):
     # Get MCP tools for the executor
     mcp_tools = []
     # Check if MCP is enabled before creating tools
-    if os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+    if ziya_env("ZIYA_ENABLE_MCP"):
         try:
             logger.debug("Attempting to get MCP tools for agent executor...")
             

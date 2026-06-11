@@ -31,21 +31,6 @@ class DirectGoogleModel:
         self.client = genai.Client(api_key=api_key) if api_key else genai.Client()
         logger.info("Created Google GenAI client")
 
-    def _extract_text_from_mcp_result(self, result: Any) -> str:
-        """Extracts the text content from a structured MCP tool result."""
-        if not isinstance(result, dict) or 'content' not in result:
-            return str(result)
-
-        content = result['content']
-        if not isinstance(content, list) or not content:
-            return str(result)
-
-        first_item = content[0]
-        if isinstance(first_item, dict) and 'text' in first_item:
-            return first_item['text']
-
-        return str(result)
-
     def _convert_langchain_tools_to_google(self, tools: List[BaseTool]) -> Optional[types.Tool]:
         """Converts LangChain tools to Google GenAI SDK Tool format."""
         if not tools:

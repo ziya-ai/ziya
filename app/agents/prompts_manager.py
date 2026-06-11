@@ -12,6 +12,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from app.utils.logging_utils import logger
 from app.mcp.manager import get_mcp_manager
 from app.utils.prompt_extensions import PromptExtensionManager
+from app.config.env_registry import ziya_env
 from app.agents.prompts import original_template, conversational_prompt
 
 # Global cache for extended prompts
@@ -116,8 +117,8 @@ def get_model_info_from_config() -> Dict[str, str]:
     from app.config.models_config import DEFAULT_ENDPOINT, DEFAULT_MODELS, MODEL_CONFIGS
     
     # Get endpoint and model from environment variables
-    endpoint = os.environ.get("ZIYA_ENDPOINT", DEFAULT_ENDPOINT)
-    model_name = os.environ.get("ZIYA_MODEL", DEFAULT_MODELS.get(endpoint))
+    endpoint = ziya_env("ZIYA_ENDPOINT")
+    model_name = ziya_env("ZIYA_MODEL") or DEFAULT_MODELS.get(endpoint)
     
     # Get model family from config
     model_family = None

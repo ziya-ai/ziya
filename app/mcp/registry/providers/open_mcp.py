@@ -146,8 +146,9 @@ class OpenMCPProvider(RegistryProvider):
             # Install based on package type
             if package_info.get('type') == 'npm':
                 # Install npm package
-                result = subprocess.run(['npm', 'install', '-g', package_info.get('name', service_id)], 
-                                      capture_output=True, text=True, timeout=300)
+                result = await asyncio.to_thread(
+                    subprocess.run, ['npm', 'install', '-g', package_info.get('name', service_id)],
+                    capture_output=True, text=True, timeout=300)
                 if result.returncode != 0:
                     raise RuntimeError(f"NPM install failed: {result.stderr}")
                 
@@ -155,8 +156,9 @@ class OpenMCPProvider(RegistryProvider):
                 
             elif package_info.get('type') == 'pypi':
                 # Install pip package
-                result = subprocess.run(['pip', 'install', package_info.get('name', service_id)], 
-                                      capture_output=True, text=True, timeout=300)
+                result = await asyncio.to_thread(
+                    subprocess.run, ['pip', 'install', package_info.get('name', service_id)],
+                    capture_output=True, text=True, timeout=300)
                 if result.returncode != 0:
                     raise RuntimeError(f"Pip install failed: {result.stderr}")
                 
@@ -165,8 +167,9 @@ class OpenMCPProvider(RegistryProvider):
             elif service.provider_metadata.get('repository'):
                 # Clone git repository
                 repo_url = service.provider_metadata['repository']
-                result = subprocess.run(['git', 'clone', repo_url, str(install_dir)], 
-                                      capture_output=True, text=True, timeout=300)
+                result = await asyncio.to_thread(
+                    subprocess.run, ['git', 'clone', repo_url, str(install_dir)],
+                    capture_output=True, text=True, timeout=300)
                 if result.returncode != 0:
                     raise RuntimeError(f"Git clone failed: {result.stderr}")
                 
