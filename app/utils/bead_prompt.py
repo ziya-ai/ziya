@@ -133,7 +133,10 @@ def _is_global_ephemeral() -> bool:
     timing, browser-mode resolution) silently removed the only instruction
     telling the model that beads exist.
     """
-    if os.environ.get("ZIYA_EPHEMERAL", "").lower() in ("1", "true", "yes"):
-        logger.debug("📿 bead directive gate: global ephemeral mode active")
-        return True
+    # Both names are checked: the server sets ZIYA_EPHEMERAL_MODE
+    # (app/main.py), while ZIYA_EPHEMERAL is the documented manual override.
+    for var in ("ZIYA_EPHEMERAL", "ZIYA_EPHEMERAL_MODE"):
+        if os.environ.get(var, "").lower() in ("1", "true", "yes"):
+            logger.debug(f"📿 bead directive gate: global ephemeral mode active ({var})")
+            return True
     return False

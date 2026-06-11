@@ -9,7 +9,14 @@ through the frontend sync but isn't rendered.
 
 Storage operations resolve the chat via the request-scoped ContextVars
 (conversation_id + project_root), same pattern as context_management.py.
+
+When the chat record can't be resolved (CLI sessions, which persist to
+~/.ziya/sessions rather than ChatStorage, or brand-new web conversations
+that haven't synced to disk yet), beads fall back to a standalone file at
+~/.ziya/beads/<conversation_id>.json.  A later save that finds the chat
+record available migrates the fallback beads into it and removes the file.
 """
+import json
 import os
 import time
 from typing import Any, Dict, List, Optional
@@ -22,17 +29,28 @@ from app.utils.logging_utils import logger
 _BEADS_FIELD = "_beads"
 
 
-def _resolve_chat_storage():
+def _get_conversation_id(conversation_id: Optional[str] = None) -> Optional[str]:
+    """Resolve a conversation id: explicit arg first, then request ContextVar."""
+    if conversation_id:
+        return conversation_id
+    try:
+        from app.context import get_conversation_id_or_none
+        return get_conversation_id_or_none()
+    except ImportError:
+        return None
+
+
+def _resolve_chat_storage(conversation_id: Optional[str] = None):
     """Resolve ChatStorage + conversation_id from request context.
 
     Returns (chat_storage, conversation_id) or raises ValueError.
     """
-    from app.context import get_conversation_id_or_none, get_project_root_or_none
+    from app.context import get_project_root_or_none
     from app.storage.projects import ProjectStorage
     from app.storage.chats import ChatStorage
     from app.utils.paths import get_ziya_home, get_project_dir
 
-    conversation_id = get_conversation_id_or_none()
+    conversation_id = _get_conversation_id(conversation_id)
     if not conversation_id:
         raise ValueError("No conversation_id in request context")
 
@@ -49,17 +67,122 @@ def _resolve_chat_storage():
     return ChatStorage(project_dir), conversation_id
 
 
+# ── Standalone fallback store ────────────────────────────────────────────
+
+def _fallback_beads_file(conversation_id: str):
+    """Path of the standalone bead file for a conversation."""
+    from app.utils.paths import get_ziya_home
+    beads_dir = get_ziya_home() / "beads"
+    beads_dir.mkdir(parents=True, exist_ok=True)
+    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in conversation_id)
+    return beads_dir / f"{safe}.json"
+
+
+def _load_fallback(conversation_id: str) -> List[dict]:
+    path = _fallback_beads_file(conversation_id)
+    if not path.exists():
+        return []
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError) as e:
+        logger.debug(f"📿 Fallback bead load failed: {e}")
+        return []
+
+
+def _save_fallback(conversation_id: str, bead_dicts: List[dict]) -> None:
+    path = _fallback_beads_file(conversation_id)
+    try:
+        with open(path, "w") as f:
+            json.dump(bead_dicts, f, indent=2)
+        logger.debug(
+            f"📿 Saved {len(bead_dicts)} beads to fallback store for "
+            f"conv {conversation_id[:8]}"
+        )
+    except OSError as e:
+        logger.warning(f"📿 Fallback bead save failed: {e}")
+
+
+def _remove_fallback(conversation_id: str) -> None:
+    try:
+        path = _fallback_beads_file(conversation_id)
+        if path.exists():
+            path.unlink()
+    except OSError:
+        pass
+
+
+def remove_fallback_beads(conversation_id: str) -> None:
+    """Remove the standalone bead file for a conversation, if any.
+
+    Called from deletion paths (chat delete, CLI session cleanup) so
+    fallback files don't outlive the conversations they belong to.
+    """
+    _remove_fallback(conversation_id)
+
+
+def cleanup_orphaned_fallbacks(max_age_days: int = 30) -> int:
+    """Delete fallback bead files not modified in ``max_age_days`` days.
+
+    Fallback files normally retire themselves: either migration onto the
+    chat record removes them, or the deletion hooks do.  This sweep catches
+    the leftovers — ephemeral web conversations that never synced, crashed
+    CLI sessions, conversations deleted before the hooks existed.  Age is
+    keyed on mtime, so any active conversation keeps refreshing its file.
+
+    Returns the number of files removed.
+    """
+    from app.utils.paths import get_ziya_home
+    beads_dir = get_ziya_home() / "beads"
+    if not beads_dir.is_dir():
+        return 0
+    cutoff = time.time() - max_age_days * 86400
+    removed = 0
+    try:
+        for path in beads_dir.glob("*.json"):
+            try:
+                if path.stat().st_mtime < cutoff:
+                    path.unlink()
+                    removed += 1
+            except OSError:
+                continue
+    except OSError as e:
+        logger.debug(f"📿 Orphan bead sweep failed: {e}")
+    if removed:
+        logger.info(f"📿 Removed {removed} orphaned bead file(s) older than {max_age_days}d")
+    return removed
+
+
+def _parse_beads(raw_beads) -> List[Bead]:
+    beads = []
+    for entry in raw_beads or []:
+        try:
+            beads.append(Bead(**entry) if isinstance(entry, dict) else entry)
+        except Exception as e:
+            logger.debug(f"Skipping malformed bead entry: {e}")
+    return beads
+
+
 def load_bead_tree(chat_storage=None, conversation_id: str = None) -> BeadTree:
     """Load the bead tree for the current (or specified) conversation.
 
     Returns an empty BeadTree if no beads exist yet.
     """
-    if chat_storage is None or conversation_id is None:
-        chat_storage, conversation_id = _resolve_chat_storage()
-
-    chat = chat_storage.get(conversation_id)
-    if not chat:
+    conversation_id = _get_conversation_id(conversation_id)
+    if not conversation_id:
         return BeadTree()
+
+    if chat_storage is None:
+        try:
+            chat_storage, conversation_id = _resolve_chat_storage(conversation_id)
+        except ValueError as e:
+            logger.debug(f"📿 Chat record unavailable, using fallback store: {e}")
+            chat_storage = None
+
+    chat = chat_storage.get(conversation_id) if chat_storage else None
+    if not chat:
+        return BeadTree(beads=_parse_beads(_load_fallback(conversation_id)))
 
     # Read raw _beads from the chat's extra fields
     raw_beads = None
@@ -70,29 +193,35 @@ def load_bead_tree(chat_storage=None, conversation_id: str = None) -> BeadTree:
         raw_beads = getattr(chat, _BEADS_FIELD, None)
 
     if not raw_beads or not isinstance(raw_beads, list):
-        return BeadTree()
+        # Chat exists but carries no beads yet — a fallback file may hold
+        # beads written before the chat first synced to disk.
+        return BeadTree(beads=_parse_beads(_load_fallback(conversation_id)))
 
-    beads = []
-    for entry in raw_beads:
-        try:
-            beads.append(Bead(**entry) if isinstance(entry, dict) else entry)
-        except Exception as e:
-            logger.debug(f"Skipping malformed bead entry: {e}")
-    return BeadTree(beads=beads)
+    return BeadTree(beads=_parse_beads(raw_beads))
 
 
 def save_bead_tree(tree: BeadTree, chat_storage=None, conversation_id: str = None) -> None:
     """Persist the bead tree back to the chat record."""
-    if chat_storage is None or conversation_id is None:
-        chat_storage, conversation_id = _resolve_chat_storage()
+    conversation_id = _get_conversation_id(conversation_id)
+    if not conversation_id:
+        logger.warning("Cannot save beads: no conversation_id available")
+        return
+
+    bead_dicts = [b.model_dump() for b in tree.beads]
+
+    if chat_storage is None:
+        try:
+            chat_storage, conversation_id = _resolve_chat_storage(conversation_id)
+        except ValueError as e:
+            logger.debug(f"📿 Chat record unavailable, saving to fallback: {e}")
+            _save_fallback(conversation_id, bead_dicts)
+            return
 
     chat = chat_storage.get(conversation_id)
     if not chat:
-        logger.warning(f"Cannot save beads: chat {conversation_id} not found")
+        # Chat not on disk yet (new conversation pre-sync, or CLI session).
+        _save_fallback(conversation_id, bead_dicts)
         return
-
-    # Serialize beads to dicts for JSON storage
-    bead_dicts = [b.model_dump() for b in tree.beads]
 
     # Write to the chat's extra fields
     if hasattr(chat, "__pydantic_extra__"):
@@ -116,6 +245,9 @@ def save_bead_tree(tree: BeadTree, chat_storage=None, conversation_id: str = Non
     d["_version"] = int(time.time() * 1000)
     chat_storage._write_json(chat_storage._chat_file(conversation_id), d)
     logger.debug(f"📿 Saved {len(tree.beads)} beads for conv {conversation_id[:8]}")
+
+    # Beads now live on the chat record — retire any fallback file.
+    _remove_fallback(conversation_id)
 
 
 def add_bead(bead: Bead) -> BeadTree:

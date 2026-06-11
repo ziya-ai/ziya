@@ -70,6 +70,8 @@ import traceback
 from pathlib import Path
 import sys
 from app.utils.logging_utils import logger
+from app.config.env_registry import ziya_env
+from app.utils.interruptible_input import interruptible_input
 from typing import List, Tuple 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
@@ -171,8 +173,9 @@ def _autocheckpoint(cli: 'CLI') -> None:
         return
     try:
         save_session(cli, cleanup=False)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        # Disk failure must not interrupt conversation
+        logger.debug("Auto-save session failed: %s", e)
 
 
 def load_session(session_id: str) -> dict:
@@ -220,8 +223,26 @@ def find_session_by_name(name: str) -> Optional[str]:
     return candidates[0][2]
 
 
+# Once-per-process guard for the orphaned-bead TTL sweep.
+_bead_sweep_done = False
+
+
+def _remove_session_beads(session_path) -> None:
+    """Remove the fallback bead file tied to a CLI session file.
+
+    CLI conversations are keyed cli_<session_id>, and the session file is
+    named <session_id>.json — so the stem maps directly.
+    """
+    try:
+        from app.storage.beads import remove_fallback_beads
+        remove_fallback_beads(f"cli_{session_path.stem}")
+    except Exception:
+        pass
+
+
 def cleanup_old_sessions(keep_count: int = 10):
     """Keep only the most recent sessions. Named sessions are preserved."""
+    global _bead_sweep_done
     session_dir = get_session_dir()
     sessions = sorted(session_dir.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True)
 
@@ -236,7 +257,19 @@ def cleanup_old_sessions(keep_count: int = 10):
             pass
         unnamed.append(p)
     for old_session in unnamed[keep_count:]:
+        _remove_session_beads(old_session)
         old_session.unlink()
+
+    # Sweep fallback bead files orphaned by other paths (crashed sessions,
+    # ephemeral web chats that never synced).  Cheap, but once per process
+    # is plenty since this runs on every session checkpoint.
+    if not _bead_sweep_done:
+        _bead_sweep_done = True
+        try:
+            from app.storage.beads import cleanup_orphaned_fallbacks
+            cleanup_orphaned_fallbacks()
+        except Exception:
+            pass
 
 
 async def select_session() -> Optional[str]:
@@ -361,7 +394,7 @@ def print_chat_startup_info(args):
     """Pretty print essential startup information for chat mode."""
     root = getattr(args, 'root', None) or os.getcwd()
     profile = getattr(args, 'profile', None) or os.environ.get('AWS_PROFILE', 'default')
-    model = getattr(args, 'model', None) or os.environ.get('ZIYA_MODEL', '')
+    model = getattr(args, 'model', None) or ziya_env('ZIYA_MODEL') or ''
     
     # Only show essential info
     print(f"Ziya CLI • profile: {profile} • model: {model}")
@@ -397,7 +430,7 @@ def setup_env(args):
     # Reconfigure existing loggers so modules imported before ZIYA_MODE was set
     # pick up the correct level (WARNING for chat, DEBUG when --debug).
     try:
-        target_level = getattr(logging, os.environ.get('ZIYA_LOG_LEVEL', 'WARNING').upper())
+        target_level = getattr(logging, (ziya_env('ZIYA_LOG_LEVEL') or 'WARNING').upper())
         for logger_name in list(logging.Logger.manager.loggerDict.keys()):
             if logger_name.startswith('app.') or logger_name == 'app':
                 try:
@@ -476,16 +509,198 @@ def get_git_diff() -> Optional[str]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Declarative command spec — the single source of truth for the CLI's
+# slash-command surface.  Tab completion (SmartCompleter), the "?" inline
+# help pattern, /help text, and dispatch are derived from this structure.
+# To add a command, subcommand, or option, edit ONLY this spec.
+#
+# Entry keys:
+#   name        canonical command name, e.g. '/shell'
+#   aliases     optional list of alternate names, e.g. ['/a']
+#   help        one-line description (completion menu + /help)
+#   usage       optional usage string for /help, e.g. '/add <path>'
+#   completion  argument completion style: 'path' | 'model' (default: none)
+#   subcommands optional {name: {'help': str, 'options': {name: help}}}
+# ---------------------------------------------------------------------------
+COMMAND_SPEC = [
+    {
+        'name': '/add',
+        'aliases': ['/a'],
+        'help': 'Add file or directory to context',
+        'usage': '/add <path>',
+        'completion': 'path',
+        'handler': 'cmd_add',
+    },
+    {
+        'name': '/rm',
+        'aliases': ['/remove'],
+        'help': 'Remove from context',
+        'usage': '/rm <path>',
+        'completion': 'path',
+        'handler': 'cmd_rm',
+    },
+    {
+        'name': '/files',
+        'aliases': ['/ls', '/f'],
+        'help': 'List context files',
+        'handler': 'cmd_files',
+    },
+    {
+        'name': '/shell',
+        'help': 'Manage shell commands (session-local by default)',
+        'handler': 'cmd_shell',
+        'subcommands': {
+            'list': {'help': 'Show allowed shell commands'},
+            'add': {'help': "Add command(s) to allowlist (append 'save' to persist)"},
+            'rm': {'help': 'Remove command(s) from allowlist'},
+            'yolo': {'help': 'Allow ANY shell command (session only)',
+                     'options': {'off': 'Disable YOLO mode'}},
+            'git': {'help': 'Allow git operations (add, commit, push, all, safe)',
+                    'options': {
+                        'all': 'Allow ALL git operations',
+                        'add': "Allow 'git add'",
+                        'commit': "Allow 'git commit'",
+                        'push': "Allow 'git push'",
+                        'safe': 'Reset to safe (read-only) git ops',
+                    }},
+            'timeout': {'help': 'Set command timeout in seconds (0 = no limit)'},
+            'reset': {'help': 'Reset shell config to defaults'},
+        },
+    },
+    {
+        'name': '/goal',
+        'help': 'Set an autonomous goal (runs as task card)',
+        'usage': '/goal <text>',
+        'handler': 'cmd_goal',
+    },
+    {
+        'name': '/tune',
+        'help': 'Adjust session settings',
+        'usage': '/tune <key> <value>',
+        'handler': 'cmd_tune',
+        'subcommands': {
+            'iterations': {'help': 'Max tool iterations per response'},
+        },
+    },
+    {
+        'name': '/model',
+        'aliases': ['/m'],
+        'help': 'Switch model',
+        'usage': '/model [name]',
+        'completion': 'model',
+        'handler': 'cmd_model',
+    },
+    {
+        'name': '/clear',
+        'help': 'Clear conversation history',
+        'handler': 'cmd_clear',
+    },
+    {
+        'name': '/reset',
+        'help': 'Clear history, files, and all session state',
+        'handler': 'cmd_reset',
+    },
+    {
+        'name': '/suspend',
+        'help': 'Save session and exit',
+        'usage': '/suspend [name]',
+        'handler': 'cmd_suspend',
+    },
+    {
+        'name': '/save',
+        'help': 'Checkpoint the current session without exiting',
+        'usage': '/save [name]',
+        'handler': 'cmd_save',
+    },
+    {
+        'name': '/resume',
+        'help': "Restore a previous session's files and history",
+        'usage': '/resume [name]',
+        'handler': 'cmd_resume',
+    },
+    {
+        'name': '/beads',
+        'help': "Show the conversation's task tree (beads)",
+        'handler': 'cmd_beads',
+    },
+    {
+        'name': '/help',
+        'aliases': ['/h'],
+        'help': 'Show help',
+        'handler': 'cmd_help',
+    },
+    {
+        'name': '/quit',
+        'aliases': ['/q', '/exit'],
+        'help': 'Exit',
+        'handler': 'cmd_quit',
+    },
+]
+
+
+def _derive_command_tables(spec):
+    """Build completion/help lookup tables from COMMAND_SPEC.
+
+    Returns (commands, subcommands, third_level):
+      commands:    {name_or_alias: help}            top-level completion meta
+      subcommands: {command: {sub: help}}            second-level completion + "?"
+      third_level: {(command, sub): {option: help}}  third-level completion + "?"
+    Subcommand tables are registered under the canonical name AND aliases so
+    lookups work however the command was typed.
+    """
+    commands = {}
+    subcommands = {}
+    third_level = {}
+    for entry in spec:
+        names = [entry['name']] + entry.get('aliases', [])
+        for n in names:
+            commands[n] = entry['help']
+        subs = entry.get('subcommands')
+        if subs:
+            sub_help = {s: d['help'] for s, d in subs.items()}
+            for n in names:
+                subcommands[n] = sub_help
+                for s, d in subs.items():
+                    if 'options' in d:
+                        third_level[(n, s)] = d['options']
+    return commands, subcommands, third_level
+
+
+CLI_COMMANDS, CLI_SUBCOMMANDS, CLI_THIRD_LEVEL = _derive_command_tables(COMMAND_SPEC)
+
+# Commands whose argument completes as a model name (vs. the path default),
+# derived from the spec's 'completion' field.
+CLI_MODEL_ARG_COMMANDS = {
+    n for e in COMMAND_SPEC if e.get('completion') == 'model'
+    for n in [e['name']] + e.get('aliases', [])
+}
+
+# Dispatch map: {name_or_alias: handler method name on CLI}.
+CLI_DISPATCH = {
+    n: e['handler']
+    for e in COMMAND_SPEC if 'handler' in e
+    for n in [e['name']] + e.get('aliases', [])
+}
+
+
 class CLI:
     """Lightweight CLI client."""
     
     def __init__(self, files: List[str] = None):
         self.files = files or []
         self.history = []
-        self.conversation_id = f"cli_{os.getpid()}"
+        # Eagerly assign the session id (normally generated lazily at first
+        # save) so conversation-scoped state — bead trees in particular — is
+        # keyed consistently from the first exchange and survives
+        # suspend/resume.  save_session reuses an existing _session_id, and
+        # the resume path overwrites it after construction.  The pid suffix
+        # guards against two CLIs starting in the same second.
+        self._session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.getpid()}"
         self._model = None
         self._init_error = None
         self._active_task = None  # Track active streaming task for cancellation
+        self._ask_task = None  # Outermost ask() task — ^C target outside streaming
         self._cancellation_requested = False
         self._diff_applicator = None  # Lazy-load diff applicator
         self._background_init_task = None  # Background MCP + plugins init task
@@ -498,6 +713,17 @@ class CLI:
         self._session_timeout = None  # Session-local command timeout override
         self._setup_prompt_session()
     
+    @property
+    def conversation_id(self) -> str:
+        """Stable conversation id for this CLI session.
+
+        Derived from the session id so per-conversation state (bead trees,
+        goal attribution) follows the session through suspend/resume — the
+        resume path overwrites _session_id after construction, and this
+        property picks that up automatically.
+        """
+        return f"cli_{self._session_id}"
+
     @property
     def model(self):
         """Lazy-load model on first use."""
@@ -517,7 +743,7 @@ class CLI:
         """Initialize the model with proper error handling."""
         try:
             # Check credentials first for Bedrock
-            endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+            endpoint = ziya_env("ZIYA_ENDPOINT")
             if endpoint == "bedrock":
                 from app.utils.aws_utils import check_aws_credentials
                 valid, message = check_aws_credentials()
@@ -542,20 +768,25 @@ class CLI:
         """Set up prompt_toolkit session with history and completions."""
         # Custom completer for commands and file paths
         class SmartCompleter(Completer):
+            # All tables derived from COMMAND_SPEC (single source of truth)
+            COMMANDS = CLI_COMMANDS
+            SUBCOMMANDS = CLI_SUBCOMMANDS
+            THIRD_LEVEL = CLI_THIRD_LEVEL
+
             def __init__(self):
-                self.command_completer = WordCompleter([
-                    '/add', '/a',
-                    '/rm', '/remove',
-                    '/shell',
-                    '/files', '/ls', '/f',
-                    '/clear',
-                    '/model', '/m',
-                    '/quit', '/q', '/exit',
-                    '/reset',
-                    '/suspend', '/resume',
-                    '/save',
-                    '/help', '/h'
-                ], ignore_case=True, sentence=True, match_middle=True)
+                self.command_completer = WordCompleter(
+                    list(self.COMMANDS.keys()),
+                    meta_dict=self.COMMANDS,
+                    ignore_case=True, sentence=True, match_middle=True
+                )
+                self.subcommand_completers = {
+                    cmd: WordCompleter(list(subs.keys()), meta_dict=subs, ignore_case=True)
+                    for cmd, subs in self.SUBCOMMANDS.items()
+                }
+                self.third_level_completers = {
+                    key: WordCompleter(list(subs.keys()), meta_dict=subs, ignore_case=True)
+                    for key, subs in self.THIRD_LEVEL.items()
+                }
                 
                 self.path_completer = PathCompleter(
                     only_directories=False,
@@ -565,7 +796,7 @@ class CLI:
                 # Model name completer
                 try:
                     from app.config.models_config import MODEL_CONFIGS
-                    endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+                    endpoint = ziya_env("ZIYA_ENDPOINT")
                     model_names = list(MODEL_CONFIGS.get(endpoint, {}).keys())
                     self.model_completer = WordCompleter(model_names, ignore_case=True)
                 except (ImportError, KeyError, AttributeError):
@@ -581,7 +812,7 @@ class CLI:
                         # We're past the command, show path completions for the argument part
                         # Check if this is a /model command
                         command = stripped.split()[0].lower()
-                        if command in ['/model', '/m'] and self.model_completer:
+                        if command in CLI_MODEL_ARG_COMMANDS and self.model_completer:
                             # Show model name completions
                             space_idx = stripped.index(' ')
                             model_part = stripped[space_idx + 1:]
@@ -593,6 +824,24 @@ class CLI:
                             yield from self.model_completer.get_completions(model_doc, complete_event)
                             return
                         
+                        # Second/third-level completion for multipart commands
+                        if command in self.subcommand_completers:
+                            space_idx = stripped.index(' ')
+                            rest = stripped[space_idx + 1:]
+                            tokens = rest.split(' ')
+                            if len(tokens) == 1:
+                                # Completing the subcommand itself
+                                sub_doc = Document(text=tokens[0], cursor_position=len(tokens[0]))
+                                yield from self.subcommand_completers[command].get_completions(sub_doc, complete_event)
+                                return
+                            third = self.third_level_completers.get((command, tokens[0].lower()))
+                            if third and len(tokens) == 2:
+                                third_doc = Document(text=tokens[1], cursor_position=len(tokens[1]))
+                                yield from third.get_completions(third_doc, complete_event)
+                                return
+                            # No deeper completions for these commands
+                            return
+
                         # Find where the command ends and the path argument begins
                         space_idx = stripped.index(' ')
                         path_part = stripped[space_idx + 1:]
@@ -695,7 +944,7 @@ class CLI:
             question=question,
             chat_history=self.history,
             files=self.files,
-            conversation_id=f"cli_{os.getpid()}",
+            conversation_id=self.conversation_id,
             use_langchain_format=True
         )
     
@@ -708,7 +957,7 @@ class CLI:
             print("\033[90m⟳ Finishing setup...\033[0m", file=sys.stderr, end="\r")
             try:
                 await self._background_init_task
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass  # Errors are reported inside the task itself
             finally:
                 # Clear the "finishing setup" line
@@ -757,7 +1006,7 @@ class CLI:
                 last_frame = tb[-1]
                 location = f"{last_frame.filename}:{last_frame.lineno}"
                 print(f"\n\033[31mError in {location}: {error_str}\033[0m", file=sys.stderr)
-                if os.environ.get('ZIYA_LOG_LEVEL') == 'DEBUG':
+                if ziya_env('ZIYA_LOG_LEVEL') == 'DEBUG':
                     traceback.print_exc(file=sys.stderr)
             else:
                 print(f"\033[31mError: {error_str}\033[0m", file=sys.stderr)
@@ -790,7 +1039,7 @@ class CLI:
         from app.agents.agent import file_state_manager
         
         # Use consistent conversation ID for this CLI session
-        conversation_id = f"cli_{os.getpid()}"
+        conversation_id = self.conversation_id
 
         validation_hook = DiffValidationHook(
             file_state_manager=file_state_manager,
@@ -878,7 +1127,7 @@ class CLI:
                     except (OSError, ValueError, RuntimeError, KeyError, IndexError) as e:
                         import traceback
                         print(f"\n\033[33mNote: Could not process diffs: {e}\033[0m", file=sys.stderr)
-                        if os.environ.get('ZIYA_LOG_LEVEL') == 'DEBUG':
+                        if ziya_env('ZIYA_LOG_LEVEL') == 'DEBUG':
                             traceback.print_exc(file=sys.stderr)
                         break
                     
@@ -1214,7 +1463,7 @@ class CLI:
             md_renderer = StreamingMarkdownRenderer()
         
         try:
-            _debug_chunks = os.environ.get('ZIYA_DEBUG_CHUNKS') == '1'
+            _debug_chunks = ziya_env('ZIYA_DEBUG_CHUNKS')
             async for chunk in stream_generator:
                 chunk_type = chunk.get('type')
 
@@ -1490,7 +1739,7 @@ class CLI:
 
     def _print_auth_help(self):
         """Print authentication help based on endpoint."""
-        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        endpoint = ziya_env("ZIYA_ENDPOINT")
         
         print(file=sys.stderr)
         if endpoint == "bedrock":
@@ -1555,11 +1804,17 @@ class CLI:
                 print()
                 print("\033[90m⏳ Sending to model...\033[0m", file=sys.stderr)
                 sys.stdout.write("\033]133;C\007"); sys.stdout.flush()
+                # Run ask() as a task so the SIGINT handler can cancel the
+                # whole operation — including non-streaming phases like diff
+                # validation — and return control to the prompt.
+                self._ask_task = asyncio.create_task(self.ask(user_input))
                 try:
-                    await self.ask(user_input)
+                    await self._ask_task
                 except asyncio.CancelledError:
                     # Operation was cancelled, continue the loop
                     pass
+                finally:
+                    self._ask_task = None
                 _autocheckpoint(self)
                 sys.stdout.write("\033]133;D\007"); sys.stdout.flush()
                 print("\033[90m[trace] ask() returned, looping to prompt\033[0m", file=sys.stderr)
@@ -1574,40 +1829,246 @@ class CLI:
         
         print("\033[90mGoodbye\033[0m")
     
-    async def _handle_command(self, cmd: str) -> bool:
-        """Handle slash commands. Returns False to exit."""
-        parts = cmd.split(maxsplit=1)
-        command = parts[0].lower()
-        arg = parts[1] if len(parts) > 1 else ""
-        if command in ['/q', '/quit', '/exit']:
-            return False
-        
-        elif command in ['/h', '/help']:
-            print("""
-\033[1mCommands:\033[0m
-  /add <path>    Add file or directory to context
-  /rm <path>     Remove from context  
-  /files         List context files
-  /goal <text>   Set an autonomous goal (runs as task card)
-  /suspend [name]  Save session and exit (resume later with /resume or --resume)
-  /save [name]     Checkpoint the current session without exiting
-  /resume          Restore a previous session's files and history
-  /shell         Manage shell commands (session-local by default)
-                 /shell add <cmd>   Add to allowlist
-                 /shell rm <cmd>    Remove from allowlist
-                 /shell yolo        Enable YOLO mode (session only)
-                 /shell yolo off    Disable YOLO mode
-                 /shell reset       Reset to defaults
-                 /shell timeout <s> Set command timeout (0=none)
-                 /shell git <op>    Allow a git operation (e.g. add, commit, push, all)
-                 Append 'save' to persist: /shell add git save
-  /clear         Clear conversation history
-  /reset         Clear history, files, and all session state
-  /tune <key> <val> Adjust session settings:
-                 /tune iterations <n>  Max tool iterations (default: 200)
-  /model <name>  Switch model
-  /quit          Exit
+    def _print_inline_help(self, command: str, path: list) -> bool:
+        """Print next-level option descriptions for a "?" query.
 
+        path is the tokens between the command and the trailing "?",
+        e.g. "/shell git ?" -> command='/shell', path=['git'].
+        Returns True if a help table was found and printed.
+        """
+        if not path:
+            table = CLI_SUBCOMMANDS.get(command)
+            label = command
+        elif len(path) == 1:
+            table = CLI_THIRD_LEVEL.get((command, path[0].lower()))
+            label = f"{command} {path[0]}"
+        else:
+            table = None
+            label = command
+        if not table:
+            return False
+        width = max(len(name) for name in table)
+        print(f"\033[1m{label}\033[0m options:")
+        for name, desc in table.items():
+            print(f"  \033[36m{name:<{width}}\033[0m  {desc}")
+        return True
+
+    def add_files(self, paths: List[str]) -> None:
+        """Resolve file/dir/glob paths and add them to the context."""
+        root = os.environ.get("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
+        resolved = resolve_files(paths, root)
+        if not resolved:
+            print(f"\033[33mNo files matched: {', '.join(paths)}\033[0m")
+            return
+        added = [f for f in resolved if f not in self.files]
+        for f in added:
+            self.files.append(f)
+            print(f"\033[32m+ {f}\033[0m")
+        if not added:
+            print("\033[90mAlready in context\033[0m")
+        print(f"\033[90m{len(self.files)} file(s) in context\033[0m")
+
+    def remove_files(self, paths: List[str]) -> None:
+        """Remove paths from the context (exact or resolved match)."""
+        root = os.environ.get("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
+        targets = set(paths) | set(resolve_files(paths, root))
+        removed = [f for f in self.files if f in targets]
+        if not removed:
+            print(f"\033[33mNot in context: {', '.join(paths)}\033[0m")
+            return
+        self.files = [f for f in self.files if f not in targets]
+        for f in removed:
+            print(f"\033[31m- {f}\033[0m")
+        print(f"\033[90m{len(self.files)} file(s) in context\033[0m")
+
+    def list_files(self) -> None:
+        """Print the current context file list."""
+        if not self.files:
+            print("\033[90mNo files in context. Use /add <path>.\033[0m")
+            return
+        print(f"\033[1mContext files\033[0m \033[90m({len(self.files)})\033[0m")
+        for f in self.files:
+            print(f"  {f}")
+
+    async def cmd_add(self, arg: str) -> bool:
+        """/add <path> — add file or directory to context."""
+        if arg:
+            self.add_files([arg])
+        else:
+            print("\033[31mUsage: /add <path>\033[0m")
+        return True
+
+    async def cmd_rm(self, arg: str) -> bool:
+        """/rm <path> — remove from context."""
+        if arg:
+            self.remove_files([arg])
+        else:
+            print("\033[31mUsage: /rm <path>\033[0m")
+        return True
+
+    async def cmd_files(self, arg: str) -> bool:
+        """/files — list context files."""
+        self.list_files()
+        return True
+
+    async def cmd_clear(self, arg: str) -> bool:
+        """/clear — clear conversation history."""
+        self.history = []
+        # Fresh session identity: the next save writes a new session file,
+        # and conversation-scoped state (bead tree) starts over since
+        # conversation_id derives from _session_id.
+        self._session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.getpid()}"
+        self._session_name = None
+        self._session_start_time = None
+        try:
+            session_id = save_session(self, arg.strip() or None)
+        except Exception as e:
+            print(f"\033[31mSave failed: {e}\033[0m")
+            return True  # don't exit on a failed save
+        print(f"\033[32m✓ Session saved: {session_id}\033[0m")
+        print("\033[90mResume with: ziya chat --resume\033[0m")
+        return False
+        try:
+            session_id = save_session(self, arg.strip() or None)
+            print(f"\033[32m✓ Session saved: {session_id}\033[0m")
+        except Exception as e:
+            print(f"\033[31mSave failed: {e}\033[0m")
+        arg = arg.strip()
+        if arg:
+            session_id = find_session_by_name(arg)
+            if not session_id:
+                print(f"\033[33mNo session matching '{arg}'\033[0m")
+                return True
+        else:
+            session_id = await select_session()
+            if not session_id:
+                return True
+        try:
+            data = load_session(session_id)
+        except FileNotFoundError as e:
+            print(f"\033[33m{e}\033[0m")
+            return True
+        # Checkpoint the current session before switching away so its
+        # history isn't lost (auto-checkpoint may not have run yet).
+        if self.history and not getattr(self, '_ephemeral', False):
+            try:
+                save_session(self, cleanup=False)
+            except Exception:
+                pass
+        self.files = data.get('files', [])
+        self.history = data.get('history', [])
+        self._session_id = data.get('id', session_id)
+        self._session_name = data.get('name')
+        self._session_start_time = data.get('start_time', data.get('timestamp'))
+        print(f"\033[32m✓ Resumed session {self._session_id}\033[0m")
+        print(f"  Files: {len(self.files)}, Messages: {len(self.history)}\n")
+        print("\033[32m✓ History cleared\033[0m")
+        return True
+
+    async def cmd_reset(self, arg: str) -> bool:
+        """/reset — clear history, files, and all session state."""
+        self.files = []
+        print("\033[32m✓ Session reset: history, files, and session state cleared\033[0m")
+        return True
+
+    async def cmd_suspend(self, arg: str) -> bool:
+        """/suspend [name] — save session and exit."""
+
+    async def cmd_save(self, arg: str) -> bool:
+        """/save [name] — checkpoint session without exiting."""
+        return True
+
+    async def cmd_resume(self, arg: str) -> bool:
+        """/resume [name] — restore a previous session."""
+        return True
+
+    async def cmd_shell(self, arg: str) -> bool:
+        """/shell — manage shell command allowlist."""
+        await self._handle_shell_command(arg)
+        return True
+
+    async def cmd_goal(self, arg: str) -> bool:
+        """/goal <text> — run an autonomous goal."""
+        await self._handle_goal_command(arg)
+        return True
+
+    async def cmd_tune(self, arg: str) -> bool:
+        """/tune <key> <value> — adjust session settings."""
+        self._handle_tune(arg)
+        return True
+
+    async def cmd_model(self, arg: str) -> bool:
+        """/model [name] — switch model."""
+        await self._handle_model_selection_async(arg)
+        return True
+
+    async def cmd_quit(self, arg: str) -> bool:
+        """/quit — exit."""
+        return False
+
+    async def cmd_beads(self, arg: str) -> bool:
+        """/beads — render the conversation's task tree."""
+        try:
+            from app.storage.beads import load_bead_tree
+            tree = load_bead_tree(conversation_id=self.conversation_id)
+        except Exception as e:
+            print(f"\033[31mCould not load bead tree: {e}\033[0m")
+            return True
+
+        if not tree.beads:
+            print("\033[90mNo beads tracked in this session yet.\033[0m")
+            return True
+
+        icons = {
+            'active': ('\033[32m', '●'),     # green
+            'parked': ('\033[33m', '◐'),     # yellow
+            'completed': ('\033[90m', '✓'),  # grey
+            'abandoned': ('\033[90m', '✗'),  # grey
+        }
+        children_of = {}
+        ids = {b.id for b in tree.beads}
+        roots = []
+        for b in tree.beads:
+            # Treat beads with a missing parent as roots (orphan-safe).
+            if b.parent_id and b.parent_id in ids:
+                children_of.setdefault(b.parent_id, []).append(b)
+            else:
+                roots.append(b)
+
+        def render(bead, depth):
+            color, icon = icons.get(bead.status, ('', '?'))
+            hint = f" \033[90m— {bead.context_hint}\033[0m" if bead.context_hint else ""
+            print(f"  {'  ' * depth}{color}{icon}\033[0m {bead.content}"
+                  f" \033[90m[{bead.status}]\033[0m{hint}")
+            for child in sorted(children_of.get(bead.id, []), key=lambda b: b.created_at):
+                render(child, depth + 1)
+
+        counts = {}
+        for b in tree.beads:
+            counts[b.status] = counts.get(b.status, 0) + 1
+        summary = ", ".join(f"{v} {k}" for k, v in sorted(counts.items()))
+        print(f"\n\033[1mTask tree\033[0m \033[90m({summary})\033[0m")
+        for root in sorted(roots, key=lambda b: b.created_at):
+            render(root, 0)
+        print()
+        return True
+
+    async def cmd_help(self, arg: str) -> bool:
+        """/help — show help, generated from COMMAND_SPEC."""
+        print("\n\033[1mCommands:\033[0m")
+        usages = [e.get('usage', e['name']) for e in COMMAND_SPEC]
+        width = max(len(u) for u in usages) + 2
+        for entry, usage in zip(COMMAND_SPEC, usages):
+            aliases = entry.get('aliases')
+            alias_note = f" \033[90m(also {', '.join(aliases)})\033[0m" if aliases else ""
+            print(f"  \033[36m{usage:<{width}}\033[0m{entry['help']}{alias_note}")
+            subs = entry.get('subcommands')
+            if subs:
+                for sub, d in subs.items():
+                    sub_usage = f"{entry['name']} {sub}"
+                    print(f"    \033[90m{sub_usage:<{width}}{d['help']}\033[0m")
+        print("\n\033[90mTip: append ? for options, e.g. /shell ? or /shell git ?\033[0m")
+        print("""
 \033[1mDiff Application:\033[0m
   When the AI provides code diffs, you'll be prompted to:
   [a]pply - Apply the diff to your files
@@ -1616,113 +2077,27 @@ class CLI:
   [v]iew - View the full diff content
   [q]uit - Stop processing remaining diffs
 """)
-        
-        elif command in ['/add', '/a']:
-            if arg:
-                root = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
-                new_files = resolve_files([arg], root)
-                added = [f for f in new_files if f not in self.files]
-                self.files.extend(added)
-                print(f"\033[90mAdded {len(added)} files\033[0m")
-            else:
-                print("Usage: /add <path>")
-        
-        elif command in ['/files', '/ls', '/f']:
-            if self.files:
-                print(f"\033[1mContext files ({len(self.files)}):\033[0m")
-                for f in self.files:
-                    print(f"  {f}")
-            else:
-                print("\033[90mNo files in context\033[0m")
-                print("\033[90mUse /add <path> to add files\033[0m")
-        
-        elif command in ['/rm', '/remove']:
-            if arg:
-                before = len(self.files)
-                self.files = [f for f in self.files if arg not in f]
-                print(f"\033[90mRemoved {before - len(self.files)} files\033[0m")
+        return True
 
-        elif command == '/shell':
-            await self._handle_shell_command(arg)
+    async def _handle_command(self, cmd: str) -> bool:
+        """Handle slash commands. Returns False to exit."""
+        parts = cmd.split(maxsplit=1)
+        command = parts[0].lower()
+        arg = parts[1] if len(parts) > 1 else ""
 
-        elif command == '/suspend':
-            name = arg.strip() or None
-            session_id = save_session(self, name=name)
-            print(f"\033[32m✓ Session suspended: {session_id}\033[0m")
-            print(f"\033[90m  Resume with: ziya chat --resume\033[0m")
-            print(f"\033[90m  Or use /resume in any session\033[0m")
-            return False
+        # "?" help pattern: "/shell ?" or "/shell git ?" prints descriptions
+        # of the next-level subcommands/options.
+        if arg:
+            tokens = arg.split()
+            if tokens[-1] == '?' and self._print_inline_help(command, tokens[:-1]):
+                return True
 
-        elif command == '/save':
-            name = arg.strip() or None
-            try:
-                session_id = save_session(self, name=name)
-                label = f" ({name})" if name else ""
-                print(f"\033[32m✓ Session checkpointed: {session_id}{label}\033[0m")
-            except (OSError, ValueError) as e:
-                print(f"\033[31mFailed to save: {e}\033[0m")
-            return True
+        # Spec-driven dispatch (see COMMAND_SPEC / CLI_DISPATCH)
+        handler_name = CLI_DISPATCH.get(command)
+        if handler_name:
+            return await getattr(self, handler_name)(arg)
 
-        elif command == '/resume':
-            if arg:
-                session_id = find_session_by_name(arg)
-                if not session_id:
-                    print(f"\033[33mNo session matching '{arg}'\033[0m")
-                    return True
-            else:
-                session_id = await select_session()
-            if session_id:
-                try:
-                    session_data = load_session(session_id)
-                    self.files = session_data.get('files', [])
-                    self.history = session_data.get('history', [])
-                    self._session_start_time = session_data.get('start_time', session_data.get('timestamp'))
-                    self._session_id = session_data.get('id', session_id)
-                    self._session_name = session_data.get('name')
-                    opener = session_data.get('opening_statement', '')
-                    print(f"\033[32m✓ Session resumed\033[0m")
-                    if opener:
-                        print(f"  \033[90m\"{opener[:80]}\"\033[0m")
-                    print(f"  Files: {len(self.files)}, Messages: {len(self.history)}")
-                except FileNotFoundError as e:
-                    print(f"\033[33m{e}\033[0m")
-                except (json.JSONDecodeError, OSError, KeyError, ValueError) as e:
-                    print(f"\033[31mFailed to resume: {e}\033[0m")
-            else:
-                print("\033[90mResume cancelled\033[0m")
-
-        elif command in ['/model', '/m']:
-            await self._handle_model_selection_async(arg)
-        
-        elif command == '/goal':
-            await self._handle_goal_command(arg)
-
-        elif command == '/tune':
-            self._handle_tune(arg)
-
-        elif command == '/clear':
-            count = len(self.history)
-            self.history.clear()
-            print(f"\033[32m✓ Cleared {count} messages from history\033[0m")
-
-        elif command == '/reset':
-            hist_count = len(self.history)
-            file_count = len(self.files)
-            self.history.clear()
-            self.files.clear()
-            self.conversation_id = f"cli_{os.getpid()}_{id(self)}"
-            self._session_start_time = None
-            self._session_id = None
-            self._session_name = None
-            self._session_shell_commands = None
-            self._session_yolo = False
-            self._session_timeout = None
-            self._partial_response = ""
-            print(f"\033[32m✓ Session reset\033[0m")
-            print(f"\033[90m  Cleared {hist_count} messages, {file_count} files\033[0m")
-
-        else:
-            print(f"\033[90mUnknown command: {command}\033[0m")
+        print(f"\033[90mUnknown command: {command}\033[0m")
         
         return True
 
@@ -1748,7 +2123,7 @@ class CLI:
         import aiohttp
 
         # Determine the server URL
-        port = os.environ.get("ZIYA_PORT", "8093")
+        port = str(ziya_env("ZIYA_PORT"))
         base_url = f"http://localhost:{port}"
 
         # Build the command request
@@ -1774,7 +2149,7 @@ class CLI:
 
         try:
             headers = {"Content-Type": "application/json"}
-            project_root = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+            project_root = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
             headers["X-Project-Root"] = project_root
 
             async with aiohttp.ClientSession() as session:
@@ -2147,14 +2522,14 @@ class CLI:
         
         # Consult model capabilities (honors family-level unsupported_parameters,
         # e.g. Opus 4.7 rejects temperature/top_k/top_p). Same source the web modal uses.
-        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        endpoint = ziya_env("ZIYA_ENDPOINT")
         supported_params = get_supported_parameters(endpoint, model_name)
 
         # Temperature
         if 'temperature' in supported_params:
             temp_range = supported_params.get('temperature') or model_config.get('parameter_ranges', {}).get('temperature', {'min': 0, 'max': 1, 'default': 0.3})
             current_temp = current_settings.get('temperature', temp_range.get('default', 0.3))
-            temp_input = input(f"Temperature [{temp_range.get('min', 0)}-{temp_range.get('max', 1)}] (current: {current_temp}): ").strip()
+            temp_input = interruptible_input(f"Temperature [{temp_range.get('min', 0)}-{temp_range.get('max', 1)}] (current: {current_temp}): ").strip()
             if temp_input:
                 try:
                     val = float(temp_input)
@@ -2172,7 +2547,7 @@ class CLI:
         # Max output tokens
         max_output = model_config.get('max_output_tokens', 4096)
         current_max = current_settings.get('max_output_tokens', max_output)
-        max_input = input(f"Max Output Tokens [1-{max_output}] (current: {current_max}): ").strip()
+        max_input = interruptible_input(f"Max Output Tokens [1-{max_output}] (current: {current_max}): ").strip()
         if max_input:
             try:
                 val = int(max_input)
@@ -2191,7 +2566,7 @@ class CLI:
         if 'top_k' in supported_params:
             top_k_range = supported_params.get('top_k') or {'min': 0, 'max': 500, 'default': 15}
             current_top_k = current_settings.get('top_k', top_k_range.get('default', 15))
-            top_k_input = input(f"Top-K [{top_k_range.get('min', 0)}-{top_k_range.get('max', 500)}] (current: {current_top_k}): ").strip()
+            top_k_input = interruptible_input(f"Top-K [{top_k_range.get('min', 0)}-{top_k_range.get('max', 500)}] (current: {current_top_k}): ").strip()
             if top_k_input:
                 try:
                     val = int(top_k_input)
@@ -2210,7 +2585,7 @@ class CLI:
         if 'top_p' in supported_params:
             top_p_range = supported_params.get('top_p') or {'min': 0.0, 'max': 1.0, 'default': 1.0}
             current_top_p = current_settings.get('top_p', top_p_range.get('default', 1.0))
-            top_p_input = input(f"Top-P [{top_p_range.get('min', 0.0)}-{top_p_range.get('max', 1.0)}] (current: {current_top_p}): ").strip()
+            top_p_input = interruptible_input(f"Top-P [{top_p_range.get('min', 0.0)}-{top_p_range.get('max', 1.0)}] (current: {current_top_p}): ").strip()
             if top_p_input:
                 try:
                     val = float(top_p_input)
@@ -2229,8 +2604,8 @@ class CLI:
         if model_config.get('supports_adaptive_thinking'):
             valid_efforts = model_config.get('supported_efforts', ['low', 'medium', 'high', 'max'])
             default_effort = model_config.get('thinking_effort_default', 'medium')
-            current_effort = current_settings.get('thinking_effort') or os.environ.get('ZIYA_THINKING_EFFORT') or default_effort
-            effort_input = input(f"Thinking Effort [{'/'.join(valid_efforts)}] (current: {current_effort}): ").strip().lower()
+            current_effort = current_settings.get('thinking_effort') or ziya_env('ZIYA_THINKING_EFFORT') or default_effort
+            effort_input = interruptible_input(f"Thinking Effort [{'/'.join(valid_efforts)}] (current: {current_effort}): ").strip().lower()
             if effort_input:
                 if effort_input in valid_efforts:
                     settings['thinking_effort'] = effort_input
@@ -2244,14 +2619,20 @@ class CLI:
     
     async def _handle_model_selection_async(self, arg: str):
         """Handle /model command with async interactive selection."""
-        from app.config.models_config import MODEL_CONFIGS, DEFAULT_MODELS
+        from app.config.models_config import MODEL_CONFIGS, DEFAULT_MODELS, MODEL_ALIASES
         
-        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        endpoint = ziya_env("ZIYA_ENDPOINT")
         available_models = MODEL_CONFIGS.get(endpoint, {})
-        current_model = os.environ.get("ZIYA_MODEL", DEFAULT_MODELS.get(endpoint, ""))
+        current_model = ziya_env("ZIYA_MODEL") or DEFAULT_MODELS.get(endpoint, "")
         
         # If a model name is provided directly, use it
         if arg:
+            # Resolve aliases — allows "/model fable" → "fable5", etc.
+            endpoint_aliases = MODEL_ALIASES.get(endpoint, {})
+            if arg not in available_models and arg in endpoint_aliases:
+                resolved = endpoint_aliases[arg]
+                print(f"\033[90m{arg} → {resolved}\033[0m")
+                arg = resolved
             if arg in available_models:
                 os.environ["ZIYA_MODEL"] = arg
                 self._model = None  # Force reload
@@ -2392,7 +2773,11 @@ class CLI:
                 
                 # If user pressed right arrow, show settings dialog
                 if configure_requested['value']:
-                    settings = await self._show_model_settings_dialog(selected_model, selected_config)
+                    try:
+                        settings = await self._show_model_settings_dialog(selected_model, selected_config)
+                    except KeyboardInterrupt:
+                        print()
+                        settings = None
                     if settings is None:
                         # User cancelled settings, go back to model selection
                         print(f"\n\033[90mSettings cancelled, keeping model: {current_model}\033[0m")
@@ -2467,8 +2852,8 @@ async def _run_with_mcp(coro):
             mcp_manager = get_mcp_manager()
             if mcp_manager and mcp_manager.is_initialized:
                 await mcp_manager.shutdown()
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001 — best-effort during process exit
+            logger.debug("MCP shutdown error during exit: %s", e)
 
 
 async def _run_async_cli(cli):
@@ -2510,8 +2895,20 @@ async def _run_async_cli(cli):
             try:
                 sys.stdout.write("\n\033[33m^C - Cancelling...\033[0m\n")
                 sys.stdout.flush()
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001 — stdout may be closed during signal handling
+                pass  # Nothing can be done if stdout is broken
+        elif getattr(cli, '_ask_task', None) and not cli._ask_task.done():
+            # Non-streaming phase of an ask() (e.g. diff validation in a
+            # worker thread, between model attempts).  _active_task is unset
+            # here, but the operation is still running — cancel the whole
+            # ask() so control returns to the prompt.
+            cli._cancellation_requested = True
+            cli._ask_task.cancel()
+            try:
+                sys.stdout.write("\n\033[33m^C - Cancelling...\033[0m\n")
+                sys.stdout.flush()
+            except Exception:  # noqa: BLE001 — stdout may be closed during signal handling
+                pass  # Nothing can be done if stdout is broken
         else:
             # At the prompt the terminal is in raw mode, so SIGINT
             # won't fire — prompt_toolkit handles ^C as a character.
@@ -2535,17 +2932,17 @@ async def _run_async_cli(cli):
 
 def _enforce_endpoint_policy():
     """Enforce enterprise endpoint policy for CLI invocations."""
-    if os.environ.get("ZIYA_ALLOW_ALL_ENDPOINTS") != "1":
+    if not ziya_env("ZIYA_ALLOW_ALL_ENDPOINTS"):
         try:
             from app.plugins import get_allowed_endpoints
             allowed = get_allowed_endpoints()
-            endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+            endpoint = ziya_env("ZIYA_ENDPOINT")
             if allowed is not None and endpoint not in allowed:
                 print(f"\n\033[31m✗ Policy Violation: Endpoint '{endpoint}' is not permitted.\033[0m", file=sys.stderr)
                 print(f"\033[33mAllowed endpoints: {', '.join(allowed)}\033[0m\n", file=sys.stderr)
                 sys.exit(1)
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Plugin policy check failed (non-fatal): %s", e)
 
 def _init_and_authenticate(args, *, skip_setup_env: bool = False):
     """Common initialisation: environment setup, plugin loading, and auth check.
@@ -2579,7 +2976,7 @@ def _create_cli_session(args, files=None) -> 'CLI':
     """
     _init_and_authenticate(args)
     if files is None:
-        root = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+        root = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
         files = resolve_files(args.files, root) if getattr(args, 'files', None) else []
     return CLI(files=files)
 
@@ -2592,6 +2989,13 @@ def cmd_chat(args):
     """Handle: ziya chat [FILES...]"""
     # Environment setup must happen before anything else.
     setup_env(args)
+
+    # Propagate ephemeral mode to the environment so the bead gates
+    # (bead_tools._is_ephemeral_context, bead_prompt) and any other
+    # env-based ephemeral checks see it — cli._ephemeral alone is
+    # invisible to those code paths.
+    if getattr(args, 'ephemeral', False):
+        os.environ['ZIYA_EPHEMERAL_MODE'] = 'true'
 
     # Kick off plugin initialization in a background thread immediately so the
     # network calls inside internal_plugins.register() overlap with auth and
@@ -2655,7 +3059,7 @@ def cmd_chat(args):
         _print_auth_error()
         sys.exit(1)
     
-    root = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+    root = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
     files = resolve_files(args.files, root) if args.files else []
     cli = CLI(files=files)
     cli._plugins_future = _plugins_future
@@ -2691,7 +3095,7 @@ def cmd_review(args):
     cli = _create_cli_session(args)
     print_chat_startup_info(args)
     
-    root = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+    root = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
     
     # Get content to review
     content = None
@@ -2743,7 +3147,7 @@ def cmd_task(args):
     )
     setup_env(args)  # needed for root dir before --list/--show early exits
     setup_env(args)
-    root = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+    root = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
     tasks = load_tasks(root)
 
     # --list: print available tasks and exit
@@ -2820,7 +3224,7 @@ def cmd_task(args):
 
 def _check_auth_quick(profile: str = None) -> bool:
     """Quick check if authentication is likely to work."""
-    endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+    endpoint = ziya_env("ZIYA_ENDPOINT")
     
     if endpoint == "bedrock":
         try:
@@ -2842,7 +3246,7 @@ def _check_auth_quick(profile: str = None) -> bool:
 
 def _print_auth_error():
     """Print authentication error with helpful instructions."""
-    endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+    endpoint = ziya_env("ZIYA_ENDPOINT")
     
     print("\n\033[31m✗ Authentication failed\033[0m\n", file=sys.stderr)
     
@@ -3010,7 +3414,7 @@ def main():
             last_frame = tb[-1]
             location = f"{last_frame.filename}:{last_frame.lineno}"
             print(f"\033[31mError in {location}: {e}\033[0m", file=sys.stderr)
-            if os.environ.get('ZIYA_LOG_LEVEL') == 'DEBUG':
+            if ziya_env('ZIYA_LOG_LEVEL') == 'DEBUG':
                 print("\nFull traceback:", file=sys.stderr)
                 traceback.print_exc(file=sys.stderr)
         else:

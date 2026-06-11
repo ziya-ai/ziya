@@ -28,28 +28,18 @@ _EPHEMERAL_SKIP = {"ok": True, "skipped": True, "reason": "ephemeral"}
 
 
 def _is_ephemeral_context() -> bool:
-    """Check if the current context is ephemeral (beads won't persist).
+    """Check if global ephemeral mode is active (beads shouldn't persist).
 
-    Returns True when global ephemeral mode is active or the
-    conversation's chat record doesn't exist on disk (frontend-only
-    ephemeral conversations).
+    This gate is env-only.  Persistence availability is handled by the
+    storage layer, which falls back to a standalone bead file when the
+    conversation's chat record isn't on disk (CLI sessions, new web
+    conversations that haven't synced yet).
     """
-    if os.environ.get("ZIYA_EPHEMERAL", "").lower() in ("1", "true", "yes"):
-        logger.debug("📿 bead gate: ephemeral=True (ZIYA_EPHEMERAL set)")
-        return True
-    try:
-        from app.storage.beads import _resolve_chat_storage
-        storage, conv_id = _resolve_chat_storage()
-        missing = storage.get(conv_id) is None
-        if missing:
-            logger.debug(
-                "📿 bead gate: ephemeral=True (chat %s not on disk)",
-                (conv_id or "?")[:8],
-            )
-        return missing
-    except (ValueError, ImportError) as e:
-        logger.debug("📿 bead gate: ephemeral=True (resolve failed: %s)", e)
-        return True
+    for var in ("ZIYA_EPHEMERAL", "ZIYA_EPHEMERAL_MODE"):
+        if os.environ.get(var, "").lower() in ("1", "true", "yes"):
+            logger.debug(f"📿 bead gate: ephemeral=True ({var} set)")
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +74,7 @@ class BeadCreateTool(BaseMCPTool):
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
         content = kwargs.get("content", "").strip()
+        conversation_id = kwargs.get("conversation_id")
         if _is_ephemeral_context():
             return _EPHEMERAL_SKIP
         if not content:
@@ -100,7 +91,7 @@ class BeadCreateTool(BaseMCPTool):
             from app.models.bead import Bead
             from app.storage.beads import load_bead_tree, save_bead_tree
 
-            tree = load_bead_tree()
+            tree = load_bead_tree(conversation_id=conversation_id)
             active = tree.active_bead
             parent_id = active.id if active else None
 
@@ -115,7 +106,7 @@ class BeadCreateTool(BaseMCPTool):
                 context_hint=context_hint,
             )
             tree.beads.append(new_bead)
-            save_bead_tree(tree)
+            save_bead_tree(tree, conversation_id=conversation_id)
 
             logger.debug(
                 f"📿 Bead created: [{new_bead.id[:8]}] {status} — {content[:60]}"
@@ -158,13 +149,14 @@ class BeadCompleteTool(BaseMCPTool):
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
         bead_id = kwargs.get("bead_id")
+        conversation_id = kwargs.get("conversation_id")
         if _is_ephemeral_context():
             return _EPHEMERAL_SKIP
 
         try:
             from app.storage.beads import load_bead_tree, save_bead_tree
 
-            tree = load_bead_tree()
+            tree = load_bead_tree(conversation_id=conversation_id)
             if bead_id:
                 target = next((b for b in tree.beads if b.id == bead_id), None)
             else:
@@ -181,7 +173,7 @@ class BeadCompleteTool(BaseMCPTool):
                 if parent and parent.status == "parked":
                     parent.status = "active"
 
-            save_bead_tree(tree)
+            save_bead_tree(tree, conversation_id=conversation_id)
             active = tree.active_bead
             return {
                 "ok": True,
@@ -222,7 +214,7 @@ class BeadStatusTool(BaseMCPTool):
         try:
             from app.storage.beads import load_bead_tree
 
-            tree = load_bead_tree()
+            tree = load_bead_tree(conversation_id=kwargs.get("conversation_id"))
             if not tree.beads:
                 return {"ok": True, "tree": "empty", "message": "No beads tracked yet."}
 

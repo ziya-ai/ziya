@@ -34,8 +34,8 @@ class ProjectStorage(BaseStorage[Project]):
             data = self._read_json(self._index_file())
             if isinstance(data, dict):
                 return data
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Path index load failed, rebuilding: %s", e)
         return {}
 
     def _save_index(self, index: dict) -> None:
