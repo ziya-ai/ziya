@@ -50,8 +50,11 @@ class TaskBindingStorage(BaseStorage[TaskBinding]):
                 from app.utils.encryption import is_encrypted, get_encryptor
                 if is_encrypted(raw):
                     raw = get_encryptor().decrypt(raw)
-            except Exception:
-                pass
+            except ImportError:
+                pass  # Encryption module not available
+            except Exception as e:
+                logger.warning("Decryption failed for %s: %s — reading as plaintext",
+                               filepath.name, e)
             result = json.loads(raw)
             if not isinstance(result, list):
                 logger.error(f"Expected JSON array in {filepath}, got {type(result).__name__}")
