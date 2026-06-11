@@ -7,6 +7,7 @@ import json
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.types import ASGIApp
 from starlette.responses import JSONResponse
+from app.config.env_registry import ziya_env
 import os
 from app.utils.logging_utils import logger
 # Middleware for handling request size limits and model settings
@@ -81,8 +82,8 @@ class ModelSettingsMiddleware(BaseHTTPMiddleware):
                     # Handle top_k parameter - check if it's supported by the current model
                     if "top_k" in body:
                         from app.agents.models import ModelManager
-                        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
-                        model_name = os.environ.get("ZIYA_MODEL")
+                        endpoint = ziya_env("ZIYA_ENDPOINT")
+                        model_name = ziya_env("ZIYA_MODEL")
                         
                         # Get model configuration
                         model_config = ModelManager.get_model_config(endpoint, model_name)
@@ -101,8 +102,8 @@ class ModelSettingsMiddleware(BaseHTTPMiddleware):
                     # Handle thinking_mode parameter
                     if "thinking_mode" in body:
                         from app.agents.models import ModelManager
-                        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
-                        model_name = os.environ.get("ZIYA_MODEL")
+                        endpoint = ziya_env("ZIYA_ENDPOINT")
+                        model_name = ziya_env("ZIYA_MODEL")
                         
                         # Get model configuration
                         model_config = ModelManager.get_model_config(endpoint, model_name)
