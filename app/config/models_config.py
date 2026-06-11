@@ -16,6 +16,31 @@ DEFAULT_MODELS = {
     "anthropic": "claude-sonnet-4-6"
 }
 
+# Model aliases — short names that resolve to canonical model keys.
+# Checked per-endpoint so the same alias can point to different models
+# on different providers.  Resolution order:
+#   1. Exact match in MODEL_CONFIGS[endpoint] (canonical name)
+#   2. Alias lookup in MODEL_ALIASES[endpoint]
+#   3. Fallback to endpoint default (with warning)
+MODEL_ALIASES: dict[str, dict[str, str]] = {
+    "bedrock": {
+        "fable": "fable5",
+        "mythos": "mythos5",
+        "sonnet": "sonnet4.6",
+        "opus": "opus4.8",
+        "haiku": "haiku-4.5",
+        "nova": "nova-pro-v2",
+    },
+    "google": {
+        "gemini": "gemini-3.1-pro",
+        "flash": "gemini-flash",
+    },
+    "anthropic": {
+        "sonnet": "claude-sonnet-4-6",
+        "opus": "claude-opus-4-8",
+    },
+}
+
 # Lightweight models used for background tasks (memory extraction,
 # summarization, classification).  These should be the cheapest
 # available model per endpoint.  Override per-category via
@@ -1615,3 +1640,96 @@ def _load_user_model_config() -> None:
 
 
 _load_user_model_config()
+
+
+# ─── Schema Validation ────────────────────────────────────────────────────────
+# Known valid keys for model configuration entries.  Adding a key here
+# is what makes it "declared" — typos in MODEL_CONFIGS will be caught.
+_VALID_MODEL_CONFIG_KEYS = frozenset({
+    "available_regions", "context_window", "convert_system_message_to_human",
+    "default_max_output_tokens", "effort_beta_required", "endpoint_override",
+    "enforce_size_limit", "extended_context_header", "extended_context_limit",
+    "family", "inference_parameters", "internal_parameters",
+    "is_advanced_model", "max_input_tokens", "max_iterations",
+    "max_output_tokens", "max_request_size_mb", "max_thinking_tokens", "max_tokens",
+    "message_format", "model_id", "model_name", "native_function_calling",
+    "parameter_mappings", "parameter_ranges", "parent", "preferred_region",
+    "preferred_regions", "preview", "region", "region_restricted",
+    "region_router_class", "requires_provider_data_share",
+    "service_name", "stop_sequences", "supports_cache", "supported_efforts",
+    "supported_parameters", "supports_adaptive_thinking",
+    "supports_assistant_prefill", "supports_context_caching",
+    "supports_extended_context", "supports_function_calling",
+    "supports_max_input_tokens", "supports_multimodal", "supports_streaming",
+    "supports_thinking", "supports_vision", "temperature",
+    "thinking_budget", "thinking_effort_default", "thinking_level",
+    "timeout_multiplier", "token_limit", "top_k", "top_p",
+    "unsupported_parameters", "wrapper_class",
+})
+
+_VALID_FAMILY_KEYS = frozenset({
+    "available_regions", "context_window", "default_max_output_tokens",
+    "family", "inference_parameters", "max_output_tokens", "model_id",
+    "native_function_calling", "parameter_mappings", "parent",
+    "preferred_region", "stop_sequences", "supported_efforts",
+    "supported_parameters", "supports_adaptive_thinking",
+    "supports_assistant_prefill", "supports_context_caching",
+    "supports_extended_context", "supports_function_calling",
+    "supports_multimodal", "supports_streaming", "supports_thinking",
+    "supports_vision", "thinking_effort_default", "token_limit",
+    "unsupported_parameters",
+})
+
+
+def validate_model_configs() -> list[str]:
+    """Validate MODEL_CONFIGS, MODEL_FAMILIES, and MODEL_ALIASES for common errors.
+
+    Returns a list of human-readable issue descriptions (empty = all good).
+    Called at startup so misconfigurations surface immediately.
+    """
+    issues: list[str] = []
+
+    # 1. Check for unknown keys in model configs (catches typos)
+    for endpoint, models in MODEL_CONFIGS.items():
+        for model_name, cfg in models.items():
+            unknown = set(cfg.keys()) - _VALID_MODEL_CONFIG_KEYS
+            if unknown:
+                issues.append(
+                    f"[{endpoint}/{model_name}] unknown config keys: {sorted(unknown)}"
+                )
+
+    # 2. Check for unknown keys in family definitions
+    for family_name, cfg in MODEL_FAMILIES.items():
+        unknown = set(cfg.keys()) - _VALID_FAMILY_KEYS
+        if unknown:
+            issues.append(
+                f"[family/{family_name}] unknown keys: {sorted(unknown)}"
+            )
+
+    # 3. Validate family references exist
+    for endpoint, models in MODEL_CONFIGS.items():
+        for model_name, cfg in models.items():
+            family_ref = cfg.get("family")
+            if family_ref and family_ref not in MODEL_FAMILIES:
+                issues.append(
+                    f"[{endpoint}/{model_name}] references non-existent family '{family_ref}'"
+                )
+
+    # 4. Validate parent references in families
+    for family_name, cfg in MODEL_FAMILIES.items():
+        parent_ref = cfg.get("parent")
+        if parent_ref and parent_ref not in MODEL_FAMILIES:
+            issues.append(
+                f"[family/{family_name}] references non-existent parent '{parent_ref}'"
+            )
+
+    # 5. Validate aliases point to real models
+    for endpoint, aliases in MODEL_ALIASES.items():
+        endpoint_models = MODEL_CONFIGS.get(endpoint, {})
+        for alias, target in aliases.items():
+            if target not in endpoint_models:
+                issues.append(
+                    f"[alias/{endpoint}] '{alias}' → '{target}' but '{target}' not in MODEL_CONFIGS['{endpoint}']"
+                )
+
+    return issues
