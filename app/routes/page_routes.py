@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from app.utils.logging_utils import logger
+from app.config.env_registry import ziya_env
 from app.agents.models import ModelManager
 
 router = APIRouter(tags=["pages"])
@@ -195,7 +196,7 @@ async def debug_page_old(request: Request):
         html_parts.extend([
             '            <div class="info-card">',
             '                <h3>Directories</h3>',
-            f'                <div class="info-row"><span class="info-label">Root Directory:</span><span class="info-value"><code>{os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())}</code></span></div>',
+            f'                <div class="info-row"><span class="info-label">Root Directory:</span><span class="info-value"><code>{ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()}</code></span></div>',
             f'                <div class="info-row"><span class="info-label">Working Directory:</span><span class="info-value"><code>{os.getcwd()}</code></span></div>',
             '            </div>',
             '        </div>',
@@ -211,7 +212,7 @@ async def debug_page_old(request: Request):
         ])
         
         # Model Configuration
-        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+        endpoint = ziya_env("ZIYA_ENDPOINT")
         
         # Get current model from ModelManager instead of just env var
         try:
@@ -224,7 +225,7 @@ async def debug_page_old(request: Request):
                 model_id_display = str(model_id)
         except Exception as e:
             logger.warning(f"Could not get current model from ModelManager: {e}")
-            current_model = os.environ.get("ZIYA_MODEL", "Not set")
+            current_model = ziya_env("ZIYA_MODEL") or "Not set"
             model_id_display = "Unknown"
         
         html_parts.extend([
@@ -238,7 +239,7 @@ async def debug_page_old(request: Request):
         # AWS/Google Configuration
         if endpoint == "bedrock":
             import boto3
-            profile = os.environ.get('ZIYA_AWS_PROFILE') or os.environ.get('AWS_PROFILE', 'default')
+            profile = ziya_env('ZIYA_AWS_PROFILE') or os.environ.get('AWS_PROFILE', 'default')
             region = os.environ.get('AWS_REGION', 'us-west-2')
             html_parts.extend([
                 f'            <div class="info-row"><span class="info-label">AWS Profile:</span><span class="info-value">{profile}</span></div>',
@@ -273,7 +274,7 @@ async def debug_page_old(request: Request):
         html_parts.append('        </div>')
         
         # MCP Information
-        mcp_enabled = os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes")
+        mcp_enabled = ziya_env("ZIYA_ENABLE_MCP")
         html_parts.extend([
             '        <h2>🔧 MCP Servers and Tools</h2>',
             '        <div class="info-card">',
@@ -322,9 +323,9 @@ async def debug_page_old(request: Request):
             html_parts.append('        </div>')
         
         # Feature Flags
-        ast_enabled = os.environ.get("ZIYA_ENABLE_AST", "false").lower() in ("true", "1", "yes")
-        mcp_enabled = os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes")
-        ephemeral = os.environ.get("ZIYA_EPHEMERAL_MODE", "false").lower() in ("true", "1", "yes")
+        ast_enabled = ziya_env("ZIYA_ENABLE_AST")
+        mcp_enabled = ziya_env("ZIYA_ENABLE_MCP")
+        ephemeral = ziya_env("ZIYA_EPHEMERAL_MODE")
         
         html_parts.extend([
             '        <h2>⚙️ Feature Flags</h2>',

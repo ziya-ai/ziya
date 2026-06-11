@@ -10,6 +10,7 @@ import os
 from typing import Any, Dict, List, Optional
 from datetime import timedelta
 from app.utils.logging_utils import logger
+from app.config.env_registry import ziya_env
 from app.plugins.interfaces import DataRetentionPolicy, EncryptionPolicy
 
 # Global plugin registries
@@ -519,7 +520,7 @@ def initialize():
     register_directory_scan_provider(DefaultDirectoryScanProvider())
     
     # Only load internal plugins if ZIYA_LOAD_INTERNAL_PLUGINS is set
-    if os.environ.get('ZIYA_LOAD_INTERNAL_PLUGINS') == '1':
+    if ziya_env('ZIYA_LOAD_INTERNAL_PLUGINS'):
         loaded = False
         for module_name in ['plugins', 'internal.plugins']:
             try:

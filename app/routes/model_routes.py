@@ -4,6 +4,7 @@ Model configuration and management routes.
 Extracted from server.py during Phase 3 refactoring.
 Contains all /api/* model configuration endpoints.
 """
+import asyncio
 import gc
 import json
 import os
@@ -49,14 +50,14 @@ def get_available_models(endpoint: Optional[str] = None):
             if allowed_endpoints is not None and endpoint not in allowed_endpoints:
                 logger.warning(f"Endpoint '{endpoint}' not in policy list {allowed_endpoints}, using first allowed")
                 endpoint = allowed_endpoints[0]
-        except Exception:
-            pass
+        except (ImportError, RuntimeError, OSError):
+            pass  # Plugin system unavailable
 
     # Personal model allowlist from ~/.ziya/models.json
     try:
         from app.config.models_config import get_user_allowed_models
         user_allowed = get_user_allowed_models()
-    except Exception:
+    except (ImportError, RuntimeError, OSError):
         user_allowed = None
 
     try:
@@ -220,9 +221,21 @@ def get_model_id():
     # Always return the model alias (name) rather than the full model ID
     return {'model_id': ModelManager.get_model_alias()}
 
+# Serializes model mutations: set_model and update_model_settings both
+# mutate shared ZIYA_* env vars and ModelManager._state with manual rollback;
+# concurrent requests would interleave and corrupt state.
+_model_mutation_lock = asyncio.Lock()
+
+
 @router.post('/api/set-model')
 async def set_model(request: SetModelRequest):
     """Set the active model for the current endpoint."""
+    async with _model_mutation_lock:
+        return await _set_model_locked(request)
+
+
+async def _set_model_locked(request: SetModelRequest):
+    """Body of set_model; caller must hold _model_mutation_lock."""
     
     try:
         # Force garbage collection at the start
@@ -245,8 +258,8 @@ async def set_model(request: SetModelRequest):
                         )
             except HTTPException:
                 raise
-            except Exception:
-                pass
+            except (ImportError, RuntimeError, OSError):
+                pass  # Plugin policy system unavailable
 
         # Enforce personal model allowlist from ~/.ziya/models.json
         try:
@@ -259,8 +272,8 @@ async def set_model(request: SetModelRequest):
                 )
         except HTTPException:
             raise
-        except Exception:
-            pass
+        except (ImportError, RuntimeError, OSError):
+            pass  # Model allowlist unavailable
 
         if not model_id:
             logger.error("Empty model ID provided")
@@ -651,6 +664,13 @@ def get_model_capabilities(model: str = None):
 
 @router.post('/api/model-settings')
 async def update_model_settings(settings: ModelSettingsRequest):
+    """Update model settings (serialized with set_model)."""
+    async with _model_mutation_lock:
+        return await _update_model_settings_locked(settings)
+
+
+async def _update_model_settings_locked(settings: ModelSettingsRequest):
+    """Body of update_model_settings; caller must hold _model_mutation_lock."""
     from app.agents.agent import model
     from app.agents.wrappers.nova_wrapper import NovaBedrock
     original_settings = settings.model_dump()

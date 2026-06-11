@@ -1,6 +1,7 @@
 """
 Token counting service for contexts and skills.
 """
+import logging
 from pathlib import Path
 from typing import List, Dict
 
@@ -9,6 +10,8 @@ try:
     _TIKTOKEN_AVAILABLE = True
 except ImportError:
     _TIKTOKEN_AVAILABLE = False
+
+logger = logging.getLogger(__name__)
 
 
 class TokenService:
@@ -25,8 +28,8 @@ class TokenService:
         if self.encoding is not None:
             try:
                 return len(self.encoding.encode(text))
-            except Exception:
-                pass
+            except (UnicodeEncodeError, ValueError) as e:
+                logger.debug("tiktoken encode failed, using estimate: %s", e)
         # Fallback to rough estimate if tiktoken unavailable or encoding fails
         return len(text) // 4
     
@@ -38,7 +41,8 @@ class TokenService:
         try:
             content = filepath.read_text(encoding='utf-8', errors='ignore')
             return self.count_tokens(content)
-        except Exception:
+        except (OSError, UnicodeDecodeError) as e:
+            logger.debug("Cannot read %s for token count: %s", filepath.name, e)
             return 0
     
     def count_tokens_for_files(self, base_path: str, files: List[str]) -> int:

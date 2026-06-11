@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.utils.logging_utils import logger
+from app.config.env_registry import ziya_env
 
 # --------------------------------------------------------------------------- #
 # Configuration
@@ -63,7 +64,7 @@ _BUILD_LOCKS_MUTEX = threading.Lock()
 
 
 def _get_token_threshold() -> int:
-    raw = os.environ.get("ZIYA_PDF_RAG_TOKEN_THRESHOLD")
+    raw = ziya_env("ZIYA_PDF_RAG_TOKEN_THRESHOLD")
     if raw:
         try:
             return max(1000, int(raw))
@@ -91,7 +92,7 @@ def _count_tokens(text: str) -> int:
         from app.utils.tiktoken_compat import tiktoken
         enc = tiktoken.get_encoding("cl100k_base")
         return len(enc.encode(text))
-    except Exception:
+    except (ImportError, KeyError, UnicodeEncodeError):
         # Conservative fallback: 4 chars / token
         return max(1, len(text) // 4)
 
@@ -114,9 +115,9 @@ def _get_project_root() -> str:
         root = _ctx_root()
         if root and os.path.isdir(root):
             return root
-    except Exception:
-        pass
-    return os.environ.get("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
+    except (ImportError, RuntimeError):
+        pass  # Context module unavailable — use env fallback
+    return ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
 
 
 def _project_relative_path(abspath: str) -> str:
@@ -131,8 +132,8 @@ def _project_relative_path(abspath: str) -> str:
         ap = str(Path(abspath).resolve())
         if ap == root or ap.startswith(root + os.sep):
             return os.path.relpath(ap, root)
-    except Exception:
-        pass
+    except (OSError, ValueError):
+        pass  # Path resolution failed — return absolute path
     return abspath
 
 
@@ -147,7 +148,7 @@ def _cache_key_for(path: str) -> Tuple[str, Path]:
     """
     try:
         abspath = str(Path(path).resolve())
-    except Exception:
+    except (OSError, ValueError):
         abspath = os.path.abspath(path)
     try:
         st = os.stat(abspath)
@@ -192,10 +193,10 @@ def _extract_native_outline(path: str) -> Tuple[List[Dict[str, Any]], Dict[str, 
                 key = str(k).lstrip("/")
                 try:
                     metadata[key] = str(v)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except (TypeError, ValueError):
+                    pass  # Non-stringifiable metadata value
+        except (AttributeError, TypeError):
+            pass  # Metadata not accessible
 
         def _walk(items, level: int) -> List[Dict[str, Any]]:
             out: List[Dict[str, Any]] = []
@@ -818,7 +819,7 @@ class PdfIndex:
             )
             return None
 
-        model_name = os.environ.get("ZIYA_PDF_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+        model_name = ziya_env("ZIYA_PDF_EMBEDDING_MODEL")
         emb_path = self.cache_dir / "embeddings.npy"
         try:
             if emb_path.is_file():

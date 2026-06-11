@@ -12,6 +12,7 @@ from typing import Dict, Any, Optional
 import threading
 
 from app.utils.logging_utils import logger
+from app.config.env_registry import ziya_env
 
 # Add more detailed logging for AST dependencies
 logger.info(f"Python version: {sys.version}")
@@ -110,7 +111,7 @@ def initialize_ast_if_enabled():
     # The ProjectContextMiddleware will trigger indexing for the correct
     # project root when the first request with X-Project-Root arrives.
     # In CLI mode, ZIYA_USER_CODEBASE_DIR is set correctly before this runs.
-    if not os.environ.get("ZIYA_USER_CODEBASE_DIR"):
+    if not ziya_env("ZIYA_USER_CODEBASE_DIR"):
         logger.info("AST: Deferring indexing until first project request (no ZIYA_USER_CODEBASE_DIR set)")
         _ast_indexing_status.update({'enabled': True})
         return
@@ -122,7 +123,7 @@ def initialize_ast_if_enabled():
     logger.info("AST capabilities enabled, starting initialization...")
     
     # Update status to indicate indexing has started
-    codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", os.getcwd())
+    codebase_dir = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
 
     # Guard: don't start a second indexing run for the same project
     from app.utils.ast_parser.integration import _indexing_in_progress as _ast_in_progress, _initialized_projects
@@ -142,7 +143,7 @@ def initialize_ast_if_enabled():
     def _initialize_ast():
         """Background thread function to initialize AST."""
         try:
-            max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
+            max_depth = ziya_env("ZIYA_MAX_DEPTH")
             
             # Get exclude patterns
             exclude_patterns = []
@@ -151,7 +152,7 @@ def initialize_ast_if_enabled():
             gitignore_patterns = get_ignored_patterns(codebase_dir)
             
             # Add additional common patterns that might not be in .gitignore
-            additional_excludes = os.environ.get("ZIYA_ADDITIONAL_EXCLUDE_DIRS", "")
+            additional_excludes = ziya_env("ZIYA_ADDITIONAL_EXCLUDE_DIRS")
             if additional_excludes:
                 additional_patterns = [p.strip() for p in additional_excludes.split(',') if p.strip()]
                 gitignore_patterns.extend([(p, 'additional') for p in additional_patterns])

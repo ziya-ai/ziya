@@ -17,6 +17,7 @@ from app.utils.context_cache import get_context_cache_manager
 from app.utils.conversation_context import conversation_context
 from app.config.models_config import DEFAULT_MAX_OUTPUT_TOKENS
 
+from app.config.env_registry import ziya_env
 
 class ZiyaBedrock(Runnable):
     """
@@ -68,8 +69,8 @@ class ZiyaBedrock(Runnable):
         # Check if the model supports top_k
         from app.agents.models import ModelManager
         from app.config.models_config import get_supported_parameters
-        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
-        model_name = os.environ.get("ZIYA_MODEL")
+        endpoint = ziya_env("ZIYA_ENDPOINT")
+        model_name = ziya_env("ZIYA_MODEL")
         model_config = ModelManager.get_model_config(endpoint, model_name)
         resolved_supported = get_supported_parameters(endpoint, model_name)
 
@@ -98,8 +99,8 @@ class ZiyaBedrock(Runnable):
             
         # Filter model kwargs based on the model's supported parameters
         from app.agents.models import ModelManager
-        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
-        model_name = os.environ.get("ZIYA_MODEL")
+        endpoint = ziya_env("ZIYA_ENDPOINT")
+        model_name = ziya_env("ZIYA_MODEL")
         
         model_config = ModelManager.get_model_config(endpoint, model_name)
         filtered_kwargs = ModelManager.filter_model_kwargs(current_model_kwargs, model_config)
@@ -189,8 +190,8 @@ class ZiyaBedrock(Runnable):
         
         # Get model configuration to check caching support
         from app.agents.models import ModelManager
-        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
-        model_name = os.environ.get("ZIYA_MODEL")
+        endpoint = ziya_env("ZIYA_ENDPOINT")
+        model_name = ziya_env("ZIYA_MODEL")
         model_config = ModelManager.get_model_config(endpoint, model_name)
         
         if not model_config.get("supports_context_caching", False):
@@ -305,7 +306,7 @@ class ZiyaBedrock(Runnable):
         from app.utils.file_utils import is_binary_file
         
         file_contents = {}
-        base_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
+        base_dir = ziya_env("ZIYA_USER_CODEBASE_DIR") or ""
         
         for file_path in file_paths:
             try:
@@ -339,7 +340,7 @@ class ZiyaBedrock(Runnable):
         messages = self._ensure_system_message_ordering(messages)
 
         # Use much higher default if not set
-        kwargs["max_tokens"] = int(os.environ.get("ZIYA_MAX_OUTPUT_TOKENS", self.ziya_max_tokens or DEFAULT_MAX_OUTPUT_TOKENS))
+        kwargs["max_tokens"] = ziya_env("ZIYA_MAX_OUTPUT_TOKENS") or self.ziya_max_tokens or DEFAULT_MAX_OUTPUT_TOKENS
         if self.ziya_max_tokens is not None and "max_tokens" not in kwargs:
             kwargs["max_tokens"] = self.ziya_max_tokens
             logger.debug(f"Added max_tokens={self.ziya_max_tokens} to _generate kwargs")
@@ -359,8 +360,8 @@ class ZiyaBedrock(Runnable):
 
         # Filter kwargs based on the model's supported parameters
         from app.agents.models import ModelManager
-        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
-        model_name = os.environ.get("ZIYA_MODEL")
+        endpoint = ziya_env("ZIYA_ENDPOINT")
+        model_name = ziya_env("ZIYA_MODEL")
         
         # Get the model config and filter the kwargs
         model_config = ModelManager.get_model_config(endpoint, model_name)
@@ -462,8 +463,8 @@ class ZiyaBedrock(Runnable):
         # `unsupported_parameters` opt-outs the same way __init__ does.
         from app.agents.models import ModelManager
         from app.config.models_config import get_supported_parameters
-        _endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
-        _model_name = os.environ.get("ZIYA_MODEL")
+        _endpoint = ziya_env("ZIYA_ENDPOINT")
+        _model_name = ziya_env("ZIYA_MODEL")
         _resolved_supported = get_supported_parameters(_endpoint, _model_name)
 
         if "temperature" in kwargs and "temperature" in _resolved_supported:
@@ -502,8 +503,8 @@ class ZiyaBedrock(Runnable):
         from app.agents.models import ModelManager
         
         # Get the endpoint and model name
-        endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
-        model_name = os.environ.get("ZIYA_MODEL")
+        endpoint = ziya_env("ZIYA_ENDPOINT")
+        model_name = ziya_env("ZIYA_MODEL")
         
         # Get the model config and filter the kwargs
         model_config = ModelManager.get_model_config(endpoint, model_name)

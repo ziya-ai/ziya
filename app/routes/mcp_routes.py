@@ -21,6 +21,7 @@ from app.config.models_config import MODEL_CONFIGS
 from app.mcp.registry_manager import get_registry_manager
 
 router = APIRouter(prefix="/api/mcp", tags=["mcp"])
+from app.config.env_registry import ziya_env
 
 class MCPServerConfig(BaseModel):
     model_config = {"extra": "allow"}
@@ -786,7 +787,7 @@ async def toggle_server(request: ServerToggleRequest):
     """
     try:
         # Check if MCP is enabled
-        if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+        if not ziya_env("ZIYA_ENABLE_MCP"):
             return {
                 "success": False,
                 "message": "MCP is disabled. Use --mcp flag to enable MCP integration."
