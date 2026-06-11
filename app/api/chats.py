@@ -555,8 +555,8 @@ async def set_chat_global(project_id: str, chat_id: str, body: dict):
         from app.storage.global_items import _summary_cache as _global_cache
         _chats_cache.pop(path_str, None)
         _global_cache.pop(path_str, None)
-    except Exception:
-        pass
+    except (ImportError, KeyError, TypeError):
+        pass  # Cache modules not loaded or key absent
     return Chat(**raw)
 
 
