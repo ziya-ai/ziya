@@ -8,7 +8,7 @@ Verifies that the structural quality gate rejects:
 And that intra-batch dedup catches paraphrases within the same extraction.
 """
 import pytest
-from app.utils.memory_extractor import quality_gate, deduplicate, _deduplicate_within_batch
+from app.memory.extractor import quality_gate, deduplicate, _deduplicate_within_batch
 
 
 class TestRefactoringGate:

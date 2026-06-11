@@ -378,12 +378,12 @@ class TestSearchToolDecayThrottle:
 class TestPruneStaleState:
 
     def setup_method(self):
-        import app.utils.memory_feedback as fb
+        import app.memory.feedback as fb
         fb._loaded_per_conversation.clear()
         fb._labile_until.clear()
 
     def test_expired_labile_entries_dropped(self):
-        import app.utils.memory_feedback as fb
+        import app.memory.feedback as fb
         now = int(time.time() * 1000)
         fb._labile_until["expired"] = now - 1000
         fb._labile_until["live"] = now + 3_600_000
@@ -392,7 +392,7 @@ class TestPruneStaleState:
         assert "live" in fb._labile_until
 
     def test_labile_capped_to_max(self):
-        import app.utils.memory_feedback as fb
+        import app.memory.feedback as fb
         now = int(time.time() * 1000)
         # All live, but over the cap — keep the longest-lived ones.
         for i in range(fb._MAX_LABILE_ENTRIES + 50):
@@ -404,14 +404,14 @@ class TestPruneStaleState:
         assert survivor in fb._labile_until
 
     def test_loaded_conversations_capped(self):
-        import app.utils.memory_feedback as fb
+        import app.memory.feedback as fb
         for i in range(fb._MAX_TRACKED_CONVERSATIONS + 25):
             fb._loaded_per_conversation[f"conv{i}"].add("m1")
         fb._prune_stale_state()
         assert len(fb._loaded_per_conversation) == fb._MAX_TRACKED_CONVERSATIONS
 
     def test_prune_noop_when_under_caps(self):
-        import app.utils.memory_feedback as fb
+        import app.memory.feedback as fb
         now = int(time.time() * 1000)
         fb._labile_until["a"] = now + 100000
         fb._loaded_per_conversation["c1"].add("m1")
@@ -420,7 +420,7 @@ class TestPruneStaleState:
         assert fb._loaded_per_conversation["c1"] == {"m1"}
 
     def test_record_load_invokes_prune(self):
-        import app.utils.memory_feedback as fb
+        import app.memory.feedback as fb
         now = int(time.time() * 1000)
         fb._labile_until["expired"] = now - 5000
         fb.record_load("c1", ["m_new"])
@@ -449,13 +449,13 @@ class _FakeProvider:
 class TestApplyFeedbackNonBlocking:
 
     def setup_method(self):
-        import app.utils.memory_feedback as fb
+        import app.memory.feedback as fb
         fb._loaded_per_conversation.clear()
         fb._labile_until.clear()
 
     @pytest.mark.asyncio
     async def test_used_memory_bumps_counters_via_to_thread(self, tmp_path):
-        import app.utils.memory_feedback as fb
+        import app.memory.feedback as fb
         from app.services.embedding_service import EmbeddingCache
 
         st = MemoryStorage(memory_dir=tmp_path / "memory")
@@ -479,7 +479,7 @@ class TestApplyFeedbackNonBlocking:
         with patch("app.services.embedding_service.get_embedding_provider", return_value=provider), \
              patch("app.services.embedding_service.get_embedding_cache", return_value=cache), \
              patch("app.storage.memory.get_memory_storage", return_value=st), \
-             patch("app.utils.memory_feedback.asyncio.to_thread", side_effect=_counting_to_thread):
+             patch("app.memory.feedback.asyncio.to_thread", side_effect=_counting_to_thread):
             res = await fb.apply_feedback("conv-1", "the obp budget answer is 512mb")
 
         # The embedding work went through asyncio.to_thread (non-blocking).
@@ -492,7 +492,7 @@ class TestApplyFeedbackNonBlocking:
 
     @pytest.mark.asyncio
     async def test_loaded_only_when_below_threshold(self, tmp_path):
-        import app.utils.memory_feedback as fb
+        import app.memory.feedback as fb
         from app.services.embedding_service import EmbeddingCache
 
         st = MemoryStorage(memory_dir=tmp_path / "memory")
@@ -517,7 +517,7 @@ class TestApplyFeedbackNonBlocking:
 
     @pytest.mark.asyncio
     async def test_apply_updates_single_batched_write(self, tmp_path):
-        import app.utils.memory_feedback as fb
+        import app.memory.feedback as fb
         st = MemoryStorage(memory_dir=tmp_path / "memory")
         ids = []
         for i in range(4):
@@ -533,7 +533,7 @@ class TestApplyFeedbackNonBlocking:
 
     @pytest.mark.asyncio
     async def test_clears_conversation_after_apply(self, tmp_path):
-        import app.utils.memory_feedback as fb
+        import app.memory.feedback as fb
         from app.services.embedding_service import EmbeddingCache
         st = MemoryStorage(memory_dir=tmp_path / "memory")
         m = Memory(content="x")
@@ -550,7 +550,7 @@ class TestApplyFeedbackNonBlocking:
 
     @pytest.mark.asyncio
     async def test_noop_provider_bumps_loaded_only(self, tmp_path):
-        import app.utils.memory_feedback as fb
+        import app.memory.feedback as fb
         from app.services.embedding_service import NoopProvider
         st = MemoryStorage(memory_dir=tmp_path / "memory")
         m = Memory(content="y")

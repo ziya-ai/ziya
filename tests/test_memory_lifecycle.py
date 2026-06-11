@@ -1,5 +1,5 @@
 """
-Tests for app.utils.memory_lifecycle (Diff 7).
+Tests for app.memory.lifecycle (Diff 7).
 
 Two layers of coverage:
 
@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.utils.memory_lifecycle import (
+from app.memory.lifecycle import (
     _evaluate_promotion,
     _evaluate_archival,
     _proposal_age,
@@ -220,7 +220,7 @@ class TestRunLifecyclePass:
 
         with patch("app.storage.proposals.get_proposals_store", return_value=proposals), \
              patch("app.storage.memory.get_memory_storage", return_value=store), \
-             patch("app.utils.memory_extractor._next_activity_count", return_value=1), \
+             patch("app.memory.extractor._next_activity_count", return_value=1), \
              patch("app.services.embedding_service.get_embedding_cache",
                     return_value=MagicMock(get=MagicMock(return_value=None))), \
              patch("app.services.embedding_service.embed_and_cache"):
@@ -258,7 +258,7 @@ class TestRunLifecyclePass:
              patch("app.storage.memory.get_memory_storage", return_value=store), \
              patch("app.services.embedding_service.get_embedding_cache",
                     return_value=MagicMock(get=MagicMock(return_value=None))), \
-             patch("app.utils.memory_lifecycle.open", create=True) as mock_open:
+             patch("app.memory.lifecycle.open", create=True) as mock_open:
             # Mock the activity-counter file read
             mock_open.return_value.__enter__.return_value.read.return_value = (
                 '{"count": 10}'

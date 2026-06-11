@@ -1,5 +1,5 @@
 """
-Tests for app.utils.memory_extractor — post-conversation memory extraction.
+Tests for app.memory.extractor — post-conversation memory extraction.
 
 Covers:
   - Conversation stripping (tool results, code, diffs removed)
@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.utils.memory_extractor import (
+from app.memory.extractor import (
     strip_conversation,
     _strip_artifacts,
     deduplicate,
@@ -886,7 +886,7 @@ class TestRunExtraction:
              patch("app.storage.proposals.get_proposals_store", return_value=proposals), \
              patch("app.services.model_resolver.call_service_model",
                    side_effect=mock_llm_extract), \
-             patch("app.utils.memory_lifecycle.run_lifecycle_pass",
+             patch("app.memory.lifecycle.run_lifecycle_pass",
                    side_effect=mock_lifecycle):
             await run_post_conversation_extraction(messages, "conv-lifecycle")
 
@@ -931,7 +931,7 @@ class TestRunExtraction:
              patch("app.storage.proposals.get_proposals_store", return_value=proposals), \
              patch("app.services.model_resolver.call_service_model",
                    side_effect=mock_llm_extract_2), \
-             patch("app.utils.memory_lifecycle.run_lifecycle_pass",
+             patch("app.memory.lifecycle.run_lifecycle_pass",
                    side_effect=mock_lifecycle_raises):
             result = await run_post_conversation_extraction(messages, "conv-lc-fail")
 

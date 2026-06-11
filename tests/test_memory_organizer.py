@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 from app.models.memory import Memory, MindMapNode
 from app.storage.memory import MemoryStorage
-from app.utils.memory_organizer import (
+from app.memory.organizer import (
     cluster_memories,
     cleanup_corpus,
     extract_relations,

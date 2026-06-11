@@ -17,6 +17,17 @@ pytestmark = pytest.mark.skipif(
     reason="MCP not enabled - set ZIYA_ENABLE_MCP=true to run integration tests"
 )
 
+# app.mcp.stream_integration (SecureStreamProcessor) was removed in the
+# secure-stream refactor but several tests below still import it inside
+# their bodies, producing ModuleNotFoundError at runtime.  Skip the whole
+# module until the suite is rewritten against the current architecture
+# (native tool API + app.hallucination detectors) or the legacy tests
+# are deleted outright.
+pytest.importorskip(
+    "app.mcp.stream_integration",
+    reason="legacy SecureStreamProcessor tests — module removed in refactor",
+)
+
 
 class TestRealMCPIntegration:
     """Test real MCP server integration."""

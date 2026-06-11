@@ -1,5 +1,5 @@
 """
-Tests for app.utils.memory_comparator — LLM-guided memory comparison.
+Tests for app.memory.comparator — LLM-guided memory comparison.
 
 Covers:
   - find_similar_memories: local tag+word overlap scoring
@@ -13,7 +13,7 @@ from unittest.mock import patch, AsyncMock
 
 import pytest
 
-from app.utils.memory_comparator import find_similar_memories, compare_memory
+from app.memory.comparator import find_similar_memories, compare_memory
 
 
 @pytest.fixture(autouse=True)

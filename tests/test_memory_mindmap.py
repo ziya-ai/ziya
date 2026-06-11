@@ -207,7 +207,7 @@ class TestProgressivePrompt:
 
     def test_mindmap_triggers_handles_only(self, populated_tree):
         with patch("app.storage.memory.get_memory_storage", return_value=populated_tree):
-            from app.utils.memory_prompt import get_memory_prompt_section
+            from app.memory.prompt import get_memory_prompt_section
             section = get_memory_prompt_section()
             # Should show Level 0 handles, not individual memory content
             assert "LEO broadband constellation" in section
@@ -221,7 +221,7 @@ class TestProgressivePrompt:
         storage = MemoryStorage(memory_dir=tmp_path / "mem")
         storage.save(Memory(content="A fact", layer="domain_context"))
         with patch("app.storage.memory.get_memory_storage", return_value=storage):
-            from app.utils.memory_prompt import get_memory_prompt_section
+            from app.memory.prompt import get_memory_prompt_section
             section = get_memory_prompt_section()
             assert "A fact" in section
             assert "memory_context" not in section  # No handles-only mode

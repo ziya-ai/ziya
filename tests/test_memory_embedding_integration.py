@@ -15,6 +15,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import app.memory  # noqa: F401 — ensure app.memory is importable for patch() targets
 from app.models.memory import Memory, MemoryProposal
 from app.storage.memory import MemoryStorage
 from app.services.embedding_service import EmbeddingCache, NoopProvider
@@ -50,7 +51,7 @@ class TestEmbeddingDedup:
 
     def test_keyword_dedup_still_works_without_embeddings(self):
         """With NoopProvider, keyword dedup catches substring matches."""
-        from app.utils.memory_extractor import deduplicate
+        from app.memory.extractor import deduplicate
 
         candidates = [
             {"content": "VPC uses overlay networking", "tags": ["networking"]},
@@ -71,7 +72,7 @@ class TestEmbeddingDedup:
         candidate AND the comparator's NOOP/UPDATE/ADD decision.
         Paraphrase-against-proposal (`prop_*`) is dropped instead.
         """
-        from app.utils.memory_extractor import deduplicate
+        from app.memory.extractor import deduplicate
         import app.services.embedding_service as es
 
         # Create a mock provider that returns similar vectors
@@ -109,7 +110,7 @@ class TestEmbeddingDedup:
         (no active-memory comparator path to defer to).  This is the
         original noise-suppression role embedding dedup plays.
         """
-        from app.utils.memory_extractor import deduplicate
+        from app.memory.extractor import deduplicate
         import app.services.embedding_service as es
 
         mock_provider = MagicMock()
@@ -143,7 +144,7 @@ class TestEmbeddingDedup:
 
     def test_embedding_dedup_keeps_genuinely_different(self, tmp_path):
         """Candidates with low similarity pass through."""
-        from app.utils.memory_extractor import deduplicate
+        from app.memory.extractor import deduplicate
         import app.services.embedding_service as es
 
         mock_provider = MagicMock()
@@ -195,9 +196,9 @@ class TestReEmbedOnUpdate:
         _real_embed_and_cache = _es_mod.embed_and_cache
 
         # Mock the full extraction pipeline dependencies
-        with patch("app.utils.memory_extractor.extract_memories", new_callable=AsyncMock) as mock_extract, \
-             patch("app.utils.memory_comparator.find_similar_memories") as mock_find, \
-             patch("app.utils.memory_comparator.compare_memory", new_callable=AsyncMock) as mock_compare, \
+        with patch("app.memory.extractor.extract_memories", new_callable=AsyncMock) as mock_extract, \
+             patch("app.memory.comparator.find_similar_memories") as mock_find, \
+             patch("app.memory.comparator.compare_memory", new_callable=AsyncMock) as mock_compare, \
              patch("app.storage.memory.get_memory_storage", return_value=tmp_store), \
              patch.object(_es_mod, "embed_and_cache", side_effect=_track_embed), \
              patch("app.mcp.builtin_tools.is_builtin_category_enabled", return_value=True):
@@ -209,7 +210,7 @@ class TestReEmbedOnUpdate:
             mock_find.return_value = [m1.model_dump()]
             mock_compare.return_value = {"action": "UPDATE", "target_id": m1.id}
 
-            from app.utils.memory_extractor import run_post_conversation_extraction
+            from app.memory.extractor import run_post_conversation_extraction
             # Messages must be long enough to survive strip_conversation (>200 chars)
             messages = [
                 # The "to be clear" / "remember" phrases hit the
@@ -236,9 +237,9 @@ class TestReEmbedOnUpdate:
         """UPDATE should not reset importance of a heavily-used memory."""
         m1 = _make_memory(tmp_store, "Old content", tags=["topic"], importance=0.95)
 
-        with patch("app.utils.memory_extractor.extract_memories", new_callable=AsyncMock) as mock_extract, \
-             patch("app.utils.memory_comparator.find_similar_memories") as mock_find, \
-             patch("app.utils.memory_comparator.compare_memory", new_callable=AsyncMock) as mock_compare, \
+        with patch("app.memory.extractor.extract_memories", new_callable=AsyncMock) as mock_extract, \
+             patch("app.memory.comparator.find_similar_memories") as mock_find, \
+             patch("app.memory.comparator.compare_memory", new_callable=AsyncMock) as mock_compare, \
              patch("app.storage.memory.get_memory_storage", return_value=tmp_store), \
              patch("app.services.embedding_service.embed_and_cache"), \
              patch("app.mcp.builtin_tools.is_builtin_category_enabled", return_value=True):
@@ -250,7 +251,7 @@ class TestReEmbedOnUpdate:
             mock_find.return_value = [m1.model_dump()]
             mock_compare.return_value = {"action": "UPDATE", "target_id": m1.id}
 
-            from app.utils.memory_extractor import run_post_conversation_extraction
+            from app.memory.extractor import run_post_conversation_extraction
             # Salience triggers ("to be clear", "remember this") needed
             # so the pipeline doesn't short-circuit before the comparator.
             messages = [
@@ -323,7 +324,7 @@ class TestStartupInitialization:
              patch("app.services.embedding_service.get_embedding_provider") as mock_prov, \
              patch("app.services.embedding_service.get_embedding_cache") as mock_cache_fn, \
              patch("app.services.embedding_service.backfill_embeddings", new_callable=AsyncMock) as mock_backfill, \
-             patch("app.utils.memory_organizer.reorganize", new_callable=AsyncMock) as mock_reorg:
+             patch("app.memory.organizer.reorganize", new_callable=AsyncMock) as mock_reorg:
 
             # Embeddings: all present, no backfill needed
             mock_prov.return_value = NoopProvider()
