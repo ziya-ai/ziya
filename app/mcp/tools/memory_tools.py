@@ -146,7 +146,7 @@ class MemorySearchTool(BaseMCPTool):
                             entry += f"  tags: {', '.join(mem.tags)}"
                         formatted.append(entry)
                     try:
-                        from app.utils.memory_feedback import record_load
+                        from app.memory.feedback import record_load
                         record_load(_conversation_id, [m.id for m in promoted])
                     except Exception as fb_err:
                         logger.debug(f"record_load (auto-promoted) failed: {fb_err}")
@@ -184,7 +184,7 @@ class MemorySearchTool(BaseMCPTool):
         # Record retrieval-load for the feedback loop.  Use signal happens
         # later when the assistant's response gets scored against these.
         try:
-            from app.utils.memory_feedback import record_load
+            from app.memory.feedback import record_load
             record_load(_conversation_id, [m.id for m in results])
         except Exception as fb_err:
             logger.debug(f"record_load (search) failed: {fb_err}")
@@ -269,7 +269,7 @@ class MemorySaveTool(BaseMCPTool):
 
         # Phase 2: Auto-place in mind-map + cell division + cross-links
         try:
-            from app.utils.memory_maintenance import run_post_save_maintenance
+            from app.memory.maintenance import run_post_save_maintenance
             run_post_save_maintenance(saved.id)
         except Exception as e:
             logger.warning(f"Post-save maintenance failed (non-fatal): {e}")
@@ -409,7 +409,7 @@ class MemoryContextTool(BaseMCPTool):
         memory_refs = node.get("memory_refs") or []
         if memory_refs:
             try:
-                from app.utils.memory_feedback import record_load
+                from app.memory.feedback import record_load
                 record_load(_conversation_id, list(memory_refs))
             except Exception as fb_err:
                 logger.debug(f"record_load (context) failed: {fb_err}")
@@ -466,7 +466,7 @@ class MemoryExpandTool(BaseMCPTool):
 
         # Record retrieval-load for the feedback loop.
         try:
-            from app.utils.memory_feedback import record_load
+            from app.memory.feedback import record_load
             record_load(_conversation_id, [m.id for m in memories])
         except Exception as fb_err:
             logger.debug(f"record_load (expand) failed: {fb_err}")
