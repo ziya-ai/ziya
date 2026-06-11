@@ -12,7 +12,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from app.utils.memory_extractor import (
+from app.memory.extractor import (
     _classify_uri,
     _extract_uris_from_text,
     _extract_reference_candidates,
@@ -84,7 +84,7 @@ class TestPluginContribution:
     def setup_method(self):
         # Reset the plugin pattern cache before each test so registration
         # changes are visible.
-        import app.utils.memory_extractor as me
+        import app.memory.extractor as me
         me._plugin_uri_patterns_cache = None
 
     def test_plugin_pattern_classifies_before_generic_url(self):
@@ -95,7 +95,7 @@ class TestPluginContribution:
         ]
         with patch("app.plugins.get_extraction_pattern_providers",
                     return_value=[fake_provider]):
-            import app.utils.memory_extractor as me
+            import app.memory.extractor as me
             me._plugin_uri_patterns_cache = None
             result = _classify_uri("https://wiki.fakecorp.com/page")
             assert result == "wiki"
@@ -106,7 +106,7 @@ class TestPluginContribution:
         broken_provider.get_uri_patterns.side_effect = RuntimeError("broken")
         with patch("app.plugins.get_extraction_pattern_providers",
                     return_value=[broken_provider]):
-            import app.utils.memory_extractor as me
+            import app.memory.extractor as me
             me._plugin_uri_patterns_cache = None
             result = _classify_uri("https://example.com/foo")
             assert result == "url"  # Falls back to built-in
@@ -114,7 +114,7 @@ class TestPluginContribution:
     def test_no_plugin_system_doesnt_break(self):
         """If app.plugins isn't importable, built-ins still work."""
         with patch.dict("sys.modules", {"app.plugins": None}):
-            import app.utils.memory_extractor as me
+            import app.memory.extractor as me
             me._plugin_uri_patterns_cache = None
             result = _classify_uri("https://example.com/foo")
             assert result == "url"

@@ -19,7 +19,7 @@ import pytest
 
 from app.models.memory import Memory, MindMapNode
 from app.storage.memory import MemoryStorage
-from app.utils.memory_maintenance import (
+from app.memory.maintenance import (
     run_post_save_maintenance,
     maybe_divide_node,
     discover_cross_links,

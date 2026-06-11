@@ -5,13 +5,13 @@ from unittest.mock import patch
 
 import pytest
 
-from app.utils import memory_organize_history as moh
+from app.memory import organize_history as moh
 
 
 @pytest.fixture
 def history_dir(tmp_path):
     """Patch the home dir so the history file lives in tmp_path."""
-    with patch("app.utils.memory_organize_history.get_ziya_home" if False
+    with patch("app.memory.organize_history.get_ziya_home" if False
                else "app.utils.paths.get_ziya_home", return_value=tmp_path):
         yield tmp_path
 
