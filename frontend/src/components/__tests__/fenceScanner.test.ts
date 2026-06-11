@@ -16,6 +16,7 @@ import {
     escapeNestedBacktickFences,
     stripBareProseFences,
     applyOutsideFences,
+    splitJsonSpecTrailingContent,
 } from '../fenceScanner';
 
 const BT = '`'.repeat(3);
@@ -428,5 +429,97 @@ describe('applyOutsideFences', () => {
         // Fence content is left in original case
         expect(result).toContain('x');
         expect(result).toContain('y');
+    });
+});
+
+describe('splitJsonSpecTrailingContent', () => {
+    /** Extract [lang, content] pairs for every closed fenced block in md. */
+    const blocks = (md: string): Array<[string, string]> => {
+        const lines = md.split('\n');
+        const classes = classifyFenceLines(md);
+        const out: Array<[string, string]> = [];
+        let open = -1;
+        let lang = '';
+        lines.forEach((_, i) => {
+            if (classes[i].kind === 'open') { open = i; lang = (classes[i] as any).info; }
+            else if (classes[i].kind === 'close' && open >= 0) {
+                out.push([lang, lines.slice(open + 1, i).join('\n')]);
+                open = -1;
+            }
+        });
+        return out;
+    };
+
+    it('leaves a well-formed plotly block untouched', () => {
+        const md = [BT + 'plotly', '{"data": [1, 2]}', BT, 'after'].join('\n');
+        expect(splitJsonSpecTrailingContent(md)).toBe(md);
+    });
+
+    it('leaves an unterminated (streaming) plotly block untouched', () => {
+        const md = [BT + 'plotly', '{"data": [1,'].join('\n');
+        expect(splitJsonSpecTrailingContent(md)).toBe(md);
+    });
+
+    it('leaves non-JSON languages untouched even with trailing text', () => {
+        const md = [BT + 'mermaid', 'graph TD', 'A-->B', BT].join('\n');
+        expect(splitJsonSpecTrailingContent(md)).toBe(md);
+    });
+
+    it('splits prose glued after the JSON value out of the block', () => {
+        const md = [BT + 'plotly', '{"data": [1]}Some prose here.', BT].join('\n');
+        const result = splitJsonSpecTrailingContent(md);
+        const b = blocks(result);
+        expect(b).toHaveLength(1);
+        expect(JSON.parse(b[0][1])).toEqual({ data: [1] });
+        expect(result).toContain('Some prose here.');
+        // Prose must be outside the fence.
+        expect(b[0][1]).not.toContain('Some prose');
+    });
+
+    it('recovers a second plotly block swallowed by an unclosed first one', () => {
+        const md = [
+            BT + 'plotly',
+            '{"data": [1]}prose between the charts',
+            '',
+            BT + 'plotly',
+            '{"data": [2]}',
+            BT,
+        ].join('\n');
+        const result = splitJsonSpecTrailingContent(md);
+        const b = blocks(result);
+        expect(b).toHaveLength(2);
+        expect(JSON.parse(b[0][1])).toEqual({ data: [1] });
+        expect(JSON.parse(b[1][1])).toEqual({ data: [2] });
+        expect(result).toContain('prose between the charts');
+    });
+
+    it('handles braces and escapes inside JSON strings', () => {
+        const md = [BT + 'plotly', '{"t": "a } b \\" c"}trailing', BT].join('\n');
+        const result = splitJsonSpecTrailingContent(md);
+        const b = blocks(result);
+        expect(b).toHaveLength(1);
+        expect(JSON.parse(b[0][1])).toEqual({ t: 'a } b " c' });
+        expect(result).toContain('trailing');
+    });
+
+    it('recovers nested specs across multiple passes', () => {
+        const md = [
+            BT + 'plotly',
+            '{"a": 1}x',
+            BT + 'plotly',
+            '{"b": 2}y',
+            BT + 'plotly',
+            '{"c": 3}',
+            BT,
+        ].join('\n');
+        const result = splitJsonSpecTrailingContent(md);
+        const b = blocks(result);
+        expect(b).toHaveLength(3);
+        expect(b.map(([, c]) => JSON.parse(c))).toEqual([{ a: 1 }, { b: 2 }, { c: 3 }]);
+    });
+
+    it('does not split when only whitespace trails the JSON', () => {
+        const md = [BT + 'plotly', '{"data": [1]}   ', '', BT].join('\n');
+        expect(splitJsonSpecTrailingContent(md)).toBe(md);
     });
 });

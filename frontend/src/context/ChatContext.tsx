@@ -2498,13 +2498,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
         recentlyFetchedFullIds.current.clear();
 
         // On an actual project switch, immediately load the new project's
-        // conversations from local IndexedDB and show them in the sidebar
-        // before the server sync completes.  This gets the left pane
-        // populated within a few hundred milliseconds rather than waiting
-        // for all the network round-trips in syncWithServer().
+        // conversations from local IndexedDB and show them in the sidebar before
+        // the server sync completes.  Also run on initial browser session load
+        // (serverSyncedForProject === null) so the sidebar is never blank while
+        // waiting for the first server round-trip — the same guarantee we already
+        // give for explicit project switches.
         // The server sync still runs in the background and will merge any
         // newer data from the server once it finishes.
-        if (isActualProjectSwitch) {
+        const isInitialLoad = serverSyncedForProject.current === null;
+        if (isActualProjectSwitch || isInitialLoad) {
             const preloadForSwitch = async () => {
                 try {
                     let shells: Conversation[];
